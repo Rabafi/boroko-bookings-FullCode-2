@@ -27,7 +27,7 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Starter',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort'],
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
     visibility: 'always',
     upsellPriority: 0,
     routes: ['/'],
@@ -201,7 +201,7 @@ export const MODULE_CATALOG = [
   },
   {
     key: 'starter_backup',
-    label: 'Core data recovery export',
+    label: 'Core Data Backup',
     description: 'Customer-owned .tbbackup package for support-led recovery; imports and managed backups remain Standard-only',
     category: MODULE_CATEGORIES.finance,
     requiredPlan: 'Starter',
@@ -324,7 +324,7 @@ export const MODULE_CATALOG = [
   {
     key: 'import',
     label: 'Data Management',
-    description: 'Import and export lodge data',
+    description: 'Import and export property data',
     category: MODULE_CATEGORIES.finance,
     requiredPlan: 'Standard',
     isAddon: false,
@@ -887,11 +887,11 @@ export const MODULE_CATALOG = [
     isAddon: false,
     addonKey: null,
     allowedPropertyTypes: ['motel', 'hotel', 'resort', 'lodge'],
-    visibility: 'hotel_only',
+    visibility: 'hidden',
     upsellPriority: 70,
     routes: ['/documents'],
     capabilities: ['documents.view', 'documents.manage', 'documents.generate'],
-    rolloutStatus: 'active'
+    rolloutStatus: 'planned'
   },
   {
     key: 'hotel_roles',
@@ -1121,6 +1121,10 @@ export function resolveModuleVisibility(moduleKey, propertyType, subscriptionPla
 
   const normalizedPropertyType = normalizePropertyType(propertyType)
   const normalizedPlan = normalizeSubscriptionPlan(subscriptionPlan)
+
+  if (module.visibility === 'hidden') {
+    return MODULE_VISIBILITY_STATES.hidden
+  }
 
   if (!module.allowedPropertyTypes.includes(normalizedPropertyType)) {
     return MODULE_VISIBILITY_STATES.hidden

@@ -47,3 +47,10 @@ test('cash-up feedback persists after staff clock-out and manager approval actio
   assert.match(cashClose, /scrollIntoView\(\{ block: 'end', behavior: 'smooth' \}\)/)
   assert.match(hospitalityPosCss, /\.hpos-cashup-review-actions \{[^}]*scroll-margin-bottom:32px/, 'manager action bar keeps a safe visible scroll target')
 })
+
+test('cash-up review never presents an empty queue after an unavailable response', () => {
+  assert.match(cashClose, /reviewUnavailable/)
+  assert.match(cashClose, /result\.offline === true \|\| result\.complete === false/)
+  assert.match(cashClose, /Cash-up review is not verified/)
+  assert.match(cashClose, /No empty-queue conclusion is being shown/)
+})

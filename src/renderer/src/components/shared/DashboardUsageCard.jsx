@@ -22,6 +22,7 @@ export default function DashboardUsageCard({
   lodgeId = '',
   lodgeName = '',
   recommendation = null,
+  limits: suppliedLimits = null,
   trigger = 'dashboard'
 } = {}) {
   const currentPlan = normalizeSubscriptionPlan(plan)
@@ -48,7 +49,7 @@ export default function DashboardUsageCard({
       </section>
     )
   }
-  const limits = getPlanUsageLimits(currentPlan)
+  const limits = suppliedLimits || getPlanUsageLimits(currentPlan)
   const currentLimits = formatPlanLimits(currentPlan)
   const bookingsUsed = Number(usage?.monthlyBookings ?? 0)
   const roomsUsed = Number(usage?.rooms ?? 0)

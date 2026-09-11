@@ -66,11 +66,13 @@ describe('Phase 6: Restaurant Usability Gaps', () => {
     it('POS.jsx executeSplitBill handles both modes', () => {
       const jsx = read(POS_JSX)
       const fnIdx = jsx.indexOf('const executeSplitBill = async')
-      const fnBody = jsx.slice(fnIdx, fnIdx + 800)
+      const fnEnd = jsx.indexOf('\n  const ', fnIdx + 10)
+      const fnBody = jsx.slice(fnIdx, fnEnd > 0 ? fnEnd : fnIdx + 1600)
       assert.ok(fnBody.includes("splitMode === 'even'"), 'handles even mode')
       assert.ok(fnBody.includes("splitMode === 'items'"), 'handles items mode')
       assert.ok(fnBody.includes('splitBillEvenly'), 'calls splitBillEvenly for even mode')
       assert.ok(fnBody.includes('splitBillByItems'), 'calls splitBillByItems for items mode')
+      assert.ok(fnBody.includes('source_tab_version'), 'even splits carry the loaded tab version for optimistic concurrency')
     })
 
     it('POS.jsx openSplitModal resets split mode state', () => {
@@ -310,12 +312,18 @@ describe('Phase 6: Restaurant Usability Gaps', () => {
     it('pos.js splitBillEvenly has no dead code after RPC return', () => {
       const js = read(POS_JS)
       const fnIdx = js.indexOf('export async function splitBillEvenly')
-      const fnEnd = js.indexOf('\n}', fnIdx + 500)
-      const fnBody = js.slice(fnIdx, fnEnd + 1)
-      const returnIdx = fnBody.indexOf('return { success: false, error:', fnBody.indexOf("rpc('split_pos_tab_evenly'"))
-      assert.ok(returnIdx > 0, 'has return after RPC path')
-      const afterReturn = fnBody.slice(returnIdx + 50)
-      assert.ok(!afterReturn.includes('const rows = readPosTabs'), 'no dead offline fallback code')
+      const fnEnd = js.indexOf('\nexport ', fnIdx + 10)
+      const fnBody = js.slice(fnIdx, fnEnd > 0 ? fnEnd : fnIdx + 4000)
+      const rpcIdx = fnBody.indexOf("rpc('split_pos_tab_evenly'")
+      assert.ok(rpcIdx > 0, 'calls the atomic split RPC')
+      const afterRpc = fnBody.slice(rpcIdx)
+      // Transport failures return an unknown-outcome envelope; they never
+      // fall through into fabricated tab state.
+      assert.ok(afterRpc.includes("code: 'unknown_split_error'"), 'has unknown-outcome return after RPC path')
+      assert.ok(afterRpc.includes("outcome: 'unknown'"), 'transport failure stays unknown, never terminal')
+      // Offline splits stay rejected without queueing a shadow operation.
+      assert.ok(fnBody.includes("code: 'offline_split_blocked'"), 'offline splits are blocked')
+      assert.ok(!fnBody.includes('queueOperation'), 'no dead offline queueing code')
     })
   })
 

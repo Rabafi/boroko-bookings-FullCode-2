@@ -6,6 +6,7 @@
 do $$
 declare
   v_definition text;
+  v_live text;
   v_old text := $old$
   v_operator_id := coalesce(v_actor_id, v_shift.cashier_id);
   if v_operator_id is null then
@@ -38,6 +39,8 @@ $old$;
   end if;
 $new$;
   v_occurrences integer;
+  v_new_count integer;
+  v_result text;
 begin
   select pg_get_functiondef('public.create_pos_order_v3(jsonb)'::regprocedure)
     into v_definition;
@@ -45,14 +48,51 @@ begin
   if v_definition is null then
     raise exception 'create_pos_order_v3(jsonb) is not installed';
   end if;
+  -- Newline portability: the dollar-quoted matcher blocks above carry this
+  -- file's own checkout line endings (CRLF or LF), while pg_get_functiondef
+  -- returns the stored definition (LF when installed from LF bytes). Match
+  -- byte-exactly first to preserve the legacy path bit-for-bit; otherwise
+  -- compare with carriage returns normalized on BOTH sides. Only CRLF
+  -- sequences are collapsed: lone carriage returns, spaces, and all other
+  -- bytes still participate in matching, so a missing or changed contract
+  -- keeps failing instead of matching loosely. The swapped blocks contain
+  -- no embedded newlines inside string literals (single-line error texts
+  -- only), so CRLF->LF normalization cannot alter literal content.
   v_occurrences := (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old);
-  if v_occurrences = 0 then
-    raise exception 'create_pos_order_v3 operator attribution contract is not in the expected form';
+  v_new_count := (length(v_definition) - length(replace(v_definition, v_new, ''))) / length(v_new);
+  if v_occurrences = 1 and v_new_count = 0 then
+    v_result := replace(v_definition, v_old, v_new);
+  else
+    v_live := replace(v_definition, chr(13) || chr(10), chr(10));
+    v_old := replace(v_old, chr(13) || chr(10), chr(10));
+    v_new := replace(v_new, chr(13) || chr(10), chr(10));
+    v_occurrences := (length(v_live) - length(replace(v_live, v_old, ''))) / length(v_old);
+    v_new_count := (length(v_live) - length(replace(v_live, v_new, ''))) / length(v_new);
+    if v_occurrences = 1 and v_new_count = 0 then
+      v_result := replace(v_live, v_old, v_new);
+    elsif v_occurrences = 0 and v_new_count = 1 then
+      -- The exact intended new contract is already installed (for example
+      -- a prior attempt committed the rewrite before halting elsewhere).
+      -- This explicit branch proves the target state; it never stands in
+      -- for a missing or ambiguous contract.
+      raise notice 'create_pos_order_v3 operator attribution repair already installed; skipping rewrite';
+      return;
+    elsif v_occurrences = 0 then
+      raise exception 'create_pos_order_v3 operator attribution contract is not in the expected form';
+    else
+      raise exception 'create_pos_order_v3 operator attribution contract is ambiguous';
+    end if;
   end if;
-  if v_occurrences <> 1 then
-    raise exception 'create_pos_order_v3 operator attribution contract is ambiguous';
+  -- Verify the rewritten statement before executing: the new block exactly
+  -- once, the old block fully gone. Anything else aborts instead of
+  -- installing a half-rewritten function.
+  if (length(v_result) - length(replace(v_result, v_new, ''))) / length(v_new) <> 1 then
+    raise exception 'create_pos_order_v3 operator attribution rewrite did not install the new block exactly once';
+  end if;
+  if position(v_old in v_result) <> 0 then
+    raise exception 'create_pos_order_v3 operator attribution rewrite left the old block behind';
   end if;
 
-  execute replace(v_definition, v_old, v_new);
+  execute v_result;
 end;
 $$

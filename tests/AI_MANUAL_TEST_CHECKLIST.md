@@ -1,6 +1,11 @@
-# AI Chatbot Manual Verification Checklist
+# AI Chatbot Manual Verification Checklist (recommend-only contract)
 
-Use before enabling action-taking AI in production.
+The assistant **recommends actions and shows routes but never automates
+anything**: there are no proposals, no confirm-execute path, and no direct
+ledger writes from the assistant. A write intent returns a recommendation
+card that navigates to the normal screen, where that screen's own
+capability and validation gates apply. Use before enabling any cloud
+provider in production.
 Record results in the **Status** column:
 - **NOT RUN** — test not yet performed
 - **BLOCKED** — test requires credentials/UI/network not available in current session
@@ -25,7 +30,7 @@ Record results in the **Status** column:
 | A4 | Missing API key | `BOROKO_AI_PROVIDER=deepseek`<br>(no key) | "AI API key missing" error | BLOCKED: needs UI access | Parser-level test passes (runtime tests) |
 | A5 | Invalid API key (401/403) | `BOROKO_AI_PROVIDER=deepseek`<br>`BOROKO_AI_API_KEY=sk-invalid` | "authentication failed" (safe message, no raw 401) | BLOCKED: needs valid DeepSeek key to test 401 | Provider behavior tests pass (error normalization) |
 | A6 | Unsupported provider (explicit) | `BOROKO_AI_PROVIDER=openai` | "Unsupported AI provider configured: openai" — **no silent Gemini fallback** | **PASS** | Verified via runtime provider behavior test (test 5) |
-| A7 | Unset provider (safe default) | (no BOROKO_AI_PROVIDER) | Falls back to gemini | **PASS** | Verified via runtime provider behavior test (test 1) |
+| A7 | Unset provider (safe default) | (no BOROKO_AI_PROVIDER) | Falls back to local assistant | **PASS** | Verified via runtime provider behavior test (test 1) |
 | A8 | Case-insensitive provider | `BOROKO_AI_PROVIDER=DeepSeek` | Works as deepseek | **PASS** | Verified via runtime provider behavior test (test 6) |
 
 ---
@@ -37,7 +42,7 @@ Record results in the **Status** column:
 | B1 | Rate limit (429) | Rapid-fire messages or rate-limited key | "rate limit reached. Please wait a moment." | BLOCKED: needs real key under rate limit | normalizeProviderError handles 429 (tested) |
 | B2 | Server unavailable (5xx) | `BOROKO_AI_BASE_URL=https://httpstat.us/503` | "AI provider is temporarily unavailable (status 503). Boroko continues to work normally." | BLOCKED: needs UI access | normalizeProviderError handles 5xx (tested) |
 | B3 | Simulated offline | `BOROKO_TEST_FORCE_OFFLINE=true` | "needs an internet connection. Boroko can still work offline." | BLOCKED: needs UI access | normalizeProviderError handles network errors (tested) |
-| B4 | Offline — no proposals created | Disconnect + ask for write action | No proposal appears. Safe error shown. | BLOCKED: needs UI access | |
+| B4 | Offline — no recommendations lost | Disconnect + ask for write action | Recommendation card shown with Open-screen button. Nothing executes. | BLOCKED: needs UI access | |
 | B5 | Offline — normal Boroko works | Disconnect + use bookings/POS | Normal workflows unaffected | BLOCKED: needs UI access | |
 
 ---
@@ -68,16 +73,16 @@ Record results in the **Status** column:
 
 ---
 
-## E. Proposal & Lodge Validation
+## E. Recommendation & Execution Safety
 
 | # | Scenario | How to Trigger | Expected Result | Status | Notes |
 |---|---|---|---|---|---|
-| E1 | Proposal confirmation required | Ask AI to record a payment | Proposal card shown with Confirm button. Payment NOT auto-executed. | BLOCKED: needs live app + AI key | Source analysis confirms proposal flow |
-| E2 | Actions disabled by default | `BOROKO_AI_ACTIONS_ENABLED` not set (or `false`) | Confirm-required tools rejected: "AI actions are currently disabled for safety." Read-only tools continue working. | **PASS** | Source analysis confirms gate at lines 271-277 (flag) and 1343-1349 (turn gate) + 1364-1367 (execute gate) |
-| E3 | Missing lodgeId rejected | Proposal has no lodgeId + execution attempted | "lodge context is missing from the proposal." Audit logged. | **PASS** | Source analysis confirms strict check (lines 1377-1380) |
-| E4 | Mismatched lodgeId rejected | Proposal from Lodge A, execute in Lodge B | "belongs to a different lodge session." Audit logged. | **PASS** | Source analysis confirms (lines 1385-1388) |
-| E5 | Expired proposal (>10 min TTL) | Create proposal, wait >10 min, confirm | "This AI action has expired." | **PASS** | Source analysis confirms (lines 1370-1374) |
-| E6 | Role/capability block | Restricted role attempts write action | Capability check blocks execution | **PASS** | Source analysis confirms (line 1385 in execute, lines 1333-1334 in turn) |
+| E1 | Recommendation offered, nothing auto-runs | Ask AI to record a payment | Recommendation card shown with Open-screen button. Payment NOT executed. Target screen enforces its own gates. | BLOCKED: needs live app + AI key | Source analysis confirms recommend-only turn path |
+| E2 | Recommend-only by design | Ask for any write action | Recommendation card with route returned; `ai.tool.recommended` audit event; no proposal, no execution path exists | **PASS** | Source analysis confirms RECOMMENDATION_ROUTES + buildRecommendation, no proposal store |
+| E3 | Execute always rejects | Call `ai:execute` directly | Recommend-only error. `ai.execute.rejected` audit logged with `recommend_only`. | **PASS** | Source analysis confirms unconditional reject in execute() |
+| E4 | Crafted bulk chat messages do nothing privileged | Send `bulk_record_payment for ids: …` as chat | No bulk execution path in `ai:turn`; treated as normal text. Bulk collection only via the Inline panel preview → explicit Confirm. | **PASS** | Fast-path bypass removed from turn(); automated suite asserts absence |
+| E5 | Capability-gated reads preserved | Restricted role asks for summaries | Read tools still require their view capability; write intents return guidance only | **PASS** | toolCaps checks retained on the read path |
+| E6 | Role/capability block on target screens | Follow a recommendation as restricted role | Target screen's own capability gate blocks the action | BLOCKED: needs live app | Enforcement lives on the screen, not the assistant |
 
 ---
 
@@ -88,7 +93,7 @@ Record results in the **Status** column:
 | F1 | Collections bulk audit | Execute collections via inline panel | ai-audit.log has `ai.collections.execute` with affected_booking_ids, error_summaries | BLOCKED: needs live app | Source analysis confirms (index.js) |
 | F2 | Overdue checkout bulk audit | Execute overdue checkout via inline panel | ai-audit.log has `ai.overdue.execute` with affected_booking_ids | BLOCKED: needs live app | Source analysis confirms (index.js) |
 | F3 | Failed bulk operation logs | Force bulk execution error | ai-audit.log has `ai.collections.execute.failed` or `ai.overdue.execute.failed` with error summary | BLOCKED: needs live app | Source analysis confirms (index.js) |
-| F4 | Single action audit log | Execute single payment via AI | ai-audit.log has `ai.tool.confirmed` | BLOCKED: needs live app | Source analysis confirms |
+| F4 | Single recommendation audit log | Ask AI for a write action | ai-audit.log has `ai.tool.recommended` with tool, params, and route | BLOCKED: needs live app | Source analysis confirms |
 
 ---
 
@@ -106,10 +111,10 @@ Record results in the **Status** column:
 
 ---
 
-## H. Launch Gate Verification
+## H. Recommend-Only Verification
 
 | # | Scenario | Env Var | Expected Result | Status | Notes |
 |---|---|---|---|---|---|
-| H1 | Actions disabled (default) | (no flag or `BOROKO_AI_ACTIONS_ENABLED=false`) | Confirm-required tools blocked: "AI actions are currently disabled for safety." Read-only tools work normally. | **PASS** | Source analysis confirms `AI_ACTIONS_ENABLED` defaults to `false` (line 271-272) |
-| H2 | Actions enabled | `BOROKO_AI_ACTIONS_ENABLED=true` | Confirm-required tools create proposals normally (subject to other guards) | BLOCKED: needs live app with AI key | |
-| H3 | Bulk execute blocked when disabled | Actions disabled + try bulk collections/overdue | IPC handler bypasses — needs explicit guard in index.js too | BLOCKED: needs live app | Bulk IPC handlers in index.js do not currently check AI_ACTIONS_ENABLED — they are triggered from inline panel UI, not AI chat |
+| H1 | Recommend-only (always) | any | Confirm-required tools return a recommendation card with a route; nothing executes. Read-only tools work normally. | **PASS** | No proposal store or execute path exists; automated suite asserts 96/96 |
+| H2 | Bulk panel still explicit | n/a | Bulk collections/overdue run only via Inline panel preview → per-item selection → explicit Confirm, capability-gated | BLOCKED: needs live app | IPC handlers in index.js retain capability + AI_ACTIONS_ENABLED gates; not reachable from chat |
+| H3 | No chat-triggered bulk execution | n/a | `bulk_record_payment for ids:` / `bulk_check_out ids:` chat messages have no privileged path | **PASS** | Fast-paths removed from turn(); automated suite asserts absence |

@@ -30,9 +30,10 @@ import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/paymentMethods'
 import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
-import { canCreateBooking, countMonthlyCreatedBookings, countMonthlyUsageBookings, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { canCreateBooking, countMonthlyCreatedBookings, countMonthlyUsageBookings, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { formatLocalDate, localToday } from '../utils/localDate'
 import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
+import { getBookingFinancialView, isPendingBookingFinancial, bookingPaymentStatusLabel } from '../../../shared/bookingFinancials.js'
 
 const CheckinWorkflow = lazy(() => import('./CheckinWorkflow'))
 const EarlyLateCheckout = lazy(() => import('./EarlyLateCheckout'))
@@ -107,17 +108,20 @@ function buildWhatsAppMessage(b, settings) {
 }
 
 function bookingOutstandingAmount(booking) {
-  return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+  return getBookingFinancialView(booking).outstanding
 }
 
 function bookingRefundPending(booking) {
-  return booking?.status === 'cancelled' && Number(booking.amount_paid || 0) > 0.01 && booking.refund_settled !== true
+  const financial = getBookingFinancialView(booking)
+  return !financial.pending && booking?.status === 'cancelled' && financial.amountPaid > 0.01 && booking.refund_settled !== true
 }
 
 function bookingNeedsAttention(booking) {
-  const total = Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0))
-  const paid = Math.max(0, Number(booking.amount_paid || 0))
-  const status = String(booking.payment_status || 'unpaid')
+  const financial = getBookingFinancialView(booking)
+  if (financial.pending) return false
+  const total = financial.grandTotal
+  const paid = financial.amountPaid
+  const status = String(financial.paymentStatus || 'unpaid')
   if (paid > total + 0.01) return true
   if (status === 'paid' && paid < total - 0.01) return true
   if (status === 'unpaid' && paid > 0.01) return true
@@ -439,7 +443,7 @@ export default function Bookings() {
 
   const getCheckoutBlockMessage = (booking) => {
     if (!booking) return ''
-    if (booking._pending_payment) return 'Cannot checkout: payment is pending sync'
+    if (isPendingBookingFinancial(booking)) return 'Cannot checkout: booking money is pending server confirmation'
     if (isFinanciallySyncBlocked(booking.id)) return FINANCIAL_SYNC_BLOCK_MESSAGE
     const outstanding = bookingOutstandingAmount(booking)
     if (outstanding > 0) return `Settle ${currency} ${outstanding.toFixed(2)} before checkout`
@@ -702,10 +706,15 @@ export default function Bookings() {
       setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
     }
-    const initialStatus = b.payment_status === 'paid' ? 'paid' : b.payment_status === 'partial' ? 'partial' : 'paid'
+    if (isPendingBookingFinancial(b)) {
+      setWarning('Booking money is still pending server confirmation. Sync this booking before recording another payment.')
+      return
+    }
+    const financial = getBookingFinancialView(b)
+    const initialStatus = financial.paymentStatus === 'paid' ? 'paid' : financial.paymentStatus === 'partial' ? 'partial' : 'paid'
     const initialAmount = initialStatus === 'paid'
-      ? Number(b.total_amount || 0) + Number(b.charges_total || 0) - Number(b.amount_paid || 0)
-      : (b.amount_paid || '')
+      ? financial.outstanding
+      : (financial.amountPaid || '')
     setPaymentBooking(b)
     setPaymentIntentKey(getOrCreatePaymentIntentKey(b.id, initialStatus, initialAmount))
     setPayError('')
@@ -848,6 +857,10 @@ export default function Bookings() {
       setPayError(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
     }
+    if (isPendingBookingFinancial(paymentBooking)) {
+      setPayError('Booking money is still pending server confirmation. Sync the booking before recording another payment.')
+      return
+    }
     setPayLoading(true)
     setPayError('')
 
@@ -874,7 +887,7 @@ export default function Bookings() {
       closePaymentModal()
       loadAll()
       const newPaid = Number(creditResult?.amount_paid || 0)
-      const totalOwed = Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)
+      const totalOwed = getBookingFinancialView(paymentBooking).grandTotal
       const remaining = Math.max(0, totalOwed - newPaid)
       showSuccess(
         remaining > 0
@@ -886,9 +899,10 @@ export default function Bookings() {
     }
 
     // Normal payment path
+    const paymentFinancial = getBookingFinancialView(paymentBooking)
     let amountToPay = 0
     if (payForm.payment_status === 'paid') {
-      amountToPay = Math.max(0, Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0) - Number(paymentBooking.amount_paid || 0))
+      amountToPay = paymentFinancial.outstanding
     } else if (payForm.payment_status === 'partial') {
       amountToPay = Number(payForm.amount_paid) || 0
     }
@@ -916,7 +930,7 @@ export default function Bookings() {
     paymentIntentCacheRef.current.delete(paymentBooking.id)
     closePaymentModal()
     loadAll()
-    const remaining = Math.max(0, (Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)) - Number(paymentBooking.amount_paid || 0) - Number(amountToPay || 0))
+    const remaining = Math.max(0, paymentFinancial.outstanding - Number(amountToPay || 0))
     showSuccess(
       result?.offline
         ? 'Payment saved locally — will sync when online'
@@ -939,12 +953,24 @@ export default function Bookings() {
       return
     }
     if (status === 'cancelled') {
-      const hasDeposit = Number(booking?.amount_paid || 0) > 0
-      const msg = hasDeposit
-        ? `This booking has a deposit of ${currency} ${Number(booking.amount_paid).toFixed(2)}.\n\nCancelling will mark this as "Pending Refund". You must process the refund in the Financial Reconciliation section later to clear the balance.\n\nContinue with cancellation?`
-        : 'Cancel this booking?\n\nThis removes it from active operations and can affect room availability and reporting. Continue only if the guest is definitely not staying.'
-      
-      const confirmed = window.confirm(msg)
+      const financial = getBookingFinancialView(booking)
+      if (financial.pending) {
+        setWarning('Booking money is still pending server confirmation. Sync this booking before cancelling it so any refund boundary is evaluated safely.')
+        return
+      }
+      const hasDeposit = financial.amountPaid > 0
+      if (hasDeposit) {
+        const openRefund = window.confirm(
+          `This booking has ${currency} ${financial.amountPaid.toFixed(2)} recorded as paid. ` +
+          'A status change cannot cancel a paid booking. Open Financial Reconciliation now to approve the refund and cancel it atomically?'
+        )
+        if (openRefund) navigate('/invoices', { state: { refundBookingId: booking.id } })
+        return
+      }
+
+      const confirmed = window.confirm(
+        'Cancel this booking?\n\nThis removes it from active operations and can affect room availability and reporting. Continue only if the guest is definitely not staying.'
+      )
       if (!confirmed) return
     }
     if (status === 'checked_in' && booking) {
@@ -954,8 +980,8 @@ export default function Bookings() {
       }
     }
     if (status === 'checked_out' && booking) {
-      if (booking._pending_payment) {
-        setWarning('Cannot checkout: payment is pending sync')
+      if (isPendingBookingFinancial(booking)) {
+        setWarning('Cannot check out: booking money is pending server confirmation')
         return
       }
       const outstanding = bookingOutstandingAmount(booking)
@@ -1062,7 +1088,8 @@ export default function Bookings() {
       b.room_number?.toLowerCase().includes(search.toLowerCase()) ||
       String(fmtBkNum(b)).toLowerCase().includes(search.toLowerCase())
     const matchStatus = filterStatus === 'all' || b.status === filterStatus
-    const matchPayment = filterPayment === 'all' || (b.payment_status || 'unpaid') === filterPayment
+    const financial = getBookingFinancialView(b)
+    const matchPayment = filterPayment === 'all' || (financial.pending ? 'unpaid' : financial.paymentStatus || 'unpaid') === filterPayment
     const matchOnline = !filterOnline || b.source === 'online'
     return matchSearch && matchStatus && matchPayment && matchOnline
   }), [bookings, filterOnline, filterPayment, filterStatus, search])
@@ -1200,7 +1227,7 @@ export default function Bookings() {
   const partialRemaining = paymentBooking
     ? Math.max(0, outstandingBeforePayment - Number(payForm.amount_paid || 0))
     : 0
-  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
+  const usageLimits = usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {})
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
   const usageMonthDate = new Date()
   const thisMonthBookings = countMonthlyUsageBookings(bookings, usageMonthDate)
@@ -1211,7 +1238,7 @@ export default function Bookings() {
     : thisMonthBookings
   const bookingLimitStatus = usageSnapshot?.bookingAllowance?.targetMonthStatus
     || usageSnapshot?.statuses?.bookingTargetMonth
-    || canCreateBooking({ plan: currentPlan, used: checkInMonthBookings })
+    || canCreateBooking({ plan: currentPlan, used: checkInMonthBookings, limits: usageLimits })
   const currentCheckInMonthFull = bookingLimitStatus.isBlocked === true || bookingLimitStatus.state === 'blocked'
   const thisMonthCreatedBookings = countMonthlyCreatedBookings(bookings, usageMonthDate)
   const rawCreationMonthBookings = usageSnapshot?.usage?.creationMonthBookings
@@ -1592,23 +1619,23 @@ export default function Bookings() {
                     </div>
                   </td>
                   <td className="px-5 py-4">
-                    <PaymentBadge status={b.payment_status || 'unpaid'} />
-                    {b._pending_payment && (
+                    <PaymentBadge status={isPendingBookingFinancial(b) ? 'unpaid' : (b.payment_status || 'unpaid')} />
+                    {isPendingBookingFinancial(b) && (
                       <>
                         <span className="ml-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700 align-middle whitespace-nowrap animate-pulse">
-                          ⏳ Payment pending sync
+                          ⏳ {bookingPaymentStatusLabel(b)}
                         </span>
                         <p className="mt-1 text-xs text-amber-700">
-                          Displayed balance is an estimate until Supabase confirms the payment
+                          Displayed booking money is an estimate until Supabase confirms sync
                         </p>
                       </>
                     )}
-                    {b.payment_status === 'partial' && b.amount_paid > 0 && (
+                    {!isPendingBookingFinancial(b) && b.payment_status === 'partial' && b.amount_paid > 0 && (
                       <p className="mt-1 text-xs text-slate-500">
                         {currency} {Number(b.amount_paid).toFixed(2)} paid
                       </p>
                     )}
-                    {b.payment_method && b.payment_status !== 'unpaid' && (
+                    {b.payment_method && !isPendingBookingFinancial(b) && b.payment_status !== 'unpaid' && (
                       <p className="mt-1 text-xs text-slate-500">
                         {METHOD_LABEL[b.payment_method] || b.payment_method}
                         {!b._pending_payment && !b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds) && (
@@ -1618,7 +1645,9 @@ export default function Bookings() {
                     )}
                   </td>
                   <td className="px-5 py-4 text-right">
-                    <div className="font-semibold text-slate-800">{currency} {Number(b.total_amount || 0).toFixed(2)}</div>
+                    <div className={`font-semibold ${isPendingBookingFinancial(b) ? 'text-amber-700' : 'text-slate-800'}`}>
+                      {currency} {getBookingFinancialView(b).total.toFixed(2)}{isPendingBookingFinancial(b) ? ' est.' : ''}
+                    </div>
                   </td>
                   <td className="px-5 py-4 text-center relative">
                     <div className="flex items-center justify-center gap-1.5">
@@ -1675,10 +1704,10 @@ export default function Bookings() {
                           {b.status === 'checked_in' && (
                             <button
                               onClick={() => handleStatusChange(b.id, 'checked_out')}
-                              disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id}
+                              disabled={bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || isPendingBookingFinancial(b) || statusLoadingId === b.id}
                               title={statusLoadingId === b.id && statusLoadingAction === 'checked_out' ? 'Checking out…' : getCheckoutBlockMessage(b)}
                               className={`cursor-pointer rounded-xl px-3 py-1.5 text-xs font-semibold text-white transition-colors ${
-                                bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || b._pending_payment || statusLoadingId === b.id
+                                bookingOutstandingAmount(b) > 0 || isFinanciallySyncBlocked(b.id) || isPendingBookingFinancial(b) || statusLoadingId === b.id
                                   ? 'bg-slate-300 text-slate-600 cursor-not-allowed'
                                   : 'bg-indigo-600 hover:bg-indigo-700'
                               }`}
@@ -1686,7 +1715,7 @@ export default function Bookings() {
                               {statusLoadingId === b.id && statusLoadingAction === 'checked_out' ? 'Checking out…' : 'Check Out'}
                             </button>
                           )}
-                          {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
+                          {!isPendingBookingFinancial(b) && getBookingFinancialView(b).paymentStatus !== 'paid' && b.status !== 'cancelled' && (
                             <button
                               onClick={() => openPayment(b)}
                               disabled={isFinanciallySyncBlocked(b.id)}
@@ -2628,6 +2657,9 @@ export default function Bookings() {
                   </p>
                 )}
                 <p className="mt-1 text-xs text-emerald-700/80">Estimated total before any future extra charges, refunds, or manual adjustments.</p>
+                <p className="mt-1 text-xs font-medium text-amber-700">
+                  Availability and price are final only after server confirmation. Offline saves may require review or another room when they sync.
+                </p>
               </div>
             )}
 
@@ -2866,7 +2898,8 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
 
   const phone = formatWhatsAppPhone(b.customer_phone)
   const msg = buildWhatsAppMessage(b, settings)
-  const outstanding = bookingOutstandingAmount(b)
+  const financial = getBookingFinancialView(b)
+  const outstanding = financial.outstanding
 
   return (
     <>
@@ -2918,8 +2951,8 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
             <MenuItem
               icon={LogOut}
               onClick={() => { onCheckOut(); onClose() }}
-              disabled={outstanding > 0}
-              title={outstanding > 0 ? `Settle the outstanding balance first: ${outstanding.toFixed(2)}` : undefined}
+              disabled={outstanding > 0 || financial.pending}
+              title={financial.pending ? 'Booking money is pending server confirmation.' : outstanding > 0 ? `Settle the outstanding balance first: ${outstanding.toFixed(2)}` : undefined}
               color="blue"
             >
               Check out
@@ -2929,7 +2962,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
           <Divider />
 
           {/* Payment actions */}
-          {b.payment_status !== 'paid' && b.status !== 'cancelled' && (
+          {!financial.pending && financial.paymentStatus !== 'paid' && b.status !== 'cancelled' && (
             <MenuItem icon={Banknote} onClick={() => { onPayment(); onClose() }} color="primary">
               Add payment
             </MenuItem>

@@ -5,7 +5,6 @@ import { titleCase } from './format'
 import {
   appendIssueLog,
   createQueuedOperation,
-  enqueueOfflineOperation,
   enqueueOfflineOperationVerified,
   getOfflineQueue,
   readIssueLog,
@@ -896,7 +895,7 @@ async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }
       throw new Error(`${label} requires an internet connection and cannot be saved offline. Use Front Desk when back online.`)
     }
     if (optimistic) optimistic()
-    if (!supportOperation) enqueueOfflineOperation(lodgeId, queueItem)
+    if (!supportOperation) enqueueOfflineOperationVerified(lodgeId, queueItem)
     return { success: true, queued: true, operation_id: operationId }
   }
   try {
@@ -935,30 +934,31 @@ export async function getEntitlement(lodgeId, options = {}) {
     fetcher: async () => {
       try {
         const entitlement = await fetchEntitlementRpc(lodgeId)
-        if (entitlement) {
+        if (entitlement && entitlement.success !== false && entitlement.entitlement_unverified !== true) {
           storeEntitlement(lodgeId, entitlement)
           return entitlement
         }
       } catch {
-        // Fallback below.
+        // A transport failure may use a still-valid server-issued offline lease.
       }
 
-      const settings = await getSettings(lodgeId).catch(() => null)
-      const features = await fetchFeatureOverrides(lodgeId).catch(() => ({}))
-      const fallback = {
-        success: true,
-        status: 'active',
-        expired: false,
-        plan: 'Starter',
-        lodge_id: lodgeId,
-        lodge_name: settings?.lodge_name || settings?.company_name || 'Your Lodge',
-        effective_features: {
-          ...STARTER_FEATURE_FLAGS,
-          ...features
-        }
+      const cached = getStoredEntitlement(lodgeId)
+      if (cached && cached.expired !== true) {
+        return { ...cached, source: 'offline_lease', offline: true }
       }
-      storeEntitlement(lodgeId, fallback)
-      return fallback
+
+      // Do not synthesize a plan or feature set when entitlement verification
+      // failed.  Callers can render a locked state and ask the operator to
+      // reconnect/verify instead of granting accidental access.
+      return {
+        success: false,
+        status: 'unverified',
+        expired: true,
+        entitlement_unverified: true,
+        lodge_id: lodgeId,
+        plan: null,
+        effective_features: { ...STARTER_FEATURE_FLAGS }
+      }
     }
   })
 }

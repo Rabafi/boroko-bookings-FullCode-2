@@ -90,13 +90,22 @@ export default function HotelLayout() {
     const featureMap = (features && Object.keys(features).length > 0)
       ? features
       : (entitlement.effective_features || {})
-    return { features: featureMap, addons }
-  }, [access?.entitlement, features])
+    return {
+      features: featureMap,
+      addons,
+      // Keep feature locks discoverable while hiding controls the role cannot
+      // use. The access snapshot is role-only, so feature-off items remain
+      // eligible for the normal locked/upgrade treatment.
+      allowedByRole: access?.allowedByRole || {}
+    }
+  }, [access?.allowedByRole, access?.entitlement, features])
 
   const primaryGroups = useMemo(() => (
     HOTEL_NAV_GROUPS.map((group) => ({
       ...group,
-      items: group.items.map((item) => annotateHotelNavItem(item, lockContext))
+      items: group.items
+        .map((item) => annotateHotelNavItem(item, lockContext))
+        .filter((item) => !item.isRoleBlocked)
     }))
   ), [lockContext])
 
@@ -105,6 +114,7 @@ export default function HotelLayout() {
     return HOTEL_MORE_ITEMS
       .filter((item) => assistantEnabled || item.to !== '/ai')
       .map((item) => annotateHotelNavItem(item, lockContext))
+      .filter((item) => !item.isRoleBlocked)
   }, [lockContext, settings?.assistant_enabled])
 
   const lockedMoreCount = useMemo(

@@ -362,11 +362,16 @@ function isBookingUpdateConflictError(message = '') {
 }
 
 function shouldManualReviewSyncItem(item, errorMessage = '') {
-  return item?.table === 'update_booking' && isBookingUpdateConflictError(errorMessage);
+  return ['update_booking', 'update_campsite_booking', 'reschedule_accommodation_booking'].includes(item?.table)
+    && isBookingUpdateConflictError(errorMessage);
 }
 
 function isCreateBookingQueueItem(item) {
-  return item?.type === 'rpc' && item?.table === 'create_booking';
+  return item?.type === 'rpc' && [
+    'create_booking',
+    'create_campsite_booking',
+    'create_multi_room_booking'
+  ].includes(item?.table);
 }
 
 function isConvertQuotationQueueItem(item) {
@@ -413,6 +418,19 @@ function getQueuedQuotationId(item) {
   }
 
   return null;
+}
+
+function getQueuedBookingIds(item) {
+  const groupIds = Array.isArray(item?._local_booking_ids) ?
+    item._local_booking_ids.map((value) => String(value || '').trim()).filter(Boolean) : [];
+  const singleId = groupIds.length > 0 ? null : getQueuedBookingId(item);
+  return [...new Set([...groupIds, ...(singleId ? [singleId] : [])])];
+}
+
+function patchQueuedBookingSyncStates(item, patch = {}) {
+  for (const bookingId of getQueuedBookingIds(item)) {
+    patchCachedBookingSyncState(bookingId, patch);
+  }
 }
 
 function rewriteQueuedEntityReference(pending = [], localId, serverId, { fieldNames = [], dependsPrefix = '' } = {}) {
@@ -476,8 +494,12 @@ function queueItemNeedsBookingRefresh(item) {
     return new Set([
     'create_booking',
     'create_campsite_booking',
+    'create_multi_room_booking',
     'create_booking_invoice_group',
     'update_booking',
+    'update_campsite_booking',
+    'reschedule_booking',
+    'reschedule_accommodation_booking',
     'update_booking_status',
     'update_booking_payment',
     'add_booking_charge',
@@ -558,6 +580,15 @@ function isAlreadyAppliedRpcError(item, errorOrMessage) {
   if (item?.type !== 'rpc') return false;
   const message = getErrorMessage(errorOrMessage);
   if (isConvertQuotationQueueItem(item) && /quotation is already converted|quotation is already .*converted|already converted/i.test(message)) {
+    return true;
+  }
+  // save_bar_product_with_stock: a duplicate-name refusal means a DIFFERENT
+  // operation key already created this product/stock server-side, so the work
+  // this queued item represents is resolved elsewhere — consume it as synced
+  // instead of dead-lettering an unfailing retry loop. Barcode and
+  // operation-key conflicts use different message shapes and stay reviewable.
+  if (item?.table === 'save_bar_product_with_stock' &&
+      /^A (?:product|stock item) named /i.test(String(message || ''))) {
     return true;
   }
   // For create_quotation, a 23505 on the quotation_number unique constraint means
@@ -654,6 +685,7 @@ async function _runSyncQueue() {
   // P1-8: widen post-sync refresh tracking
   let shouldRefreshBookings = false;
   let shouldRefreshBookingsAfterFailure = false;
+  let shouldRefreshBookingGroups = false;
   let shouldRefreshInventory = false;
   let shouldRefreshCustomers = false;
   let shouldRefreshRooms = false;
@@ -725,17 +757,18 @@ async function _runSyncQueue() {
           });
         }
       }
-      // Also mark related bookings as failed if their create_booking parent failed
+      // Also mark every local child as failed if a booking-create parent failed.
+      // A multi-room group is one queue intent but has several display rows.
       if (isCreateBookingQueueItem(item)) {
-        const bookingId = getQueuedBookingId(item);
-        if (bookingId) {
+        const bookingIds = getQueuedBookingIds(item);
+        for (const bookingId of bookingIds) {
           console.warn('[BOOKING SYNC] Failed booking', bookingId, 'Skipped: parent operation failed');
-          patchCachedBookingSyncState(bookingId, {
-            _pending_sync: true,
-            _sync_state: 'failed',
-            _sync_error: 'Skipped: parent operation failed'
-          });
         }
+        patchQueuedBookingSyncStates(item, {
+          _pending_sync: true,
+          _sync_state: 'failed',
+          _sync_error: 'Skipped: parent operation failed'
+        });
       }
       if (retryCount >= MAX_SYNC_RETRIES) {
         deadLetter.push(skipped);
@@ -923,7 +956,7 @@ async function _runSyncQueue() {
         }
       }
       // P1-13: mark rejected optimistic state for update/payment/status RPCs
-      if (item.type === 'rpc' && ['update_booking', 'update_booking_status', 'update_booking_payment', 'add_booking_charge', 'delete_booking_charge', 'approve_booking_refund'].includes(item.table)) {
+      if (item.type === 'rpc' && ['update_booking', 'update_campsite_booking', 'reschedule_booking', 'reschedule_accommodation_booking', 'update_booking_status', 'update_booking_payment', 'add_booking_charge', 'delete_booking_charge', 'approve_booking_refund'].includes(item.table)) {
         const bookingId = item.data?.p_booking_id || item.data?.p_id || null;
         if (bookingId) {
           patchCachedBookingSyncState(bookingId, {
@@ -948,30 +981,32 @@ async function _runSyncQueue() {
       }
       // Handle booking creation failures (especially room conflicts)
       if (isCreateBookingQueueItem(item)) {
-        const bookingId = getQueuedBookingId(item);
-        if (bookingId) {
-          const isConflict = isRoomConflictError(errorMessage);
+        const bookingIds = getQueuedBookingIds(item);
+        const isConflict = isRoomConflictError(errorMessage);
+        for (const bookingId of bookingIds) {
           console.warn('[BOOKING SYNC] Failed booking', bookingId, isConflict ? '(room conflict)' : '', errorMessage);
-          patchCachedBookingSyncState(bookingId, {
-            _pending_sync: true,
-            _sync_state: isConflict ? 'sync_failed' : 'failed',
-            _sync_error: errorMessage
-          });
-          // Notify renderer about booking conflict
-          if (isConflict) {
-            try {
-              BrowserWindow.getAllWindows().forEach((win) => {
-                if (!win.isDestroyed()) {
+        }
+        patchQueuedBookingSyncStates(item, {
+          _pending_sync: true,
+          _sync_state: isConflict ? 'sync_failed' : 'failed',
+          _sync_error: errorMessage
+        });
+        // Notify renderer about every affected child in a failed group.
+        if (isConflict && bookingIds.length > 0) {
+          try {
+            BrowserWindow.getAllWindows().forEach((win) => {
+              if (!win.isDestroyed()) {
+                for (const bookingId of bookingIds) {
                   win.webContents.send('booking:sync-conflict', {
                     bookingId,
                     error: 'This room is already booked for the selected dates.',
                     details: errorMessage
                   });
                 }
-              });
-            } catch (e) {
-              console.error('[BOOKING SYNC] Failed to notify renderer:', e);
-            }
+              }
+            });
+          } catch (e) {
+            console.error('[BOOKING SYNC] Failed to notify renderer:', e);
           }
         }
       }
@@ -1111,16 +1146,28 @@ async function _runSyncQueue() {
         }
       }
       if (isCreateBookingQueueItem(item)) {
-        const bookingId = getQueuedBookingId(item);
-        if (bookingId) {
-          patchCachedBookingSyncState(bookingId, {
+        const localBookingIds = getQueuedBookingIds(item);
+        const serverBookingIds = Array.isArray(rpcResultData?.booking_ids) ?
+          rpcResultData.booking_ids.map((value) => String(value || '').trim()).filter(Boolean) : [];
+        localBookingIds.forEach((localBookingId, index) => {
+          const serverBookingId = serverBookingIds[index] || null;
+          if (serverBookingId && serverBookingId !== localBookingId) {
+            replaceQueuedBookingReference(localBookingId, serverBookingId);
+            for (let i = 0; i < pending.length; i += 1) {
+              pending[i] = rewriteQueuedBookingReferenceItem(pending[i], localBookingId, serverBookingId);
+            }
+          }
+          patchCachedBookingSyncState(serverBookingId || localBookingId, {
             _pending_sync: false,
             _sync_state: 'synced',
             _sync_error: null,
             _synced_at: new Date().toISOString()
           });
-          console.log('[BOOKING SYNC] Synced booking', bookingId);
-        }
+          // If the server returned a definitive row, the post-sync refresh will
+          // replace the local projection; otherwise retaining the local id keeps
+          // the failed/synced state visible until the next refresh.
+          console.log('[BOOKING SYNC] Synced booking', serverBookingId || localBookingId);
+        });
       }
       if (isConvertQuotationQueueItem(item)) {
         const quotationId = getSyncItemQuotationId(item);
@@ -1263,7 +1310,12 @@ async function _runSyncQueue() {
         }
       }
       if (queueItemNeedsInventoryRefresh(item)) shouldRefreshInventory = true;
-      if (queueItemNeedsBookingRefresh(item)) shouldRefreshBookings = true;
+      if (queueItemNeedsBookingRefresh(item)) {
+        shouldRefreshBookings = true;
+        if (item.type === 'rpc' && ['create_multi_room_booking', 'create_booking_invoice_group'].includes(item.table)) {
+          shouldRefreshBookingGroups = true;
+        }
+      }
       if (queueItemNeedsSupplyRefresh(item)) shouldRefreshSupplies = true;
       if (queueItemNeedsRateOverrideRefresh(item)) shouldRefreshRateOverrides = true;
       // P1-8: widen refresh to cover all domains touched by this operation
@@ -1407,6 +1459,9 @@ async function _runSyncQueue() {
   // P1-8: widen canonical post-sync refresh
   const refreshTargets = [];
   if ((successCount > 0 && shouldRefreshBookings) || shouldRefreshBookingsAfterFailure) refreshTargets.push('bookings', 'booking-charges');
+  if (successCount > 0 && shouldRefreshBookingGroups) {
+    refreshTargets.push('booking-invoice-groups', 'booking-invoice-group-lines');
+  }
   if (successCount > 0 && shouldRefreshCustomers) refreshTargets.push('customers');
   if (successCount > 0 && shouldRefreshRooms) refreshTargets.push('rooms');
   if (successCount > 0 && shouldRefreshUsers) refreshTargets.push('users');

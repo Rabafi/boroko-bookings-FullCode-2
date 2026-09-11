@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router'
 import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck, Clock, Wallet, ClipboardCheck, AlertTriangle } from 'lucide-react'
 import DataImport from './DataImport'
-import { useSettings } from '../app-context'
+import StarterBackup from './StarterBackup'
+import { useAccess, useSettings } from '../app-context'
 import { isBarOnlyMode, isRestaurantOnly } from '../../../shared/propertyTypes'
 
 const LODGE_TABS = ['Import Bookings', 'Export Data', 'Backups']
@@ -59,6 +60,7 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   const [endDate, setEndDate] = useState('')
   const [privacyMode, setPrivacyMode] = useState(false)
   const [progress, setProgress] = useState(null)
+  const dataNoun = restaurantMode ? 'restaurant' : 'property'
 
   useEffect(() => {
     const expectedPrefix = restaurantMode ? 'restaurant_' : ''
@@ -94,7 +96,7 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   return (
     <div className={restaurantMode ? 'hpos-data-panel' : 'p-6 max-w-3xl'}>
       <p className="text-gray-500 text-sm mb-6">
-        Export {restaurantMode ? 'restaurant' : 'lodge'} data into a multi-sheet Excel workbook. Choose a focused export when you do
+        Export {dataNoun} data into a multi-sheet Excel workbook. Choose a focused export when you do
         not need the full backup snapshot.
       </p>
 
@@ -229,6 +231,7 @@ function BackupsTab({ restaurantMode }) {
     export_excel: true,
     enforcement_level: 'reminder'
   })
+  const dataNoun = restaurantMode ? 'restaurant' : 'property'
 
   const loadInfo = async () => {
     const data = await window.api.backup.getInfo().catch(() => ({ backups: [], backupDir: '', policy: null }))
@@ -323,9 +326,9 @@ function BackupsTab({ restaurantMode }) {
       <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-200">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">Weekly Data Archiving</h2>
+            <h2 className="text-lg font-bold text-gray-900">Managed weekly exports</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Create a complete Excel snapshot of all {restaurantMode ? 'restaurant' : 'lodge'} {restaurantMode ? 'sales, stock, and operational' : 'transactions, guests, and operational'} history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
+              Create a complete Excel snapshot of all {dataNoun} {restaurantMode ? 'sales, stock, and operational' : 'transactions, guests, and operational'} history. Keep this enabled so System Health can warn you when a fresh off-device backup is overdue.
             </p>
           </div>
           <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${statusClass}`}>
@@ -464,20 +467,40 @@ function BackupsTab({ restaurantMode }) {
 export default function DataManagement() {
   const location = useLocation()
   const [tab, setTab] = useState(0)
+  const access = useAccess()
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const normalizedPropertyType = String(propertyType || '').trim().toLowerCase()
   const restaurantMode = isRestaurantOnly(propertyType) || ['bar', 'bar_only'].includes(normalizedPropertyType) || isBarOnlyMode(settings)
   const TABS = restaurantMode ? RESTAURANT_TABS : LODGE_TABS
+  const roleMap = access?.allowedByRole || {}
+  const roleMapReady = Object.keys(roleMap).length > 0
+  const roleAllows = (capability) => !roleMapReady || roleMap[capability] === true
+  const canImportData = roleAllows('data.import')
+  const canExportData = roleAllows('data.export')
+  const canCoreBackup = roleAllows('backup.starter_export')
+  const canManageBackups = roleAllows('backup.manage')
+  const visibleTabs = [
+    canImportData ? { key: 'import', label: TABS[0] } : null,
+    canExportData ? { key: 'export', label: TABS[1] } : null,
+    (canManageBackups || (!restaurantMode && canCoreBackup)) ? { key: 'backups', label: TABS[2] } : null
+  ].filter(Boolean)
+  const visibleTabKeys = visibleTabs.map((item) => item.key).join('|')
   const EXPORT_PRESETS = restaurantMode ? RESTAURANT_EXPORT_PRESETS : LODGE_EXPORT_PRESETS
   const EXPORT_SECTIONS = restaurantMode ? RESTAURANT_EXPORT_SECTIONS : LODGE_EXPORT_SECTIONS
 
   useEffect(() => {
     const requestedTab = location.state?.activeTab
-    if (requestedTab === 'export') setTab(1)
-    if (requestedTab === 'backups') setTab(2)
-    if (requestedTab === 'import') setTab(0)
-  }, [location.state?.activeTab])
+    if (!requestedTab) return
+    const nextIndex = visibleTabs.findIndex((item) => item.key === requestedTab)
+    if (nextIndex >= 0) setTab(nextIndex)
+  }, [location.state?.activeTab, visibleTabKeys])
+
+  useEffect(() => {
+    setTab((current) => Math.min(current, Math.max(visibleTabs.length - 1, 0)))
+  }, [visibleTabKeys, visibleTabs.length])
+
+  const activeTab = visibleTabs[tab] || null
 
   return (
     <div className={restaurantMode ? 'hpos-data-workspace' : 'p-6 max-w-5xl'}>
@@ -489,15 +512,15 @@ export default function DataManagement() {
         <div>
           <p className={restaurantMode ? 'hpos-eyebrow' : 'hidden'}>{restaurantMode ? 'Business continuity' : ''}</p>
           <h1 className="text-2xl font-bold text-gray-800">{restaurantMode ? 'Data & backups' : 'Data Management'}</h1>
-          <p className="text-gray-500 text-sm mt-0.5">{restaurantMode ? 'Move restaurant or bar data safely, create professional workbooks, and protect the business.' : 'Import or export lodge data'}</p>
+          <p className="text-gray-500 text-sm mt-0.5">{restaurantMode ? 'Move restaurant or bar data safely, create professional workbooks, and protect the business.' : 'Import or export property data'}</p>
         </div>
       </div>
 
       {/* Tab bar */}
       <div className={restaurantMode ? 'hpos-data-tabs' : 'flex gap-1 bg-gray-100 rounded-lg p-1 w-fit mb-6'}>
-        {TABS.map((t, i) => (
+        {visibleTabs.map((item, i) => (
           <button
-            key={t}
+            key={item.key}
             onClick={() => setTab(i)}
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               tab === i
@@ -505,14 +528,33 @@ export default function DataManagement() {
                 : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            {i === 0 ? <Upload size={14} /> : i === 1 ? <Download size={14} /> : <HardDrive size={14} />}
-            {t}
+            {item.key === 'import' ? <Upload size={14} /> : item.key === 'export' ? <Download size={14} /> : <HardDrive size={14} />}
+            {item.label}
           </button>
         ))}
       </div>
 
       {/* Tab content */}
-      {tab === 0 ? <DataImport /> : tab === 1 ? <ExportTab restaurantMode={restaurantMode} EXPORT_PRESETS={EXPORT_PRESETS} EXPORT_SECTIONS={EXPORT_SECTIONS} /> : <BackupsTab restaurantMode={restaurantMode} />}
+      {!activeTab ? (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          Your role does not have access to data import, export, or backup actions.
+        </p>
+      ) : activeTab.key === 'import' ? <DataImport /> : activeTab.key === 'export' ? <ExportTab restaurantMode={restaurantMode} EXPORT_PRESETS={EXPORT_PRESETS} EXPORT_SECTIONS={EXPORT_SECTIONS} /> : (
+        <div className="space-y-6">
+          {!restaurantMode && canCoreBackup && (
+            <section className="rounded-2xl border border-indigo-100 bg-indigo-50 p-5" data-testid="core-data-backup-section">
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-indigo-950">Core Data Backup</h2>
+                <p className="mt-1 text-sm text-indigo-900">
+                  Save a customer-owned copy of core property data for support-led recovery, alongside managed weekly exports.
+                </p>
+              </div>
+              <StarterBackup embedded />
+            </section>
+          )}
+          {canManageBackups && <BackupsTab restaurantMode={restaurantMode} />}
+        </div>
+      )}
     </div>
   )
 }

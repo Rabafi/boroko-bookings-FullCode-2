@@ -1,3 +1,6 @@
+import Fuse from 'fuse.js/basic'
+import { casual as chronoCasual } from 'chrono-node/en'
+
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'can', 'do', 'does', 'for',
   'from', 'get', 'give', 'go', 'help', 'how', 'i', 'in', 'is', 'it', 'me',
@@ -82,8 +85,6 @@ const SYNONYM_MAP = {
   'pay': 'payment',
   'collecting': 'payment',
   'collect': 'payment',
-  'refund': 'payment',
-  'void payment': 'payment',
   'owing': 'unpaid',
   'owed': 'unpaid',
   'outstanding': 'unpaid',
@@ -155,6 +156,19 @@ const SYNONYM_MAP = {
   'tier': 'subscription',
   'module': 'subscription',
   'unlock': 'subscription'
+}
+
+// Message-level synonym guards (declared up here: the corpus builders below
+// call normalizeText at module load, before the text-processing section).
+// If a guard pattern matches anywhere in the message, that synonym is
+// skipped so the discriminating token survives ("purchase order" is
+// inventory, not POS; "electricity bill" is an expense, not an invoice).
+const GUARDED_SYNONYM_CONTEXTS = {
+  order: /\b(void|cancel\w*|revers\w*|purchas\w*|reorder|stocks?|suppl\w*|inventor\w*|supplier|buy\w*|goods|quot\w*)\b/,
+  sale: /\b(void|cancel\w*|revers\w*|reports?|refund|trend|revenu\w*|forecast|weeks?|today|yesterday|month)\b/,
+  bill: /\b(electri\w*|water|power|utilit\w*|rent\w*|wages?|supplier|council|tax\w*|levy)\b/,
+  food: /\b(costs?|expenses?|wast\w*|spoil\w*)\b/,
+  tab: /\bopen\w*\b/
 }
 
 // ─── Bi-gram phrase list ───────────────────────────────────────────────────
@@ -241,7 +255,7 @@ const SCENARIO_PLAYBOOKS = [
     id: 'guest-refuses-payment',
     title: 'Guest refuses to pay',
     summary: 'Use this when a guest is checking out or disputing the balance.',
-    match: (text) => /\b(refuses to pay|guest wont pay|guest won.t pay|payment dispute|disputing balance)\b/.test(text),
+    match: (text) => /\b(refuses? to pay|guest wont pay|guest won.t pay|payments? disputes?|disputing balances?)\b/.test(text),
     steps: [
       'Look up the booking and confirm the current balance, charges, and payments already recorded.',
       'Review unpaid bookings or the booking payment history before discussing the bill.',
@@ -256,7 +270,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'deposit-vs-payment',
     title: 'Deposit and payment rules',
-    match: (text) => /\b(deposits?|amount paid|amount_paid|paid totals?|type over paid|payment status|balance due|outstanding)\b/.test(text),
+    match: (text) => /\b(deposits?|amount paid|amount_paid|paid totals?|type over paid|payment status|balances? due|outstanding)\b/.test(text),
     assistantText: [
       'Deposits and payments should be recorded through the payment flow, not by typing over paid totals.',
       'Never edit `amount_paid` directly. Use Record payment so Tsa Bonno applies the normal payment flow safely.',
@@ -268,7 +282,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'checkout-balance-rule',
     title: 'Checkout balance rule',
-    match: (text) => /\b(can i check ?out|checkout blocked|check out blocked|80%|part paid|partially paid|not fully paid)\b/.test(text),
+    match: (text) => /\b(can i check ?outs?|checkouts? (is |are )?blocked|check outs? (is |are )?blocked|80%|part paid|partially paid|not fully paid)\b/.test(text),
     assistantText: [
       'A guest should not be checked out while a balance is still outstanding.',
       'If checkout is blocked, review the booking balance first, confirm any missing payments, then use the check-out action after the booking is fully settled.'
@@ -278,7 +292,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'offline-sync-financials',
     title: 'Offline sync and financial safety',
-    match: (text) => /\b(offline sync|internet down|no internet|failed sync|sync warning|sync financial|queue|pending sync)\b/.test(text),
+    match: (text) => /\b(offline syncs?|internet down|no internet|failed sync|sync warnings?|sync financial|queues?|pending sync)\b/.test(text),
     assistantText: [
       'When the internet is down, Tsa Bonno can still capture local work, but remote reporting may lag behind until sync catches up.',
       'If sync warnings involve financial records, treat totals carefully until System Health shows the queue is healthy again.',
@@ -289,7 +303,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'refund-guidance',
     title: 'Refund guidance',
-    match: (text) => /\b(refund|void payment|reverse payment|cancel payment)\b/.test(text),
+    match: (text) => /\b(refunds?|void (a |the )?payments?|revers\w*( a| the)? payments?|cancel\w* (a |the )?payments?)\b/.test(text),
     assistantText: [
       'Refunds and reversals should be reviewed carefully from the booking or invoice context.',
       'Use the booking and payment history to confirm what was charged, what was paid, and whether the guest is still checked in before changing anything.'
@@ -299,7 +313,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'role-permissions',
     title: 'Roles and permissions',
-    match: (text) => /\b(role|permission|who can|access|staff rights|user rights)\b/.test(text),
+    match: (text) => /\b(roles?|permissions?|who can|access|staff rights|user rights)\b/.test(text),
     assistantText: [
       'User access is controlled from Staff and role settings.',
       'If you are checking whether someone can perform an action, open Staff, review the user role, and confirm the required module access before testing the workflow.'
@@ -651,7 +665,7 @@ const APP_WORKFLOWS = [
       'Void history is part of the financial audit trail.',
       'Do not delete POS records manually.'
     ],
-    keywords: ['void', 'void order', 'cancel sale', 'reverse pos', 'supervisor pin', 'manager pin', 'stock restore']
+    keywords: ['void', 'void order', 'void sale', 'cancel sale', 'reverse pos', 'supervisor pin', 'manager pin', 'stock restore']
   },
   {
     id: 'inventory-stock',
@@ -672,7 +686,7 @@ const APP_WORKFLOWS = [
       'Use manager PINs where the app asks for approval.',
       'POS-linked stock may update automatically after sales.'
     ],
-    keywords: ['inventory', 'stock', 'add stock', 'purchase', 'low stock', 'stocktake', 'adjust stock', 'wastage', 'item', 'supplier']
+    keywords: ['inventory', 'stock', 'add stock', 'purchase', 'purchase order', 'order stock', 'low stock', 'stocktake', 'adjust stock', 'wastage', 'item', 'supplier']
   },
   {
     id: 'room-supplies',
@@ -693,7 +707,7 @@ const APP_WORKFLOWS = [
       'Room supply reporting helps separate guest-room cost from general inventory.',
       'Use Room Supplies for amenities, and Inventory for saleable or outlet stock.'
     ],
-    keywords: ['supplies', 'linen', 'amenities', 'room stock', 'soap', 'towels', 'allocation', 'load room', 'return stock']
+    keywords: ['supplies', 'linen', 'amenities', 'room stock', 'soap', 'towels', 'order supplies', 'allocation', 'load room', 'return stock']
   },
   {
     id: 'expenses',
@@ -712,7 +726,7 @@ const APP_WORKFLOWS = [
       'Use Inventory purchases for stock buying when the item should affect stock counts.',
       'Use Expenses for overheads, services, repairs, and non-stock costs.'
     ],
-    keywords: ['expense', 'expenses', 'cost', 'purchase cost', 'overhead', 'supplier bill', 'repair cost']
+    keywords: ['expense', 'expenses', 'cost', 'purchase cost', 'overhead', 'supplier bill', 'repair cost', 'electricity', 'electricity bill', 'utility bill', 'food cost']
   },
   {
     id: 'night-audit',
@@ -1000,7 +1014,7 @@ const LOCAL_TOOL_INTENTS = [
     title: 'Room availability',
     response: 'I will check room availability from local bookings and rooms.',
     responsePrompt: 'Which rooms are available tonight?',
-    keywords: ['room available', 'available room', 'which rooms', 'free room', 'vacant', 'any rooms', 'room free tonight', 'open rooms', 'unoccupied', 'availability']
+    keywords: ['room available', 'available room', 'which rooms', 'free room', 'vacant', 'any rooms', 'room free tonight', 'open rooms', 'unoccupied', 'availability', 'tomorrow']
   },
   {
     tool: 'get_room_rate',
@@ -1116,11 +1130,31 @@ const PLAYBOOK_CORPUS = buildCorpusDocuments(SCENARIO_PLAYBOOKS, (entry) => [ent
 function applySynonyms(text) {
   let result = text
   for (const [from, to] of Object.entries(SYNONYM_MAP)) {
+    // Guarded expansion: some synonyms destroy the discriminating token when
+    // the word is used in a different sense ("purchase order" is inventory,
+    // not POS; "electricity bill" is an expense, not an invoice). When a
+    // guard context is present anywhere in the message, keep the original
+    // word so exact-phrase and keyword matching can do their job.
+    const guard = GUARDED_SYNONYM_CONTEXTS[from]
+    if (guard && guard.test(result)) continue
     // Use word-boundary safe replacement
     const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     result = result.replace(new RegExp(`\\b${escaped}\\b`, 'g'), to)
   }
   return result
+}
+
+// Light normalization for identity gates (playbooks, policy FAQ, explicit
+// action phrases): lowercase + punctuation only. Deliberately NO synonym
+// expansion — expansion erases the very tokens those gates look for
+// ("refund" -> "payment" killed the refund FAQ; "pay" -> "payment" killed
+// the guest-refuses-payment playbook).
+function lightNormalize(value) {
+  return String(value || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/['`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ').trim()
 }
 
 function normalizeText(value) {
@@ -1358,13 +1392,24 @@ function scoreDocument(query, documentText, title = '', keywords = []) {
   // Phrase-level bonus (runs first to prevent phrase bleedover)
   score += phraseBonusScore(query, documentText, title)
 
-  if (normalizedTitle && normalizedTitle.includes(normalizedQuery)) score += 22
-  if (normalizedDoc.includes(normalizedQuery)) score += 12
+  // Content-token sequence matching: stopwords ("a", "the") carry no intent,
+  // so "void a sale" must match the "void sale" keyword despite the "a", and
+  // "cancel a sale" must equal "cancel sale". Raw substring matching is kept
+  // as a fallback (else-if), so every previously matching document still
+  // matches — this only adds stopword-robust recall, never removes it.
+  const queryContent = unique(tokenize(query)).join(' ')
+  const titleContent = unique(tokenize(title)).join(' ')
+  const docContent = unique(tokenize(documentText)).join(' ')
+  if (queryContent) {
+    if ((titleContent && titleContent.includes(queryContent)) || (normalizedTitle && normalizedTitle.includes(normalizedQuery))) score += 22
+    if (docContent.includes(queryContent) || normalizedDoc.includes(normalizedQuery)) score += 12
+  }
 
   for (const keyword of normalizedKeywords) {
     if (!keyword) continue
-    if (keyword === normalizedQuery) score += 20
-    else if (keyword.includes(normalizedQuery) || normalizedQuery.includes(keyword)) score += 10
+    const keywordContent = unique(tokenize(keyword)).join(' ')
+    if ((keywordContent && keywordContent === queryContent) || keyword === normalizedQuery) score += 20
+    else if ((keywordContent && queryContent && (keywordContent.includes(queryContent) || queryContent.includes(keywordContent))) || keyword.includes(normalizedQuery) || normalizedQuery.includes(keyword)) score += 10
   }
 
   for (const queryToken of queryTokens) {
@@ -1414,6 +1459,41 @@ function publicWorkflow(entry, score = 0, matchedTerms = []) {
   }
 }
 
+let topicFuse = null
+
+function getTopicFuse() {
+  if (!topicFuse) {
+    topicFuse = new Fuse(APP_WORKFLOWS, {
+      keys: [
+        { name: 'title', weight: 3 },
+        { name: 'keywords', weight: 2 },
+        { name: 'summary', weight: 1 },
+        { name: 'screen', weight: 1 },
+        { name: 'category', weight: 0.5 }
+      ],
+      includeScore: true,
+      threshold: 0.45,
+      ignoreLocation: true
+    })
+  }
+  return topicFuse
+}
+
+// Typo-tolerant "did you mean" over app workflows. Used by the UI fallback
+// layer only — the core intent pipeline above is unchanged, so existing
+// matching behavior and its tests are unaffected.
+export function findClosestTopics(query, limit = 3) {
+  const text = String(query || '').trim()
+  if (!text) return []
+  try {
+    return getTopicFuse()
+      .search(text, { limit: Math.max(1, Math.min(5, Number(limit) || 3)) })
+      .map((hit) => publicWorkflow(hit.item, 0, []))
+  } catch {
+    return []
+  }
+}
+
 export function searchLocalAppHelp(query, { route = null, limit = 5 } = {}) {
   const normalizedQuery = normalizeText(query)
   const routeBoost = route ? String(route) : ''
@@ -1451,6 +1531,13 @@ function hasNegation(message) {
   return NEGATION_WORDS.test(normalizeText(message))
 }
 
+// Void/refund/cancel-sale phrasing contains negation words ("cancel", "void")
+// but names a real workflow, so it must not take the stopping/correcting
+// clarify path. Matched on light text so synonym expansion cannot hide it.
+function negatedActionWord(message) {
+  return /\b(voids?|refund|revers\w+ payments?|cancel\w* (a |the )?(sales?|payments?|orders?))\b/.test(lightNormalize(message))
+}
+
 function isGreeting(text) {
   return /^(hi|hello|hey|good morning|good afternoon|good evening|howzit|dumela)\b/.test(text)
 }
@@ -1468,9 +1555,46 @@ function isCapabilitiesQuestion(text) {
 }
 
 function extractRoomHint(message) {
-  const match = String(message || '').match(/\b(?:room|rm)\s*(\d+[a-z]?)\b/i)
-  return match ? String(match[1]).toUpperCase() : null
+  const raw = String(message || '')
+  const digitMatch = raw.match(/\b(?:room|rm)\s*(\d+[a-z]?)\b/i)
+  if (digitMatch) return String(digitMatch[1]).toUpperCase()
+  // Number words: "balance for room five" -> "5". Runs on the raw message so
+  // stemming/synonym expansion cannot mangle the words first.
+  const wordMatch = raw.match(/\b(?:room|rm)\s*([a-z]+(?:[-\s][a-z]+)?)\b/i)
+  if (wordMatch) {
+    const resolved = resolveNumberWords(wordMatch[1])
+    if (resolved != null) return String(resolved)
+  }
+  return null
 }
+
+// Small number-word resolver for room numbers (one .. thirty). Pure lookup,
+// no stemming — avoids "thirteen" becoming "thirteen" minus suffix bugs.
+const NUMBER_WORDS = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30
+}
+const TENS_WORDS = { twenty: 20, thirty: 30 }
+
+function resolveNumberWords(text) {
+  const parts = String(text || '').toLowerCase().replace(/-/g, ' ').split(/\s+/).filter(Boolean)
+  if (!parts.length) return null
+  let total = 0
+  for (const part of parts) {
+    if (NUMBER_WORDS[part] != null && NUMBER_WORDS[part] < 20) {
+      total += NUMBER_WORDS[part]
+    } else if (TENS_WORDS[part] != null) {
+      total += TENS_WORDS[part]
+    } else {
+      return null
+    }
+  }
+  if (total < 1 || total > 99) return null
+  return total
+}
+
+export { extractRoomHint, resolveNumberWords }
 
 function extractDayWindow(message) {
   const text = normalizeText(message)
@@ -1492,10 +1616,31 @@ function extractDayWindow(message) {
     return Math.max(1, Math.min(30, daysUntil))
   }
   if (/\bnext week\b|\bthis week\b|\b7 day\b|\bseven day\b/.test(text)) return 7
+  if (/\b(fortnight|fourteen nights?)\b/.test(text)) return 14
   const match = text.match(/\b(\d+)\s*(day|days)\b/)
   if (match) return Math.max(1, Math.min(30, Number(match[1]) || 1))
+  // chrono fallback: "last 7 days", "past month", "June 3", "in 5 days".
+  // Past references become a look-back window of the same span; future
+  // references become a look-ahead window. Clamped to the 1..30 tool range.
+  // Skipped for room-number queries: chrono would read the room digits as a
+  // day-of-month and corrupt the window ("balance for room 5").
+  if (/\b(?:room|rm)\s*\d/i.test(String(message || ''))) return null
+  try {
+    const parsed = chronoCasual.parse(message, new Date(), { forwardDate: true })
+    const start = parsed?.[0]?.start?.date?.()
+    if (start instanceof Date && !Number.isNaN(start.getTime())) {
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      const spanDays = Math.ceil((start.getTime() - todayStart.getTime()) / 86400000)
+      if (spanDays !== 0) return Math.max(1, Math.min(30, Math.abs(spanDays)))
+    }
+  } catch {
+    // chrono is a best-effort enhancement; regex results above stand.
+  }
   return null
 }
+
+export { extractDayWindow }
 
 function extractGuestHint(message) {
   const direct = String(message || '').match(/\b(?:guest|customer|invoice)\s+(?:named\s+)?([a-z][a-z\s.'-]{1,40})$/i)
@@ -1533,14 +1678,22 @@ function buildCapabilitiesSummary() {
   ].join('\n')
 }
 
-function getTimeContext() {
-  const hour = new Date().getHours()
-  if (hour < 6) return { period: 'early_morning', boost: 'get_backup_status', suggestion: 'When was the last backup?' }
-  if (hour < 10) return { period: 'morning', boost: 'get_daily_briefing', suggestion: 'Give me the daily briefing.' }
-  if (hour < 14) return { period: 'midday', boost: 'get_attention', suggestion: 'What needs my attention right now?' }
-  if (hour < 18) return { period: 'afternoon', boost: 'get_overdue_checkouts', suggestion: 'Show overdue checkouts.' }
-  if (hour < 22) return { period: 'evening', boost: 'get_handover_report', suggestion: 'Show shift handover report.' }
+// Pure, hour-parameterized shift context so the suggestion bias is unit
+// testable without mocking the clock. Periods follow front-desk rhythm:
+// early checks face yesterday's close, mornings brief, midday triages,
+// afternoons clear departures, evenings hand over, nights verify backups.
+export function getTimeAwareSuggestions(hour = new Date().getHours()) {
+  const h = Math.max(0, Math.min(23, Number(hour) || 0))
+  if (h < 6) return { period: 'early_morning', boost: 'get_backup_status', suggestion: 'When was the last backup?' }
+  if (h < 10) return { period: 'morning', boost: 'get_daily_briefing', suggestion: 'Give me the daily briefing.' }
+  if (h < 14) return { period: 'midday', boost: 'get_attention', suggestion: 'What needs my attention right now?' }
+  if (h < 18) return { period: 'afternoon', boost: 'get_overdue_checkouts', suggestion: 'Show overdue checkouts.' }
+  if (h < 22) return { period: 'evening', boost: 'get_handover_report', suggestion: 'Show shift handover report.' }
   return { period: 'night', boost: 'get_backup_status', suggestion: 'When was the last backup?' }
+}
+
+function getTimeContext() {
+  return getTimeAwareSuggestions(new Date().getHours())
 }
 
 function extractRoomRateHint(message) {
@@ -1554,7 +1707,8 @@ function extractRoomRateHint(message) {
 }
 
 function findFinancialFaq(message) {
-  const text = normalizeText(message)
+  // Identity matching on light (unexpanded) text — see lightNormalize.
+  const text = lightNormalize(message)
   const exact = FINANCIAL_FAQ.find((entry) => entry.match(text))
   if (/\b(balance for room|who is in room|invoice for room|booking id|booking number|find booking|lookup booking)\b/.test(text)) return null
   if (exact) return exact
@@ -1570,7 +1724,8 @@ function findFinancialFaq(message) {
 }
 
 function findScenarioPlaybook(message) {
-  const text = normalizeText(message)
+  // Identity matching on light (unexpanded) text — see lightNormalize.
+  const text = lightNormalize(message)
   const exact = SCENARIO_PLAYBOOKS.find((entry) => entry.match(text))
   if (exact) return exact
   const scored = SCENARIO_PLAYBOOKS.map((entry, index) => {
@@ -1590,10 +1745,10 @@ function buildClarifier(message) {
   if (/\bguest\b/.test(text) && !extractGuestHint(message)) {
     return { text: 'I can search guest records. What guest name, phone number, or email should I look for?', dialogue: { intent: 'search_guest', params: {}, missing: ['guest_query'] }, slot: 'guest_query' }
   }
-  if (/\broom\b/.test(text) && !extractRoomHint(message) && /\bavailable|free|vacant\b/.test(text)) {
-    return { text: 'I can check room availability. Which room number, or should I check all rooms?', dialogue: { intent: 'get_room_availability', params: { days: extractDayWindow(message) || 1 }, missing: ['room_or_all'] }, slot: 'room_or_all' }
-  }
-  if (/\b(rate|price|tariff|cost)\b/.test(text) && !extractRoomHint(message) && !extractRoomRateHint(message)?.rate_query) {
+  // No room-number branch: a missing room means ALL rooms, not a question.
+  // Asking "which room?" for every singular "room available" query felt like
+  // not listening; the availability grid shows every room anyway.
+  if (/\b(rate|price|tariff|cost)\b/.test(text) && !/\b(food|electric|utility|supplier|overhead|repair|maintenance)\b/.test(text) && !extractRoomHint(message) && !extractRoomRateHint(message)?.rate_query) {
     return { text: 'I can check the local room rate. Which room number or room type should I check?', dialogue: { intent: 'get_room_rate', params: {}, missing: ['room_or_type'] }, slot: 'room_or_type' }
   }
   return null
@@ -1627,13 +1782,19 @@ function resolveToolIntent(message) {
       localHelp: { mode: 'capabilities', confidence: 'high', query: message, bestMatch: null, matches: [], suggestions: LOCAL_ASSISTANT_SUGGESTIONS.slice(0, 4) }
     }
   }
-  if (negated && !instructional) {
+  if (negated && !instructional && !negatedActionWord(message)) {
     return {
       assistantText: 'It sounds like you are stopping or correcting something. Tell me what you want to check instead, and I will keep it read-only.',
       localHelp: { mode: 'clarify', confidence: 'medium', query: message, bestMatch: null, matches: [], suggestions: ['What needs my attention right now?', 'Show unpaid bookings.', 'How do I check out a guest?'], slot: 'negation', dialogue: null }
     }
   }
-  if (/\b(shift handover report|handover report|handoff brief)\b/.test(text)) {
+  // Bare "check in" / "check out" is a workflow question, not a live audit:
+  // return early so workflow search ranks the check-in/out guide (which wins
+  // decisively) instead of a tool intent that merely mentions the phrase.
+  if (/^(please\s+)?check\s*-?\s*(in|out)\b(\s+(a\s+|the\s+)?guests?\b)?\s*[?.!]*$/.test(String(message || '').trim())) {
+    return null
+  }
+  if (/\b(shift handover reports?|handover reports?|handoff brief)\b/.test(lightNormalize(message))) {
     return {
       tool: 'get_handover_report',
       params: {},
@@ -1709,6 +1870,32 @@ function resolveToolIntent(message) {
     return null
   }
   if (instructional && /\b(check in|check out|failed sync|create booking|add stock|send invoice|invoice|maintenance|room board|night audit|calendar|report|settings|payment)\b/.test(text)) {
+    return null
+  }
+  // Instructional purchasing/expense/supply questions are workflow questions:
+  // skip the read-tool stage (whose stock/payment/noise intents merely mention
+  // the words) so workflow search ranks the Inventory / Expenses / Supplies
+  // guides, which carry the new exact-phrase keywords.
+  if (instructional && /\b(order stocks?|purchas\w*|electric\w*|utilit\w*|supplier bills?|overhead|food costs?|repair costs?|suppl\w*)\b/.test(text)) {
+    return null
+  }
+  // "void ..." names the POS void flow (or payment reversal guidance via the
+  // refund FAQ, which runs earlier). "cancel a sale" is the same flow in
+  // different words. Never live-tool questions: the tool stage only ties on
+  // noise here while workflow search ranks pos-void decisively.
+  if (/\bvoids?\b/.test(lightNormalize(message)) || /\bcancel\w* (a |the )?sales?\b/.test(lightNormalize(message))) {
+    return null
+  }
+  // "purchase order ..." is an inventory/supplies workflow question ("purchase
+  // order supplies" should open Room Supplies, not a stock count).
+  if (/\bpurchas\w* orders?\b/.test(lightNormalize(message))) {
+    return null
+  }
+  // Expense-context questions are workflow questions even without
+  // instructional phrasing ("food costs", "electricity bill"): the read-tool
+  // stage would otherwise match a rate/guest/noise intent that merely shares
+  // a word. The Expenses guide carries the exact-phrase keywords.
+  if (/\b(food costs?|electric\w*|utilit\w*|supplier bills?|overhead)\b/.test(text)) {
     return null
   }
   if (/\bunpaid\b|\bowed\b|\bowing\b|\bbalance\b/.test(text)) {
@@ -2185,36 +2372,76 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
     last.toolResult = summarizeToolResult(toolName, result)
   }
 
-  function resolve({ message, route = null, liveContext = null, uiContext = null } = {}) {
-    const enrichedMessage = getContextualQuery(message)
-    let result = resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext })
-    if (pendingDialogue && result?.tool === pendingDialogue.intent) {
-      const params = mergeDialogueParams(pendingDialogue.intent, pendingDialogue.params, enrichedMessage)
-      const missing = missingSlotsForTool(pendingDialogue.intent, params)
-      if (missing.length) {
-        result = {
-          assistantText: slotPrompt(pendingDialogue.intent, missing[0]),
-          localHelp: {
-            mode: 'clarify',
-            confidence: 'medium',
-            query: message,
-            bestMatch: null,
-            matches: [],
-            suggestions: [],
-            dialogue: { intent: pendingDialogue.intent, params, missing },
-            slot: missing[0]
-          }
-        }
-      } else {
-        result = { ...result, params }
-      }
-    }
-    // Track for next turn
+  // A confident answer on the RAW message always wins: session enrichment
+  // exists to rescue vague follow-ups, not to overrule a clear question.
+  // Without this, "rooms?" asked after a payment question became a
+  // maintenance alert, because enrichment prepended the previous screen's
+  // category before matching.
+  function isConfidentResult(result) {
+    if (!result) return false
+    if (result.tool) return result.localIntent?.confidence === 'high'
+    const help = result.localHelp
+    if (!help || !help.bestMatch) return false
+    if (help.mode === 'clarify' || help.mode === 'fallback' || help.mode === 'disambiguation') return false
+    return help.confidence === 'high'
+  }
+
+  // Messages led by a continuation conjunction ("and payment?", "but
+  // tomorrow?") are explicitly continuing the previous turn: they are never
+  // answered from the raw text alone, where a single shared token can match
+  // some unrelated tool with spurious confidence.
+  const CONTINUATION_LEAD = /^(and|or|but|also|too|then|so|plus)\b/i
+
+  function trackTurn(message, result) {
     const workflowId = result?.localHelp?.bestMatch?.id || null
     const toolName = result?.tool || history[history.length - 1]?.toolName || null
     pendingDialogue = result?.localHelp?.mode === 'clarify' ? result?.localHelp?.dialogue || null : null
     recordTurn(message, workflowId, toolName)
-    return result
+  }
+
+  function resolve({ message, route = null, liveContext = null, uiContext = null } = {}) {
+    // Slot-filling dialogue always enriches: the user is answering our question.
+    if (pendingDialogue) {
+      const enrichedMessage = enrichFromDialogue(pendingDialogue, message)
+      let result = resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext })
+      if (result?.tool === pendingDialogue.intent) {
+        const params = mergeDialogueParams(pendingDialogue.intent, pendingDialogue.params, enrichedMessage)
+        const missing = missingSlotsForTool(pendingDialogue.intent, params)
+        if (missing.length) {
+          result = {
+            assistantText: slotPrompt(pendingDialogue.intent, missing[0]),
+            localHelp: {
+              mode: 'clarify',
+              confidence: 'medium',
+              query: message,
+              bestMatch: null,
+              matches: [],
+              suggestions: [],
+              dialogue: { intent: pendingDialogue.intent, params, missing },
+              slot: missing[0]
+            }
+          }
+        } else {
+          result = { ...result, params }
+        }
+      }
+      trackTurn(message, result)
+      return result
+    }
+    const rawResult = resolveLocalAssistantTurn({ message, route, liveContext, uiContext })
+    if (!CONTINUATION_LEAD.test(String(message).trim()) && isConfidentResult(rawResult)) {
+      trackTurn(message, rawResult)
+      return rawResult
+    }
+    const enrichedMessage = getContextualQuery(message)
+    if (enrichedMessage === message) {
+      trackTurn(message, rawResult)
+      return rawResult
+    }
+    const enrichedResult = resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext })
+    const final = isConfidentResult(enrichedResult) ? enrichedResult : rawResult
+    trackTurn(message, final)
+    return final
   }
 
   return { resolve, history, rememberToolResult }

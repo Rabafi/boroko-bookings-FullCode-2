@@ -48,7 +48,7 @@ test('POS package keys are unique and persist independently of the Pro compatibi
   assert.deepEqual(offers.map((offer) => offer.displayName), [
     'Bar POS', 'Restaurant Service', 'Restaurant Control', 'Restaurant Growth'
   ])
-  assert.ok(accessPanel.includes('value={requestedPackageKey}'))
+  assert.ok(accessPanel.includes("value={requestedPackageKey || ''}"))
   assert.ok(accessPanel.includes('commercial_package_key: selectedCommercialPackage.commercialPackageKey'))
   assert.ok(accessPanel.includes('key={plan.commercialPackageKey}'))
   assert.ok(!accessPanel.includes('value={plan.internalPlan}'))
@@ -159,7 +159,7 @@ test('server activation resets non-included POS features before granting the sel
   ]) {
     assert.ok(entitlementBoundaryMigration.includes(required), `${required} must be present in the POS entitlement boundary migration`)
   }
-  assert.ok(accessPanel.includes('Commercial POS packages do not inherit Lodge &amp; Camp usage caps.'))
+  assert.ok(accessPanel.includes('POS packages are feature bundles. They do not use the Lodge &amp; Camp room, user, or monthly booking caps.'))
   assert.ok(upgradePrompt.includes('Feature bundle access with no Lodge & Camp capacity limits') || upgradePrompt.includes('feature-bundle based'))
   assert.ok(!upgradePrompt.includes('Next package limits:') || upgradePrompt.includes('IS_CAPACITYLESS_PRODUCT'))
   for (const required of ["'product_id', v_license.product_id", "'commercial_package_key', v_license.commercial_package_key"]) {

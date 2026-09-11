@@ -30,7 +30,8 @@ import {
   getRestaurantDashboardShortcuts,
   isBarOnlyBlockedPath,
   normalizeAppPath,
-  resolvePosServicePayload
+  resolvePosServicePayload,
+  resolveResumedTabPayment
 } from '../src/shared/barModeProfile.js'
 import { getDesktopNavItems } from '../src/renderer/src/navigation/desktopNav.js'
 
@@ -84,6 +85,8 @@ test('isBarOnlyBlockedPath covers HPOS kitchen/floor and restaurant production p
   assert.equal(isBarOnlyBlockedPath('/restaurant/purchase-suggestions', ['purchase_suggestions']), false)
   assert.equal(isBarOnlyBlockedPath('/restaurant/lots-expiry', ['lots_expiry']), false)
   assert.equal(isBarOnlyBlockedPath('/restaurant/staff-performance', ['staff_performance']), false)
+  assert.equal(isBarOnlyBlockedPath('/restaurant/finance-close'), true)
+  assert.equal(isBarOnlyBlockedPath('/restaurant/finance-close?tab=settlements', ['restaurant_accounting']), false)
   assert.equal(isBarOnlyBlockedPath('/restaurant/floor'), true)
   assert.equal(isBarOnlyBlockedPath('/pos/kitchen-display'), true)
   // Allowed bar/HPOS paths
@@ -118,6 +121,66 @@ test('resolvePosServicePayload maps counter and named tabs without inventing a s
   const table = resolvePosServicePayload('table', { tableName: 'T4' })
   assert.equal(table.table_name, 'T4')
   assert.equal(table.openSession, true)
+})
+
+test('resumed bar tabs open in tab mode so payment closes the tab', () => {
+  // Bar tabs always carry table_name (= tab name). If a resume lands on an
+  // invalid mode it corrects to counter and the payment records a counter
+  // sale with tab_id null, leaving the tab open.
+  const terminal = fs.readFileSync(path.join(root, 'src/renderer/src/components/hospitality-pos/HposTerminal.jsx'), 'utf8')
+  assert.match(terminal, /location\.state\?\.tableName && !isBarOnlyMode\(settings\)/)
+  assert.match(terminal, /location\.state\?\.tabId && allowed\.has\("tab"\)/)
+  assert.match(terminal, /resumedTab\.table_name && !barOnly \? "table" : "tab"/)
+  // Legacy Bar tabs carry table_name null with the name in tab_name only;
+  // the resume must still land on tab mode and keep the name.
+  assert.match(terminal, /location\.state\?\.tabName \|\| location\.state\?\.tableName \|\| ""/)
+})
+
+test('resumed tab payments retain the exact tab id or fail closed', () => {
+  // Fresh sales carry no tab identity.
+  assert.deepEqual(
+    resolveResumedTabPayment({ settlesTab: true }),
+    { ok: true, tabId: null, expectedVersion: null }
+  )
+  // Resume keeps the exact id plus the loaded version (legacy null-name
+  // tabs included: identity never depends on table_name).
+  assert.deepEqual(
+    resolveResumedTabPayment({ resumeTabId: 'tab-1', resumeTabVersion: 4, settlesTab: true }),
+    { ok: true, tabId: 'tab-1', expectedVersion: 4 }
+  )
+  // A changed check underneath the sale blocks instead of paying the
+  // wrong tab or degrading into a counter sale.
+  const changed = resolveResumedTabPayment({ resumeTabId: 'tab-1', selectedTab: { id: 'tab-2', tab_version: 1 }, settlesTab: true })
+  assert.equal(changed.ok, false)
+  assert.equal(changed.code, 'tab_context_changed')
+  // A tab-opened sale flipped to counter mode is blocked, never degraded.
+  const degraded = resolveResumedTabPayment({ resumeTabId: 'tab-1', resumeTabVersion: 4, settlesTab: false })
+  assert.equal(degraded.ok, false)
+  assert.equal(degraded.code, 'tab_settlement_required')
+  // Malformed versions fail closed instead of silently dropping concurrency.
+  const malformed = resolveResumedTabPayment({ resumeTabId: 'tab-1', resumeTabVersion: 'stale', settlesTab: true })
+  assert.equal(malformed.ok, false)
+  assert.equal(malformed.code, 'tab_version_required')
+  // A tab id without any loaded version is blocked: the server cannot tell
+  // a fresh sale from a stale retry without it.
+  const missing = resolveResumedTabPayment({ resumeTabId: 'tab-1', settlesTab: true })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.code, 'tab_version_required')
+  // Selected-only lodge flow resolves id plus version together.
+  assert.deepEqual(
+    resolveResumedTabPayment({ selectedTab: { id: 'tab-9', tab_version: 3 }, settlesTab: true }),
+    { ok: true, tabId: 'tab-9', expectedVersion: 3 }
+  )
+  // An explicit resume intent without any surviving id still fails closed
+  // instead of degrading into a counter sale.
+  const lostLink = resolveResumedTabPayment({ resumeIntent: true, settlesTab: true })
+  assert.equal(lostLink.ok, false)
+  assert.equal(lostLink.code, 'tab_link_missing')
+  // Intent plus id settles normally and preserves the loaded version.
+  assert.deepEqual(
+    resolveResumedTabPayment({ resumeIntent: true, resumeTabId: 'tab-1', resumeTabVersion: 2, settlesTab: true }),
+    { ok: true, tabId: 'tab-1', expectedVersion: 2 }
+  )
 })
 
 test('ui vocabulary is bar-native in bar_only and restaurant-native otherwise', () => {

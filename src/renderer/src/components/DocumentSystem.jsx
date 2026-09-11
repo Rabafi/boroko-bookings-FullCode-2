@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Check, AlertTriangle, FileText, Eye, Send } from 'lucide-react'
+import { canAccessCapability } from '../../../shared/accessControl'
+import { hasHotelDocumentsEntitlement } from '../../../shared/documentAccess'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { useAccess } from '../app-context'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
 
@@ -15,6 +19,7 @@ const DOCUMENT_TYPES = [
 ]
 
 const emptyTemplate = { template_key: '', name: '', document_type: 'folio', numbering_prefix: '' }
+const IS_HOTEL_PRODUCT = getProductDefinition(getRuntimeProductId()).id === 'hotel'
 
 function assertRpcSuccess(result, fallbackMessage) {
   if (result == null) {
@@ -27,6 +32,12 @@ function assertRpcSuccess(result, fallbackMessage) {
 }
 
 export default function DocumentSystem({ templatesOnly = false } = {}) {
+  const access = useAccess()
+  const canViewDocuments = IS_HOTEL_PRODUCT
+    && hasHotelDocumentsEntitlement(access?.entitlement)
+    && canAccessCapability(access, 'documents.view')
+  const canManageDocuments = canViewDocuments && canAccessCapability(access, 'documents.manage')
+  const canGenerateDocuments = canViewDocuments && canAccessCapability(access, 'documents.generate')
   const [templates, setTemplates] = useState([])
   const [dashboard, setDashboard] = useState({ recent_documents: [] })
   const [history, setHistory] = useState([])
@@ -46,6 +57,10 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
   const [confirmDialog, setConfirmDialog] = useState(null)
 
   const load = useCallback(async () => {
+    if (!canViewDocuments) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -60,7 +75,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [canViewDocuments])
 
   useEffect(() => { load() }, [load])
 
@@ -70,8 +85,15 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
     return () => clearTimeout(timer)
   }, [success])
 
-  const openAdd = () => { setEditing(null); setForm(emptyTemplate); setError(''); setShowModal(true) }
+  const openAdd = () => {
+    if (!canManageDocuments) return
+    setEditing(null)
+    setForm(emptyTemplate)
+    setError('')
+    setShowModal(true)
+  }
   const openEdit = (t) => {
+    if (!canManageDocuments) return
     setEditing(t.id)
     setForm({
       template_key: t.template_key || '',
@@ -85,6 +107,10 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
 
   const handleSave = async (e) => {
     e.preventDefault()
+    if (!canManageDocuments) {
+      setError('Your role can view document templates but cannot edit them.')
+      return
+    }
     if (!form.template_key || !form.name) {
       setError('Template key and name are required')
       return
@@ -122,6 +148,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
   }
 
   const handleDelete = (templateId) => {
+    if (!canManageDocuments) return
     setConfirmDialog({
       message: 'Delete this template?',
       onConfirm: async () => {
@@ -139,6 +166,10 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
   }
 
   const handleRender = async () => {
+    if (!canGenerateDocuments) {
+      setError('Your role does not have permission to generate documents.')
+      return
+    }
     if (!renderTemplateKey || !renderSubjectType || !renderSubjectId) {
       setError('All render fields are required')
       return
@@ -164,6 +195,10 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
   }
 
   const handlePublish = async (documentId) => {
+    if (!canManageDocuments) {
+      setError('Your role does not have permission to publish documents.')
+      return
+    }
     if (!documentId) return
     setError('')
     setPublishingId(documentId)
@@ -188,6 +223,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
   }
 
   const handleLoadHistory = async () => {
+    if (!canViewDocuments) return
     if (!renderSubjectType || !renderSubjectId) {
       setError('Subject type and ID required')
       return
@@ -211,6 +247,16 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
     </button>
   )
 
+  if (!canViewDocuments) {
+    return (
+      <div className="p-6" data-testid="documents-access-denied">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">
+          Document tools are available only in HotelOS for accounts and roles with document access.
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -219,7 +265,9 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
     )
   }
 
-  const effectiveTab = templatesOnly ? 'templates' : activeTab
+  const effectiveTab = templatesOnly
+    ? 'templates'
+    : (!canGenerateDocuments && activeTab === 'render' ? 'history' : activeTab)
   const recentDocuments = Array.isArray(dashboard?.recent_documents) ? dashboard.recent_documents : []
 
   return (
@@ -234,7 +282,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
         {!templatesOnly && (
           <div className="flex gap-2">
             <TabButton tab="templates" label="Templates" />
-            <TabButton tab="render" label="Generate" />
+            {canGenerateDocuments && <TabButton tab="render" label="Generate" />}
             <TabButton tab="history" label="History" />
           </div>
         )}
@@ -257,13 +305,15 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
         <div className="bg-white rounded-xl border">
           <div className="p-4 border-b flex items-center justify-between">
             <h3 className="font-semibold">Document Templates</h3>
-            <button
-              onClick={openAdd}
-              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 flex items-center gap-1"
-            >
-              <Plus className="w-4 h-4" />
-              Add Template
-            </button>
+            {canManageDocuments && (
+              <button
+                onClick={openAdd}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 flex items-center gap-1"
+              >
+                <Plus className="w-4 h-4" />
+                Add Template
+              </button>
+            )}
           </div>
           <div className="p-4">
             {templates.length === 0 ? (
@@ -276,7 +326,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
                     <th className="pb-2">Name</th>
                     <th className="pb-2">Type</th>
                     <th className="pb-2">Numbering</th>
-                    <th className="pb-2">Actions</th>
+                    {canManageDocuments && <th className="pb-2">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -290,17 +340,19 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
                         </span>
                       </td>
                       <td>{t.numbering_prefix || '-'}</td>
-                      <td className="flex gap-1">
-                        <button onClick={() => openEdit(t)} className="p-1 hover:bg-gray-100 rounded">
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(t.id)}
-                          className="p-1 hover:bg-red-100 rounded text-red-600"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
+                      {canManageDocuments && (
+                        <td className="flex gap-1">
+                          <button onClick={() => openEdit(t)} className="p-1 hover:bg-gray-100 rounded">
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(t.id)}
+                            className="p-1 hover:bg-red-100 rounded text-red-600"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -367,7 +419,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
                 <div className="font-medium text-green-800">Server draft created</div>
                 <div className="text-xs text-green-700 mt-1">Number: {renderResult.document_number}</div>
                 <div className="text-xs text-green-700">ID: {renderResult.document_id}</div>
-                {renderResult.document_id && (
+                {renderResult.document_id && canManageDocuments && (
                   <button
                     onClick={() => handlePublish(renderResult.document_id)}
                     disabled={publishingId === renderResult.document_id}
@@ -404,7 +456,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
                       >
                         {d.status}
                       </span>
-                      {d.status === 'draft' && (
+                      {d.status === 'draft' && canManageDocuments && (
                         <button
                           onClick={() => handlePublish(d.id)}
                           disabled={publishingId === d.id}
@@ -486,7 +538,7 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
                       {d.created_at ? new Date(d.created_at).toLocaleString() : '—'}
                     </td>
                     <td>
-                      {d.status === 'draft' && (
+                      {d.status === 'draft' && canManageDocuments && (
                         <button
                           onClick={() => handlePublish(d.id)}
                           disabled={publishingId === d.id}

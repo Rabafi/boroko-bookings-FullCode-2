@@ -53,9 +53,9 @@ test('cashier cash-up is submitted for an independently authorised review', () =
 })
 
 test('a manager must provide a correction note when returning a cash-up', () => {
-  assert.match(cashClose, /Confirm manager decision/)
+    assert.match(cashClose, /Enter a correction note before returning this cash-up\./)
   assert.match(cashClose, /Correction note/)
-  assert.match(cashClose, /reviewCashupSubmission\?\.\(\{ submission_id: submission\.id, decision, notes/)
+  assert.match(cashClose, /reviewCashupSubmission\?\.\(\{\s*submission_id: submission\.id,\s*decision,\s*notes: reviewNotes\.trim\(\) \|\| null,\s*manager_pin: managerPin\.trim\(\),/)
   assert.match(cashupRejectionSql, /Enter a return-for-correction note/)
 })
 

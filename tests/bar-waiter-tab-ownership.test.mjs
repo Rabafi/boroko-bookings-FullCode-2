@@ -15,6 +15,7 @@ const checks = read('src/renderer/src/components/hospitality-pos/HposOpenChecks.
 const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
 const latestSplitContract = read('supabase/migrations/20260807130000_bar_tab_financial_snapshot_and_concurrency.sql')
 const latestTillActivationContract = read('supabase/migrations/20260715026000_restaurant_shared_till_requires_attendance.sql')
+const currentShiftSettlement = read('supabase/migrations/20260906163000_pos_tab_settlement_current_shift_proof.sql')
 
 test('Bar tab mutation ownership is server-enforced and Bar-scoped', () => {
   assert.match(migration, /create or replace function public\._pos_tab_is_bar_scope\(p_lodge_id uuid\)/)
@@ -24,8 +25,7 @@ test('Bar tab mutation ownership is server-enforced and Bar-scoped', () => {
   assert.match(migration, /if not public\._pos_tab_is_bar_scope\(v_tab\.lodge_id\) then[\s\S]*update_pos_tab_status_unowned/)
 })
 
-test('Hold/Open Check forwards the main-held Till proof to the authoritative upsert', () => {
-  assert.match(terminal, /window\.api\?\.pos\?\.saveTab\?\.\(\{[\s\S]*waiter_id: \(verifiedOperator \|\| user\)\?\.id \|\| null,[\s\S]*shift_id: currentShift\.id/)
+test('Hold/Open Check forwards the main-held Till proof to the authoritative upsert', () => {  assert.match(terminal, /window\.api\?\.pos\?\.saveTab\?\.\(\{[\s\S]*waiter_id: \(verifiedOperator \|\| user\)\?\.id \|\| null,[\s\S]*shift_id: currentShift\.id/)
   assert.match(main, /if \(tillContext\.operatorProof\) payload\._operator_proof = tillContext\.operatorProof/)
   assert.match(main, /const tillContext = await getTabMutationTillContext\(event, data \|\| \{\}\)[\s\S]*db\.savePosTab\(buildAuthoritativeTillPayload\(data, tillContext, 'tab'\)\)/)
   assert.match(main, /if \(context\.shared && !context\.operatorProof\)[\s\S]*code: 'till_operator_proof_missing'/)
@@ -107,7 +107,82 @@ test('Bar Open Tabs exposes an explicit active-shift transfer workflow with stab
   assert.match(checks, /Transfer waiter/)
   assert.match(checks, /getBarActiveShifts/)
   assert.match(checks, /getStaffOpenShift/)
-  assert.match(checks, /hpos:pending-waiter-transfer:/)
-  assert.match(checks, /savedEnvelope\?\.operationId \|\| crypto\.randomUUID\(\)/)
+  // Durable recovery lives in the shared helper; the component consumes it and
+  // preserves the legacy tab-only key for migration reads.
+  assert.match(checks, /posTabRecovery/)
+  assert.match(checks, /readRecoveryEnvelope\("transfer"/)
+  assert.match(checks, /Check status/)
+  assert.match(checks, /Retry original/)
+  const helper = read('src/shared/posTabRecovery.js')
+  assert.match(helper, /hpos:pending-waiter-transfer:/)
+  assert.match(helper, /hpos:pending-split:/)
   assert.match(checks, /target_waiter_id: target\.staff_user_id/)
+})
+
+test('paid tab auto-close carries the operator proof and reports close failures', () => {
+  // The post-payment close is a tab mutation like any other: without the
+  // proof the server rejects it as tab_not_owned while the payment stands,
+  // so the tab silently stays open. The payment must never fail because
+  // the follow-up close failed; the warning must reach the operator.
+  assert.match(pos, /closePosTab\(data\.tab_id, 'closed', \{ _operator_proof: operatorProof \|\| null \}\)/)
+  assert.match(pos, /tab_close_warning/)
+  assert.match(terminal, /tab_close_warning/)
+})
+
+test('atomic settlement rejects second payments and replays the stored result', () => {
+  // P0: a new settlement against a tab that already has a completed/settled
+  // order is rejected; an exact idempotent replay returns the stored
+  // settled result before any tab mutation runs, so retries can neither
+  // double-charge nor mint duplicate tabs. Historical duplicates are left
+  // for audited void/refund reconciliation (never auto-deleted here).
+  const atomic = read('supabase/migrations/20260905230000_pos_v3_atomic_tab_settlement.sql')
+  const duplicateGuard = read('supabase/migrations/20260905231000_pos_v3_duplicate_settlement_guard.sql')
+  const claimFirst = read('supabase/migrations/20260905233000_pos_v3_claim_first_tab_settlement.sql')
+  assert.match(duplicateGuard, /o\.status in \('completed', ?'settled'\)/)
+  assert.match(duplicateGuard, /'tab_already_settled'/)
+  assert.match(atomic, /if v_tab_id is null/)
+  assert.doesNotMatch(atomic, /delete from public\.pos_tabs/i)
+  assert.doesNotMatch(atomic, /delete from public\.pos_orders/i)
+  assert.doesNotMatch(duplicateGuard, /delete from public\.pos_tabs/i)
+  assert.doesNotMatch(duplicateGuard, /delete from public\.pos_orders/i)
+  assert.ok(
+    claimFirst.indexOf('Remove the pre-claim tab lock') >= 0
+    && claimFirst.indexOf('an exact retry returns its stored receipt') >= 0,
+    'claim-first reorder must delete the pre-claim lock and re-add validation after replay'
+  )
+  assert.equal((atomic.match(/^commit;/gm) || []).length, 1, 'settlement must commit once: one transaction, no second phase')
+  // Claim-first reorder: replay precedes every tab lock/validation, name
+  // resolution is caller-opted-in, and a failed close rolls back instead of
+  // committing a payment with a warning.
+  assert.match(claimFirst, /an exact retry returns its stored receipt/)
+  assert.match(claimFirst, /resolve_tab/)
+  assert.match(claimFirst, /raise exception using errcode/)
+  assert.match(claimFirst, /_operator_proof', v_tab_operator_proof/)
+  assert.doesNotMatch(claimFirst, /delete from public\.pos_tabs/i)
+  assert.doesNotMatch(claimFirst, /delete from public\.pos_orders/i)
+})
+
+test('tab settlement requires a version and keeps the lodge waiter', () => {
+  // Every tab_id settlement must present a positive expected_tab_version;
+  // resolve-or-create attributes non-Bar tabs to the validated payload
+  // waiter while Bar scope keeps the proof-verified operator.
+  const guard = read('supabase/migrations/20260905234000_pos_v3_tab_version_waiter.sql')
+  assert.match(guard, /tab_version_required/)
+  assert.match(guard, /This sale is missing its tab version/)
+  assert.match(guard, /_pos_tab_is_bar_scope\(v_lodge_id\) then v_operator_id/)
+  assert.match(guard, /coalesce\(nullif\(payload->>'waiter_id', ''\)::uuid, v_operator_id\)/)
+  assert.doesNotMatch(guard, /delete from public\.pos_tabs/i)
+  assert.doesNotMatch(guard, /delete from public\.pos_orders/i)
+})
+
+test('tab settlement validates the proof against the current payment shift', () => {
+  // An open tab can outlive the shift that opened it. The historical tab
+  // shift remains untouched; the assigned waiter must prove the current open
+  // shift that receives the order and tender.
+  assert.match(currentShiftSettlement, /v_payment_shift uuid := nullif\(p_payload->>'shift_id', ''\)::uuid/)
+  assert.match(currentShiftSettlement, /_pos_operator_proof_staff\([\s\S]*v_payment_shift,[\s\S]*v_actor/)
+  assert.match(currentShiftSettlement, /_pos_tab_active_waiter_error\([\s\S]*v_tab\.waiter_id,[\s\S]*v_payment_shift/)
+  assert.doesNotMatch(currentShiftSettlement, /set\s+shift_id/i)
+  assert.doesNotMatch(currentShiftSettlement, /delete from public\.pos_tabs/i)
+  assert.doesNotMatch(currentShiftSettlement, /delete from public\.pos_orders/i)
 })

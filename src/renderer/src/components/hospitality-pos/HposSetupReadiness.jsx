@@ -45,6 +45,17 @@ const BAR_STAGES = [
   ['first_completed_shift', 'First completed shift', 'Clock a team member in with their private PIN, then complete and clock out the first supervised bar shift.', '/hpos/team'],
 ];
 
+// Display-only grouping of the 14 Bar stages into 6 first-run sections.
+// Stage keys, evidence, progress math and retirement behavior are unchanged.
+const BAR_STAGE_GROUPS = [
+  { title: 'Venue', keys: ['business_profile', 'tax_service', 'outlets'] },
+  { title: 'Team', keys: ['staff_accounts', 'staff_roles', 'staff_pins'] },
+  { title: 'Stock & products', keys: ['modifiers_combos', 'menu_categories', 'menu_pricing', 'inventory'] },
+  { title: 'First sale', keys: ['payments_tips', 'receipt_hardware'] },
+  { title: 'Cash control', keys: ['daily_checklists'] },
+  { title: 'Go live', keys: ['first_completed_shift'] },
+];
+
 export default function HposSetupReadiness() {
   const navigate = useNavigate();
   const { settings } = useSettings();
@@ -103,6 +114,26 @@ export default function HposSetupReadiness() {
     return () => clearTimeout(timer);
   }, [completed, loading, navigate, readComplete, stages.length]);
 
+  const renderStage = ([key, title, description, route], index) => {
+    const row = latest.get(key); const done = readComplete && row?.detected === true;
+    const completedAt = row?.completed_at ? new Date(row.completed_at) : null;
+    const completedLabel = readComplete && completedAt && !Number.isNaN(completedAt.getTime())
+      ? `Authoritative evidence completed ${completedAt.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}.`
+      : (done ? 'Evidence is present; completion time is not available from the source record.' : '');
+    const evidenceLabel = readComplete
+      ? (row?.evidence || 'Checking configuration evidence…')
+      : (row?.evidence ? `Last known evidence (not verified): ${row.evidence}` : 'Evidence unavailable until an online server read succeeds.');
+    return <article key={key} className={done ? 'is-done' : ''}>
+      <span className="hpos-setup-stage-number">{done ? <CheckCircle2 size={18} /> : String(index + 1).padStart(2, '0')}</span>
+      <div><h2>{title}</h2><p><strong>How:</strong> {description}</p><small>{evidenceLabel}</small>{completedLabel && <small>{completedLabel}</small>}</div>
+      <HposStatusBadge tone={done ? 'success' : 'warning'}>{done ? 'Detected' : readComplete ? 'Not detected' : 'Not verified'}</HposStatusBadge>
+      <div className="hpos-setup-stage-actions"><HposButton icon={ExternalLink} onClick={() => navigate(route)}>{done ? 'Review' : 'Set up'}</HposButton></div>
+    </article>;
+  };
+
+  const barStageByKey = useMemo(() => new Map(stages.map((stage) => [stage[0], stage])), [stages]);
+  let barStageNumber = 0;
+
   return <div className="hpos-page-frame hpos-setup-readiness-page">
     <HposPageHero eyebrow="New venue setup" title={barOnly ? 'Bar setup readiness' : 'Restaurant setup readiness'} description={barOnly ? 'A focused path from empty till to safe first sale. Each stage advances only when the underlying setup evidence exists.' : 'An evidence-based 20-stage path from first configuration to a safe go-live. A stage only advances when the system detects its underlying setup data.'} actions={<HposButton icon={RefreshCw} onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton>} />
     {error && <HposNotice tone="error">{error}</HposNotice>}
@@ -111,22 +142,19 @@ export default function HposSetupReadiness() {
     {!loading && readComplete && completed === stages.length && <HposNotice>All setup evidence is present. This readiness board will now retire from Manage.</HposNotice>}
     <section className="hpos-setup-summary"><div><ClipboardCheck size={24} /><span><small>{loading ? 'Checking setup evidence' : readComplete ? 'Setup complete' : 'Setup evidence not verified'}</small><strong>{loading ? '—' : readComplete ? `${completed} / ${stages.length}` : '—'}</strong></span></div><div><span className="hpos-setup-progress"><i style={{ width: `${readComplete ? (completed / stages.length) * 100 : 0}%` }} /></span><p>{loading ? 'Checking authoritative server evidence…' : !readComplete ? 'Completion is blocked until authoritative server evidence is available.' : completed === stages.length ? 'All setup stages are confirmed.' : `${stages.length - completed} stage${stages.length - completed === 1 ? '' : 's'} still need manager confirmation.`}</p></div></section>
     <section className="hpos-setup-stage-list" aria-busy={loading}>
-      {stages.map(([key, title, description, route], index) => {
-        const row = latest.get(key); const done = readComplete && row?.detected === true;
-        const completedAt = row?.completed_at ? new Date(row.completed_at) : null;
-        const completedLabel = readComplete && completedAt && !Number.isNaN(completedAt.getTime())
-          ? `Authoritative evidence completed ${completedAt.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}.`
-          : (done ? 'Evidence is present; completion time is not available from the source record.' : '');
-        const evidenceLabel = readComplete
-          ? (row?.evidence || 'Checking configuration evidence…')
-          : (row?.evidence ? `Last known evidence (not verified): ${row.evidence}` : 'Evidence unavailable until an online server read succeeds.');
-        return <article key={key} className={done ? 'is-done' : ''}>
-          <span className="hpos-setup-stage-number">{done ? <CheckCircle2 size={18} /> : String(index + 1).padStart(2, '0')}</span>
-          <div><h2>{title}</h2><p><strong>How:</strong> {description}</p><small>{evidenceLabel}</small>{completedLabel && <small>{completedLabel}</small>}</div>
-          <HposStatusBadge tone={done ? 'success' : 'warning'}>{done ? 'Detected' : readComplete ? 'Not detected' : 'Not verified'}</HposStatusBadge>
-          <div className="hpos-setup-stage-actions"><HposButton icon={ExternalLink} onClick={() => navigate(route)}>{done ? 'Review' : 'Set up'}</HposButton></div>
-        </article>;
-      })}
+      {barOnly
+        ? BAR_STAGE_GROUPS.map((group) => (
+            <section key={group.title} aria-label={group.title}>
+              <h2 className="hpos-setup-group-title">{group.title}</h2>
+              {group.keys.map((key) => {
+                const stage = barStageByKey.get(key);
+                if (!stage) return null;
+                barStageNumber += 1;
+                return renderStage(stage, barStageNumber - 1);
+              })}
+            </section>
+          ))
+        : stages.map((stage, index) => renderStage(stage, index))}
     </section>
   </div>;
 }

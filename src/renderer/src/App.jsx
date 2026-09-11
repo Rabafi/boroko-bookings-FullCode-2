@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } 
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router'
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, canAccessCapability, isPosFullAccessRole } from '../../shared/accessControl'
-import { SUBSCRIPTION_PLAN_ORDER, getFeatureRequiredPlan, getSubscriptionPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
+import { SUBSCRIPTION_PLAN_ORDER, getFeatureRequiredPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
 import { getCommercialPackageCatalog, getCommercialPackageLabel } from '../../shared/commercialPackages'
 import { getCommercialAddonOffers, isCommercialSelectionEligible } from '../../shared/commercialEntitlements.js'
-import { getCommercialFeatureSet, isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
+import { getCommercialFeatureOverride, getCommercialFeatureSet, isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
+import { getModuleByKey } from '../../shared/moduleCatalog.js'
 import { isBarOnlyMode, isRestaurantOnly } from '../../shared/propertyTypes'
 import { isBarOnlyBlockedPath, normalizeAppPath } from '../../shared/barModeProfile'
 import {
@@ -32,6 +33,7 @@ import {
   useAuth,
   useProfiles
 } from './app-context'
+import { UpgradeShowcase } from './components/shared/EntitlementPresentation'
 
 // ── Lazy — split into separate chunks, loaded on first visit ──────────────────
 const Welcome     = lazy(() => import('./components/Welcome'))
@@ -92,7 +94,6 @@ const OperationsCompliance = lazy(() => import('./components/OperationsComplianc
 const MultiOutletPos = lazy(() => import('./components/MultiOutletPos'))
 const RoomAttributes = lazy(() => import('./components/RoomAttributes'))
 const CorporateBilling = lazy(() => import('./components/CorporateBilling'))
-const DocumentSystem = lazy(() => import('./components/DocumentSystem'))
 const HotelRolesConfig = lazy(() => import('./components/HotelRolesConfig'))
 const CheckinWorkflow = lazy(() => import('./components/CheckinWorkflow'))
 const EarlyLateCheckout = lazy(() => import('./components/EarlyLateCheckout'))
@@ -141,6 +142,7 @@ const RestaurantTaxReturns = lazy(() => import('./components/restaurant-accounti
 const RestaurantBudgets = lazy(() => import('./components/restaurant-accounting/RestaurantBudgets'))
 const RestaurantBalanceSheet = lazy(() => import('./components/restaurant-accounting/RestaurantBalanceSheet'))
 const RestaurantPayroll = lazy(() => import('./components/restaurant-accounting/RestaurantPayroll'))
+const RestaurantAccountingActivation = lazy(() => import('./components/restaurant-accounting/RestaurantAccountingActivation'))
 
 // ── Restaurant & Bar POS UI ───────────────────────────────────────────────────
 const HposLayout       = lazy(() => import('./components/hospitality-pos/HposLayout'))
@@ -213,40 +215,36 @@ const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
   const access = useContext(AccessContext)
+  const location = useLocation()
   const commercialPackageKey = access?.entitlement?.commercial_package_key || null
   const commercialAddonKeys = access?.entitlement?.enterprise_addons || []
+  const commercialLodgeId = access?.entitlement?.lodge_id || null
   const commercialBlocked = IS_HPOS_PRODUCT && commercialPackageKey
-    ? !isCommercialFeatureIncluded(BUILD_PRODUCT.id, commercialPackageKey, feature, commercialAddonKeys)
+    ? !isCommercialFeatureIncluded(BUILD_PRODUCT.id, commercialPackageKey, feature, commercialAddonKeys, access?.entitlement, commercialLodgeId)
     : false
 
   // Only block when flags have been loaded AND this feature is explicitly false
   if ((Object.keys(features).length > 0 && features[feature] === false) || commercialBlocked) {
-    const requiredTier = getFeatureRequiredPlan(feature)
-    const requiredPlan = getSubscriptionPlan(requiredTier)
-    const requiredPackage = commercialBlocked ? 'a higher POS package' : getCommercialPackageLabel(requiredTier, BUILD_PRODUCT.id)
-    const trialExpired = access?.entitlement?.expired === true
-    const moduleLabel = FEATURE_LABELS[feature] || 'This module'
-    const tierColor = requiredTier === 'Pro' ? 'purple' : 'blue'
-    const accessNoun = IS_HOTEL_PRODUCT ? 'hotel' : IS_HPOS_PRODUCT ? 'restaurant' : 'lodge'
+    // The module catalogue is the richer source of page metadata. Keep the
+    // feature fallback for legacy/restaurant flags that do not have a module
+    // row yet.
+    const catalogModule = getModuleByKey(feature)
+    const requiredTier = catalogModule?.requiredPlan || getFeatureRequiredPlan(feature)
+    const requiredCommercialPackage = commercialBlocked
+      ? getCommercialPackageCatalog(BUILD_PRODUCT.id).find((candidate) => (
+          isCommercialFeatureIncluded(BUILD_PRODUCT.id, candidate.commercialPackageKey, feature, commercialAddonKeys)
+        ))
+      : null
     return (
-      <div className="flex flex-col items-center justify-center h-full min-h-[500px] p-10 text-center select-none">
-        <div className="text-6xl mb-5">🔒</div>
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">
-          {trialExpired ? 'Trial expired' : `${requiredPackage} Package Required`}
-        </h2>
-        <p className="text-gray-500 text-sm max-w-sm mb-6">
-          {trialExpired
-            ? `${moduleLabel} is unavailable because this trial has ended. Buy a subscription to restore ${accessNoun} access.`
-            : `${moduleLabel} is not included in your current subscription. ${commercialBlocked ? 'Request the package that includes this workflow.' : `${requiredPlan.headline}. ${requiredTier === 'Enterprise' ? 'HotelOS is a separate Tsa Bonno product with quotation-based access.' : requiredPlan.upgradeNudge}`}`}
-        </p>
-        <div className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold ${
-          tierColor === 'purple'
-            ? 'bg-purple-100 text-purple-700 border border-purple-200'
-            : 'bg-blue-100 text-blue-700 border border-blue-200'
-        }`}>
-          {trialExpired ? 'Buy a subscription to continue' : `Request ${requiredPackage} to access this feature`}
-        </div>
-      </div>
+      <UpgradeShowcase
+        feature={feature}
+        requiredPlan={requiredTier}
+        requiredPackage={requiredCommercialPackage}
+        currentPlan={access?.entitlement?.plan || 'Starter'}
+        productId={BUILD_PRODUCT.id}
+        module={catalogModule}
+        routePath={location.pathname}
+      />
     )
   }
   return children
@@ -337,7 +335,9 @@ function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   const enabledFeatures = getCommercialFeatureSet(
     access?.entitlement?.product_id || BUILD_PRODUCT.id,
     access?.entitlement?.commercial_package_key,
-    access?.entitlement?.enterprise_addons || []
+    access?.entitlement?.enterprise_addons || [],
+    access?.entitlement,
+    access?.entitlement?.lodge_id || null
   )
   if (barOnlyMode && isBarOnlyBlockedPath(location, enabledFeatures)) {
     return <Navigate to={redirectTo} replace />
@@ -377,7 +377,7 @@ function RestaurantAccountingRoute({ payroll = false, children }) {
   const access = useContext(AccessContext)
   const capability = payroll ? 'accounting.payroll_view' : 'accounting.read'
   if (!canAccessCapability(access, capability)) {
-    return <div className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Accounting access required</h1><p className="mt-3 text-sm leading-6 text-rose-800">{payroll ? 'Private payroll access is assigned separately from general Accounting.' : 'Your role does not include Restaurant Accounting read access.'}</p></div></div>
+    return <div data-testid="role-permission-denial" data-lock-reason="role" className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Accounting role permission required</h1><p className="mt-3 text-sm leading-6 text-rose-800">{payroll ? 'Private payroll access is assigned separately from general Accounting.' : 'Your role does not include Restaurant Accounting read access.'} A package upgrade will not change role permissions.</p></div></div>
   }
   return <UpgradeWall feature="restaurant_accounting">{children}</UpgradeWall>
 }
@@ -385,10 +385,11 @@ function RestaurantAccountingRoute({ payroll = false, children }) {
 function CapabilityRoute({ capability, children }) {
   const access = useContext(AccessContext)
   if (!canAccessCapability(access, capability)) {
-    return <div className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Access required</h1><p className="mt-3 text-sm leading-6 text-rose-800">Your current role does not include this Restaurant &amp; Bar workflow.</p></div></div>
+    return <div data-testid="role-permission-denial" data-lock-reason="role" className="flex min-h-[420px] items-center justify-center p-8"><div className="max-w-lg rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center"><h1 className="text-2xl font-bold text-rose-950">Role permission required</h1><p className="mt-3 text-sm leading-6 text-rose-800">Your current role does not include this workflow. A package upgrade will not change role permissions; ask a manager or administrator to update your access.</p></div></div>
   }
   return children
 }
+
 // ── Update Banner ─────────────────────────────────────────────────────────────
 function UpdateBanner() {
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
@@ -1313,25 +1314,9 @@ export default function App() {
   const restoreAttemptedRef = useRef(false)
   const navigationGuardRef = useRef({ isDirty: false, confirmLeave: null })
 
-  // Windows' native caption can fail to paint parts of the product name on
-  // some machines. Electron keeps the native window controls, while this
-  // renderer-owned drag region paints the complete product name reliably.
+  // Let Electron's native frame own the caption and window controls.
   useEffect(() => {
     document.title = BUILD_PRODUCT.name
-    if (isBrowserPreview) return undefined
-
-    document.documentElement.classList.add('has-app-window-titlebar')
-    const titlebar = document.createElement('div')
-    titlebar.className = 'app-window-titlebar'
-    titlebar.setAttribute('role', 'banner')
-    titlebar.setAttribute('aria-label', `${BUILD_PRODUCT.name} window`)
-    titlebar.textContent = BUILD_PRODUCT.name
-    document.body.appendChild(titlebar)
-
-    return () => {
-      titlebar.remove()
-      document.documentElement.classList.remove('has-app-window-titlebar')
-    }
   }, [])
 
   // Theme — apply saved preference on startup and follow system changes when requested.
@@ -1428,8 +1413,13 @@ export default function App() {
     const normalizedPlan = normalizeSubscriptionPlan(nextTrial?.plan || 'Starter')
     const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
     APP_FEATURES.forEach((featureName) => {
+      const commercialOverride = getCommercialFeatureOverride(nextTrial, BUILD_PRODUCT.id, featureName, nextTrial?.commercial_package_key || null, nextTrial?.lodge_id || null)
+      if (commercialOverride !== null) {
+        nextFeatures[featureName] = commercialOverride
+        return
+      }
       if (nextTrial?.product_id === 'hospitality-pos' && nextTrial?.commercial_package_key
-        && !isCommercialFeatureIncluded('hospitality-pos', nextTrial.commercial_package_key, featureName, nextTrial.enterprise_addons || [])) {
+        && !isCommercialFeatureIncluded(BUILD_PRODUCT.id, nextTrial.commercial_package_key, featureName, nextTrial.enterprise_addons || [], nextTrial, nextTrial?.lodge_id || null)) {
         nextFeatures[featureName] = false
         return
       }
@@ -1448,6 +1438,18 @@ export default function App() {
     setTrialStatus(nextTrial)
     setFeatures(nextFeatures)
   }, [])
+
+  // Expose one renderer-owned refresh path so subscription changes update the
+  // global capability snapshot immediately. The main process receives
+  // forceFresh and invalidates its in-memory entitlement result before the
+  // authoritative read; disk cache remains available only for offline use.
+  const refreshEntitlement = useCallback(async ({ forceFresh = false } = {}) => {
+    const lodgeId = activeProfile?.lodge_id
+    if (isBrowserPreview || !lodgeId || !window.api?.trial?.getStatus) return null
+    const nextTrial = await window.api.trial.getStatus(lodgeId, { forceFresh: forceFresh === true }).catch(() => null)
+    if (nextTrial) applyEntitlement(nextTrial)
+    return nextTrial
+  }, [activeProfile?.lodge_id, applyEntitlement, isBrowserPreview])
 
   const clearStoredRendererSession = useCallback(() => {
     localStorage.removeItem('bb_user')
@@ -1559,7 +1561,15 @@ export default function App() {
 
       setSettingsLoading(true)
       try {
-        const nextSettings = await window.api.settings.get().catch(() => null)
+        let nextSettings = await window.api.settings.get().catch(() => null)
+        if (!nextSettings && window.api.settings.getOutletContext) {
+          // Outlet-scoped roles (cashier/supervisor) lack settings.view, so the
+          // full row is denied as null. Without property_type/hospitality_mode
+          // the hpos route guards default to 'lodge' and bounce every /hpos/*
+          // route back to '/' in an infinite loop. The outlet context carries
+          // only routing/mode/identity fields so boot can resolve correctly.
+          nextSettings = await window.api.settings.getOutletContext().catch(() => null)
+        }
         if (!cancelled) {
           setSettings(nextSettings)
         }
@@ -1851,10 +1861,13 @@ export default function App() {
       capabilityOverrides: user?.capability_overrides || {},
       productId: trialStatus?.product_id || null,
       commercialPackageKey: trialStatus?.commercial_package_key || null,
-      commercialAddonKeys: trialStatus?.enterprise_addons || []
+      commercialAddonKeys: trialStatus?.enterprise_addons || [],
+      commercialEntitlement: trialStatus,
+      commercialLodgeId: trialStatus?.lodge_id || activeProfile?.lodge_id || null
     }),
     entitlement: trialStatus,
-    allowedOutletIds: _allowedOutletIds
+    allowedOutletIds: _allowedOutletIds,
+    refreshEntitlement
   }
 
   // Master admin gets Command Central, no regular app
@@ -2005,7 +2018,7 @@ export default function App() {
                 <Route path="checkin-workflow" element={<UpgradeWall feature="checkin_workflow"><Lazy><CheckinWorkflow /></Lazy></UpgradeWall>} />
                 <Route path="early-late-checkout" element={<Navigate to="/bookings?tab=early-late" replace />} />
                 <Route path="cancellation-policies" element={<Navigate to="/bookings?tab=cancellations" replace />} />
-                <Route path="documents" element={<Navigate to="/settings?tab=document-templates" replace />} />
+                <Route path="documents" element={<Navigate to={BUILD_PRODUCT.defaultHome || '/'} replace />} />
                 <Route path="payment-links" element={<Navigate to="/folios" replace />} />
                 <Route path="booking-engine" element={<Navigate to="/rate-plans?tab=booking-engine" replace />} />
                 <Route path="night-audit-enterprise" element={<UpgradeWall feature="night_audit_enterprise"><Lazy><NightAuditEnterprise /></Lazy></UpgradeWall>} />
@@ -2076,6 +2089,7 @@ export default function App() {
                 <Route path="restaurant/budgets" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantBudgets /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
                 <Route path="restaurant/balance-sheet" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantBalanceSheet /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
                 <Route path="restaurant/payroll" element={<RestaurantOnlyRoute><RestaurantAccountingRoute payroll><Lazy><RestaurantPayroll /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
+                <Route path="restaurant/accounting-setup" element={<RestaurantOnlyRoute><RestaurantAccountingRoute><Lazy><RestaurantAccountingActivation /></Lazy></RestaurantAccountingRoute></RestaurantOnlyRoute>} />
                 {/* ── HPOS: New restaurant UI routes ────────────────────────────────── */}
                 <Route path="hpos/" element={<RestaurantOnlyRoute><Lazy><HposTerminal /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/floor" element={<RestaurantOnlyRoute><UpgradeWall feature="tables"><Lazy><HposFloorPlan /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />

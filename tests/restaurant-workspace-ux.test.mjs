@@ -11,8 +11,13 @@ const restaurantDirectory = new URL('src/renderer/src/components/restaurant/', r
 test('restaurant workspaces expose a focused tab set with a recovery boundary', () => {
   for (const workspaceName of ['floor', 'kitchen', 'menu', 'stock', 'team', 'finance', 'control']) assert.match(workspace, new RegExp(`${workspaceName}:\\s*\\{`))
   assert.match(workspace, /RestaurantWorkspaceErrorBoundary/)
-  assert.match(workspace, /No sale or stock change was made/)
-  assert.match(workspace, /<ActiveComponent workspace=\{workspace\} tabKey=\{activeTab.key\}/)
+  assert.match(workspace, /cannot confirm the outcome of a recent action/)
+  assert.match(workspace, /before retrying a payment or stock change/)
+  assert.doesNotMatch(workspace, /No sale or stock change was made|No payment was recorded/)
+  assert.match(workspace, /<ActiveComponent workspace=\{workspace\} tabKey=\{viewTab\?\.key\}/)
+  // A denied ?tab= renders an explicit denial instead of the child.
+  assert.match(workspace, /WorkspaceTabDenied/)
+  assert.match(workspace, /deniedTab/)
 })
 
 test('Finance & close is the canonical home for financial controls, while guest controls stay separate', () => {

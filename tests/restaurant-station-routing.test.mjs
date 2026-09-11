@@ -302,14 +302,16 @@ describe('Restaurant Station Routing', () => {
     it('pos.js createPosMenuItem includes kitchen_station_id', () => {
       const js = read(POS_JS)
       const fnIdx = js.indexOf('export async function createPosMenuItem')
-      const fnBody = js.slice(fnIdx, fnIdx + 800)
+      const fnEnd = js.indexOf('\nexport ', fnIdx + 10)
+      const fnBody = js.slice(fnIdx, fnEnd > 0 ? fnEnd : fnIdx + 4000)
       assert.ok(fnBody.includes('kitchen_station_id: data.kitchen_station_id'), 'creates with station')
     })
 
     it('pos.js updatePosMenuItem includes kitchen_station_id', () => {
       const js = read(POS_JS)
       const fnIdx = js.indexOf('export async function updatePosMenuItem')
-      const fnBody = js.slice(fnIdx, fnIdx + 800)
+      const fnEnd = js.indexOf('\nexport ', fnIdx + 10)
+      const fnBody = js.slice(fnIdx, fnEnd > 0 ? fnEnd : fnIdx + 5000)
       assert.ok(fnBody.includes('kitchen_station_id'), 'updates with station')
     })
 

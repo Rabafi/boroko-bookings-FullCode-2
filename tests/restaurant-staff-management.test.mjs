@@ -13,7 +13,9 @@ const authLogin = readFileSync('src/main/domains/authLogin.js', 'utf8')
 
 describe('Restaurant staff management', () => {
   it('uses restaurant service-team labels and removes hotel-only roles from its route', () => {
-    assert.match(staffPage, /Waiter \/ till operator/)
+    // Service-team vocabulary uses operator-first labels ("Till operator /
+    // cashier") instead of the legacy "Waiter / till operator" wording.
+    assert.match(staffPage, /Till operator \/ cashier/)
     assert.match(staffPage, /Service supervisor/)
     assert.match(staffPage, /hasHotelRoles && !restaurantMode/)
   })
@@ -35,7 +37,7 @@ describe('Restaurant staff management', () => {
   it('shows a server-backed staff access audit, not a clearable local activity log', () => {
     assert.match(staffPage, /Server-backed access audit/)
     assert.match(staffPage, /window\.api\.users\.getAccessAudit\(\)/)
-    assert.match(preload, /getAccessAudit: \(\) => ipcRenderer\.invoke\('users:getAccessAudit'\)/)
+    assert.match(preload, /getAccessAudit: \(\) => invoke\('users:getAccessAudit'\)/)
     assert.match(main, /ipcMain\.handle\('users:getAccessAudit'/)
     assert.match(authUsers, /export async function getStaffAccessAudit/)
   })

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
-import { useSettings, UnsavedChangesContext } from '../app-context'
+import { useAccess, useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } from '../utils/themeMode'
@@ -17,6 +17,7 @@ import {
 } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
+import { canAccessCapability } from '../../../shared/accessControl'
 import {
   DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES,
   TILL_OPERATOR_MODES,
@@ -30,7 +31,6 @@ const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 const IS_HOSPITALITY_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
-const DocumentTemplates = lazy(() => import('./DocumentSystem').then(m => ({ default: () => <m.default templatesOnly /> })))
 
 const BOOKING_SITE_BASE = 'https://borokoonlinebookings.netlify.app'
 const PUBLIC_OFFER_DEFAULTS = {
@@ -41,6 +41,9 @@ const PUBLIC_OFFER_DEFAULTS = {
   public_offer_events: false
 }
 const PUBLIC_OFFER_DEFAULT_TRUE = new Set(['public_offer_rooms', 'public_offer_multi_room'])
+// The main process has a 15-second end-to-end budget; keep a small IPC slack
+// so the renderer does not report failure just as the main process resolves.
+const SETTINGS_SAVE_TIMEOUT_MS = 20000
 const EMAIL_PROVIDER_PRESETS = {
   gmail: {
     label: 'Gmail',
@@ -98,10 +101,31 @@ function normalizePlanName(plan) {
   return plan || ''
 }
 
+function cloneSettings(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value))
+}
+
+function settingsEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function withSettingsSaveTimeout(promise, timeoutMs = SETTINGS_SAVE_TIMEOUT_MS) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error('Saving settings timed out. Check the internet connection and try Save Settings again.')
+      error.code = 'settings_save_timeout'
+      reject(error)
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
 
 export default function Settings() {
   const navigate = useNavigate()
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
+  const access = useAccess()
   const { settings: globalSettings, setSettings: setGlobalSettings } = useSettings()
   const propertyType = globalSettings?.property_type || globalSettings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
@@ -115,8 +139,7 @@ export default function Settings() {
   const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') || location.state?.activeTab || 'general')
 
   useEffect(() => {
-    if (!restaurantMode) return
-    if (activeTab === 'system') navigate('/hpos/system-health', { replace: true })
+    if (restaurantMode && activeTab === 'system') navigate('/hpos/system-health', { replace: true })
     if (activeTab === 'document-templates') {
       setActiveTab('general')
       setSearchParams({ tab: 'general' }, { replace: true })
@@ -130,8 +153,8 @@ export default function Settings() {
   }, [searchParams, location.state?.activeTab])
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [saveNotice, setSaveNotice] = useState(null)
   const [logoPreview, setLogoPreview] = useState(null)
   const [heroPreview, setHeroPreview] = useState(null)
   const [bookingFaqText, setBookingFaqText] = useState('')
@@ -140,6 +163,7 @@ export default function Settings() {
   const heroInputRef = useRef(null)
   const savedFormSnapshotRef = useRef(null)
   const savedEmailSnapshotRef = useRef(null)
+  const formRef = useRef(null)
   const [showUnsavedModal, setShowUnsavedModal] = useState(false)
   const [modalSaving, setModalSaving] = useState(false)
   const pendingNavRef = useRef(null)
@@ -197,6 +221,11 @@ export default function Settings() {
   }, [emailConfig])
 
   const isDirty = isFormDirty || (emailTouched && isEmailDirty)
+  const canManageGeneralSettings = canAccessCapability(access, 'settings.manage_general')
+
+  useEffect(() => {
+    formRef.current = form
+  }, [form])
 
   useEffect(() => {
     if (!isDirty) return
@@ -463,10 +492,14 @@ export default function Settings() {
   const [generalDataLoaded, setGeneralDataLoaded] = useState(false)
   const [licenseDataLoaded, setLicenseDataLoaded] = useState(false)
 
-  const refreshLicenseStatus = (lodgeId) => {
+  const refreshLicenseStatus = (lodgeId, { forceFresh = false } = {}) => {
     if (lodgeId && window.api?.trial) {
-      window.api.trial.getStatus(lodgeId).then(setLicenseStatus).catch(() => {})
+      return window.api.trial.getStatus(lodgeId, { forceFresh: forceFresh === true }).then((status) => {
+        setLicenseStatus(status)
+        return status
+      }).catch(() => null)
     }
+    return Promise.resolve(null)
   }
 
   useEffect(() => {
@@ -496,7 +529,9 @@ export default function Settings() {
       if (res?.success) {
         setActivateMsg({ type: 'success', text: `License activated! Plan: ${res.plan || 'Starter'}` })
         setLicenseKey('')
-        refreshLicenseStatus(lodgeId)
+        const nextStatus = await access?.refreshEntitlement?.({ forceFresh: true })
+        if (nextStatus) setLicenseStatus(nextStatus)
+        else await refreshLicenseStatus(lodgeId, { forceFresh: true })
       } else {
         setActivateMsg({ type: 'error', text: res?.error || 'Activation failed.' })
       }
@@ -537,10 +572,13 @@ export default function Settings() {
   useEffect(() => {
     if (globalSettings) {
       const s = normalizeSettingsForForm(globalSettings)
-      setForm(s)
-      if (!savedFormSnapshotRef.current) {
-        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
+      // A global settings refresh can happen while this page is open. Never
+      // replace a draft that the operator has already started editing.
+      if (formRef.current && savedFormSnapshotRef.current && !settingsEqual(formRef.current, savedFormSnapshotRef.current)) {
+        return
       }
+      setForm(s)
+      savedFormSnapshotRef.current = cloneSettings(s)
       setLogoPreview(s?.logo || null)
       setHeroPreview(s?.hero_image || null)
       setBookingFaqText(faqToText(s?.booking_faq))
@@ -549,10 +587,11 @@ export default function Settings() {
 
     window.api.settings.get().then((sn) => {
       const s = normalizeSettingsForForm(sn)
-      setForm(s)
-      if (!savedFormSnapshotRef.current) {
-        savedFormSnapshotRef.current = JSON.parse(JSON.stringify(s))
+      if (formRef.current && savedFormSnapshotRef.current && !settingsEqual(formRef.current, savedFormSnapshotRef.current)) {
+        return
       }
+      setForm(s)
+      savedFormSnapshotRef.current = cloneSettings(s)
       setLogoPreview(s?.logo || null)
       setHeroPreview(s?.hero_image || null)
       setBookingFaqText(faqToText(s?.booking_faq))
@@ -596,28 +635,35 @@ export default function Settings() {
       setEmailConfig(JSON.parse(JSON.stringify(savedEmailSnapshotRef.current)))
     }
     setEmailTouched(false)
-    setSaved(false)
     setSaveError('')
+    setSaveNotice(null)
   }
 
-  const set = (field, value) => setForm((f) => ({ ...f, [field]: value }))
+  const set = (field, value) => {
+    setSaveNotice(null)
+    setSaveError('')
+    setForm((f) => ({ ...f, [field]: value }))
+  }
 
   const tillOperatorPolicy = getTillOperatorPolicy(form || globalSettings || {})
-  const setTillOperatorPolicy = (field, value) => setForm((current) => ({
-    ...current,
-    operating_profile: {
-      ...(current?.operating_profile || {}),
-      till_operator_policy: {
-        ...(current?.operating_profile?.till_operator_policy || {}),
-        [field]: value
+  const setTillOperatorPolicy = (field, value) => {
+    setSaveNotice(null)
+    setSaveError('')
+    setForm((current) => ({
+      ...current,
+      operating_profile: {
+        ...(current?.operating_profile || {}),
+        till_operator_policy: {
+          ...(current?.operating_profile?.till_operator_policy || {}),
+          [field]: value
+        }
       }
-    }
-  }))
+    }))
+  }
 
   const toggleAssistant = () => {
     const nextEnabled = form?.assistant_enabled !== true
     set('assistant_enabled', nextEnabled)
-    setGlobalSettings((current) => current ? { ...current, assistant_enabled: nextEnabled } : current)
   }
 
   // ── Logo handling ──────────────────────────────────────────────────────────
@@ -649,6 +695,8 @@ export default function Settings() {
 
   const handleFileChange = (e) => {
     processImageFile(e.target.files[0], (base64) => {
+      setSaveNotice(null)
+      setSaveError('')
       setLogoPreview(base64)
       setForm((f) => ({ ...f, logo: base64 }))
     }, { max: 400, minWidth: 128, minHeight: 128, label: 'Logo' })
@@ -656,6 +704,8 @@ export default function Settings() {
 
   const handleHeroFileChange = (e) => {
     processImageFile(e.target.files[0], (base64) => {
+      setSaveNotice(null)
+      setSaveError('')
       setHeroPreview(base64)
       setForm((f) => ({ ...f, hero_image: base64 }))
     }, { max: 1400, minWidth: 800, minHeight: 400, label: 'Hero image' })
@@ -665,64 +715,187 @@ export default function Settings() {
     e.preventDefault()
     setDragOver(false)
     processImageFile(e.dataTransfer.files[0], (base64) => {
+      setSaveNotice(null)
+      setSaveError('')
       setLogoPreview(base64)
       setForm((f) => ({ ...f, logo: base64 }))
     }, { max: 400, minWidth: 128, minHeight: 128, label: 'Logo' })
   }
 
   const removeLogo = () => {
+    setSaveNotice(null)
+    setSaveError('')
     setLogoPreview(null)
     setForm((f) => ({ ...f, logo: '' }))
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   const removeHeroImage = () => {
+    setSaveNotice(null)
+    setSaveError('')
     setHeroPreview(null)
     setForm((f) => ({ ...f, hero_image: '' }))
     if (heroInputRef.current) heroInputRef.current.value = ''
   }
 
-  const handleSave = async (e) => {
-    e?.preventDefault?.()
+  const validateSettingsForm = (draft) => {
+    if (!draft?.lodge_name?.trim()) return `Enter your ${businessLabel.toLowerCase()} name before saving.`
+    return ''
+  }
+
+  const buildSettingsSavePayload = (draft) => {
+    const propertyType = normalizePropertyType(draft?.property_type || draft?.business_type || 'lodge')
+    const existingProfile = draft?.operating_profile || globalSettings?.operating_profile || {}
+    return {
+      ...draft,
+      property_type: propertyType,
+      business_type: propertyTypeToBusinessType(propertyType),
+      operating_profile: buildOperatingProfile(
+        propertyType,
+        draft?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
+        draft?.enterprise_addons || globalSettings?.enterprise_addons || [],
+        {
+          hospitalityMode: existingProfile.hospitality_mode || draft?.hospitality_mode || null,
+          campsitesEnabled: existingProfile?.campsite_profile?.enabled === true,
+          roomsOrUnits: existingProfile?.accommodation_mix?.rooms_or_units !== false,
+          wholeProperty: existingProfile?.accommodation_mix?.whole_property_exclusive_use === true,
+          tillOperatorPolicy: existingProfile?.till_operator_policy || {
+            mode: TILL_OPERATOR_MODES.STRICT,
+            inactivity_minutes: DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES
+          }
+        }
+      )
+    }
+  }
+
+  const preserveDraftChanges = (serverSettings, savedDraft, latestDraft) => {
+    const merged = { ...serverSettings }
+    Object.keys(latestDraft || {}).forEach((field) => {
+      if (!settingsEqual(latestDraft[field], savedDraft?.[field])) merged[field] = latestDraft[field]
+    })
+    return merged
+  }
+
+  const getSaveNotice = (res, draftChangedDuringSave) => {
+    const meta = res?.meta || {}
+    const skippedColumns = Array.isArray(meta.skippedColumns) ? meta.skippedColumns : []
+    const warnings = Array.isArray(meta.warnings) ? meta.warnings.filter(Boolean) : []
+    if (meta.persistence === 'device_only' || meta.online === false) {
+      return {
+        tone: 'warning',
+        message: 'Saved on this computer only. Reconnect to the internet and save again to sync these changes to the lodge.'
+      }
+    }
+    if (skippedColumns.length > 0) {
+      return {
+        tone: 'warning',
+        message: 'Saved online, but some optional settings are not available in the server schema. Ask an administrator to apply the current database migration, then save again.'
+      }
+    }
+    if (warnings.length > 0) {
+      return {
+        tone: 'warning',
+        message: `Settings saved online with a warning: ${warnings[0]}`
+      }
+    }
+    if (draftChangedDuringSave) {
+      return {
+        tone: 'warning',
+        message: 'The first changes were saved. You still have newer edits to save.'
+      }
+    }
+    return { tone: 'success', message: 'Settings saved to this lodge.' }
+  }
+
+  const saveSettingsDraft = async () => {
+    if (saving) return { success: false, error: 'A settings save is already in progress.' }
+    if (!canManageGeneralSettings) {
+      const error = 'You do not have permission to change general settings. Ask a lodge manager to save these changes.'
+      setSaveNotice(null)
+      setSaveError(error)
+      return { success: false, error }
+    }
+    const validationError = validateSettingsForm(form)
+    if (validationError) {
+      setSaveNotice(null)
+      setSaveError(validationError)
+      return { success: false, error: validationError }
+    }
+    if (!isFormDirty) {
+      const notice = { tone: 'info', message: 'There are no general settings changes to save.' }
+      setSaveError('')
+      setSaveNotice(notice)
+      return { success: true, noop: true }
+    }
+
+    const draftAtSave = cloneSettings(form)
+    const savePayload = buildSettingsSavePayload(draftAtSave)
     setSaving(true)
-    setSaved(false)
+    setSaveNotice(null)
     setSaveError('')
     try {
-      const propertyType = normalizePropertyType(form?.property_type || form?.business_type || 'lodge')
-      const existingProfile = form?.operating_profile || globalSettings?.operating_profile || {}
-      const savePayload = {
-        ...form,
-        property_type: propertyType,
-        business_type: propertyTypeToBusinessType(propertyType),
-        operating_profile: buildOperatingProfile(
-          propertyType,
-          form?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
-          form?.enterprise_addons || globalSettings?.enterprise_addons || [],
-          {
-            hospitalityMode: existingProfile.hospitality_mode || form?.hospitality_mode || null,
-            campsitesEnabled: existingProfile?.campsite_profile?.enabled === true,
-            roomsOrUnits: existingProfile?.accommodation_mix?.rooms_or_units !== false,
-            wholeProperty: existingProfile?.accommodation_mix?.whole_property_exclusive_use === true,
-            tillOperatorPolicy: existingProfile?.till_operator_policy || {
-              mode: TILL_OPERATOR_MODES.STRICT,
-              inactivity_minutes: DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES
-            }
-          }
-        )
-      }
-      const res = await window.api.settings.save(savePayload)
-      if (res.success) {
-        applySavedSettings(res.data)
-        setSaved(true)
-        setTimeout(() => setSaved(false), 3000)
+      const res = await withSettingsSaveTimeout(
+        window.api.settings.save(savePayload),
+        SETTINGS_SAVE_TIMEOUT_MS
+      )
+      if (!res?.success) throw new Error(res?.error || 'Settings could not be saved right now.')
+
+      const latestDraft = formRef.current
+      const draftChangedDuringSave = !settingsEqual(latestDraft, draftAtSave)
+      const serverSettings = normalizeSettingsForForm(res.data || savePayload)
+      const meta = res?.meta || {}
+      const skippedColumns = Array.isArray(meta.skippedColumns) ? meta.skippedColumns : []
+      const retryablePending = meta.persistence === 'device_only' || meta.pending === true || skippedColumns.length > 0
+      const previousServerSettings = cloneSettings(savedFormSnapshotRef.current || globalSettings || {})
+      if (retryablePending) {
+        // Offline and partial-schema saves must remain retryable. Keep the
+        // server snapshot authoritative and leave the draft dirty so Save
+        // remains available after reconnecting or applying the migration.
+        const retrySnapshot = meta.persistence === 'device_only'
+          ? previousServerSettings
+          : { ...serverSettings, ...Object.fromEntries(skippedColumns.map((field) => [field, previousServerSettings?.[field]])) }
+        const retryDraft = draftChangedDuringSave
+          ? preserveDraftChanges(retrySnapshot, draftAtSave, latestDraft)
+          : (latestDraft || draftAtSave)
+        // Keep the locally saved draft effective for this session, while the
+        // separate snapshot below preserves which values still need a server
+        // retry.
+        setGlobalSettings(retryDraft)
+        setForm(retryDraft)
+        savedFormSnapshotRef.current = cloneSettings(retrySnapshot)
+        setLogoPreview(retryDraft?.logo || null)
+        setHeroPreview(retryDraft?.hero_image || null)
+        setBookingFaqText(faqToText(retryDraft?.booking_faq))
+      } else if (!draftChangedDuringSave) {
+        applySavedSettings(serverSettings)
       } else {
-        setSaveError(res.error || 'Settings could not be saved right now.')
+        // Reconcile the server result without clobbering edits made while the
+        // request was in flight. The saved snapshot remains server-authoritative,
+        // so the newer edits stay visibly dirty and must be saved separately.
+        const savedSnapshot = cloneSettings(serverSettings)
+        const mergedDraft = preserveDraftChanges(savedSnapshot, draftAtSave, latestDraft)
+        setGlobalSettings(savedSnapshot)
+        setForm(mergedDraft)
+        savedFormSnapshotRef.current = savedSnapshot
+        setLogoPreview(mergedDraft?.logo || null)
+        setHeroPreview(mergedDraft?.hero_image || null)
+        setBookingFaqText(faqToText(mergedDraft?.booking_faq))
       }
+      setSaveNotice(getSaveNotice(res, draftChangedDuringSave))
+      return { ...res, draftChangedDuringSave, retryablePending }
     } catch (err) {
       console.error(err)
-      setSaveError(err?.message || 'Settings could not be saved right now.')
+      const message = err?.message || 'Settings could not be saved right now.'
+      setSaveError(message)
+      return { success: false, error: message }
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
+  }
+
+  const handleSave = async (e) => {
+    e?.preventDefault?.()
+    return saveSettingsDraft()
   }
 
   const setEmailField = (field, value) => {
@@ -823,7 +996,6 @@ export default function Settings() {
   const tabs = [
     { id: 'general', label: 'General', icon: <SettingsIcon size={14} /> },
     { id: 'license', label: 'Subscription & Access', icon: <CreditCard size={14} /> },
-    { id: 'document-templates', label: 'Document Templates', icon: <FileText size={14} /> },
     { id: 'system', label: 'System Health', icon: <ShieldCheck size={14} /> },
   ]
 
@@ -841,19 +1013,23 @@ export default function Settings() {
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !canManageGeneralSettings || !isFormDirty}
             className={restaurantMode ? 'hpos-primary-action' : 'btn-primary flex items-center gap-2'}
+            title={!canManageGeneralSettings ? 'You need settings.manage_general permission to save.' : undefined}
           >
             <Save size={15} />
             {saving ? 'Saving...' : 'Save Settings'}
           </button>
         )}
       </div>
-      {activeTab === 'general' && (saved || saveError) && (
+      {activeTab === 'general' && (isDirty || saveNotice || saveError) && (
         <div className={`mb-4 rounded-lg border px-4 py-3 text-sm font-medium ${
-          saved ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'
+          saveError ? 'border-red-200 bg-red-50 text-red-700'
+            : saveNotice?.tone === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-800'
+              : saveNotice?.tone === 'info' ? 'border-blue-200 bg-blue-50 text-blue-800'
+                : 'border-green-200 bg-green-50 text-green-700'
         }`}>
-          {saved ? 'Settings saved successfully.' : saveError}
+          {saveError || saveNotice?.message || 'You have unsaved changes. Save when you are ready.'}
         </div>
       )}
 
@@ -882,6 +1058,12 @@ export default function Settings() {
           ════════════════════════════════════════════════════════════════ */}
       {activeTab === 'general' && (
         <>
+          {!canManageGeneralSettings && (
+            <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              You can view these settings, but only a lodge manager with general-settings permission can change or save them.
+            </div>
+          )}
+
           {/* ── Assistant Visibility ────────────────────────────────────── */}
           <div className="bg-white rounded-xl shadow-sm p-5 mb-6 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -900,6 +1082,7 @@ export default function Settings() {
             <button
               type="button"
               onClick={toggleAssistant}
+              disabled={saving || !canManageGeneralSettings}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
                 form?.assistant_enabled === true ? 'bg-green-600' : 'bg-gray-200'
               }`}
@@ -1207,6 +1390,7 @@ export default function Settings() {
           )}
 
           <form onSubmit={handleSave} className="space-y-6">
+            <fieldset disabled={saving || !canManageGeneralSettings} className="contents">
 
             {/* ── Logo Upload ─────────────────────────────────────────────── */}
             <div className="bg-white rounded-xl shadow-sm p-6">
@@ -1865,7 +2049,12 @@ export default function Settings() {
 
             {/* ── Save ─────────────────────────────────────────────────────── */}
             <div className="flex items-center gap-4 pb-6">
-              <button type="submit" disabled={saving} className="btn-primary flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={saving || !canManageGeneralSettings || !isFormDirty}
+                title={!canManageGeneralSettings ? 'You need settings.manage_general permission to save.' : undefined}
+                className="btn-primary flex items-center gap-2"
+              >
                 <Save size={15} />
                 {saving ? 'Saving...' : 'Save Settings'}
               </button>
@@ -1879,8 +2068,10 @@ export default function Settings() {
                   Discard Changes
                 </button>
               )}
-              {saved && (
-                <span className="text-sm text-green-600 font-medium flex items-center gap-1">✓ Settings saved successfully!</span>
+              {saveNotice && (
+                <span className={`text-sm font-medium flex items-center gap-1 ${saveNotice.tone === 'warning' ? 'text-amber-700' : saveNotice.tone === 'info' ? 'text-blue-700' : 'text-green-600'}`}>
+                  {saveNotice.tone === 'warning' ? <AlertTriangle size={15} /> : '✓'} {saveNotice.message}
+                </span>
               )}
               {saveError && (
                 <span className="text-sm text-red-600 font-medium flex items-center gap-1">
@@ -1888,6 +2079,7 @@ export default function Settings() {
                 </span>
               )}
             </div>
+            </fieldset>
           </form>
         </>
       )}
@@ -1920,25 +2112,30 @@ export default function Settings() {
             <button
               onClick={async () => {
                 setModalSaving(true)
-                setSaveError('')
-                try {
-                  const res = await window.api.settings.save(form)
-                  if (res.success) {
-                    applySavedSettings(res.data)
-                    setModalSaving(false)
-                    setShowUnsavedModal(false)
-                    pendingNavRef.current?.()
+                if (!isFormDirty && isEmailDirty) {
+                  setSaveNotice({
+                    tone: 'warning',
+                    message: 'Email setup has unsaved changes. Use Save Email Setup first, then choose Save & Leave.'
+                  })
+                  setSaveError('')
+                  setModalSaving(false)
+                  return
+                }
+                const res = await saveSettingsDraft()
+                setModalSaving(false)
+                if (res?.success && !res?.draftChangedDuringSave && !res?.retryablePending) {
+                  if (isEmailDirty) {
+                    setSaveNotice({
+                      tone: 'warning',
+                      message: 'General settings were saved. Use Save Email Setup before leaving so your email changes are not lost.'
+                    })
                     return
                   }
-                  setSaveError(res.error || 'Settings could not be saved right now.')
-                } catch (err) {
-                  console.error(err)
-                  setSaveError(err?.message || 'Settings could not be saved right now.')
+                  setShowUnsavedModal(false)
+                  pendingNavRef.current?.()
                 }
-                setModalSaving(false)
-                setShowUnsavedModal(false)
               }}
-              disabled={modalSaving}
+              disabled={modalSaving || saving || !canManageGeneralSettings}
               className="btn-primary flex items-center gap-2"
             >
               {modalSaving ? (
@@ -1960,12 +2157,6 @@ export default function Settings() {
             <SubscriptionAccessPanel />
           </Suspense>
         </div>
-      )}
-
-      {activeTab === 'document-templates' && (
-        <Suspense fallback={tabLoader}>
-          <DocumentTemplates />
-        </Suspense>
       )}
 
       {activeTab === 'system' && (

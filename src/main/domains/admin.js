@@ -836,6 +836,7 @@ export async function assignCommercialSubscription(payload = {}) {
   })
   if (error) throw new Error(error.message)
   if (data?.success === false) throw new Error(data.error || 'Could not save commercial subscription assignment')
+  if (data?.status === 'pending_remediation' || data?.pending_remediation === true) return data
   if (!data?.license_id) throw new Error('Commercial subscription assignment returned no license identifier')
   return data
 }
@@ -1326,6 +1327,81 @@ export async function deleteBroadcast(id) {
 }
 
 // ─── ADMIN: FEATURE FLAGS ──────────────────────────────────────────────────────
+
+function requireCommercialOverrideReason(reason, action = 'override') {
+  const normalized = String(reason || '').trim()
+  if (normalized.length < 8) throw new Error(`A ${action} reason of at least 8 characters is required`)
+  return normalized
+}
+
+export async function getCommercialEntitlementOverrides(targetLodgeId, productId) {
+  if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
+  const { data, error } = await requireAdmin().rpc('get_commercial_entitlement_overrides', {
+    p_lodge_id: targetLodgeId,
+    p_product_id: productId || null
+  })
+  if (error) throw new Error(error.message)
+  return Array.isArray(data) ? data : []
+}
+
+export async function getCommercialTransitionPreview(targetLodgeId, productId, targetPackageKey, referenceDate = null) {
+  if (!state.isOnline) throw new Error('Commercial transition preview requires an online connection')
+  const { data, error } = await requireAdmin().rpc('get_commercial_transition_preview', {
+    p_lodge_id: targetLodgeId,
+    p_product_id: productId,
+    p_target_package_key: targetPackageKey,
+    p_reference_date: referenceDate || new Date().toISOString().slice(0, 10)
+  })
+  if (error) throw new Error(error.message)
+  if (data?.success === false) throw new Error(data.error || 'Could not preview the package transition')
+  return data
+}
+
+export async function setCommercialEntitlementOverride(payload = {}) {
+  if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
+  const reason = requireCommercialOverrideReason(payload.reason)
+  const { data, error } = await requireAdmin().rpc('admin_set_commercial_entitlement_override', {
+    p_payload: {
+      ...payload,
+      operation_id: String(payload.operation_id || '').trim() || crypto.randomUUID(),
+      reason
+    }
+  })
+  if (error) throw new Error(error.message)
+  if (data?.success === false) throw new Error(data.error || 'Could not save the commercial entitlement override')
+  return data
+}
+
+export async function revokeCommercialEntitlementOverride(payload = {}) {
+  if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
+  const reason = requireCommercialOverrideReason(payload.reason, 'revoke')
+  const { data, error } = await requireAdmin().rpc('admin_revoke_commercial_entitlement_override', {
+    p_payload: {
+      ...payload,
+      operation_id: String(payload.operation_id || '').trim() || crypto.randomUUID(),
+      reason
+    }
+  })
+  if (error) throw new Error(error.message)
+  if (data?.success === false) throw new Error(data.error || 'Could not revoke the commercial entitlement override')
+  return data
+}
+
+export async function applyCommercialUserRemediation(payload = {}) {
+  if (!state.isOnline) throw new Error('Commercial user remediation requires an online connection')
+  const reason = requireCommercialOverrideReason(payload.reason, 'remediation')
+  const { data, error } = await requireAdmin().rpc('admin_apply_commercial_user_remediation', {
+    p_payload: {
+      ...payload,
+      operation_id: String(payload.operation_id || '').trim() || crypto.randomUUID(),
+      reason,
+      keep_user_ids: Array.isArray(payload.keep_user_ids) ? payload.keep_user_ids : []
+    }
+  })
+  if (error) throw new Error(error.message)
+  if (data?.success === false) throw new Error(data.error || 'Could not apply the commercial user remediation')
+  return data
+}
 
 export async function getLodgeFeatures(targetLodgeId) {
   if (!state.isOnline) throw new Error('Lodge feature overrides require an online connection');

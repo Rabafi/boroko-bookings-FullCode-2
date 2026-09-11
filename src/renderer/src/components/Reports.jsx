@@ -224,6 +224,12 @@ export default function Reports() {
   // Outlet filter — applies to POS, Expenses, and Costs (inventory) tabs only
   const [outlets, setOutlets]           = useState([])
   const [selectedOutlet, setSelectedOutlet] = useState('all')
+  // Canonical cross-module navigation (F&B Phase 2): consume the F&B outlet
+  // query state and preserve the return context on tab switches.
+  const fnbOutletParam = searchParams.get('outlet') || ''
+  const fnbFromParam = searchParams.get('from') || ''
+  const fnbReturn = fnbFromParam === 'food-beverage'
+  const fnbBackTo = fnbOutletParam ? `/food-beverage/fnb-reports?outlet=${encodeURIComponent(fnbOutletParam)}` : '/food-beverage/fnb-reports'
   const reportTitle = REPORT_TITLES[activeTab] || 'Report'
   const companyDisplayName = settings?.lodge_name || settings?.company_name || 'Tsa Bonno LodgingOS'
   const companyLegalName = settings?.company_name && settings?.company_name !== companyDisplayName ? settings.company_name : ''
@@ -289,6 +295,12 @@ export default function Reports() {
   useEffect(() => {
     window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
   }, [])
+
+  // Consume the F&B outlet query state on entry; operator changes afterwards win.
+  useEffect(() => {
+    if (fnbOutletParam) setSelectedOutlet(fnbOutletParam)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fnbOutletParam])
 
   useEffect(() => {
     window.api.sync.getStatus().then((status) => setSyncStatus(status || null)).catch(() => {})
@@ -832,8 +844,21 @@ export default function Reports() {
     }}
   ]
 
+  const switchTabPreservingFnb = (v) => {
+    setActiveTab(v)
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', v)
+    setSearchParams(next, { replace: true })
+  }
+
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6" id="printable-report">
+      {fnbReturn && (
+        <div className="no-print flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-sm text-slate-700">
+          <p><strong className="font-bold text-emerald-800">F&amp;B context.</strong> Server-confirmed POS sales evidence — the same source the F&amp;B report uses{fnbOutletParam ? ' for the selected outlet' : ''}.</p>
+          <a href={`#/food-beverage/fnb-reports${fnbOutletParam ? `?outlet=${encodeURIComponent(fnbOutletParam)}` : ''}`} onClick={(e) => { e.preventDefault(); navigate(fnbBackTo) }} className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-xs font-bold text-white hover:bg-emerald-800">Back to F&amp;B</a>
+        </div>
+      )}
 
       {/* Header */}
       <div className="bb-page-header no-print">
@@ -871,7 +896,7 @@ export default function Reports() {
       {/* Tabs */}
       <div className="bb-card no-print flex flex-wrap gap-2 p-2">
         {TABS.map(([v, l]) => (
-          <button key={v} onClick={() => { setActiveTab(v); setSearchParams({ tab: v }, { replace: true }) }}
+          <button key={v} onClick={() => switchTabPreservingFnb(v)}
             className={`rounded-2xl px-4 py-2.5 text-sm font-medium transition-colors ${
               activeTab === v ? 'bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-[0_10px_24px_rgba(22,101,52,0.24)]' : 'bg-white text-slate-600 hover:bg-slate-50 shadow-sm'
             }`}>

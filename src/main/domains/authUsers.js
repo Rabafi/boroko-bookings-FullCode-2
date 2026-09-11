@@ -38,7 +38,7 @@ import {
 import { readCache, writeCache } from './cacheStore.js';
 import { normalizeStaffStatus } from '../../shared/accessControl.js';
 import { normalizeSubscriptionPlan } from '../../shared/subscriptionPlans.js';
-import { getTrialStatus } from './entitlements.js';
+import { getAuthoritativeTrialStatus, getTrialStatus } from './entitlements.js';
 
 const AUTH_CONTRACT_VERSION = 2;
 const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
@@ -53,6 +53,22 @@ async function getStarterUsersAccessMode() {
     isStarter: plan === 'Starter' && features.staff_basic !== false && features.staff !== true,
     entitlement
   };
+}
+
+async function assertPwaEntitlementForUpdate(enabled) {
+  if (enabled !== true) return;
+  if (state.isOnline !== true) {
+    throw new Error('Manager mobile app access can only be enabled while online so the Pro entitlement can be verified.');
+  }
+  let entitlement;
+  try {
+    entitlement = await getAuthoritativeTrialStatus(state.lodgeId);
+  } catch {
+    throw new Error('Manager mobile app access could not be enabled because the live Pro entitlement could not be verified. Check the connection and try again.');
+  }
+  if (entitlement?.effective_features?.pwa !== true) {
+    throw new Error('Manager mobile app access is not included in this subscription. Upgrade to Pro for mobile access.');
+  }
 }
 
 /**
@@ -439,6 +455,7 @@ export async function createUser(data) {
 
   const hash = bcrypt.hashSync(data.password, 10);
   const pwaAccess = resolvePwaAccessUpdate({}, data);
+  await assertPwaEntitlementForUpdate(pwaAccess.enabled);
   const id = randomUUID();
   const user = {
     id,
@@ -667,6 +684,7 @@ export async function updateUser(id, data) {
     update.password_updated_at = nowIso();
   }
   const pwaAccess = resolvePwaAccessUpdate(existingUser, buildPwaAccessInput(data));
+  await assertPwaEntitlementForUpdate(pwaAccess.enabled);
   const nextRole = update.role || existingUser.role;
   const nextStatus = update.status || existingUser.status;
   const currentStatus = normalizeStaffStatus(existingUser.status);

@@ -15,7 +15,6 @@ import { getSupplyItems, getSupplyPurchases } from './supplies.js';
 import { getPosOrders } from './pos.js';
 import { getSyncStatus } from './sync.js';
 
-import { createBooking, updateBookingPayment } from './bookings.js'
 import { createCustomer } from './customers.js'
 import { createExpense, deleteExpense } from './expenses.js'
 import { createInventoryItem, deleteInventoryItem } from './inventory.js'
@@ -519,48 +518,39 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
         });
       }
 
-      // Create booking via RPC (status starts as 'confirmed', amount_paid = 0)
       const amountPaid = Number(row.amount_paid) || 0;
-      const bookingId = await createBooking({
-        customer_id: customerId,
-        room_id: roomId,
-        check_in: row.check_in,
-        check_out: row.check_out,
-        adults: Number(row.adults) || 1,
-        children: Number(row.children) || 0,
-        total_amount: Number(row.total_amount) || undefined,
-        allow_total_override: !!row.total_amount,
-        notes: row.notes || '',
-        created_by: state.currentUser?.id || null
-      });
-
-      // Record payment via RPC if any was paid
-      if (amountPaid > 0) {
-        await updateBookingPayment(
-          bookingId,
-          amountPaid,
-          row.payment_method || 'cash',
-          'payment',
-          null,
-          `import-${batchId}-row-${rowNum}`
-        );
-      }
-
-      // Update status to match historical record — best-effort, does not fail the row
       const targetStatus = String(row.status || '').trim().toLowerCase();
       const validStatuses = ['confirmed', 'checked_in', 'checked_out', 'cancelled'];
-      if (targetStatus && targetStatus !== 'confirmed' && validStatuses.includes(targetStatus)) {
-        try {
-          const { error: statusErr } = await state.supabase.
-          from('bookings').
-          update({ status: targetStatus, updated_at: new Date().toISOString() }).
-          eq('id', bookingId).
-          eq('lodge_id', state.lodgeId);
-          if (!statusErr) await refreshCache('bookings');
-        } catch {
-
-          // Non-fatal — booking and payment are already saved correctly
-        }}
+      if (targetStatus && !validStatuses.includes(targetStatus)) {
+        throw new Error(`Unsupported booking status: ${targetStatus}`);
+      }
+      const importKey = `import-${batchId}-row-${rowNum}`;
+      // Keep the entity identity stable alongside the idempotency key.  If a
+      // request times out after the server commits, the caller can safely
+      // retry the exact same payload without asking the RPC to generate a new
+      // booking UUID (which would change its request hash).
+      const importBookingId = randomUUID();
+      const { data: importedResult, error: importError } = await state.supabase.rpc('import_booking_row', {
+        p_lodge_id: state.lodgeId,
+        p_customer_id: customerId,
+        p_room_id: roomId,
+        p_check_in: row.check_in,
+        p_check_out: row.check_out,
+        p_adults: Number(row.adults) || 1,
+        p_children: Number(row.children) || 0,
+        p_total_amount: Number(row.total_amount) || 0,
+        p_invoice_number: row.invoice_number || null,
+        p_notes: row.notes || '',
+        p_created_by: state.currentUser?.id || null,
+        p_amount_paid: amountPaid,
+        p_payment_method: row.payment_method || 'cash',
+        p_target_status: targetStatus || 'confirmed',
+        p_booking_id: importBookingId,
+        p_idempotency_key: importKey
+      });
+      if (importError) throw new Error(importError.message);
+      if (!importedResult?.success) throw new Error(importedResult?.error || 'Imported booking row was rejected');
+      const bookingId = importedResult.booking_id;
 
       importedIds.push(bookingId);
       imported++;

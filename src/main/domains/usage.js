@@ -7,8 +7,8 @@ import {
   countMonthlyCreatedBookings,
   countMonthlyUsageBookings,
   evaluateBookingCreationAllowance,
+  getEffectiveUsageLimits,
   getNextSubscriptionPlan,
-  getPlanUsageLimits,
   getPlanRecommendation,
   normalizeSubscriptionPlan
 } from '../../shared/subscriptionPlans.js';
@@ -37,7 +37,7 @@ export {
 export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { monthDate = new Date(), creationMonthDate = new Date(), forceRemoteRefresh = false } = {}) {
   const entitlement = await getTrialStatus(targetLodgeId).catch(() => null);
   const plan = normalizeSubscriptionPlan(entitlement?.plan || 'Starter');
-  const limits = getPlanUsageLimits(plan);
+  const limits = getEffectiveUsageLimits(entitlement || {}, plan);
   if (!state.isOnline && !forceRemoteRefresh || !targetLodgeId) {
     const usage = getCachedEntityUsageCounts({ targetMonthDate: monthDate, creationMonthDate });
     return { ...buildUsageSummary(plan, limits, usage, 'cache'), lastUsageSyncAt: state.lastUsageSyncAt };

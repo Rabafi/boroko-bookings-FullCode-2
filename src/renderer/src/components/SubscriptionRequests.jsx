@@ -471,6 +471,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                     </p>
                   ) : (
                     <p className="text-[10px] leading-4 text-gray-500">
+                      {!selectedLicenseId && 'Select the client license to activate before continuing. '}
                       Activation applies the immutable approved quote to the selected license and enables only its package and add-on entitlements. The server records the operator and rejects unapproved or mismatched requests.
                     </p>
                   )}

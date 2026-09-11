@@ -166,7 +166,7 @@ function BackupResult({
   )
 }
 
-export default function StarterBackup() {
+export default function StarterBackup({ embedded = false }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [notice, setNotice] = useState('')
@@ -317,7 +317,7 @@ export default function StarterBackup() {
       if (next?.success === false) setNotice(hideSensitiveError(next.error || 'This action could not be completed.'))
       else if (next?.success) {
         onSuccess?.(next)
-        setNotice(next.rehearsalDirectory ? `Recovery test passed. No lodge data was changed. Report: ${next.rehearsalDirectory}` : successCopy)
+        setNotice(next.rehearsalDirectory ? `Recovery test passed. No property data was changed. Report: ${next.rehearsalDirectory}` : successCopy)
       }
     } catch (error) {
       setNotice(hideSensitiveError(error?.message || 'This action could not be completed.'))
@@ -336,7 +336,7 @@ export default function StarterBackup() {
     'The second backup copy was saved.',
     (next) => { setResult((current) => ({ ...current, ...next })); refreshHistory() }
   )
-  const rehearse = () => withBusy(() => window.api?.backup?.starterRestoreRehearsal?.({ destination: result?.destination, passphrase: result?.encrypted ? passphrase : '' }), 'Local recovery test passed. No lodge data was changed.')
+  const rehearse = () => withBusy(() => window.api?.backup?.starterRestoreRehearsal?.({ destination: result?.destination, passphrase: result?.encrypted ? passphrase : '' }), 'Local recovery test passed. No property data was changed.')
   const startNewBackup = () => {
     setResult(null)
     setNotice('')
@@ -357,16 +357,20 @@ export default function StarterBackup() {
     setNotice('Enter the backup passphrase, then select Check backup.')
   }
 
+  const shellClass = embedded ? 'space-y-5' : 'mx-auto max-w-4xl space-y-5 p-6'
+
   return (
-    <main className="mx-auto max-w-4xl space-y-5 p-6" data-testid="starter-backup">
-      <header>
-        <p className="text-xs font-bold uppercase tracking-[.18em] text-indigo-700">Starter backup</p>
-        <h1 className="mt-1 text-3xl font-bold text-slate-950">Back up your lodge data</h1>
-        <p className="mt-2 max-w-2xl text-sm text-slate-600">Save your rooms, guests, bookings, payments, quotations, settings, and maintenance records in one secure file.</p>
-      </header>
+    <section className={shellClass} data-testid="starter-backup" data-embedded={embedded ? 'true' : undefined}>
+      {!embedded && (
+        <header>
+          <p className="text-xs font-bold uppercase tracking-[.18em] text-indigo-700">Core Data Backup</p>
+          <h1 className="mt-1 text-3xl font-bold text-slate-950">Back up your property data</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-600">Save your rooms, guests, bookings, payments, quotations, settings, and maintenance records in one secure file.</p>
+        </header>
+      )}
 
       <section className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
-        <div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-indigo-700" /><div><h2 className="font-semibold text-indigo-950">Safe and read-only</h2><p className="mt-1 text-sm text-indigo-900">Creating, checking, or testing a backup never changes your live lodge data. Recovery is handled with support.</p></div></div>
+        <div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-indigo-700" /><div><h2 className="font-semibold text-indigo-950">Safe and read-only</h2><p className="mt-1 text-sm text-indigo-900">Creating, checking, or testing a backup never changes your live property data. Recovery is handled with support.</p></div></div>
       </section>
 
       <section className="grid gap-4 md:grid-cols-2">
@@ -470,7 +474,7 @@ export default function StarterBackup() {
         onStartNew={startNewBackup}
         busy={busy}
       />
-      <footer className="text-xs text-slate-500">This page creates and tests backup files only. It never restores or overwrites live lodge data.</footer>
-    </main>
+      <footer className="text-xs text-slate-500">This page creates and tests backup files only. It never restores or overwrites live property data.</footer>
+    </section>
   )
 }

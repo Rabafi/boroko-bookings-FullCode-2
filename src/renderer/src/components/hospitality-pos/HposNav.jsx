@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
+import { createPortal } from 'react-dom'
 import {
   Bell, Wifi, WifiOff, Clock, User, ChevronDown,
-  RefreshCw, Plus, LogOut, Settings, ShieldCheck, Database, Search, Rows3
+  RefreshCw, Plus, LogOut, Settings, ShieldCheck, Database, Search, Rows3,
+  BookOpen, ExternalLink, Download, Loader2, X
 } from 'lucide-react'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../../shared/uiVocabulary'
@@ -114,11 +116,129 @@ function TrialStatusIndicator({ trialStatus, onOpenSubscription }) {
   )
 }
 
-export default function HposNav({ settings, user, syncStatus, trialStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange }) {
+function HposBarGuidesPanel({ settings, onClose }) {
+  const [manifest, setManifest] = useState(null)
+  const [status, setStatus] = useState(null)
+  const [busy, setBusy] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        const result = await window.api?.barGuides?.getManifest?.()
+        if (!active) return
+        setManifest(result?.success ? result : null)
+        if (!result?.success) {
+          setStatus({ tone: 'error', text: result?.error || 'The guides are unavailable in this app build.' })
+        }
+      } catch (error) {
+        if (active) setStatus({ tone: 'error', text: error?.message || 'The guides are unavailable in this app build.' })
+      }
+    }
+    load()
+    return () => { active = false }
+  }, [])
+
+  const runGuideAction = async (documentId, action) => {
+    setBusy(action + ':' + documentId)
+    setStatus(null)
+    try {
+      const result = await window.api?.barGuides?.[action]?.(documentId)
+      if (result?.success) {
+        setStatus({
+          tone: 'success',
+          text: action === 'save' ? 'Guide saved successfully.' : 'Guide opened in your PDF viewer.'
+        })
+      } else if (!result?.canceled) {
+        setStatus({ tone: 'error', text: result?.error || 'The guide action could not be completed. Try Save PDF.' })
+      }
+    } catch (error) {
+      setStatus({ tone: 'error', text: error?.message || 'The guide action could not be completed. Try Save PDF.' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const documents = manifest?.documents || []
+  return (
+    <div
+      className="hpos-guides-backdrop"
+      role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1200,
+        display: 'grid',
+        placeItems: 'center',
+        padding: '24px',
+        background: 'rgba(31, 24, 28, .42)',
+        backdropFilter: 'blur(8px)'
+      }}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hpos-guides-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        style={{
+          width: 'min(620px, 100%)',
+          maxHeight: 'min(720px, calc(100vh - 48px))',
+          overflowY: 'auto',
+          padding: '24px',
+          border: '1px solid rgba(255,255,255,.72)',
+          borderRadius: '22px',
+          background: '#fffdf8',
+          boxShadow: '0 28px 90px rgba(31,24,28,.28)'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px' }}>
+          <div>
+            <p className="hpos-eyebrow">Offline reference</p>
+            <h2 id="hpos-guides-title" style={{ margin: '4px 0 6px', color: '#2f2830', fontSize: '24px', letterSpacing: '-.03em' }}>Help &amp; guides</h2>
+            <p style={{ margin: 0, color: '#756a70', fontSize: '12px', lineHeight: 1.55 }}>These guides are included with your app and are available offline.</p>
+            {manifest?.appVersion && <p style={{ margin: '8px 0 0', color: '#968a90', fontSize: '10px', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>App {manifest.appVersion} · reviewed {manifest.reviewDate}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close Help & guides" title="Close" style={{ display: 'grid', placeItems: 'center', width: '36px', height: '36px', flexShrink: 0, border: '1px solid #ded3d8', borderRadius: '11px', background: '#fff', color: '#6b5f66', cursor: 'pointer' }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: '10px', marginTop: '20px' }}>
+          {documents.map((document) => (
+            <article key={document.id} style={{ padding: '14px', border: '1px solid #e5dce0', borderRadius: '16px', background: '#fbf7f2' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+                <div>
+                  <h3 style={{ margin: 0, color: '#342b31', fontSize: '14px' }}>{document.label}</h3>
+                  {document.revision && <p style={{ margin: '4px 0 0', color: '#968a90', fontSize: '10px' }}>Revision {document.revision}</p>}
+                </div>
+                <BookOpen size={16} color="#39705d" aria-hidden="true" />
+              </div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                <button type="button" onClick={() => runGuideAction(document.id, 'open')} disabled={busy !== null} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', flex: 1, minHeight: '40px', border: 0, borderRadius: '11px', background: '#39705d', color: '#fff', fontSize: '12px', fontWeight: 800, cursor: 'pointer' }}>
+                  {busy === 'open:' + document.id ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+                  Open {document.id === 'bar-manual' ? 'manual' : 'quick-start'}
+                </button>
+                <button type="button" onClick={() => runGuideAction(document.id, 'save')} disabled={busy !== null} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px', flex: 1, minHeight: '40px', border: '1px solid #cfc2c8', borderRadius: '11px', background: '#fff', color: '#4b4047', fontSize: '12px', fontWeight: 800, cursor: 'pointer' }}>
+                  {busy === 'save:' + document.id ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  Save PDF
+                </button>
+              </div>
+            </article>
+          ))}
+          {!manifest && !status && <p style={{ margin: 0, color: '#756a70', fontSize: '12px' }}>Loading guide information…</p>}
+        </div>
+        {status && <p role="status" style={{ margin: '16px 0 0', padding: '11px 12px', border: '1px solid ' + (status.tone === 'error' ? '#e1aaa0' : '#b7d9c9'), borderRadius: '12px', background: status.tone === 'error' ? '#fff0eb' : '#edf8f2', color: status.tone === 'error' ? '#a94430' : '#39705d', fontSize: '12px', lineHeight: 1.45 }}>{status.text}</p>}
+      </section>
+    </div>
+  )
+}
+export default function HposNav({ settings, user, syncStatus, trialStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange, barOnly: barOnlyProp }) {
   const navigate = useNavigate()
   const [showProfile, setShowProfile] = useState(false)
+  const [showGuides, setShowGuides] = useState(false)
 
-  const barOnly = isBarOnlyMode(settings)
+  const barOnly = barOnlyProp ?? isBarOnlyMode(settings)
   const vocab = getUiVocabulary({ settings, propertyType: settings?.property_type || settings?.business_type })
   const workspaceName = settings?.lodge_name || settings?.company_name || vocab.nameFallback
   const workspaceType = barOnly ? 'Bar' : 'Restaurant & Bar'
@@ -289,6 +409,21 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                   onClick={onDensityChange}
                   style={{display:'flex',alignItems:'center',gap:'8px',width:'100%',padding:'9px 14px',border:'none',background:'transparent',color:'#24362c',fontSize:'12px',fontWeight:600,cursor:'pointer',textAlign:'left'}}
                 ><Rows3 size={14}/>{density === 'touch' ? 'Use compact density' : 'Use touch density'}</button>
+                {barOnly && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowProfile(false); setShowGuides(true) }}
+                    aria-haspopup="dialog"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                      padding: '9px 14px', border: 'none', background: 'transparent',
+                      color: '#24362c', fontSize: '12px', fontWeight: 700, cursor: 'pointer', textAlign: 'left'
+                    }}
+                  >
+                    <BookOpen size={14} />
+                    Help &amp; guides
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => goTo('/settings')}
@@ -360,6 +495,8 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
           )}
         </div>
       </div>
+
+      {showGuides && <HposBarGuidesPanel settings={settings} onClose={() => setShowGuides(false)} />}
 
       <style>{`
         @keyframes spin {

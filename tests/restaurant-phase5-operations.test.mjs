@@ -17,12 +17,16 @@ test('Phase 5: getActiveShifts function exists', () => {
   assert.match(posJs, /export async function getActiveShifts/)
 })
 
-test('Phase 5: clockInStaff rejects offline', () => {
-  assert.match(posJs, /Cannot clock in offline/)
+test('Phase 5: clockInStaff queues offline instead of rejecting', () => {
+  // Offline clock-in uses the trusted staff cache plus an idempotent queued
+  // replay op, explicitly marked provisional — never a silent local success.
+  assert.match(posJs, /clock_in_staff_offline/)
+  assert.match(posJs, /provisional: true/)
+  assert.match(posJs, /idempotency_key: resolvedKey/)
 })
 
-test('Phase 5: clockOutStaff rejects offline', () => {
-  assert.match(posJs, /Cannot clock out offline/)
+test('Phase 5: clockOutStaff queues offline instead of rejecting', () => {
+  assert.match(posJs, /clock_out_staff_offline|_pending_sync: true/)
 })
 
 test('Phase 5: clockInStaff uses clock_in_staff RPC', () => {
@@ -173,8 +177,11 @@ test('Phase 5: resolveExceptionAlert rejects offline', () => {
   assert.match(posJs, /Cannot resolve alert offline/)
 })
 
-test('Phase 5: getActiveAlerts uses get_active_alerts RPC', () => {
-  assert.match(posJs, /get_active_alerts/)
+test('Phase 5: getActiveAlerts uses the authorised alert-history RPC', () => {
+  // Active-only view of the same authorised history read (resolved excluded
+  // server-side), not a separate unscoped RPC.
+  assert.match(posJs, /get_restaurant_alert_history/)
+  assert.match(posJs, /p_include_resolved: false/)
 })
 
 // ── Owner Digest ────────────────────────────────────────────

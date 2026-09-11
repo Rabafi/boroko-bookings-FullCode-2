@@ -380,6 +380,17 @@ test('Bar stock counts refuse to derive audited adjustments from cached quantiti
   assert.match(stock, /cached quantity cannot be used to calculate an audited adjustment/)
 })
 
+test('rejected menu availability changes do not mutate the local sold-out state', async () => {
+  const menu = await read('src/renderer/src/components/hospitality-pos/HposMenu.jsx')
+  const toggle = menu.match(/const toggleAvailability = async \(item\) => \{[\s\S]*?\n  \};/)?.[0] || ''
+  assert.match(toggle, /const result = await window\.api\.pos\.updateMenuItem/)
+  assert.match(toggle, /if \(!result\?\.success\) \{[\s\S]*?throw new Error/)
+  assert.ok(
+    toggle.indexOf('if (!result?.success)') < toggle.indexOf('setItems((current)'),
+    'local availability may change only after authoritative success'
+  )
+})
+
 test('stock-cost reports and exports require explicit spend finality and recorded line totals', async () => {
   const reports = await read('src/renderer/src/components/Reports.jsx')
   const main = await read('src/main/index.js')
@@ -486,7 +497,7 @@ test('recipe variance and preparation-loss pages do not turn failed RPC reads in
   assert.match(variance, /Variance evidence is unavailable until the server confirms complete report sources/)
   assert.match(variance, /sourceComplete \? `P \$\{totalVarianceValue\.toFixed\(2\)\}` : 'Unavailable'/)
   assert.doesNotMatch(variance, /Number\(loss\.preparation_loss_cost\) \|\| 0\)\.toFixed/)
-  assert.match(pos, /p_outlet_id: outletId \|\| null\n    \}\)/)
+  assert.match(pos, /p_outlet_id: outletId \|\| null\r?\n    \}\)/)
   assert.doesNotMatch(pos, /p_include_reservation_waitlist: includeReservationWaitlist/)
 })
 

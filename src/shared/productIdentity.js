@@ -71,7 +71,6 @@ const ACCOMMODATION_OPS = Object.freeze([
   'checkin-workflow',
   'early-late-checkout',
   'cancellation-policies',
-  'documents',
   'payment-links',
   'booking-engine',
   'night-audit-enterprise',
@@ -79,6 +78,11 @@ const ACCOMMODATION_OPS = Object.freeze([
   'subscription-builder',
   'custom-website'
 ])
+
+// Hotel Core owns the unfinished document-template surface. Keep it out of
+// the Lodge/POS route contracts even though the shared bundle still contains
+// the implementation for the separately distributed HotelOS product.
+const HOTEL_ONLY_OPS = Object.freeze(['documents'])
 
 const RESTAURANT_OPS = Object.freeze([
   'pos',
@@ -147,7 +151,7 @@ export const PRODUCT_DEFINITIONS = Object.freeze({
       gradient: 'from-[#f0ebe4] via-[#f7f3ed] to-[#e6dfd5]'
     }),
     // Hotel keeps accommodation + enterprise; pure restaurant HPOS shell is POS product only.
-    allowedRoutePrefixes: freezeRoutes(CORE_PREAUTH, CORE_SHARED, ACCOMMODATION_OPS),
+    allowedRoutePrefixes: freezeRoutes(CORE_PREAUTH, CORE_SHARED, ACCOMMODATION_OPS, HOTEL_ONLY_OPS),
     defaultHome: '/',
     releaseRepo: 'boroko-hotel-releases'
   }),

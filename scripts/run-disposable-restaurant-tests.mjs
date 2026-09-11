@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { childProcessExitCode } from './test-run-result.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const disposableFlag = process.env.RESTAURANT_ACCOUNTING_DISPOSABLE_DB
@@ -57,14 +58,14 @@ try {
   const start = runSupabase(['start'])
   if (start.status !== 0) {
     console.error('Supabase could not start. This is a hard no-ship result for the restaurant behavioral gate.')
-    process.exitCode = start.status || 1
+    process.exitCode = childProcessExitCode(start)
   } else {
     started = true
     console.log('Resetting the disposable database and applying all ordered migrations...')
     const reset = runSupabase(['db', 'reset', '--local', '--yes'])
     if (reset.status !== 0) {
       console.error('Supabase database reset/migration application failed.')
-      process.exitCode = reset.status || 1
+      process.exitCode = childProcessExitCode(reset)
     } else {
       const env = {
         ...process.env,
@@ -77,8 +78,8 @@ try {
         stdio: 'inherit',
         shell: false
       })
-      exitCode = tests.status || 1
-      process.exitCode = tests.status || 1
+      exitCode = childProcessExitCode(tests)
+      process.exitCode = exitCode
     }
   }
 } catch (error) {
@@ -89,7 +90,7 @@ try {
     console.log('Stopping the disposable local Supabase stack...')
     try {
       const stop = runSupabase(['stop', '--no-backup'])
-      if (stop.status !== 0 && process.exitCode === 0) process.exitCode = stop.status || 1
+      if (stop.status !== 0 && process.exitCode === 0) process.exitCode = childProcessExitCode(stop)
     } catch (error) {
       console.error(error?.message || error)
       if (process.exitCode === 0) process.exitCode = 1

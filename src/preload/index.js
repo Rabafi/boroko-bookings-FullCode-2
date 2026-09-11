@@ -228,6 +228,30 @@ const api = {
     forecast: (days) => invoke('dashboard:forecast', days),
     bookingPaymentsToday: () => invoke('dashboard:bookingPaymentsToday')
   },
+  fnb: {
+    getModulePreferences: () => invoke('fnb:getModulePreferences'),
+    getCachedModulePreferences: () => invoke('fnb:getCachedModulePreferences'),
+    setModulePreference: (moduleKey, enabled, expectedVersion) => invoke('fnb:setModulePreference', moduleKey, enabled, expectedVersion),
+    getToday: (outletId) => invoke('fnb:getToday', outletId),
+    getConsolidatedReport: (start, end, outletId) => invoke('fnb:getConsolidatedReport', start, end, outletId),
+    createRoomServiceOrder: (payload, operationId) => invoke('fnb:createRoomServiceOrder', payload, operationId),
+    updateRoomServiceStatus: (orderId, toStatus, payload, operationId) => invoke('fnb:updateRoomServiceStatus', orderId, toStatus, payload, operationId),
+    getRoomServiceQueue: (outletId, includeClosed) => invoke('fnb:getRoomServiceQueue', outletId, includeClosed),
+    createMealEntitlement: (payload, operationId) => invoke('fnb:createMealEntitlement', payload, operationId),
+    redeemMeal: (entitlementId, payload, operationId) => invoke('fnb:redeemMeal', entitlementId, payload, operationId),
+    getMealEntitlements: (includeDepleted) => invoke('fnb:getMealEntitlements', includeDepleted),
+    createTemperatureLog: (payload, operationId) => invoke('fnb:createTemperatureLog', payload, operationId),
+    closeCorrectiveAction: (actionId, closeNote, operationId) => invoke('fnb:closeCorrectiveAction', actionId, closeNote, operationId),
+    getFoodSafetyTemplates: () => invoke('fnb:getFoodSafetyTemplates'),
+    getCorrectiveQueue: (includeClosed) => invoke('fnb:getCorrectiveQueue', includeClosed),
+    createFoodSafetyTemplate: (payload, operationId) => invoke('fnb:createFoodSafetyTemplate', payload, operationId),
+    captureSupplierInvoice: (payload, operationId) => invoke('fnb:captureSupplierInvoice', payload, operationId),
+    approveInvoiceMatch: (invoiceId, approve, note, operationId) => invoke('fnb:approveInvoiceMatch', invoiceId, approve, note, operationId),
+    handoffInvoiceToAccounting: (invoiceId, operationId) => invoke('fnb:handoffInvoiceToAccounting', invoiceId, operationId),
+    getSupplierInvoices: () => invoke('fnb:getSupplierInvoices'),
+    getDemandRecommendations: (date, outletId) => invoke('fnb:getDemandRecommendations', date, outletId),
+    approveDemandRecommendation: (recommendationKey, action, payload, operationId) => invoke('fnb:approveDemandRecommendation', recommendationKey, action, payload, operationId)
+  },
   requests: {
     getAll: (limit) => invoke('requests:getAll', limit),
     update: (id, updates) => invoke('requests:update', id, updates),
@@ -240,6 +264,11 @@ const api = {
   },
   shell: {
     openExternal: (url) => invoke('shell:openExternal', url)
+  },
+  barGuides: {
+    getManifest: () => invoke('barGuides:getManifest'),
+    open: (documentId) => invoke('barGuides:open', documentId),
+    save: (documentId) => invoke('barGuides:save', documentId)
   },
   window: {
     repairInputFocus: (reason) => invoke('window:repairInputFocus', reason),
@@ -304,6 +333,7 @@ const api = {
   },
   settings: {
     get: () => invoke('settings:get'),
+    getOutletContext: () => invoke('settings:getOutletContext'),
     save: (data) => invoke('settings:save', data),
     updateOperatingProfile: (profile) => invoke('settings:updateOperatingProfile', profile),
     getDiagnostics: (expectedLodgeId) => invoke('settings:getDiagnostics', expectedLodgeId),
@@ -346,9 +376,11 @@ const api = {
     }
   },
   trial: {
-    getStatus: (lodgeId) => invoke('trial:getStatus', lodgeId),
+    getStatus: (lodgeId, options) => invoke('trial:getStatus', lodgeId, options),
     activateKey: (lodgeId, key) => invoke('trial:activateKey', lodgeId, key),
-    getInvoices: (lodgeId) => invoke('trial:getInvoices', lodgeId)
+    getInvoices: (lodgeId) => invoke('trial:getInvoices', lodgeId),
+    getCommercialInvoices: (lodgeId, options) => invoke('trial:getCommercialInvoices', lodgeId, options),
+    getCommercialBillingHistory: (lodgeId, productId) => invoke('trial:getCommercialInvoices', lodgeId, { productId })
   },
   usage: {
     getSnapshot: (options) => invoke('usage:getSnapshot', options)
@@ -375,6 +407,12 @@ const api = {
     deleteMenuItem: (id) => invoke('pos:deleteMenuItem', id),
     setBarPackTemplate: (data) => invoke('pos:setBarPackTemplate', data),
     saveBarProductWithPacks: (data) => invoke('pos:saveBarProductWithPacks', data),
+    saveBarProductWithStock: (data) => invoke('pos:saveBarProductWithStock', data),
+    retryProductRequest: (operationKey) => invoke('pos:retryProductRequest', operationKey),
+    discardProductRequest: (operationKey) => invoke('pos:discardProductRequest', operationKey),
+    getProductRequestStatus: () => invoke('pos:getProductRequestStatus'),
+    getMenuStockReadiness: () => invoke('pos:getMenuStockReadiness'),
+    processPendingPublications: (outletIds) => invoke('catalog:processPendingPublications', outletIds),
     getOrders: (start, end) => invoke('pos:getOrders', start, end),
     getCertifiedReportHistory: (start, end) => invoke('pos:getCertifiedReportHistory', start, end),
     getMyOrders: (start, end) => invoke('pos:getMyOrders', start, end),
@@ -650,6 +688,11 @@ const api = {
     getLodgeFeatures: (lodgeId) => invoke('admin:getLodgeFeatures', lodgeId),
     setLodgeFeature: (lodgeId, name, enabled, metadata) => invoke('admin:setLodgeFeature', lodgeId, name, enabled, metadata),
     clearLodgeFeature: (lodgeId, name) => invoke('admin:clearLodgeFeature', lodgeId, name),
+    getCommercialEntitlementOverrides: (lodgeId, productId) => invoke('admin:getCommercialEntitlementOverrides', lodgeId, productId),
+    getCommercialTransitionPreview: (lodgeId, productId, targetPackageKey, referenceDate) => invoke('admin:getCommercialTransitionPreview', lodgeId, productId, targetPackageKey, referenceDate),
+    setCommercialEntitlementOverride: (payload) => invoke('admin:setCommercialEntitlementOverride', payload),
+    revokeCommercialEntitlementOverride: (payload) => invoke('admin:revokeCommercialEntitlementOverride', payload),
+    applyCommercialUserRemediation: (payload) => invoke('admin:applyCommercialUserRemediation', payload),
     getAllLodgeFeatures: () => invoke('admin:getAllLodgeFeatures'),
     getTestDataResetPreview: (lodgeId, payload) => invoke('admin:getTestDataResetPreview', lodgeId, payload),
     runTestDataReset: (lodgeId, payload) => invoke('admin:runTestDataReset', lodgeId, payload),

@@ -18,6 +18,7 @@ import {
   Wine,
   ChefHat,
   ArrowUpRight,
+  ArrowDown,
   LayoutDashboard,
   ClipboardList,
   CheckCircle2,
@@ -29,6 +30,7 @@ import {
   PiggyBank,
   Scale,
   Coins,
+  RefreshCw,
 } from 'lucide-react';
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
@@ -244,6 +246,23 @@ export default function HposManageHub() {
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
   const canManagePos = canAccessCapability(access, 'pos.manage');
+  const refreshEntitlement = access?.refreshEntitlement;
+  const [accessRefreshing, setAccessRefreshing] = useState(false);
+  const [accessRefreshError, setAccessRefreshError] = useState('');
+  const refreshAccess = useCallback(async () => {
+    if (!refreshEntitlement) return;
+    setAccessRefreshing(true);
+    setAccessRefreshError('');
+    try {
+      const result = await refreshEntitlement({ forceFresh: true });
+      if (!result) throw new Error('Access could not be refreshed. Reconnect and try again.');
+    } catch (error) {
+      setAccessRefreshError(error?.message || 'Access could not be refreshed. Reconnect and try again.');
+    } finally {
+      setAccessRefreshing(false);
+    }
+  }, [refreshEntitlement]);
+  useEffect(() => { refreshAccess(); }, [refreshAccess]);
   const [dailyOpening, setDailyOpening] = useState(null);
   const [dailyLoading, setDailyLoading] = useState(canManagePos);
   const [setupComplete, setSetupComplete] = useState(false);
@@ -261,6 +280,8 @@ export default function HposManageHub() {
     })),
     [activeAddonKeys],
   );
+  const allBarAddonsEnabled = barAddonSummary.length > 0 && barAddonSummary.every((addon) => addon.enabled);
+  const showBarPackageGuide = barOnly && canManagePos && !allBarAddonsEnabled;
   const items = useMemo(
     () =>
       getHposMoreItems(barOnly).filter((item) => {
@@ -271,6 +292,8 @@ export default function HposManageHub() {
           access?.entitlement?.commercial_package_key,
           item.feature,
           access?.entitlement?.enterprise_addons || [],
+          access?.entitlement,
+          access?.entitlement?.lodge_id || null
         );
       }),
     [access, barOnly],
@@ -340,9 +363,28 @@ export default function HposManageHub() {
           <p>Manager workspace</p>
           <h1>Run the {barOnly ? 'bar' : 'restaurant'} beyond the till</h1>
           <span>Open the right control desk quickly. Tools remain filtered by your role and package.</span>
+          {showBarPackageGuide && (
+            <button
+              type="button"
+              className="hpos-manage-guide-teaser"
+              onClick={() => document.getElementById('bar-package-guide')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >
+              Need purchases &amp; P&amp;L? See add-ons below <ArrowDown size={12} />
+            </button>
+          )}
         </div>
         <div className="hpos-manage-heading-stat"><LayoutDashboard size={20} /><span><strong>{items.length}</strong> available workspaces</span></div>
       </header>
+
+      {refreshEntitlement && (
+        <div className="hpos-manage-readiness">
+          <button type="button" onClick={refreshAccess} disabled={accessRefreshing}>
+            <RefreshCw size={16} /> {accessRefreshing ? 'Refreshing access…' : 'Refresh package access'}
+          </button>
+          <small>After a Command Central change, refresh to update your available workspaces.</small>
+          {accessRefreshError && <span role="alert">{accessRefreshError}</span>}
+        </div>
+      )}
 
       {canManagePos && !dailyLoading && (setupComplete ? (
         <section className="hpos-manage-readiness is-ready" aria-label="Setup completion">
@@ -358,40 +400,6 @@ export default function HposManageHub() {
           <span>{dailyOpening?.status === 'completed' ? <CheckCircle2 size={20} /> : <ClipboardList size={20} />}</span>
           <div><strong>{dailyOpening?.status === 'completed' ? 'Today’s opening checklist is complete' : dailyOpening ? 'Today’s opening checklist needs attention' : 'Today’s opening checklist has not been started'}</strong><small>{dailyOpening?.status === 'completed' ? 'Daily service readiness is recorded for this venue.' : 'Open the control board before service starts to create or finish the opening routine.'}</small></div>
           <button type="button" onClick={() => navigate('/hpos/control')}>{dailyOpening?.status === 'completed' ? 'Review' : 'Open checks'}</button>
-        </section>
-      )}
-
-      {barOnly && canManagePos && (
-        <section className="hpos-bar-package-guide" aria-labelledby="bar-package-guide-title">
-          <div className="hpos-bar-package-guide__heading">
-            <div>
-              <p>Plan your next control</p>
-              <h2 id="bar-package-guide-title">Turn sales and stock into a fuller financial picture</h2>
-              <span>Bar POS records sales, simple deliveries and physical counts. It does not create supplier bills, purchase history, cost-of-sales reporting or a profit-and-loss statement on its own.</span>
-            </div>
-            <button type="button" className="hpos-bar-package-guide__review" onClick={() => navigate('/settings?tab=license')}>
-              Review package <ArrowUpRight size={16} />
-            </button>
-          </div>
-
-          <div className="hpos-bar-package-guide__path">
-            <CheckCircle2 size={17} />
-            <span><strong>To see purchases and P&amp;L:</strong> choose <strong>Stock &amp; Purchasing Pro</strong> and <strong>Accounting &amp; Workforce</strong> together. Package changes remain governed; reviewing this page does not change access.</span>
-          </div>
-
-          <div className="hpos-bar-package-guide__cards">
-            {barAddonSummary.map((addon) => (
-              <article key={addon.addonKey} className={addon.enabled ? 'is-enabled' : ''}>
-                <div className="hpos-bar-package-guide__card-topline">
-                  <span>{addon.eyebrow}</span>
-                  <em>{addon.enabled ? 'Enabled' : 'Optional add-on'}</em>
-                </div>
-                <h3>{addon.displayName}</h3>
-                <p>{addon.summary}</p>
-                <strong>{formatCommercialMoney(addon.annualPriceBwp)}/year</strong>
-              </article>
-            ))}
-          </div>
         </section>
       )}
 
@@ -424,6 +432,47 @@ export default function HposManageHub() {
           </div>
         </section>
       ))}
+
+      {showBarPackageGuide && (
+        <section className="hpos-bar-package-guide" aria-labelledby="bar-package-guide-title" id="bar-package-guide">
+          <div className="hpos-bar-package-guide__heading">
+            <div>
+              <p>Plan your next control</p>
+              <h2 id="bar-package-guide-title">Turn sales and stock into a fuller financial picture</h2>
+              <span>Bar POS records sales, simple deliveries and physical counts. It does not create supplier bills, purchase history, cost-of-sales reporting or a profit-and-loss statement on its own.</span>
+            </div>
+            <button type="button" className="hpos-bar-package-guide__review" onClick={() => navigate('/settings?tab=license')}>
+              Review package <ArrowUpRight size={16} />
+            </button>
+          </div>
+
+          <div className="hpos-bar-package-guide__path">
+            <CheckCircle2 size={17} />
+            <span><strong>To see purchases and P&amp;L:</strong> choose <strong>Stock &amp; Purchasing Pro</strong> and <strong>Accounting &amp; Workforce</strong> together. Package changes remain governed; reviewing this page does not change access.</span>
+          </div>
+
+          <div className="hpos-bar-package-guide__cards">
+            {barAddonSummary.map((addon) => (
+              <article key={addon.addonKey} className={addon.enabled ? 'is-enabled' : ''}>
+                <div className="hpos-bar-package-guide__card-topline">
+                  <span>{addon.eyebrow}</span>
+                  <em>{addon.enabled ? 'Enabled' : 'Optional add-on'}</em>
+                </div>
+                <h3>{addon.displayName}</h3>
+                <p>{addon.summary}</p>
+                <strong>{formatCommercialMoney(addon.annualPriceBwp)}/year</strong>
+                <button
+                  type="button"
+                  className="hpos-bar-package-guide__card-cta"
+                  onClick={() => navigate(`/settings?tab=license&feature=${encodeURIComponent(addon.addonKey)}`)}
+                >
+                  {addon.enabled ? 'View in Subscription' : 'Request this add-on'} <ArrowUpRight size={13} />
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {items.length === 0 && (
         <div className="hpos-manage-empty">

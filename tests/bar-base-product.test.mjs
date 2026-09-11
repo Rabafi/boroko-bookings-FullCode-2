@@ -96,6 +96,16 @@ test('Bar Manage explains the financial boundary of Basic and the add-ons needed
   assert.match(manageHub, /To see purchases and P&amp;L/)
   assert.match(manageHub, /navigate\('\/settings\?tab=license'\)/)
   assert.match(manageHub, /formatCommercialMoney\(addon\.annualPriceBwp\)/)
+  const groupsIndex = manageHub.indexOf('{groups.map((group)')
+  const guideIndex = manageHub.indexOf('hpos-bar-package-guide')
+  assert.ok(groupsIndex !== -1 && guideIndex !== -1 && groupsIndex < guideIndex, 'Plan-your-next-control guide must render after Manage groups so workspaces stay above the fold')
+  assert.match(manageHub, /allBarAddonsEnabled/)
+  assert.match(manageHub, /showBarPackageGuide/)
+  assert.match(manageHub, /hpos-manage-guide-teaser/)
+  assert.match(manageHub, /scrollIntoView/)
+  assert.match(manageHub, /tab=license&feature=/)
+  assert.match(manageHub, /Request this add-on/)
+  assert.match(manageHub, /View in Subscription/)
 })
 
 test('bar setup and products stay focused on a fourteen-stage drinks-and-simple-food launch', () => {

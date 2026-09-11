@@ -210,7 +210,14 @@ export function getOfflineQueue(lodgeId) {
 
 export function setOfflineQueue(lodgeId, items) {
   const normalized = deduplicateQueueItems(items)
-  writeLocalJson(scoped(QUEUE_PREFIX, lodgeId, 'items'), normalized)
+  // Queue state is recoverable operational work.  A best-effort localStorage
+  // write can make a failed/blocked operation disappear after a flush, so use
+  // the verified write-ahead path for every queue mutation (not only support).
+  writeLocalJsonVerified(scoped(QUEUE_PREFIX, lodgeId, 'items'), normalized)
+  const stored = readLocalJsonVerified(scoped(QUEUE_PREFIX, lodgeId, 'items'))
+  if (!Array.isArray(stored) || JSON.stringify(stored) !== JSON.stringify(normalized)) {
+    throw new Error('Offline work could not be durably persisted for recovery.')
+  }
   emit('boroko:pwa-queue', { lodgeId, count: normalized.length })
   return normalized
 }

@@ -153,7 +153,9 @@ test('every preload ipcRenderer.invoke channel has a matching ipcMain.handle', (
 
   // Extract invoke channel names from preload
   const invokeChannels = new Set()
-  const invokeRegex = /ipcRenderer\.invoke\('([^']+)'/g
+  // Preload routes calls through the local invoke() wrapper so every call can
+  // share the same error handling; retain support for direct calls too.
+  const invokeRegex = /(?:ipcRenderer\.)?invoke\('([^']+)'/g
   let match
   while ((match = invokeRegex.exec(preload)) !== null) {
     invokeChannels.add(match[1])

@@ -114,6 +114,8 @@ export default function HposLayout() {
     access?.entitlement?.product_id || 'hospitality-pos',
     access?.entitlement?.commercial_package_key,
     access?.entitlement?.enterprise_addons || [],
+    access?.entitlement,
+    access?.entitlement?.lodge_id || null
   )], [access?.entitlement]);
   const { user, logout } = useAuth();
   const [syncStatus, setSyncStatus] = useState({
@@ -145,24 +147,40 @@ export default function HposLayout() {
   }, [density]);
 
   useEffect(() => {
+    // Open Tabs owns the fresh tab rows on /hpos/checks (mount + 15s quiet
+    // poll + visibility refetch). A second layout-level getTabs(active) on the
+    // same cadence doubles the financial-truth RPC cost exactly when the tab
+    // list is largest, so the layout skips its tabs fetch there and keeps the
+    // last-known badge count. Kitchen tickets still poll (bar-only
+    // short-circuits to []), and leaving the page repolls immediately via the
+    // pathname dependency below.
+    const onChecksPage =
+      location.pathname === '/hpos/checks' ||
+      location.pathname.startsWith('/hpos/checks/');
     let active = true;
     const poll = async () => {
       if (document.visibilityState === 'hidden') return;
       const [tabsResult, ticketsResult] = await Promise.allSettled([
-        window.api?.pos?.getTabs?.({ status: 'active' }) || [],
+        onChecksPage
+          ? Promise.resolve(null)
+          : window.api?.pos?.getTabs?.({ status: 'active' }) || [],
         barOnly
           ? Promise.resolve([])
           : window.api?.pos?.getTickets?.({ status: 'active' }) || [],
       ]);
       if (!active) return;
-      const tabs =
-        tabsResult.status === 'fulfilled' && Array.isArray(tabsResult.value)
-          ? tabsResult.value
-          : [];
       const tickets =
         ticketsResult.status === 'fulfilled' &&
         Array.isArray(ticketsResult.value)
           ? ticketsResult.value
+          : [];
+      if (onChecksPage) {
+        setLiveCounts((previous) => ({ ...previous, kitchen: tickets.length }));
+        return;
+      }
+      const tabs =
+        tabsResult.status === 'fulfilled' && Array.isArray(tabsResult.value)
+          ? tabsResult.value
           : [];
       setLiveCounts({
         checks: tabs.filter(
@@ -185,7 +203,7 @@ export default function HposLayout() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisible);
     };
-  }, [barOnly]);
+  }, [barOnly, location.pathname]);
 
   // Electron can retain stale hit-test rectangles after a route is lazy-loaded.
   // Force a settled layout on navigation instead of requiring a manual resize.
@@ -328,7 +346,7 @@ export default function HposLayout() {
           keywords: 'export excel pdf performance',
         },
         canAccessCapability(access, 'expenses.view') && {
-          route: '/restaurant/finance-close?tab=expenses',
+          route: barOnly ? '/hpos/expenses' : '/restaurant/finance-close?tab=expenses',
           label: 'Record or review expenses',
           group: 'Money',
           keywords: 'spend cost export',
@@ -358,6 +376,7 @@ export default function HposLayout() {
         user={user}
         syncStatus={syncStatus}
         trialStatus={access?.entitlement}
+        barOnly={barOnly}
         isPosRoute={isPosRoute}
         onClockIn={startOrder}
         onLogout={logout}
@@ -432,7 +451,11 @@ export default function HposLayout() {
         <main
           id="hpos-main"
           tabIndex="-1"
-          className={`hpos-app-main ${isPosRoute ? 'is-pos' : ''}`}
+          // Only the live Till keeps a locked viewport (overflow hidden with its
+          // own internal scroll areas). Review pages such as /hpos/cash must keep
+          // the default scrollable main, otherwise long cash-up queues and the
+          // manager decision form below the fold can never be reached.
+          className={`hpos-app-main ${isTillRoute ? 'is-pos' : ''}`}
         >
           {!isTillRoute && (
             <nav className="hpos-history-nav" aria-label="Page history">

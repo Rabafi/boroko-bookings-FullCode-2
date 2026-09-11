@@ -279,6 +279,23 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
                   ))}
                 </div>
               )}
+              {/* Cash tendering aids: display-only, recorded at sale time on
+                  this terminal. Absent values render nothing and are never
+                  back-filled from the allocation. */}
+              {order?.cash_received != null && Number.isFinite(Number(order.cash_received)) && (
+                <div className="border-t border-slate-100 pt-3">
+                  <div className="flex justify-between text-xs font-semibold text-slate-600">
+                    <span>Cash received</span>
+                    <span>{currency} {Number(order.cash_received).toFixed(2)}</span>
+                  </div>
+                  {order?.change_due != null && Number.isFinite(Number(order.change_due)) && (
+                    <div className="flex justify-between text-xs font-black text-slate-800">
+                      <span>Change</span>
+                      <span>{currency} {Number(order.change_due).toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Footer */}

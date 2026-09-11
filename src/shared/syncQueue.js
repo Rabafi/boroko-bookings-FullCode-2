@@ -1,9 +1,13 @@
 export const FINANCIAL_SYNC_TABLES = new Set([
   'create_booking',
+  'create_campsite_booking',
+  'create_multi_room_booking',
   'create_booking_invoice_group',
   'create_booking_record',
   'reschedule_booking',
+  'reschedule_accommodation_booking',
   'update_booking',
+  'update_campsite_booking',
   'update_booking_status',
   'update_booking_payment',
   'convert_quotation_to_booking',
@@ -72,7 +76,14 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'resolve_maintenance_ticket',
   'add_pool_day_use',
   'update_pool_day_use',
-  'delete_pool_day_use'
+  'delete_pool_day_use',
+  // F&B progressive activation: offline-eligible creates that move money or
+  // stock must surface in sync-risk reporting like any other financial item.
+  'create_fnb_room_service_order',
+  'create_fnb_meal_entitlement',
+  'redeem_fnb_meal',
+  'create_fnb_temperature_log',
+  'capture_fnb_supplier_invoice'
 ])
 
 export function pickNextReadySyncItemIndex(

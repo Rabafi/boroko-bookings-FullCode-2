@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildPosTotals } from '../src/shared/totals.js';
-import { normalizePaymentBreakdown, validateProviderPaymentReferences, buildCreatePosOrderPayload, buildVoidPayload, buildCashupPayload } from '../src/shared/payloads.js';
+import { normalizePaymentBreakdown, validateProviderPaymentReferences, buildCreatePosOrderPayload, buildCreatePosOrderPayloadV3, buildVoidPayload, buildCashupPayload } from '../src/shared/payloads.js';
 import { createQueueItem, isQueueItemReady, markItemSyncing, markItemSynced, markItemFailed, isNetworkError, isBusinessError } from '../src/shared/offlineQueue.js';
 import { sanitizePosError } from '../src/shared/errors.js';
 import { normalizePosHardwareSettings } from '../src/shared/hardwareSettings.js';
@@ -1283,6 +1283,25 @@ test('provider payment references are required before Legacy POS queueing', () =
   );
   assert.doesNotThrow(() => validateProviderPaymentReferences([{ method: 'card', amount: 20, reference: 'AUTH-123' }], 'card'));
   assert.doesNotThrow(() => validateProviderPaymentReferences([{ method: 'cash', amount: 20, reference: null }], 'cash'));
+});
+
+test('legacy v3 orders never opt into server tab name resolution', () => {
+  // create_pos_order_v3 only resolve-or-creates tabs for callers that send
+  // resolve_tab. Legacy payloads must not set it, so legacy table sales
+  // keep their existing no-tab-minting behavior under atomic settlement.
+  const payload = buildCreatePosOrderPayloadV3({
+    lodge_id: '00000000-0000-0000-0000-000000000000',
+    catalog_snapshot_id: '00000000-0000-0000-0000-000000000001',
+    shift_id: '00000000-0000-0000-0000-000000000002',
+    outlet_id: '00000000-0000-0000-0000-000000000003',
+    table_name: 'T9',
+    tab_name: 'T9',
+    payment_method: 'cash',
+    items: [{ menu_item_id: null, item_name: 'Coffee', quantity: 1, unit_price: 25 }],
+  });
+  assert.ok(!('resolve_tab' in payload), 'Legacy v3 payload must not carry resolve_tab');
+  assert.ok(!('expected_tab_version' in payload), 'Legacy v3 payload must not carry expected_tab_version');
+  assert.ok(!('tab_id' in payload), 'Legacy v3 payload must not carry tab_id');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

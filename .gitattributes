@@ -1,0 +1,7 @@
+# Newline policy: SQL migration bytes must check out as LF so anchored
+# multiline matchers (dollar-quoted $old$ blocks compared against
+# pg_get_functiondef output) see the same convention as stored definitions.
+# This affects FUTURE checkouts only: it does not rewrite existing worktree
+# files, restage anything, or repair already-installed function bodies.
+# Existing CRLF worktree files keep their bytes until re-checked-out.
+supabase/migrations/*.sql text eol=lf

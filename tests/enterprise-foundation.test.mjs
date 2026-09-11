@@ -622,7 +622,7 @@ test('getDesktopNavItems lodge + Pro returns accommodation nav with Pro features
   assert.ok(labels.includes('Rooms'), 'should include Rooms')
   assert.ok(labels.includes('POS'), 'should include POS on Pro')
   assert.ok(labels.includes('Inventory'), 'should include Inventory on Pro')
-  assert.ok(labels.includes('Staff'), 'should include Staff on Pro')
+  assert.ok(labels.includes('Users & Access'), 'should include Users & Access on Pro')
   assert.ok(!labels.includes('Hotel Dashboard'), 'should NOT include Hotel Dashboard')
 })
 
@@ -680,7 +680,7 @@ test('getDesktopNavItems restaurant + Pro returns restaurant-focused nav', () =>
   assert.ok(labels.includes('Dashboard'), 'should include Dashboard')
   assert.ok(labels.includes('POS'), 'should include POS')
   assert.ok(labels.includes('Expenses'), 'should include Expenses')
-  assert.ok(labels.includes('Staff'), 'should include Staff')
+  assert.ok(labels.includes('Users & Access'), 'should include Users & Access')
   assert.ok(labels.includes('Reports'), 'should include Reports')
   assert.ok(labels.includes('Settings'), 'should include Settings')
   assert.ok(!labels.includes('Bookings'), 'should NOT include Bookings')
@@ -733,7 +733,7 @@ test('getDesktopNavItems hotel + Pro with realistic access shows locked Hotel up
   const unlockedLabels = unlockedItems.map(i => i.label)
   assert.ok(unlockedLabels.includes('POS'), 'POS should be unlocked on Pro')
   assert.ok(unlockedLabels.includes('Inventory'), 'Inventory should be unlocked on Pro')
-  assert.ok(unlockedLabels.includes('Staff'), 'Staff should be unlocked on Pro')
+  assert.ok(unlockedLabels.includes('Users & Access'), 'Users & Access should be unlocked on Pro')
 })
 
 test('getDesktopNavItems hotel + Enterprise with realistic access shows Hotel items (locked or visible)', () => {
@@ -1849,7 +1849,7 @@ test('subscription package builder submits dedicated requests via subscriptionRe
   const builderSource = readFileSync(resolve(__dirname, '../src/renderer/src/components/SubscriptionPackageBuilder.jsx'), 'utf8')
   const requestSource = readFileSync(resolve(__dirname, '../src/shared/subscriptionRequest.js'), 'utf8')
   assert.ok(preloadSource.includes('subscriptionRequests:'), 'preload must expose subscription request API')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('subscriptionRequests:submit'"), 'preload must bridge subscription request submission')
+  assert.ok(preloadSource.includes("invoke('subscriptionRequests:submit'"), 'preload must bridge subscription request submission through the shared invoke guard')
   assert.ok(mainIndexSource.includes("ipcMain.handle('subscriptionRequests:submit'"), 'main process must handle subscription request submission')
   assert.ok(mainIndexSource.includes('db.submitSubscriptionRequest'), 'subscription requests must use dedicated subscriptionRequests domain')
   assert.ok(builderSource.includes('window.api.subscriptionRequests.submit'), 'builder must call the real submission bridge')

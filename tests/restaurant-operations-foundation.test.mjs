@@ -42,8 +42,8 @@ test('Phase 2 table operations are exposed through preload and IPC', () => {
 })
 
 test('Phase 2 modifiers are present in order payload and setup workflow', () => {
-  assert.match(preload, /getModifierGroups: \(\) => ipcRenderer\.invoke\('pos:getModifierGroups'\)/)
-  assert.match(preload, /saveModifierGroup: \(data\) => ipcRenderer\.invoke\('pos:saveModifierGroup', data\)/)
+  assert.match(preload, /getModifierGroups: \(\) => invoke\('pos:getModifierGroups'\)/)
+  assert.match(preload, /saveModifierGroup: \(data\) => invoke\('pos:saveModifierGroup', data\)/)
   assert.match(posUi, /modifier_option_ids/)
   assert.match(posUi, /Modifiers & Instructions/)
   assert.match(posUi, /Kitchen\/bar instruction/)
@@ -54,8 +54,8 @@ test('Phase 2 modifiers are present in order payload and setup workflow', () => 
 })
 
 test('Phase 2 kitchen and bar routing uses prep tickets and station status updates', () => {
-  assert.match(preload, /getTickets: \(filters\) => ipcRenderer\.invoke\('pos:getTickets', filters\)/)
-  assert.match(preload, /updateTicketStatus: \(id, status\) => ipcRenderer\.invoke\('pos:updateTicketStatus', id, status\)/)
+  assert.match(preload, /getTickets: \(filters\) => invoke\('pos:getTickets', filters\)/)
+  assert.match(preload, /updateTicketStatus: \(id, status\) => invoke\('pos:updateTicketStatus', id, status\)/)
   assert.match(mainIndex, /ipcMain\.handle\('pos:getTickets'/)
   assert.match(mainIndex, /ipcMain\.handle\('pos:updateTicketStatus'/)
   assert.match(posUi, /Open Kitchen Screen/)
@@ -65,10 +65,10 @@ test('Phase 2 kitchen and bar routing uses prep tickets and station status updat
 })
 
 test('Phase 2 manager approvals and cash-up stay server-authoritative', () => {
-  assert.match(preload, /approveVoidWithPin: \(data\) => ipcRenderer\.invoke\('pos:approveVoidWithPin', data\)/)
-  assert.match(preload, /approveDiscountWithPin: \(data\) => ipcRenderer\.invoke\('pos:approveDiscountWithPin', data\)/)
-  assert.match(preload, /createPartialReturnWithPin: \(data\) => ipcRenderer\.invoke\('pos:createPartialReturnWithPin', data\)/)
-  assert.match(preload, /createCashup: \(data\) => ipcRenderer\.invoke\('pos:createCashup', data\)/)
+  assert.match(preload, /approveVoidWithPin: \(data\) => invoke\('pos:approveVoidWithPin', data\)/)
+  assert.match(preload, /approveDiscountWithPin: \(data\) => invoke\('pos:approveDiscountWithPin', data\)/)
+  assert.match(preload, /createPartialReturnWithPin: \(data\) => invoke\('pos:createPartialReturnWithPin', data\)/)
+  assert.match(preload, /createCashup: \(data\) => invoke\('pos:createCashup', data\)/)
   assert.match(combinedPosSql, /create or replace function public\.approve_pos_void_with_pin\(payload jsonb\)/i)
   assert.match(combinedPosSql, /create or replace function public\.approve_pos_discount_with_pin\(payload jsonb\)/i)
   assert.match(combinedPosSql, /_pos_resolve_pin_internal\(v_lodge_id, v_pin, 'pos\.discount'/i)
@@ -195,9 +195,9 @@ test('Phase 3 server-atomic recipe depletion migration is installed', async () =
   const sql = await readFile(new URL('../supabase/migrations/20260805090000_pos_recipe_stock_depletion_server_atomic.sql', import.meta.url), 'utf8')
   assert.match(sql, /create or replace function public\.restaurant_apply_recipe_sale_depletion/)
   assert.match(sql, /create trigger trg_restaurant_recipe_sale_depletion[\s\S]*after insert on public\.pos_order_items/)
-  assert.match(sql, /new\.inventory_item_id is not null or coalesce\(new\.quantity, 0\) <= 0/, 'must never touch direct-stock or return lines')
-  assert.match(sql, /coalesce\(v_parent_type, 'sale'\) <> 'sale'/, 'must skip non-sale orders')
-  assert.match(sql, /restaurant_recipe_quantity_in_inventory_unit[\s\S]*new\.quantity/, 'must deplete from the authoritative line quantity')
+  assert.match(sql, /v_line\.inventory_item_id is not null or coalesce\(v_line\.quantity, 0\) <= 0/, 'must never touch direct-stock or return lines')
+  assert.match(sql, /coalesce\(v_order\.transaction_type, 'sale'\) <> 'sale'/, 'must skip non-sale orders')
+  assert.match(sql, /restaurant_recipe_quantity_in_inventory_unit[\s\S]*v_line\.quantity/, 'must deplete from the authoritative line quantity')
   assert.match(sql, /for update of ii/, 'must lock inventory rows')
   assert.match(sql, /raise exception 'Insufficient stock/, 'must fail closed on insufficient recipe stock')
   assert.match(sql, /create or replace function public\.record_recipe_stock_depletion[\s\S]*from public\.pos_order_items/, 'legacy replay must derive quantities from authoritative order lines')
@@ -245,4 +245,12 @@ test('Phase 3 SQL stock movement rows are traceable to order and recipe', async 
   assert.match(phase3Sql, /recipe_id uuid/, 'must have recipe_id')
   assert.match(phase3Sql, /recipe_version integer/, 'must have recipe_version')
   assert.match(phase3Sql, /inventory_item_id uuid/, 'must have inventory_item_id')
+})
+
+test('Lodge table settlement is a single authorized call', () => {
+  assert.doesNotMatch(posUi, /tableSession\.tab\?\.id/, 'Table payment must not resolve through a separate session call')
+  assert.match(posUi, /resolve_tab: resolveTabFromName/, 'New tables resolve server-side under the same authorization')
+  assert.match(posUi, /expected_tab_version: activeTabId \? \(currentOpenTab\?\.tab_version/, 'Resumed lodge tabs forward their version for optimistic concurrency')
+  assert.match(posUi, /currentOpenTab\?\.id !== activeTabId/, 'A mismatched open check blocks locally instead of submitting a stale tab id')
+  assert.match(posUi, /This open check changed\. Refresh open tabs before taking payment\./, 'Missing tab versions fail closed locally before submission')
 })

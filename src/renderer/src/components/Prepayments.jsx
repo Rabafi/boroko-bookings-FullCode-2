@@ -255,6 +255,31 @@ export default function Prepayments() {
   const selectedBalanceUsable = selectedData.balanceState !== 'unavailable' && numericAmount(balance) !== null
   const canAllocate = canRecord && selectedBalanceUsable && Number(balance) > 0 && Array.isArray(bookings) && bookings.length > 0
 
+  // Entitlements and role capabilities can change while this page is open
+  // (for example, after a subscription downgrade). Close any already-open
+  // money-moving modal on the next render and leave an actionable explanation
+  // instead of allowing a stale form to submit into a denied IPC call.
+  useEffect(() => {
+    const revokedActions = []
+    if (receiveOpen && !canRecord) {
+      closeReceiveModal()
+      revokedActions.push('receiving deposits')
+    }
+    if (applyEntry && !canAllocate) {
+      setApplyEntry(false)
+      setApplyOperationKey(null)
+      revokedActions.push('allocating deposits')
+    }
+    if (refundOpen && !canRefund) {
+      setRefundOpen(false)
+      setRefundOperationKey(null)
+      revokedActions.push('refunding deposits')
+    }
+    if (revokedActions.length > 0) {
+      setError(`Access or the authoritative balance changed, so ${revokedActions.join(', ')} was closed. Refresh before posting financial work.`)
+    }
+  }, [applyEntry, canAllocate, canRecord, canRefund, receiveOpen, refundOpen])
+
   const openLinkedInvoice = (bookingId) => {
     if (!bookingId) return
     navigate('/invoices', {
@@ -276,6 +301,11 @@ export default function Prepayments() {
 
   const receive = async (event) => {
     event.preventDefault()
+    if (!canRecord) {
+      closeReceiveModal()
+      setError('Receiving deposits is no longer available for this role or subscription.')
+      return
+    }
     if (!selected) return
     const amount = numericAmount(receiveForm.amount)
     if (amount === null || amount <= 0) {
@@ -326,6 +356,12 @@ export default function Prepayments() {
 
   const applyCredit = async (event) => {
     event.preventDefault()
+    if (!canAllocate) {
+      setApplyEntry(false)
+      setApplyOperationKey(null)
+      setError('Deposit allocation is no longer available for this role, subscription, or balance.')
+      return
+    }
     const booking = bookings?.find((row) => String(row.id) === String(applyForm.bookingId))
     const amount = numericAmount(applyForm.amount)
     if (!booking || amount === null || amount <= 0) return
@@ -358,6 +394,12 @@ export default function Prepayments() {
 
   const refundCredit = async (event) => {
     event.preventDefault()
+    if (!canRefund || !selectedBalanceUsable) {
+      setRefundOpen(false)
+      setRefundOperationKey(null)
+      setError('Deposit refunds are no longer available for this role, subscription, or balance.')
+      return
+    }
     const amount = numericAmount(refundForm.amount)
     if (amount === null || amount <= 0) return
     const idempotencyKey = refundOperationKey || newOperationKey('customer-credit:refund')
@@ -675,10 +717,11 @@ export default function Prepayments() {
                     <p className="mt-1 text-xs text-slate-500">Server-backed portfolio, reconciliation, and export controls. These projections never replace the customer-credit ledger.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <button onClick={loadReconciliation} disabled={reconciliation.status === 'loading'} className="btn-secondary flex items-center gap-2"><RefreshCw size={14} /> {reconciliation.status === 'loading' ? 'Reconciling…' : 'Reconcile 30 days'}</button>
+                    <button onClick={loadReconciliation} disabled={!canViewReports || reconciliation.status === 'loading'} title={!canViewReports ? 'Your role does not have reconciliation authority.' : undefined} className="btn-secondary flex items-center gap-2"><RefreshCw size={14} /> {reconciliation.status === 'loading' ? 'Reconciling…' : 'Reconcile 30 days'}</button>
                     <button onClick={() => exportReport()} disabled={!canExport || exporting === 'server'} className="btn-secondary flex items-center gap-2"><Download size={14} /> {exporting === 'server' ? 'Preparing…' : 'Export server data'}</button>
                   </div>
                 </div>
+                {!canViewReports && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Reconciliation is unavailable for your role. A Finance, Manager, Admin, or Super Admin user must run the server projection.</p>}
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="rounded-xl border border-slate-200 p-4">
                     <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Portfolio liability</p><span className="text-xs text-slate-500">{portfolio.status === 'ready' && portfolioData?.financial_certified === true ? 'Server-certified' : 'Server response'}</span></div>
@@ -739,7 +782,7 @@ export default function Prepayments() {
           <MethodSelect value={receiveForm.method} onChange={(method) => setReceiveForm({ ...receiveForm, method })} />
           <Field label="Reference / POP number"><input className="input w-full" value={receiveForm.reference} onChange={(e) => setReceiveForm({ ...receiveForm, reference: e.target.value })} /></Field>
           <Field label="Notes"><textarea className="input min-h-20 w-full" value={receiveForm.notes} onChange={(e) => setReceiveForm({ ...receiveForm, notes: e.target.value })} /></Field>
-          <div className="flex gap-2"><button type="button" onClick={closeReceiveModal} className="btn-secondary flex-1">Cancel</button><button disabled={saving} className="btn-primary flex-1">{saving ? 'Recording…' : 'Record deposit'}</button></div>
+          <div className="flex gap-2"><button type="button" onClick={closeReceiveModal} className="btn-secondary flex-1">Cancel</button><button disabled={saving || !canRecord} className="btn-primary flex-1">{saving ? 'Recording…' : 'Record deposit'}</button></div>
         </form>
       </Modal>}
 
@@ -749,7 +792,7 @@ export default function Prepayments() {
           <Field label="Booking"><select required className="input w-full" value={applyForm.bookingId} onChange={(e) => setApplyForm({ ...applyForm, bookingId: e.target.value })}><option value="">Select booking…</option>{bookings?.map((booking) => { const total = numericAmount(booking.total_amount); const charges = numericAmount(booking.charges_total) || 0; const paid = numericAmount(booking.amount_paid); const due = total === null || paid === null ? null : total + charges - paid; return <option key={booking.id} value={booking.id}>{booking.invoice_number || booking.id.slice(0, 8)} · {booking.check_in || 'Date unavailable'} · Due {amountLabel(currency, due)}</option> })}</select></Field>
           <Field label={`Amount (${currency})`}><input required className="input w-full" type="number" min="0.01" step="0.01" max={selectedBalanceUsable ? balance : undefined} value={applyForm.amount} onChange={(e) => setApplyForm({ ...applyForm, amount: e.target.value })} /></Field>
           <Field label="Notes"><textarea className="input min-h-20 w-full" value={applyForm.notes} onChange={(e) => setApplyForm({ ...applyForm, notes: e.target.value })} /></Field>
-          <div className="flex gap-2"><button type="button" onClick={() => { setApplyEntry(false); setApplyOperationKey(null) }} className="btn-secondary flex-1">Cancel</button><button disabled={saving || !selectedBalanceUsable} className="btn-primary flex-1">{saving ? 'Allocating…' : 'Allocate deposit'}</button></div>
+          <div className="flex gap-2"><button type="button" onClick={() => { setApplyEntry(false); setApplyOperationKey(null) }} className="btn-secondary flex-1">Cancel</button><button disabled={saving || !canAllocate} className="btn-primary flex-1">{saving ? 'Allocating…' : 'Allocate deposit'}</button></div>
         </form>
       </Modal>}
 
@@ -760,7 +803,7 @@ export default function Prepayments() {
           <MethodSelect value={refundForm.method} onChange={(method) => setRefundForm({ ...refundForm, method })} />
           <Field label="Refund reference"><input required className="input w-full" value={refundForm.reference} onChange={(e) => setRefundForm({ ...refundForm, reference: e.target.value })} /></Field>
           <Field label="Reason"><textarea required className="input min-h-20 w-full" value={refundForm.notes} onChange={(e) => setRefundForm({ ...refundForm, notes: e.target.value })} /></Field>
-          <div className="flex gap-2"><button type="button" onClick={() => { setRefundOpen(false); setRefundOperationKey(null) }} className="btn-secondary flex-1">Cancel</button><button disabled={saving || !selectedBalanceUsable} className="btn-primary flex-1 bg-rose-600 hover:bg-rose-700">{saving ? 'Recording…' : 'Record refund'}</button></div>
+          <div className="flex gap-2"><button type="button" onClick={() => { setRefundOpen(false); setRefundOperationKey(null) }} className="btn-secondary flex-1">Cancel</button><button disabled={saving || !canRefund || !selectedBalanceUsable} className="btn-primary flex-1 bg-rose-600 hover:bg-rose-700">{saving ? 'Recording…' : 'Record refund'}</button></div>
         </form>
       </Modal>}
 

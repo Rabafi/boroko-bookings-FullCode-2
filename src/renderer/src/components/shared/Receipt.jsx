@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Printer, X, Download, CreditCard } from 'lucide-react'
 import { useSettings } from '../../app-context'
+import { getBookingFinancialView, bookingPaymentStatusLabel } from '../../../../shared/bookingFinancials.js'
 
 function formatEventDate(value) {
   if (!value) return 'Time not recorded'
@@ -60,10 +61,11 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
 
   const currency = settings?.currency || 'P'
   const ratePerNight = Number(booking.rate_per_night || 0)
-  const roomSubtotal = Number(booking.total_amount || 0)  // server-authoritative room cost; avoids rate×nights drift for event bookings
+  const financial = getBookingFinancialView(booking)
+  const roomSubtotal = financial.total  // server-authoritative room cost; offline values are explicitly estimates
   const extraTotal = charges.reduce((sum, c) => sum + Number(c.amount || 0), 0)
   const grandTotal = roomSubtotal + extraTotal
-  const amountPaid = Number(booking.amount_paid || 0)
+  const amountPaid = financial.amountPaid
   const isCancelled = booking.status === 'cancelled'
   const outstanding = !isCancelled ? Math.max(0, grandTotal - amountPaid) : 0
   const refundDue = isCancelled && amountPaid > grandTotal ? amountPaid - grandTotal : 0
@@ -236,10 +238,10 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
               </div>
             )}
             {/* Payment estimate disclaimer — only when booking is server-confirmed but payment amounts are locally estimated */}
-            {booking._pending_payment && !booking._pending_sync && (
+            {financial.pending && (
               <div className="mb-4 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-amber-700 text-xs font-medium text-center">
-                ⏳ Payment amounts are estimated — pending server confirmation.
-                Totals will update once connectivity is restored.
+                ⏳ Booking money is estimated — pending server confirmation.
+                Totals and payment status will update once connectivity is restored.
               </div>
             )}
             {/* Lodge Header */}
@@ -445,17 +447,21 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
                 <span className="text-xs text-gray-400">Payment</span>
                 <span
                   className={`text-xs font-semibold uppercase px-2 py-0.5 rounded-full ${
-                    booking.payment_status === 'paid'
+                    financial.pending
+                      ? 'bg-amber-100 text-amber-700'
+                      : financial.paymentStatus === 'paid'
                       ? 'bg-green-100 text-green-700'
-                      : booking.payment_status === 'partial'
+                      : financial.paymentStatus === 'partial'
                       ? 'bg-yellow-100 text-yellow-700'
                       : 'bg-red-100 text-red-600'
                   }`}
                 >
-                  {booking.payment_status === 'paid'
+                  {financial.pending
+                    ? `⏳ ${bookingPaymentStatusLabel(booking)}`
+                    : financial.paymentStatus === 'paid'
                     ? '✅ Paid'
-                    : booking.payment_status === 'partial'
-                    ? `⚡ Partial — ${currency} ${Number(booking.amount_paid || 0).toFixed(2)} paid`
+                    : financial.paymentStatus === 'partial'
+                    ? `⚡ Partial — ${currency} ${financial.amountPaid.toFixed(2)} paid`
                     : '❌ Unpaid'}
                 </span>
               </div>

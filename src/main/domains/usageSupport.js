@@ -90,10 +90,11 @@ export function buildUsageSummary(plan, limits, usage, source) {
   const bookingAllowance = evaluateBookingCreationAllowance({
     plan,
     targetMonthUsed: usage.targetMonthBookings,
-    createdMonthUsed: usage.creationMonthBookings
+    createdMonthUsed: usage.creationMonthBookings,
+    limits
   });
-  const roomStatus = canCreateRoom({ plan, used: usage.rooms });
-  const userStatus = canCreateUser({ plan, used: usage.users });
+  const roomStatus = canCreateRoom({ plan, used: usage.rooms, limits });
+  const userStatus = canCreateUser({ plan, used: usage.users, limits });
   const recommendation = getPlanRecommendation({
     plan,
     bookingsUsage: usage.targetMonthBookings ?? usage.monthlyBookings,

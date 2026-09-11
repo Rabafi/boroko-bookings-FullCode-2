@@ -163,6 +163,32 @@ test('Starter supports read, receive, receipt, and allocation while Standard/Pro
   assert.match(desktopNavSource, /tier:\s*['"]Pro['"]/)
 })
 
+test('desktop subscription changes refresh the shared entitlement and Guest Deposits fails closed on stale forms', () => {
+  const entitlementSource = read('src/main/domains/entitlements.js')
+  assert.match(entitlementSource, /export function invalidateTrialStatus\(lodgeId = null\)/)
+  assert.match(entitlementSource, /const forceFresh = options\?\.forceFresh === true/)
+  assert.match(preloadSource, /getStatus:\s*\(lodgeId, options\)\s*=>\s*invoke\(['"]trial:getStatus['"], lodgeId, options\)/)
+  const trialStatusHandler = handlerBody(mainSource, 'trial:getStatus')
+  assert.match(trialStatusHandler, /options\?\.forceFresh === true/)
+  assert.match(trialStatusHandler, /db\.getTrialStatus\(lodgeId,\s*\{\s*forceFresh:/)
+  assert.match(appSource, /const refreshEntitlement = useCallback\(async \(\{ forceFresh = false \} = \{\}\)/)
+  assert.match(appSource, /trial\.getStatus\(lodgeId, \{ forceFresh: forceFresh === true \}\)/)
+  assert.match(appSource, /allowedOutletIds: _allowedOutletIds,\s*refreshEntitlement/)
+  assert.match(read('src/renderer/src/components/SubscriptionAccessPanel.jsx'), /access\?\.refreshEntitlement\?\.\(\{ forceFresh: true \}\)/)
+  const settingsSource = read('src/renderer/src/components/Settings.jsx')
+  assert.match(settingsSource, /useAccess\(\)/)
+  assert.match(settingsSource, /access\?\.refreshEntitlement\?\.\(\{ forceFresh: true \}\)/)
+
+  assert.match(desktopPrepayments, /disabled=\{!canViewReports \|\| reconciliation\.status === 'loading'\}/)
+  assert.match(desktopPrepayments, /Reconciliation is unavailable for your role/i)
+  assert.match(desktopPrepayments, /receiveOpen && !canRecord/)
+  assert.match(desktopPrepayments, /applyEntry && !canAllocate/)
+  assert.match(desktopPrepayments, /refundOpen && !canRefund/)
+  assert.match(desktopPrepayments, /disabled=\{saving \|\| !canRecord\}/)
+  assert.match(desktopPrepayments, /disabled=\{saving \|\| !canAllocate\}/)
+  assert.match(desktopPrepayments, /disabled=\{saving \|\| !canRefund \|\| !selectedBalanceUsable\}/)
+})
+
 test('role and capability checks fail closed at the direct IPC boundary', () => {
   const readChannels = ['customerCredit:getBalance', 'customerCredit:getHistory', 'customerCredit:getSummary']
   for (const channel of readChannels) {

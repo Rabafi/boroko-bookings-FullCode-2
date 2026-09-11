@@ -38,7 +38,14 @@ function parseInvoiceSequence(invoiceNumber, prefix) {
   return Number.isInteger(sequence) ? sequence : null;
 }
 
-export async function getNextInvoiceNumberByLookup(db) {
+// Kept as a compatibility export for older callers, but the lookup strategy
+// is inherently race-prone (two operators can observe the same maximum).
+// Callers must explicitly opt into a non-financial diagnostic use; invoice
+// creation is hard-gated on the atomic database sequence RPC instead.
+export async function getNextInvoiceNumberByLookup(db, { allowUnsafeLookup = false } = {}) {
+  if (!allowUnsafeLookup) {
+    throw new Error('The atomic invoice-number service is required; lookup fallback is disabled for invoice creation.');
+  }
   const year = new Date().getFullYear();
   const prefix = `INV-${year}-`;
 

@@ -1,4 +1,4 @@
-import { isCommercialFeatureIncluded } from './commercialAccess.js'
+import { getCommercialFeatureOverride, isCommercialFeatureIncluded } from './commercialAccess.js'
 
 export const APP_FEATURES = [
   'basic_reports',
@@ -31,7 +31,7 @@ export const APP_FEATURES = [
 
 export const FEATURE_LABELS = {
   basic_reports: 'Basic reports',
-  starter_backup: 'Starter backup',
+  starter_backup: 'Core Data Backup',
   starter_backup_automation: 'Starter weekly backup automation',
   staff_basic: 'Users & access',
   prepayments_basic: 'Guest Deposits',
@@ -138,8 +138,8 @@ export const CAPABILITY_LABELS = {
   'system.health': 'View system health',
   'sync.manage': 'Retry and clear sync issues',
   'backup.manage': 'Manage backups',
-  'backup.starter_export': 'Create Starter backup',
-  'backup.starter_automation': 'Configure Starter weekly backup automation',
+  'backup.starter_export': 'Create Core Data Backup',
+  'backup.starter_automation': 'Configure weekly Core Data Backup automation',
   'admin.clients': 'Manage client portfolio',
   'admin.licensing': 'Manage licensing',
   'admin.overrides': 'Manage feature overrides',
@@ -705,7 +705,9 @@ export function buildCapabilitySnapshot({
   capabilityOverrides = {},
   productId = null,
   commercialPackageKey = null,
-  commercialAddonKeys = []
+  commercialAddonKeys = [],
+  commercialEntitlement = null,
+  commercialLodgeId = null
 } = {}) {
   if (isMasterAdmin) {
     const allTrue = Object.fromEntries(ALL_CAPABILITIES.map((capability) => [capability, true]))
@@ -736,12 +738,17 @@ export function buildCapabilitySnapshot({
   ALL_CAPABILITIES.forEach((capability) => {
     const requiredFeature = CAPABILITY_FEATURE_REQUIREMENTS[capability]
     const roleAllows = allowedByRole[capability] === true
-    const featureBlocked = Boolean(requiredFeature) && features?.[requiredFeature] === false
+    const commercialOverride = requiredFeature
+      ? getCommercialFeatureOverride(commercialEntitlement, productId, requiredFeature, commercialPackageKey, commercialLodgeId)
+      : null
+    const featureBlocked = Boolean(requiredFeature) && features?.[requiredFeature] === false && commercialOverride !== true
     const commercialBlocked = Boolean(requiredFeature) && !isCommercialFeatureIncluded(
       productId,
       commercialPackageKey,
       requiredFeature,
-      commercialAddonKeys
+      commercialAddonKeys,
+      commercialEntitlement,
+      commercialLodgeId
     )
     const override = Object.prototype.hasOwnProperty.call(normalizedOverrides, capability)
       ? normalizedOverrides[capability]

@@ -75,13 +75,13 @@ test('Starter backup bridge is separate from Standard managed backup controls', 
 
 test('Starter backup UI uses simple recovery language and remains path-safe', () => {
   assert.match(ui, /window\.api\?\.backup\?\.starterExport/)
-  assert.match(ui, /Back up your lodge data/)
+  assert.match(ui, /Back up your property data/)
   assert.match(ui, /Safe and read-only/)
   assert.match(ui, /guest and payment records/)
   assert.match(ui, /SHA-256 fingerprint/)
   assert.match(ui, /Included records/)
   assert.match(ui, /Data included:/)
-  assert.match(ui, /never restores or overwrites live lodge data/)
+  assert.match(ui, /never restores or overwrites live property data/)
   assert.doesNotMatch(ui, /backupDir|filePath|target_dir/)
 })
 
@@ -130,7 +130,7 @@ test('Starter backup is wired as a Lodge Starter route without widening Standard
   assert.match(app, /path="starter-backup"[\s\S]*backup\.starter_export[\s\S]*feature="starter_backup"/)
   assert.match(nav, /to: '\/starter-backup'[\s\S]*feature: 'starter_backup'[\s\S]*capability: 'backup\.starter_export'/)
   assert.match(identity, /'starter-backup'/)
-  assert.match(access, /starter_backup: 'Starter backup'/)
+  assert.match(access, /starter_backup: 'Core Data Backup'/)
   assert.match(access, /'backup\.starter_export': 'starter_backup'/)
   assert.match(commercial, /'basic_reports', 'starter_backup'/)
   assert.match(commercial, /'starter_backup_automation'/)

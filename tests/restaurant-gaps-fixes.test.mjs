@@ -58,20 +58,34 @@ test('RestaurantPurchasing approvePurchaseOrder sends raw orderId', async () => 
 
 test('RestaurantPurchasing receivePurchaseOrder sends raw orderId', async () => {
   const src = await readFile('src/renderer/src/components/restaurant/RestaurantPurchasing.jsx', 'utf8')
-  assert.ok(src.includes('await window.api.pos.receivePurchaseOrder(orderId)'), 'Must send raw orderId')
+  const preload = await readFile('src/preload/index.js', 'utf8')
+  const ipc = await readFile('src/main/index.js', 'utf8')
+  // Raw positional IDs end to end, plus the receiving stock location the
+  // server needs to book stock into the right place. No object wrapping.
+  assert.ok(src.includes('await window.api.pos.receivePurchaseOrder(orderId, stockLocationId)'), 'Must send raw orderId and stock location')
   assert.ok(!src.includes('receivePurchaseOrder({'), 'Must NOT send object with order_id')
+  assert.ok(preload.includes("receivePurchaseOrder: (orderId, stockLocationId) => invoke('pos:receivePurchaseOrder', orderId, stockLocationId)"), 'Preload must forward both raw IDs')
+  assert.ok(ipc.includes("ipcMain.handle('pos:receivePurchaseOrder', async (_, orderId, stockLocationId)"), 'IPC must receive both raw IDs')
 })
 
 // ── Alerts sends raw alertId ──────────────────────────────────────
 test('RestaurantAlerts resolveAlert sends raw alertId', async () => {
   const src = await readFile('src/renderer/src/components/restaurant/RestaurantAlerts.jsx', 'utf8')
-  assert.ok(src.includes('await window.api.pos.resolveAlert(alertId)'), 'Must send raw alertId')
+  const preload = await readFile('src/preload/index.js', 'utf8')
+  // Raw positional ID plus operator reason plus a stable per-alert
+  // idempotency key, and the UI requires server confirmation (resolved_at).
+  assert.ok(src.includes('await window.api.pos.resolveAlert(alertId, reason.trim(), operationId)'), 'Must send raw alertId, reason, and operation key')
   assert.ok(!src.includes('resolveAlert({'), 'Must NOT send object with alert_id')
+  assert.ok(preload.includes("resolveAlert: (alertId, reason, operationId) => invoke('pos:resolveAlert', alertId, reason, operationId)"), 'Preload must forward the idempotent triple')
+  assert.ok(src.includes('!result.resolved_at'), 'Must require server-confirmed resolution')
 })
 
 test('RestaurantAlerts loads resolved history for its Active, Resolved, and All filters', async () => {
   const src = await readFile('src/renderer/src/components/restaurant/RestaurantAlerts.jsx', 'utf8')
-  assert.ok(src.includes('getExceptionAlerts()'), 'Alert history view must load both active and resolved alerts')
+  // The complete authorised server history (not the active-only read) feeds
+  // all three filters; otherwise Resolved/All look broken after resolving.
+  assert.ok(src.includes('getAlertHistory({ includeResolved: true })'), 'Alert history view must load both active and resolved alerts')
+  assert.ok(src.includes("if (filter === 'resolved') return a.is_resolved"), 'Resolved filter must select resolved rows')
 })
 
 test('Restaurant feedback records the canonical desktop actor', async () => {
@@ -170,7 +184,7 @@ test('Export function in index.js uses getShiftHistory not getShifts', async () 
 
 test('Export function passes date range to getPosPurchaseOrders', async () => {
   const src = await readFile('src/main/index.js', 'utf8')
-  assert.ok(src.includes('db.getPosPurchaseOrders?.(normalized.startDate, normalized.endDate)'), 'Must pass dates to getPosPurchaseOrders')
+  assert.ok(src.includes("callDb('getPosPurchaseOrders', normalized.startDate, normalized.endDate)"), 'Must pass dates to getPosPurchaseOrders')
 })
 
 // ── RestaurantKitchen updateTicketStatus uses positional args ──────
@@ -183,7 +197,7 @@ test('RestaurantKitchen updateTicketStatus sends (id, status) not object', async
 test('Restaurant reservation seating uses the deployed JSON RPC contract', async () => {
   const source = await readFile('src/main/domains/pos.js', 'utf8')
   const migration = await readFile('supabase/migrations/20260716009000_reservation_capacity_and_combined_tables.sql', 'utf8')
-  assert.ok(source.includes("rpc('seat_restaurant_reservation', {\n      payload:"), 'Reservation seating must call the JSON payload RPC signature')
+  assert.ok(source.includes("rpc('seat_restaurant_reservation', {") && /payload:\s*\{ id, lodge_id/.test(source), 'Reservation seating must call the JSON payload RPC signature')
   assert.ok(migration.includes("status = 'seated'"), 'Reservation seating must persist the seated state')
   assert.ok(migration.includes('FROM public.pos_tables'), 'Reservation seating must validate the same POS floor table catalogue shown to the operator')
   assert.ok(migration.includes('FOR UPDATE;'), 'Reservation seating must lock records against concurrent table assignment')
@@ -244,9 +258,15 @@ test('Restaurant setup readiness is evidence-based and guides all 20 stages', as
   assert.ok(migration.includes('restaurant_setup_evidence'), 'Readiness must prove a protected data export')
   assert.ok(migration.includes("array['manager', 'admin', 'super_admin']"), 'Setup progress must be manager-restricted server-side')
   assert.ok(screen.includes('go_live_review'), 'Readiness screen must include the go-live review stage')
-  assert.equal((screen.match(/\['[a-z_]+',/g) || []).length, 20, 'Readiness screen must contain exactly 20 setup stages')
+  // Restaurant and Bar keep separate focused stage lists, selected by mode.
+  // Display-only groupings below BAR_STAGES are excluded from the count.
+  const restaurantStages = screen.slice(screen.indexOf('const STAGES ='), screen.indexOf('const BAR_STAGES ='))
+  const barStages = screen.slice(screen.indexOf('const BAR_STAGES ='), screen.indexOf('const BAR_STAGE_GROUPS ='))
+  assert.equal((restaurantStages.match(/\['[a-z_]+',/g) || []).length, 20, 'Restaurant readiness must contain exactly 20 setup stages')
+  assert.equal((barStages.match(/\['[a-z_]+',/g) || []).length, 14, 'Bar readiness must contain exactly 14 focused stages')
+  assert.ok(screen.includes('const stages = barOnly ? BAR_STAGES : STAGES'), 'Readiness must select the stage list by operating mode')
   assert.ok(screen.includes('<strong>How:</strong>'), 'Each stage must tell the manager how to complete it')
-  assert.ok(!screen.includes('Confirm'), 'Managers must not self-attest readiness with a Confirm button')
+  assert.ok(!/>\s*Confirm\s*</.test(screen), 'Managers must not self-attest readiness with a Confirm button')
   assert.ok(preload.includes('getSetupProgress:'), 'Preload must expose setup progress')
   assert.ok(main.includes("pos:setSetupStage"), 'Main process must register setup updates')
   assert.ok(domain.includes('setRestaurantSetupStage'), 'POS domain must use the authoritative setup RPC')
@@ -269,8 +289,10 @@ test('Setup board retires automatically once all evidence-based stages are detec
     readFile('src/renderer/src/components/hospitality-pos/HposManageHub.jsx', 'utf8'),
     readFile('src/renderer/src/components/hospitality-pos/HposSetupReadiness.jsx', 'utf8'),
   ])
-  assert.ok(manage.includes('stages.length === 20 && stages.every'), 'Manage must hide setup only after all 20 stages are detected')
-  assert.ok(manage.includes('!setupComplete'), 'Manage must not render the readiness link after completion')
+  // Retirement requires server-reported completion plus every required stage
+  // detected — strictly stronger than a client-side stage count.
+  assert.ok(manage.includes('status.complete === true && requiredKeys.length > 0 && completedCount === requiredKeys.length'), 'Manage must hide setup only after server-confirmed completion of every required stage')
+  assert.ok(manage.includes('(setupComplete ? ('), 'Manage must swap the readiness link for a completion state once setup completes')
   assert.ok(readiness.includes("navigate('/hpos/manage', { replace: true })"), 'Completed readiness route must retire itself')
 })
 

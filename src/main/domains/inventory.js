@@ -134,7 +134,7 @@ function removeInventoryDraftFromQueues(id) {
   if (nextFailed.removed) writeFailedSyncQueue(nextFailed.queue);
 }
 
-function upsertLocalInventoryMovement(entry = {}) {
+export function upsertLocalInventoryMovement(entry = {}) {
   if (!entry?.item_id || !entry?.movement_type) return null;
   const row = {
     id: entry.id || randomUUID(),
@@ -255,7 +255,9 @@ export async function getBarStockAging(outletId = null) {
 
 export async function getDayUseInventoryItems() {
   const rows = await getInventoryItems().catch(() => readCache('inventory-items'));
-  return (rows || []).filter((item) => !item?.outlet_id);
+  // Operational list: delisted stock (product deleted, nothing else references
+  // it) is excluded; its movement history remains server-side for audit.
+  return (rows || []).filter((item) => !item?.outlet_id && item?.is_active !== false);
 }
 
 export async function getInventoryItemById(id) {

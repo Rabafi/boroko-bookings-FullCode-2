@@ -58,6 +58,10 @@ export const BAR_ADDON_PATH_FEATURES = Object.freeze({
   '/restaurant/recipe-variance': 'variance',
   '/restaurant/prep-batches': 'prep',
   '/restaurant/staff-performance': 'staff_performance',
+  // Finance & close is a shared workspace. In Bar mode it becomes reachable
+  // only with the Accounting & Workforce add-on; the page's individual tabs
+  // and server capabilities still enforce their own narrower permissions.
+  '/restaurant/finance-close': 'restaurant_accounting',
   '/restaurant/chart-of-accounts': 'restaurant_accounting',
   '/restaurant/general-ledger': 'restaurant_accounting',
   '/restaurant/accounts-payable': 'restaurant_accounting',
@@ -306,6 +310,20 @@ export function getHposDockItems(settingsOrBarOnly) {
 }
 
 /**
+ * Whether the Till should load restaurant floor-table status for the outlet.
+ * Bar-only service uses Counter + Open tabs backed by the tab list, so the
+ * floor-table read is skipped there. Shift loading is independent of this
+ * helper and must never be gated by it.
+ * @param {object|boolean|null} settingsOrBarOnly
+ */
+export function shouldLoadTillTables(settingsOrBarOnly) {
+  const barOnly = typeof settingsOrBarOnly === 'boolean'
+    ? settingsOrBarOnly
+    : isBarOnlyMode(settingsOrBarOnly)
+  return !barOnly
+}
+
+/**
  * @param {object|boolean|null} settingsOrBarOnly
  */
 export function getHposMoreItems(settingsOrBarOnly) {
@@ -316,8 +334,86 @@ export function getHposMoreItems(settingsOrBarOnly) {
 }
 
 /**
+ * Resolve which tab a tab-opened sale must settle, failing closed.
+ *
+ * Any workflow opened from an existing tab (resume navigation state or a
+ * selected open tab) must settle exactly that tab_id: degrading into a
+ * counter sale would orphan the open check, and minting by name could pay
+ * the wrong check. Returns { ok, tabId, expectedVersion } or
+ * { ok: false, code, error } when the sale must be blocked before anything
+ * is journalled or sent.
+ */
+export function resolveResumedTabPayment({
+  resumeIntent = false,
+  resumeTabId = null,
+  resumeTabVersion = null,
+  selectedTab = null,
+  settlesTab = false,
+} = {}) {
+  const asId = (value) => {
+    const text = String(value || '').trim();
+    return text || null;
+  };
+  const asVersion = (value) => {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+  };
+  const navId = asId(resumeTabId);
+  const selectedId = selectedTab ? asId(selectedTab.id) : null;
+  // Open Checks marks an explicit resume intent; the id may additionally be
+  // known from navigation state or the selected open tab.
+  const openedFromTab = Boolean(resumeIntent || navId || selectedId);
+  if (navId && selectedId && navId !== selectedId) {
+    return {
+      ok: false,
+      tabId: null,
+      expectedVersion: null,
+      code: 'tab_context_changed',
+      error: 'The open check changed underneath this sale. Re-open it from Open Tabs before taking payment.',
+    };
+  }
+  const tabId = navId || selectedId || null;
+  if (openedFromTab && !tabId) {
+    return {
+      ok: false,
+      tabId: null,
+      expectedVersion: null,
+      code: 'tab_link_missing',
+      error: 'This sale was opened from a tab but lost its tab link. Re-open it from Open Tabs before taking payment.',
+    };
+  }
+  if (openedFromTab && !settlesTab) {
+    return {
+      ok: false,
+      tabId: null,
+      expectedVersion: null,
+      code: 'tab_settlement_required',
+      error: 'This sale was opened from an open tab. Switch back to the tab service mode to settle it instead of recording a counter sale.',
+    };
+  }
+  const expectedVersion = navId
+    ? (asVersion(resumeTabVersion) ?? asVersion(selectedTab?.tab_version))
+    : asVersion(selectedTab?.tab_version);
+  // Optimistic concurrency is mandatory for tab settlement: without the
+  // loaded version the server cannot tell a fresh sale from a stale retry.
+  if (openedFromTab && tabId && expectedVersion === null) {
+    return {
+      ok: false,
+      tabId: null,
+      expectedVersion: null,
+      code: 'tab_version_required',
+      error: 'This sale is missing its tab version. Refresh the open check before taking payment.',
+    };
+  }
+  return {
+    ok: true,
+    tabId,
+    expectedVersion,
+  };
+}
+
+/**
  * Dashboard / home shortcuts for restaurant property types.
- * @param {object|boolean|null} settingsOrBarOnly
  */
 export function getRestaurantDashboardShortcuts(settingsOrBarOnly) {
   const barOnly = typeof settingsOrBarOnly === 'boolean'

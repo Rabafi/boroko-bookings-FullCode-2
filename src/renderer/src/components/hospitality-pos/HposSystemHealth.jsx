@@ -222,6 +222,32 @@ export default function HposSystemHealth() {
     }
   };
 
+  const clearFailedItems = async (row = null) => {
+    setRunning(true);
+    setNotice('');
+    setError('');
+    try {
+      const rows = row ? [row] : (details?.failed || []);
+      if (rows.some((entry) => entry?.isFinancial)) {
+        const okToClear = window.confirm(
+          'Some of these are financial operations. Clearing stops retries and records the item for manager review. Clear anyway?',
+        );
+        if (!okToClear) return;
+      }
+      const ids = rows.map(queueId).filter(Boolean);
+      if (row && ids.length === 0) throw new Error('This failed operation has no reference to clear.');
+      const result = await window.api?.sync?.clearFailed?.(row ? ids : undefined);
+      if (result?.success === false) throw new Error(result.error || 'Failed operations could not be cleared.');
+      const removed = Number(result?.removed ?? ids.length ?? 0);
+      setNotice(`${removed} cleared operation${removed === 1 ? '' : 's'} recorded for manager review on this computer.`);
+      await load();
+    } catch (clearError) {
+      setError(clearError?.message || 'Failed operations could not be cleared.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const clearIssues = async () => {
     setRunning(true);
     setNotice('');
@@ -334,18 +360,18 @@ export default function HposSystemHealth() {
           <section className="hpos-sync-desk">
             <div className="hpos-section-heading">
               <span><Database size={18} /></span>
-              <div><h2>Operation queue</h2><p>Retries keep the original operation identifiers and payloads.</p></div>
+              <div><h2>Operation queue</h2><p>Retries keep the original operation identifiers and payloads. Clearing stops retries and records the item for manager review.</p></div>
               {canSync && <HposButton tone="primary" icon={RefreshCw} onClick={runNow} disabled={running}>{running ? 'Working…' : 'Sync now'}</HposButton>}
             </div>
             {(details?.failed || []).length > 0 && (
               <div className="hpos-sync-list">
-                <header><strong>Failed operations</strong>{canSync && <HposButton onClick={() => retryFailed()} disabled={running}>Retry all failed</HposButton>}</header>
+                <header><strong>Failed operations</strong>{canSync && <span className="hpos-sync-header-actions"><HposButton onClick={() => retryFailed()} disabled={running}>Retry all failed</HposButton><HposButton onClick={() => clearFailedItems()} disabled={running}>Clear all failed</HposButton></span>}</header>
                 {(details.failed || []).map((row) => (
                   <article key={queueId(row) || JSON.stringify(row)}>
                     <span className="hpos-health-icon is-danger"><AlertTriangle size={17} /></span>
                     <div><strong>{String(row.table || row.type || 'Operation').replaceAll('_', ' ')}</strong><p>{row.displayError || row.lastError || 'This operation did not sync.'}</p><small>{row.isFinancial ? 'Financial operation · preserve for review' : row.dependencyLabel || 'Operational item'}</small></div>
                     {row.isFinancial && <HposStatusBadge tone="danger">Financial</HposStatusBadge>}
-                    {canSync && <HposButton onClick={() => retryFailed(row)} disabled={running}>Retry</HposButton>}
+                    {canSync && <span className="hpos-sync-row-actions"><HposButton onClick={() => retryFailed(row)} disabled={running}>Retry</HposButton><HposButton onClick={() => clearFailedItems(row)} disabled={running}>Clear</HposButton></span>}
                   </article>
                 ))}
               </div>

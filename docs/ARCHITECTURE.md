@@ -1,6 +1,6 @@
 # Tsa Bonno HospitalityOS Architecture
 
-Last reviewed: 2026-07-03
+Last reviewed: 2026-09-09
 
 ## System map
 
@@ -83,3 +83,19 @@ The following can move independently:
 - Supabase migrations.
 
 A feature is operational only when every required surface and migration has been deployed. Repository code alone is not proof of production state.
+## Packaged Bar customer guides
+
+The `hospitality-pos` Electron build takes the approved pair from `output/pdf/` and packages them as external resources at `resources/bar-guides/`, alongside `document-manifest.json`. The build configuration filters that resource set to the two Bar PDFs so repository documentation, screenshots and other product manuals are not shipped accidentally.
+
+The customer path is:
+
+```text
+Bar shell (`HposLayout.jsx` -> `HposNav.jsx`) top-right profile menu -> Help & guides
+  -> renderer requests bar-manual or bar-quick-start
+  -> preload forwards the fixed document identifier
+  -> main process validates the identifier against an allowlist
+  -> main process resolves resources/bar-guides/<approved filename>
+  -> shell.openPath opens the local PDF, or dialog.showSaveDialog + fs.copyFileSync saves it
+```
+
+The renderer never supplies an arbitrary filesystem path. Open and Save PDF are local operations: they do not require connectivity, change operational records or create business audit events. The manifest keeps app applicability, document revision, review date, filename and SHA-256 checksum distinct and is checked before release.

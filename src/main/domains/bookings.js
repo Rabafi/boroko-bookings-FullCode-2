@@ -18,13 +18,13 @@ import {
 } from './infrastructure.js';
 import { assertCreationWithinUsageLimit } from './usage.js';
 import {
-  getNextInvoiceNumberByLookup,
   isMissingInvoiceNumberRpcError,
   roundMoneyValue
 } from './finance.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
 import { patchCachedQuotationSyncState } from './syncCache.js';
 import { computeStayTotal, isCampsiteUnit, normalizeRateMode } from '../../shared/accommodation.js';
+import { getBookingFinancialView } from '../../shared/bookingFinancials.js';
 
 // ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 
@@ -173,8 +173,9 @@ function buildOfflineBookingFinancialState(totalAmount, depositAmount = 0) {
   const paid = Math.max(0, Number(depositAmount || 0));
   const amountPaid = Math.min(paid, total);
   return {
-    amount_paid: amountPaid,
-    payment_status: amountPaid >= total && total > 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'unpaid'
+    _estimated_total_amount: total,
+    _estimated_amount_paid: amountPaid,
+    _estimated_payment_status: amountPaid >= total && total > 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'unpaid'
   };
 }
 
@@ -220,8 +221,11 @@ function patchCachedBookingFinancialEstimate(bookingId, patch = {}) {
     _sync_error: null,
     updated_at: new Date().toISOString()
   };
-  const totalOwed = Number(next.total_amount || 0) + Number(next.charges_total || 0);
-  next.payment_status = calculateBookingPaymentStatus(totalOwed, next.amount_paid);
+  const totalOwed = Number(next._estimated_total_amount ?? next.total_amount ?? 0) + Number(next.charges_total || 0);
+  const estimatedPaid = Number(next._estimated_amount_paid ?? next.amount_paid ?? 0);
+  next._estimated_total_amount = Math.max(0, Number(next._estimated_total_amount ?? next.total_amount ?? 0));
+  next._estimated_amount_paid = Math.max(0, estimatedPaid);
+  next._estimated_payment_status = calculateBookingPaymentStatus(totalOwed, estimatedPaid);
   cachedBookings[idx] = next;
   writeCache('bookings', cachedBookings);
   return next;
@@ -944,8 +948,6 @@ export async function createBooking(data) {
       rate_mode: campsite ? normalizeRateMode(room.rate_mode) : null,
       total_amount: total,
       status: 'confirmed',
-      payment_status: 'unpaid',
-      amount_paid: 0,
       deposit_amount: deposit,
       payment_method: null,
       notes: data.notes || '',
@@ -1033,12 +1035,14 @@ export async function createBooking(data) {
       const optimisticPayment = buildOfflineBookingFinancialState(total, deposit);
       const newBooking = {
         ...booking,
-        amount_paid: optimisticPayment.amount_paid,
-        payment_status: optimisticPayment.payment_status,
+        ...optimisticPayment,
+        // The local row is a display projection.  Keep canonical money
+        // columns empty/zero until the authoritative RPC replays.
+        total_amount: 0,
         _local_invoice_number: buildLocalPendingInvoiceNumber(id),
         _pending_sync: true,
         _pending_payment: deposit > 0,
-        _financial_estimate: deposit > 0,
+        _financial_estimate: true,
         _sync_created_offline: true,
         _sync_state: 'pending',
         _sync_error: null,
@@ -1101,7 +1105,9 @@ export async function createMultiRoomBooking(data = {}) {
   map((entry) => ({
     room_id: String(entry?.room_id || '').trim(),
     adults: Math.max(1, Number(entry?.adults || 1)),
-    children: Math.max(0, Number(entry?.children || 0))
+    children: Math.max(0, Number(entry?.children || 0)),
+    tents: Math.max(0, Number(entry?.tents || 0)),
+    vehicles: Math.max(0, Number(entry?.vehicles || 0))
   })).
   filter((entry) => entry.room_id);
   const uniqueRoomIds = [...new Set(roomLines.map((entry) => entry.room_id))];
@@ -1124,6 +1130,7 @@ export async function createMultiRoomBooking(data = {}) {
   await checkExclusiveEventConflict(data.check_in, data.check_out);
 
   const groupId = data.group_id || buildAccommodationGroupId();
+  const groupIdempotencyKey = data.idempotency_key || `booking-group:${groupId}`;
   const roomPlans = [];
   for (const line of roomLines) {
     await checkRoomConflict(line.room_id, data.check_in, data.check_out);
@@ -1133,68 +1140,161 @@ export async function createMultiRoomBooking(data = {}) {
     if (totalGuests > (room.max_occupancy || 2)) {
       throw new Error(`Room ${room.room_number || ''} exceeds maximum occupancy (${room.max_occupancy || 2}).`);
     }
-    let effectiveRate = room.rate_per_night;
+    const campsite = isCampsiteUnit(room);
+    const tents = campsite ? Math.max(0, Number(line.tents || data.tents || 0)) : 0;
+    const vehicles = campsite ? Math.max(0, Number(line.vehicles || data.vehicles || 0)) : 0;
+    let effectiveRate = campsite
+      ? computeStayTotal(room, { nights, adults: line.adults, children: line.children, tents, vehicles })
+      : Number(room.rate_per_night || 0) * nights;
     try {
-      const override = await getApplicableRate(line.room_id, data.check_in, data.check_out);
-      if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
-        effectiveRate = Number(override.rate);
+      if (state.isOnline && typeof state.supabase?.rpc === 'function') {
+        const { data: quote, error: quoteError } = await state.supabase.rpc(
+          campsite ? 'accommodation_booking_expected_total' : 'quote_room_stay',
+          campsite ? {
+            p_lodge_id: state.lodgeId,
+            p_room_id: line.room_id,
+            p_check_in: data.check_in,
+            p_check_out: data.check_out,
+            p_adults: line.adults,
+            p_children: line.children,
+            p_tents: tents,
+            p_vehicles: vehicles,
+            p_corporate_account_id: data.corporate_account_id || null
+          } : {
+            p_lodge_id: state.lodgeId,
+            p_room_id: line.room_id,
+            p_check_in: data.check_in,
+            p_check_out: data.check_out,
+            p_corporate_account_id: data.corporate_account_id || null
+          }
+        );
+        const quotedTotal = campsite ? Number(quote) : Number(quote?.total);
+        if (!quoteError && Number.isFinite(quotedTotal) && quotedTotal > 0) effectiveRate = quotedTotal;
+      } else {
+        const override = await getApplicableRate(line.room_id, data.check_in, data.check_out);
+        if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+          effectiveRate = Number(override.rate) * nights;
+        }
       }
     } catch { /* fall back to base rate */ }
-    const total = Number(effectiveRate || 0) * nights;
+    const total = Number(effectiveRate || 0);
     if (!Number.isFinite(total) || total <= 0) {
       throw new Error(`Invalid total for room ${room.room_number || ''}. Check room rate and dates.`);
     }
-    roomPlans.push({ ...line, room, total });
+    roomPlans.push({ ...line, room, tents, vehicles, campsite, total });
   }
 
   const groupTotal = roomPlans.reduce((sum, plan) => sum + Number(plan.total || 0), 0);
-  let remainingDeposit = Math.min(Math.max(0, Number(data.deposit_amount || 0)), groupTotal);
-  const created = [];
   const groupNotes = appendAccommodationGroupMetadata(data.notes || '', groupId, roomPlans.length);
 
-  try {
-    for (const plan of roomPlans) {
-      const lineDeposit = Math.min(remainingDeposit, plan.total);
-      remainingDeposit = Math.max(0, Math.round((remainingDeposit - lineDeposit) * 100) / 100);
-      const bookingId = await createBooking({
-        customer_id: data.customer_id,
-        room_id: plan.room_id,
-        check_in: data.check_in,
-        check_out: data.check_out,
-        adults: plan.adults,
-        children: plan.children,
-        deposit_amount: lineDeposit,
-        payment_method: data.payment_method,
-        notes: groupNotes,
-        created_by: data.created_by || null,
-        allow_total_override: true,
-        total_amount: plan.total
-      });
-      created.push({
-        booking_id: bookingId,
-        room_id: plan.room_id,
-        room_number: plan.room?.room_number || null,
-        total_amount: plan.total,
-        deposit_amount: lineDeposit
-      });
-    }
-    await createBookingInvoiceGroup({
-      groupKey: groupId,
-      customerId: data.customer_id,
-      bookingIds: created.map((entry) => entry.booking_id),
-      notes: stripAccommodationGroupMetadata(data.notes || ''),
-      createdBy: data.created_by || state.currentUser?.id || null
-    });
-  } catch (error) {
-    error.message = created.length > 0
-      ? `${error.message} Some room bookings may already have been created; review the bookings list before retrying.`
-      : error.message;
-    throw error;
+  const rpcPayload = {
+    p_lodge_id: state.lodgeId,
+    p_customer_id: data.customer_id,
+    p_check_in: data.check_in,
+    p_check_out: data.check_out,
+    p_rooms: roomPlans.map((plan) => ({
+      room_id: plan.room_id,
+      adults: plan.adults,
+      children: plan.children,
+      tents: plan.tents,
+      vehicles: plan.vehicles
+    })),
+    // Null means the server owns the quote.  The local groupTotal is only a
+    // best-available estimate for offline presentation.
+    p_total_amount: null,
+    p_deposit_amount: Math.min(Math.max(0, Number(data.deposit_amount || 0)), groupTotal),
+    p_deposit_method: data.payment_method || null,
+    p_notes: groupNotes,
+    p_created_by: data.created_by || state.currentUser?.id || null,
+    p_group_key: groupId,
+    p_idempotency_key: groupIdempotencyKey
+  };
+
+  if (state.isOnline) {
+    const { data: result, error } = await state.supabase.rpc('create_multi_room_booking', rpcPayload);
+    if (error) throw new Error(error.message);
+    if (!result?.success) throw new Error(result?.error || 'Could not create multi-room booking');
+    await refreshCache('bookings', 'booking-invoice-groups', 'booking-invoice-group-lines');
+    logActivity('booking_group_created', `Multi-room booking created · ${result.booking_ids?.length || roomPlans.length} rooms · ${data.check_in} → ${data.check_out}`);
+    return { ...result, offline: false };
   }
 
+  // Offline is one group intent. Child records are display-only estimates and
+  // are never emitted as independent create/payment queue operations.
+  let remainingDeposit = Math.min(Math.max(0, Number(data.deposit_amount || 0)), groupTotal);
+  const created = roomPlans.map((plan) => {
+    const lineDeposit = Math.min(remainingDeposit, plan.total);
+    remainingDeposit = Math.max(0, Math.round((remainingDeposit - lineDeposit) * 100) / 100);
+    const localId = randomUUID();
+    return {
+      booking_id: localId,
+      room_id: plan.room_id,
+      room_number: plan.room?.room_number || null,
+      total_amount: plan.total,
+      deposit_amount: lineDeposit,
+      _local_booking_id: localId,
+      _estimated_total_amount: plan.total,
+      _estimated_amount_paid: lineDeposit,
+      _estimated_payment_status: calculateBookingPaymentStatus(plan.total, lineDeposit),
+      _pending_sync: true,
+      _financial_estimate: true,
+      _sync_created_offline: true,
+      _sync_state: 'pending'
+    };
+  });
+  const now = new Date().toISOString();
+  const cachedBookings = readCache('bookings');
+  const localBookings = created.map((entry, index) => ({
+    id: entry.booking_id,
+    lodge_id: state.lodgeId,
+    customer_id: data.customer_id,
+    room_id: entry.room_id,
+    room_number: entry.room_number,
+    check_in: data.check_in,
+    check_out: data.check_out,
+    adults: roomPlans[index].adults,
+    children: roomPlans[index].children,
+    status: 'confirmed',
+    deposit_amount: entry.deposit_amount,
+    payment_method: entry.deposit_amount > 0 ? data.payment_method || 'cash' : null,
+    notes: groupNotes,
+    invoice_number: null,
+    _local_invoice_number: buildLocalPendingInvoiceNumber(entry.booking_id),
+    ...entry,
+    // `entry.total_amount` is the best-available estimate, never the
+    // server-authoritative booking total while this group is offline.
+    total_amount: 0,
+    created_at: now,
+    updated_at: now
+  }));
+  // Persist the single authoritative group intent before exposing optimistic
+  // children. If queue persistence fails, no local booking projection is
+  // allowed to imply that recoverable work exists.
+  queueOperation('rpc', 'create_multi_room_booking', rpcPayload, null, {
+    _queue_id: `booking-group-${groupId}`,
+    _local_booking_ids: created.map((entry) => entry.booking_id),
+    _group_id: groupId,
+    ...(readCache('customers').find((customer) => customer.id === data.customer_id)?._pending_sync ? { _depends_on: `customer-${data.customer_id}` } : {})
+  });
+  writeCache('bookings', [...localBookings, ...cachedBookings.filter((booking) => !created.some((entry) => entry.booking_id === booking.id))]);
+  upsertCachedBookingInvoiceGroup({
+    id: `local-${groupId}`,
+    lodge_id: state.lodgeId,
+    group_key: groupId,
+    customer_id: data.customer_id,
+    invoice_number: buildLocalPendingInvoiceNumber(groupId),
+    issued_at: now,
+    notes: stripAccommodationGroupMetadata(data.notes || ''),
+    created_by: data.created_by || state.currentUser?.id || null,
+    created_at: now,
+    updated_at: now,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _financial_estimate: true
+  }, created.map((entry, index) => ({ booking_id: entry.booking_id, line_order: index + 1, _pending_sync: true })));
   logActivity(
     'booking_group_created',
-    `Multi-room booking created · ${created.length} rooms · ${data.check_in} → ${data.check_out}`
+    `Multi-room booking queued · ${created.length} rooms · ${data.check_in} → ${data.check_out}`
   );
 
   return {
@@ -1219,7 +1319,47 @@ export async function updateBooking(id, data) {
     if (totalGuests > (room.max_occupancy || 2)) {
       throw new Error(`Number of guests (${totalGuests}) exceeds room maximum occupancy (${room.max_occupancy || 2})`);
     }
-    const total = room.rate_per_night * nights;
+    const campsite = isCampsiteUnit(room);
+    const campsiteTents = campsite ? Math.max(0, Number(data.tents ?? data.tents_count ?? 0)) : 0;
+    const campsiteVehicles = campsite ? Math.max(0, Number(data.vehicles ?? data.vehicles_count ?? 0)) : 0;
+    let total = Number(room.rate_per_night || 0) * nights;
+    try {
+      if (state.isOnline && typeof state.supabase?.rpc === 'function') {
+        const quoteArgs = campsite ? {
+          p_lodge_id: state.lodgeId,
+          p_room_id: data.room_id,
+          p_check_in: data.check_in,
+          p_check_out: data.check_out,
+          p_adults: Math.max(1, Number(data.adults || 1)),
+          p_children: Math.max(0, Number(data.children || 0)),
+          p_tents: campsiteTents,
+          p_vehicles: campsiteVehicles,
+          p_corporate_account_id: data.corporate_account_id || null
+        } : {
+          p_lodge_id: state.lodgeId,
+          p_room_id: data.room_id,
+          p_check_in: data.check_in,
+          p_check_out: data.check_out,
+          p_corporate_account_id: data.corporate_account_id || null
+        };
+        const { data: quote, error: quoteError } = await state.supabase.rpc(
+          campsite ? 'accommodation_booking_expected_total' : 'quote_room_stay',
+          quoteArgs
+        );
+        const quotedTotal = campsite ? Number(quote) : Number(quote?.total);
+        if (quoteError || !Number.isFinite(quotedTotal) || quotedTotal <= 0) {
+          throw new Error(quoteError?.message || 'Server quote unavailable');
+        }
+        total = quotedTotal;
+      } else {
+        const override = await getApplicableRate(data.room_id, data.check_in, data.check_out);
+        if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
+          total = Number(override.rate) * nights;
+        }
+      }
+    } catch (quoteError) {
+      if (state.isOnline) throw new Error(`Could not verify the booking quote: ${quoteError.message}`);
+    }
     if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates');
 
     // Local payment_status estimate for the offline cache only.
@@ -1227,7 +1367,8 @@ export async function updateBooking(id, data) {
     // payment_status is intentionally NOT sent in the RPC payload — the server ignores it anyway.
     const currentBooking = readCache('bookings').find((b) => b.id === id);
     const expectedUpdatedAt = data.expected_updated_at || currentBooking?.updated_at || null;
-    const amountPaid = Number(currentBooking?.amount_paid) || 0;
+    const currentFinancial = getBookingFinancialView(currentBooking || {});
+    const amountPaid = currentFinancial.amountPaid;
     // Include charges_total so the offline estimate matches server logic
     const chargesTotal = Number(currentBooking?.charges_total) || 0;
     const totalOwed = total + chargesTotal;
@@ -1241,6 +1382,7 @@ export async function updateBooking(id, data) {
       check_out: data.check_out,
       adults: data.adults,
       children: data.children,
+      ...(campsite ? { tents: campsiteTents, vehicles: campsiteVehicles } : {}),
       total_amount: total,
       notes: data.notes,
       updated_at: new Date().toISOString()
@@ -1258,12 +1400,14 @@ export async function updateBooking(id, data) {
       check_out: update.check_out,
       adults: update.adults,
       children: update.children,
+      ...(campsite ? { tents: campsiteTents, vehicles: campsiteVehicles } : {}),
       total_amount: update.total_amount,
       notes: update.notes
     });
 
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('update_booking', {
+      const updateRpc = campsite ? 'update_campsite_booking' : 'update_booking';
+      const { data: result, error } = await state.supabase.rpc(updateRpc, {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: rpcPayload,
@@ -1278,21 +1422,27 @@ export async function updateBooking(id, data) {
       const idx = cached.findIndex((b) => b.id === id);
       const _updDepend = cached[idx]?._pending_sync ? `booking-${id}` : null;
       // Queue FIRST — dependency resolved from pre-write cache; no second read needed
-      queueOperation('rpc', 'update_booking', {
+      queueOperation('rpc', campsite ? 'update_campsite_booking' : 'update_booking', {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: rpcPayload,
         p_expected_updated_at: rpcPayload.expected_updated_at || null,
         p_idempotency_key: idempotencyKey
       }, null, _updDepend ? { _depends_on: _updDepend } : {});
-      // Cache SECOND — offline estimate includes charges_total for correct local display
+      // Cache SECOND. Keep canonical money fields untouched; the quote and
+      // derived payment status are provisional until replay revalidates them.
       if (idx >= 0) {
         cached[idx] = {
           ...cached[idx],
           ...update,
-          payment_status: offlinePaymentStatus,
-          _pending_payment: true,
-          _pending_sync: true
+          total_amount: cached[idx].total_amount,
+          _estimated_total_amount: total,
+          _estimated_amount_paid: amountPaid,
+          _estimated_payment_status: offlinePaymentStatus,
+          _pricing_estimate: true,
+          _financial_estimate: true,
+          _pending_sync: true,
+          _sync_state: 'pending'
         };
       }
       writeCache('bookings', cached);
@@ -1457,12 +1607,13 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
     const idx = cached.findIndex((b) => b.id === id);
     if (idx >= 0) {
       const b = cached[idx];
-      const newPaid = (Number(b.amount_paid) || 0) + numericAmount;
+      const financial = getBookingFinancialView(b);
+      const newPaid = financial.amountPaid + numericAmount;
       if (newPaid < 0) {
         throw new Error('Payment update would result in a negative amount paid.');
       }
       // Canonical amount owed = room total + charges; || 0 guards against null/undefined charges_total
-      const totalOwed = (Number(b.total_amount) || 0) + (Number(b.charges_total) || 0);
+      const totalOwed = financial.grandTotal;
 
       if (type === 'payment' && newPaid > totalOwed + 0.01) {
         throw new Error(`Amount paid (${newPaid.toFixed(2)}) cannot exceed total booking value (${totalOwed.toFixed(2)}).`);
@@ -1486,8 +1637,11 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
       // Cache SECOND
       cached[idx] = {
         ...b,
-        amount_paid: newPaid,
-        payment_status: newPaid >= totalOwed && totalOwed > 0 ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid',
+        // Payment writes are ledger-authoritative on replay.  Keep the
+        // optimistic delta outside canonical amount_paid/payment_status.
+        _estimated_total_amount: financial.total,
+        _estimated_amount_paid: newPaid,
+        _estimated_payment_status: newPaid >= totalOwed && totalOwed > 0 ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid',
         _pending_payment: true, // local estimate — not server-confirmed; cleared by refreshCache
         _financial_estimate: true,
         _pending_sync: true, // UI-only flag — never sent to Supabase; cleared by next refreshCache from DB
@@ -1908,13 +2062,15 @@ export async function createEventBooking(data) {
     if (!result?.success) throw new Error(result?.error || 'Could not create event booking');
     createdBookingId = result.booking_id || bookingId;
   } else {
+    const optimisticPayment = buildOfflineBookingFinancialState(totalEventPrice, totalDeposit);
     const newBooking = {
       ...booking,
-      amount_paid: 0,
-      payment_status: 'unpaid',
+      total_amount: 0,
+      ...optimisticPayment,
       _local_invoice_number: buildLocalPendingInvoiceNumber(bookingId),
       _pending_sync: true,
       _pending_payment: totalDeposit > 0,
+      _financial_estimate: true,
       _sync_created_offline: true,
       _sync_state: 'pending',
       _sync_error: null,
@@ -2343,7 +2499,7 @@ export async function rescheduleBooking(bookingId, {
     });
 
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('reschedule_booking', {
+      const { data: result, error } = await state.supabase.rpc('reschedule_accommodation_booking', {
         p_booking_id: bookingId,
         p_lodge_id: state.lodgeId,
         p_new_room_id: newRoomId,
@@ -2411,8 +2567,22 @@ export async function rescheduleBooking(bookingId, {
       if (eventConflict) throw new Error('The lodge is fully reserved for an exclusive event on these dates');
 
       const nights = Math.ceil((new Date(newCheckOut) - new Date(newCheckIn)) / (1000 * 60 * 60 * 24));
-      const newTotal = room.rate_per_night * nights;
-      const amountPaid = Number(b.amount_paid) || 0;
+      const campsite = isCampsiteUnit(room);
+      let newTotal = campsite
+        ? computeStayTotal(room, {
+          nights,
+          adults: Number(b.adults || 1),
+          children: Number(b.children || 0),
+          tents: Number(b.tents || b.tents_count || 0),
+          vehicles: Number(b.vehicles || b.vehicles_count || 0)
+        })
+        : Number(room.rate_per_night || 0) * nights;
+      const offlineOverride = await getApplicableRate(newRoomId, newCheckIn, newCheckOut);
+      if (!campsite && offlineOverride && Number.isFinite(Number(offlineOverride.rate)) && Number(offlineOverride.rate) > 0) {
+        newTotal = Number(offlineOverride.rate) * nights;
+      }
+      const currentFinancial = getBookingFinancialView(b);
+      const amountPaid = currentFinancial.amountPaid;
       const chargesTotal = Number(b.charges_total) || 0;
       const newOwed = newTotal + chargesTotal;
       const overpayment = Math.max(0, amountPaid - newOwed);
@@ -2428,7 +2598,7 @@ export async function rescheduleBooking(bookingId, {
 
       const paymentStatus = finalPaid >= newOwed && newOwed > 0 ? 'paid' : finalPaid > 0 ? 'partial' : 'unpaid';
 
-      queueOperation('rpc', 'reschedule_booking', {
+      queueOperation('rpc', 'reschedule_accommodation_booking', {
         p_booking_id: bookingId,
         p_lodge_id: state.lodgeId,
         p_new_room_id: newRoomId,
@@ -2448,10 +2618,13 @@ export async function rescheduleBooking(bookingId, {
         room_id: newRoomId,
         check_in: newCheckIn,
         check_out: newCheckOut,
-        total_amount: newTotal,
-        amount_paid: finalPaid,
-        payment_status: paymentStatus,
+        _estimated_total_amount: newTotal,
+        _estimated_amount_paid: finalPaid,
+        _estimated_payment_status: paymentStatus,
+        _pricing_estimate: true,
+        _financial_estimate: true,
         _pending_sync: true,
+        _sync_state: 'pending',
         updated_at: new Date().toISOString()
       };
       writeCache('bookings', cached);
@@ -2467,6 +2640,7 @@ export async function rescheduleBooking(bookingId, {
         new_total: newTotal,
         amount_paid: finalPaid,
         payment_status: paymentStatus,
+        estimated: true,
         overpayment_transferred: overpayment,
         additional_due: Math.max(0, newOwed - finalPaid),
         offline: true,
@@ -2491,8 +2665,7 @@ async function getNextBookingInvoiceNumber() {
       if (!isMissingInvoiceNumberRpcError(error)) {
         throw new Error('Failed to generate invoice number: ' + error.message);
       }
-      console.warn('[Invoices] get_next_invoice_number RPC unavailable, falling back to lookup:', error.message);
-      return await getNextInvoiceNumberByLookup(state.supabase);
+      throw new Error('The atomic invoice-number service is unavailable. Refresh the server migration before creating a booking.');
     }
     return data;
   }
@@ -3255,10 +3428,11 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       check_out: quotation.check_out || null,
       adults: isEvent ? 1 : Number(quotation.adults) || 1,
       children: isEvent ? 0 : Number(quotation.children) || 0,
-      total_amount: total,
-      amount_paid: optimisticPayment.amount_paid,
+      // Keep canonical money fields unconfirmed while this conversion is
+      // offline.  The queued RPC will write the authoritative ledger values.
+      total_amount: 0,
+      ...optimisticPayment,
       deposit_amount: deposit,
-      payment_status: optimisticPayment.payment_status,
       payment_method: deposit > 0 ? method : null,
       status: 'confirmed',
       invoice_number: null,
@@ -3275,7 +3449,7 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       _local_invoice_number: buildLocalPendingInvoiceNumber(localBookingId),
       _pending_sync: true,
       _pending_payment: deposit > 0,
-      _financial_estimate: deposit > 0,
+      _financial_estimate: true,
       _sync_created_offline: true,
       _sync_state: 'pending',
       _sync_error: null,

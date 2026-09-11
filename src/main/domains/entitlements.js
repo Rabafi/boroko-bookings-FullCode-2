@@ -15,6 +15,8 @@ import {
   toPositiveInt
 } from './subscriptionState.js';
 import { refreshCachedTrialCountdown } from './trialCountdown.js';
+import { getRuntimeProductId } from '../../shared/productIdentity.js';
+import { getCommercialFeatureSet } from '../../shared/commercialAccess.js';
 
 export { refreshCachedTrialCountdown } from './trialCountdown.js';
 
@@ -25,6 +27,36 @@ const ENTITLEMENT_CACHE_TTL_MS = 2 * 60_000
 // time to complete on a cold authenticated session before falling back to a
 // local trial date, which may predate a later active license.
 const ENTITLEMENT_RPC_TIMEOUT_MS = 15 * 1000
+
+async function getProductAwareEntitlement(targetLodgeId) {
+  const productId = getRuntimeProductId()
+  const productResult = await supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
+    p_lodge_id: targetLodgeId,
+    p_product_id: productId
+  }, ENTITLEMENT_RPC_TIMEOUT_MS)
+  if (!productResult.error) return productResult
+
+  // Preserve LodgingOS compatibility during a staged migration rollout. Hotel
+  // and POS must fail over to their product-filtered legacy read instead of
+  // accepting a different executable's one-argument entitlement.
+  if (productId === 'lodge-camp' && isMissingEntitlementRpcError(productResult.error)) {
+    return supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
+      p_lodge_id: targetLodgeId
+    }, ENTITLEMENT_RPC_TIMEOUT_MS)
+  }
+  return productResult
+}
+
+// Drop only the in-memory authorization result. The disk cache remains an
+// offline fallback, while the next online read is forced through the
+// authoritative entitlement RPC.
+export function invalidateTrialStatus(lodgeId = null) {
+  if (lodgeId) {
+    _entitlementCache.delete(lodgeId)
+    return
+  }
+  _entitlementCache.clear()
+}
 
 export function isMissingEntitlementRpcError(error) {
   const message = String(error?.message || '');
@@ -52,6 +84,8 @@ function getCachedEntitlement(targetLodgeId = null) {
   if (!cached || typeof cached !== 'object') return null;
   const refreshed = refreshCachedTrialCountdown(cached);
   if (targetLodgeId && String(refreshed.lodge_id || '').trim().toLowerCase() !== String(targetLodgeId || '').trim().toLowerCase()) {
+    // Covers both wrong-tenant snapshots and lodge-less legacy snapshots:
+    // the latter are handled exclusively by the trusted adapter below.
     return null;
   }
   if (refreshed.status === 'expired' && cached.status === 'trial') return refreshed;
@@ -65,6 +99,41 @@ function getCachedEntitlement(targetLodgeId = null) {
     }
   }
   return refreshed;
+}
+
+/**
+ * Trusted adapter for lodge-less legacy disk snapshots. A snapshot without
+ * tenant provenance is bound to the requested lodge ONLY when this device
+ * holds exactly one company profile (no ambiguity about ownership), passes
+ * the same offline-lease checks as stamped entries, and is written back
+ * stamped so the legacy form disappears. Multi-profile devices must refresh
+ * online instead of guessing ownership.
+ */
+async function getLegacyBoundEntitlement(targetLodgeId) {
+  if (!targetLodgeId) return null;
+  const cached = readCache('trial_status');
+  if (!cached || typeof cached !== 'object') return null;
+  if (String(cached.lodge_id || '').trim()) return null;
+  let singleProfile = false;
+  try {
+    const profiles = await import('./' + 'profiles.js');
+    const list = (profiles.getProfiles?.() || []).filter((profile) => profile?.lodge_id);
+    singleProfile = list.length === 1;
+  } catch {
+    singleProfile = false;
+  }
+  if (!singleProfile) return null;
+  const refreshed = refreshCachedTrialCountdown(cached);
+  const offlineValidUntil = cached.offline_valid_until ||
+  cached.offlineValidUntil || (
+  cached.cached_at ? addDays(cached.cached_at, DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
+  if (offlineValidUntil) {
+    const validUntilDate = new Date(offlineValidUntil);
+    if (!Number.isFinite(validUntilDate.getTime()) || validUntilDate < new Date()) {
+      return null;
+    }
+  }
+  return cacheEntitlement(targetLodgeId, refreshed);
 }
 
 function cacheEntitlement(targetLodgeId, entitlement) {
@@ -198,8 +267,15 @@ function buildLicensedEntitlement(license, featureOverrides = []) {
   };
 }
 
-function coerceEntitlementResponse(payload) {
+function coerceEntitlementResponse(payload, requestedLodgeId = null) {
   if (!payload || typeof payload !== 'object') return null;
+  const requested = requestedLodgeId ? String(requestedLodgeId).trim().toLowerCase() : null;
+  const responseLodge = payload.lodge_id ? String(payload.lodge_id).trim().toLowerCase() : null;
+  // Fail closed when the server answers for a different tenant than the one
+  // requested. When the response carries no tenant, bind the requested lodge:
+  // the RPC was scoped with p_lodge_id=requested under RLS, so the answer is
+  // inherently about that tenant — this is the trusted adapter, not a guess.
+  if (requested && responseLodge && responseLodge !== requested) return null;
   const normalizedPlan = payload.plan ? normalizePlanName(payload.plan) : payload.status === 'trial' ? 'Trial' : null;
   const effectiveFeatures = mergeFeatureOverrides(
     getPlanFeatureMap(normalizedPlan || 'Starter', {
@@ -211,9 +287,18 @@ function coerceEntitlementResponse(payload) {
 
   const commercialAddonKeys = payload.enterprise_addons
     || payload.commercial_pricing_snapshot?.selection?.selected_addon_keys;
+  // Older RPCs return base-package features alongside the approved addon
+  // selection. Resolve those grants before legacy plan defaults; explicit
+  // server denials and product-scoped overrides retain precedence.
+  const boundPayload = { ...payload, lodge_id: responseLodge ? payload.lodge_id : (requestedLodgeId || null) };
+  if (payload.product_id === 'hospitality-pos') {
+    for (const feature of getCommercialFeatureSet(payload.product_id, payload.commercial_package_key, commercialAddonKeys, boundPayload, requestedLodgeId)) {
+      if (!Object.prototype.hasOwnProperty.call(payload.effective_features || {}, feature)) effectiveFeatures[feature] = true;
+    }
+  }
   return {
     ...payload,
-    lodge_id: payload.lodge_id || null,
+    lodge_id: boundPayload.lodge_id,
     plan: normalizedPlan,
     expired: payload.expired === true,
     daysLeft: payload.daysLeft ?? payload.days_left ?? null,
@@ -229,6 +314,29 @@ function coerceEntitlementResponse(payload) {
   };
 }
 
+// Test seam: pure tenant binding for the authoritative fetch path.
+export { coerceEntitlementResponse as coerceEntitlementResponseForTenant };
+
+/**
+ * Read the live server entitlement without any disk, legacy-query, or trial
+ * fallback. Use this for provisioning high-risk access where a stale offline
+ * lease must never authorize a new capability.
+ */
+export async function getAuthoritativeTrialStatus(lodgeId) {
+  const targetLodgeId = lodgeId || await getActiveProfileLodgeId();
+  if (!targetLodgeId || state.isOnline !== true || !state.supabase) {
+    throw new Error('A live entitlement connection is required.');
+  }
+
+  const { data, error } = await getProductAwareEntitlement(targetLodgeId);
+  if (error) throw new Error(error.message || 'The live entitlement could not be verified.');
+
+  const normalized = coerceEntitlementResponse(data, targetLodgeId);
+  if (!normalized) throw new Error('The live entitlement response was invalid or belongs to a different tenant.');
+  _entitlementCache.set(targetLodgeId, { result: normalized, cachedAt: Date.now() });
+  return cacheEntitlement(targetLodgeId, normalized);
+}
+
 async function getLegacyFeatureOverrides(targetLodgeId) {
   const { data, error } = await state.supabase.
   from('lodge_features').
@@ -240,12 +348,17 @@ async function getLegacyFeatureOverrides(targetLodgeId) {
 
 async function getLegacyEntitlement(targetLodgeId) {
   const now = new Date().toISOString();
-  const { data: licenseRows, error: licenseError } = await state.supabase.
+  const productId = getRuntimeProductId()
+  let licenseQuery = state.supabase.
   from('licenses').
   select('id, lodge_id, lodge_name, expires_at, subscription_plan, monthly_fee, payment_status, next_due_date, currency, is_active, plan_version_code, grace_period_days, offline_lease_days, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot').
   eq('lodge_id', targetLodgeId).
   eq('is_active', true).
-  or(`expires_at.is.null,expires_at.gt.${now}`).
+  or(`expires_at.is.null,expires_at.gt.${now}`)
+  licenseQuery = productId === 'lodge-camp'
+    ? licenseQuery.or('product_id.eq.lodge-camp,product_id.is.null')
+    : licenseQuery.eq('product_id', productId)
+  const { data: licenseRows, error: licenseError } = await licenseQuery.
   order('issued_at', { ascending: false }).
   limit(1);
 
@@ -276,12 +389,14 @@ export async function getTrialStatus(lodgeId, options = {}) {
     return buildTrialEntitlement(null);
   }
 
+  const forceFresh = options?.forceFresh === true
+  if (forceFresh) invalidateTrialStatus(targetLodgeId)
   const cached = _entitlementCache.get(targetLodgeId)
-  if (options.forceFresh !== true && cached && Date.now() - cached.cachedAt < ENTITLEMENT_CACHE_TTL_MS) {
+  if (!forceFresh && cached && Date.now() - cached.cachedAt < ENTITLEMENT_CACHE_TTL_MS) {
     return cached.result
   }
 
-  const existingRequest = _entitlementRequests.get(targetLodgeId)
+  const existingRequest = forceFresh ? null : _entitlementRequests.get(targetLodgeId)
   if (existingRequest) return existingRequest
 
   const request = loadTrialStatus(targetLodgeId)
@@ -302,6 +417,8 @@ async function loadTrialStatus(targetLodgeId) {
   if (checkResult === 'timeout' || !state.isOnline) {
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
+    const legacyBound = await getLegacyBoundEntitlement(targetLodgeId);
+    if (legacyBound) return legacyBound;
     const staleCached = readCache('trial_status');
     if (staleCached && typeof staleCached === 'object') {
       return buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
@@ -311,11 +428,9 @@ async function loadTrialStatus(targetLodgeId) {
   }
 
   try {
-    const { data, error } = await supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
-      p_lodge_id: targetLodgeId
-    }, ENTITLEMENT_RPC_TIMEOUT_MS);
+    const { data, error } = await getProductAwareEntitlement(targetLodgeId);
     if (error) throw error;
-    const normalized = coerceEntitlementResponse(data);
+    const normalized = coerceEntitlementResponse(data, targetLodgeId);
     if (normalized) {
       _entitlementCache.set(targetLodgeId, { result: normalized, cachedAt: Date.now() })
       return cacheEntitlement(targetLodgeId, normalized);
@@ -336,6 +451,8 @@ async function loadTrialStatus(targetLodgeId) {
     }
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
+    const legacyBound = await getLegacyBoundEntitlement(targetLodgeId);
+    if (legacyBound) return legacyBound;
     const staleCached = readCache('trial_status');
     if (staleCached && typeof staleCached === 'object') {
       const result = buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
@@ -358,7 +475,7 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
       p_license_key: key
     });
     if (error) throw error;
-    const normalized = coerceEntitlementResponse(data);
+    const normalized = coerceEntitlementResponse(data, lodgeId);
     if (normalized?.success === false) throw new Error(normalized.error || 'Activation failed');
     if (normalized) {
       _entitlementCache.delete(lodgeId);

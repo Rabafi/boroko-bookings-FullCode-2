@@ -39,6 +39,13 @@ import {
 const ROOM_MEDIA_TTL_MS = 30 * 60 * 1000
 const BOOKING_FORM_KEY = 'booking-form-data'
 const BOOKING_STATE_KEY = 'booking-state'
+const BOOKING_IDEMPOTENCY_KEY = 'booking-idempotency-key'
+
+function createBookingIdempotencyKey() {
+  const randomUuid = globalThis.crypto?.randomUUID
+  if (typeof randomUuid === 'function') return randomUuid.call(globalThis.crypto)
+  return `public-booking-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`
+}
 
 function clampGuestCount(value, max) {
   const numeric = Number(value || 0)
@@ -227,6 +234,11 @@ export default function BookingPage() {
     vehicles: 0,
     notes: ''
   })
+  // Keep one request key for this form intent.  A refresh or ambiguous
+  // network retry must replay the same key; a successful submission clears it
+  // so a later booking is a new intent.
+  const [idempotencyKey] = useState(() => readSessionState(BOOKING_IDEMPOTENCY_KEY) || createBookingIdempotencyKey())
+  useSessionState(BOOKING_IDEMPOTENCY_KEY, idempotencyKey)
 
   // Inline validation state
   const [touched, setTouched] = useState({})
@@ -438,6 +450,7 @@ export default function BookingPage() {
     const { data, error: rpcError } = await rpc('create_online_booking', {
       p_slug: slug,
       payload: {
+        idempotency_key: idempotencyKey,
         booking_type: effectiveBookingType,
         room_id: selectedRooms[0]?.id || room.id,
         rooms: roomLines,
@@ -474,6 +487,7 @@ export default function BookingPage() {
     // Clear form persistence after successful submission
     clearSessionState(BOOKING_FORM_KEY)
     clearSessionState(BOOKING_STATE_KEY)
+    clearSessionState(BOOKING_IDEMPOTENCY_KEY)
 
     trackBookingRequest(slug, room.id, data.booking_id, data.total_amount)
     navigate(`/${slug}/success`, { state: { booking: data }, replace: true })

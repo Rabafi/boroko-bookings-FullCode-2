@@ -275,7 +275,7 @@ export default function Dashboard() {
       setCashDrawer(rDrawer || null)
       setActiveAlerts(Array.isArray(rAlerts) ? rAlerts : [])
       const usagePlan = normalizeSubscriptionPlan(usage?.plan || s?.plan || settings?.subscription_plan || 'Starter')
-      const usageLimits = getPlanUsageLimits(usagePlan)
+      const usageLimits = usage?.limits || getPlanUsageLimits(usagePlan)
       const usageCounts = usage && !usage.error && usage.usage
         ? {
             monthlyBookings: Number(usage.usage.monthlyBookings || 0),
@@ -505,7 +505,7 @@ export default function Dashboard() {
     [allUpcoming]
   )
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || settings?.subscription_plan || 'Starter')
-  const usageLimits = getPlanUsageLimits(currentPlan)
+  const usageLimits = usageSnapshot?.limits || getPlanUsageLimits(currentPlan)
   const usageCounts = usageSnapshot?.usage || { monthlyBookings: 0, rooms: 0, users: 0 }
   const bookingStatus = usageSnapshot?.statuses?.bookings || getUsageLimitStatus({ used: usageCounts.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace })
   const roomStatus = usageSnapshot?.statuses?.rooms || getUsageLimitStatus({ used: usageCounts.rooms, limit: usageLimits.rooms })

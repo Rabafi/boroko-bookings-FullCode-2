@@ -293,7 +293,14 @@ test('pos.js updatePosMenuItem includes visual cue fields in RPC payload', () =>
 })
 
 test('pos.js _getPosMenuItems selects visual cue columns from database', () => {
-  assert.match(posDomain, /select\('id, name, category, price, is_available, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id'\)/)
+  // Additional catalogue fields (such as archived_at) must not make this
+  // contract fail. Check the actual menu SELECT's required column set.
+  const menuSelect = posDomain.match(/from\('pos_menu_items'\)\s*\.\s*select\('([^']+)'\)/)
+  assert.ok(menuSelect, 'the remote menu read must retain an explicit column list')
+  const columns = new Set(menuSelect[1].split(',').map((column) => column.trim()))
+  for (const column of ['id', 'name', 'category', 'price', 'is_available', 'archived_at', 'barcode', 'inventory_item_id', 'depletion_qty', 'outlet_id', 'template_kind', 'lodge_id', 'created_at', 'updated_at', 'dietary_flags', 'prep_time_minutes', 'is_popular', 'kitchen_station_id']) {
+    assert.ok(columns.has(column), `menu read must include ${column}`)
+  }
 })
 
 test('Full pipeline: form state -> pos.js payload -> RPC column -> POS read back', () => {

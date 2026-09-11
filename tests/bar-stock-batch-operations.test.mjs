@@ -54,6 +54,19 @@ test('Count All requires certified versioned stock and reviews all lines before 
   assert.match(migration, /missing_stock_version/)
 })
 
+test('single-item Count uses the same stale-stock contract as Count All', () => {
+  const actionStart = stock.indexOf('const recordStockAction = async () => {')
+  const actionEnd = stock.indexOf('const openCountAll = () => {', actionStart)
+  assert.ok(actionStart >= 0 && actionEnd > actionStart)
+  const action = stock.slice(actionStart, actionEnd)
+  assert.match(action, /postBarPhysicalCount\(\{/)
+  assert.match(action, /operation_id: stockAction\.operationId/)
+  assert.match(action, /expected_qty: stockNumber\(stockAction\.item\)/)
+  assert.match(action, /expected_updated_at: stockAction\.item\.updated_at \|\| null/)
+  assert.match(action, /actual_qty: entered/)
+  assert.doesNotMatch(action, /if \(delta === 0\)/)
+})
+
 test('barcode receiving and verified output-path label printing have recovery paths', () => {
   assert.match(domain, /findInventoryItemByBarcode/)
   assert.match(stock, /Barcode lookup/)

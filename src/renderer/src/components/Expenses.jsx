@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, Search } from 'lucide-react'
+import { NavLink, useSearchParams } from 'react-router'
+import { Plus, Pencil, Trash2, Search, ArrowLeft } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
@@ -66,6 +67,13 @@ export default function Expenses() {
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
   const CATEGORIES = restaurantMode ? RESTAURANT_CATEGORIES : LODGE_CATEGORIES
+  const [searchParams] = useSearchParams()
+  // Canonical cross-module navigation (F&B Phase 2): ?scope=food-beverage keeps
+  // the one canonical Expenses workflow; F&B only filters + preserves return.
+  const fnbScope = searchParams.get('scope') === 'food-beverage'
+  const fnbOutlet = searchParams.get('outlet') || ''
+  const fnbReturn = searchParams.get('from') === 'food-beverage'
+  const fnbBackTo = fnbOutlet ? `/food-beverage/close?outlet=${encodeURIComponent(fnbOutlet)}` : '/food-beverage/close'
 
   const [expenses, setExpenses] = useState([])
   const [inventorySpend, setInventorySpend] = useState({ total: 0, purchases: [] })
@@ -80,6 +88,13 @@ export default function Expenses() {
   const [sortBy, setSortBy] = useState('date_desc')
   const [outlets, setOutlets] = useState([])
   const [selectedOutlet, setSelectedOutlet] = useState('all')
+
+  // Consume the F&B outlet query state on entry; operator changes afterwards win.
+  useEffect(() => {
+    if (fnbOutlet) setSelectedOutlet(fnbOutlet)
+    if (fnbScope) setCatFilter((current) => (current === 'all' ? 'Food & Beverage' : current))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fnbOutlet, fnbScope])
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -302,6 +317,12 @@ export default function Expenses() {
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      {(fnbScope || fnbReturn) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-sm text-slate-700">
+          <p><strong className="font-bold text-emerald-800">F&amp;B-filtered view.</strong> This is the canonical Lodge Expenses workflow — F&amp;B only filters it{fnbOutlet ? ' to the selected outlet' : ''}.</p>
+          <NavLink to={fnbBackTo} className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-xs font-bold text-white hover:bg-emerald-800"><ArrowLeft size={14} />Back to F&amp;B</NavLink>
+        </div>
+      )}
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Operating Costs</p>

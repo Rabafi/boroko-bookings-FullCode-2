@@ -90,7 +90,15 @@ export const HOTEL_NAV_GROUPS = [
       { to: '/calendar', label: 'Calendar', icon: CalendarDays, match: ['/calendar'] },
       { to: '/quotations', label: 'Quotations', icon: ClipboardList, match: ['/quotations'] },
       { to: '/invoices', label: 'Invoices', icon: CreditCard, match: ['/invoices'] },
-      { to: '/prepayments', label: 'Advances', icon: Wallet, match: ['/prepayments'] }
+      {
+        to: '/prepayments',
+        label: 'Guest Deposits',
+        icon: Wallet,
+        match: ['/prepayments'],
+        feature: 'prepayments_basic',
+        moduleKey: 'prepayments_basic',
+        capability: 'prepayments.view'
+      }
     ]
   },
   {
@@ -313,12 +321,13 @@ export const HOTEL_MORE_ITEMS = [
   },
   {
     to: '/data-management',
-    label: 'Data import',
+    label: 'Data Management',
     icon: Database,
     match: ['/data-management'],
     feature: 'import',
     moduleKey: 'import',
-    pitch: 'Import guests, rooms, and history'
+    capabilityAny: ['data.import', 'backup.starter_export'],
+    pitch: 'Import property records, export workbooks, and maintain core data backups'
   },
     {
       to: '/ai',
@@ -672,11 +681,29 @@ export function isHotelNavItemLocked(item, { features = {}, addons = [] } = {}) 
   return false
 }
 
+/**
+ * Role capabilities are separate from feature entitlements: a role-blocked
+ * item should not be advertised as an upgrade the user cannot use.
+ * An empty map is treated as not-yet-loaded to preserve the initial shell.
+ */
+export function isHotelNavItemRoleAllowed(item, { allowedByRole = {} } = {}) {
+  const requiredCapabilities = Array.isArray(item?.capabilityAny)
+    ? item.capabilityAny
+    : (item?.capability ? [item.capability] : [])
+  if (requiredCapabilities.length === 0) return true
+  const hasRoleMap = allowedByRole && typeof allowedByRole === 'object'
+    && Object.keys(allowedByRole).length > 0
+  if (!hasRoleMap) return true
+  return requiredCapabilities.some((capability) => allowedByRole[capability] === true)
+}
+
 export function annotateHotelNavItem(item, context) {
   const locked = isHotelNavItemLocked(item, context)
+  const roleBlocked = !isHotelNavItemRoleAllowed(item, context)
   return {
     ...item,
     isLocked: locked,
+    isRoleBlocked: roleBlocked,
     lockBadge: locked ? (item.isAddon ? 'Add-on' : 'Upgrade') : null
   }
 }
@@ -719,12 +746,13 @@ export function pathMatchesHotelItem(pathname, item) {
 }
 
 /** Flatten all navigable hotel links for command palette */
-export function getHotelSearchItems({ includeLocked = true, features = {}, addons = [] } = {}) {
+export function getHotelSearchItems({ includeLocked = true, features = {}, addons = [], allowedByRole = {} } = {}) {
   const seen = new Set()
   const items = []
   const push = (link, group) => {
     if (!link?.to || seen.has(link.to)) return
-    const annotated = annotateHotelNavItem(link, { features, addons })
+    const annotated = annotateHotelNavItem(link, { features, addons, allowedByRole })
+    if (annotated.isRoleBlocked) return
     if (!includeLocked && annotated.isLocked) return
     seen.add(link.to)
     items.push({

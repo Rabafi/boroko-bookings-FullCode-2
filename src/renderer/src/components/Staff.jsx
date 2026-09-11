@@ -24,7 +24,8 @@ import {
   Eye,
   EyeOff,
   Mail,
-  Briefcase
+  Briefcase,
+  BarChart3
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
@@ -44,9 +45,16 @@ import {
   normalizeAppRole,
   normalizeStaffStatus
 } from '../../../shared/accessControl'
-import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 
 const HotelRolesConfig = lazy(() => import('./HotelRolesConfig'))
+const StaffProductivityPanel = lazy(() => import('./shared/StaffProductivityPanel'))
+
+// Performance (staff activity) lives inside the Staff page for the lodging
+// app so Starter teams can see it. Other products keep the existing
+// Enterprise Workforce surface untouched.
+const IS_LODGE_APP = getProductDefinition(getRuntimeProductId()).id === 'lodge-camp'
 
 const emptyForm = {
   name: '',
@@ -214,6 +222,7 @@ function StaffMembers() {
   const access = useAccess()
   const features = useFeatures()
   const starterAccessLite = features?.staff_basic === true && features?.staff !== true
+  const pwaFeatureEnabled = features?.pwa === true
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
@@ -221,12 +230,12 @@ function StaffMembers() {
   const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
   const currentRole = normalizeAppRole(currentUser?.role)
   const canManageStaff = canAccessCapability(access, 'staff.manage')
-  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
   const canSetRoles = canManageStaff && !starterAccessLite && ['admin', 'super_admin'].includes(currentRole)
   const isLimitedStaffManager = canManageStaff && currentRole === 'manager'
 
   const [users, setUsers] = useState([])
   const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const usageLimits = usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {})
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -297,7 +306,7 @@ function StaffMembers() {
     () => users.filter((user) => normalizeAppRole(user.role) === 'admin' && ['active', 'suspended'].includes(normalizeStaffStatus(user.status))).length,
     [users]
   )
-  const userLimitStatus = usageSnapshot?.statuses?.users || canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
+  const userLimitStatus = usageSnapshot?.statuses?.users || canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length, limits: usageLimits })
   const staffEarlyPrompt = getEarlyUpgradePromptState({
     plan: currentPlan,
     bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? 0,
@@ -454,7 +463,7 @@ function StaffMembers() {
       }
       if (Object.keys(form.capability_overrides || {}).length > 0 || form.pwa_enabled || (form.allowed_outlet_ids || []).length > 0) {
         setLoading(false)
-        setError('Starter user access uses fixed role templates. Custom permissions, mobile access, and outlet assignments are available on Standard.')
+        setError('Starter user access uses fixed role templates. Custom permissions and outlet assignments are available on Standard; Manager mobile app access is available on Pro.')
         return
       }
     }
@@ -511,7 +520,7 @@ function StaffMembers() {
     if (editingId) {
       result = await window.api.users.update(editingId, buildUserPayload(form, editingUser))
     } else {
-      const userLimitStatus = canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length })
+      const userLimitStatus = canCreateUser({ plan: access?.entitlement?.plan || 'Starter', used: users.length, limits: usageLimits })
       if (userLimitStatus.isBlocked) {
         const plan = access?.entitlement?.plan || 'Starter'
         const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
@@ -861,14 +870,14 @@ function StaffMembers() {
                     Administrator-controlled account
                   </span>
                 )}
-                {!starterAccessLite && pwaEligible && (
+                {pwaFeatureEnabled && pwaEligible && (
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     pwaEnabled ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'
                   }`}>
                     {pwaEnabled ? 'Manager mobile app ready' : 'Manager mobile app turned off'}
                   </span>
                 )}
-                {!starterAccessLite && staffUser.pwa_password_set_at && (
+                {pwaFeatureEnabled && pwaEligible && staffUser.pwa_password_set_at && (
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
                     Mobile app password updated {formatShortDate(staffUser.pwa_password_set_at)}
                   </span>
@@ -881,7 +890,7 @@ function StaffMembers() {
                   </span>
                 ))}
               </div>
-              {!starterAccessLite && pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
+              {pwaFeatureEnabled && pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mt-3">
                   {staffUser.pwa_disabled_reason}
                 </p>
@@ -1202,7 +1211,7 @@ function StaffMembers() {
               </div>
             )}
 
-            {!starterAccessLite && isPwaEligibleRole(form.role) && (
+            {pwaFeatureEnabled && isPwaEligibleRole(form.role) && (
               <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <p className="text-sm font-medium text-slate-800">Manager mobile app access</p>
@@ -1805,18 +1814,21 @@ export default function Staff() {
   const barOnly = isBarOnlyMode(settings)
 
   const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
+  const canViewPerformance = IS_LODGE_APP && canAccessCapability(access, 'staff.view')
+  const showPerformanceTab = IS_LODGE_APP && canViewPerformance
 
   useEffect(() => {
     const tabParam = searchParams.get('tab')
     if (starterAccessLite) {
-      setTab('staff')
+      setTab(tabParam === 'performance' && showPerformanceTab ? 'performance' : 'staff')
       return
     }
     if (tabParam) setTab(tabParam)
-  }, [searchParams, starterAccessLite])
+  }, [searchParams, starterAccessLite, showPerformanceTab])
 
   const tabs = [
     { key: 'staff', label: starterAccessLite ? 'User Accounts' : 'Staff Members', icon: User },
+    ...(showPerformanceTab ? [{ key: 'performance', label: 'Performance', icon: BarChart3 }] : []),
     ...(!starterAccessLite ? [{ key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck }] : []),
     ...(!starterAccessLite && hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
     ...(!starterAccessLite ? [{ key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }] : [])
@@ -1858,6 +1870,7 @@ export default function Staff() {
       </div>
 
       {tab === 'staff' && <StaffMembers />}
+      {tab === 'performance' && showPerformanceTab && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading performance...</div>}><StaffProductivityPanel /></Suspense>}
       {tab === 'roles' && <RolesAndPermissions restaurantMode={restaurantMode} />}
       {tab === 'hotel-roles' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><HotelRolesConfig /></Suspense>}
       {tab === 'activity' && <ActivityLog restaurantMode={restaurantMode} />}

@@ -11,6 +11,7 @@ export default function BottomNav({ alertCount = 0, inboxUnreadCount = 0, inboxE
   const secondaryRoutes = new Set([
     '/more',
     '/alerts',
+    '/performance',
     '/reports',
     '/quotations',
     '/invoices',

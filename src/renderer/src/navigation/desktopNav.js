@@ -289,7 +289,7 @@ export const ALL_NAV = [
   },
   {
     to: '/starter-backup',
-    label: 'Core data recovery export',
+    label: 'Core Data Backup',
     icon: Database,
     types: ['lodge'],
     group: 'Finance',
@@ -297,6 +297,7 @@ export const ALL_NAV = [
     tier: 'Starter',
     capability: 'backup.starter_export',
     moduleKey: 'starter_backup',
+    visiblePlans: ['Starter'],
     keywords: ['backup', 'recovery', 'core data', 'data ownership', 'support']
   },
   {
@@ -494,8 +495,9 @@ export const ALL_NAV = [
     group: 'Finance',
     feature: 'import',
     tier: 'Standard',
-    capability: 'data.import',
+    capabilityAny: ['data.import', 'backup.starter_export'],
     moduleKey: 'import',
+    visiblePlans: ['Standard', 'Pro', 'Enterprise'],
     keywords: ['import', 'export', 'backup']
   },
   {
@@ -708,19 +710,6 @@ export const ALL_NAV = [
     keywords: ['corporate billing', 'company charges', 'group billing']
   },
   {
-    to: '/documents',
-    label: 'Documents',
-    icon: FileText,
-    types: ['lodge'],
-    hideFromSidebar: true,
-    group: 'Hotel',
-    feature: 'documents',
-    tier: 'Enterprise',
-    capability: 'documents.view',
-    moduleKey: 'documents',
-    keywords: ['templates', 'forms', 'registration cards', 'statements']
-  },
-  {
     to: '/hotel-roles',
     label: 'Hotel Roles',
     icon: UserCog,
@@ -900,6 +889,7 @@ export function getDesktopNavItems(bizType, access, propertyType = null, subscri
     if (hotelMode && item.hideInHotelMode) return acc
     if (barOnlyMode && item.barOnlyHidden) return acc
     if (item.barOnlyOnly && !barOnlyMode) return acc
+    if (Array.isArray(item.visiblePlans) && !item.visiblePlans.includes(normalizedPlan)) return acc
 
     // Lodge product: hotel-only catalog modules and pure hotel-type rail items stay out.
     if (lodgeProductScoped) {
@@ -930,7 +920,10 @@ export function getDesktopNavItems(bizType, access, propertyType = null, subscri
     if (lodgeProductScoped && isLocked && item.group === 'Hotel') return acc
 
     if (!isLocked) {
-      if (item.capability && access?.allowedByRole?.[item.capability] !== true) return acc
+      if (Array.isArray(item.capabilityAny)) {
+        const allowedByRole = access?.allowedByRole || {}
+        if (!item.capabilityAny.some((capability) => allowedByRole[capability] === true)) return acc
+      } else if (item.capability && access?.allowedByRole?.[item.capability] !== true) return acc
     }
 
     acc.push({ ...item, visibility, isLocked })

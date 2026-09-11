@@ -68,12 +68,12 @@ test('nightAudit IPC handlers exist in main/index.js', () => {
 test('nightAudit preload bridges exist', () => {
   const preload = readSource('src/preload/index.js')
   assert.ok(preload.includes('nightAudit:'))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:runChecks')"))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:close'"))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:reopen'"))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:summary'"))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:history'"))
-  assert.ok(preload.includes("ipcRenderer.invoke('nightAudit:resolveException'"))
+  assert.ok(preload.includes("invoke('nightAudit:runChecks')"))
+  assert.ok(preload.includes("invoke('nightAudit:close'"))
+  assert.ok(preload.includes("invoke('nightAudit:reopen'"))
+  assert.ok(preload.includes("invoke('nightAudit:summary'"))
+  assert.ok(preload.includes("invoke('nightAudit:history'"))
+  assert.ok(preload.includes("invoke('nightAudit:resolveException'"))
 })
 
 // ── Access control tests ───────────────────────────────────────────────────

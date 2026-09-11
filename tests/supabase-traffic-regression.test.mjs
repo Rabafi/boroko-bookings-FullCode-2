@@ -24,8 +24,10 @@ test('desktop entitlement requests are cached and concurrent calls are coalesced
   assert.match(entitlements, /const _entitlementRequests = new Map\(\)/)
   assert.match(entitlements, /const ENTITLEMENT_CACHE_TTL_MS = 2 \* 60_000/)
   assert.match(entitlements, /const ENTITLEMENT_RPC_TIMEOUT_MS = 15 \* 1000/)
+  assert.match(entitlements, /export function invalidateTrialStatus\(lodgeId = null\)/)
+  assert.match(entitlements, /if \(forceFresh\) invalidateTrialStatus\(targetLodgeId\)/)
   assert.match(entitlements, /if \(existingRequest\) return existingRequest/)
-  assert.match(entitlements, /options\.forceFresh !== true/)
+  assert.match(entitlements, /if \(!forceFresh && cached && Date\.now\(\) - cached\.cachedAt < ENTITLEMENT_CACHE_TTL_MS\)/)
 })
 
 test('high-cost manager pages retain refresh behavior with gentler visible-only polling', async () => {

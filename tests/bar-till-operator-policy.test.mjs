@@ -75,6 +75,59 @@ test('POS surfaces enforce policy and preserve operator identity', () => {
   assert.match(attributionMigration, /trg_pos_orders_assign_operator_from_shift/)
 })
 
+test('fresh Shift-mode payments await proof renewal before creating the order', () => {
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  const preflight = terminal.indexOf('const renewed = await window.api?.pos?.touchSharedTillOperator?.({')
+  const submit = terminal.indexOf('const result = await window.api.pos.createOrder(orderPayload);')
+
+  assert.ok(preflight >= 0, 'payment must synchronously renew the server-side Till proof')
+  assert.ok(submit > preflight, 'proof renewal must finish before the order RPC starts')
+  assert.match(terminal, /!retryingSubmit[\s\S]*const renewed = await window\.api\?\.pos\?\.touchSharedTillOperator/)
+  assert.match(terminal, /if \(!renewed\?\.success\)[\s\S]*clearTillOperatorState\([\s\S]*showUnlock: true/)
+})
+
+test('Strict tab payment authorizes once and consumes exactly once', () => {
+  // Mirrors the single-call tab payment: one authorize carrying the
+  // waiter/cashier/shift/outlet identity, then one consume after the order
+  // succeeds. A second payment without a fresh PIN is rejected.
+  let now = 50_000
+  const store = createTillOperatorSessionStore({ clock: () => now })
+  store.create({ webContentsId: 9, staffId: 'op-9', staffName: 'Op', outletId: 'out-9', shiftId: 'shift-9', mode: TILL_OPERATOR_MODES.STRICT, inactivityMinutes: 30 })
+  const authorized = store.authorize(9, { outletId: 'out-9', operatorId: 'op-9', shiftId: 'shift-9' })
+  assert.equal(authorized.success, true)
+  assert.equal(authorized.session.staffId, 'op-9')
+  store.consumeStrict(9)
+  assert.equal(store.get(9), null)
+  const second = store.authorize(9, { outletId: 'out-9', operatorId: 'op-9', shiftId: 'shift-9' })
+  assert.equal(second.success, false)
+  assert.equal(second.code, TILL_OPERATOR_SESSION_CODES.REQUIRED)
+})
+
+test('failed tab payment preserves the Strict session for retry', () => {
+  // No consume happens unless the order succeeds, so a rejected tab payment
+  // keeps its authorization for the corrected retry instead of forcing a
+  // re-PIN that would mint a new sale.
+  let now = 60_000
+  const store = createTillOperatorSessionStore({ clock: () => now })
+  store.create({ webContentsId: 10, staffId: 'op-10', outletId: 'out-10', shiftId: 'shift-10', mode: TILL_OPERATOR_MODES.STRICT, inactivityMinutes: 30 })
+  const authorized = store.authorize(10, { outletId: 'out-10', operatorId: 'op-10', shiftId: 'shift-10' })
+  assert.equal(authorized.success, true)
+  assert.equal(store.get(10)?.staffId, 'op-10')
+})
+
+test('Shift sessions survive success and renew on activity', () => {
+  // Shift mode is the shared-terminal exception: one PIN covers the shift,
+  // activity renews the lease, and consumeStrict is a no-op for Shift.
+  let now = 70_000
+  const store = createTillOperatorSessionStore({ clock: () => now })
+  store.create({ webContentsId: 11, staffId: 'op-11', outletId: 'out-11', shiftId: 'shift-11', mode: TILL_OPERATOR_MODES.SHIFT, inactivityMinutes: 30 })
+  const touched = store.touch(11, { outletId: 'out-11', operatorId: 'op-11', shiftId: 'shift-11' })
+  assert.equal(touched.success, true)
+  assert.equal(store.get(11)?.staffId, 'op-11')
+  store.consumeStrict(11)
+  assert.equal(store.get(11)?.staffId, 'op-11')
+})
+
 test('session manager expires without reads extending the lease', () => {
   let now = 1000
   const store = createTillOperatorSessionStore({ clock: () => now })

@@ -1,6 +1,5 @@
 import fs from 'fs'
 import { join } from 'path'
-import crypto from 'crypto'
 import electron from 'electron'
 import { resolveLocalAssistantTurn, createLocalAssistantSession, getLocalAssistantCatalog } from './localAssistant.js'
 
@@ -436,15 +435,39 @@ function resolveProvider() {
 
 const DEFAULT_AI_MODEL = process.env.BOROKO_AI_MODEL || 'boroko-local-assistant'
 
-// ─── P0.6: ACTION-TAKING AI LAUNCH GATE ─────────────────────────────────
-// By default, confirm-required (write) tools are DISABLED for safety.
-// Read-only AI (summaries, dashboards, fraud detection) still works.
-// Set BOROKO_AI_ACTIONS_ENABLED=true to enable proposal creation and execution.
-const AI_ACTIONS_ENABLED = process.env.BOROKO_AI_ACTIONS_ENABLED === 'true'
+// ─── RECOMMEND-ONLY CONTRACT ──────────────────────────────────────────
+// The assistant NEVER executes data changes. When the operator needs a
+// mutation (payment, check-in/out, booking creation, bulk collection), turn()
+// returns a recommendation carrying the exact screen route plus navigation
+// state. The operator reviews and confirms on that screen like any normal
+// workflow, where the screen's own capability and validation gates apply.
+// There is intentionally no proposal store and no execute path: nothing the
+// assistant produces can become a financial or inventory effect by itself.
+export const RECOMMENDATION_ROUTES = {
+  create_booking: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to create the booking' },
+  check_in: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to check in the guest' },
+  check_out: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to check out the guest' },
+  record_payment: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to record the payment' },
+  bulk_record_payment: { route: '/invoices', screen: 'Invoices', label: 'Open Invoices to collect the balances' },
+  bulk_check_out: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to check out the rooms' }
+}
 
-function isWriteTool(toolName) {
-  const spec = TOOL_SPEC_MAP.get(toolName)
-  return spec ? spec.confirm === true : false
+export function buildRecommendation(tool, params = {}) {
+  const base = RECOMMENDATION_ROUTES[tool] || { route: '/ai', screen: 'Assistant', label: 'Open the Assistant to continue' }
+  const safeParams = params && typeof params === 'object' && !Array.isArray(params) ? params : {}
+  const state = {}
+  const bookingId = typeof safeParams.booking_id === 'string' && safeParams.booking_id ? safeParams.booking_id : null
+  if (bookingId && (tool === 'check_in' || tool === 'check_out')) state.reviewBookingId = bookingId
+  if (bookingId && tool === 'record_payment') state.collectPaymentBookingId = bookingId
+  return { tool, params: safeParams, route: base.route, screen: base.screen, label: base.label, state }
+}
+
+export function recommendationGuidance(recommendation, fallback = '') {
+  const rec = recommendation || {}
+  const where = rec.screen ? ` in ${rec.screen}` : ''
+  const what = rec.label || 'Open the suggested screen to continue'
+  const base = `${what}${where}. The assistant never runs actions itself — review and confirm on the screen like any normal workflow.`
+  return fallback ? `${fallback}\n\n${base}` : base
 }
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -757,10 +780,12 @@ CRITICAL RULES — VIOLATING ANY OF THESE IS A SEVERE ERROR:
    - OUTSTANDING = total_amount + charges_total - amount_paid
    - You MUST use these formulas — do not invent your own.
 
-9. For payment-related suggestions, never tell the user to update amount_paid directly. Always use the record_payment tool.
+9. For payment-related suggestions, never tell the user to update amount_paid directly. Recommend the record_payment action so the operator uses the payment screen.
+
+10. You NEVER execute actions. For anything that changes data, emit the tool JSON and the app converts it into a recommendation card naming the exact screen. Never claim you ran, booked, charged, checked in, or collected anything yourself.
 
 AVAILABLE TOOLS:
-${tools.map((t) => `- ${t.name}: ${t.description} (requires confirmation: ${t.confirm ? 'yes' : 'no'})${t.paramsSchema?.required?.length ? ` | required params: ${t.paramsSchema.required.join(', ')}` : ''}`).join('\n')}
+${tools.map((t) => `- ${t.name}: ${t.description} (${t.confirm ? 'recommend-only: suggest it with the screen, never run it' : 'read-only: runs immediately, changes nothing'})${t.paramsSchema?.required?.length ? ` | required params: ${t.paramsSchema.required.join(', ')}` : ''}`).join('\n')}
 
 SYNC AWARENESS:
 - The context JSON includes a "sync_health" section with pending/failed sync counts and financial sync details.
@@ -781,11 +806,16 @@ function normalizeHandoverPerson(row) {
   }
 }
 
-function createToolRunner({ db, appUserDataPath }) {
+function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
+  // Injectable clock: production defaults to wall time; tests pass a fixed
+  // `now` so date-relative tools (unpaid buckets, overdue, forecasts) are
+  // deterministic. Audit timestamps intentionally keep real time (nowIso).
+  const todayKey = (ref) => (ref instanceof Date && !Number.isNaN(ref.getTime()) ? ref : now()).toISOString().slice(0, 10)
+  const nowMs = () => now().getTime()
   return async function runTool(tool, params) {
     switch (tool) {
       case 'get_attention': {
-        const today = new Date().toISOString().slice(0, 10)
+        const today = todayKey()
         const [stats, maintenance, lowStock, bookings, syncStatus, onlineRequests, backupInfo] = await Promise.all([
           safeDbCall(() => db.getDashboardStats(), null),
           safeDbCall(() => db.getAllMaintenanceTickets?.(), []),
@@ -836,7 +866,7 @@ function createToolRunner({ db, appUserDataPath }) {
         }
         const newestBackup = Array.isArray(backupInfo?.backups) ? backupInfo.backups[0] : null
         const newestBackupAt = newestBackup?.createdAt || newestBackup?.created_at || null
-        const backupAgeMs = newestBackupAt ? (Date.now() - Date.parse(newestBackupAt)) : null
+        const backupAgeMs = newestBackupAt ? (nowMs() - Date.parse(newestBackupAt)) : null
         if (!newestBackup) {
           items.push({ kind: 'backup_missing', severity: 'high', title: 'No recent backup found', detail: 'Create or verify a local backup before the next shift handover.', action: 'When was the last backup?' })
         } else if (backupAgeMs != null && backupAgeMs > 48 * 60 * 60 * 1000) {
@@ -869,8 +899,8 @@ function createToolRunner({ db, appUserDataPath }) {
       }
       case 'get_today_revenue': {
         const mix = await safeDbCall(() => db.getTodayBookingPaymentMix(), null)
-        const today = new Date()
-        const yesterday = new Date(today)
+        const today = now()
+        const yesterday = new Date(today.getTime())
         yesterday.setDate(today.getDate() - 1)
         const yesterdayKey = yesterday.toISOString().slice(0, 10)
         const yesterdayMix = await safeDbCall(() => db.getTodayBookingPaymentMix(yesterdayKey), null)
@@ -894,9 +924,10 @@ function createToolRunner({ db, appUserDataPath }) {
       case 'get_revenue_comparison': {
         const days = Math.max(2, Math.min(14, Number(params?.days || 7)))
         const series = []
+        const base = now()
         for (let i = days - 1; i >= 0; i--) {
-          const day = new Date()
-          day.setDate(day.getDate() - i)
+          const day = new Date(base.getTime())
+          day.setDate(base.getDate() - i)
           const dateKey = day.toISOString().slice(0, 10)
           const mix = await safeDbCall(() => db.getTodayBookingPaymentMix(dateKey), null)
           series.push({ date: dateKey, total: Number(mix?.total_collected ?? mix?.gross_collected ?? 0), count: Number(mix?.payment_count || 0) })
@@ -915,13 +946,13 @@ function createToolRunner({ db, appUserDataPath }) {
       }
       case 'list_unpaid_bookings': {
         const bookings = await safeDbCall(() => db.getAllBookings(), [])
-        const rows = mapUnpaidRows(bookings).slice(0, 12)
+        const rows = mapUnpaidRows(bookings, todayKey()).slice(0, 12)
         return { unpaid: rows, count: rows.length }
       }
       case 'get_unpaid_summary': {
         const bookings = await safeDbCall(() => db.getAllBookings(), [])
-        const today = new Date().toISOString().slice(0, 10)
-        const yesterday = new Date()
+        const today = todayKey()
+        const yesterday = new Date(now().getTime())
         yesterday.setDate(yesterday.getDate() - 1)
         const yesterdayKey = yesterday.toISOString().slice(0, 10)
         const eligible = mapUnpaidRows(bookings, today)
@@ -949,7 +980,7 @@ function createToolRunner({ db, appUserDataPath }) {
         }
       }
       case 'get_overdue_checkouts': {
-        const todayStr = new Date().toISOString().slice(0, 10)
+        const todayStr = todayKey()
         const allBookings = await safeDbCall(() => db.getAllBookings(), [])
         const overdue = allBookings.filter(b => b.check_out && b.check_out.slice(0, 10) < todayStr && (b.status === 'checked_in' || b.status === 'confirmed'))
         return {
@@ -972,10 +1003,10 @@ function createToolRunner({ db, appUserDataPath }) {
         ])
         const days = Math.max(1, Math.min(14, Number(params?.days || 1)))
         const roomNumber = params?.room_number ? String(params.room_number).toLowerCase() : null
-        const today = new Date()
+        const today = now()
         const range = []
         for (let i = 0; i < days; i++) {
-          const date = new Date(today)
+          const date = new Date(today.getTime())
           date.setDate(today.getDate() + i)
           range.push(date.toISOString().slice(0, 10))
         }
@@ -1054,7 +1085,7 @@ function createToolRunner({ db, appUserDataPath }) {
         if (!bookingQuery && !roomNumber && !guestQuery) {
           return { count: 0, bookings: [], needs_query: true, query: { booking_query: bookingQuery, room_number: roomNumber, guest_query: guestQuery } }
         }
-        const today = new Date().toISOString().slice(0, 10)
+        const today = todayKey()
         const rows = (Array.isArray(bookings) ? bookings : []).filter((booking) => {
           const roomHit = roomNumber ? String(booking.room_number || '').toLowerCase() === roomNumber : false
           const bookingHit = bookingQuery ? `${booking.id || ''} ${booking.booking_number || ''} ${booking.invoice_number || ''}`.toLowerCase().includes(bookingQuery) : false
@@ -1131,7 +1162,7 @@ function createToolRunner({ db, appUserDataPath }) {
         const backups = Array.isArray(info?.backups) ? info.backups : []
         const newest = backups[0] || null
         const newestAt = newest?.createdAt || newest?.created_at || null
-        const ageMs = newestAt ? (Date.now() - Date.parse(newestAt)) : null
+        const ageMs = newestAt ? (nowMs() - Date.parse(newestAt)) : null
         const stale = ageMs != null ? ageMs > 48 * 60 * 60 * 1000 : true
         return {
           backup_dir: info?.backupDir || '',
@@ -1189,7 +1220,7 @@ function createToolRunner({ db, appUserDataPath }) {
           safeDbCall(() => db.getAllBookings(), []),
           safeDbCall(() => db.getAllMaintenanceTickets?.(), [])
         ])
-        const today = new Date().toISOString().slice(0, 10)
+        const today = todayKey()
         const activeByRoom = new Map()
         for (const booking of Array.isArray(bookings) ? bookings : []) {
           const inDate = String(booking?.check_in || '').slice(0, 10)
@@ -1225,7 +1256,7 @@ function createToolRunner({ db, appUserDataPath }) {
       }
       case 'get_operational_cleanliness_audit': {
         const bookings = await safeDbCall(() => db.getAllBookings(), [])
-        const today = new Date().toISOString().slice(0, 10)
+        const today = todayKey()
         const missedCheckIns = []
         const missedCheckOuts = []
         for (const booking of Array.isArray(bookings) ? bookings : []) {
@@ -1261,77 +1292,9 @@ function createToolRunner({ db, appUserDataPath }) {
           total_flags: missedCheckIns.length + missedCheckOuts.length
         }
       }
-      case 'create_booking': {
-        const id = await db.createBooking(params || {})
-        return { success: true, booking_id: id }
-      }
-      case 'check_in': {
-        if (!params?.booking_id) throw new Error('booking_id is required')
-        await db.updateBookingStatus(params.booking_id, 'checked_in')
-        return { success: true }
-      }
-      case 'check_out': {
-        if (!params?.booking_id) throw new Error('booking_id is required')
-        await db.updateBookingStatus(params.booking_id, 'checked_out')
-        return { success: true }
-      }
-      case 'record_payment': {
-        if (!params?.booking_id) throw new Error('booking_id is required')
-        const amount = Number(params.amount)
-        const method = params.method || 'cash'
-        const intentKey = params.intent_key || `ai:${nowIso()}`
-        return await db.updateBookingPayment(params.booking_id, amount, method, 'payment', null, intentKey)
-      }
-      case 'bulk_record_payment': {
-        const ids = Array.isArray(params?.booking_ids) ? params.booking_ids : []
-        if (ids.length === 0) throw new Error('booking_ids array is required and must not be empty')
-        const method = params?.method || 'cash'
-        const batchKey = `ai:bulk:${nowIso()}`
-        const allBookings = await safeDbCall(() => db.getAllBookings(), [])
-        const bookingMap = new Map((Array.isArray(allBookings) ? allBookings : []).map((b) => [b.id, b]))
-        const results = []
-        let successCount = 0
-        let skipCount = 0
-        let errorCount = 0
-        for (const bookingId of ids) {
-          const b = bookingMap.get(bookingId)
-          if (!b) { results.push({ id: bookingId, status: 'not_found' }); errorCount++; continue }
-          if ((b.status || '') === 'cancelled') { results.push({ id: bookingId, status: 'skipped', reason: 'cancelled' }); skipCount++; continue }
-          const total = Number(b.total_amount || 0) + Number(b.charges_total || 0)
-          const paid = Number(b.amount_paid || 0)
-          const balance = Math.max(0, total - paid)
-          if (balance < 0.01) { results.push({ id: bookingId, status: 'already_paid', balance: 0 }); skipCount++; continue }
-          try {
-            const nextIntentKey = `${batchKey}:${bookingId}`
-            const res = await db.updateBookingPayment(bookingId, balance, method, 'payment', null, nextIntentKey)
-            results.push({ id: bookingId, status: 'paid', amount: balance, ...res })
-            successCount++
-          } catch (e) {
-            results.push({ id: bookingId, status: 'error', error: e.message || 'Payment failed' })
-            errorCount++
-          }
-        }
-        return { success: true, total_processed: ids.length, success_count: successCount, skip_count: skipCount, error_count: errorCount, results }
-      }
-      case 'bulk_check_out': {
-        const ids = Array.isArray(params.booking_ids) ? params.booking_ids : []
-        if (!ids.length) throw new Error('No booking IDs provided')
-        let successCount = 0
-        const results = []
-        for (const id of ids) {
-          try {
-            await db.updateBookingStatus(id, 'checked_out')
-            successCount++
-            results.push({ id, status: 'checked_out' })
-          } catch (e) {
-            results.push({ id, error: e.message })
-          }
-        }
-        return { success_count: successCount, total: ids.length, results }
-      }
       case 'get_daily_briefing': {
-        const todayStr = new Date().toISOString().slice(0, 10)
-        const yesterday = new Date()
+        const todayStr = todayKey()
+        const yesterday = new Date(now().getTime())
         yesterday.setDate(yesterday.getDate() - 1)
         const yesterdayStr = yesterday.toISOString().slice(0, 10)
         const [stats, paymentMix, maintenance, allBookings, syncStatus] = await Promise.all([
@@ -1411,11 +1374,33 @@ function createToolRunner({ db, appUserDataPath }) {
           overdueCheckouts > 0 ? `${overdueCheckouts} overdue checkout${overdueCheckouts === 1 ? '' : 's'}` : null,
           unpaidCount > 0 ? `${unpaidCount} unpaid booking${unpaidCount === 1 ? '' : 's'}` : null
         ].filter(Boolean)
+        // Deterministic plain-language narrative (template NLG, no model).
+        // Additive only: headline/insights/actions/comparison are unchanged.
+        const storyBits = []
+        storyBits.push(
+          checkIns > 0 || checkOuts > 0
+            ? `Today brings ${checkIns} arrival${checkIns === 1 ? '' : 's'} and ${checkOuts} departure${checkOuts === 1 ? '' : 's'} at ${occupancy}% occupancy.`
+            : `A quiet movement day at ${occupancy}% occupancy — no arrivals or departures scheduled.`
+        )
+        storyBits.push(
+          revenueToday > 0
+            ? `P${revenueToday.toFixed(2)} collected so far${revenueComparison.percent == null ? '' : ` (${revenueComparison.delta >= 0 ? 'up' : 'down'} ${Math.abs(revenueComparison.percent)}% vs yesterday)`}.`
+            : 'Nothing collected yet today.'
+        )
+        storyBits.push(
+          outstanding > 0.01
+            ? `P${outstanding.toFixed(2)} still outstanding across ${unpaidCount} booking${unpaidCount === 1 ? '' : 's'}${overdueCheckouts > 0 ? `, with ${overdueCheckouts} overdue checkout${overdueCheckouts === 1 ? '' : 's'} needing attention first` : ''}.`
+            : 'No outstanding balances — the book is clean.'
+        )
+        if (syncStatus && ((syncStatus.failed || 0) > 0 || (syncStatus.pending || 0) > 0)) {
+          storyBits.push('Treat these figures as provisional until System Health clears the sync queue.')
+        }
         return {
           date: todayStr,
           occupancy,
           revenue_today: revenueToday,
           outstanding,
+          story: storyBits.join(' '),
           check_ins: checkIns,
           check_outs: checkOuts,
           overdue_checkouts: overdueCheckouts,
@@ -1573,8 +1558,8 @@ function createToolRunner({ db, appUserDataPath }) {
   }
 }
 
-export function createLocalReadToolRunner({ db }) {
-  const runTool = createToolRunner({ db })
+export function createLocalReadToolRunner({ db, now = () => new Date() }) {
+  const runTool = createToolRunner({ db, now })
   return {
     runTool(tool, params = {}) {
       const spec = TOOL_SPEC_MAP.get(tool)
@@ -1587,8 +1572,7 @@ export function createLocalReadToolRunner({ db }) {
 
 // ─── ORCHESTRATOR ────────────────────────────────────────────────────────
 
-export function createAiOrchestrator({ appUserDataPath, db, requireCapability }) {
-  const proposals = new Map() // id -> { createdAt, tool, params, lodgeId, userId }
+export function createAiOrchestrator({ appUserDataPath, db, requireCapability, now = () => new Date() }) {
   const localAssistantSessions = new Map()
 
   const toolCaps = {
@@ -1629,7 +1613,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
   }
 
   const system = buildSystemPrompt()
-  const runTool = createToolRunner({ db, appUserDataPath })
+  const runTool = createToolRunner({ db, appUserDataPath, now })
 
   // ─── P0-3: SYNC-AWARE CONTEXT BUILDER ─────────────────────────────────
   // Includes pending/failed sync counts, financial sync breakdown,
@@ -1700,24 +1684,6 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
       return { assistantText: '', toolResult: { tool: 'get_overdue_checkouts', result }, proposal: null }
     }
 
-    // Inline panel bulk payment execution: "bulk_record_payment for ids: id1,id2 method cash"
-    if (msgLower.startsWith('bulk_record_payment for ids:')) {
-      const parts = message.split(' method ')
-      const idsStr = (parts[0] || '').replace(/^bulk_record_payment for ids:\s*/i, '').trim()
-      const method = (parts[1] || 'cash').trim()
-      const ids = idsStr.split(',').map(s => s.trim()).filter(Boolean)
-      const result = await runTool('bulk_record_payment', { booking_ids: ids, method })
-      return { assistantText: '', toolResult: { tool: 'bulk_record_payment', result }, proposal: null }
-    }
-
-    // Inline panel bulk checkout execution: "bulk_check_out ids: id1,id2"
-    if (msgLower.startsWith('bulk_check_out ids:')) {
-      const idsStr = message.replace(/^bulk_check_out ids:\s*/i, '').trim()
-      const ids = idsStr.split(',').map(s => s.trim()).filter(Boolean)
-      const result = await runTool('bulk_check_out', { booking_ids: ids })
-      return { assistantText: '', toolResult: { tool: 'bulk_check_out', result }, proposal: null }
-    }
-
     // 2. Local assistant brain. It handles feature location, workflow instructions,
     // typo-tolerant matching, and read-only operational intents without a cloud model.
     const context = { ...(await buildContextSnapshot()), route: route || null }
@@ -1735,7 +1701,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
       let overdueCount = null
       try {
         const allBks = await safeDbCall(() => db.getAllBookings(), [])
-        const todayStr = new Date().toISOString().slice(0, 10)
+        const todayStr = now().toISOString().slice(0, 10)
         let u = 0, o = 0
         for (const b of Array.isArray(allBks) ? allBks : []) {
           if ((b.status || '') === 'cancelled') continue
@@ -1775,17 +1741,25 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
     if (localTurn?.tool) {
       const toolName = localTurn.tool
       const toolSpec = TOOL_SPEC_MAP.get(toolName)
-      const cap = toolCaps[toolName]
-      if (cap) await requireCapability(cap)
 
       if (!toolSpec || toolSpec.confirm) {
-        writeAiAuditLog({ user, lodgeId, event: 'ai.local_tool.rejected', payload: { message, tool: toolName } }, { userDataPath: appUserDataPath })
+        // Defensive: the local brain only emits read-only intents, but if a
+        // write intent ever arrives here it becomes guidance with a route —
+        // never an execution. Guidance is read-only, so no write capability
+        // is required to receive it; the target screen enforces its own caps.
+        const recommendation = buildRecommendation(toolName, localTurn.params || {})
+        writeAiAuditLog({ user, lodgeId, event: 'ai.tool.recommended', payload: { message, tool: toolName, recommendation } }, { userDataPath: appUserDataPath })
         return {
-          assistantText: 'I can guide you to that action, but I will not run write actions from local text matching.',
+          success: true,
+          assistantText: recommendationGuidance(recommendation, localTurn.assistantText || ''),
+          recommendation,
           localHelp: resolveLocalAssistantTurn({ message: `how do I ${message}`, route, liveContext, uiContext })?.localHelp || null,
           proposal: null
         }
       }
+
+      const cap = toolCaps[toolName]
+      if (cap) await requireCapability(cap)
 
       const result = await runTool(toolName, localTurn.params || {})
       getAssistantSession(threadId).rememberToolResult(toolName, result)
@@ -1801,6 +1775,11 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
     }
 
     if (localTurn?.localHelp && (provider === 'local' || localTurn.localHelp.confidence !== 'low')) {
+      // Device-local unresolved-query signal for the monthly synonym/backlog
+      // review. Truncated prompt text only; never leaves this device.
+      if (localTurn.localHelp.mode === 'fallback') {
+        writeAiAuditLog({ user, lodgeId, event: 'ai.unresolved_query', payload: { message: String(message || '').slice(0, 140), route: route || null } }, { userDataPath: appUserDataPath })
+      }
       writeAiAuditLog({ user, lodgeId, event: 'ai.local_help', payload: { message, route: route || null, help: localTurn.localHelp } }, { userDataPath: appUserDataPath })
       return {
         success: true,
@@ -1852,7 +1831,10 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
 
     const params = cmdResult.params && typeof cmdResult.params === 'object' ? cmdResult.params : {}
 
-    // Read tools execute immediately. Action tools become proposals requiring confirmation.
+    // Read tools execute immediately (they change nothing). Confirm tools
+    // NEVER execute and NEVER become proposals: they become recommendations
+    // carrying the exact screen route, so the operator acts on the normal
+    // screen with its own capability and validation gates.
     if (!toolSpec.confirm) {
       const result = await runTool(toolName, params)
       writeAiAuditLog({ user, lodgeId, event: 'ai.tool.executed', payload: { tool: toolName, params, result } }, { userDataPath: appUserDataPath })
@@ -1864,69 +1846,28 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability })
       }
     }
 
-    // P0.6: Block confirm-required tools unless AI actions are explicitly enabled
-    if (!AI_ACTIONS_ENABLED) {
-      writeAiAuditLog({ user, lodgeId, event: 'ai.tool.rejected.actions_disabled', payload: { tool: toolName, params } }, { userDataPath: appUserDataPath })
-      return {
-        success: true,
-        assistantText: assistantText || `AI actions are currently disabled for safety. You can still ask questions and request summaries.`,
-        proposal: null
-      }
-    }
-
-    const proposalId = crypto.randomUUID()
-    proposals.set(proposalId, { createdAt: Date.now(), tool: toolName, params, lodgeId, userId: user?.id || null })
-    writeAiAuditLog({ user, lodgeId, event: 'ai.tool.proposed', payload: { proposalId, tool: toolName, params } }, { userDataPath: appUserDataPath })
+    const recommendation = buildRecommendation(toolName, params)
+    writeAiAuditLog({ user, lodgeId, event: 'ai.tool.recommended', payload: { tool: toolName, params, recommendation } }, { userDataPath: appUserDataPath })
 
     return {
       success: true,
-      assistantText: assistantText || "I've prepared the action for your approval.",
-      proposal: { id: proposalId, tool: toolName, params }
+      assistantText: recommendationGuidance(recommendation, assistantText),
+      recommendation,
+      proposal: null
     }
   }
 
-  // ─── P0-5: STRICT LODGE VALIDATION ─────────────────────────────────────
-  // Rejects execution if either proposal.lodgeId or current lodgeId is missing,
-  // or if they don't match. The main process / authenticated session is the
-  // source of truth — renderer cannot override lodgeId.
+  // ─── RECOMMEND-ONLY EXECUTE ──────────────────────────────────────────
+  // There is no proposal store and no execution path by design (see the
+  // RECOMMEND-ONLY CONTRACT above). This handler exists only so older
+  // renderers fail closed with guidance instead of hanging: every call is
+  // rejected and audit-logged. Operator actions happen on normal screens.
 
-  async function execute({ proposalId }) {
-    // P0.6: Guard even previously-created proposals if actions are now disabled
-    if (!AI_ACTIONS_ENABLED) {
-      throw new Error('AI actions are currently disabled for safety. You can still ask questions and request summaries.')
-    }
+  async function execute() {
     const user = db.getCurrentUser?.() || null
     const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
-    const proposal = proposals.get(proposalId)
-    if (!proposal) throw new Error('This AI action has expired. Please ask again.')
-
-    // TTL: 10 minutes
-    if (Date.now() - proposal.createdAt > 10 * 60 * 1000) {
-      proposals.delete(proposalId)
-      throw new Error('This AI action has expired. Please ask again.')
-    }
-
-    // P0-5: Strict lodge validation — both sides must be present AND match
-    if (!proposal.lodgeId) {
-      writeAiAuditLog({ user, lodgeId, event: 'ai.execute.rejected', payload: { proposalId, reason: 'missing_proposal_lodgeId' } }, { userDataPath: appUserDataPath })
-      throw new Error('Cannot execute this action — lodge context is missing from the proposal. Please ask again.')
-    }
-    if (!lodgeId) {
-      writeAiAuditLog({ user, lodgeId, event: 'ai.execute.rejected', payload: { proposalId, reason: 'missing_current_lodgeId' } }, { userDataPath: appUserDataPath })
-      throw new Error('Cannot execute this action — no lodge session is active. Please ensure a lodge profile is selected.')
-    }
-    if (proposal.lodgeId !== lodgeId) {
-      writeAiAuditLog({ user, lodgeId, event: 'ai.execute.rejected', payload: { proposalId, reason: 'lodgeId_mismatch', proposalLodgeId: proposal.lodgeId, currentLodgeId: lodgeId } }, { userDataPath: appUserDataPath })
-      throw new Error('This AI action belongs to a different lodge session.')
-    }
-
-    const cap = toolCaps[proposal.tool]
-    if (cap) await requireCapability(cap)
-
-    const result = await runTool(proposal.tool, proposal.params)
-    writeAiAuditLog({ user, lodgeId, event: 'ai.tool.confirmed', payload: { proposalId, tool: proposal.tool, params: proposal.params, result } }, { userDataPath: appUserDataPath })
-    proposals.delete(proposalId)
-    return { success: true, tool: proposal.tool, result }
+    writeAiAuditLog({ user, lodgeId, event: 'ai.execute.rejected', payload: { reason: 'recommend_only' } }, { userDataPath: appUserDataPath })
+    throw new Error('The assistant only recommends actions and shows the right screen — it never runs them. Use the recommendation card to continue on the normal screen.')
   }
 
   function getLocalCatalog() {

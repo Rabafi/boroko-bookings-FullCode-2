@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import pg from 'pg'
 import { randomUUID } from 'node:crypto'
+import { rejectsSqlState as rejectsCode } from './helpers/sql-state.mjs'
 
 const DB_URL=process.env.RESTAURANT_ACCOUNTING_TEST_DB_URL||'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
 const client=()=>new pg.Client({connectionString:DB_URL})
@@ -10,7 +11,6 @@ const result=async(c,text,params=[])=>(await one(c,`select ${text} result`,param
 async function actor(c,{id,lodge,role='admin',jwt='service_role'}){
  await c.query("select set_config('request.jwt.claim.role',$1,false),set_config('app.session_valid','true',false),set_config('app.actor_id',$2,false),set_config('app.lodge_id',$3,false),set_config('app.session_role',$4,false)",[jwt,id,lodge,role])
 }
-async function rejectsCode(action,code){await assert.rejects(action,error=>error?.code===code||String(error?.message).length>0)}
 
 test('Restaurant Accounting disposable database behavioral suite',async t=>{
  const c=client();await c.connect()
@@ -114,10 +114,13 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
  })
 
  await t.test('saves budgets atomically and rejects conflicting retry payloads',async()=>{
-  const entries=[{account_id:ids['4000'],month:7,amount:5000},{account_id:ids['5000'],month:7,amount:1500}]
-  const saved=await result(c,'public.save_restaurant_budget_matrix_v2($1,$2,$3::jsonb,$4)',[lodge,2026,JSON.stringify(entries),'budget-2026']);assert.equal(saved.data.saved,2)
+  // The server requires the complete matrix: every active revenue/expense
+  // account (4000, 5000, 5100) in every month 1-12 — 36 rows. A partial
+  // matrix is invalid input (23514), not a supported partial save.
+  const entries=[];for(const code of ['4000','5000','5100'])for(let month=1;month<=12;month++)entries.push({account_id:ids[code],month,amount:1000+month})
+  const saved=await result(c,'public.save_restaurant_budget_matrix_v2($1,$2,$3::jsonb,$4)',[lodge,2026,JSON.stringify(entries),'budget-2026']);assert.equal(saved.data.rows,36)
   const replay=await result(c,'public.save_restaurant_budget_matrix_v2($1,$2,$3::jsonb,$4)',[lodge,2026,JSON.stringify(entries),'budget-2026']);assert.equal(replay.replayed,true)
-  await rejectsCode(()=>result(c,'public.save_restaurant_budget_matrix_v2($1,$2,$3::jsonb,$4)',[lodge,2026,JSON.stringify([{...entries[0],amount:1}]),'budget-2026']),'23505')
+  await rejectsCode(()=>result(c,'public.save_restaurant_budget_matrix_v2($1,$2,$3::jsonb,$4)',[lodge,2026,JSON.stringify([{...entries[0],amount:1}]),'budget-2026']),'22000')
  })
 
  let payrollJournal
@@ -156,7 +159,7 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   await result(c,'public.propose_bank_matches_v2($1,$2)',[lodge,bank])
   const proposal=await one(c,'select id,bank_transaction_id from public.restaurant_match_proposals where bank_account_id=$1 and status=$2',[bank,'pending']);assert.ok(proposal)
   await actor(c,{id:users.checker,lodge});await result(c,'public.review_bank_match_v2($1,$2,true)',[lodge,proposal.id])
-  const book=Number((await one(c,'select coalesce(sum(l.debit-l.credit),0) balance from public.restaurant_journal_lines l join public.restaurant_journal_entries e on e.id=l.entry_id where l.account_id=$1 and e.is_posted',[ids['1000']])).balance)
+  const book=Number((await one(c,'select coalesce(sum(l.debit-l.credit),0) balance from public.restaurant_journal_lines l join public.restaurant_journal_entries e on e.id=l.entry_id where l.account_id=$1 and e.is_posted and e.entry_date<=$2',[ids['1000'],'2026-07-15'])).balance)
   await actor(c,{id:users.maker,lodge});const recon=await result(c,'public.create_bank_reconciliation_v2($1,$2,$3,$4,$5,$6::uuid[],$7::jsonb)',[lodge,bank,imported.data.id,book,'2026-07-15',[proposal.bank_transaction_id],JSON.stringify([])]);assert.equal(Number(recon.data.difference),0)
   await rejectsCode(()=>result(c,'public.complete_bank_reconciliation_v2($1,$2,null)',[lodge,recon.data.id]),'42501')
   await actor(c,{id:users.checker,lodge});const completed=await result(c,'public.complete_bank_reconciliation_v2($1,$2,$3)',[lodge,recon.data.id,'Checked']);assert.equal(completed.data.period_lock_created,false);assert.ok(completed.data.packet_id);assert.ok(completed.data.packet_hash)

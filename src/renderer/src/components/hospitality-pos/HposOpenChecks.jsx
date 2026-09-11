@@ -11,6 +11,18 @@ import {
 import { useNavigate } from "react-router";
 import { useAuth, useSettings } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
+import {
+  TAB_RECOVERY_OUTCOMES,
+  buildSplitPayload,
+  buildTransferPayload,
+  defaultCanReplayOperation,
+  describeRecoveryEnvelope,
+  listRecoveryEnvelopes,
+  readRecoveryEnvelope,
+  recoveryResultMessage,
+  replaySavedTabOperation,
+  submitNewTabOperation
+} from "../../../../shared/posTabRecovery";
 import { HposButton, HposEmptyState, HposNotice, HposPageHero } from "./HposUi";
 
 const age = (value) => {
@@ -37,19 +49,67 @@ export default function HposOpenChecks() {
   const currency = settings?.currency || "P";
   const [tabs, setTabs] = useState([]);
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("newest");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [splitTab, setSplitTab] = useState(null);
   const [splitCount, setSplitCount] = useState(2);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitError, setSplitError] = useState("");
+  const [splitPending, setSplitPending] = useState(null);
+  const [splitQuarantine, setSplitQuarantine] = useState("");
   const [transferTab, setTransferTab] = useState(null);
   const [transferChoices, setTransferChoices] = useState([]);
   const [transferTarget, setTransferTarget] = useState("");
   const [transferNotes, setTransferNotes] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferError, setTransferError] = useState("");
+  const [transferPending, setTransferPending] = useState(null);
+  const [transferQuarantine, setTransferQuarantine] = useState("");
   const [sharedTillOperatorId, setSharedTillOperatorId] = useState(null);
+  const tenantId = settings?.lodge_id || user?.lodge_id || null;
+  const actorId = sharedTillOperatorId || user?.id || null;
+  const actorRole = user?.role || null;
+  const [inbox, setInbox] = useState([]);
+
+  const refreshInbox = useCallback(() => {
+    const { envelopes } = listRecoveryEnvelopes({ tenantId });
+    setInbox(envelopes);
+  }, [tenantId]);
+
+  const refreshSplitPending = useCallback((tab) => {
+    if (!tab?.id) {
+      setSplitPending(null);
+      setSplitQuarantine("");
+      return;
+    }
+    const { envelope, corrupt, raw } = readRecoveryEnvelope("split", { tenantId, sourceTabId: tab.id });
+    if (corrupt) {
+      const qkey = quarantineRecoveryRecord("split", { sourceTabId: tab.id, raw });
+      setSplitPending({ outcome: TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW, corrupt: true });
+      setSplitQuarantine(qkey || "");
+      return;
+    }
+    setSplitQuarantine("");
+    setSplitPending(envelope);
+  }, [tenantId]);
+
+  const refreshTransferPending = useCallback((tab) => {
+    if (!tab?.id) {
+      setTransferPending(null);
+      setTransferQuarantine("");
+      return;
+    }
+    const { envelope, corrupt, raw } = readRecoveryEnvelope("transfer", { tenantId, sourceTabId: tab.id });
+    if (corrupt) {
+      const qkey = quarantineRecoveryRecord("transfer", { sourceTabId: tab.id, raw });
+      setTransferPending({ outcome: TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW, corrupt: true });
+      setTransferQuarantine(qkey || "");
+      return;
+    }
+    setTransferQuarantine("");
+    setTransferPending(envelope);
+  }, [tenantId]);
 
   useEffect(() => {
     if (!barOnly) {
@@ -92,6 +152,7 @@ export default function HposOpenChecks() {
 
   useEffect(() => {
     load();
+    refreshInbox();
     const id = setInterval(() => {
       if (document.visibilityState === "visible") load({ quiet: true });
     }, 15000);
@@ -103,7 +164,7 @@ export default function HposOpenChecks() {
       clearInterval(id);
       document.removeEventListener("visibilitychange", handleVisible);
     };
-  }, [load]);
+  }, [load, refreshInbox]);
 
   const filtered = useMemo(
     () =>
@@ -114,6 +175,20 @@ export default function HposOpenChecks() {
       ),
     [tabs, query],
   );
+  // Operator-chosen ordering over the filtered set; search matching above
+  // is unchanged.
+  const sorted = useMemo(() => {
+    const rows = [...filtered];
+    const ageOf = (tab) => new Date(tab.updated_at || tab.created_at || 0).getTime();
+    const valueOf = (tab) => tabValue(tab);
+    rows.sort((a, b) => {
+      if (sort === "oldest") return ageOf(a) - ageOf(b);
+      if (sort === "highest") return (valueOf(b) ?? -1) - (valueOf(a) ?? -1);
+      if (sort === "lowest") return (valueOf(a) ?? Number.MAX_SAFE_INTEGER) - (valueOf(b) ?? Number.MAX_SAFE_INTEGER);
+      return ageOf(b) - ageOf(a);
+    });
+    return rows;
+  }, [filtered, sort]);
   const tabTotalsComplete = tabs.every((tab) => tabValue(tab) !== null);
   const total = tabTotalsComplete ? tabs.reduce((sum, tab) => sum + tabValue(tab), 0) : null;
   const currentOwnerId = sharedTillOperatorId || user?.id || null;
@@ -128,6 +203,24 @@ export default function HposOpenChecks() {
         tableName: tab.table_name || "",
         tabName: tab.tab_name || tab.customer_name || "",
         tabId: tab.id,
+        tabVersion: tab.tab_version ?? tab.version ?? null,
+        resumeIntent: true,
+      },
+    });
+  };
+  // Settle resumes the tab and opens payment immediately so adding items and
+  // paying stay distinct actions: Resume tab = keep selling, Settle = pay now.
+  // A certified total is required; without one the operator resumes instead.
+  const settle = (tab) => {
+    if (!canControl(tab) || tabValue(tab) === null) return;
+    return navigate("/hpos/pos", {
+      state: {
+        tableName: tab.table_name || "",
+        tabName: tab.tab_name || tab.customer_name || "",
+        tabId: tab.id,
+        tabVersion: tab.tab_version ?? tab.version ?? null,
+        resumeIntent: true,
+        settle: true,
       },
     });
   };
@@ -136,33 +229,43 @@ export default function HposOpenChecks() {
     setSplitTab(tab);
     setSplitCount(2);
     setSplitError("");
+    refreshSplitPending(tab);
   };
-  const runSplit = async () => {
+  const applySplitOutcome = (out) => {
+    setSplitPending(out.envelope);
+    refreshInbox();
+    if (out.classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
+      setSplitPending(null);
+      setSplitTab(null);
+      load({ quiet: true });
+      return null;
+    }
+    return recoveryResultMessage('split', out.classification, out.result, out.envelope?.operationId);
+  };
+
+  const runSplit = async ({ corrected = false } = {}) => {
     if (!splitTab?.id || splitBusy || tabValue(splitTab) === null || !canControl(splitTab)) return;
     setSplitBusy(true);
     setSplitError("");
     try {
-      const keyName = `hpos:pending-split:${splitTab.id}`;
-      const payloadFingerprint = JSON.stringify({ split_count: Number(splitCount), source_tab_version: splitTab.tab_version ?? splitTab.version ?? 1 });
-      const saved = localStorage.getItem(keyName);
-      const savedEnvelope = saved ? JSON.parse(saved) : null;
-      if (savedEnvelope?.payloadFingerprint && savedEnvelope.payloadFingerprint !== payloadFingerprint) {
-        throw new Error('A previous split attempt for this tab is unresolved. Refresh and resolve it before changing the split count.');
-      }
-      const operationKey = savedEnvelope?.operationKey || crypto.randomUUID();
-      localStorage.setItem(keyName, JSON.stringify({ operationKey, payloadFingerprint }));
-      const result = await window.api?.pos?.splitBillEvenly?.({
-        source_tab_id: splitTab.id,
-        split_count: Number(splitCount),
-        target_table_names: [],
-        source_tab_version: splitTab.tab_version ?? splitTab.version ?? 1,
-        idempotency_key: operationKey,
+      // New-attempt entry path: intent comes from the visible form only.
+      const count = Number(splitCount);
+      const version = splitTab.tab_version ?? splitTab.version ?? 1;
+      const payload = buildSplitPayload({ splitCount: count, sourceTabVersion: version });
+      const out = await submitNewTabOperation({
+        kind: "split",
+        tenantId,
+        sourceTabId: splitTab.id,
+        outletId: splitTab.outlet_id || null,
+        actorId,
+        expectedVersion: version,
+        payload,
+        request: { source_tab_id: splitTab.id, split_count: count, target_table_names: [], source_tab_version: version },
+        corrected,
+        dispatch: (args) => window.api?.pos?.splitBillEvenly?.(args),
       });
-      if (!result?.success)
-        throw new Error(result?.error || "Could not split this check.");
-      localStorage.removeItem(keyName);
-      setSplitTab(null);
-      await load({ quiet: true });
+      const message = applySplitOutcome(out);
+      if (message) throw new Error(message);
     } catch (splitFailure) {
       setSplitError(splitFailure?.message || "Could not split this check.");
     } finally {
@@ -176,6 +279,7 @@ export default function HposOpenChecks() {
     setTransferTarget("");
     setTransferNotes("");
     setTransferError("");
+    refreshTransferPending(tab);
     try {
       const attendance = (await window.api?.pos?.getBarActiveShifts?.()) || [];
       const choices = (await Promise.all(attendance.map(async (row) => {
@@ -191,38 +295,154 @@ export default function HposOpenChecks() {
     }
   };
 
-  const runTransfer = async () => {
+  const applyTransferOutcome = (out) => {
+    setTransferPending(out.envelope);
+    refreshInbox();
+    if (out.classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
+      setTransferPending(null);
+      setTransferTab(null);
+      load({ quiet: true });
+      return null;
+    }
+    return recoveryResultMessage('transfer', out.classification, out.result, out.envelope?.operationId);
+  };
+
+  const runTransfer = async ({ corrected = false } = {}) => {
     if (!transferTab?.id || !transferTarget || transferBusy || !canControl(transferTab)) return;
     const target = transferChoices.find((row) => row.staff_user_id === transferTarget);
     if (!target?.pos_shift_id) return;
     setTransferBusy(true);
     setTransferError("");
     try {
-      const keyName = `hpos:pending-waiter-transfer:${transferTab.id}`;
-      const payloadFingerprint = JSON.stringify({ target_waiter_id: target.staff_user_id, target_shift_id: target.pos_shift_id, expected_tab_version: transferTab.tab_version ?? 1, notes: transferNotes.trim() || null });
-      const saved = localStorage.getItem(keyName);
-      const savedEnvelope = saved ? JSON.parse(saved) : null;
-      if (savedEnvelope?.payloadFingerprint && savedEnvelope.payloadFingerprint !== payloadFingerprint) {
-        throw new Error("A previous transfer attempt for this tab is unresolved. Retry it or refresh before choosing another waiter.");
-      }
-      const operationId = savedEnvelope?.operationId || crypto.randomUUID();
-      localStorage.setItem(keyName, JSON.stringify({ operationId, payloadFingerprint }));
-      const result = await window.api?.pos?.transferTabWaiter?.({
-        tab_id: transferTab.id,
-        target_waiter_id: target.staff_user_id,
-        target_shift_id: target.pos_shift_id,
-        expected_tab_version: transferTab.tab_version ?? 1,
-        operation_id: operationId,
-        notes: transferNotes.trim() || null,
+      // New-attempt entry path: intent comes from the visible form only.
+      const version = transferTab.tab_version ?? 1;
+      const notes = transferNotes.trim() || null;
+      const payload = buildTransferPayload({
+        targetWaiterId: target.staff_user_id,
+        targetShiftId: target.pos_shift_id,
+        expectedTabVersion: version,
+        notes
       });
-      if (!result?.success) throw new Error(result?.error || "The server rejected this waiter transfer.");
-      localStorage.removeItem(keyName);
-      setTransferTab(null);
-      await load({ quiet: true });
+      const out = await submitNewTabOperation({
+        kind: "transfer",
+        tenantId,
+        sourceTabId: transferTab.id,
+        outletId: transferTab.outlet_id || null,
+        actorId,
+        expectedVersion: version,
+        payload,
+        request: {
+          tab_id: transferTab.id,
+          target_waiter_id: target.staff_user_id,
+          target_shift_id: target.pos_shift_id,
+          expected_tab_version: version,
+          notes,
+        },
+        corrected,
+        dispatch: (args) => window.api?.pos?.transferTabWaiter?.(args),
+      });
+      const message = applyTransferOutcome(out);
+      if (message) throw new Error(message);
     } catch (transferFailure) {
-      setTransferError(transferFailure?.message || "Could not confirm the waiter transfer. Retry with the same transfer key.");
+      setTransferError(transferFailure?.message || "Could not confirm the waiter transfer.");
     } finally {
       setTransferBusy(false);
+    }
+  };
+
+  // Replay entry path: see replaySplit. No target choices, tab cache, or
+  // ownership state are consulted; the saved request goes out verbatim.
+  const replayTransfer = async () => {
+    if (!transferTab?.id || transferBusy) return;
+    setTransferBusy(true);
+    setTransferError("");
+    try {
+      const out = await replaySavedTabOperation({
+        kind: "transfer",
+        tenantId,
+        sourceTabId: transferTab.id,
+        actorId,
+        actorRole,
+        dispatch: (args) => window.api?.pos?.transferTabWaiter?.(args),
+      });
+      const message = applyTransferOutcome(out);
+      if (message) throw new Error(message);
+    } catch (transferFailure) {
+      setTransferError(transferFailure?.message || "Could not check the transfer status.");
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
+  const checkTransferStatus = () => replayTransfer();
+
+  // Replay entry path: resubmits the SAVED operation verbatim (same request,
+  // same key, is_replay). Reads storage fresh; never touches editable form
+  // state, so a reopened default form cannot alter the replayed intent.
+  const replaySplit = async () => {
+    if (!splitTab?.id || splitBusy) return;
+    setSplitBusy(true);
+    setSplitError("");
+    try {
+      const out = await replaySavedTabOperation({
+        kind: "split",
+        tenantId,
+        sourceTabId: splitTab.id,
+        actorId,
+        actorRole,
+        dispatch: (args) => window.api?.pos?.splitBillEvenly?.(args),
+      });
+      const message = applySplitOutcome(out);
+      if (message) throw new Error(message);
+    } catch (splitFailure) {
+      setSplitError(splitFailure?.message || "Could not check the split status.");
+    } finally {
+      setSplitBusy(false);
+    }
+  };
+
+  const checkSplitStatus = () => replaySplit();
+
+  const startCorrectedSplit = async () => {
+    if (!splitTab?.id || splitBusy) return;
+    await runSplit({ corrected: true });
+  };
+
+  const startCorrectedTransfer = async () => {
+    if (!transferTab?.id || transferBusy) return;
+    await runTransfer({ corrected: true });
+  };
+
+  // Pending-operation discovery independent of the active tab list: an
+  // envelope survives tab closure, ownership change, and reload. Replay is
+  // authorized per operation (originator or manager); the server enforces
+  // the rest. Committed attempts are archived out of this list.
+  const [inboxBusyKey, setInboxBusyKey] = useState(null);
+  const replayInboxItem = async (row) => {
+    if (!row?.envelope || inboxBusyKey) return;
+    const key = `${row.kind}:${row.envelope.operationId}`;
+    setInboxBusyKey(key);
+    try {
+      const out = await replaySavedTabOperation({
+        kind: row.kind,
+        tenantId,
+        sourceTabId: row.envelope.sourceTabId,
+        actorId,
+        actorRole,
+        dispatch: (args) => row.kind === 'split'
+          ? window.api?.pos?.splitBillEvenly?.(args)
+          : window.api?.pos?.transferTabWaiter?.(args),
+      });
+      if (out.classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
+        await load({ quiet: true });
+      }
+    } catch {
+      // Errors are reflected through the refreshed inbox record below.
+    } finally {
+      refreshInbox();
+      if (splitTab?.id) refreshSplitPending(splitTab);
+      if (transferTab?.id) refreshTransferPending(transferTab);
+      setInboxBusyKey(null);
     }
   };
 
@@ -265,8 +485,49 @@ export default function HposOpenChecks() {
             }
           />
         </label>
+        <label>
+          <span className="hpos-visually-hidden">Sort open tabs</span>
+          <select
+            value={sort}
+            onChange={(event) => setSort(event.target.value)}
+            aria-label="Sort open tabs"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="highest">Highest value</option>
+            <option value="lowest">Lowest value</option>
+          </select>
+        </label>
       </div>
       {error && <HposNotice tone="error">{error}</HposNotice>}
+      {inbox.length > 0 && (
+        <section className="hpos-service-inbox" data-testid="recovery-inbox" aria-live="polite">
+          <h2>Unresolved operations ({inbox.length})</h2>
+          <p className="hpos-service-dialog__hint">Saved split and transfer attempts that have not reached a confirmed outcome — including tabs that already closed or changed owner. Status check replays the saved operation under its original key without duplicating.</p>
+          {inbox.map((row) => {
+            const allowed = row.corrupt
+              ? false
+              : defaultCanReplayOperation({ envelope: row.envelope, actorId, actorRole });
+            return (
+              <div key={`${row.kind}:${row.envelope?.operationId || row.key}`} className="hpos-service-inbox__row">
+                <div>
+                  <strong>{row.kind === 'split' ? 'Split' : 'Waiter transfer'}</strong>
+                  <span> · tab {String(row.envelope?.sourceTabId || '').slice(0, 8)}… · key {String(row.envelope?.operationId || '').slice(0, 8)}…</span>
+                  <span> · status {row.corrupt ? 'needs review (unreadable record)' : row.envelope?.outcome}{row.envelope?.lastCode ? ` (${row.envelope.lastCode})` : ''}</span>
+                  {row.legacy && <span> · legacy record</span>}
+                </div>
+                <HposButton
+                  disabled={inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` || !allowed}
+                  onClick={() => replayInboxItem(row)}
+                  title={allowed ? 'Replay the saved operation under its original key' : 'Only the originating operator or a manager can replay this operation'}
+                >
+                  {inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` ? 'Checking…' : 'Check status'}
+                </HposButton>
+              </div>
+            );
+          })}
+        </section>
+      )}
       {loading ? (
         <div className="hpos-service-loading">
           <RefreshCw className="is-spinning" size={22} />
@@ -274,7 +535,7 @@ export default function HposOpenChecks() {
         </div>
       ) : (
         <section className="hpos-check-grid" aria-live="polite">
-          {filtered.map((tab) => (
+          {sorted.map((tab) => (
             <article key={tab.id} className="hpos-check-card">
               <div className="hpos-check-card-head">
                 <span>{tab.table_name || tab.tab_name || "Open tab"}</span>
@@ -331,10 +592,18 @@ export default function HposOpenChecks() {
                 >
                   Resume tab →
                 </button>
+                <button
+                  type="button"
+                  onClick={() => settle(tab)}
+                  disabled={!canControl(tab) || tabValue(tab) === null}
+                  title={!canControl(tab) ? ownerTitle(tab) : (tabValue(tab) === null ? "The certified total is unavailable. Resume the tab instead." : "Resume this tab and open payment.")}
+                >
+                  Settle
+                </button>
               </footer>
             </article>
           ))}
-          {!filtered.length && (
+          {!sorted.length && (
             <HposEmptyState
               icon={WalletCards}
               title="No open tabs"
@@ -394,6 +663,22 @@ export default function HposOpenChecks() {
               </small>
             </label>
             {splitError && <HposNotice tone="error">{splitError}</HposNotice>}
+            {splitQuarantine && <HposNotice tone="warning">A damaged local split record was quarantined ({splitQuarantine}). Outcome not confirmed: keep this record and ask support to inspect it before posting any correction.</HposNotice>}
+            {splitPending?.operationId && (
+              <div className="hpos-service-recovery" data-testid="split-recovery-panel">
+                <p><strong>Original attempt:</strong> {describeRecoveryEnvelope(splitPending)} · status {splitPending.outcome}{splitPending.lastCode ? ` (${splitPending.lastCode})` : ""}</p>
+                <p>Operation {String(splitPending.operationId).slice(0, 8)}… · tab {String(splitTab.id).slice(0, 8)}…{splitPending.lastCheckedAt ? ` · last checked ${new Date(splitPending.lastCheckedAt).toLocaleString()}` : ""}</p>
+                {splitPending.outcome === TAB_RECOVERY_OUTCOMES.UNKNOWN && <p>Outcome not confirmed: the split may or may not have committed. Replaying uses the original key and never posts a duplicate.</p>}
+                {splitPending.outcome === TAB_RECOVERY_OUTCOMES.REJECTED && <p>The server rejected this attempt, so nothing was posted. A deliberate correction needs a new key.</p>}
+                {splitPending.outcome === TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW && <p>This key conflicts with different details. Keep this record and ask support to inspect the original operation before correcting.</p>}
+                <div className="hpos-service-dialog__actions">
+                  <HposButton onClick={checkSplitStatus} disabled={splitBusy}>Check status</HposButton>
+                  <HposButton onClick={replaySplit} disabled={splitBusy}>Retry original</HposButton>
+                  {splitPending.outcome === TAB_RECOVERY_OUTCOMES.REJECTED && <HposButton tone="primary" onClick={startCorrectedSplit} disabled={splitBusy}>Start corrected attempt</HposButton>}
+                </div>
+                <p className="hpos-service-dialog__hint">Status check replays the saved operation under its original key. If the server never received it, this submits it exactly once; if it did, the server returns the stored result without duplicating.</p>
+              </div>
+            )}
             <footer>
               <HposButton
                 onClick={() => setSplitTab(null)}
@@ -404,7 +689,7 @@ export default function HposOpenChecks() {
               <HposButton
                 tone="primary"
                 icon={Scissors}
-                onClick={runSplit}
+                onClick={() => runSplit({})}
                 disabled={splitBusy || tabValue(splitTab) === null}
               >
                 {splitBusy ? "Splitting…" : "Split checks"}
@@ -421,9 +706,25 @@ export default function HposOpenChecks() {
             <h2 id="transfer-waiter-title">Transfer waiter</h2>
             <p className="hpos-service-dialog__hint">Tab: {transferTab.table_name || transferTab.tab_name || "Open tab"}. Only its currently assigned waiter (or verified Till operator) can confirm this transfer.</p>
             {transferError && <HposNotice tone="error">{transferError}</HposNotice>}
+            {transferQuarantine && <HposNotice tone="warning">A damaged local transfer record was quarantined ({transferQuarantine}). Outcome not confirmed: keep this record and ask support to inspect it before posting any correction.</HposNotice>}
+            {transferPending?.operationId && (
+              <div className="hpos-service-recovery" data-testid="transfer-recovery-panel">
+                <p><strong>Original attempt:</strong> {describeRecoveryEnvelope(transferPending)} · status {transferPending.outcome}{transferPending.lastCode ? ` (${transferPending.lastCode})` : ""}</p>
+                <p>Operation {String(transferPending.operationId).slice(0, 8)}… · tab {String(transferTab.id).slice(0, 8)}…{transferPending.lastCheckedAt ? ` · last checked ${new Date(transferPending.lastCheckedAt).toLocaleString()}` : ""}</p>
+                {transferPending.outcome === TAB_RECOVERY_OUTCOMES.UNKNOWN && <p>Outcome not confirmed: the transfer may or may not have committed. Replaying uses the original key and never posts a duplicate.</p>}
+                {transferPending.outcome === TAB_RECOVERY_OUTCOMES.REJECTED && <p>The server rejected this attempt, so nothing was posted. A deliberate correction needs a new key.</p>}
+                {transferPending.outcome === TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW && <p>This key conflicts with different details. Keep this record and ask support to inspect the original operation before correcting.</p>}
+                <div className="hpos-service-dialog__actions">
+                  <HposButton onClick={checkTransferStatus} disabled={transferBusy}>Check status</HposButton>
+                  <HposButton onClick={replayTransfer} disabled={transferBusy}>Retry original</HposButton>
+                  {transferPending.outcome === TAB_RECOVERY_OUTCOMES.REJECTED && <HposButton tone="primary" onClick={startCorrectedTransfer} disabled={transferBusy || !transferTarget}>Start corrected attempt</HposButton>}
+                </div>
+                <p className="hpos-service-dialog__hint">Status check replays the saved operation under its original key. If the server never received it, this submits it exactly once; if it did, the server returns the stored result without duplicating.</p>
+              </div>
+            )}
             <label className="hpos-form-field"><span>Active waiter for this outlet</span><select value={transferTarget} onChange={(event) => setTransferTarget(event.target.value)} disabled={transferBusy || !transferChoices.length}><option value="">Choose waiter</option>{transferChoices.map((row) => <option key={`${row.staff_user_id}:${row.pos_shift_id}`} value={row.staff_user_id}>{row.staff_name || row.staff_user_id}</option>)}</select></label>
             <label className="hpos-form-field"><span>Note (optional)</span><textarea value={transferNotes} onChange={(event) => setTransferNotes(event.target.value.slice(0, 1000))} disabled={transferBusy} maxLength={1000} rows={3} placeholder="Reason or handover note" /></label>
-            <div className="hpos-service-dialog__actions"><HposButton onClick={() => setTransferTab(null)} disabled={transferBusy}>Cancel</HposButton><HposButton tone="primary" onClick={runTransfer} disabled={transferBusy || !transferTarget}>{transferBusy ? "Transferring…" : "Transfer waiter"}</HposButton></div>
+            <div className="hpos-service-dialog__actions"><HposButton onClick={() => setTransferTab(null)} disabled={transferBusy}>Cancel</HposButton><HposButton tone="primary" onClick={() => runTransfer({})} disabled={transferBusy || !transferTarget}>{transferBusy ? "Transferring…" : "Transfer waiter"}</HposButton></div>
           </section>
         </div>
       )}

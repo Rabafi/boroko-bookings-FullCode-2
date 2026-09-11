@@ -70,6 +70,11 @@ The PWA connects directly to Supabase and does not use `database.js`.
 
 It is not globally read-only: it supports selected RPC-backed operational actions such as maintenance, expenses, inventory, day-use, conference, quotation, and support/inbox workflows. High-risk financial capabilities must remain explicitly capability-gated and server-enforced. Do not infer permission from a visible button.
 
+## Bar customer documentation
+
+Every change that affects a customer’s Bar setup, navigation, visible controls, permissions, daily workflows, financial or stock behavior, recovery guidance, supported equipment or available features must include a manual-impact assessment. Update the customer manual, quick-start where affected, relevant screenshots and documentation evidence in the same change before release. Internal changes with no customer-facing effect may be marked “No manual update required” with a brief reason.
+
+Relevant Bar changes must also verify that the approved manual and quick-start are packaged with the `hospitality-pos` application and that ordinary authenticated Bar users can open or save both guides offline. Keep internal signing, deployment, Accounting activation mechanics and unrelated product guidance out of customer PDFs. See `docs/bar-manual/maintenance.md` for the update workflow and `docs/bar-manual/document-manifest.json` for approved-document applicability and checksums.
 ## Implementation workflow
 
 1. Inspect the current working tree and preserve unrelated user changes.
@@ -96,4 +101,5 @@ A critical change is not done until:
 - reports and audit history remain financially consistent;
 - relevant guardrails prevent invalid, duplicated, unauthorized, or unrecoverable operational actions and give the operator a safe recovery path;
 - focused tests and affected builds pass;
+- for Bar-facing changes, the manual-impact decision is recorded and, when required, the approved manual, quick-start, screenshots, evidence and packaged offline guide checks are complete;
 - deployment status is stated accurately rather than inferred.

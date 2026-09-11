@@ -20,6 +20,10 @@ function test(name, fn) {
 console.log('\n=== Local AI Tool Tests ===\n')
 
 function makeRunner(overrides = {}) {
+  // Fixed clock (2026-05-21) so date-relative tools are deterministic: the
+  // fixtures live in May 2026 and wall-clock drift was silently rotting these
+  // tests (active stays, overdue buckets, maintenance risk all key off today).
+  const now = () => new Date('2026-05-21T12:00:00Z')
   const db = {
     getTodayBookingPaymentMix: async (dateKey) => {
       const map = {
@@ -59,7 +63,7 @@ function makeRunner(overrides = {}) {
     }),
     ...overrides
   }
-  return createLocalReadToolRunner({ db })
+  return createLocalReadToolRunner({ db, now })
 }
 
 test('room availability ignores cancelled bookings', async () => {

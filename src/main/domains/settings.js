@@ -68,7 +68,24 @@ const DEFAULT_SETTINGS = {
 };
 const SETTINGS_QUERY_TIMEOUT_MS = 15000;
 const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 10000;
+const SETTINGS_SAVE_TIMEOUT_MS = 15000;
 let settingsRefreshInFlight = null;
+
+async function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(message);
+      error.code = 'settings_save_timeout';
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function getDefaultSettings() {
   return {
@@ -137,11 +154,15 @@ function isRowLevelSecurityError(message = '') {
  * app_lodge_access requires an existing lodge session/user. Prefer service-role
  * admin client when available, otherwise the security-definer bootstrap RPC.
  */
-async function bootstrapRemoteSettingsRecord(settings) {
+async function bootstrapRemoteSettingsRecord(settings, { skippedColumns = [], timeoutMs = SETTINGS_SAVE_TIMEOUT_MS } = {}) {
   if (state.adminDb) {
-    const result = await state.adminDb.from('settings').upsert(settings, { onConflict: 'lodge_id' }).select().maybeSingle();
+    const result = await withTimeout(
+      state.adminDb.from('settings').upsert(settings, { onConflict: 'lodge_id' }).select().maybeSingle(),
+      timeoutMs,
+      'Saving settings timed out while contacting the server. Check the internet connection and try again.'
+    );
     if (!result.error) {
-      return { data: { ...settings, ...(result.data || {}) }, mode: 'service_role_bootstrap' };
+      return { data: { ...settings, ...(result.data || {}) }, mode: 'service_role_bootstrap', skippedColumns };
     }
     if (!isRowLevelSecurityError(result.error.message || '')) {
       // Fall through to RPC for schema/RLS-independent bootstrap.
@@ -149,9 +170,11 @@ async function bootstrapRemoteSettingsRecord(settings) {
     }
   }
 
-  const { data, error } = await state.supabase.rpc('bootstrap_company_settings', {
-    p_payload: settings
-  });
+  const { data, error } = await withTimeout(
+    state.supabase.rpc('bootstrap_company_settings', { p_payload: settings }),
+    timeoutMs,
+    'Saving settings timed out while contacting the server. Check the internet connection and try again.'
+  );
   if (error) {
     const message = error.message || 'Could not bootstrap company settings.';
     if (/function .*bootstrap_company_settings|could not find the function/i.test(message)) {
@@ -170,11 +193,12 @@ async function bootstrapRemoteSettingsRecord(settings) {
   }
   return {
     data: { ...settings, ...(data.settings || {}), lodge_id: settings.lodge_id },
-    mode: 'rpc_bootstrap'
+    mode: 'rpc_bootstrap',
+    skippedColumns
   };
 }
 
-async function saveRemoteSettingsRecord(settings, { allowBootstrap = false } = {}) {
+async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, deadline = Date.now() + SETTINGS_SAVE_TIMEOUT_MS } = {}) {
   const optionalRemoteColumns = new Set([
     'assistant_enabled',
     'slug',
@@ -200,8 +224,18 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false } = {
   const skippedColumns = [];
   let lastErrorMessage = '';
 
-  for (let attempt = 0; attempt <= optionalRemoteColumns.size; attempt += 1) {
-    const result = await state.supabase.from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle();
+  for (;;) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      const error = new Error('Saving settings timed out while contacting the server. Check the internet connection and try again.');
+      error.code = 'settings_save_timeout';
+      throw error;
+    }
+    const result = await withTimeout(
+      state.supabase.from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle(),
+      remainingMs,
+      'Saving settings timed out while contacting the server. Check the internet connection and try again.'
+    );
     if (!result.error) {
       return { data: { ...settings, ...(result.data || {}) }, mode: 'lodge', skippedColumns };
     }
@@ -218,7 +252,10 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false } = {
 
     // New company setup has no lodge session yet — RLS blocks direct insert/update.
     if (allowBootstrap && isRowLevelSecurityError(message)) {
-      return bootstrapRemoteSettingsRecord(remoteSettings);
+      return bootstrapRemoteSettingsRecord(remoteSettings, {
+        skippedColumns,
+        timeoutMs: Math.max(1, deadline - Date.now())
+      });
     }
 
     if (!/column .*lodge_id|constraint|on conflict/i.test(message)) {
@@ -230,7 +267,10 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false } = {
   }
 
   if (allowBootstrap && isRowLevelSecurityError(lastErrorMessage)) {
-    return bootstrapRemoteSettingsRecord(remoteSettings);
+    return bootstrapRemoteSettingsRecord(remoteSettings, {
+      skippedColumns,
+      timeoutMs: Math.max(1, deadline - Date.now())
+    });
   }
 
   throw new Error('Settings could not be saved because the remote settings table is missing too many expected columns.');
@@ -466,19 +506,38 @@ export async function saveSettings(data, options = {}) {
   };
 
   if (state.isOnline) {
-    const saved = await saveRemoteSettingsRecord(settings, { allowBootstrap });
+    // Keep the remote upsert and ancillary trial stamp inside one bounded
+    // budget so the renderer never times out after the settings already saved.
+    const saveDeadline = Date.now() + SETTINGS_SAVE_TIMEOUT_MS;
+    const saved = await saveRemoteSettingsRecord(settings, { allowBootstrap, deadline: saveDeadline });
     const savedRemote = saved?.data || null;
     const usedBootstrap = saved?.mode === 'rpc_bootstrap' || saved?.mode === 'service_role_bootstrap';
+    const skippedColumns = Array.isArray(saved?.skippedColumns) ? saved.skippedColumns : [];
+    const warnings = [];
 
     // Bootstrap path already stamps trial_started_at. Direct updates still need
     // lodge access and will RLS-fail before the first admin user exists.
     if (!usedBootstrap) {
-      const { error } = await state.supabase.from('settings').
-      update({ trial_started_at: new Date().toISOString() }).
-      eq('lodge_id', state.lodgeId).
-      is('trial_started_at', null);
-      if (error && !/column .*trial_started_at/i.test(error.message || '') && !isRowLevelSecurityError(error.message || '')) {
-        throw new Error(error.message);
+      const remainingMs = saveDeadline - Date.now();
+      if (remainingMs <= 0) {
+        warnings.push('Settings saved, but the lodge trial record update was not completed before the save timeout. Reload and verify before trying again.');
+      } else {
+        try {
+          const { error } = await withTimeout(
+            state.supabase.from('settings').
+            update({ trial_started_at: new Date().toISOString() }).
+            eq('lodge_id', state.lodgeId).
+            is('trial_started_at', null),
+            remainingMs,
+            'Saving settings timed out while updating the lodge trial record. The settings update may have succeeded; reload and verify before trying again.'
+          );
+          if (error && !/column .*trial_started_at/i.test(error.message || '') && !isRowLevelSecurityError(error.message || '')) {
+            throw new Error(error.message);
+          }
+        } catch (error) {
+          if (error?.code !== 'settings_save_timeout') throw error;
+          warnings.push(error.message);
+        }
       }
     }
 
@@ -488,12 +547,37 @@ export async function saveSettings(data, options = {}) {
     if (activeProfile?.status === PROFILE_STATUS.READY) {
       updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(normalized, activeProfile.label) });
     }
+    if (options?.includeMeta === true) {
+      return {
+        data: normalized,
+        meta: {
+          persistence: skippedColumns.length > 0 ? 'remote_partial' : 'remote',
+          online: true,
+          pending: false,
+          skippedColumns,
+          warnings
+        }
+      };
+    }
     return normalized;
   }
   writeCache('settings', [settings]);
   const activeProfile = getActiveProfile();
   if (activeProfile?.status === PROFILE_STATUS.READY) {
     updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(settings, activeProfile.label) });
+  }
+  if (options?.includeMeta === true) {
+    return {
+      data: settings,
+      meta: {
+        persistence: 'device_only',
+        online: false,
+        pending: true,
+        retryRequired: true,
+        skippedColumns: [],
+        warnings: ['This computer is offline. The settings were not sent to the lodge server.']
+      }
+    };
   }
   return settings;
 }

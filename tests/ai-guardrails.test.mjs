@@ -1,13 +1,14 @@
 /**
- * AI Guardrails Test Suite — P0 Verification
+ * AI Guardrails Test Suite — P0 Verification (recommend-only contract)
  *
  * Validates:
  *   - DeepSeek V4 Pro provider support in aiOrchestrator.js
  *   - Offline-aware error normalization
  *   - Sync health in AI context
  *   - Strict fenced JSON parsing (rejects unsafe patterns)
- *   - Lodge validation hardening
+ *   - Recommend-only execution (no proposals, no direct writes, routes only)
  *   - Audit log parity for bulk handlers
+ *   - Offline smarts with no outside LLM (chrono EN, Fuse basic, clock)
  *
  * Run: node tests/ai-guardrails.test.mjs
  */
@@ -36,6 +37,7 @@ function test(name, fn) {
 async function run() {
 
   const aiOrchestrator = await read('src/main/ai/aiOrchestrator.js')
+  const localAssistant = await read('src/main/ai/localAssistant.js')
   const mainIndex = await read('src/main/index.js')
   const preload = await read('src/preload/index.js')
   const opsAi = await read('src/renderer/src/components/OpsAi.jsx')
@@ -296,33 +298,55 @@ async function run() {
     assert.match(aiOrchestrator, /no tool.*do not output.*JSON|no tool.*no JSON|if no tool.*output ANY JSON/i)
   })
 
-  // ────── P0-5: LODGE VALIDATION ───────────────────────────────────────────
+  // ────── P0-5: RECOMMEND-ONLY EXECUTION ─────────────────────────────────
+  // The assistant never executes data changes: no proposal store, no execute
+  // path, no direct ledger writes. Write intents become route-bearing
+  // recommendations; the operator acts on the normal screen.
 
-  console.log('\n--- P0-5: Strict Lodge Validation ---\n')
+  console.log('\n--- P0-5: Recommend-Only Execution ---\n')
 
-  test('Rejects missing proposal lodgeId', () => {
-    assert.match(aiOrchestrator, /missing_proposal_lodgeId/, 'Should reject when proposal has no lodgeId')
+  test('No proposal store remains in the orchestrator', () => {
+    assert.doesNotMatch(aiOrchestrator, /proposals\.(set|get|delete|has)/, 'No proposal store operations should remain')
+    assert.doesNotMatch(aiOrchestrator, /new Map\(\).*proposal|proposalId/, 'No proposal IDs should remain')
+    assert.doesNotMatch(aiOrchestrator, /ai\.tool\.proposed/, 'No proposal audit event should remain')
   })
 
-  test('Rejects missing current lodgeId', () => {
-    assert.match(aiOrchestrator, /missing_current_lodgeId/, 'Should reject when current lodgeId is missing')
-  })
-
-  test('Rejects mismatched lodgeId', () => {
-    assert.match(aiOrchestrator, /lodgeId_mismatch/, 'Should reject mismatched lodgeIds')
+  test('execute() always rejects with recommend-only guidance', () => {
+    assert.match(aiOrchestrator, /recommend-only/, 'execute should name the recommend-only contract')
+    assert.match(aiOrchestrator, /reason:\s*'recommend_only'/, 'Rejection should carry a recommend_only reason')
   })
 
   test('Rejection writes audit log', () => {
     assert.match(aiOrchestrator, /ai\.execute\.rejected/, 'Should audit-log rejected executions')
   })
 
-  test('New code explicitly checks for missing proposal.lodgeId', () => {
-    assert.match(aiOrchestrator, /!proposal\.lodgeId/, 'Should explicitly check for missing proposal.lodgeId')
+  test('No proposal-ID crypto remains', () => {
+    assert.doesNotMatch(aiOrchestrator, /from 'crypto'/, 'crypto import (proposal IDs only) should be gone')
   })
 
-  test('New code explicitly checks for missing current lodgeId', () => {
-    // Should check lodId is missing (not as a weak guard)
-    assert.match(aiOrchestrator, /!lodgeId\)/, 'Should explicitly check for missing current lodgeId')
+  test('Write intents become audited recommendations, never proposals', () => {
+    assert.match(aiOrchestrator, /ai\.tool\.recommended/, 'Recommendations should be audit-logged')
+    assert.doesNotMatch(aiOrchestrator, /ai\.tool\.confirmed/, 'No confirm-execution audit event should remain')
+  })
+
+  test('Orchestrator performs no direct ledger writes', () => {
+    assert.doesNotMatch(aiOrchestrator, /db\.updateBookingPayment/, 'No direct payment writes in orchestrator')
+    assert.doesNotMatch(aiOrchestrator, /db\.updateBookingStatus/, 'No direct status writes in orchestrator')
+    assert.doesNotMatch(aiOrchestrator, /db\.createBooking/, 'No direct booking creation in orchestrator')
+  })
+
+  test('Crafted bulk-message fast-paths are removed', () => {
+    assert.doesNotMatch(aiOrchestrator, /bulk_record_payment for ids/, 'Bulk payment message bypass should be gone')
+    assert.doesNotMatch(aiOrchestrator, /bulk_check_out ids:/, 'Bulk checkout message bypass should be gone')
+  })
+
+  test('Every write tool has a recommendation route', () => {
+    assert.match(aiOrchestrator, /RECOMMENDATION_ROUTES/, 'Recommendation route map should exist')
+    for (const tool of ['create_booking', 'check_in', 'check_out', 'record_payment', 'bulk_record_payment', 'bulk_check_out']) {
+      assert.match(aiOrchestrator, new RegExp(tool), `Route map should cover ${tool}`)
+    }
+    assert.match(aiOrchestrator, /collectPaymentBookingId/, 'Payment recommendations should deep-link the payment form')
+    assert.match(aiOrchestrator, /reviewBookingId/, 'Check-in/out recommendations should deep-link the booking')
   })
 
   // ────── P0-6: AUDIT LOG PARITY ───────────────────────────────────────────
@@ -345,12 +369,12 @@ async function run() {
     assert.match(mainIndex, /ai\.overdue\.execute\.failed/, 'Bulk overdue errors should be audit-logged')
   })
 
-  test('Single AI action still writes audit log (confirmed)', () => {
-    assert.match(aiOrchestrator, /ai\.tool\.confirmed/, 'Single tool confirmation should still be audit-logged')
+  test('Single AI recommendation writes audit log', () => {
+    assert.match(aiOrchestrator, /ai\.tool\.recommended/, 'Recommendations should be audit-logged')
   })
 
-  test('Single AI proposal writes audit log', () => {
-    assert.match(aiOrchestrator, /ai\.tool\.proposed/, 'Proposals should be audit-logged')
+  test('Recommendation audit carries the route', () => {
+    assert.match(aiOrchestrator, /recommendation \}/, 'Recommendation payload should be audit-logged with its route')
   })
 
   test('Bulk audit includes affected booking IDs', () => {
@@ -371,11 +395,11 @@ async function run() {
   })
 
   test('Preload exposes ai.turn IPC', () => {
-    assert.match(preload, /turn:\s*\(payload\)\s*=>\s*ipcRenderer\.invoke\('ai:turn'/, 'preload should expose ai.turn')
+    assert.match(preload, /invoke\('ai:turn'/, 'preload should expose ai.turn')
   })
 
   test('Preload exposes ai.execute IPC', () => {
-    assert.match(preload, /execute:\s*\(payload\)\s*=>\s*ipcRenderer\.invoke\('ai:execute'/, 'preload should expose ai.execute')
+    assert.match(preload, /invoke\('ai:execute'/, 'preload should expose ai.execute')
   })
 
   test('Preload exposes ai.collections IPC', () => {
@@ -399,8 +423,12 @@ async function run() {
     assert.match(aiOrchestrator, /total_amount.*charges_total/, 'Financial formulas should use total_amount + charges_total')
   })
 
-  test('Uses updateBookingPayment for payments (not direct writes)', () => {
-    assert.match(aiOrchestrator, /updateBookingPayment/, 'Should use updateBookingPayment for payments')
+  test('Orchestrator never authors ledger state (recommend-only proof)', () => {
+    assert.doesNotMatch(aiOrchestrator, /db\.updateBookingPayment/, 'Should not call updateBookingPayment — operators act on screens')
+  })
+
+  test('Daily briefing carries a deterministic narrative', () => {
+    assert.match(aiOrchestrator, /story: storyBits\.join/, 'Briefing should include a template narrative')
   })
 
   test('No new dangerous tools', () => {
@@ -428,6 +456,68 @@ async function run() {
   test('Audit log function does not log API keys', () => {
     const auditFn = aiOrchestrator.match(/function\s+writeAiAuditLog[\s\S]*?^export function/m)?.[0] || ''
     assert.doesNotMatch(auditFn, /api_key|apikey|secret|password|token/i, 'Audit log should not contain secret/credential fields')
+  })
+
+  // ────── P0-8: OFFLINE SMARTS (no outside LLM) ───────────────────────────
+  // chrono-node (EN-only), Fuse (basic), number-word rooms, testable shift
+  // bias, unresolved-query signal, injectable clock. All device-local.
+
+  console.log('\n--- P0-8: Offline Smarts ---\n')
+
+  test('chrono-node EN-only import in localAssistant', () => {
+    assert.match(localAssistant, /from 'chrono-node\/en'/, 'Should deep-import English-only chrono')
+    assert.doesNotMatch(localAssistant, /from 'chrono-node'/, 'Should not pull the full multi-locale entry')
+  })
+
+  test('Fuse basic import in localAssistant and OpsAi', () => {
+    assert.match(localAssistant, /from 'fuse\.js\/basic'/, 'localAssistant should use the basic Fuse build')
+    assert.match(opsAi, /from 'fuse\.js\/basic'/, 'OpsAi should use the basic Fuse build for topic search')
+  })
+
+  test('Number-word room resolver is exported', () => {
+    assert.match(localAssistant, /export \{ extractRoomHint|export function resolveNumberWords|resolveNumberWords \}/, 'Room helpers should be exported for tests')
+    assert.match(localAssistant, /NUMBER_WORDS/, 'Number-word map should exist')
+  })
+
+  test('Day-window parser is exported and chrono-backed', () => {
+    assert.match(localAssistant, /export \{ extractDayWindow \}/, 'extractDayWindow should be exported for tests')
+    assert.match(localAssistant, /chronoCasual\.parse/, 'Day window should consult chrono as fallback')
+  })
+
+  test('Shift bias is hour-parameterized and exported', () => {
+    assert.match(localAssistant, /export function getTimeAwareSuggestions/, 'Time-aware suggestions should be exported for tests')
+  })
+
+  test('Did-you-mean helper is exported', () => {
+    assert.match(localAssistant, /export function findClosestTopics/, 'Topic did-you-mean should be exported')
+  })
+
+  test('Unresolved queries are audit-logged device-locally', () => {
+    assert.match(aiOrchestrator, /ai\.unresolved_query/, 'Fallbacks should log an unresolved-query signal')
+  })
+
+  test('Tool runner accepts an injectable clock', () => {
+    assert.match(aiOrchestrator, /now = \(\) => new Date\(\)/, 'Clock should be injectable for deterministic tests')
+    assert.match(aiOrchestrator, /createLocalReadToolRunner\(\{ db, now/, 'Read runner should pass the clock through')
+  })
+
+  test('OpsAi renders recommendation cards (navigate, never execute)', () => {
+    assert.match(opsAi, /RecommendationCard/, 'Recommendation card should exist')
+    assert.match(opsAi, /result\.recommendation/, 'Chat should attach recommendations from turn results')
+    assert.doesNotMatch(opsAi, /Cloud action proposal/, 'Proposal confirm UI should be gone')
+  })
+
+  test('OpsAi explains multi-match record lists', () => {
+    assert.match(opsAi, /Multiple matches — choose one/, 'Guest/booking widgets should disambiguate')
+  })
+
+  test('OpsAi renders the briefing narrative', () => {
+    assert.match(opsAi, /result\.story/, 'Briefing widget should render the deterministic story')
+  })
+
+  test('OpsAi topic search is typo-tolerant with did-you-mean', () => {
+    assert.match(opsAi, /catalogFuse/, 'Topic search should use Fuse')
+    assert.match(opsAi, /Did you mean/, 'Empty topic search should suggest the closest topic')
   })
 
   // ─── SUMMARY ─────────────────────────────────────────────────────────────

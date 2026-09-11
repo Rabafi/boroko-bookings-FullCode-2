@@ -29,7 +29,9 @@
   ],
   "extraResources": [
     { "from": "src/main/assets", "to": "assets" },
-    { "from": "apps/hospitality-pos/product.json", "to": "product.json" }
+    { "from": "apps/hospitality-pos/product.json", "to": "product.json" },
+    { "from": "output/pdf", "to": "bar-guides", "filter": ["Tsa-Bonno-Bar-Customer-Manual.pdf", "Tsa-Bonno-Bar-Quick-Start.pdf"] },
+    { "from": "docs/bar-manual/document-manifest.json", "to": "bar-guides/document-manifest.json" }
   ],
   "extraMetadata": { "name": "boroko-hospitality-pos", "main": "out/hospitality-pos/main/index.js", "description": "Tsa Bonno Restaurant & Bar POS" },
   "nsis": {

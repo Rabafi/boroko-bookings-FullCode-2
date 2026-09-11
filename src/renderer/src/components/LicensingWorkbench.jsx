@@ -14,7 +14,7 @@ import {
 import { FEATURE_LABELS } from '../../../shared/accessControl'
 import {
   SUBSCRIPTION_PLAN_ORDER,
-  getAllSubscriptionPlans,
+  getPlanUsageLimits,
   getSubscriptionPlan,
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
@@ -218,53 +218,66 @@ function parseUpgradeRequest(description = '') {
 }
 
 function PlanCatalog({ licenses }) {
-  const countsByPlan = useMemo(() => {
+  const countsByPackage = useMemo(() => {
     return (licenses || []).reduce((accumulator, license) => {
       if (!isAssignedLicense(license)) return accumulator
-      const plan = normalizePlanName(license.subscription_plan)
-      accumulator[plan] = (accumulator[plan] || 0) + 1
+      const productId = license.product_id || 'lodge-camp'
+      const packageKey = license.commercial_package_key
+        || (productId === 'lodge-camp' ? normalizePlanName(license.subscription_plan).toLowerCase() : '')
+      const key = `${productId}:${packageKey}`
+      accumulator[key] = (accumulator[key] || 0) + 1
       return accumulator
     }, {})
   }, [licenses])
 
+  const productCatalogs = [
+    ['lodge-camp', 'LodgingOS'],
+    ['hotel', 'HotelOS'],
+    ['hospitality-pos', 'Restaurant & Bar POS']
+  ].map(([productId, label]) => ({ productId, label, offers: getCommercialOffers(productId) }))
+
   return (
     <div className="space-y-5">
-      <div className="grid lg:grid-cols-3 gap-4">
-        {getAllSubscriptionPlans().map((plan) => (
-          <div key={plan.name} className={`rounded-2xl border p-5 ${PLAN_COLORS[plan.name]}`}>
+      {productCatalogs.map(({ productId, label, offers }) => (
+        <section key={productId} className="space-y-3">
+          <div>
+            <h3 className="text-lg font-semibold text-white">{label}</h3>
+            <p className="text-sm text-gray-400">Product-specific packages and included workflows.</p>
+          </div>
+          <div className="grid lg:grid-cols-3 gap-4">
+          {offers.map((offer) => {
+            const limits = productId === 'lodge-camp' ? getPlanUsageLimits(offer.internalPlan) : null
+            const included = (offer.includedFeatures || []).slice(0, 8)
+            return <div key={`${productId}:${offer.commercialPackageKey}`} className={`rounded-2xl border p-5 ${PLAN_COLORS[offer.internalPlan] || PLAN_COLORS.Pro}`}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <p className="text-lg font-bold text-white">{plan.name}</p>
+                  <p className="text-lg font-bold text-white">{offer.displayName}</p>
                   <span className="rounded-full bg-gray-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-                    {plan.badge}
+                    {formatCommercialMoney(offer.priceBwp)}
                   </span>
                 </div>
-                <p className="mt-1 text-sm text-gray-300">{plan.headline}</p>
-                <p className="mt-1 text-sm text-gray-400">{plan.summary}</p>
+                <p className="mt-1 text-sm text-gray-300">{offer.salesCopy}</p>
               </div>
               <span className="text-xs font-semibold px-2 py-1 rounded-full bg-gray-900 text-gray-300">
-                {countsByPlan[plan.name] || 0} clients
+                {countsByPackage[`${productId}:${offer.commercialPackageKey}`] || 0} clients
               </span>
             </div>
-            <div className="mt-4 rounded-2xl border border-white/5 bg-black/10 p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">Best For</p>
-              <p className="mt-2 text-sm text-gray-300">{plan.audience}</p>
-            </div>
+            {limits && <div className="mt-4 rounded-2xl border border-white/5 bg-black/10 p-3 text-xs text-gray-300">{limits.rooms} rooms · {limits.users} users · {limits.monthlyBookings} bookings/month</div>}
             <div className="mt-4 space-y-2">
-              {FEATURE_ORDER.map((feature) => (
+              {included.map((feature) => (
                 <div key={feature} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-300">{FEATURE_LABELS[feature]}</span>
-                  <span className={PLAN_FLAGS[plan.name]?.[feature] ? 'text-green-300' : 'text-gray-600'}>
-                    {PLAN_FLAGS[plan.name]?.[feature] ? 'Included' : 'Locked'}
-                  </span>
+                  <span className="text-gray-300">{FEATURE_LABELS[feature] || feature.replace(/_/g, ' ')}</span>
+                  <span className="text-green-300">Included</span>
                 </div>
               ))}
+              {(offer.includedFeatures || []).length > included.length && <p className="text-xs text-gray-500">+ {(offer.includedFeatures || []).length - included.length} more included workflows</p>}
             </div>
-            <p className="mt-4 text-xs text-gray-500">{plan.upgradeNudge}</p>
+            </div>
+          })}
           </div>
-        ))}
-      </div>
+        </section>
+      ))}
     </div>
   )
 }
@@ -289,10 +302,14 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     duration: ''
   })
   const [saving, setSaving] = useState(false)
-  const [assignmentOperationId, setAssignmentOperationId] = useState('')
+  const [assignmentOperationId, setAssignmentOperationId] = useState(() => crypto.randomUUID())
   const [filter, setFilter] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [pendingUserRemediation, setPendingUserRemediation] = useState(null)
+  const [remediationUsers, setRemediationUsers] = useState([])
+  const [keepUserIds, setKeepUserIds] = useState([])
+  const [remediating, setRemediating] = useState(false)
 
   useEffect(() => {
     if (prefill) {
@@ -383,13 +400,15 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     setError('')
     setNotice('')
     setSaving(true)
+    const operationId = assignmentOperationId || crypto.randomUUID()
+    if (!assignmentOperationId) setAssignmentOperationId(operationId)
     try {
       if (editingLicense) {
         if (String(editingLicense.id || '').startsWith('entitlement:')) {
           throw new Error('This assignment was recovered from entitlement data but no editable license row was returned. Refresh licenses, then open Supabase if this still appears.')
         }
         const result = await window.api.admin.assignCommercialSubscription({
-          operation_id: assignmentOperationId,
+          operation_id: operationId,
           license_id: editingLicense.id,
           lodge_id: form.lodge_id,
           lodge_name: form.lodge_name,
@@ -406,6 +425,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           activation_reason: form.notes
         })
         if (!result?.success) throw new Error(result?.error || 'Could not update license assignment')
+        if (result?.status === 'pending_remediation' || result?.pending_remediation === true) {
+          const blockerCopy = (result.blockers || []).map((item) => item.message).filter(Boolean).join(' ')
+          setNotice(`${form.subscription_plan} is selected as the target package, but the current license was not changed yet. Complete the listed remediation and save again. ${blockerCopy}`.trim())
+          const userBlocker = (result.blockers || []).find((item) => item.code === 'users_over_limit')
+          if (userBlocker) {
+            const users = await window.api.admin.getCompanyUsers(form.lodge_id).catch(() => [])
+            setRemediationUsers((users || []).filter((user) => String(user.status || 'active').toLowerCase() === 'active'))
+            setKeepUserIds([])
+            setPendingUserRemediation({ ...userBlocker, targetPackageKey: form.commercial_package_key })
+          }
+          setAssignmentOperationId(crypto.randomUUID())
+          return
+        }
         setNotice('License assignment updated.')
       } else {
         const existing = buildAssignedLicenseMap(licenses).get(assignmentKey(form.lodge_id, form.product_id))
@@ -414,7 +446,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           throw new Error('This lodge already has an active assignment. I opened the existing license for editing instead.')
         }
         const result = await window.api.admin.assignCommercialSubscription({
-            operation_id: assignmentOperationId,
+            operation_id: operationId,
             lodge_id: form.lodge_id,
             lodge_name: form.lodge_name,
             business_type: form.business_type,
@@ -431,6 +463,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
             activation_reason: form.notes
         })
         if (!result?.success) throw new Error(result?.error || 'Could not generate license')
+        if (result?.status === 'pending_remediation' || result?.pending_remediation === true) {
+          const blockerCopy = (result.blockers || []).map((item) => item.message).filter(Boolean).join(' ')
+          setNotice(`${form.subscription_plan} is accepted as the target package, but activation is pending remediation. No users or records were changed. ${blockerCopy}`.trim())
+          const userBlocker = (result.blockers || []).find((item) => item.code === 'users_over_limit')
+          if (userBlocker) {
+            const users = await window.api.admin.getCompanyUsers(form.lodge_id).catch(() => [])
+            setRemediationUsers((users || []).filter((user) => String(user.status || 'active').toLowerCase() === 'active'))
+            setKeepUserIds([])
+            setPendingUserRemediation({ ...userBlocker, targetPackageKey: form.commercial_package_key })
+          }
+          setAssignmentOperationId(crypto.randomUUID())
+          return
+        }
         const issuedKey = result?.license?.license_key || result?.license_key
         setNotice(`Generated ${form.subscription_plan} license${issuedKey ? `: ${issuedKey}` : '.'}`)
       }
@@ -442,6 +487,30 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     } finally {
       setSaving(false)
     }
+  }
+
+  const applyUserRemediation = async () => {
+    const required = Number(pendingUserRemediation?.limit || 0)
+    if (keepUserIds.length !== required) return setError(`Select exactly ${required} active account(s) to retain.`)
+    if (String(form.notes || '').trim().length < 8) return setError('Keep the assignment reason at 8 characters or longer before applying remediation.')
+    setRemediating(true)
+    setError('')
+    try {
+      const result = await window.api.admin.applyCommercialUserRemediation({
+        lodge_id: form.lodge_id,
+        product_id: form.product_id,
+        target_package_key: pendingUserRemediation.targetPackageKey,
+        keep_user_ids: keepUserIds,
+        reason: form.notes.trim()
+      })
+      if (!result?.success) throw new Error(result?.error || 'Could not apply user remediation')
+      setPendingUserRemediation(null)
+      setRemediationUsers([])
+      setKeepUserIds([])
+      setAssignmentOperationId(crypto.randomUUID())
+      setNotice(`${result.suspended_users || 0} overflow account(s) were suspended, not deleted, and their sessions were revoked. Save the assignment again to activate the selected package.`)
+    } catch (err) { setError(err?.message || 'Could not apply user remediation') }
+    finally { setRemediating(false) }
   }
 
   return (
@@ -507,6 +576,18 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           </div>
         )}
 
+        {pendingUserRemediation && (
+          <div className="rounded-2xl border border-amber-700 bg-amber-950/30 p-4">
+            <p className="font-semibold text-amber-200">Choose the {pendingUserRemediation.limit} account(s) that remain active</p>
+            <p className="mt-1 text-xs leading-5 text-amber-200/70">All other active accounts will be suspended—not deleted—and their desktop/PWA sessions will be revoked. Starter must retain exactly one Admin owner.</p>
+            <div className="mt-3 space-y-2">{remediationUsers.map((user) => {
+              const checked = keepUserIds.includes(user.id)
+              return <label key={user.id} className="flex cursor-pointer items-center gap-3 rounded-xl border border-amber-900/60 bg-black/20 px-3 py-2 text-sm text-gray-200"><input type="checkbox" checked={checked} onChange={() => setKeepUserIds((current) => checked ? current.filter((id) => id !== user.id) : current.length < Number(pendingUserRemediation.limit || 0) ? [...current, user.id] : current)} /><span className="flex-1">{user.name || user.email || user.id}</span><span className="text-xs uppercase text-gray-500">{user.role}</span></label>
+            })}</div>
+            <button type="button" onClick={applyUserRemediation} disabled={remediating || keepUserIds.length !== Number(pendingUserRemediation.limit || 0)} className="mt-3 w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40">{remediating ? 'Applying safely…' : `Suspend overflow and retain ${pendingUserRemediation.limit}`}</button>
+          </div>
+        )}
+
         <div>
           <label className="text-xs text-gray-400 block mb-1">Client</label>
           <select
@@ -514,6 +595,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
             value={form.lodge_id}
             onChange={(event) => {
               const company = companyById.get(lodgeKey(event.target.value))
+              setAssignmentOperationId((current) => current || crypto.randomUUID())
               setForm((current) => ({
                 ...current,
                 lodge_id: company?.lodge_id || '',
@@ -671,7 +753,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   )
 }
 
-function OverrideDesk({ companies, licenses }) {
+function LegacyOverrideDesk({ companies, licenses }) {
   const [selectedLodge, setSelectedLodge] = useState('')
   const [flags, setFlags] = useState({})
   const [overrideDetails, setOverrideDetails] = useState({})
@@ -940,6 +1022,163 @@ function OverrideDesk({ companies, licenses }) {
       </div>
     </div>
   )
+}
+
+function OverrideDesk({ companies, licenses }) {
+  const [selectedLodge, setSelectedLodge] = useState('')
+  const [selectedProduct, setSelectedProduct] = useState('')
+  const [referencePackageKey, setReferencePackageKey] = useState('')
+  const [overrides, setOverrides] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [savingKey, setSavingKey] = useState('')
+  const [reason, setReason] = useState('')
+  const [expiresAt, setExpiresAt] = useState('')
+  const [limitDrafts, setLimitDrafts] = useState({})
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const company = useMemo(() => (companies || []).find((row) => lodgeKey(row.lodge_id) === lodgeKey(selectedLodge)) || null, [companies, selectedLodge])
+  const products = useMemo(() => {
+    if (!selectedLodge) return []
+    const result = new Set((licenses || []).filter((row) => lodgeKey(row.lodge_id) === lodgeKey(selectedLodge)).map((row) => row.product_id).filter(Boolean))
+    result.add(getCompanyProductId(company))
+    return [...result]
+  }, [company, licenses, selectedLodge])
+  const assigned = useMemo(() => buildAssignedLicenseMap(licenses), [licenses])
+  const activeLicense = assigned.get(assignmentKey(selectedLodge, selectedProduct)) || null
+  const productOffers = useMemo(() => getCommercialOffers(selectedProduct), [selectedProduct])
+  const referenceOffer = productOffers.find((offer) => offer.commercialPackageKey === referencePackageKey)
+    || productOffers.find((offer) => offer.commercialPackageKey === activeLicense?.commercial_package_key)
+    || productOffers[0]
+    || null
+  const selectedPlan = normalizePlanName(referenceOffer?.internalPlan || activeLicense?.subscription_plan || 'Starter')
+  const baseFeatures = useMemo(() => new Set(referenceOffer?.includedFeatures || []), [referenceOffer])
+  const featureKeys = useMemo(() => {
+    const result = new Set()
+    getCommercialOffers(selectedProduct).forEach((offer) => (offer.includedFeatures || []).forEach((key) => {
+      if (/^[a-z][a-z0-9_.-]*$/.test(String(key || ''))) result.add(key)
+    }))
+    getCommercialAddonOffers(selectedProduct, company?.property_type || company?.business_type).forEach((addon) => (addon.includedFeatures || []).forEach((key) => result.add(key)))
+    if (selectedProduct === 'lodge-camp') FEATURE_ORDER.forEach((key) => result.add(key))
+    return [...result].sort((a, b) => (FEATURE_LABELS[a] || a).localeCompare(FEATURE_LABELS[b] || b))
+  }, [company?.business_type, company?.property_type, selectedProduct])
+  const activeOverrides = useMemo(() => {
+    const result = new Map()
+    const now = Date.now()
+    for (const row of overrides) {
+      if (row.revoked_at || (row.expires_at && new Date(row.expires_at).getTime() <= now)) continue
+      const key = row.feature_key ? `feature:${row.feature_key}` : `limit:${row.limit_key}`
+      if (!result.has(key)) result.set(key, row)
+    }
+    return result
+  }, [overrides])
+  const baseLimits = selectedProduct === 'lodge-camp' ? getPlanUsageLimits(selectedPlan) : null
+  const limitDefinitions = useMemo(() => baseLimits ? [
+    ['users', 'Active users', baseLimits.users],
+    ['rooms', 'Rooms', baseLimits.rooms],
+    ['monthly_bookings', 'Bookings per check-in month', baseLimits.monthlyBookings],
+    ['booking_grace', 'Monthly booking grace', baseLimits.monthlyBookingsGrace]
+  ] : [], [baseLimits])
+
+  useEffect(() => { setSelectedProduct(products[0] || '') }, [products])
+  useEffect(() => {
+    const offers = getCommercialOffers(selectedProduct)
+    const currentKey = activeLicense?.commercial_package_key
+    setReferencePackageKey(offers.some((offer) => offer.commercialPackageKey === currentKey) ? currentKey : offers[0]?.commercialPackageKey || '')
+  }, [activeLicense?.commercial_package_key, selectedLodge, selectedProduct])
+
+  const reload = async () => {
+    if (!selectedLodge || !selectedProduct) return
+    setLoading(true)
+    setError('')
+    try {
+      const rows = await window.api.admin.getCommercialEntitlementOverrides(selectedLodge, selectedProduct)
+      setOverrides(Array.isArray(rows) ? rows : [])
+    } catch (err) {
+      setOverrides([])
+      setError(err?.message || 'Could not load commercial overrides')
+    } finally { setLoading(false) }
+  }
+
+  useEffect(() => { reload() }, [selectedLodge, selectedProduct])
+  useEffect(() => {
+    setLimitDrafts(Object.fromEntries(limitDefinitions.map(([key, , fallback]) => [key, String(activeOverrides.get(`limit:${key}`)?.limit_value ?? fallback ?? '')])))
+  }, [activeOverrides, limitDefinitions])
+
+  const envelope = () => {
+    if (reason.trim().length < 8) throw new Error('Enter a reason of at least 8 characters before changing an entitlement.')
+    return {
+      lodge_id: selectedLodge,
+      product_id: selectedProduct,
+      reason: reason.trim(),
+      expires_at: expiresAt ? new Date(`${expiresAt}T23:59:59`).toISOString() : null
+    }
+  }
+  const runMutation = async (key, action, successMessage) => {
+    setSavingKey(key); setError(''); setNotice('')
+    try {
+      const result = await action()
+      if (!result?.success) throw new Error(result?.error || 'The override was not saved')
+      setNotice(successMessage)
+      await reload()
+    } catch (err) { setError(err?.message || 'The override was not saved') }
+    finally { setSavingKey('') }
+  }
+  const revoke = (row, label) => runMutation(
+    row.feature_key ? `feature:${row.feature_key}` : `limit:${row.limit_key}`,
+    () => window.api.admin.revokeCommercialEntitlementOverride({ ...envelope(), override_id: row.id }),
+    `${label} now inherits the package default.`
+  )
+  const saveFeature = (feature, enabled) => runMutation(
+    `feature:${feature}`,
+    () => window.api.admin.setCommercialEntitlementOverride({ ...envelope(), feature_key: feature, enabled }),
+    `${FEATURE_LABELS[feature] || feature.replace(/_/g, ' ')} is explicitly ${enabled ? 'enabled' : 'disabled'} for ${getProductFamilyLabel(selectedProduct)}.`
+  )
+  const saveLimit = (key, label) => {
+    const value = Number(limitDrafts[key])
+    if (!Number.isInteger(value) || value < 0) return setError(`${label} must be a non-negative whole number.`)
+    return runMutation(
+      `limit:${key}`,
+      () => window.api.admin.setCommercialEntitlementOverride({ ...envelope(), limit_key: key, limit_value: value }),
+      `${label} is now ${value} for this property.`
+    )
+  }
+
+  return <div className="space-y-5">
+    <section className="rounded-2xl border border-gray-700 bg-gray-800 p-5">
+      <div className="flex items-center gap-2"><SlidersHorizontal size={18} className="text-purple-300" /><h3 className="text-lg font-semibold text-white">Commercial Entitlement Control</h3></div>
+      <p className="mt-1 text-sm text-gray-400">Package defaults stay intact. Exceptions are product-scoped, audited, expiring, and reversible.</p>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <select value={selectedLodge} onChange={(event) => setSelectedLodge(event.target.value)} className="rounded-xl border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-white"><option value="">Choose a client…</option>{(companies || []).map((row) => <option key={row.lodge_id} value={row.lodge_id}>{row.lodge_name || row.company_name}</option>)}</select>
+        <select value={selectedProduct} onChange={(event) => setSelectedProduct(event.target.value)} disabled={!selectedLodge} className="rounded-xl border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-white disabled:opacity-50">{products.map((product) => <option key={product} value={product}>{getProductFamilyLabel(product)}</option>)}</select>
+        <select value={referencePackageKey} onChange={(event) => setReferencePackageKey(event.target.value)} disabled={!selectedProduct} className="rounded-xl border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-white disabled:opacity-50"><option value="">Package defaults to compare…</option>{productOffers.map((offer) => <option key={offer.commercialPackageKey} value={offer.commercialPackageKey}>{offer.displayName}{offer.commercialPackageKey === activeLicense?.commercial_package_key ? ' (currently active)' : ''}</option>)}</select>
+      </div>
+      {selectedLodge && selectedProduct && referenceOffer && <p className="mt-2 text-xs text-gray-500">Comparing against {referenceOffer.displayName} defaults. This selector does not change the live licence; saved overrides remain attached to this client and product.</p>}
+      {selectedLodge && selectedProduct && <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_0.35fr]"><div><label className="mb-1 block text-xs text-gray-400">Mandatory reason (minimum 8 characters)</label><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Business reason for this exception or revocation" className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white" /></div><div><label className="mb-1 block text-xs text-gray-400">Optional expiry</label><input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white" /></div></div>}
+      {error && <p className="mt-3 rounded-xl border border-red-800 bg-red-950/30 px-3 py-2 text-sm text-red-300">{error}</p>}
+      {notice && <p className="mt-3 rounded-xl border border-green-800 bg-green-950/30 px-3 py-2 text-sm text-green-300">{notice}</p>}
+    </section>
+
+    {selectedLodge && selectedProduct === 'lodge-camp' && <section className="rounded-2xl border border-gray-700 bg-gray-800 p-5">
+      <div className="flex items-center gap-2"><Users size={18} className="text-blue-300" /><h3 className="text-lg font-semibold text-white">Numeric Allowances</h3></div>
+      <p className="mt-1 text-xs text-gray-500">For example, set Active users to 3 to let this Starter property create and retain a third account.</p>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">{limitDefinitions.map(([key, label, fallback]) => {
+        const row = activeOverrides.get(`limit:${key}`)
+        return <div key={key} className="rounded-2xl border border-gray-700 bg-gray-900/80 p-4"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-white">{label}</p><p className="mt-1 text-xs text-gray-500">Package default: {fallback}{row ? ' · overridden' : ''}</p>{row?.reason && <p className="mt-2 text-xs text-gray-500">{row.reason}{row.expires_at ? ` · ends ${fmtDate(row.expires_at)}` : ''}</p>}</div>{row && <button onClick={() => revoke(row, label)} disabled={savingKey === `limit:${key}`} className="text-xs font-semibold text-amber-300">Use default</button>}</div><div className="mt-3 flex gap-2"><input type="number" min="0" step="1" value={limitDrafts[key] ?? ''} onChange={(event) => setLimitDrafts((current) => ({ ...current, [key]: event.target.value }))} className="min-w-0 flex-1 rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white" /><button onClick={() => saveLimit(key, label)} disabled={savingKey === `limit:${key}`} className="rounded-xl bg-purple-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{savingKey === `limit:${key}` ? 'Saving…' : 'Save override'}</button></div></div>
+      })}</div>
+    </section>}
+
+    <section className="rounded-2xl border border-gray-700 bg-gray-800 p-5">
+      <div className="flex items-center gap-2"><Sparkles size={18} className="text-purple-300" /><h3 className="text-lg font-semibold text-white">Every Product Feature</h3></div>
+      <p className="mt-1 text-xs text-gray-500">Only the selected product's catalogue is shown. Roles, tenancy, audit, security, ledgers, and product identity are never overrideable.</p>
+      {!selectedLodge ? <p className="mt-4 text-sm text-gray-500">Choose a client to manage feature exceptions.</p> : loading ? <p className="mt-4 text-sm text-gray-500">Loading authoritative overrides…</p> : <div className="mt-4 grid gap-3 md:grid-cols-2">{featureKeys.map((feature) => {
+        const row = activeOverrides.get(`feature:${feature}`)
+        const baseEnabled = baseFeatures.has(feature) || (selectedProduct === 'lodge-camp' && PLAN_FLAGS[selectedPlan]?.[feature] === true)
+        const effective = row ? row.enabled !== false : baseEnabled
+        return <div key={feature} className="rounded-2xl border border-gray-700 bg-gray-900/80 p-4"><p className="font-semibold text-white">{FEATURE_LABELS[feature] || feature.replace(/_/g, ' ')}</p><p className="mt-1 text-xs text-gray-500">Package: {baseEnabled ? 'Enabled' : 'Disabled'} · Effective: {effective ? 'Enabled' : 'Disabled'}{row ? ' · overridden' : ''}</p>{row?.reason && <p className="mt-2 text-xs text-gray-500">{row.reason}{row.expires_at ? ` · ends ${fmtDate(row.expires_at)}` : ''}</p>}<div className="mt-3 flex flex-wrap gap-2"><button onClick={() => saveFeature(feature, true)} disabled={savingKey === `feature:${feature}`} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${row?.enabled === true ? 'bg-green-500/20 text-green-300' : 'bg-gray-700 text-gray-300'}`}>Force on</button><button onClick={() => saveFeature(feature, false)} disabled={savingKey === `feature:${feature}`} className={`rounded-full px-3 py-1.5 text-xs font-semibold ${row?.enabled === false ? 'bg-red-500/20 text-red-300' : 'bg-gray-700 text-gray-300'}`}>Force off</button>{row && <button onClick={() => revoke(row, FEATURE_LABELS[feature] || feature)} disabled={savingKey === `feature:${feature}`} className="rounded-full px-3 py-1.5 text-xs font-semibold text-amber-300">Use package default</button>}</div></div>
+      })}</div>}
+    </section>
+  </div>
 }
 
 function ClientHealthDesk({ companies, licenses, tickets, onApprove }) {

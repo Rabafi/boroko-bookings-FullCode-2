@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
+import { checkOnline } from './connectivity.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
@@ -21,6 +22,7 @@ import {
 import {
   resolvePosSubmitAttempt,
   commitPosSubmitAttempt,
+  hasPosSubmitAttempt,
   getPendingPosSubmitAttempt as getPendingSubmitAttemptRecord,
   clearPosSubmitAttempt as clearPosSubmitAttemptRecord
 } from './posSubmitJournal.js'
@@ -28,6 +30,12 @@ import { classifyAuthoritativeShiftClose } from './posShiftClose.js'
 import { getTrialStatus } from './entitlements.js'
 import { isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
 import { isBarOnlyMode } from '../../shared/propertyTypes.js'
+import { validateSaleModifierRequirements } from '../../shared/modifierRequirements.js'
+import { createProductSaveFlow } from '../../shared/productSaveFlow.js'
+import { isDefinitiveProductRejection, isMissingRpcError } from '../../shared/productRequest.js'
+import { runPublicationSweep, summarizePublication } from '../../shared/catalogPublication.js'
+import { upsertLocalInventoryMovement } from './inventory.js'
+import { applyOptionalV3TabFields, isPositiveTabVersion } from '../../shared/posV3TabFields.js'
 
 const POS_REMOTE_READ_TTL_MS = 2_500;
 const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, service_mode, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
@@ -119,10 +127,10 @@ async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [],
   const packageKey = entitlement?.commercial_package_key || null
   const addonKeys = entitlement?.enterprise_addons || []
   if (!productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
-  if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys)) {
+  if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys, entitlement, state.lodgeId)) {
     throw new Error('Voucher tender is not included in the current Bar POS commercial entitlement.')
   }
-  if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys)) {
+  if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys, entitlement, state.lodgeId)) {
     throw new Error('Tip tender is not included in the current Bar POS commercial entitlement.')
   }
 }
@@ -361,15 +369,17 @@ function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod
   const rows = Array.isArray(paymentBreakdown) && paymentBreakdown.length > 0
     ? paymentBreakdown
     : [{ method: fallbackMethod, amount: 0, reference: null }];
-  const missing = rows.filter((row) => {
+  // Card and mobile-money references are optional on the restaurant bar
+  // POS: a provider tender without a reference remains valid. A supplied
+  // reference is length-guarded so it stays usable as audit evidence.
+  const invalid = rows.filter((row) => {
     const method = String(row?.method || fallbackMethod || 'cash').trim().toLowerCase();
-    if (!['card', 'mobile_money'].includes(method)) return false;
-    const reference = String(row?.reference || '').trim();
-    return !reference || reference.length > 120;
+    if (method !== 'card' && method !== 'mobile_money') return false;
+    return String(row?.reference || '').trim().length > 120;
   });
-  if (missing.length > 0) {
-    const labels = [...new Set(missing.map((row) => String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() === 'mobile_money' ? 'mobile money' : 'card'))];
-    throw new Error(`Enter the ${labels.join(' and ')} transaction or approval reference before recording payment.`);
+  if (invalid.length > 0) {
+    const labels = [...new Set(invalid.map((row) => String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() === 'mobile_money' ? 'mobile money' : 'card'))];
+    throw new Error(`The ${labels.join(' and ')} reference must be 120 characters or fewer`);
   }
   return paymentBreakdown;
 }
@@ -567,6 +577,23 @@ function readPosModifierGroups() {
 
 function writePosModifierGroups(rows = []) {
   writeCache('pos-modifier-groups', rows.slice(0, 500));
+  // Freshness marker: an absent marker means requirements are UNKNOWN
+  // (never confuse with known-empty). Domain pre-checks skip without it;
+  // the server trigger remains the authoritative backstop.
+  writeCache('pos-modifier-groups-meta', { fetchedAt: new Date().toISOString() });
+}
+
+/**
+ * Domain pre-dispatch check for required modifier choices. Runs before
+ * checkout and tab-hold payloads leave this process (online and offline
+ * queue building alike). Skips only when group definitions were never
+ * loaded here — the server trigger still enforces at insert.
+ */
+export function assertSaleModifierRequirements(items) {
+  const meta = readCache('pos-modifier-groups-meta');
+  if (!meta || typeof meta !== 'object' || !meta.fetchedAt) return;
+  const check = validateSaleModifierRequirements(items, readPosModifierGroups(), true);
+  if (!check.ok) throw new Error(check.error);
 }
 
 function readPosPromotions() {
@@ -848,7 +875,9 @@ export async function deletePosMenuItem(id) {
   await publishPosCatalogSnapshotsForChange([existing?.outlet_id || null]).catch((publishError) => {
     throw new Error(`Menu item was deleted, but catalog publication failed: ${publishError.message}`);
   });
-  return { success: true };
+  // Pass the server outcome flags through (soft_deleted/already_deleted/
+  // stock_delisted) so surfaces can tell the operator exactly what happened.
+  return { ...result, success: true };
 }
 
 export async function setBarPosPackTemplate(data) {
@@ -969,6 +998,267 @@ export async function saveBarPosProductWithPacks(data = {}) {
   if (!result?.success) throw new Error(result?.error || 'Could not save Bar product and packs');
   await publishPosCatalogSnapshotsForChange([payload.outlet_id]).catch((publishError) => { throw new Error(`Product was saved, but catalog publication failed: ${publishError.message}`); });
   return { ...result, success: true };
+}
+
+function readProductRequests() {
+  const rows = readCache('product-requests');
+  return Array.isArray(rows) ? rows : [];
+}
+
+function writeProductRequests(rows) {
+  writeCache('product-requests', Array.isArray(rows) ? rows : []);
+}
+
+function markProductRequest(operationKey, patch) {
+  writeProductRequests(
+    readProductRequests().map((entry) =>
+      entry?.operation_key === operationKey ? { ...entry, ...patch } : entry,
+    ),
+  );
+}
+
+// Single module-scope flow so concurrent clicks single-flight on the key.
+const productSaveFlow = createProductSaveFlow({
+  readRequest: (key) => readProductRequests().find((entry) => entry?.operation_key === key) || null,
+  listRequests: () => readProductRequests(),
+  writeRequest: (entry) => {
+    writeProductRequests([
+      ...readProductRequests().filter((row) => row?.operation_key !== entry?.operation_key),
+      entry,
+    ]);
+  },
+  removeRequest: (key) => {
+    writeProductRequests(readProductRequests().filter((row) => row?.operation_key !== key));
+  },
+  queueOffline: async (entry) => {
+    queueOperation("rpc", "save_bar_product_with_stock", { payload: entry.payload }, null, {
+      _queue_id: `bar-product-stock-${entry.operation_key}`,
+    });
+  },
+  dispatchOnline: async (payload) => {
+    const { data: rpcData, error } = await state.supabase.rpc("save_bar_product_with_stock", { payload });
+    if (error) {
+      if (isMissingRpcError(error)) return { transported: true, missing: true, error };
+      // Definitive business refusals (validation 22023 / conflict 23505, e.g.
+      // duplicate names, barcode conflicts, stale versions) can never succeed
+      // by retrying identical bytes: mark them terminal-rejected so recovery
+      // stops re-dispatching instead of duplicating work under new keys.
+      if (isDefinitiveProductRejection(error)) return { transported: true, rejected: true, error };
+      throw error;
+    }
+    if (!rpcData?.success) return { transported: true, rejected: true, result: rpcData };
+    return { transported: true, result: rpcData };
+  },
+  finalizeCommitted: async (entry, result) => {
+    // Entry is already committed by the flow before this runs; this handles
+    // idempotent side effects only (movement once, publication sweep).
+    const entityIds = {
+      menu_item_id: result?.menu_item_id || entry.entity_ids?.menu_item_id || null,
+      inventory_item_id: result?.inventory_item_id || entry.entity_ids?.inventory_item_id || null,
+    };
+    if (entry.payload?.stock?.mode === "create" && Number(entry.payload.stock.opening_stock || 0) > 0) {
+      try {
+        upsertLocalInventoryMovement({
+          item_id: entityIds.inventory_item_id,
+          movement_type: "opening_stock",
+          quantity: Number(entry.payload.stock.opening_stock || 0),
+          notes: "Opening stock recorded when the product was created",
+          reference_type: "inventory_item",
+          reference_id: entityIds.inventory_item_id,
+          source: "inventory",
+        });
+      } catch {
+        /* Local movement aid must never fail a committed save. */
+      }
+    }
+    const expectedOutlets = Array.isArray(result?.outlet_ids) ? result.outlet_ids.filter(Boolean) : [];
+    let publication = expectedOutlets.length ? "pending" : "published";
+    if (expectedOutlets.length) {
+      try {
+        const sweep = await processPendingPublicationJobs(expectedOutlets);
+        const summary = summarizePublication(expectedOutlets, sweep.outlets);
+        if (summary.every((row) => row.status === "published")) publication = "published";
+        else if (summary.some((row) => row.status === "failed")) publication = "failed";
+      } catch {
+        /* Pending stays retryable; never reported as published. */
+      }
+    }
+    markProductRequest(entry.operation_key, { publication });
+    return { publication };
+  },
+  isOnline: () => state.isOnline === true,
+  newId: () => randomUUID(),
+});
+
+/**
+ * Unified product + stock + packs save (wizard contract), orchestrated by
+ * the shared persist-once flow: the normalized request is verified-persisted
+ * before dispatch; retries replay identical bytes under the same key (server
+ * dedupes by key); changed payloads under a reused key are rejected; storage
+ * failure blocks dispatch; transport failures stay retryable (unknown) while
+ * business refusals are terminal (rejected). Concurrent clicks single-flight
+ * on the operation key.
+ */
+export async function saveBarProductWithStock(data = {}) {
+  const minted = {
+    inventoryItemId: String(data?.inventory_item_id || "").trim() || randomUUID(),
+  };
+  return productSaveFlow.save(data, state.lodgeId, minted);
+}
+
+/** Explicit retry of a stored product request (recovery UI, startup sweep). */
+export async function retryProductRequest(operationKey) {
+  return productSaveFlow.retry(operationKey);
+}
+
+/** Actionable stored requests for the Products recovery banner. */
+export function getProductRequestStatus() {
+  return productSaveFlow
+    .list()
+    .filter((entry) => {
+      if (!entry?.operation_key) return false;
+      if (productSaveFlow.ACTIONABLE.has(entry.state)) return true;
+      return (
+        entry.state === "committed" &&
+        entry.publication &&
+        entry.publication !== "published"
+      );
+    })
+    .map((entry) => ({
+      operation_key: entry.operation_key,
+      name: entry.payload?.product?.name || "Product",
+      state: entry.state,
+      publication: entry.publication || null,
+      error: entry.error || null,
+      outlet_id: entry.payload?.stock?.outlet_id || null,
+      saved_at: entry.created_at || null,
+    }));
+}
+
+/** Retire a terminally rejected request key. */
+export function discardProductRequest(operationKey) {
+  productSaveFlow.discard(operationKey);
+  return { success: true };
+}
+
+/** Crash/startup recovery: re-dispatch actionable stored requests, then sweep their outlets. */
+export async function recoverPendingProductRequests() {
+  const acted = await productSaveFlow.recover();
+  const outletIds = [
+    ...new Set(
+      productSaveFlow
+        .list()
+        .filter((entry) => entry?.state === "committed" && entry?.publication && entry.publication !== "published")
+        .map((entry) => entry.payload?.stock?.outlet_id)
+        .filter(Boolean),
+    ),
+  ];
+  let sweep = { outlets: [] };
+  if (outletIds.length && state.isOnline) {
+    try {
+      sweep = await processPendingPublicationJobs(outletIds);
+    } catch {
+      /* Recovery is best-effort; requests remain retryable. */
+    }
+  }
+  return { requests: acted, publication: sweep.outlets || [] };
+}
+
+/**
+ * Desktop-claimed publication worker over the shared sweep machine:
+ * per-outlet published | pending | failed | no-job results. An empty sweep
+ * is never publication proof — callers map expected outlets explicitly.
+ * Pauses when all desktops are closed (stated limitation); pending jobs
+ * survive restarts and are reclaimed by the next run.
+ */
+export async function processPendingPublicationJobs(outletIds = []) {
+  const targets = [...new Set((Array.isArray(outletIds) ? outletIds : []).filter(Boolean))].slice(0, 20);
+  if (!state.isOnline || !state.supabase) {
+    return {
+      success: false,
+      offline: true,
+      outlets: targets.map((outletId) => ({ outlet_id: outletId, status: "pending", error: "Publication requires a live connection." })),
+    };
+  }
+  const rpc = async (name, args) => {
+    const { data, error } = await state.supabase.rpc(name, args);
+    if (error) throw error;
+    return data;
+  };
+  const outlets = await runPublicationSweep({
+    outlets: targets,
+    claim: async (outletId) => {
+      const claimed = await rpc("claim_catalog_publication_job", {
+        p_lodge_id: state.lodgeId,
+        p_outlet_id: outletId,
+        p_lease_seconds: 300,
+      });
+      if (!claimed?.success || !claimed?.claimed) return null;
+      return {
+        job: {
+          job_id: claimed.job_id,
+          claim_token: claimed.claim_token,
+          outlet_id: outletId,
+          version: claimed.version,
+          attempts: claimed.attempts,
+        },
+      };
+    },
+    publish: async (outletId) => {
+      await publishPosCatalogSnapshot(outletId);
+    },
+    complete: async (job) => {
+      const done = await rpc("complete_catalog_publication_job", {
+        p_job_id: job.job_id,
+        p_claim_token: job.claim_token,
+      });
+      if (!done?.success) return { completed: false, error: done?.error || "Completion rejected" };
+      if (done?.superseded) return { completed: true, superseded: true };
+      return { completed: done?.published === true };
+    },
+    release: async (job, error, permanent) => {
+      await rpc("fail_catalog_publication_job", {
+        p_job_id: job.job_id,
+        p_claim_token: job.claim_token,
+        p_error: error,
+        p_permanent: permanent === true,
+      });
+    },
+  });
+  return {
+    success: outlets.every((row) => row.status === "published" || row.status === "no-job"),
+    outlets,
+  };
+}
+
+/**
+ * Server-authoritative stock readiness per sellable item (outcome only, no
+ * recipe disclosure). Base Till users can read this without recipe rights.
+ * Offline or failed reads are explicit, never an empty/ready catalogue.
+ */
+export async function getMenuStockReadiness() {
+  // A freshness read is an explicit operator recovery action. Probe again
+  // instead of trusting a stale offline flag left by an earlier outage.
+  const online = await checkOnline().catch(() => false);
+  if (!online || !state.supabase) {
+    return { success: false, code: "offline", error: 'Stock status needs a live connection. Refresh when online.' };
+  }
+  try {
+    const { data, error } = await state.supabase.rpc('get_pos_menu_stock_readiness', { p_lodge_id: state.lodgeId });
+    if (error) {
+      if (isMissingRpcError(error)) {
+        return { success: false, code: 'backend-update-required', error: 'Stock status needs the latest till update. Selling continues on last verified data where available.' };
+      }
+      throw new Error(error.message);
+    }
+    if (!data?.success) throw new Error(data?.error || 'Stock status could not be verified.');
+    return { success: true, rows: Array.isArray(data.rows) ? data.rows : [] };
+  } catch (error) {
+    if (isMissingRpcError(error)) {
+      return { success: false, code: 'backend-update-required', error: 'Stock status needs the latest till update. Selling continues on last verified data where available.' };
+    }
+    return { success: false, error: error?.message || 'Stock status could not be verified.' };
+  }
 }
 
 // outletFilter: null = all, [] = no access, [uuid1,...] = restrict to these outlet IDs
@@ -1468,6 +1758,16 @@ export async function createPosOrder(data) {
         manual_discount: data.manual_discount || null,
         items: v3OfflineItems
       };
+      // Optional tab-identity fields travel only when the caller sent them,
+      // so a rebuilt retry hashes byte-equivalently to its journal entry.
+      applyOptionalV3TabFields(v3OfflinePayload, data);
+
+      // Fail closed before journaling: a brand-new tab_id settlement without
+      // a version must never enter the journal. Replays reuse their
+      // journalled bytes (guard skipped when this intent already exists).
+      if (data.tab_id && !isPositiveTabVersion(data.expected_tab_version) && !hasPosSubmitAttempt(submitIntentId)) {
+        throw new Error('This sale is missing its tab version. Refresh the open check before taking payment.');
+      }
 
       // Record the exact offline RPC envelope, not the renderer's richer
       // pre-resolution cart object. Queue replay and renderer recovery then
@@ -1477,6 +1777,11 @@ export async function createPosOrder(data) {
       const effectiveOfflinePayload = attemptResolution.reused && attemptRecord?.payload
         ? attemptRecord.payload
         : v3OfflinePayload;
+      // Required choices are checked for fresh attempts only: a journalled
+      // replay reuses its original bytes, and a committed attempt must never
+      // be blocked by changed modifier configuration (the server replays
+      // committed work first).
+      if (!attemptResolution.reused) assertSaleModifierRequirements(effectiveOfflinePayload.items);
 
       const cachedShift = readPosShifts().find((shift) => shift.id === data.shift_id) || null;
       const orderDependencies = [
@@ -1561,9 +1866,16 @@ export async function createPosOrder(data) {
       applyOfflinePosInventoryReservation(inventoryReservations);
       appendPrepTickets(orderRow, orderRow.pos_order_items);
       appendPosAudit('order_completed_offline', { entity_type: 'pos_order', entity_id: id, details: { total, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: offlineCatalogSnapshotId, v3: true } });
-      if (data.tab_id) await closePosTab(data.tab_id).catch(() => {});
+      let tabCloseWarning = null;
+      if (data.tab_id) {
+        const closeResult = await closePosTab(data.tab_id, 'closed', { _operator_proof: operatorProof || null })
+          .catch((closeError) => ({ success: false, error: closeError?.message || 'Could not close the tab.' }));
+        if (closeResult?.success === false) {
+          tabCloseWarning = closeResult.error || 'The payment was recorded but the tab did not close.';
+        }
+      }
 
-      return { success: true, id, offline: true, provisional: true };
+      return { success: true, id, offline: true, provisional: true, ...(tabCloseWarning ? { tab_close_warning: tabCloseWarning } : {}) };
     }
 
     // Resolve booking ID before entering the transaction (read-only, safe outside)
@@ -1653,11 +1965,24 @@ export async function createPosOrder(data) {
     // The journal digest is based on the exact payload sent to
     // create_pos_order_v3. On a retry, replace the newly rebuilt envelope
     // with the originally journalled one before issuing the RPC.
+    //
+    // Optional tab-identity fields travel only when the caller sent them
+    // (byte-equivalent retries), then brand-new version-less tab_id
+    // settlements fail closed before journaling. Replays reuse their
+    // journalled bytes: the server replays committed work first and
+    // definitively rejects uncommitted work so the attempt can be cleared.
+    applyOptionalV3TabFields(v3Payload, data);
+    if (data.tab_id && !isPositiveTabVersion(data.expected_tab_version) && !hasPosSubmitAttempt(submitIntentId)) {
+      throw new Error('This sale is missing its tab version. Refresh the open check before taking payment.');
+    }
     const onlineAttemptError = recordAttempt(v3Payload);
     if (onlineAttemptError) return onlineAttemptError;
     if (attemptResolution.reused && attemptRecord?.payload) {
       v3Payload = { ...attemptRecord.payload };
     }
+    // Fresh attempts only (see offline path): replays reuse journalled bytes
+    // so configuration changes can never block committed work.
+    if (!attemptResolution.reused) assertSaleModifierRequirements(v3Payload.items);
 
     // All DB writes are delegated to a single Postgres transaction via RPC.
     // If any step fails, Postgres rolls back the entire operation automatically.
@@ -1690,7 +2015,10 @@ export async function createPosOrder(data) {
         }
       }
       appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total: serverTotal, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: catalogSnapshotId, v3: true, ticket_count: serverTickets.length } });
-      if (data.tab_id) closePosTab(data.tab_id).catch(() => {});
+      // Tab settlement is atomic inside create_pos_order_v3 (resolve, record,
+      // close in one transaction); the result already carries tab_closed /
+      // tab_close_warning. No client-side follow-up close: a second RPC could
+      // neither observe nor repair a crash consistently.
       commitPosSubmitAttempt(submitIntentId);
       // Recipe stock depletion is written atomically inside create_pos_order_v3
       // (server trigger), so no follow-up call is needed here.
@@ -2459,12 +2787,28 @@ export async function savePosTab(data = {}) {
   const operatorProof = String(data?._operator_proof || '').trim() || null;
   data = { ...data };
   delete data._operator_proof;
+  const hasExistingId = Boolean(data.id);
+  const suppliedVersion = data.tab_version ?? data.expected_version;
+  const parsedVersion = suppliedVersion == null || suppliedVersion === '' ? null : Number(suppliedVersion);
+  // Existing tabs must carry the version read from the server. Without this
+  // guard a reopened check could be cached/queued as version 1 and later
+  // overwrite a concurrent edit when the server contract is unavailable.
+  if (hasExistingId && (!Number.isInteger(parsedVersion) || parsedVersion <= 0)) {
+    return { success: false, code: 'tab_version_required', error: 'This open check is missing its version. Refresh it before saving.' };
+  }
   const status = normalizeTabStatus(data.status, normalizeTableName(data.table_name) ? 'running' : 'open');
   if (ACTIVE_TABLE_TAB_STATUSES.has(status) && (!data.waiter_id || !normalizeTableName(data.waiter_name) || !data.shift_id)) {
     return { success: false, error: 'Unlock Till with the serving staff PIN and start their shift before holding an open check.' };
   }
   const id = data.id || randomUUID();
   const now = new Date().toISOString();
+  const localRowsBeforeSave = readPosTabs();
+  const previousLocalTab = hasExistingId
+    ? localRowsBeforeSave.find((entry) => entry.id === id) || null
+    : null;
+  const previousLocalTabIndex = previousLocalTab
+    ? localRowsBeforeSave.findIndex((entry) => entry.id === id)
+    : -1;
   const tableName = normalizeTableName(data.table_name) || null;
   const outletId = data.outlet_id || null;
   const existingActive = findActiveTableTab(readPosTabs(), tableName, outletId, id);
@@ -2495,17 +2839,32 @@ export async function savePosTab(data = {}) {
     opened_by_name: data.opened_by_name || state.currentUser?.name || state.currentUser?.email || null,
     created_at: data.created_at || now,
     updated_at: now,
-    expected_version: data.id ? Number(data.expected_version ?? data.tab_version ?? 1) : null,
-    tab_version: data.tab_version ?? 1
+    expected_version: hasExistingId ? parsedVersion : null,
+    tab_version: hasExistingId ? parsedVersion : 1
   };
+  try {
+    assertSaleModifierRequirements(row.items);
+  } catch (error) {
+    return { success: false, error: error?.message || 'Complete the required choices before holding this check.' };
+  }
   upsertLocalPosTab(row);
+  const restoreLocalTabAfterRejectedSave = () => {
+    const currentRows = readPosTabs().filter((entry) => entry.id !== id);
+    if (previousLocalTab) {
+      const insertAt = previousLocalTabIndex < 0
+        ? currentRows.length
+        : Math.min(previousLocalTabIndex, currentRows.length);
+      currentRows.splice(insertAt, 0, previousLocalTab);
+    }
+    writePosTabs(currentRows);
+  };
 
   if (state.isOnline && state.supabase) {
     try {
       const { data: rpcData, error } = await state.supabase.rpc('upsert_pos_tab', { payload: operatorProof ? { ...row, _operator_proof: operatorProof } : row });
       if (error) throw new Error(error.message);
       if (!rpcData?.success) {
-        writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
+        restoreLocalTabAfterRejectedSave();
         return { success: false, error: rpcData?.error || 'Could not hold this open check.' };
       }
       const remoteRow = rpcData?.tab || rpcData?.row || null;
@@ -2523,7 +2882,7 @@ export async function savePosTab(data = {}) {
     } catch (error) {
       // While the terminal reports online, never present an unconfirmed tab as
       // valid. The server owns staff/shift attribution and has the audit trail.
-      writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
+      restoreLocalTabAfterRejectedSave();
       return { success: false, error: error?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
     }
   } else {
@@ -2593,17 +2952,30 @@ export async function transferPosTabWaiter(data = {}) {
   const targetWaiterId = String(data.target_waiter_id || '').trim();
   const targetShiftId = String(data.target_shift_id || '').trim();
   const operationId = String(data.operation_id || randomUUID()).trim();
+  // Replays resubmit the immutable saved request verbatim. Local pre-checks
+  // that compare against the (possibly refreshed) cache must not block them:
+  // the server authoritatively replays the stored result or rejects with its
+  // own current-state code. Fresh attempts keep every local guard.
+  const isReplay = data.is_replay === true;
   const current = readPosTabs().find((row) => row.id === tabId) || null;
-  if (!current) return { success: false, error: 'Open table tab not found. Refresh open tabs and try again.' };
-  if (!current.waiter_id) {
-    return { success: false, error: 'This tab has no assigned waiter. Refresh open tabs and assign a serving waiter first.' };
+  // A missing local cache row must not block recovery of an already-sent
+  // operation: the server remains authoritative and replays the stored result
+  // for the original key. Only brand-new attempts without a resolvable tab
+  // fail closed locally.
+  const isReplayWithoutCache = !current && Boolean(data.operation_id);
+  if (!current && !isReplayWithoutCache) return { success: false, code: 'tab_not_found', provenance: 'local-validation', error: 'Open table tab not found. Refresh open tabs and try again.' };
+  if (!isReplay && current && !current.waiter_id) {
+    return { success: false, code: 'invalid_transfer', provenance: 'local-validation', error: 'This tab has no assigned waiter. Refresh open tabs and assign a serving waiter first.' };
   }
-  if (!targetWaiterId || !targetShiftId || targetWaiterId === current.waiter_id) {
-    return { success: false, error: 'Choose another active waiter and their current Till shift.' };
+  if (!isReplay && current && (!targetWaiterId || !targetShiftId || targetWaiterId === current.waiter_id)) {
+    return { success: false, code: 'invalid_transfer', provenance: 'local-validation', error: 'Choose another active waiter and their current Till shift.' };
   }
-  const expectedVersion = Number(data.expected_tab_version ?? data.tab_version ?? current.tab_version);
+  if (!isReplayWithoutCache && (!targetWaiterId || !targetShiftId)) {
+    return { success: false, code: 'invalid_transfer', provenance: 'local-validation', error: 'Choose another active waiter and their current Till shift.' };
+  }
+  const expectedVersion = Number(data.expected_tab_version ?? data.tab_version ?? current?.tab_version);
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
-    return { success: false, error: 'Refresh this tab before transferring it so its current version can be confirmed.' };
+    return { success: false, code: 'tab_version_required', provenance: 'local-validation', error: 'Refresh this tab before transferring it so its current version can be confirmed.' };
   }
   const rpcArgs = {
     p_tab_id: tabId,
@@ -2617,17 +2989,38 @@ export async function transferPosTabWaiter(data = {}) {
   if (state.isOnline && state.supabase) {
     try {
       const { data: rpcData, error } = await state.supabase.rpc('transfer_pos_tab_waiter', rpcArgs);
-      if (error) throw new Error(error.message);
-      if (rpcData?.success === false) return rpcData;
+      if (error) {
+        const sqlState = error.code || error.sqlState || null;
+        const conflict = /already used for different|different payload/i.test(error.message || '');
+        return {
+          success: false,
+          code: conflict ? 'idempotency_conflict' : (sqlState || 'unknown_transfer_error'),
+          sqlState,
+          provenance: 'transport-error',
+          error: error.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.',
+          operation_id: operationId,
+          outcome: 'unknown'
+        };
+      }
+      if (rpcData?.success === false) return { ...rpcData, provenance: 'server-rpc-response', operation_id: operationId, outcome: rpcData.code === 'idempotency_conflict' ? 'needs_review' : 'rejected' };
       const remoteRow = rpcData?.tab || null;
-      if (remoteRow?.id) upsertLocalPosTab({ ...remoteRow, _pending_sync: false, _sync_state: 'synced' });
-      return { ...(rpcData || {}), success: true, tab: remoteRow || current, operation_id: operationId };
+      // Post-commit cache reconciliation must never convert a commit into a
+      // failure: the server already wrote. A sync warning is recorded instead.
+      let cacheSyncWarning = null;
+      if (remoteRow?.id) {
+        try {
+          upsertLocalPosTab({ ...remoteRow, _pending_sync: false, _sync_state: 'synced' });
+        } catch (cacheError) {
+          cacheSyncWarning = cacheError?.message || 'Local tab cache could not be refreshed after a committed transfer.';
+        }
+      }
+      return { ...(rpcData || {}), success: true, tab: remoteRow || current, operation_id: operationId, outcome: 'committed', provenance: 'server-rpc-response', ...(cacheSyncWarning ? { cacheSyncWarning } : {}) };
     } catch (error) {
-      return { success: false, error: error?.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.' };
+      return { success: false, code: 'unknown_transfer_error', provenance: 'transport-error', error: error?.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.', operation_id: operationId, outcome: 'unknown' };
     }
   }
 
-  return { success: false, error: 'Bar waiter transfers require a live connection so ownership, target attendance, and the active Till shift can be confirmed.' };
+  return { success: false, code: 'offline_transfer_blocked', provenance: 'local-validation', error: 'Bar waiter transfers require a live connection so ownership, target attendance, and the active Till shift can be confirmed.' };
 }
 
 export async function closePosTab(id, status = 'closed', extra = {}) {
@@ -2804,39 +3197,78 @@ export async function splitBillByItems(data = {}) {
 
 export async function splitBillEvenly(data = {}) {
   const { source_tab_id, split_count, target_table_names, source_tab_version } = data || {};
-  if (!source_tab_id) return { success: false, error: 'Source tab is required.' };
+  if (!source_tab_id) return { success: false, code: 'invalid_split', provenance: 'local-validation', error: 'Source tab is required.' };
   const numSplits = Number(split_count);
   if (!Number.isInteger(numSplits) || numSplits < 2 || numSplits > 10) {
-    return { success: false, error: 'Split count must be between 2 and 10.' };
+    return { success: false, code: 'invalid_split', provenance: 'local-validation', error: 'Split count must be between 2 and 10.' };
   }
+  const idempotencyKey = data.idempotency_key || randomUUID();
   // A split closes one tab and opens/updates several others. Never emulate that
   // financial/operational transition offline or with client-side upsert loops.
   if (!state.isOnline || !state.supabase || !state.lodgeId) {
-    return { success: false, error: 'Bill splits require a live connection so every tab is updated together.' };
+    return { success: false, code: 'offline_split_blocked', provenance: 'local-validation', error: 'Bill splits require a live connection so every tab is updated together.', idempotency_key: idempotencyKey, outcome: 'rejected' };
   }
-  const { data: rpcData, error: rpcError } = await state.supabase.rpc('split_pos_tab_evenly', {
-    payload: {
-      lodge_id: state.lodgeId,
-      source_tab_id,
-      split_count: numSplits,
-      target_table_names: Array.isArray(target_table_names) ? target_table_names : [],
-      source_tab_version: source_tab_version == null ? null : Number(source_tab_version),
-      idempotency_key: data.idempotency_key || randomUUID(),
-      _operator_proof: data._operator_proof || null
-    }
-  });
-  if (rpcError) return { success: false, error: rpcError.message };
-  if (rpcData?.success === false) return rpcData;
+  let rpcData = null;
+  let rpcError = null;
+  try {
+    ({ data: rpcData, error: rpcError } = await state.supabase.rpc('split_pos_tab_evenly', {
+      payload: {
+        lodge_id: state.lodgeId,
+        source_tab_id,
+        split_count: numSplits,
+        target_table_names: Array.isArray(target_table_names) ? target_table_names : [],
+        source_tab_version: source_tab_version == null ? null : Number(source_tab_version),
+        idempotency_key: idempotencyKey,
+        _operator_proof: data._operator_proof || null
+      }
+    }));
+  } catch (thrown) {
+    // A thrown transport error carries no server response at all: it can
+    // never prove a terminal rejection. Report unknown with the key so the
+    // original operation can be replayed.
+    return {
+      success: false,
+      code: 'unknown_split_error',
+      provenance: 'transport-error',
+      error: thrown?.message || 'Could not split the bill.',
+      idempotency_key: idempotencyKey,
+      outcome: 'unknown'
+    };
+  }
+  if (rpcError) {
+    const sqlState = rpcError.code || rpcError.sqlState || null;
+    // Only explicit conflict evidence counts: SQLSTATE 22000 is the broad
+    // data_exception class, so it decides nothing without the conflict text
+    // from the split key-mismatch raise.
+    const conflict = /different payload|already used/i.test(rpcError.message || '');
+    return {
+      success: false,
+      code: conflict ? 'idempotency_conflict' : (sqlState || 'unknown_split_error'),
+      sqlState,
+      provenance: 'transport-error',
+      error: rpcError.message || 'Could not split the bill.',
+      idempotency_key: idempotencyKey,
+      outcome: conflict ? 'needs_review' : 'unknown'
+    };
+  }
+  if (rpcData?.success === false) return { ...rpcData, provenance: 'server-rpc-response', idempotency_key: idempotencyKey, outcome: rpcData.code === 'idempotency_conflict' ? 'needs_review' : 'rejected' };
   if (rpcData?.success) {
-    const updated = [
-      ...(Array.isArray(rpcData.new_tabs) ? rpcData.new_tabs : []),
-      ...(rpcData.source_tab ? [rpcData.source_tab] : []),
-      ...readPosTabs().filter((row) => row.id !== rpcData.source_tab?.id && !(rpcData.new_tabs || []).some((tab) => tab.id === row.id))
-    ];
-    writePosTabs(updated);
-    return rpcData;
+    // Post-commit cache reconciliation must never convert a commit into a
+    // failure: the server already wrote. A sync warning is recorded instead.
+    let cacheSyncWarning = null;
+    try {
+      const updated = [
+        ...(Array.isArray(rpcData.new_tabs) ? rpcData.new_tabs : []),
+        ...(rpcData.source_tab ? [rpcData.source_tab] : []),
+        ...readPosTabs().filter((row) => row.id !== rpcData.source_tab?.id && !(rpcData.new_tabs || []).some((tab) => tab.id === row.id))
+      ];
+      writePosTabs(updated);
+    } catch (cacheError) {
+      cacheSyncWarning = cacheError?.message || 'Local tab cache could not be refreshed after a committed split.';
+    }
+    return { ...rpcData, provenance: 'server-rpc-response', idempotency_key: idempotencyKey, outcome: 'committed', ...(cacheSyncWarning ? { cacheSyncWarning } : {}) };
   }
-  return { success: false, error: 'Could not split the bill.' };
+  return { success: false, code: 'unknown_split_error', provenance: 'transport-error', error: 'Could not split the bill.', idempotency_key: idempotencyKey, outcome: 'unknown' };
 }
 
 export async function submitPosCashup(payload = {}) {

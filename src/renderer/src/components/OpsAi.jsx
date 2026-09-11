@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
-  CheckCircle2,
   Copy,
   Search,
   ThumbsDown,
@@ -19,6 +18,7 @@ import {
   XCircle
 } from 'lucide-react'
 import { ShieldAlert, RefreshCw, ChevronDown, ChevronUp, Clock } from 'lucide-react'
+import Fuse from 'fuse.js/basic'
 
 function InvestigationPanel({ alert, onBack, onAction }) {
   if (!alert) return null
@@ -207,6 +207,34 @@ function formatMoney(currency, value) {
 function openGuideTarget(navigate, route, state = null) {
   if (!route) return
   navigate(route, state ? { state } : undefined)
+}
+
+// Recommendation card: the assistant suggests a data-changing action and the
+// exact screen that performs it. The button only navigates — the action
+// itself happens on the normal screen with its own capability and validation
+// gates. Nothing here executes anything.
+function RecommendationCard({ recommendation, onOpen }) {
+  if (!recommendation?.route) return null
+  const params = recommendation.params && typeof recommendation.params === 'object' ? recommendation.params : {}
+  const paramBits = Object.entries(params)
+    .filter(([, value]) => value != null && value !== '')
+    .slice(0, 3)
+    .map(([key, value]) => `${String(key).replace(/_/g, ' ')}: ${Array.isArray(value) ? `${value.length} selected` : String(value)}`)
+  return (
+    <div className="mt-3 overflow-hidden rounded-2xl border border-sky-200 bg-sky-50/60">
+      <div className="px-4 py-3">
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-700">Recommended action</p>
+        <p className="mt-1 text-sm font-bold text-slate-900">{recommendation.label || 'Continue on the suggested screen'}</p>
+        {paramBits.length ? <p className="mt-1 text-xs text-slate-600">{paramBits.join(' · ')}</p> : null}
+        <p className="mt-1 text-[11px] text-slate-500">Opens {recommendation.screen || 'the screen'} — you review and confirm there. Nothing runs automatically.</p>
+      </div>
+      <div className="flex gap-2 border-t border-sky-100 bg-white/60 px-4 py-2.5">
+        <button type="button" onClick={onOpen} className="inline-flex items-center gap-1 rounded-xl bg-sky-700 px-3 py-2 text-xs font-bold text-white hover:bg-sky-800">
+          <MapPin size={12} /> Open {recommendation.screen || 'screen'}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function loadFeedback() {
@@ -452,26 +480,70 @@ export default function OpsAi() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [messages, busy])
 
-  const quickActions = useMemo(() => ([
-    { label: "What needs my attention?", prompt: "What needs my attention right now?" },
-    { label: "What can I do here?", prompt: "What can I do here?" },
-    { label: "Find booking steps", prompt: "How do I create a booking?" },
-    { label: "Find payment steps", prompt: "Where do I record a payment?" },
-    { label: "Fix failed sync", prompt: "How do I fix failed sync?" },
-    { label: "Add stock", prompt: "How do I add stock?" },
-    { label: "Collections", prompt: "Give me the full unpaid collections summary." },
-    { label: "Daily briefing", prompt: "Give me the daily briefing." }
-  ]), [])
+  // Shift-aware ordering mirrors the main-process suggestion bias:
+  // mornings brief, midday triages, afternoons clear money, evenings hand
+  // over. Ordering only — no behavior change, no new IPC.
+  const quickActions = useMemo(() => {
+    const base = [
+      { label: "What needs my attention?", prompt: "What needs my attention right now?" },
+      { label: "What can I do here?", prompt: "What can I do here?" },
+      { label: "Find booking steps", prompt: "How do I create a booking?" },
+      { label: "Find payment steps", prompt: "Where do I record a payment?" },
+      { label: "Fix failed sync", prompt: "How do I fix failed sync?" },
+      { label: "Add stock", prompt: "How do I add stock?" },
+      { label: "Collections", prompt: "Give me the full unpaid collections summary." },
+      { label: "Daily briefing", prompt: "Give me the daily briefing." },
+      { label: "Shift handover", prompt: "Show shift handover report." }
+    ]
+    const hour = new Date().getHours()
+    const firstLabel = hour < 10 ? "Daily briefing" : hour < 14 ? "What needs my attention?" : hour < 18 ? "Collections" : "Shift handover"
+    const first = base.find((q) => q.label === firstLabel)
+    return first ? [first, ...base.filter((q) => q.label !== firstLabel)] : base
+  }, [])
 
-  const groupedCatalog = useMemo(() => catalog.reduce((acc, item) => {
-    const query = safeString(topicQuery).toLowerCase()
-    const haystack = `${item.title || ''} ${item.summary || ''} ${item.category || ''}`.toLowerCase()
-    if (query && !haystack.includes(query)) return acc
-    const key = item.category || 'Other'
-    acc[key] ||= []
-    acc[key].push(item)
-    return acc
-  }, {}), [catalog, topicQuery])
+  // Typo-tolerant topic search (Fuse) over the main-process catalog. The
+  // strict pass filters; a looser pass powers the "did you mean" hint when
+  // nothing matches. Both run locally on data already on this device.
+  const catalogFuse = useMemo(() => new Fuse(catalog, {
+    keys: [
+      { name: 'title', weight: 3 },
+      { name: 'summary', weight: 1 },
+      { name: 'category', weight: 1 },
+      { name: 'screen', weight: 0.5 }
+    ],
+    includeScore: true,
+    threshold: 0.45,
+    ignoreLocation: true
+  }), [catalog])
+
+  const catalogSuggestFuse = useMemo(() => new Fuse(catalog, {
+    keys: [
+      { name: 'title', weight: 3 },
+      { name: 'summary', weight: 1 },
+      { name: 'category', weight: 1 }
+    ],
+    includeScore: true,
+    threshold: 0.75,
+    ignoreLocation: true
+  }), [catalog])
+
+  const groupedCatalog = useMemo(() => {
+    const query = safeString(topicQuery)
+    const items = query ? catalogFuse.search(query).map((hit) => hit.item) : catalog
+    return items.reduce((acc, item) => {
+      const key = item.category || 'Other'
+      acc[key] ||= []
+      acc[key].push(item)
+      return acc
+    }, {})
+  }, [catalog, catalogFuse, topicQuery])
+
+  const topicDidYouMean = useMemo(() => {
+    const query = safeString(topicQuery)
+    if (!query || Object.keys(groupedCatalog).length > 0) return null
+    const hit = catalogSuggestFuse.search(query, { limit: 1 })[0]
+    return hit ? hit.item : null
+  }, [catalogSuggestFuse, groupedCatalog, topicQuery])
 
   const send = useCallback(async (prompt) => {
     const text = safeString(prompt ?? draft)
@@ -490,7 +562,8 @@ export default function OpsAi() {
         role: 'ai',
         text: result.assistantText || '',
         at: nowIso(),
-        proposal: result.proposal || null,
+        proposal: null,
+        recommendation: result.recommendation || null,
         toolResult: result.toolResult || null,
         localHelp: result.localHelp || null,
         localIntent: result.localIntent || null
@@ -511,27 +584,6 @@ export default function OpsAi() {
       send(location.state.initialPrompt)
     }
   }, [location, navigate, send])
-
-  const confirmProposal = async (proposal) => {
-    if (!proposal?.id || busy) return
-    setBusy(true)
-    setError('')
-    try {
-      const res = await window.api.ai.execute({ proposalId: proposal.id })
-      if (!res?.success) throw new Error(res?.error || 'Action failed')
-      appendMessagesToThread(currentThreadId, [{
-        id: crypto.randomUUID(),
-        role: 'ai',
-        text: `Done. ${String(res.tool || proposal.tool).replace(/_/g, ' ')} completed.`,
-        at: nowIso(),
-        toolResult: { tool: res.tool || proposal.tool, result: res.result || res }
-      }])
-    } catch (e) {
-      setError(e?.message || 'Action failed.')
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const copyText = async (text) => {
     try {
@@ -730,6 +782,7 @@ export default function OpsAi() {
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/60">Daily briefing</p>
               <p className="mt-1 text-lg font-black">{headline.length ? headline.join(' • ') : 'Operations snapshot ready'}</p>
             </div>
+            {result.story ? <p className="border-b border-slate-100 px-4 py-3 text-sm leading-6 text-slate-700">{result.story}</p> : null}
             <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"><p className="text-[11px] font-semibold text-slate-500">Occupancy</p><p className="mt-1 text-lg font-bold text-slate-900">{Number(result.occupancy || 0)}%</p>{comparison.occupancy ? <DeltaText {...comparison.occupancy} suffix="%" /> : null}</div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"><p className="text-[11px] font-semibold text-slate-500">Revenue</p><p className="mt-1 text-lg font-bold text-slate-900">{formatMoney(currency, result.revenue_today || 0)}</p>{comparison.revenue ? <p className={`mt-1 text-[11px] font-semibold ${comparison.revenue.direction === 'up' ? 'text-emerald-700' : comparison.revenue.direction === 'down' ? 'text-rose-700' : 'text-slate-500'}`}>{formatMoney(currency, comparison.revenue.delta || 0)} vs yesterday</p> : null}</div>
@@ -800,6 +853,7 @@ export default function OpsAi() {
         <div className="mt-3 rounded-2xl border border-slate-200 bg-white overflow-hidden">
           <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{rows.length} booking result{rows.length === 1 ? '' : 's'}</p>
+            {rows.length > 1 ? <p className="mt-1 text-[11px] font-semibold text-slate-500">Multiple matches — choose one to open.</p> : null}
           </div>
           <div className="divide-y divide-slate-100">
             {rows.length === 0 ? <div className="px-4 py-4 text-sm text-slate-600">No matching booking found.</div> : rows.map((row) => (
@@ -885,6 +939,7 @@ export default function OpsAi() {
         <div className="mt-3 rounded-2xl border border-slate-200 bg-white overflow-hidden">
           <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{rows.length} guest result{rows.length === 1 ? '' : 's'}</p>
+            {rows.length > 1 ? <p className="mt-1 text-[11px] font-semibold text-slate-500">Multiple matches — choose one to open.</p> : null}
           </div>
           <div className="divide-y divide-slate-100">
             {rows.map((row) => (
@@ -1404,7 +1459,16 @@ export default function OpsAi() {
                     />
                   </label>
                   <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-                    {Object.entries(groupedCatalog).length === 0 ? <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">No topics match that search yet.</div> : Object.entries(groupedCatalog).map(([category, items]) => (
+                    {Object.entries(groupedCatalog).length === 0 ? (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+                        No topics match that search yet.
+                        {topicDidYouMean ? (
+                          <button type="button" onClick={() => setTopicQuery(topicDidYouMean.title)} className="mt-2 block text-left text-xs font-bold text-emerald-700 hover:text-emerald-900">
+                            Did you mean “{topicDidYouMean.title}”?
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : Object.entries(groupedCatalog).map(([category, items]) => (
                       <div key={category}>
                         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">{category}</p>
                         <div className="mt-2 flex flex-wrap gap-2">
@@ -1523,27 +1587,16 @@ export default function OpsAi() {
                   {m.toolResult ? renderToolWidget(m.toolResult) : null}
                   {m.localHelp ? renderLocalHelpWidget(m.localHelp) : null}
 
-                  {m.proposal ? (
-                    <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Cloud action proposal</p>
-                          <p className="mt-1 text-sm font-semibold text-emerald-950">{String(m.proposal.tool || '').replace(/_/g, ' ')}</p>
-                          <p className="mt-1 text-xs text-emerald-900/80 break-words">
-                            {JSON.stringify(m.proposal.params || {})}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => confirmProposal(m.proposal)}
-                          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-60"
-                        >
-                          <CheckCircle2 size={14} />
-                          Confirm
-                        </button>
-                      </div>
-                    </div>
+                  {m.recommendation ? (
+                    <RecommendationCard
+                      recommendation={m.recommendation}
+                      onOpen={() => {
+                        const rec = m.recommendation
+                        if (!rec?.route) return
+                        const hasState = rec.state && typeof rec.state === 'object' && Object.keys(rec.state).length > 0
+                        navigate(rec.route, hasState ? { state: rec.state } : undefined)
+                      }}
+                    />
                   ) : null}
 
                   {m.role === 'ai' ? (

@@ -29,8 +29,11 @@ import {
   getDefaultHposServiceMode,
   getHposServiceModes,
   resolvePosServicePayload,
+  resolveResumedTabPayment,
+  shouldLoadTillTables,
 } from "../../../../shared/barModeProfile";
 import { isCommercialFeatureIncluded } from "../../../../shared/commercialAccess.js";
+import { canAccessCapability } from "../../../../shared/accessControl.js";
 import HposTillOperatorDialog from "./HposTillOperatorDialog";
 import { POSReceipt } from "../shared/POSReceipt";
 import {
@@ -42,8 +45,71 @@ import {
   TILL_OPERATOR_MODES,
   getTillOperatorPolicy,
 } from "../../../../shared/tillOperatorPolicy";
+import { buildBarTenderBreakdown } from "../../../../shared/barTenderAllocation";
+import {
+  validateSaleModifierRequirements,
+} from "../../../../shared/modifierRequirements";
+import { getTillEntitlements } from "../../../../shared/tillEntitlements";
+import {
+  QUICK_CASH_AMOUNTS,
+  basketDraftKey,
+  computeCashTender,
+  holdIntentKey,
+  isDraftFresh,
+  lastReceiptKey,
+  readinessCacheKey,
+  reconcileHoldIntent,
+  resolveReadinessState,
+  revalidateBasketLines,
+  roundCash,
+} from "../../../../shared/tillBasketRecovery";
 
 const TERMINAL_OUTLET_STORAGE_PREFIX = "hpos-terminal-outlet:";
+const FAVOURITES_STORAGE_PREFIX = "hpos-till-favourites:";
+const MAX_FAVOURITES = 30;
+const TOP_SELLER_POPULARITY = 80;
+const FAVOURITES_CATEGORY = "★ Favourites";
+const TOP_SELLERS_CATEGORY = "Top sellers";
+
+// Unsent-basket drafts and hold intents are per terminal (localStorage),
+// tenant, outlet, operator and shift. Anything else never restores. Keys
+// come from the single canonical builders in tillBasketRecovery so writers
+// and readers can never diverge.
+
+function readJsonSetting(key) {
+  try {
+    const raw = window.localStorage?.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Returns false when the write did not land (quota/private mode). Callers
+// guarding money-adjacent intents must treat false as blocking.
+function writeJsonSetting(key, value) {
+  try {
+    if (value === null || value === undefined) window.localStorage?.removeItem(key);
+    else window.localStorage?.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function favouritesStorageKey(lodgeId, outletId) {
+  return `${FAVOURITES_STORAGE_PREFIX}${lodgeId || "nolid"}:${outletId || "nooutlet"}`;
+}
+
+function readTillFavourites(lodgeId, outletId) {
+  try {
+    const raw = window.localStorage?.getItem(favouritesStorageKey(lodgeId, outletId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function terminalOutletStorageKey(lodgeId) {
   return lodgeId ? `${TERMINAL_OUTLET_STORAGE_PREFIX}${lodgeId}` : null;
@@ -70,12 +136,15 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
   }
 }
 
-function ProductCard({ item, onAdd, stockSetupRequired = false }) {
+function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stockSetupRequired = false, statusUnknown = false }) {
   const isSoldOut =
     item.is_available === false || item.available === false || item.sold_out;
-  const unavailableLabel = stockSetupRequired
-    ? "Stock setup required"
-    : "Sold out";
+  const blocked = isSoldOut || stockSetupRequired || statusUnknown;
+  const unavailableLabel = statusUnknown
+    ? "Refresh required"
+    : stockSetupRequired
+      ? "Stock setup required"
+      : "Sold out";
   const normalizedCategory = String(item.category || "").toLowerCase();
   const CategoryIcon =
     normalizedCategory.includes("drink") ||
@@ -107,17 +176,29 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
       starters: "#d8dec0",
     }[String(item.category || "").toLowerCase()] || "#efe2cf";
   return (
-    <button
-      disabled={isSoldOut}
-      onClick={() => onAdd(item)}
+    <div
+      role="button"
+      tabIndex={blocked ? -1 : 0}
+      aria-disabled={blocked}
+      aria-label={blocked ? `${item.name} (${unavailableLabel})` : `Add ${item.name} to order`}
+      onClick={() => {
+        if (!blocked) onAdd(item);
+      }}
+      onKeyDown={(event) => {
+        if (blocked) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onAdd(item);
+        }
+      }}
       style={{
-        background: isSoldOut ? "#f7f1e8" : categoryTone,
-        border: `1px solid ${isSoldOut ? "rgba(55,70,57,.08)" : "rgba(55,70,57,.12)"}`,
+        background: blocked ? "#f7f1e8" : categoryTone,
+        border: `1px solid ${blocked ? "rgba(55,70,57,.08)" : "rgba(55,70,57,.12)"}`,
         borderRadius: "20px",
         padding: "18px",
         minHeight: "164px",
-        cursor: isSoldOut ? "not-allowed" : "pointer",
-        opacity: isSoldOut ? 0.4 : 1,
+        cursor: blocked ? "not-allowed" : "pointer",
+        opacity: blocked ? 0.4 : 1,
         textAlign: "left",
         transition:
           "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
@@ -127,20 +208,6 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
         justifyContent: "space-between",
         position: "relative",
         overflow: "hidden",
-      }}
-      onMouseEnter={(e) => {
-        if (!isSoldOut) {
-          e.currentTarget.style.borderColor = "rgba(245, 158, 11, 0.2)";
-          e.currentTarget.style.boxShadow = "0 16px 30px rgba(65,74,57,.16)";
-          e.currentTarget.style.transform = "translateY(-3px)";
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isSoldOut) {
-          e.currentTarget.style.borderColor = "rgba(55,70,57,.12)";
-          e.currentTarget.style.boxShadow = "none";
-          e.currentTarget.style.transform = "translateY(0)";
-        }
       }}
     >
       <span
@@ -182,9 +249,38 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
         >
           {item.name}
         </span>
-        {item.popularity > 80 && (
-          <Star size={11} color="#c95635" fill="#c95635" />
-        )}
+        <span style={{ display: "flex", alignItems: "center", gap: 2, marginTop: -8, marginRight: -8 }}>
+          {Number(item.popularity || 0) > TOP_SELLER_POPULARITY && !isFavourite && (
+            <Star size={11} color="#c95635" fill="#c95635" />
+          )}
+          <button
+            type="button"
+            aria-label={isFavourite ? `Remove ${item.name} from favourites` : `Pin ${item.name} to favourites`}
+            aria-pressed={isFavourite === true}
+            title={isFavourite ? "Remove from favourites" : "Pin to favourites"}
+            onClick={(event) => {
+              event.stopPropagation();
+              event.preventDefault();
+              onToggleFavourite?.(item.id);
+            }}
+            style={{
+              width: "40px",
+              height: "40px",
+              borderRadius: "10px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <Star
+              size={15}
+              color={isFavourite ? "#c95635" : "#8a8f88"}
+              fill={isFavourite ? "#c95635" : "transparent"}
+            />
+          </button>
+        </span>
       </div>
       <div
         style={{
@@ -224,7 +320,7 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
         {item.category && (
           <span
             style={{
-              fontSize: "9px",
+              fontSize: "11px",
               fontWeight: 600,
               color: "#c95635",
               background: "rgba(255,253,248,.38)",
@@ -240,7 +336,7 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
         {item.template_kind === "bar_pack" && item.template_pack_size && (
           <span
             style={{
-              fontSize: "9px",
+              fontSize: "11px",
               fontWeight: 700,
               color: "#356ed8",
               background: "rgba(53,110,216,.12)",
@@ -254,7 +350,7 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
         {item.barcode && (
           <span
             style={{
-              fontSize: "9px",
+              fontSize: "11px",
               fontWeight: 600,
               color: "#647066",
               background: "rgba(255,253,248,.5)",
@@ -266,10 +362,10 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
           </span>
         )}
       </div>
-      {isSoldOut && (
+      {blocked && (
         <span
           style={{
-            fontSize: "9px",
+            fontSize: "12px",
             fontWeight: 700,
             color: "#b84a38",
             textTransform: "uppercase",
@@ -278,31 +374,41 @@ function ProductCard({ item, onAdd, stockSetupRequired = false }) {
           {unavailableLabel}
         </span>
       )}
-    </button>
+    </div>
   );
 }
 
-function CartLine({ line, onUpdateQty, onRemove, onCustomize, currency }) {
+function packBadgeLabel(line) {
+  const size = Number(line?.template_pack_size || 0);
+  if (line?.template_kind === "bar_pack" && Number.isFinite(size) && size > 1) {
+    return size === 24 ? "Case 24" : `${size}-pack`;
+  }
+  // Only label singles when the line positively carries single-pack data;
+  // unknown provenance renders no badge rather than a guessed one.
+  if (line?.template_kind && line.template_kind !== "bar_pack") return "Single";
+  if (line?.template_kind === "bar_pack") return "Single";
+  return null;
+}
+
+function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency, highlight = false, highlightFresh = false }) {
   const fmt = (n) => Number(n || 0).toFixed(2);
+  const packLabel = packBadgeLabel(line);
   return (
     <div
+      ref={highlightFresh ? (el) => el?.scrollIntoView?.({ block: "nearest" }) : undefined}
       style={{
         display: "flex",
         alignItems: "center",
         gap: "10px",
         padding: "10px 14px",
         borderBottom: "1px solid rgba(55,70,57,.09)",
-        transition: "background 100ms",
+        background: highlight ? "rgba(201,86,53,.08)" : "transparent",
       }}
-      onMouseEnter={(e) =>
-        (e.currentTarget.style.background = "rgba(201,86,53,.045)")
-      }
-      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
-            fontSize: "12px",
+            fontSize: "13px",
             fontWeight: 700,
             color: "#24362c",
             whiteSpace: "nowrap",
@@ -312,63 +418,90 @@ function CartLine({ line, onUpdateQty, onRemove, onCustomize, currency }) {
         >
           {line.item_name}
         </div>
+        {packLabel && (
+          <span
+            style={{
+              display: "inline-block",
+              marginTop: "3px",
+              fontSize: "10px",
+              fontWeight: 800,
+              color: packLabel === "Single" ? "#526157" : "#356ed8",
+              background: packLabel === "Single" ? "rgba(55,70,57,.08)" : "rgba(53,110,216,.12)",
+              padding: "2px 7px",
+              borderRadius: "999px",
+            }}
+          >
+            {packLabel}
+          </span>
+        )}
         {line.modifiers?.length > 0 && (
-          <div style={{ fontSize: "10px", color: "#7b7a70", marginTop: "2px" }}>
+          <div style={{ fontSize: "11px", color: "#7b7a70", marginTop: "2px" }}>
             {line.modifiers.join(", ")}
           </div>
         )}
-        <div style={{ fontSize: "11px", color: "#647066", marginTop: "2px" }}>
+        <div style={{ fontSize: "12px", color: "#647066", marginTop: "2px" }}>
           {currency}{" "}
           {fmt(Number(line.unit_price) + Number(line.modifier_total || 0))} each
         </div>
       </div>
 
-      {/* Qty Controls */}
-      <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+      {/* Qty Controls: 44px minimum targets for touch tills. */}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <button
-          onClick={() => onUpdateQty(line.id, line.quantity - 1)}
+          onClick={() => onUpdateQty(line.id, Number(line.quantity) - 1)}
+          aria-label={`Decrease ${line.item_name} quantity`}
           style={{
-            width: "26px",
-            height: "26px",
-            borderRadius: "6px",
+            width: "44px",
+            height: "44px",
+            borderRadius: "10px",
             border: "1px solid rgba(55,70,57,.16)",
             background: "#fffdf8",
-            color: "#647066",
+            color: "#24362c",
             cursor: "pointer",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
           }}
         >
-          <Minus size={12} />
+          <Minus size={16} />
         </button>
-        <span
+        <input
+          type="number"
+          min="0"
+          step="any"
+          inputMode="decimal"
+          value={line.quantity}
+          aria-label={`Quantity for ${line.item_name}`}
+          onChange={(event) => onSetQty(line.id, event.target.value)}
           style={{
-            width: "28px",
+            width: "64px",
+            height: "44px",
             textAlign: "center",
-            fontSize: "13px",
+            fontSize: "15px",
             fontWeight: 700,
             color: "#24362c",
-          }}
-        >
-          {line.quantity}
-        </span>
-        <button
-          onClick={() => onUpdateQty(line.id, line.quantity + 1)}
-          style={{
-            width: "26px",
-            height: "26px",
-            borderRadius: "6px",
+            borderRadius: "10px",
             border: "1px solid rgba(55,70,57,.16)",
             background: "#fffdf8",
-            color: "#647066",
+          }}
+        />
+        <button
+          onClick={() => onUpdateQty(line.id, Number(line.quantity) + 1)}
+          aria-label={`Increase ${line.item_name} quantity`}
+          style={{
+            width: "44px",
+            height: "44px",
+            borderRadius: "10px",
+            border: "1px solid rgba(55,70,57,.16)",
+            background: "#fffdf8",
+            color: "#24362c",
             cursor: "pointer",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
           }}
         >
-          <Plus size={12} />
+          <Plus size={16} />
         </button>
       </div>
 
@@ -390,24 +523,21 @@ function CartLine({ line, onUpdateQty, onRemove, onCustomize, currency }) {
 
       <button
         onClick={() => onRemove(line.id)}
+        aria-label={`Remove ${line.item_name}`}
         style={{
-          width: "24px",
-          height: "24px",
-          borderRadius: "6px",
-          border: "none",
+          minWidth: "44px",
+          height: "44px",
+          borderRadius: "10px",
+          border: "1px solid rgba(184,74,56,.25)",
           background: "transparent",
           color: "#b84a38",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          opacity: 0.5,
-          transition: "opacity 100ms",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
       >
-        <Trash2 size={13} />
+        <Trash2 size={16} />
       </button>
       <button
         onClick={() => onCustomize(line)}
@@ -419,6 +549,16 @@ function CartLine({ line, onUpdateQty, onRemove, onCustomize, currency }) {
       </button>
     </div>
   );
+}
+
+function tenderLabel(method) {
+  return {
+    account: "Customer account",
+    cash: "Cash",
+    card: "Card",
+    mobile_money: "Mobile money",
+    voucher: "Voucher",
+  }[method] || method;
 }
 
 export default function HposTerminal() {
@@ -449,10 +589,28 @@ export default function HposTerminal() {
       commercialPackageKey,
       featureKey,
       commercialAddonKeys,
+      access?.entitlement || null,
+      access?.entitlement?.lodge_id || null
     )
   );
   const canUseVoucher = canUseBarCommercialFeature("vouchers");
   const canUseTips = canUseBarCommercialFeature("tips_payouts");
+  const canUseRecipes = canUseBarCommercialFeature("recipes");
+  // Customer-account and promotion capabilities gate their reads, controls
+  // and submissions together (Growth add-ons in Bar-only; always on for
+  // restaurant service, preserving established behavior there).
+  const tillEntitlements = useMemo(
+    () =>
+      getTillEntitlements({
+        productId: commercialProductId,
+        packageKey: commercialPackageKey,
+        addonKeys: commercialAddonKeys,
+        entitlement: access?.entitlement || null,
+        lodgeId: access?.entitlement?.lodge_id || null,
+        barOnly,
+      }),
+    [commercialProductId, commercialPackageKey, commercialAddonKeys, access?.entitlement, barOnly],
+  );
   const barProfile = useMemo(() => getBarModeProfile(settings), [settings]);
   const tillOperatorPolicy = useMemo(() => getTillOperatorPolicy(settings), [settings]);
   const serviceModeOptions = useMemo(
@@ -462,17 +620,96 @@ export default function HposTerminal() {
   const [menuItems, setMenuItems] = useState([]);
   const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(() => new Set());
   const [cart, setCart] = useState([]);
-  const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState("All");
-  const [serviceMode, setServiceMode] = useState(() =>
-    location.state?.tabId
-      ? location.state?.tableName
-        ? "table"
-        : "tab"
-      : getDefaultHposServiceMode(settings),
+  const [lastAdded, setLastAdded] = useState(null);
+  const [lastRemoved, setLastRemoved] = useState(null);
+  const [favourites, setFavourites] = useState([]);
+  const [openTabCount, setOpenTabCount] = useState(0);
+  const [openTabsBrief, setOpenTabsBrief] = useState([]);
+  const [resumedTabInfo, setResumedTabInfo] = useState(null);
+  const [pendingRestore, setPendingRestore] = useState(null);
+  const [recoveryReady, setRecoveryReady] = useState(false);
+  const [outletReady, setOutletReady] = useState(false);
+  const [cashReceived, setCashReceived] = useState("");
+  const [lastReceipt, setLastReceipt] = useState(null);
+  // Narrow viewports (tablets, small touch tills) turn the fixed basket
+  // panel into an overlay drawer toggled from a totals bar, so the product
+  // grid keeps usable columns. Payment always forces the drawer open so the
+  // tender controls and totals stay reachable; keyboard and scanner
+  // behavior are unchanged.
+  const [narrowViewport, setNarrowViewport] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 1100px)").matches,
   );
+  const [basketOpen, setBasketOpen] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia("(max-width: 1100px)");
+    const onChange = (event) => setNarrowViewport(event.matches);
+    setNarrowViewport(query.matches);
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    }
+    return undefined;
+  }, []);
+  const basketVisible = !narrowViewport || basketOpen || showPayment;
+  const restoreCheckedRef = useRef(false);
+  const undoTimerRef = useRef(null);
+  const [search, setSearch] = useState("");
+  const [selectedOutlet, setSelectedOutlet] = useState(null);
+  // Pinned Till favourites are per terminal outlet so each bar station keeps
+  // its own fast picks. Plain menu ids, capped like the legacy POS list.
+  useEffect(() => {
+    setFavourites(readTillFavourites(lodgeId, selectedOutlet?.id));
+  }, [lodgeId, selectedOutlet?.id]);
+
+  useEffect(() => () => {
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+  }, []);
+
+  // The last-added highlight is transient: tint + scroll only while fresh.
+  useEffect(() => {
+    if (!lastAdded) return undefined;
+    const timer = window.setTimeout(() => setLastAdded(null), 2500);
+    return () => window.clearTimeout(timer);
+  }, [lastAdded]);
+
+  const toggleFavourite = useCallback((menuItemId) => {
+    if (!menuItemId) return;
+    setFavourites((prev) => {
+      const next = prev.includes(menuItemId)
+        ? prev.filter((id) => id !== menuItemId)
+        : [...prev, menuItemId].slice(-MAX_FAVOURITES);
+      try {
+        window.localStorage?.setItem(
+          favouritesStorageKey(lodgeId, selectedOutlet?.id),
+          JSON.stringify(next),
+        );
+      } catch {
+        /* Favourites are a local convenience and must never block Till. */
+      }
+      return next;
+    });
+  }, [lodgeId, selectedOutlet?.id]);
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [serviceMode, setServiceMode] = useState(() => {
+    if (!location.state?.tabId) return getDefaultHposServiceMode(settings);
+    // Bar tabs always carry table_name (= tab name), so a bar resume must
+    // land on the tab mode. Otherwise the mode corrects to counter and the
+    // payment records a counter sale without closing the tab.
+    if (location.state?.tableName && !isBarOnlyMode(settings)) return "table";
+    return "tab";
+  });
   const [customers, setCustomers] = useState([]);
   const [modifierGroups, setModifierGroups] = useState([]);
+  // Modifier applicability contract: loading (Hold/Pay wait), ready
+  // (validated per line), failed (Hold/Pay blocked until refresh).
+  const [modifiersReady, setModifiersReady] = useState("loading");
+  // Server-authoritative stock readiness per sellable (outcome only, no
+  // recipe disclosure). Base Till never infers from recipe membership.
+  const [stockReadiness, setStockReadiness] = useState({ status: "loading", map: new Map() });
   const [modifierLineId, setModifierLineId] = useState(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
@@ -493,8 +730,11 @@ export default function HposTerminal() {
   const [showPayment, setShowPayment] = useState(false);
   const [loading, setLoading] = useState(true);
   const [outlets, setOutlets] = useState([]);
-  const [selectedOutlet, setSelectedOutlet] = useState(null);
   const [tables, setTables] = useState([]);
+  // Open-tab names for the Bar tab-name suggestions. Bar-only service has no
+  // floor tables, so these come from the already-loaded tab list instead of
+  // a separate floor-table read.
+  const [openTabNames, setOpenTabNames] = useState([]);
   const [tableName, setTableName] = useState(
     () => location.state?.tableName || "",
   );
@@ -510,6 +750,11 @@ export default function HposTerminal() {
   const [submitError, setSubmitError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [scannerFeedback, setScannerFeedback] = useState(null);
+  const [lastNotFoundBarcode, setLastNotFoundBarcode] = useState(null);
+  // Unknown-barcode creation is permission-gated: both catalog sides.
+  const canCreateProduct =
+    canAccessCapability(access, "pos.menu_manage") &&
+    canAccessCapability(access, "inventory.manage");
   const [completedReceipt, setCompletedReceipt] = useState(null);
   const [serviceStaff, setServiceStaff] = useState([]);
   const [operatorStaffId, setOperatorStaffId] = useState("");
@@ -565,6 +810,11 @@ export default function HposTerminal() {
       })
       .catch((error) => {
         if (active) setSubmitError(error?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+      })
+      .finally(() => {
+        // Basket-restore waits for this: payment recovery always wins over
+        // unsent drafts, so restoration must know the recovery outcome first.
+        if (active) setRecoveryReady(true);
       });
     return () => { active = false; };
   }, []);
@@ -685,6 +935,30 @@ export default function HposTerminal() {
     };
   }, [registerTillActivity, sharedTerminalMode, tillOperatorPolicy.mode, verifiedOperator?.id]);
 
+  // Cash tendering is display-only until submit: received/changed amounts
+  // never alter the sale allocation (see completeOrder validation).
+  useEffect(() => {
+    if (!showPayment) setCashReceived("");
+  }, [showPayment]);
+
+  // This terminal's last receipt for independent reprinting. Loaded per
+  // outlet; historical receipts without tendering aids render allocation
+  // only and are never back-filled.
+  useEffect(() => {
+    if (!selectedOutlet?.id) {
+      setLastReceipt(null);
+      return;
+    }
+    setLastReceipt(
+      readJsonSetting(lastReceiptKey(lodgeId, selectedOutlet.id)),
+    );
+  }, [lodgeId, selectedOutlet?.id]);
+
+  useEffect(() => {
+    if (!tillEntitlements.canAccounts) setSelectedCustomerId("");
+    if (!tillEntitlements.canPromos) setSelectedPromotionId("");
+  }, [tillEntitlements]);
+
   const chooseTerminalOutlet = useCallback(
     (outletId) => {
       if (outletId && !outletIsAllowed(outletId)) {
@@ -717,7 +991,13 @@ export default function HposTerminal() {
   useEffect(() => {
     const allowed = new Set(serviceModeOptions.map((m) => m.id));
     if (!allowed.has(serviceMode)) {
-      setServiceMode(getDefaultHposServiceMode(barOnly));
+      // A resumed tab prefers the tab mode when the package offers it, so a
+      // bar resume never corrects to counter and orphans the open tab.
+      setServiceMode(
+        location.state?.tabId && allowed.has("tab")
+          ? "tab"
+          : getDefaultHposServiceMode(barOnly),
+      );
     }
   }, [barOnly, serviceMode, serviceModeOptions]);
 
@@ -728,6 +1008,130 @@ export default function HposTerminal() {
     }
     if (!canUseTips) setTipAmount("");
   }, [canUseTips, canUseVoucher]);
+
+  // Voucher entry is only offered for walk-up counter sales (see the tender
+  // row render condition). Clear stale values when the sale moves somewhere
+  // vouchers cannot apply, so a hidden code can never flow into the tender
+  // breakdown on submit.
+  useEffect(() => {
+    if (
+      serviceMode === "tab" ||
+      serviceMode === "table" ||
+      Boolean(selectedCustomerId)
+    ) {
+      setVoucherCode("");
+      setVoucherAmount("");
+    }
+  }, [serviceMode, selectedCustomerId]);
+
+  const draftOperatorId = verifiedOperator?.id || user?.id || null;
+  // Recovery initialization must complete before draft persistence runs:
+  // otherwise a mount with an empty cart deletes the very draft the restore
+  // check is about to read. The write effect below waits for this flag.
+  const [recoveryInitialized, setRecoveryInitialized] = useState(false);
+  const [draftPersistFailed, setDraftPersistFailed] = useState(false);
+
+  // Persist unsent baskets durably so an accidental navigation, crash or
+  // reload can offer explicit restoration. Writes are scoped to
+  // tenant/outlet/operator/shift; an empty basket removes its draft. Never
+  // runs before recovery initialization (see above).
+  useEffect(() => {
+    if (loading || !recoveryInitialized || !selectedOutlet?.id || !draftOperatorId) return;
+    const key = basketDraftKey(lodgeId, selectedOutlet.id, draftOperatorId, currentShift?.id);
+    if (!cart.length) {
+      writeJsonSetting(key, null);
+      return;
+    }
+    if (!writeJsonSetting(key, {
+      v: 1,
+      savedAt: Date.now(),
+      shiftId: currentShift?.id || null,
+      serviceMode,
+      tabName,
+      tableName,
+      customerId: selectedCustomerId || null,
+      lines: cart,
+    })) {
+      setDraftPersistFailed(true);
+    }
+  }, [loading, recoveryInitialized, cart, serviceMode, tabName, tableName, selectedCustomerId, selectedOutlet?.id, draftOperatorId, currentShift?.id, lodgeId]);
+
+  // One-shot crash reconciliation. Precedence is strict: a resumed tab wins
+  // over everything, then pending payment recovery, then an unconsumed hold
+  // intent (matched by server tab identity), and only then an unsent draft.
+  useEffect(() => {
+    if (loading || !recoveryReady || !outletReady || restoreCheckedRef.current) return;
+    restoreCheckedRef.current = true;
+    const finish = () => setRecoveryInitialized(true);
+    if (location.state?.tabId) {
+      finish();
+      return;
+    }
+    if (recoveredAttempt || submitEnvelopeRef.current?.status === "pending") {
+      finish();
+      return;
+    }
+    if (!selectedOutlet?.id || !draftOperatorId) {
+      finish();
+      return;
+    }
+    const intentKey = holdIntentKey(lodgeId, selectedOutlet.id, draftOperatorId);
+    const intent = readJsonSetting(intentKey);
+    if (intent && intent.outletId === selectedOutlet.id) {
+      const decision = reconcileHoldIntent(intent, openTabsBrief);
+      if (decision.outcome === "confirmed") {
+        writeJsonSetting(intentKey, null);
+        setSuccessMessage(`“${decision.tab.name || "Open tab"}” was held before the interruption. Resume it from Open tabs.`);
+        finish();
+        return;
+      }
+      if (decision.outcome === "expired") {
+        writeJsonSetting(intentKey, null);
+      }
+      // Unknown outcomes preserve the intent: the hold may still have
+      // committed. Restoration below offers the draft without deleting the
+      // intent, and a later mount reconciles by tab id again.
+    }
+    const scopeKey = basketDraftKey(lodgeId, selectedOutlet.id, draftOperatorId, currentShift?.id);
+    const draft = readJsonSetting(scopeKey);
+    if (!isDraftFresh(draft)) {
+      if (draft) writeJsonSetting(scopeKey, null);
+      finish();
+      return;
+    }
+    setPendingRestore({ draft, scope: scopeKey, intentKey: intent ? intentKey : null });
+    finish();
+  }, [loading, recoveryReady, outletReady, selectedOutlet?.id, currentShift?.id, draftOperatorId, lodgeId, openTabsBrief, recoveredAttempt]);
+
+  const discardRestore = useCallback(() => {
+    // Explicit discard drops both the draft and any unconfirmed hold intent:
+    // the operator has seen the state and chosen to let it go.
+    if (pendingRestore?.scope) writeJsonSetting(pendingRestore.scope, null);
+    if (pendingRestore?.intentKey) writeJsonSetting(pendingRestore.intentKey, null);
+    setPendingRestore(null);
+  }, [pendingRestore]);
+
+  const applyRestore = useCallback(() => {
+    if (!pendingRestore?.draft) return;
+    const { draft, scope } = pendingRestore;
+    const { lines, dropped, repriced } = revalidateBasketLines(draft.lines, menuItems);
+    const allowedModes = new Set(serviceModeOptions.map((mode) => mode.id));
+    setServiceMode(allowedModes.has(draft.serviceMode) ? draft.serviceMode : getDefaultHposServiceMode(barOnly));
+    setTabName(typeof draft.tabName === "string" ? draft.tabName : "");
+    setTableName(typeof draft.tableName === "string" ? draft.tableName : "");
+    if (draft.customerId && customers.some((customer) => customer.id === draft.customerId)) {
+      setSelectedCustomerId(draft.customerId);
+    }
+    setCart(lines);
+    writeJsonSetting(scope, null);
+    setPendingRestore(null);
+    const notes = [];
+    if (dropped > 0) notes.push(`${dropped} unavailable item${dropped === 1 ? " was" : "s were"} removed`);
+    if (repriced > 0) notes.push("prices were refreshed to the current catalogue");
+    setSuccessMessage(
+      `Unsent basket restored.${notes.length ? ` Note: ${notes.join("; ")}.` : ""}`,
+    );
+  }, [pendingRestore, menuItems, serviceModeOptions, barOnly, customers]);
 
   useEffect(() => {
     let active = true;
@@ -741,17 +1145,34 @@ export default function HposTerminal() {
           tabRows,
           recipeRows,
           staffRows,
+          readinessResult,
         ] = await Promise.all([
           window.api?.pos?.getMenuItems?.() ?? [],
           window.api?.outlets?.getAll?.() ?? [],
-          window.api?.pos?.getCustomers?.() ?? [],
-          window.api?.pos?.getPromotions?.() ?? [],
+          tillEntitlements.canAccounts ? (window.api?.pos?.getCustomers?.() ?? []) : [],
+          tillEntitlements.canPromos ? (window.api?.pos?.getPromotions?.() ?? []) : [],
           window.api?.pos?.getTabs?.() ?? [],
-          window.api?.pos?.getRecipes?.() ?? [],
+          // Recipes are an entitled capability: base Bar loads server
+          // readiness instead (outcome only, no disclosure).
+          !barOnly || canUseRecipes ? (window.api?.pos?.getRecipes?.() ?? []) : [],
           window.api?.pos?.getStaff?.() ?? [],
+          window.api?.pos?.getMenuStockReadiness?.() ?? { success: false },
         ]);
         if (!active) return;
         setMenuItems(Array.isArray(data) ? data : []);
+        // Approved cached readiness: a failed read falls back to last
+        // verified data (labeled stale); with no cache selling blocks.
+        const readinessCache = readJsonSetting(readinessCacheKey(lodgeId));
+        const resolved = resolveReadinessState(readinessResult, readinessCache);
+        if (resolved.status === "ready") {
+          writeJsonSetting(readinessCacheKey(lodgeId), {
+            at: Date.now(),
+            rows: Array.isArray(readinessResult.rows) ? readinessResult.rows : [],
+          });
+        }
+        setStockReadiness(resolved.status === "ready" || resolved.status === "stale"
+          ? { status: resolved.status, map: resolved.map, cachedAt: resolved.cachedAt || null }
+          : { status: "failed", map: new Map(), error: resolved.error || null, code: resolved.code || null });
         setRecipeMenuItemIds(
           new Set(
             (Array.isArray(recipeRows) ? recipeRows : [])
@@ -769,6 +1190,45 @@ export default function HposTerminal() {
         setOutlets(nextOutlets);
         const resumedTab = (Array.isArray(tabRows) ? tabRows : []).find(
           (tab) => tab.id === location.state?.tabId,
+        );
+        setOpenTabNames(
+          Array.from(
+            new Set(
+              (Array.isArray(tabRows) ? tabRows : [])
+                .map((tab) =>
+                  String(
+                    tab?.tab_name || tab?.table_name || tab?.customer_name || "",
+                  ).trim(),
+                )
+                .filter(Boolean),
+            ),
+          ).slice(0, 50),
+        );
+        setOpenTabCount(
+          (Array.isArray(tabRows) ? tabRows : []).filter(
+            (tab) =>
+              !["closed", "paid", "cancelled", "voided"].includes(
+                String(tab.status || "").toLowerCase(),
+              ),
+          ).length,
+        );
+        // Brief snapshots for crash reconciliation (matched by tab identity,
+        // never by line contents) and outlet-scoped suggestions.
+        setOpenTabsBrief(
+          (Array.isArray(tabRows) ? tabRows : [])
+            .filter(
+              (tab) =>
+                !["closed", "paid", "cancelled", "voided"].includes(
+                  String(tab.status || "").toLowerCase(),
+                ),
+            )
+            .map((tab) => ({
+              id: tab?.id || null,
+              name: String(tab?.tab_name || tab?.table_name || tab?.customer_name || "").trim(),
+              outlet_id: tab?.outlet_id || null,
+              updated_at: tab?.updated_at || tab?.created_at || null,
+            }))
+            .filter((tab) => tab.id && tab.name),
         );
         const activeOutlets = nextOutlets.filter(
           (outlet) =>
@@ -804,8 +1264,11 @@ export default function HposTerminal() {
         if (resumedTab) {
           setTableName(resumedTab.table_name || "");
           setTabName(resumedTab.tab_name || resumedTab.customer_name || "");
+          // Bar tabs always carry table_name, so only restaurant resumes use
+          // the table mode. A bar resume must stay on tab or the payment
+          // records a counter sale and leaves the tab open.
           setServiceMode(
-            resumedTab.table_name ? "table" : resumedTab.service_mode || "tab",
+            resumedTab.table_name && !barOnly ? "table" : "tab",
           );
           setSelectedCustomerId(resumedTab.customer_id || "");
           setCart(
@@ -819,20 +1282,67 @@ export default function HposTerminal() {
                 quantity: Number(item.quantity || 1),
                 modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
                 modifier_total: Number(item.modifier_total || 0),
+                template_kind: item.template_kind || null,
+                template_pack_size: item.template_pack_size || null,
               }),
             ),
           );
+          // Identity header for the resumed tab. The version decides the
+          // copy: a missing version means the tab changed underneath this
+          // sale and must be re-opened; this never blocks by itself because
+          // the payment path still fails closed through the domain.
+          const resumedVersion = location.state?.tabVersion
+            ?? resumedTab.tab_version
+            ?? resumedTab.version
+            ?? null;
+          setResumedTabInfo({
+            id: resumedTab.id || location.state?.tabId || null,
+            name:
+              resumedTab.tab_name ||
+              resumedTab.table_name ||
+              resumedTab.customer_name ||
+              "Open tab",
+            waiter: resumedTab.waiter_name || resumedTab.opened_by_name || null,
+            found: true,
+            versionOk:
+              resumedVersion !== null &&
+              resumedVersion !== undefined &&
+              Number(resumedVersion) > 0,
+          });
+          if (
+            location.state?.settle === true &&
+            Array.isArray(resumedTab.items) &&
+            resumedTab.items.length > 0
+          ) {
+            setShowPayment(true);
+          }
           setSuccessMessage(
             `${resumedTab.table_name || resumedTab.tab_name || "Open check"} loaded.`,
           );
+        } else if (location.state?.tabId) {
+          // A resume link whose tab is no longer in the list: say so plainly
+          // instead of rendering a silent counter sale.
+          setResumedTabInfo({
+            id: location.state.tabId,
+            name: location.state?.tabName || location.state?.tableName || "Open tab",
+            waiter: null,
+            found: false,
+            versionOk: false,
+          });
         }
         const groups = (await window.api?.pos?.getModifierGroups?.()) ?? [];
-        if (active) setModifierGroups(Array.isArray(groups) ? groups : []);
+        if (active) {
+          setModifierGroups(Array.isArray(groups) ? groups : []);
+          setModifiersReady("ready");
+        }
       } catch (error) {
-        if (active)
+        if (active) {
+          setModifiersReady("failed");
+          setStockReadiness({ status: "failed", map: new Map() });
           setSubmitError(
             "Could not load the POS service data. Please refresh.",
           );
+        }
       }
       if (active) setLoading(false);
     };
@@ -840,20 +1350,27 @@ export default function HposTerminal() {
     return () => {
       active = false;
     };
-  }, [location.state?.tabId, outletIsAllowed]);
+  }, [location.state?.tabId, outletIsAllowed, barOnly, canUseRecipes, tillEntitlements]);
 
   useEffect(() => {
     if (!selectedOutlet?.id) {
       setTables([]);
       setCurrentShift(null);
+      setOutletReady(true);
       return;
     }
     let active = true;
     const shiftCashierId = sharedTerminalMode && verifiedOperator?.id
       ? verifiedOperator.id
       : user?.id || null;
+    // Bar-only service has no floor tables, so that read is skipped there to
+    // keep Till startup fast. The current-shift read is independent and always
+    // runs: Bar must still load the correct operator/outlet shift.
+    const tablePromise = shouldLoadTillTables(barOnly)
+      ? (window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id) ?? [])
+      : Promise.resolve([]);
     Promise.all([
-      window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id) ?? [],
+      tablePromise,
       window.api?.pos?.getCurrentShift?.(selectedOutlet.id, shiftCashierId) ??
         null,
     ])
@@ -861,17 +1378,22 @@ export default function HposTerminal() {
         if (!active) return;
         setTables(Array.isArray(tableRows) ? tableRows : []);
         setCurrentShift(shift || null);
+        setOutletReady(true);
       })
       .catch(() => {
-        if (active)
+        if (active) {
+          setOutletReady(true);
           setSubmitError(
-            "Could not load tables or the current shift. Please refresh.",
+            barOnly
+              ? "Could not load the current shift. Please refresh."
+              : "Could not load tables or the current shift. Please refresh.",
           );
+        }
       });
     return () => {
       active = false;
     };
-  }, [selectedOutlet?.id, sharedTerminalMode, user?.id, verifiedOperator?.id]);
+  }, [selectedOutlet?.id, sharedTerminalMode, user?.id, verifiedOperator?.id, barOnly]);
 
   // The authoritative Shift-mode session lives in the main process, not in
   // this route component. Rehydrate its original expiry after navigation or
@@ -994,31 +1516,120 @@ export default function HposTerminal() {
     },
     [recipeMenuItemIds],
   );
-  const categories = [
-    "All",
-    ...Array.from(
+
+  // Stock-readiness decision per sellable: ok | issue | unknown.
+  // Bar-only trusts the server readiness map only (recipes are entitled and
+  // often unloadable there); restaurant keeps the established
+  // recipe-membership inference. Stale approved cache still decides (labeled
+  // in the banner); unknown never renders as ready or sold out.
+  const getStockIssue = useCallback(
+    (item) => {
+      if (String(item?.stock_method || "").toLowerCase() === "non_stock") return "ok";
+      if (!barOnly) return hasStockSetupIssue(item) ? "issue" : "ok";
+      if (stockReadiness.status !== "ready" && stockReadiness.status !== "stale") return "unknown";
+      const readiness = stockReadiness.map.get(item?.id);
+      if (readiness === "direct" || readiness === "recipe" || readiness === "non_stock") return "ok";
+      if (readiness === "missing" || readiness === "conflict") return "issue";
+      return "unknown";
+    },
+    [barOnly, hasStockSetupIssue, stockReadiness],
+  );
+
+  const refreshReadiness = useCallback(async () => {
+    setStockReadiness({ status: "loading", map: new Map() });
+    setSubmitError("");
+    try {
+      const result = await window.api?.pos?.getMenuStockReadiness?.();
+      const resolved = resolveReadinessState(result, readJsonSetting(readinessCacheKey(lodgeId)));
+      if (resolved.status === "ready") {
+        writeJsonSetting(readinessCacheKey(lodgeId), {
+          at: Date.now(),
+          rows: Array.isArray(result.rows) ? result.rows : [],
+        });
+        setStockReadiness({ status: "ready", map: resolved.map, cachedAt: null });
+      } else if (resolved.status === "stale") {
+        setStockReadiness({ status: "stale", map: resolved.map, cachedAt: resolved.cachedAt });
+      } else {
+        setStockReadiness({ status: "failed", map: new Map(), error: resolved.error || null, code: resolved.code || null });
+        setSubmitError(
+          resolved.code === "backend-update-required" && resolved.error
+            ? resolved.error
+            : result?.error || "Stock status could not be verified. Refresh before selling.",
+        );
+      }
+    } catch (error) {
+      setStockReadiness({ status: "failed", map: new Map() });
+      setSubmitError(error?.message || "Stock status could not be verified. Refresh before selling.");
+    }
+  }, [lodgeId]);
+  // Category order is operator-driven (pins + measured sellers first), never
+  // hardcoded per drink type: every business gets its own fast picks.
+  const favouriteIdSet = useMemo(() => new Set(favourites), [favourites]);
+  const hasTopSellers = useMemo(
+    () => tillMenuItems.some((item) => Number(item.popularity || 0) > TOP_SELLER_POPULARITY),
+    [tillMenuItems],
+  );
+  const categories = useMemo(() => {
+    const rest = Array.from(
       new Set(tillMenuItems.map((item) => item.category).filter(Boolean)),
-    ).sort(),
-  ];
+    ).sort();
+    return [
+      "All",
+      ...(favourites.length ? [FAVOURITES_CATEGORY] : []),
+      ...(hasTopSellers ? [TOP_SELLERS_CATEGORY] : []),
+      ...rest,
+    ];
+  }, [tillMenuItems, favourites.length, hasTopSellers]);
+  // A special filter with nothing left in it (e.g. last pin removed) falls
+  // back to All instead of rendering an empty grid.
+  useEffect(() => {
+    if (activeCategory === FAVOURITES_CATEGORY && favourites.length === 0) {
+      setActiveCategory("All");
+    }
+  }, [activeCategory, favourites.length]);
   const searchLower = search.trim().toLowerCase();
-  const filtered = tillMenuItems.filter(
-    (item) =>
-      (!searchLower ||
+  const filtered = tillMenuItems
+    .filter((item) => {
+      if (activeCategory === FAVOURITES_CATEGORY) return favouriteIdSet.has(item.id);
+      if (activeCategory === TOP_SELLERS_CATEGORY) {
+        return Number(item.popularity || 0) > TOP_SELLER_POPULARITY;
+      }
+      return activeCategory === "All" || item.category === activeCategory;
+    })
+    .filter(
+      (item) =>
+        !searchLower ||
         item.name?.toLowerCase().includes(searchLower) ||
         String(item.barcode || "")
           .toLowerCase()
           .includes(searchLower) ||
         String(item.template_kind || "")
           .toLowerCase()
-          .includes(searchLower)) &&
-      (activeCategory === "All" || item.category === activeCategory),
-  );
+          .includes(searchLower),
+    )
+    .sort((a, b) =>
+      activeCategory === TOP_SELLERS_CATEGORY
+        ? Number(b.popularity || 0) - Number(a.popularity || 0)
+        : 0,
+    );
 
   const addToCart = useCallback(
     (item) => {
       // A completed sale is acknowledged until the operator begins the next one.
       registerTillActivity();
       setSuccessMessage("");
+      // Fail closed on stock state: unknown renders as Refresh-required and
+      // setup issues never reach the basket (the server would reject them).
+      const issue = getStockIssue(item);
+      if (issue === "unknown") {
+        setSubmitError("Stock status is unavailable. Refresh before selling.");
+        return;
+      }
+      if (issue === "issue") {
+        setSubmitError(`${item.name || "Product"} needs stock setup before it can be sold.`);
+        return;
+      }
+      setLastAdded({ key: item.id, at: Date.now() });
       setCart((prev) => {
         const existing = prev.find((c) => c.menu_item_id === item.id);
         if (existing) {
@@ -1041,12 +1652,13 @@ export default function HposTerminal() {
             kitchen_station_id: item.kitchen_station_id || null,
             category: item.category || null,
             template_kind: item.template_kind || null,
+            template_pack_size: item.template_pack_size || null,
             barcode: item.barcode || null,
           },
         ];
       });
     },
-    [location.state?.tabId, registerTillActivity],
+    [location.state?.tabId, registerTillActivity, getStockIssue],
   );
 
   const outletName = useCallback(
@@ -1107,7 +1719,15 @@ export default function HposTerminal() {
           barcode,
           message: `${match.name || "Product"} is unavailable or sold out.`,
         };
-      if (hasStockSetupIssue(match))
+      const stockIssue = getStockIssue(match);
+      if (stockIssue === "unknown")
+        return {
+          success: false,
+          code: "stock_status_unavailable",
+          barcode,
+          message: "Stock status is unavailable. Refresh before selling.",
+        };
+      if (stockIssue === "issue")
         return {
           success: false,
           code: "stock_setup_required",
@@ -1116,7 +1736,7 @@ export default function HposTerminal() {
         };
       return { success: true, barcode, item: match };
     },
-    [hasStockSetupIssue, outletName, selectedOutlet?.id, tillMenuItems],
+    [getStockIssue, outletName, selectedOutlet?.id, tillMenuItems],
   );
 
   const handleCompletedScan = useCallback(
@@ -1137,6 +1757,9 @@ export default function HposTerminal() {
       }
       const resolved = resolveBarcodeScan(result.barcode);
       if (!resolved.success) {
+        if (resolved.code === "barcode_not_found") {
+          setLastNotFoundBarcode(resolved.barcode || result.barcode || null);
+        }
         reportScanner({
           level: "error",
           code: resolved.code,
@@ -1144,6 +1767,7 @@ export default function HposTerminal() {
         });
         return;
       }
+      setLastNotFoundBarcode(null);
       addToCart(resolved.item);
       reportScanner({
         level: "success",
@@ -1242,6 +1866,7 @@ export default function HposTerminal() {
       );
       const match = byName;
       if (!match || match.is_available === false || match.available === false) {
+        setLastNotFoundBarcode(/^[0-9]+$/.test(q) ? q : null);
         reportScanner({
           level: "error",
           code: "barcode_not_found",
@@ -1249,6 +1874,7 @@ export default function HposTerminal() {
         });
         return false;
       }
+      setLastNotFoundBarcode(null);
       addToCart(match);
       setSearch("");
       return true;
@@ -1267,9 +1893,53 @@ export default function HposTerminal() {
     }
   }, [registerTillActivity]);
 
+  // Direct quantity entry preserves Till behavior: any positive quantity is
+  // accepted (per-caller integer rules are enforced downstream, never here),
+  // zero/negative removes the line, non-numeric input is ignored.
+  const setQty = useCallback((id, raw) => {
+    registerTillActivity();
+    const qty = Number(raw);
+    if (!Number.isFinite(qty)) return;
+    if (qty <= 0) {
+      setCart((prev) => prev.filter((c) => c.id !== id));
+    } else {
+      setCart((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, quantity: qty } : c)),
+      );
+    }
+  }, [registerTillActivity]);
+
   const removeLine = useCallback((id) => {
     registerTillActivity();
-    setCart((prev) => prev.filter((c) => c.id !== id));
+    setCart((prev) => {
+      const index = prev.findIndex((c) => c.id === id);
+      if (index < 0) return prev;
+      if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = window.setTimeout(() => setLastRemoved(null), 6000);
+      setLastRemoved({ line: prev[index], index });
+      return prev.filter((c) => c.id !== id);
+    });
+  }, [registerTillActivity]);
+
+  const undoRemove = useCallback(() => {
+    if (!lastRemoved) return;
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    const { line, index } = lastRemoved;
+    setLastRemoved(null);
+    setCart((prev) => {
+      if (prev.some((c) => c.id === line.id)) return prev;
+      const next = [...prev];
+      next.splice(Math.min(index, next.length), 0, line);
+      return next;
+    });
+  }, [lastRemoved]);
+
+  const clearCart = useCallback(() => {
+    registerTillActivity();
+    if (!window.confirm("Clear this sale? All unpaid lines will be removed.")) return;
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    setLastRemoved(null);
+    setCart([]);
   }, [registerTillActivity]);
 
   const toggleModifier = (line, option, group) => {
@@ -1398,6 +2068,31 @@ export default function HposTerminal() {
   const tax = (subtotal - promotionDiscount) * taxRate;
   const tipTotal = Math.max(0, Number(tipAmount || 0));
   const total = subtotal - promotionDiscount + tax + tipTotal;
+  const tenderBreakdownResult = useMemo(
+    () =>
+      buildBarTenderBreakdown({
+        total,
+        chargeToAccount,
+        selectedCustomerId,
+        paymentMethod,
+        splitCashAmount,
+        splitRemainderMethod,
+        voucherCode,
+        voucherAmount,
+        paymentReferences,
+      }),
+    [
+      chargeToAccount,
+      paymentMethod,
+      paymentReferences,
+      selectedCustomerId,
+      splitCashAmount,
+      splitRemainderMethod,
+      total,
+      voucherAmount,
+      voucherCode,
+    ],
+  );
   const itemCount = cart.reduce((sum, c) => sum + c.quantity, 0);
   const selectedTable =
     tables.find(
@@ -1438,6 +2133,8 @@ export default function HposTerminal() {
           quantity: Number(item.quantity || 1),
           modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
           modifier_total: Number(item.modifier_total || 0),
+          template_kind: item.template_kind || null,
+          template_pack_size: item.template_pack_size || null,
         })),
       );
       setSuccessMessage(`${nextTableName} open check loaded.`);
@@ -1449,6 +2146,12 @@ export default function HposTerminal() {
 
   const openShift = async () => {
     if (!selectedOutlet?.id || shiftBusy) return;
+    // The outlet is remembered, but the float is explicit every shift: an
+    // empty float never defaults (not even to zero).
+    if (String(shiftFloat ?? "").trim() === "") {
+      setSubmitError("Enter the opening cash float to start the shift.");
+      return;
+    }
     setShiftBusy(true);
     setSubmitError("");
     try {
@@ -1503,13 +2206,45 @@ export default function HposTerminal() {
       );
       return;
     }
+    // Required modifier choices are validated on Hold as well as Pay: a
+    // sale that never opened Options must still complete its minimums.
+    // Unknown applicability blocks until verified (never guessed).
+    const holdModifierCheck = validateSaleModifierRequirements(cart, modifierGroups, modifiersReady === "ready");
+    if (!holdModifierCheck.ok) {
+      setSubmitError(holdModifierCheck.error);
+      return;
+    }
+    // Durable hold intent BEFORE dispatch, carrying the same tab id that is
+    // submitted below: reconciliation matches by server tab identity, never
+    // by name or timestamp. A failed write blocks dispatch — an unrecorded
+    // hold must never leave this terminal.
+    const holdOperatorId = (verifiedOperator || user)?.id || null;
+    const holdKey = crypto.randomUUID();
+    const holdTabId = location.state?.tabId || selectedOpenTab?.id || holdKey;
+    if (!writeJsonSetting(holdIntentKey(lodgeId, selectedOutlet.id, holdOperatorId), {
+      key: holdKey,
+      tabId: holdTabId,
+      tabName: servicePayload.tab_name || tableName.trim() || tabName.trim() || null,
+      at: Date.now(),
+      shiftId: currentShift.id,
+      outletId: selectedOutlet.id,
+      operatorId: holdOperatorId,
+    })) {
+      setSubmitError("The hold could not be stored safely on this device. Nothing was held; check storage and retry.");
+      return;
+    }
     setHolding(true);
     setSubmitError("");
     setSuccessMessage("");
     try {
       const result = await window.api?.pos?.saveTab?.({
-        id: location.state?.tabId || selectedOpenTab?.id || undefined,
+        id: holdTabId,
         expected_version: location.state?.tabVersion ?? selectedOpenTab?.tab_version ?? undefined,
+        // Keep the loaded server version on the payload as well as the
+        // optimistic expected_version guard. The domain uses this field when
+        // retaining the local tab snapshot, so a reopened Bar tab must never
+        // be rewritten as version 1 before the RPC response arrives.
+        tab_version: location.state?.tabVersion ?? selectedOpenTab?.tab_version ?? undefined,
         outlet_id: selectedOutlet.id,
         table_name: serviceMode === "table" ? tableName.trim() || null : null,
         service_mode: servicePayload.service_mode,
@@ -1551,6 +2286,10 @@ export default function HposTerminal() {
       }
       setCart([]);
       setShowPayment(false);
+      writeJsonSetting(
+        holdIntentKey(lodgeId, selectedOutlet.id, (verifiedOperator || user)?.id || null),
+        null,
+      );
       if (sharedTerminalMode) {
         if (tillOperatorPolicy.mode === TILL_OPERATOR_MODES.STRICT) {
           clearTillOperatorState({ notifyMain: true });
@@ -1563,10 +2302,12 @@ export default function HposTerminal() {
       setSuccessMessage(
         `${tableName || tabName || "Check"} held. Resume it from Open Checks.`,
       );
-      const latestTables = await Promise.resolve(
-        window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
-      ).catch(() => null);
-      if (Array.isArray(latestTables)) setTables(latestTables);
+      if (shouldLoadTillTables(barOnly)) {
+        const latestTables = await Promise.resolve(
+          window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
+        ).catch(() => null);
+        if (Array.isArray(latestTables)) setTables(latestTables);
+      }
     } catch (error) {
       setSubmitError(
         error?.message || "Could not hold this check. Nothing was cleared.",
@@ -1626,15 +2367,11 @@ export default function HposTerminal() {
         return;
       }
     }
-    const splitCash = Number(splitCashAmount || 0);
-    if (!retryingSubmit && paymentMethod === "split" && (!(splitCash > 0) || !(splitCash < total))) {
-      setSubmitError(`Enter a cash amount above zero and below ${currency} ${fmt(total)}. The balance will be assigned to ${splitRemainderMethod === "card" ? "card" : "mobile money"}.`);
-      return;
-    }
-    const tenderReference = (method) =>
-      String(paymentReferences[method] || "").trim() || null;
-    const voucherValue = Number(voucherAmount || 0);
-    if (!retryingSubmit && barOnly && !canUseVoucher && (voucherCode.trim() || voucherValue !== 0)) {
+    const voucherAmountInput = String(voucherAmount ?? "").trim();
+    const hasVoucherInput =
+      String(voucherCode || "").trim() ||
+      (voucherAmountInput && Number(voucherAmount) !== 0);
+    if (!retryingSubmit && barOnly && !canUseVoucher && hasVoucherInput) {
       setSubmitError("Voucher tender is not included in the current Bar POS package.");
       return;
     }
@@ -1642,43 +2379,17 @@ export default function HposTerminal() {
       setSubmitError("Tip tender is not included in the current Bar POS package.");
       return;
     }
-    if (!retryingSubmit && voucherValue < 0) {
-      setSubmitError("Voucher amount cannot be negative.");
-      return;
-    }
-    if (!retryingSubmit && voucherValue > total) {
-      setSubmitError("Voucher amount cannot exceed the order total.");
-      return;
-    }
-    const paymentBreakdown = chargeToAccount
-      ? [{ method: "account", amount: total, customer_id: selectedCustomerId || null, reference: null }]
-      : voucherCode.trim() && voucherValue > 0
-        ? [
-            { method: "voucher", amount: voucherValue, code: voucherCode.trim().toUpperCase(), reference: null },
-            ...(total - voucherValue > 0.005
-              ? [{ method: paymentMethod === "split" ? splitRemainderMethod : paymentMethod, amount: Number((total - voucherValue).toFixed(2)), reference: tenderReference(paymentMethod === "split" ? splitRemainderMethod : paymentMethod) }]
-              : []),
-          ]
-      : paymentMethod === "split"
-        ? [
-            { method: "cash", amount: splitCash, reference: null },
-            {
-              method: splitRemainderMethod,
-              amount: Number((total - splitCash).toFixed(2)),
-              reference: tenderReference(splitRemainderMethod),
-            },
-          ]
-        : [
-            {
-              method: paymentMethod,
-              amount: total,
-              reference: tenderReference(paymentMethod),
-            },
-          ];
+    const paymentBreakdown = tenderBreakdownResult.ok
+      ? tenderBreakdownResult.breakdown
+      : [];
+    // Keep this final envelope-level check alongside the pure allocator. The
+    // helper rejects overlong provider references before rows are emitted;
+    // this guard protects the submit boundary if a future caller enriches the
+    // rows after allocation, while references remain optional.
     const missingReferences = paymentBreakdown.filter(
       (tender) =>
         ["card", "mobile_money"].includes(tender.method) &&
-        !tender.reference,
+        String(tender.reference || "").trim().length > 120,
     );
     if (!retryingSubmit && missingReferences.length > 0) {
       const methodLabels = missingReferences
@@ -1687,9 +2398,52 @@ export default function HposTerminal() {
         )
         .join(" and ");
       setSubmitError(
-        `Enter the ${methodLabels} transaction or approval reference before recording payment.`,
+        `The ${methodLabels} reference must be 120 characters or fewer.`,
       );
       return;
+    }
+    if (!retryingSubmit && !tenderBreakdownResult.ok) {
+      setSubmitError(tenderBreakdownResult.error);
+      return;
+    }
+    if (!retryingSubmit) {
+      const payModifierCheck = validateSaleModifierRequirements(cart, modifierGroups, modifiersReady === "ready");
+      if (!payModifierCheck.ok) {
+        setSubmitError(payModifierCheck.error);
+        return;
+      }
+    }
+    // Entitlement gates mirror the hidden controls: without the Growth
+    // add-ons these submissions fail closed instead of charging silently.
+    if (!retryingSubmit && chargeToAccount && !tillEntitlements.canAccounts) {
+      setSubmitError("Customer account charging is not included in the current Bar POS package.");
+      return;
+    }
+    if (!retryingSubmit && selectedPromotion && !tillEntitlements.canPromos) {
+      setSubmitError("Promotions are not included in the current Bar POS package.");
+      return;
+    }
+
+    // Cash received/change never alter the sale allocation: the cash tender
+    // stays exactly the amount due, excess is change (never revenue or tip).
+    // These are tendering aids recorded on the receipt, not ledger fields.
+    let cashTenderMeta = null;
+    if (!retryingSubmit && !chargeToAccount && paymentMethod === "cash") {
+      const tenderCheck = computeCashTender(cashReceived, tenderBreakdownResult.total);
+      if (!tenderCheck.ok) {
+        setSubmitError(
+          tenderCheck.received != null && tenderCheck.due != null
+            ? `Cash received ${currency} ${fmt(tenderCheck.received)} is less than ${currency} ${fmt(tenderCheck.due)} due.`
+            : tenderCheck.error,
+        );
+        return;
+      }
+      cashTenderMeta = tenderCheck.cashTender;
+    } else if (retryingSubmit) {
+      // A retried attempt reuses its original tendering aids; across a full
+      // restart they are unavailable and the receipt shows allocation only
+      // (received/change are never fabricated).
+      cashTenderMeta = pendingEnvelope?.cashTender || null;
     }
 
     const servicePayload = resolvePosServicePayload(serviceMode, {
@@ -1740,32 +2494,63 @@ export default function HposTerminal() {
 
     try {
       let postOrderNotice = "";
-      if (!retryingSubmit) {
-        let tabId = null;
-        let resolvedTabName = servicePayload.tab_name;
-        if (servicePayload.openSession) {
-          const session = await window.api.pos.openTableSession({
-            outlet_id: selectedOutlet.id,
-            table_name: servicePayload.table_name,
-            tab_name: servicePayload.tab_name,
-            waiter_name: user?.name || user?.email || null,
-            waiter_id: user?.id || null,
-            items: orderItems,
+      // Pointer/keyboard activity renews the Shift-mode Till proof in the
+      // background, but payment must not race that renewal. Confirm the
+      // server-side proof at the financial boundary before minting a fresh
+      // order envelope. Recovered attempts deliberately skip this preflight:
+      // create_pos_order_v3 must be allowed to replay a committed operation
+      // under its original key even if the proof has since expired.
+      if (
+        !retryingSubmit &&
+        sharedTerminalMode &&
+        tillOperatorPolicy.mode === TILL_OPERATOR_MODES.SHIFT
+      ) {
+        const renewed = await window.api?.pos?.touchSharedTillOperator?.({
+          outlet_id: selectedOutlet.id,
+          staff_id: verifiedOperator.id,
+          shift_id: currentShift.id,
+        });
+        if (!renewed?.success) {
+          clearTillOperatorState({
+            showUnlock: true,
+            message:
+              renewed?.error ||
+              "Till proof renewal failed. Verify the operator PIN again before taking payment.",
           });
-          if (!session?.success) {
-            if (String(session?.code || "").startsWith("till_operator_") || session?.code === "till_shift_closed" || session?.code === "shift_not_open") {
-              clearTillOperatorState({ showUnlock: true, message: session?.error || "Verify the operator PIN again." });
-            }
-            throw new Error(
-              session?.error ||
-                (serviceMode === "tab"
-                  ? "Could not open the tab."
-                  : "Could not open the table."),
-            );
-          }
-          tabId = session.tab?.id || null;
-          resolvedTabName = session.tab?.tab_name || servicePayload.tab_name;
+          return;
         }
+        if (renewed.session) {
+          setOperatorLastActivityAt(
+            renewed.session.lastActivityAt || Date.now(),
+          );
+          setTillSessionExpiresAt(renewed.session.expiresAt || null);
+        }
+      }
+      if (!retryingSubmit) {
+        // Tab payments resolve and close through create_pos_order_v3 in a
+        // single authorized call: the server locks the resumed tab (or
+        // creates one from the tab name), records the order, and closes the
+        // tab in the same transaction. A separate openTableSession call here
+        // would consume a second Strict Till authorization and fail the
+        // payment, so only the resumed tab id is forwarded when known.
+        // A sale opened from an existing tab must retain that exact tab_id:
+        // anything else (lost link, changed check, counter mode) fails
+        // closed here, before anything is journalled or sent.
+        const tabPayment = resolveResumedTabPayment({
+          resumeIntent: location.state?.resumeIntent === true,
+          resumeTabId: location.state?.tabId || null,
+          resumeTabVersion: location.state?.tabVersion ?? null,
+          selectedTab: selectedOpenTab
+            ? { id: selectedOpenTab.id, tab_version: selectedOpenTab.tab_version }
+            : null,
+          settlesTab: servicePayload.openSession,
+        });
+        if (!tabPayment.ok) {
+          setSubmitError(tabPayment.error);
+          return;
+        }
+        const tabId = tabPayment.tabId;
+        const resolvedTabName = servicePayload.tab_name;
 
         const walkInName =
           selectedCustomer?.name ||
@@ -1799,7 +2584,7 @@ export default function HposTerminal() {
           tax_rate: taxRate * 100,
           tax_total: tax,
           tip_total: tipTotal,
-          total,
+          total: tenderBreakdownResult.total,
           service_mode: servicePayload.service_mode,
           table_name: servicePayload.table_name,
           delivery_address:
@@ -1808,7 +2593,7 @@ export default function HposTerminal() {
             serviceMode === "delivery" ? deliveryNotes.trim() || null : null,
           customer_account_charge:
             chargeToAccount && selectedCustomerId
-              ? { customer_id: selectedCustomerId, amount: total }
+              ? { customer_id: selectedCustomerId, amount: tenderBreakdownResult.total }
               : null,
           tab_name: resolvedTabName,
           waiter_name: servicePayload.openSession
@@ -1825,6 +2610,8 @@ export default function HposTerminal() {
             (verifiedOperator || user)?.email ||
             null,
           tab_id: tabId,
+          expected_tab_version: tabPayment.expectedVersion,
+          resolve_tab: servicePayload.openSession,
           shift_id: currentShift?.id || null,
           outlet_id: selectedOutlet.id,
           outlet_name: selectedOutlet.name,
@@ -1841,6 +2628,7 @@ export default function HposTerminal() {
           orderId: submitIntentId,
           createdAtClient,
           payload: orderPayload,
+          cashTender: cashTenderMeta,
         };
       }
       const result = await window.api.pos.createOrder(orderPayload);
@@ -1866,6 +2654,13 @@ export default function HposTerminal() {
       submitEnvelopeRef.current = null;
       setRecoveredAttempt(null);
       setSubmitNotice("");
+      if (servicePayload.openSession) {
+        // The paid tab is closed server-side. Drop the resume state so a
+        // follow-up sale resolves a fresh tab instead of reusing a closed
+        // id. This applies to recovered replays too: replaying the stored
+        // receipt must not leave a stale resume behind.
+        navigate(`${location.pathname}${location.search}`, { replace: true, state: {} });
+      }
       const hardware = await window.api?.pos
         ?.getHardwareSettings?.()
         .catch(() => null);
@@ -1883,9 +2678,27 @@ export default function HposTerminal() {
             created_at: result.server_received_at || result.created_at,
             pos_order_items: Array.isArray(result.items) ? result.items : [],
           };
+      // Display-only tendering aids for this terminal's reprints. Separate
+      // fields from the ledger allocation by construction.
+      const receiptWithCash =
+        cashTenderMeta && cashTenderMeta.cash_received != null
+          ? {
+              ...receiptOrder,
+              cash_received: cashTenderMeta.cash_received,
+              change_due: cashTenderMeta.change_due,
+            }
+          : receiptOrder;
+      // This terminal's last receipt for independent reprinting (print
+      // failure never re-submits payment). Keyed per outlet; absent
+      // received/change simply renders allocation-only.
+      writeJsonSetting(
+        lastReceiptKey(lodgeId, selectedOutlet.id),
+        receiptWithCash,
+      );
+      setLastReceipt(receiptWithCash);
       setCompletedReceipt({
         order: {
-          ...receiptOrder,
+          ...receiptWithCash,
           _open_drawer_on_print:
             Array.isArray(receiptOrder.payment_breakdown) &&
             receiptOrder.payment_breakdown.some((row) => row.method === "cash") &&
@@ -1893,7 +2706,7 @@ export default function HposTerminal() {
         },
         autoPrint: hardware?.auto_print_receipts === true,
       });
-      if (!retryingSubmit && selectedCustomerId && !result.offline) {
+      if (!retryingSubmit && selectedCustomerId && !result.offline && tillEntitlements.canAccounts) {
         // Loyalty is a post-sale repair path, so it may only use the
         // server-confirmed sale total. Never derive points from the client cart.
         const points = Number.isFinite(Number(result.total)) ? Math.floor(Number(result.total) / 10) : 0;
@@ -1920,6 +2733,12 @@ export default function HposTerminal() {
           }
         }
       }
+      // The payment stands even when the follow-up tab close fails (e.g. the
+      // tab belongs to another waiter). Surface it so the open tab is not a
+      // silent surprise in Open Tabs.
+      if (result?.tab_close_warning) {
+        postOrderNotice += ` Payment recorded, but the tab did not close and is still open: ${result.tab_close_warning}`;
+      }
       setCart([]);
       setSelectedCustomerId("");
       setDeliveryAddress("");
@@ -1929,6 +2748,7 @@ export default function HposTerminal() {
       setVoucherAmount("");
       setTipAmount("");
       setSplitCashAmount("");
+      setCashReceived("");
       setPaymentReferences({ card: "", mobile_money: "" });
       setShowPayment(false);
       if (sharedTerminalMode) {
@@ -1947,10 +2767,12 @@ export default function HposTerminal() {
             ? "Order saved locally and waiting to sync."
             : "Order sent and payment recorded.") + postOrderNotice,
       );
-      const latestTables = await Promise.resolve(
-        window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
-      ).catch(() => null);
-      if (Array.isArray(latestTables)) setTables(latestTables);
+      if (shouldLoadTillTables(barOnly)) {
+        const latestTables = await Promise.resolve(
+          window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
+        ).catch(() => null);
+        if (Array.isArray(latestTables)) setTables(latestTables);
+      }
     } catch (error) {
       setSubmitError(
         error?.message || "Could not complete this order. Nothing was cleared.",
@@ -1968,12 +2790,15 @@ export default function HposTerminal() {
     currentShift?.id,
     deliveryAddress,
     deliveryNotes,
+    modifierGroups,
+    modifiersReady,
     paymentMethod,
     paymentReferences,
     splitCashAmount,
     splitRemainderMethod,
     sharedTerminalMode,
     tillOperatorPolicy,
+    tillEntitlements,
     tipTotal,
     selectedCustomer?.name,
     selectedCustomerId,
@@ -1986,6 +2811,7 @@ export default function HposTerminal() {
     tabName,
     tax,
     taxRate,
+    tenderBreakdownResult,
     tillSessionExpiresAt,
     total,
     user?.email,
@@ -1994,6 +2820,7 @@ export default function HposTerminal() {
     verifiedOperator,
     voucherAmount,
     voucherCode,
+    cashReceived,
   ]);
 
   return (
@@ -2109,24 +2936,26 @@ export default function HposTerminal() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: "4px" }}>
+            <div style={{ display: "flex", gap: "8px" }}>
               {serviceModeOptions.map((mode) => (
                 <button
                   key={mode.id}
                   onClick={() => setServiceMode(mode.id)}
+                  aria-pressed={serviceMode === mode.id}
                   style={{
-                    padding: "5px 10px",
-                    borderRadius: "6px",
+                    minHeight: "44px",
+                    padding: "10px 14px",
+                    borderRadius: "10px",
                     border: "1px solid",
-                    fontSize: "11px",
-                    fontWeight: 600,
+                    fontSize: "13px",
+                    fontWeight: 700,
                     cursor: "pointer",
                     borderColor:
                       serviceMode === mode.id
                         ? "#c95635"
                         : "rgba(55,70,57,.14)",
                     background: serviceMode === mode.id ? "#c95635" : "#fffdf8",
-                    color: serviceMode === mode.id ? "#fff" : "#526157",
+                    color: serviceMode === mode.id ? "#fff" : "#24362c",
                   }}
                 >
                   {mode.emoji ? `${mode.emoji} ${mode.label}` : mode.label}
@@ -2168,12 +2997,78 @@ export default function HposTerminal() {
           <div
             style={{
               display: "flex",
+              flexWrap: "wrap",
               gap: "8px",
               padding: "10px 16px",
               borderBottom: "1px solid rgba(55,70,57,.08)",
               background: "#f6efe5",
             }}
           >
+            {lastNotFoundBarcode && (
+              <div
+                role="status"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flex: "1 1 100%",
+                  padding: "8px 10px",
+                  borderRadius: "9px",
+                  background: "#fff8ea",
+                  border: "1px solid rgba(166, 118, 42, 0.35)",
+                  color: "#6b4a0b",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  Barcode {lastNotFoundBarcode} isn&apos;t a product yet.
+                </span>
+                {canCreateProduct && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const code = lastNotFoundBarcode;
+                      setLastNotFoundBarcode(null);
+                      navigate("/hpos/menu", {
+                        state: { createBarcode: code },
+                      });
+                    }}
+                    style={{
+                      minHeight: "44px",
+                      padding: "0 12px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(166, 118, 42, 0.45)",
+                      background: "#fff",
+                      color: "#6b4a0b",
+                      fontSize: "12px",
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Create product
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label="Dismiss unknown barcode"
+                  onClick={() => setLastNotFoundBarcode(null)}
+                  style={{
+                    minWidth: "44px",
+                    minHeight: "44px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "transparent",
+                    color: "#6b4a0b",
+                    fontSize: "16px",
+                    cursor: "pointer",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             <select
               value={selectedOutlet?.id || ""}
               onChange={(event) => chooseTerminalOutlet(event.target.value)}
@@ -2246,19 +3141,24 @@ export default function HposTerminal() {
             )}
             {serviceMode === "tab" && (
               <datalist id="hpos-open-tab-suggestions">
-                {tables
-                  .filter((table) => table.active !== false)
-                  .map((table) => (
-                    <option
-                      key={table.id || table.name}
-                      value={table.name || table.tab_name || ""}
-                    />
-                  ))}
+                {barOnly
+                  ? openTabNames.map((name) => (
+                      <option key={name} value={name} />
+                    ))
+                  : tables
+                      .filter((table) => table.active !== false)
+                      .map((table) => (
+                        <option
+                          key={table.id || table.name}
+                          value={table.name || table.tab_name || ""}
+                        />
+                      ))}
               </datalist>
             )}
             {(serviceMode === "takeaway" ||
               serviceMode === "delivery" ||
-              serviceMode === "counter") && (
+              serviceMode === "counter") &&
+              tillEntitlements.canAccounts && (
               <select
                 value={selectedCustomerId}
                 onChange={(event) => {
@@ -2476,15 +3376,17 @@ export default function HposTerminal() {
               <button
                 key={category}
                 onClick={() => setActiveCategory(category)}
+                aria-pressed={activeCategory === category}
                 style={{
                   whiteSpace: "nowrap",
-                  padding: "8px 13px",
+                  minHeight: "44px",
+                  padding: "12px 18px",
                   borderRadius: 999,
                   border: `1px solid ${activeCategory === category ? "#c95635" : "rgba(55,70,57,.14)"}`,
                   background:
                     activeCategory === category ? "#c95635" : "#fffdf8",
-                  color: activeCategory === category ? "#fff" : "#526157",
-                  fontSize: 12,
+                  color: activeCategory === category ? "#fff" : "#24362c",
+                  fontSize: 14,
                   fontWeight: 700,
                   cursor: "pointer",
                 }}
@@ -2531,30 +3433,350 @@ export default function HposTerminal() {
                 No items found
               </div>
             ) : (
-              filtered.map((item) => (
-                <ProductCard
-                  key={item.id}
-                  item={item}
-                  onAdd={addToCart}
-                  stockSetupRequired={hasStockSetupIssue(item)}
-                />
-              ))
+              filtered.map((item) => {
+                const issue = getStockIssue(item);
+                return (
+                  <ProductCard
+                    key={item.id}
+                    item={item}
+                    onAdd={addToCart}
+                    onToggleFavourite={toggleFavourite}
+                    isFavourite={favouriteIdSet.has(item.id)}
+                    stockSetupRequired={issue === "issue"}
+                    statusUnknown={issue === "unknown"}
+                  />
+                );
+              })
             )}
           </div>
+          {narrowViewport && (
+          <button
+            type="button"
+            onClick={() => setBasketOpen((open) => !open)}
+            aria-expanded={basketVisible}
+            aria-label={basketOpen ? "Hide sale basket" : "Show sale basket"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              padding: "12px 16px",
+              minHeight: "56px",
+              borderTop: "1px solid rgba(55,70,57,.14)",
+              background: "#24362c",
+              color: "#fffdf8",
+              fontSize: "15px",
+              fontWeight: 800,
+              cursor: "pointer",
+              borderLeft: "none",
+              borderRight: "none",
+              borderBottom: "none",
+              width: "100%",
+            }}
+          >
+            <span>
+              {serviceMode === "tab" ? "Tab" : barOnly ? "Sale" : "Order"} · {currency} {fmt(total)}
+              {itemCount > 0 ? ` · ${itemCount} item${itemCount === 1 ? "" : "s"}` : ""}
+            </span>
+            <span aria-hidden="true">{basketOpen ? "▾" : "▴"}</span>
+          </button>
+          )}
         </div>
         {/* Right: Order Panel */}
         <div
-          style={{
-            width: "372px",
-            flexShrink: 0,
-            background: "rgba(255,250,242,.96)",
-            borderLeft: "1px solid rgba(55,70,57,.14)",
-            boxShadow: "-12px 0 32px rgba(47,58,47,.08)",
-            display: "flex",
-            flexDirection: "column",
-          }}
+          style={
+            narrowViewport
+              ? {
+                  position: "fixed",
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: "min(430px, 94vw)",
+                  zIndex: 1500,
+                  transform: basketVisible ? "none" : "translateX(105%)",
+                  transition: "transform 180ms ease",
+                  background: "rgba(255,250,242,.98)",
+                  borderLeft: "1px solid rgba(55,70,57,.14)",
+                  boxShadow: "-16px 0 48px rgba(47,58,47,.22)",
+                  display: "flex",
+                  flexDirection: "column",
+                }
+              : {
+                  width: "372px",
+                  flexShrink: 0,
+                  background: "rgba(255,250,242,.96)",
+                  borderLeft: "1px solid rgba(55,70,57,.14)",
+                  boxShadow: "-12px 0 32px rgba(47,58,47,.08)",
+                  display: "flex",
+                  flexDirection: "column",
+                }
+          }
         >
+          {narrowViewport && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "8px 12px 0",
+              }}
+            >
+              <span style={{ fontSize: "12px", fontWeight: 800, color: "#526157" }}>
+                Sale basket
+              </span>
+              <button
+                type="button"
+                onClick={() => setBasketOpen(false)}
+                aria-label="Hide sale basket"
+                style={{
+                  minWidth: "44px",
+                  minHeight: "44px",
+                  borderRadius: "10px",
+                  border: "1px solid rgba(55,70,57,.2)",
+                  background: "#fffdf8",
+                  color: "#24362c",
+                  fontSize: "16px",
+                  cursor: "pointer",
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {/* Order Header */}
+          {draftPersistFailed && (
+            <div
+              role="alert"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "rgba(191, 72, 45, 0.12)",
+                border: "1px solid rgba(191, 72, 45, 0.32)",
+                color: "#8d2f24",
+                fontSize: "13px",
+                fontWeight: 700,
+              }}
+            >
+              This terminal cannot store the unsent basket. Complete, hold, or
+              pay for this sale promptly — it will not survive a restart.
+            </div>
+          )}
+          {barOnly && stockReadiness.status === "stale" && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "linear-gradient(135deg, #fdf3e3, #fffaf0)",
+                border: "1px solid rgba(166, 118, 42, 0.35)",
+                color: "#7a5710",
+                fontSize: "13px",
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <span>
+                Stock status from{" "}
+                {stockReadiness.cachedAt
+                  ? new Date(stockReadiness.cachedAt).toLocaleString()
+                  : "an earlier check"}{" "}
+                — refresh when online.
+              </span>
+              <button
+                type="button"
+                onClick={refreshReadiness}
+                style={{
+                  minHeight: "44px",
+                  padding: "0 14px",
+                  borderRadius: "9px",
+                  border: "1px solid rgba(166, 118, 42, 0.45)",
+                  background: "#fff",
+                  color: "#6b4a0b",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+          {barOnly && stockReadiness.status === "failed" && (
+            <div
+              role="alert"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "rgba(191, 72, 45, 0.12)",
+                border: "1px solid rgba(191, 72, 45, 0.32)",
+                color: "#8d2f24",
+                fontSize: "13px",
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <span>Stock status unavailable — selling is paused.</span>
+              <button
+                type="button"
+                onClick={refreshReadiness}
+                style={{
+                  minHeight: "44px",
+                  padding: "0 14px",
+                  borderRadius: "9px",
+                  border: "1px solid rgba(191, 72, 45, 0.4)",
+                  background: "#fff",
+                  color: "#8d2f24",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+          {resumedTabInfo && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background:
+                  resumedTabInfo.found && resumedTabInfo.versionOk
+                    ? "rgba(47, 107, 66, 0.10)"
+                    : "rgba(191, 72, 45, 0.12)",
+                border:
+                  resumedTabInfo.found && resumedTabInfo.versionOk
+                    ? "1px solid rgba(47, 107, 66, 0.30)"
+                    : "1px solid rgba(191, 72, 45, 0.32)",
+                color:
+                  resumedTabInfo.found && resumedTabInfo.versionOk
+                    ? "#2f6b42"
+                    : "#8d2f24",
+                fontSize: "13px",
+                fontWeight: 700,
+                lineHeight: 1.4,
+              }}
+            >
+              {resumedTabInfo.found && resumedTabInfo.versionOk ? (
+                <span>
+                  Ready to continue — {resumedTabInfo.name}
+                  {resumedTabInfo.waiter ? ` · ${resumedTabInfo.waiter}` : ""}
+                </span>
+              ) : (
+                <span>
+                  Tab changed — refresh required. Re-open it from Open tabs
+                  before taking payment.
+                </span>
+              )}
+            </div>
+          )}
+          {pendingRestore && cart.length === 0 && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "12px",
+                borderRadius: "10px",
+                background: "linear-gradient(135deg, #fdf3e3, #fffaf0)",
+                border: "1px solid rgba(166, 118, 42, 0.35)",
+                color: "#7a5710",
+                fontSize: "13px",
+                fontWeight: 700,
+                lineHeight: 1.4,
+              }}
+            >
+              <span>
+                An unsent basket from{" "}
+                {pendingRestore.draft?.savedAt
+                  ? new Date(pendingRestore.draft.savedAt).toLocaleString()
+                  : "earlier"}{" "}
+                is still on this terminal. Restore it or discard it.
+              </span>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={applyRestore}
+                  style={{
+                    minHeight: "44px",
+                    padding: "0 14px",
+                    borderRadius: "9px",
+                    border: "1px solid rgba(166, 118, 42, 0.45)",
+                    background: "#fff8ea",
+                    color: "#6b4a0b",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Restore basket
+                </button>
+                <button
+                  type="button"
+                  onClick={discardRestore}
+                  style={{
+                    minHeight: "44px",
+                    padding: "0 14px",
+                    borderRadius: "9px",
+                    border: "1px solid rgba(55,70,57,.2)",
+                    background: "#fff",
+                    color: "#526157",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+          {lastRemoved && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "rgba(55,70,57,.07)",
+                border: "1px solid rgba(55,70,57,.16)",
+                color: "#24362c",
+                fontSize: "13px",
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <span>Removed {lastRemoved.line.item_name}</span>
+              <button
+                type="button"
+                onClick={undoRemove}
+                style={{
+                  minHeight: "44px",
+                  padding: "0 14px",
+                  borderRadius: "9px",
+                  border: "1px solid rgba(55,70,57,.25)",
+                  background: "#fffdf8",
+                  color: "#24362c",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                Undo
+              </button>
+            </div>
+          )}
           <div
             style={{
               padding: "16px 18px",
@@ -2585,12 +3807,35 @@ export default function HposTerminal() {
                   {itemCount}
                 </span>
               )}
+              {openTabCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => navigate("/hpos/checks")}
+                  aria-label={`${openTabCount} open tabs. Review open tabs.`}
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 800,
+                    minHeight: "44px",
+                    padding: "0 10px",
+                    borderRadius: "999px",
+                    border: "1px solid rgba(53,110,216,.3)",
+                    background: "rgba(53,110,216,.08)",
+                    color: "#356ed8",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Open tabs · {openTabCount}
+                </button>
+              )}
             </div>
             {cart.length > 0 && (
               <button
-                onClick={() => setCart([])}
+                onClick={clearCart}
                 style={{
-                  fontSize: "11px",
+                  fontSize: "13px",
+                  minHeight: "44px",
+                  padding: "0 12px",
                   color: "#b84a38",
                   background: "none",
                   border: "none",
@@ -2650,6 +3895,28 @@ export default function HposTerminal() {
                     ? "Counter sells pay immediately. Open tab holds drinks under a name. Scan a barcode or tap a drink."
                     : "Choose a table or service mode, then tap menu items to build the order."}
                 </p>
+                {lastReceipt && !showPayment && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCompletedReceipt({ order: lastReceipt, autoPrint: false })
+                    }
+                    style={{
+                      marginTop: "14px",
+                      minHeight: "48px",
+                      padding: "0 18px",
+                      borderRadius: "10px",
+                      border: "1px solid rgba(55,70,57,.2)",
+                      background: "#fffdf8",
+                      color: "#24362c",
+                      fontSize: "14px",
+                      fontWeight: 800,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Reprint last receipt
+                  </button>
+                )}
               </div>
             ) : (
               cart.map((line) => (
@@ -2657,9 +3924,16 @@ export default function HposTerminal() {
                   key={line.id}
                   line={line}
                   onUpdateQty={updateQty}
+                  onSetQty={setQty}
                   onRemove={removeLine}
                   onCustomize={(entry) => setModifierLineId(entry.id)}
                   currency={currency}
+                  highlight={lastAdded?.key != null && line.menu_item_id === lastAdded.key}
+                  highlightFresh={
+                    lastAdded?.key != null &&
+                    line.menu_item_id === lastAdded.key &&
+                    Date.now() - Number(lastAdded.at || 0) < 1500
+                  }
                 />
               ))
             )}
@@ -2759,7 +4033,7 @@ export default function HposTerminal() {
           {cart.length > 0 && (
             <div style={{ borderTop: "1px solid rgba(55,70,57,.11)" }}>
               <div style={{ padding: "12px 16px" }}>
-                {eligiblePromotions.length > 0 && (
+                {eligiblePromotions.length > 0 && tillEntitlements.canPromos && (
                   <label
                     style={{
                       display: "block",
@@ -2944,25 +4218,19 @@ export default function HposTerminal() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        gap: "6px",
-                        padding: "12px",
-                        borderRadius: "10px",
+                        gap: "8px",
+                        minHeight: "56px",
+                        padding: "14px 12px",
+                        borderRadius: "12px",
                         border: `1px solid ${pm.color}20`,
                         background: `${pm.color}08`,
                         color: pm.color,
-                        fontSize: "13px",
+                        fontSize: "15px",
                         fontWeight: 700,
                         cursor: "pointer",
-                        transition: "all 120ms ease",
                       }}
-                      onMouseEnter={(e) =>
-                        (e.currentTarget.style.background = `${pm.color}15`)
-                      }
-                      onMouseLeave={(e) =>
-                        (e.currentTarget.style.background = `${pm.color}08`)
-                      }
                     >
-                      <pm.icon size={16} />
+                      <pm.icon size={20} />
                       {pm.label}
                     </button>
                   ))}
@@ -2973,13 +4241,105 @@ export default function HposTerminal() {
                       setSplitCashAmount("");
                       setShowPayment(true);
                     }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", padding: "12px", borderRadius: "10px", border: "1px solid rgba(109,76,130,.18)", background: "rgba(109,76,130,.06)", color: "#6d4c82", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", minHeight: "56px", padding: "14px 12px", borderRadius: "12px", border: "1px solid rgba(109,76,130,.18)", background: "rgba(109,76,130,.06)", color: "#6d4c82", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}
                   >
-                    <WalletCards size={16} /> Split payment
+                    <WalletCards size={20} /> Split payment
                   </button>
                 </div>
               ) : (
                 <div style={{ padding: "0 16px 14px" }}>
+                  {/* Quick cash only tenders the sale: the cash allocation
+                      stays exactly the amount due; received/change are
+                      operator tendering aids recorded on the receipt, never
+                      revenue or tips. */}
+                  {!chargeToAccount && paymentMethod === "cash" && (
+                    <div style={{ marginBottom: "10px" }}>
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          color: "#5d4b52",
+                          marginBottom: "6px",
+                        }}
+                      >
+                        Cash received
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(4, 1fr)",
+                          gap: "8px",
+                          marginBottom: "8px",
+                        }}
+                      >
+                        {[
+                          { label: "Exact", value: total },
+                          ...QUICK_CASH_AMOUNTS.map((amount) => ({
+                            label: `P${amount}`,
+                            value: amount,
+                          })),
+                        ].map((option) => (
+                          <button
+                            key={option.label}
+                            type="button"
+                            onClick={() => setCashReceived(String(roundCash(option.value)))}
+                            style={{
+                              minHeight: "48px",
+                              borderRadius: "9px",
+                              border: "1px solid rgba(55,70,57,.18)",
+                              background: "#fff",
+                              color: "#24362c",
+                              fontSize: "14px",
+                              fontWeight: 800,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        inputMode="decimal"
+                        value={cashReceived}
+                        onChange={(event) => setCashReceived(event.target.value)}
+                        placeholder="Or enter amount received"
+                        aria-label="Cash amount received"
+                        style={{
+                          display: "block",
+                          boxSizing: "border-box",
+                          width: "100%",
+                          border: "1px solid rgba(55,70,57,.18)",
+                          borderRadius: "8px",
+                          padding: "9px 10px",
+                          minHeight: "44px",
+                          fontSize: "14px",
+                          background: "#fff",
+                        }}
+                      />
+                      {String(cashReceived).trim() !== "" &&
+                        Number.isFinite(Number(cashReceived)) && (
+                          <div
+                            role="status"
+                            style={{
+                              marginTop: "6px",
+                              fontSize: "13px",
+                              fontWeight: 800,
+                              color:
+                                roundCash(Number(cashReceived) - total) < 0
+                                  ? "#8d2f24"
+                                  : "#2f6b42",
+                            }}
+                          >
+                            {roundCash(Number(cashReceived) - total) < 0
+                              ? `Still due ${currency} ${fmt(total - roundCash(Number(cashReceived)))}`
+                              : `Change due ${currency} ${fmt(roundCash(Number(cashReceived) - total))}`}
+                          </div>
+                        )}
+                    </div>
+                  )}
                   {canUseTips && <label
                     style={{
                       display: "block",
@@ -3028,10 +4388,9 @@ export default function HposTerminal() {
                         </select>
                       </label>
                       <label style={{ gridColumn: "1 / -1", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
-                        {splitRemainderMethod === "mobile_money" ? "Mobile money reference" : "Card approval/reference"} *
+                        {splitRemainderMethod === "mobile_money" ? "Mobile money reference (optional)" : "Card approval/reference (optional)"}
                         <input
                           type="text"
-                          required
                           maxLength={120}
                           value={paymentReferences[splitRemainderMethod] || ""}
                           onChange={(event) =>
@@ -3048,10 +4407,9 @@ export default function HposTerminal() {
                   )}
                   {!chargeToAccount && paymentMethod !== "cash" && paymentMethod !== "split" && (
                     <label style={{ display: "block", marginBottom: "10px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
-                      {paymentMethod === "mobile_money" ? "Mobile money reference" : "Card approval/reference"} *
+                      {paymentMethod === "mobile_money" ? "Mobile money reference (optional)" : "Card approval/reference (optional)"}
                       <input
                         type="text"
-                        required
                         maxLength={120}
                         value={paymentReferences[paymentMethod] || ""}
                         onChange={(event) =>
@@ -3098,22 +4456,70 @@ export default function HposTerminal() {
                         color: "#c95635",
                         fontVariantNumeric: "tabular-nums",
                       }}
+                   >
+                     {currency} {fmt(total)}
+                   </div>
+                  </div>
+                  <div
+                    aria-label="Tender breakdown"
+                    style={{
+                      marginTop: 8,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      background: "rgba(255,255,255,.76)",
+                      border: "1px solid rgba(55,70,57,.12)",
+                      fontSize: 12,
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#526157",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        marginBottom: 5,
+                      }}
                     >
-                      {currency} {fmt(total)}
+                      Recorded tender breakdown
                     </div>
+                    {tenderBreakdownResult.ok ? (
+                      tenderBreakdownResult.breakdown.map((tender, index) => (
+                        <div
+                          key={`${tender.method}-${index}`}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                            color: "#24362c",
+                            padding: "2px 0",
+                          }}
+                        >
+                          <span>
+                            {tenderLabel(tender.method)}
+                            {tender.code ? ` · ${tender.code}` : ""}
+                            {tender.reference ? ` · Ref ${tender.reference}` : ""}
+                          </span>
+                          <strong>{currency} {fmt(tender.amount)}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <span style={{ color: "#8d2f24" }}>
+                        {tenderBreakdownResult.error}
+                      </span>
+                    )}
                   </div>
                   <button
                     onClick={completeOrder}
-                    disabled={submitting}
+                    disabled={submitting || !tenderBreakdownResult.ok}
                     style={{
                       width: "100%",
-                      padding: "12px",
+                      minHeight: "60px",
+                      padding: "16px 12px",
                       marginTop: "8px",
-                      borderRadius: "10px",
+                      borderRadius: "12px",
                       border: "none",
                       background: "linear-gradient(135deg, #497a8b, #315866)",
                       color: "#fffdf8",
-                      fontSize: "14px",
+                      fontSize: "16px",
                       fontWeight: 800,
                       cursor: "pointer",
                       boxShadow: "0 8px 22px rgba(49, 88, 102, 0.24)",
@@ -3194,7 +4600,8 @@ export default function HposTerminal() {
                 }}
               >
                 Choose the opening cash float. Sales from this terminal will
-                then be included in your cash-up.
+                then be included in your cash-up. Enter 0.00 explicitly when
+                you start with no cash.
               </p>
               <label
                 style={{
@@ -3255,7 +4662,7 @@ export default function HposTerminal() {
                 </button>
                 <button
                   type="button"
-                  disabled={shiftBusy || !selectedOutlet?.id}
+                  disabled={shiftBusy || !selectedOutlet?.id || String(shiftFloat ?? "").trim() === ""}
                   onClick={openShift}
                   style={{
                     padding: "9px 14px",

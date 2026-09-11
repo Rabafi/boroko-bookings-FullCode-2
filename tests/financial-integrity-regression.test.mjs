@@ -43,7 +43,8 @@ async function run() {
   )
   assert.match(createBooking, /p_deposit_amount:\s*deposit/)
   assert.doesNotMatch(createBooking, /await updateBookingPayment\(/)
-  assert.match(createBooking, /_financial_estimate:\s*deposit > 0/)
+  assert.match(createBooking, /_financial_estimate:\s*true/)
+  assert.match(createBooking, /\.\.\.optimisticPayment/)
 
   const quotationConversion = functionSection(
     bookings,
@@ -52,7 +53,9 @@ async function run() {
   )
   assert.match(quotationConversion, /p_deposit_amount:\s*deposit/)
   assert.doesNotMatch(quotationConversion, /await updateBookingPayment\(/)
-  assert.match(quotationConversion, /_financial_estimate:\s*deposit > 0/)
+  assert.match(quotationConversion, /_financial_estimate:\s*true/)
+  assert.match(quotationConversion, /\.\.\.optimisticPayment/)
+  assert.match(bookings, /function buildOfflineBookingFinancialState[\s\S]*_estimated_total_amount[\s\S]*_estimated_amount_paid[\s\S]*_estimated_payment_status/)
 
   assert.match(inventory, /const adjustmentId = operationId \|\| randomUUID\(\)/)
   assert.match(inventory, /p_adjustment_id:\s*adjustmentId/)
@@ -176,7 +179,7 @@ async function run() {
   assert.doesNotMatch(customerCreditJs, /\.from\('customer_credit_ledger'\)\.update/, 'Must not update customer_credit_ledger directly')
 
   // Reschedule must use RPC
-  assert.match(bookings, /\.rpc\('reschedule_booking'/, 'Reschedule must use RPC')
+  assert.match(bookings, /\.rpc\('reschedule_accommodation_booking'/, 'Reschedule must use the accommodation-aware RPC')
   assert.doesNotMatch(
     bookings,
     /rescheduleBooking[\s\S]*?\.from\('bookings'\)[\s\S]*?\.update\(/,

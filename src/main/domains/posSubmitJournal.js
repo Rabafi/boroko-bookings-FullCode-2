@@ -232,8 +232,13 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
   return { attempt, reused: false, conflict: false, error: null }
 }
 
-export function commitPosSubmitAttempt(submitIntentId) {
-  const normalizedIntentId = asId(submitIntentId)
+export function hasPosSubmitAttempt(submitIntentId) {
+  const normalizedIntentId = asId(submitIntentId);
+  if (!normalizedIntentId) return false;
+  return findAttempt(readAttempts(), normalizedIntentId) !== null;
+}
+
+export function commitPosSubmitAttempt(submitIntentId) {  const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return null
   const attempts = readAttempts()
   const existing = findAttempt(attempts, normalizedIntentId)

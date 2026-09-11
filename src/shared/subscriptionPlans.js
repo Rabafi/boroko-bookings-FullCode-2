@@ -259,6 +259,51 @@ export function getPlanUsageLimits(plan) {
   return PLAN_USAGE_LIMITS[normalizeSubscriptionPlan(plan)]
 }
 
+const USAGE_LIMIT_FIELD_ALIASES = {
+  monthlyBookings: ['monthlyBookings', 'monthly_bookings'],
+  monthlyBookingsGrace: ['monthlyBookingsGrace', 'monthly_bookings_grace', 'booking_grace'],
+  rooms: ['rooms'],
+  users: ['users']
+}
+
+function readEffectiveLimit(source, aliases) {
+  if (!source || typeof source !== 'object') return { found: false, value: undefined }
+  for (const alias of aliases) {
+    if (Object.prototype.hasOwnProperty.call(source, alias)) {
+      return { found: true, value: source[alias] }
+    }
+  }
+  return { found: false, value: undefined }
+}
+
+/**
+ * Resolve the capacity contract callers must enforce. Package limits remain
+ * the baseline, while an authoritative entitlement may replace individual
+ * values through Command Central. A present null means unlimited; a missing
+ * key means "use the package default".
+ */
+export function getEffectiveUsageLimits(entitlement = {}, fallbackPlan = null) {
+  const plan = fallbackPlan || entitlement?.plan || entitlement?.subscription_plan || 'Starter'
+  const resolved = { ...getPlanUsageLimits(plan) }
+  const effective = entitlement?.effective_limits
+    || entitlement?.effectiveLimits
+    || entitlement?.usage_limits
+    || entitlement?.usageLimits
+    || null
+
+  for (const [field, aliases] of Object.entries(USAGE_LIMIT_FIELD_ALIASES)) {
+    const candidate = readEffectiveLimit(effective, aliases)
+    if (!candidate.found) continue
+    if (candidate.value == null) {
+      resolved[field] = null
+      continue
+    }
+    const numeric = Number(candidate.value)
+    if (Number.isFinite(numeric) && numeric >= 0) resolved[field] = Math.floor(numeric)
+  }
+  return resolved
+}
+
 export function isUnlimited(value) {
   return value == null || value === Infinity
 }
@@ -569,8 +614,7 @@ export function trackUpgradeIntent({
   return event
 }
 
-export function canCreateBooking({ plan, used } = {}) {
-  const limits = getPlanUsageLimits(plan)
+export function canCreateBooking({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatusWithGrace({
     used,
     limit: limits.monthlyBookings,
@@ -578,13 +622,11 @@ export function canCreateBooking({ plan, used } = {}) {
   })
 }
 
-export function canCreateRoom({ plan, used } = {}) {
-  const limits = getPlanUsageLimits(plan)
+export function canCreateRoom({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatus({ used, limit: limits.rooms })
 }
 
-export function canCreateUser({ plan, used } = {}) {
-  const limits = getPlanUsageLimits(plan)
+export function canCreateUser({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatus({ used, limit: limits.users })
 }
 
@@ -633,10 +675,11 @@ function resolveUsageValue(candidate, fallback = 0) {
 export function evaluateBookingCreationAllowance({
   plan,
   targetMonthUsed = 0,
-  createdMonthUsed = 0
+  createdMonthUsed = 0,
+  limits = getPlanUsageLimits(plan)
 } = {}) {
-  const targetMonthStatus = canCreateBooking({ plan, used: targetMonthUsed })
-  const creationMonthBenchmark = canCreateBooking({ plan, used: createdMonthUsed })
+  const targetMonthStatus = canCreateBooking({ plan, used: targetMonthUsed, limits })
+  const creationMonthBenchmark = canCreateBooking({ plan, used: createdMonthUsed, limits })
   const creationMonthStatus = {
     ...creationMonthBenchmark,
     state: 'informational',

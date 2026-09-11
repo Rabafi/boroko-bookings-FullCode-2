@@ -43,6 +43,8 @@ import { getAllBookings } from './bookings.js';
 import { getAllRooms } from './rooms.js';
 import { getAllCustomers } from './customers.js';
 import { getInventoryItems } from './inventory.js';
+import { getRuntimeProductId } from '../../shared/productIdentity.js';
+import { scrubSupportBundleValue } from '../../shared/supportBundleScrub.js';
 
 const DEVICE_HEALTH_MAX_HEARTBEAT_MS = 20 * 60_000;
 let lastDeviceHealthLocalFingerprint = '';
@@ -328,6 +330,29 @@ function getCriticalErrorLogForSupport(limit = 100) {
   slice(0, limit);
 }
 
+// Support-bundle scrubbing lives in the shared dependency-free helper so it
+// stays unit-testable outside the Electron main process. Re-exported here for
+// existing callers.
+export { scrubSupportBundleValue } from '../../shared/supportBundleScrub.js';
+import { shapeSupportBundle } from '../../shared/supportBundleScrub.js';
+
+function getBundleProductId() {
+  try {
+    // Product-scoped helper keeps the bundle identity aligned with the
+    // running executable (lodge-camp, hotel, hospitality-pos).
+    if (typeof getRuntimeProductId === 'function') return getRuntimeProductId();
+  } catch {}
+  return 'unknown';
+}
+
+function getBundleAppVersion() {
+  try {
+    const version = app?.getVersion?.();
+    if (version) return String(version);
+  } catch {}
+  return 'unknown';
+}
+
 export async function getSupportBundle(limit = 20) {
   const systemHealth = await getSystemHealth().catch((error) => ({ error: error?.message || String(error) }));
   const syncStatus = getSyncStatus();
@@ -340,12 +365,20 @@ export async function getSupportBundle(limit = 20) {
   const syncMeta = readSyncMeta();
   const healthFaults = readHealthFaults().slice(0, Math.max(1, Number(limit) || 20));
 
-  return {
+  // The allowlisted schema bounds what leaves the device: unknown sections
+  // are dropped and nested bodies are reduced before export.
+  return shapeSupportBundle({
     generated_at: new Date().toISOString(),
+    product: getBundleProductId(),
+    app_version: getBundleAppVersion(),
     lodge_id: state.lodgeId || null,
     user_id: state.currentUser?.id || null,
     user_name: state.currentUser?.name || null,
     app_online: state.isOnline,
+    pending_operations: {
+      pending: Number(syncDetails?.pendingCount ?? syncStatus?.remaining ?? 0) || 0,
+      failed: Number(syncDetails?.failedCount ?? 0) || 0
+    },
     system_health: systemHealth,
     sync_status: syncStatus,
     sync_details: syncDetails,
@@ -356,7 +389,7 @@ export async function getSupportBundle(limit = 20) {
     financial_validation_runs: validationRuns,
     financial_validation_alerts: validationAlerts,
     critical_errors: criticalErrors
-  };
+  });
 }
 
 export async function getOfflineSafetyData() {

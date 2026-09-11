@@ -1,6 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Users, Calendar, CheckSquare, BookOpen, BarChart3, Layers, Clock, Plus, Edit3, Trash2, RefreshCw, AlertTriangle, X, CheckCircle } from 'lucide-react'
 
+function rollupProductivity(metrics = []) {
+  const grouped = new Map()
+  for (const metric of Array.isArray(metrics) ? metrics : []) {
+    if (!metric || typeof metric !== 'object') continue
+    const name = String(metric.staff_name || metric.user_name || 'Unknown').trim() || 'Unknown'
+    const key = String(metric.staff_id || name)
+    const row = grouped.get(key) || { staff_id: metric.staff_id || null, staff_name: name, days: 0, completed: 0, onTime: 0, incidents: 0, timeTotal: 0, timeTasks: 0, ratingTotal: 0, ratingDays: 0 }
+    const completed = Math.max(0, Number(metric.tasks_completed) || 0)
+    const onTime = Math.min(completed, Math.max(0, Number(metric.tasks_on_time) || 0))
+    const avgTime = Number(metric.avg_completion_time_minutes)
+    const rating = Number(metric.rating)
+    row.days += 1; row.completed += completed; row.onTime += onTime; row.incidents += Math.max(0, Number(metric.incidents) || 0)
+    if (Number.isFinite(avgTime) && completed > 0) { row.timeTotal += avgTime * completed; row.timeTasks += completed }
+    if (Number.isFinite(rating)) { row.ratingTotal += rating; row.ratingDays += 1 }
+    grouped.set(key, row)
+  }
+  return [...grouped.values()].map((row) => ({ ...row, onTimeRate: row.completed > 0 ? row.onTime / row.completed : null, avgTime: row.timeTasks > 0 ? row.timeTotal / row.timeTasks : null, avgRating: row.ratingDays > 0 ? row.ratingTotal / row.ratingDays : null })).sort((a, b) => b.completed - a.completed || a.staff_name.localeCompare(b.staff_name))
+}
+
+
 const TABS = [
   ['schedule', 'Schedule', Calendar],
   ['departments', 'Departments', Layers],
@@ -44,6 +64,8 @@ export default function StaffOperations() {
   const [trainingRecords, setTrainingRecords] = useState([])
   const [handovers, setHandovers] = useState([])
   const [productivity, setProductivity] = useState({ metrics: [], summary: {} })
+  const [productivityStartDate, setProductivityStartDate] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
+  const [productivityEndDate, setProductivityEndDate] = useState(() => new Date().toISOString().slice(0, 10))
 
   const [deptModal, setDeptModal] = useState(null)
   const [templateModal, setTemplateModal] = useState(null)
@@ -61,7 +83,7 @@ export default function StaffOperations() {
     return new Date(d.setDate(diff)).toISOString().slice(0, 10)
   }, [])
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (options = {}) => {
     setLoading(true)
     setError(null)
     setWarnings([])
@@ -70,6 +92,8 @@ export default function StaffOperations() {
       try { return await promise } catch (e) { warn.push(`${label}: ${e?.message || 'failed'}`); return null }
     }
     try {
+      const rangeStart = options.productivityStartDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const rangeEnd = options.productivityEndDate || today
       const [depts, tpls, cats, tks, cls, records, hovers, prod] = await Promise.all([
         settle('Departments', window.api.staffOperations.getStaffDepartments()),
         settle('Templates', window.api.staffOperations.getShiftTemplates()),
@@ -78,9 +102,7 @@ export default function StaffOperations() {
         settle('Checklists', window.api.staffOperations.getTrainingChecklists()),
         settle('TrainingRecords', window.api.staffOperations.getTrainingRecords()),
         settle('Handovers', window.api.staffOperations.getShiftHandovers()),
-        settle('Productivity', window.api.staffOperations.getStaffProductivityDashboard(
-          new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10), today
-        ))
+        settle('Productivity', window.api.staffOperations.getStaffProductivityDashboard(rangeStart, rangeEnd))
       ])
       if (warn.length && !depts && !tpls && !cats && !tks) {
         setError(warn.join(' · ') || 'Could not load staff operations data.')
@@ -581,7 +603,7 @@ export default function StaffOperations() {
       {/* ── Productivity Tab ────────────────────────────────────────────────── */}
       {activeTab === 'productivity' && (
         <section>
-          <h2 className="text-sm font-bold text-slate-800 mb-3">Productivity Dashboard</h2>
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-sm font-bold text-slate-800">Productivity Dashboard</h2><p className="mt-1 text-xs text-slate-500">Server-recorded task activity, timing, ratings, and incidents by staff member.</p></div><div className="flex flex-wrap items-end gap-2"><label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">From <input type="date" value={productivityStartDate} onChange={(e) => setProductivityStartDate(e.target.value)} className="ml-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-normal text-slate-700" /></label><label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">To <input type="date" value={productivityEndDate} onChange={(e) => setProductivityEndDate(e.target.value)} className="ml-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-normal text-slate-700" /></label><button onClick={() => loadAll({ productivityStartDate, productivityEndDate })} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700"><RefreshCw size={12} /> Refresh</button></div></div>
           {productivity.summary && Object.keys(productivity.summary).length > 0 ? (
             <>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-5">
@@ -893,3 +915,4 @@ export default function StaffOperations() {
     </div>
   )
 }
+

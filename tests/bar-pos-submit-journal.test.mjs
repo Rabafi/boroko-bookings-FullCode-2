@@ -8,9 +8,14 @@ import { state } from '../src/main/state.js'
 import {
   resolvePosSubmitAttempt,
   commitPosSubmitAttempt,
+  hasPosSubmitAttempt,
   getPendingPosSubmitAttempt,
   prunePosSubmitAttempts
 } from '../src/main/domains/posSubmitJournal.js'
+import {
+  applyOptionalV3TabFields,
+  isPositiveTabVersion
+} from '../src/shared/posV3TabFields.js'
 
 const buildPayload = (overrides = {}) => ({
   id: 'intent-1',
@@ -309,3 +314,61 @@ test('a recovery-marker write failure retains corrupt evidence and keeps the pro
       payload: buildPayload({ id: 'must-stay-blocked', submit_intent_id: 'must-stay-blocked' })
     }), (error) => error?.code === 'pos_submit_journal_unavailable' && /blocked for manager or support recovery/i.test(error.message))
   }))
+
+test('old version-less journal replays byte-equivalently despite newer cache', () =>
+  withJournalFile(() => {
+    // A journal entry written before tab versioning carries no
+    // expected_tab_version/resolve_tab keys. Rebuilding must not add them
+    // (not even from a newer cached tab version): the RPC receives the
+    // original bytes so the server claim replays the stored receipt.
+    const original = buildPayload({ tab_id: 'tab-old', tab_name: 'Old Tab' })
+    assert.ok(!('expected_tab_version' in original))
+    assert.ok(!('resolve_tab' in original))
+    const first = resolvePosSubmitAttempt({
+      submitIntentId: 'intent-old',
+      orderId: 'intent-old',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: original
+    })
+    assert.equal(first.conflict, false)
+    assert.equal(hasPosSubmitAttempt('intent-old'), true)
+    assert.equal(hasPosSubmitAttempt('intent-missing'), false)
+    // Rebuild as the fixed builders do: conditional keys only, no backfill.
+    const rebuilt = { ...original }
+    applyOptionalV3TabFields(rebuilt, { ...original, tab_id: 'tab-old' })
+    assert.ok(!('expected_tab_version' in rebuilt))
+    assert.ok(!('resolve_tab' in rebuilt))
+    const retry = resolvePosSubmitAttempt({
+      submitIntentId: 'intent-old',
+      orderId: 'intent-old',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: rebuilt
+    })
+    assert.equal(retry.conflict, false)
+    assert.equal(retry.reused, true)
+    assert.deepEqual(retry.attempt.payload, original)
+    // Enriching the same retry (the old backfill defect) conflicts locally
+    // instead of reaching the server replay.
+    const enriched = { ...original, expected_tab_version: 7 }
+    const bad = resolvePosSubmitAttempt({
+      submitIntentId: 'intent-old',
+      orderId: 'intent-old',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: enriched
+    })
+    assert.equal(bad.conflict, true)
+  }))
+
+test('optional tab fields forward only what the caller sent', () => {
+  assert.deepEqual(applyOptionalV3TabFields({ a: 1 }, {}), { a: 1 })
+  assert.deepEqual(applyOptionalV3TabFields({ a: 1 }, { expected_tab_version: null }), { a: 1, expected_tab_version: null })
+  assert.deepEqual(applyOptionalV3TabFields({ a: 1 }, { expected_tab_version: 3, resolve_tab: true }), { a: 1, expected_tab_version: 3, resolve_tab: true })
+  assert.deepEqual(applyOptionalV3TabFields({ a: 1 }, { resolve_tab: false }), { a: 1, resolve_tab: false })
+  assert.equal(isPositiveTabVersion(2), true)
+  assert.equal(isPositiveTabVersion(0), false)
+  assert.equal(isPositiveTabVersion(null), false)
+  assert.equal(isPositiveTabVersion('x'), false)
+})

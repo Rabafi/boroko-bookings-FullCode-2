@@ -18,7 +18,6 @@ import {
   HardDrive,
   ShieldAlert,
   Download,
-  Loader2,
   RefreshCw,
   Clock,
   AlertCircle,
@@ -36,11 +35,12 @@ import {
   normalizeSubscriptionPlan,
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
-import { isHotelPropertyType } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isHotelPropertyType } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getCommercialPackageLabel, getCommercialPackagePlanNames } from '../../../shared/commercialPackages'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { normalizeSupportMessages, supportMessageSide, supportSenderName } from '../../../shared/supportThreads'
+import { TrialFeatureLabel, TrialStatusNotice } from './shared/EntitlementPresentation'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
@@ -139,7 +139,7 @@ function SupportModal({ onClose, settings }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-start bg-slate-950/35 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-80 rounded-[24px] border border-white/70 bg-white/95 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.24)]" onClick={e => e.stopPropagation()}>
+      <div className="w-[min(32rem,calc(100vw-2rem))] max-h-[90vh] overflow-y-auto rounded-[24px] border border-white/70 bg-white/95 p-5 shadow-[0_24px_80px_rgba(15,23,42,0.24)]" onClick={e => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><LifeBuoy size={15} className="text-emerald-600" /> Submit Support Ticket</h3>
           <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-slate-400 transition-all hover:border-slate-200 hover:bg-slate-100 hover:text-slate-700"><X size={16} /></button>
@@ -688,7 +688,12 @@ export default function Layout() {
   }, [])
 
   const subscriptionPlan = access?.entitlement?.plan || access?.subscription_plan || null
-  const effectiveUiPlan = subscriptionPlan
+  // Trial entitlements are full-access previews across product shells. The
+  // shared catalogue uses paid plan ordering, so map trial to the top package
+  // only for navigation visibility; this never changes server authorization.
+  const effectiveUiPlan = access?.entitlement?.status === 'trial'
+    ? (BUILD_PRODUCT.id === 'lodge-camp' ? 'Pro' : 'Enterprise')
+    : subscriptionPlan
   const effectiveUiBizType = bizType
   const effectiveUiPropertyType = propertyType
   const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
@@ -1046,6 +1051,15 @@ export default function Layout() {
               <p className="mt-1 text-xs text-emerald-100/65">{vocab.nounTitle} operations</p>
             </div>
           )}
+          {access?.entitlement?.status === 'trial' && (
+            <div className="mt-3">
+              <TrialStatusNotice
+                entitlement={access.entitlement}
+                productId={BUILD_PRODUCT.id}
+                compact
+              />
+            </div>
+          )}
           {/* Sidebar spacer */}
           <div className="h-2" />
         </div>
@@ -1073,23 +1087,28 @@ export default function Layout() {
                 : <div className="my-2.5 mx-2 border-t border-white/8" />
               }
               <div className="space-y-1">
-                {group.items.map(({ to, label, icon: Icon, end, isLocked, tier, capability }) =>
+                {group.items.map(({ to, label, icon: Icon, end, isLocked, tier, feature, capability }) =>
                   isLocked ? (
-                    <button
-                      key={label}
-                      onClick={() => setUpgradeItem({ label, tier, capability })}
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end={end}
                       title={collapsed ? `${label} — ${tier} plan required` : undefined}
                       className="group flex w-full items-center gap-2.5 rounded-xl border border-dashed border-white/10 bg-white/[0.03] px-3 py-2 text-left transition-all hover:border-white/16 hover:bg-white/[0.06]"
+                      onClick={(e) => handleNavClick(e, to)}
                     >
                       <Icon size={17} className="flex-shrink-0 text-emerald-200/65 transition-transform group-hover:scale-105" />
                       {!collapsed && <span className="flex-1 text-sm font-medium text-emerald-50/72">{label}</span>}
-                      {!collapsed && tier && (
-                        <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          tier === 'Pro' ? 'bg-purple-500/20 text-purple-100' : 'bg-blue-500/20 text-blue-100'
-                        }`}>{tier}</span>
+                      {!collapsed && tier && access?.entitlement?.status === 'trial' && (
+                        <TrialFeatureLabel
+                          feature={feature}
+                          requiredPlan={tier}
+                          entitlement={access.entitlement}
+                          compact
+                        />
                       )}
                       <Lock size={12} className="flex-shrink-0 text-emerald-100/40" />
-                    </button>
+                    </NavLink>
                   ) : (
                     <NavLink key={to} to={to} end={end} className={navLinkClass} title={collapsed ? label : undefined} onClick={(e) => handleNavClick(e, to)}>
                       <div className="relative flex-shrink-0">
@@ -1101,6 +1120,14 @@ export default function Layout() {
                         )}
                       </div>
                       {!collapsed && <span className="text-sm font-medium flex-1">{label}</span>}
+                      {!collapsed && tier && access?.entitlement?.status === 'trial' && (
+                        <TrialFeatureLabel
+                          feature={feature}
+                          requiredPlan={tier}
+                          entitlement={access.entitlement}
+                          compact
+                        />
+                      )}
                       {!collapsed && to === '/bookings' && onlineRequestCount > 0 && (
                         <span className="ml-auto flex-shrink-0 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
                           {onlineRequestCount} new

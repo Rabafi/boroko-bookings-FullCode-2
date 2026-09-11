@@ -96,16 +96,19 @@ describe('Phase 4: Restaurant Financial/Customer Workflow', () => {
       assert.ok(jsx.includes('voucherAmount'), 'has voucherAmount state')
     })
 
-    it('voucher redemption fires after order creation (not during)', () => {
+    it('voucher redemption fires inside the atomic order, not as a second RPC', () => {
       const jsx = read(POS_JSX)
-      assert.ok(jsx.includes('redeemVoucher'), 'calls redeemVoucher RPC')
+      // Voucher code/amount become a tender row of the single order envelope
+      // so the server redeems atomically; a separate post-sale redeemVoucher
+      // call could leave an order without its redemption on a lost response.
+      assert.ok(jsx.includes("method: 'voucher'"), 'voucher tender row joins the atomic payment breakdown')
+      assert.ok(jsx.includes('voucherTenderCode'), 'voucher code travels with the tender row')
     })
 
-    it('voucher redemption is online-only', () => {
+    it('voucher redemption is validated before the atomic submit', () => {
       const jsx = read(POS_JSX)
-      const voucherIdx = jsx.indexOf('redeemVoucher')
-      const context = jsx.slice(Math.max(0, voucherIdx - 200), voucherIdx)
-      assert.ok(context.includes('!result.offline'), 'only fires for online orders')
+      assert.ok(jsx.includes('Enter a voucher code before completing the sale'), 'missing voucher code blocks submit')
+      assert.ok(jsx.includes('Voucher amount cannot exceed the order total'), 'over-tender voucher blocks submit')
     })
   })
 

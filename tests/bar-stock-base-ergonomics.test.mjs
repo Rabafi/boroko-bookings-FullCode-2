@@ -58,6 +58,21 @@ test('Bar Base blank count sheet never presents cached quantities as certified o
   assert.match(styles, /hpos-stock-print-sheet/)
   assert.match(styles, /is-provisional/)
   assert.doesNotMatch(stock, /print.*current_stock|current_stock.*print/i)
+  // The global print policy hides the whole body by VISIBILITY and whitelists
+  // printable overlays; the sheet must join that whitelist or it keeps layout
+  // but paints nothing (blank pages — the reported defect).
+  const globalPrint = read('src/renderer/src/index.css')
+  assert.match(globalPrint, /body \* \{\s*visibility: hidden !important;/)
+  assert.match(
+    styles,
+    /\.hpos-stock-print-sheet \*,?\s*\{[\s\S]{0,120}visibility: visible !important;/,
+  )
+  // Multi-page behavior: absolute (not fixed) anchoring like the report
+  // overlay, so long sheets flow across pages instead of clipping.
+  assert.match(
+    styles,
+    /\.hpos-stock-print-sheet \{[\s\S]{0,400}position: absolute !important;/,
+  )
 })
 
 test('Bar Base batch mutation UI is explicitly atomic and server-authoritative', () => {

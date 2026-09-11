@@ -26,21 +26,22 @@ export function FeaturesProvider({ children }) {
       }
 
       setLoading(true)
-      // Prefer live entitlement RPC; seed from server membership/session features when present.
+      // Prefer live entitlement RPC.  Session feature hints are not an
+      // entitlement proof and are only used when the RPC/cache is verified.
       const nextEntitlement = await getEntitlement(user.lodge_id).catch(() => null)
       if (cancelled) return
 
-      const sessionFeatures = user?.effective_features && typeof user.effective_features === 'object'
-        ? user.effective_features
+      const verifiedEntitlement = nextEntitlement && nextEntitlement.success !== false && nextEntitlement.entitlement_unverified !== true
+      const nextFeatures = verifiedEntitlement && nextEntitlement?.effective_features && typeof nextEntitlement.effective_features === 'object'
+        ? nextEntitlement.effective_features
         : {}
-      const nextFeatures = nextEntitlement?.effective_features || sessionFeatures || {}
       const nextAccess = buildAccessSnapshot(user, nextFeatures)
 
       setEntitlement(nextEntitlement || {
-        plan: user?.plan || user?.pwa_plan || 'Starter',
-        product_id: user?.product_id || null,
-        commercial_package_key: user?.commercial_package_key || null,
-        effective_features: sessionFeatures
+        success: false,
+        status: 'unverified',
+        entitlement_unverified: true,
+        effective_features: {}
       })
       setFeatures(nextFeatures)
       setAccess(nextAccess)
@@ -55,8 +56,8 @@ export function FeaturesProvider({ children }) {
   }, [user?.lodge_id, user?.role, user?.capability_overrides, user?.effective_features, user?.plan, user?.product_id, user?.commercial_package_key, user?.pwa_plan])
 
   const isEnabled = (feature) => {
-    if (Object.keys(features).length === 0) return true
-    return features[feature] !== false
+    // Missing entitlement data is not an implicit allow.
+    return features[feature] === true
   }
 
   const can = (capability) => access?.capabilities?.[capability] === true

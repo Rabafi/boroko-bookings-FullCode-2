@@ -4,6 +4,7 @@ import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { getPlanFeatureMap } from '../src/main/domains/subscriptionState.js'
+import { getModuleByKey, resolveModuleVisibility } from '../src/shared/moduleCatalog.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const appJsx = readFileSync(resolve(__dirname, '../src/renderer/src/App.jsx'), 'utf8')
@@ -16,7 +17,6 @@ const dashboardJsx = readFileSync(resolve(__dirname, '../src/renderer/src/compon
 const REDIRECT_ROUTES = [
   { route: 'room-attributes', target: '/rooms?tab=attributes' },
   { route: 'corporate-billing', target: '/corporate?tab=billing' },
-  { route: 'documents', target: '/settings?tab=document-templates' },
   { route: 'hotel-roles', target: '/staff?tab=hotel-roles' },
   { route: 'early-late-checkout', target: '/bookings?tab=early-late' },
   { route: 'cancellation-policies', target: '/bookings?tab=cancellations' },
@@ -114,9 +114,11 @@ test('All redirect target features are present in entitlement feature map', () =
 
 // ── Real destination tests: parent pages define the redirected tab IDs ──────
 
-test('/documents redirects to Settings with document-templates tab', () => {
-  assert.ok(settingsJsx.includes("id: 'document-templates'") || settingsJsx.includes("id:'document-templates'") || settingsJsx.includes("'document-templates'"),
-    'Settings.jsx should define a document-templates tab')
+test('/documents is retired from client navigation and Settings', () => {
+  assert.ok(appJsx.includes('path="documents" element={<Navigate to={BUILD_PRODUCT.defaultHome'), 'legacy /documents links should redirect to the product home')
+  assert.ok(!settingsJsx.includes("id: 'document-templates'"), 'Settings should not expose the unfinished template editor')
+  assert.equal(getModuleByKey('documents')?.visibility, 'hidden', 'dormant document metadata must not advertise a client module')
+  assert.equal(resolveModuleVisibility('documents', 'hotel', 'Enterprise', []), 'hidden', 'the retired module must stay hidden even on Hotel Core')
 })
 
 test('/advanced-housekeeping redirects to Housekeeping with turnover tab', () => {

@@ -31,6 +31,16 @@ const POS_PACKAGE_BY_PLAN = {
 function enrichOffer(offer) {
   const plan = getSubscriptionPlan(offer.internalPlan) || {}
   const annual = offer.billingBasis === COMMERCIAL_BILLING_BASIS.ANNUAL_LICENSE ? offer.priceBwp : null
+  const upgradeOffer = offer.upgradeTarget ? getCommercialOffer(offer.productId, offer.upgradeTarget) : null
+  const productUpgradeNudge = offer.productId === COMMERCIAL_PRODUCT_IDS.LODGE_CAMP
+    ? upgradeOffer
+      ? plan.upgradeNudge
+      : 'Pro is the highest LodgingOS package. Hotel operations are licensed separately through HotelOS.'
+    : offer.productId === COMMERCIAL_PRODUCT_IDS.HOTEL
+      ? 'Extend HotelOS with the optional services quoted for this property.'
+      : upgradeOffer
+        ? `Move to ${upgradeOffer.displayName} when this operation needs its additional workflows.`
+        : 'This is the highest package in this POS product line.'
   return {
     ...plan,
     ...offer,
@@ -41,7 +51,8 @@ function enrichOffer(offer) {
     pitch: offer.salesCopy,
     summary: offer.salesCopy,
     modules: offer.includedFeatures,
-    internalPlan: offer.internalPlan
+    internalPlan: offer.internalPlan,
+    upgradeNudge: productUpgradeNudge
   }
 }
 

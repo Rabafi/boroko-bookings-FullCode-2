@@ -125,18 +125,13 @@ import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './d
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
 import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
 import { writePosHistoryExcelArtifact, writePosHistoryJsonArtifact, writePosHistoryPdfArtifact } from './posHistoryExportArtifacts.js'
+import { registerBarGuideIpc } from './barGuidesIpc.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const BUILD_PRODUCT_ID = getRuntimeProductId()
 const BUILD_PRODUCT = getProductDefinition(BUILD_PRODUCT_ID)
 const APP_BRAND_NAME = BUILD_PRODUCT.brandName
 const APP_WINDOW_TITLE = APP_BRAND_NAME
-const PRODUCT_TITLE_BAR_COLORS = Object.freeze({
-  'lodge-camp': '#102a22',
-  hotel: '#7a432b',
-  'hospitality-pos': '#8f3524'
-})
-const APP_TITLE_BAR_COLOR = PRODUCT_TITLE_BAR_COLORS[BUILD_PRODUCT_ID] || PRODUCT_TITLE_BAR_COLORS['lodge-camp']
 const APP_EXPORT_PREFIX = 'tsa-bonno'
 const INPUT_FOCUS_DEBUG = false
 const PRODUCT_LOGO_STEMS = Object.freeze({
@@ -2645,16 +2640,9 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     title: APP_WINDOW_TITLE,
-    ...(process.platform === 'win32'
-      ? {
-          titleBarStyle: 'hidden',
-          titleBarOverlay: {
-            color: APP_TITLE_BAR_COLOR,
-            symbolColor: '#ffffff',
-            height: 36
-          }
-        }
-      : {}),
+    // Native chrome stays outside web content, so dialogs cannot sit behind a drag overlay.
+    frame: true,
+    titleBarStyle: 'default',
     icon: appIcon,
     webPreferences: {
       preload: join(currentDir, '../preload/index.mjs'),
@@ -4012,6 +4000,19 @@ app.whenReady().then(async () => {
     releaseRepo: BUILD_PRODUCT.releaseRepo
   }))
 
+  // -- Offline Bar customer guides ------------------------------------------
+  // Registration keeps the renderer boundary fixed to approved document IDs.
+  registerBarGuideIpc({
+    ipcMain,
+    app,
+    shell,
+    BrowserWindow,
+    dialog,
+    fsModule: fs,
+    buildProductId: BUILD_PRODUCT_ID,
+    currentDir,
+    resourcesPath: process.resourcesPath
+  });
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -4236,14 +4237,18 @@ app.whenReady().then(async () => {
     const entitlement = currentLodgeId
       ? await db.getTrialStatus(currentLodgeId)
       : { effective_features: {} }
+    const entitlementProductId = entitlement?.product_id || null
+    const commercialContextMatches = !entitlementProductId || entitlementProductId === BUILD_PRODUCT_ID
 
     return {
       ...buildCapabilitySnapshot({
         role: normalizeAppRole(user.role),
         features: entitlement?.effective_features || {},
-        productId: entitlement?.product_id || null,
-        commercialPackageKey: entitlement?.commercial_package_key || null,
+        productId: commercialContextMatches ? (entitlementProductId || BUILD_PRODUCT_ID) : BUILD_PRODUCT_ID,
+        commercialPackageKey: commercialContextMatches ? (entitlement?.commercial_package_key || null) : null,
         commercialAddonKeys: entitlement?.enterprise_addons || [],
+        commercialEntitlement: entitlement,
+        commercialLodgeId: currentLodgeId || null,
         capabilityOverrides: user?.capability_overrides || {}
       }),
       entitlement
@@ -4252,11 +4257,46 @@ app.whenReady().then(async () => {
 
   async function requireCommercialFeature(featureKey, errorMessage) {
     const snapshot = await getAccessSnapshot()
-    const productId = snapshot?.entitlement?.product_id || snapshot?.productId || null
+    const productId = BUILD_PRODUCT_ID
+    const entitlementProductId = snapshot?.entitlement?.product_id || null
     const commercialPackageKey = snapshot?.entitlement?.commercial_package_key || snapshot?.commercialPackageKey || null
     const commercialAddonKeys = snapshot?.entitlement?.enterprise_addons || snapshot?.commercialAddonKeys || []
-    if (productId && commercialPackageKey && !isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey, commercialAddonKeys)) {
+    const expectedLodgeId = db.getActiveProfile?.()?.lodge_id || snapshot?.entitlement?.lodge_id || null
+    if (productId === 'hospitality-pos' && (entitlementProductId !== productId || !commercialPackageKey)) {
+      throw new Error(errorMessage || 'The current Bar POS commercial entitlement could not be verified.')
+    }
+    if (expectedLodgeId && snapshot?.entitlement?.lodge_id && String(snapshot.entitlement.lodge_id).toLowerCase() !== String(expectedLodgeId).toLowerCase()) {
+      throw new Error(errorMessage || 'The current Bar POS commercial entitlement could not be verified.')
+    }
+    if (commercialPackageKey && !isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey, commercialAddonKeys, snapshot?.entitlement, expectedLodgeId)) {
       throw new Error(errorMessage || 'This feature is not included in the current commercial package.')
+    }
+    return snapshot
+  }
+
+  // Table/tab sessions back both restaurant floor tables and Bar open tabs.
+  // Bar POS base includes `tabs` but not `tables`, so gating only on `tables`
+  // blocks every Bar tab sale with the generic commercial-package error.
+  // Accept either feature; packages with neither still fail closed.
+  async function requireTablesOrTabsFeature(errorMessage) {
+    const snapshot = await getAccessSnapshot()
+    const productId = BUILD_PRODUCT_ID
+    const entitlementProductId = snapshot?.entitlement?.product_id || null
+    const commercialPackageKey = snapshot?.entitlement?.commercial_package_key || snapshot?.commercialPackageKey || null
+    const commercialAddonKeys = snapshot?.entitlement?.enterprise_addons || snapshot?.commercialAddonKeys || []
+    const expectedLodgeId = db.getActiveProfile?.()?.lodge_id || snapshot?.entitlement?.lodge_id || null
+    if (productId === 'hospitality-pos' && (entitlementProductId !== productId || !commercialPackageKey)) {
+      throw new Error(errorMessage || 'The current Bar POS commercial entitlement could not be verified.')
+    }
+    if (expectedLodgeId && snapshot?.entitlement?.lodge_id && String(snapshot.entitlement.lodge_id).toLowerCase() !== String(expectedLodgeId).toLowerCase()) {
+      throw new Error(errorMessage || 'The current Bar POS commercial entitlement could not be verified.')
+    }
+    if (commercialPackageKey) {
+      const hasTables = isCommercialFeatureIncluded(productId, commercialPackageKey, 'tables', commercialAddonKeys, snapshot?.entitlement, expectedLodgeId)
+      const hasTabs = isCommercialFeatureIncluded(productId, commercialPackageKey, 'tabs', commercialAddonKeys, snapshot?.entitlement, expectedLodgeId)
+      if (!hasTables && !hasTabs) {
+        throw new Error(errorMessage || 'This feature is not included in the current commercial package.')
+      }
     }
     return snapshot
   }
@@ -4277,14 +4317,16 @@ app.whenReady().then(async () => {
     if (!hasVoucher && tip === 0) return
     const snapshot = await getAccessSnapshot()
     const entitlement = snapshot?.entitlement || {}
-    const productId = entitlement.product_id || snapshot?.productId || null
+    const productId = BUILD_PRODUCT_ID
     const packageKey = entitlement.commercial_package_key || snapshot?.commercialPackageKey || null
     const addonKeys = entitlement.enterprise_addons || snapshot?.commercialAddonKeys || []
-    if (!productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
-    if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys)) {
+    const expectedLodgeId = db.getActiveProfile?.()?.lodge_id || entitlement.lodge_id || null
+    if (productId !== 'hospitality-pos' || entitlement.product_id !== productId || !packageKey) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
+    if (expectedLodgeId && entitlement.lodge_id && String(entitlement.lodge_id).toLowerCase() !== String(expectedLodgeId).toLowerCase()) throw new Error('Bar POS commercial entitlement could not be verified. Tender is blocked until the package context is available.')
+    if (hasVoucher && !isCommercialFeatureIncluded(productId, packageKey, 'vouchers', addonKeys, entitlement, expectedLodgeId)) {
       throw new Error('Voucher tender is not included in the current Bar POS commercial entitlement.')
     }
-    if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys)) {
+    if (tip !== 0 && !isCommercialFeatureIncluded(productId, packageKey, 'tips_payouts', addonKeys, entitlement, expectedLodgeId)) {
       throw new Error('Tip tender is not included in the current Bar POS commercial entitlement.')
     }
   }
@@ -4921,8 +4963,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('admin:assignCommercialSubscription', async (_, payload) => {
     try {
       const admin = requireFreshCommandCentralReauth()
+      await requireCapability('command_central.licensing.manage')
       return await db.assignCommercialSubscription({
         ...(payload || {}),
+        operation_id: String(payload?.operation_id || '').trim() || crypto.randomUUID(),
         actor_id: admin.id,
         actor_email: admin.email,
         activated_by: admin.email
@@ -4991,6 +5035,68 @@ app.whenReady().then(async () => {
       requireFreshCommandCentralReauth()
       return await db.clearLodgeFeature(lodgeId, name)
     } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('admin:getCommercialEntitlementOverrides', async (_, lodgeId, productId) => {
+    try {
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
+      assertCommandCentralTarget(lodgeId)
+      return await db.getCommercialEntitlementOverrides(lodgeId, productId)
+    } catch (error) { throw new Error(error?.message || 'Unable to load commercial entitlement overrides') }
+  })
+  ipcMain.handle('admin:getCommercialTransitionPreview', async (_, lodgeId, productId, targetPackageKey, referenceDate) => {
+    try {
+      requireMasterAdmin()
+      await requireCapability('command_central.licensing.manage')
+      assertCommandCentralTarget(lodgeId)
+      return await db.getCommercialTransitionPreview(lodgeId, productId, targetPackageKey, referenceDate || null)
+    } catch (error) { return { success: false, error: error?.message || 'Unable to preview the commercial transition' } }
+  })
+  ipcMain.handle('admin:setCommercialEntitlementOverride', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      await requireCapability('command_central.licensing.manage')
+      assertCommandCentralTarget(payload?.lodge_id)
+      return await db.setCommercialEntitlementOverride({
+        ...(payload || {}),
+        lodge_id: payload.lodge_id,
+        operation_id: String(payload?.operation_id || '').trim() || crypto.randomUUID(),
+        actor_id: admin.id,
+        actor_email: admin.email,
+        fresh_auth_at: new Date().toISOString()
+      })
+    } catch (error) { return { success: false, error: error?.message || 'Unable to save the commercial entitlement override' } }
+  })
+  ipcMain.handle('admin:revokeCommercialEntitlementOverride', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      await requireCapability('command_central.licensing.manage')
+      assertCommandCentralTarget(payload?.lodge_id)
+      return await db.revokeCommercialEntitlementOverride({
+        ...(payload || {}),
+        lodge_id: payload.lodge_id,
+        operation_id: String(payload?.operation_id || '').trim() || crypto.randomUUID(),
+        actor_id: admin.id,
+        actor_email: admin.email,
+        fresh_auth_at: new Date().toISOString()
+      })
+    } catch (error) { return { success: false, error: error?.message || 'Unable to revoke the commercial entitlement override' } }
+  })
+  ipcMain.handle('admin:applyCommercialUserRemediation', async (_, payload) => {
+    try {
+      const admin = requireFreshCommandCentralReauth()
+      await requireCapability('command_central.licensing.manage')
+      await requireCapability('command_central.security.manage')
+      assertCommandCentralTarget(payload?.lodge_id)
+      return await db.applyCommercialUserRemediation({
+        ...(payload || {}),
+        lodge_id: payload.lodge_id,
+        operation_id: String(payload?.operation_id || '').trim() || crypto.randomUUID(),
+        actor_id: admin.id,
+        actor_email: admin.email,
+        fresh_auth_at: new Date().toISOString()
+      })
+    } catch (error) { return { success: false, error: error?.message || 'Unable to apply the commercial user remediation' } }
   })
   ipcMain.handle('admin:getAllLodgeFeatures', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.companies.manage'); return await db.getAllLodgeFeatures() }
@@ -5439,14 +5545,44 @@ app.whenReady().then(async () => {
     printWin.destroy()
     return { success: true, filePath }
   })
-  ipcMain.handle('trial:getInvoices', async (_, lodgeId) => {
+  async function loadClientCommercialInvoices(lodgeId, options = {}) {
     try {
-      requireCurrentLodgeOrSuperAdmin(lodgeId)
-      await requireCapability('settings.manage_subscription')
-      return await db.getInvoicesByLodge(lodgeId)
+      const user = getCurrentUserOrRestore()
+      if (!user || user.isMasterAdmin === true) throw new Error('Subscription billing history requires a signed-in company user.')
+
+      const activeProfile = db.getActiveProfile?.()
+      const activeLodgeId = String(activeProfile?.lodge_id || '').trim()
+      const requestedLodgeId = String(lodgeId || '').trim()
+      if (!activeLodgeId || (requestedLodgeId && requestedLodgeId.toLowerCase() !== activeLodgeId.toLowerCase())) {
+        throw new Error('Subscription billing history is limited to the active company.')
+      }
+
+      // Keep this defence-in-depth check aligned with the server-side
+      // capability-equivalent role allowlist.  The RPC remains the authority
+      // because the renderer and IPC process are not a security boundary.
+      const role = String(normalizeAppRole(user.role) || '').toLowerCase()
+      if (!['finance', 'manager', 'admin', 'super_admin'].includes(role)) {
+        throw new Error('Your role is not allowed to view subscription billing history.')
+      }
+      return await db.getClientCommercialInvoices(activeLodgeId, options)
+    } catch (error) {
+      return {
+        success: false,
+        available: false,
+        _available: false,
+        source: 'unavailable',
+        error: error?.message || 'Subscription billing history is unavailable.',
+        rows: [],
+        total: 0
+      }
     }
-    catch { return [] }
-  })
+  }
+
+  // `getInvoices` is retained as a compatibility name for released renderers,
+  // but now resolves the client commercial ledger instead of guest booking
+  // invoices. New renderers should use the explicit commercial name.
+  ipcMain.handle('trial:getInvoices', async (_, lodgeId, options) => loadClientCommercialInvoices(lodgeId, options))
+  ipcMain.handle('trial:getCommercialInvoices', async (_, lodgeId, options) => loadClientCommercialInvoices(lodgeId, options))
   ipcMain.handle('invoices:getBookingInvoices', async () => {
     try {
       await requireCapability('invoices.view')
@@ -5831,7 +5967,14 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('staffOperations:getStaffProductivityDashboard', async (_, startDate, endDate) => {
-    try { await requireCapability('workforce_scheduling.view'); return await db.getStaffProductivityDashboard(startDate, endDate) }
+    try {
+      // Read-only dashboard. The lodging app embeds it in Staff for Starter
+      // teams (staff.view); Hotel/POS keep the Workforce capability path.
+      // The Supabase RPC still enforces the product-aware feature gate.
+      try { await requireCapability('workforce_scheduling.view') }
+      catch { await requireCapability('staff.view') }
+      return await db.getStaffProductivityDashboard(startDate, endDate)
+    }
     catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('staffOperations:publishWeeklySchedule', async (_, weekStart) => {
@@ -8643,6 +8786,47 @@ app.whenReady().then(async () => {
       return await db.saveBarPosProductWithPacks(data)
     } catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:saveBarProductWithStock', async (_, data) => {
+    try {
+      // The unified wizard writes both catalog sides: both capabilities.
+      await requireCapability('pos.menu_manage')
+      await requireCapability('inventory.manage')
+      return await db.saveBarProductWithStock(data)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:retryProductRequest', async (_, operationKey) => {
+    try {
+      await requireCapability('pos.menu_manage')
+      await requireCapability('inventory.manage')
+      return await db.retryProductRequest(operationKey)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:discardProductRequest', async (_, operationKey) => {
+    try {
+      await requireCapability('pos.menu_manage')
+      await requireCapability('inventory.manage')
+      return await db.discardProductRequest(operationKey)
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getProductRequestStatus', async () => {
+    try {
+      await requireCapability('pos.view')
+      return { success: true, requests: await db.getProductRequestStatus() }
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getMenuStockReadiness', async () => {
+    // Readable by base Till users without recipe rights: outcome only.
+    try {
+      await requireCapability('pos.view')
+      return await db.getMenuStockReadiness()
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('catalog:processPendingPublications', async (_, outletIds) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.processPendingPublicationJobs(Array.isArray(outletIds) ? outletIds : [])
+    } catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('pos:voidOrder', async (_, id) => {
     try {
       await requireCapability('pos.void')
@@ -8789,7 +8973,7 @@ app.whenReady().then(async () => {
       const tillContext = await getTabMutationTillContext(event, data || {})
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       return finalizeSharedTillMutation(event, await db.transferPosTabWaiter({ ...(data || {}), _operator_proof: tillContext.operatorProof }))
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: e.message } }
   })
   ipcMain.handle('pos:overrideTableTab', async (event, data) => {
     try {
@@ -8822,7 +9006,7 @@ app.whenReady().then(async () => {
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       return finalizeSharedTillMutation(event, await db.splitBillEvenly({ ...(data || {}), _operator_proof: tillContext.operatorProof || null }))
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: e.message } }
   })
   ipcMain.handle('pos:getTablesWithStatus', async (_, outletId) => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getPosTablesWithStatus(outletId || null) }
@@ -8835,7 +9019,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('pos:openTableSession', async (event, data) => {
     try {
       await requireCapability('pos.manage')
-      await requireCommercialFeature('tables')
+      await requireTablesOrTabsFeature()
       const outletFilter = db.getUserPosOutletFilter()
       if (outletFilter !== null && data?.outlet_id && !outletFilter.includes(data.outlet_id)) {
         return { success: false, error: 'Access denied: you do not have access to this outlet.' }
@@ -9814,6 +9998,153 @@ app.whenReady().then(async () => {
       return await db.deleteInventoryItem(id)
     } catch (e) { return { success: false, error: e.message } }
   })
+  // -- Food & Beverage progressive activation ---------------------------------
+  // Module activation is a company preference, not a licence grant. Reads are
+  // capability-aware but never infer entitlement from the toggle; the server
+  // response carries enabled/entitled/can_manage/reason/version. Activation
+  // writes require an online server round-trip and stay audited server-side.
+  ipcMain.handle('fnb:getModulePreferences', async () => {
+    try {
+      await requireCapability('pos.view')
+      return await db.getFnbModulePreferences()
+    } catch (e) {
+      console.error('fnb:getModulePreferences failed:', e)
+      throw new Error(e?.message || 'Could not load F&B module settings right now.')
+    }
+  })
+  ipcMain.handle('fnb:getCachedModulePreferences', async () => {
+    try { return await db.getCachedFnbModulePreferences() }
+    catch { return [] }
+  })
+  ipcMain.handle('fnb:setModulePreference', async (_, moduleKey, enabled, expectedVersion) => {
+    try {
+      await requireCapability('settings.manage_general')
+      return await db.setFnbModulePreference(moduleKey, enabled, expectedVersion ?? null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not update the F&B module.', code: e?.code, blockers: e?.blockers, server_version: e?.server_version, server_enabled: e?.server_enabled } }
+  })
+  ipcMain.handle('fnb:getToday', async (_, outletId) => {
+    try {
+      await requireCapability('pos.view')
+      return await db.getFnbToday(outletId || null)
+    } catch (e) {
+      console.error('fnb:getToday failed:', e)
+      throw new Error(e?.message || 'Today view is unavailable right now.')
+    }
+  })
+  ipcMain.handle('fnb:getConsolidatedReport', async (_, start, end, outletId) => {
+    try {
+      await requireCapability('reports.view')
+      return await db.getFnbConsolidatedReport(start, end, outletId || null)
+    } catch (e) {
+      console.error('fnb:getConsolidatedReport failed:', e)
+      throw new Error(e?.message || 'Consolidated report is unavailable right now.')
+    }
+  })
+  ipcMain.handle('fnb:createRoomServiceOrder', async (_, payload, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.createFnbRoomServiceOrder(payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not create the room-service order.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getRoomServiceQueue', async (_, outletId, includeClosed) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.getFnbRoomServiceQueue(outletId || null, includeClosed === true)
+    } catch (e) { return { success: false, error: e?.message || 'Room-service queue is unavailable.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getMealEntitlements', async (_, includeDepleted) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.getFnbMealEntitlements(includeDepleted === true)
+    } catch (e) { return { success: false, error: e?.message || 'Meal plans are unavailable.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getFoodSafetyTemplates', async () => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.getFnbFoodSafetyTemplates()
+    } catch (e) { return { success: false, error: e?.message || 'Check templates are unavailable.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getCorrectiveQueue', async (_, includeClosed) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.getFnbCorrectiveQueue(includeClosed === true)
+    } catch (e) { return { success: false, error: e?.message || 'Corrective actions are unavailable.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:createFoodSafetyTemplate', async (_, payload, operationId) => {
+    try {
+      await requireCapability('settings.manage_general')
+      return await db.createFnbFoodSafetyTemplate(payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not create the check template.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getSupplierInvoices', async () => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.getFnbSupplierInvoices()
+    } catch (e) { return { success: false, error: e?.message || 'Supplier invoices are unavailable.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:updateRoomServiceStatus', async (_, orderId, toStatus, payload, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.updateFnbRoomServiceStatus(orderId, toStatus, payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not update the room-service order.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:createMealEntitlement', async (_, payload, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.createFnbMealEntitlement(payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not grant the meal plan.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:redeemMeal', async (_, entitlementId, payload, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.redeemFnbMeal(entitlementId, payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not redeem the meal.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:createTemperatureLog', async (_, payload, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.createFnbTemperatureLog(payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not record the temperature.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:closeCorrectiveAction', async (_, actionId, closeNote, operationId) => {
+    try {
+      await requireCapability('pos.manage')
+      return await db.closeFnbCorrectiveAction(actionId, closeNote, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not close the corrective action.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:captureSupplierInvoice', async (_, payload, operationId) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.captureFnbSupplierInvoice(payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not capture the supplier invoice.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:approveInvoiceMatch', async (_, invoiceId, approve, note, operationId) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.approveFnbInvoiceMatch(invoiceId, approve, note || null, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not decide the invoice match.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:handoffInvoiceToAccounting', async (_, invoiceId, operationId) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.handoffFnbInvoiceToAccounting(invoiceId, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not hand the invoice to accounting.', code: e?.code } }
+  })
+  ipcMain.handle('fnb:getDemandRecommendations', async (_, date, outletId) => {
+    try {
+      await requireCapability('inventory.view')
+      return await db.getFnbDemandRecommendations(date, outletId || null)
+    } catch (e) {
+      console.error('fnb:getDemandRecommendations failed:', e)
+      throw new Error(e?.message || 'Demand planning is unavailable right now.')
+    }
+  })
+  ipcMain.handle('fnb:approveDemandRecommendation', async (_, recommendationKey, action, payload, operationId) => {
+    try {
+      await requireCapability('inventory.manage')
+      return await db.approveFnbDemandRecommendation(recommendationKey, action, payload || {}, operationId || null)
+    } catch (e) { return { success: false, error: e?.message || 'Could not approve the recommendation.', code: e?.code } }
+  })
   ipcMain.handle('inventory:discardDraft', async (_, id) => {
     try {
       await requireCapability('inventory.manage')
@@ -10651,11 +10982,49 @@ app.whenReady().then(async () => {
     try { await requireCapability('settings.view'); return await db.getSettings() }
     catch { return null }
   })
+  ipcMain.handle('settings:getOutletContext', async () => {
+    // Auth-only boot context for outlet-scoped roles (cashier/supervisor) that
+    // lack the full-settings capability. Without property_type/hospitality_mode the renderer's
+    // RestaurantOnlyRoute defaults to 'lodge' and bounces every /hpos/* route
+    // back to '/', which HposLayout bounces to '/hpos/pos' in an infinite
+    // navigation loop. Explicit allowlist: routing/mode/identity only, never
+    // the full settings row.
+    try {
+      if (!getCurrentUserOrRestore()) throw new Error('Not authenticated')
+      const full = await db.getSettings().catch(() => null)
+      if (!full || typeof full !== 'object') return null
+      const profile = full.operating_profile && typeof full.operating_profile === 'object' && !Array.isArray(full.operating_profile)
+        ? full.operating_profile
+        : {}
+      return {
+        lodge_id: full.lodge_id || null,
+        property_type: full.property_type || null,
+        business_type: full.business_type || null,
+        hospitality_mode: full.hospitality_mode || profile.hospitality_mode || null,
+        operating_mode: full.operating_mode || null,
+        operating_profile: profile,
+        currency: full.currency || 'P',
+        lodge_name: full.lodge_name || '',
+        company_name: full.company_name || '',
+        outlet_name: full.outlet_name || null,
+        default_outlet_name: full.default_outlet_name || null,
+        outlet: full.outlet || null
+      }
+    } catch { return null }
+  })
   ipcMain.handle('settings:save', async (_, data) => {
     try {
       await requireCapability('settings.manage_general')
       const previousPolicy = getTillOperatorPolicy(await db.getSettings().catch(() => ({})))
-      const saved = await db.saveSettings(data)
+      const savedResult = await db.saveSettings(data, { includeMeta: true })
+      const saved = savedResult?.data || savedResult
+      const saveMeta = savedResult?.meta || {
+        persistence: state.isOnline ? 'remote' : 'device_only',
+        online: state.isOnline === true,
+        pending: state.isOnline !== true,
+        skippedColumns: [],
+        warnings: []
+      }
       const nextPolicy = getTillOperatorPolicy(saved || data || {})
       if (previousPolicy.mode !== nextPolicy.mode || previousPolicy.inactivityMinutes !== nextPolicy.inactivityMinutes) {
         sharedTillOperatorSessions.clearAll()
@@ -10669,7 +11038,7 @@ app.whenReady().then(async () => {
           }
         })
       }
-      return { success: true, data: saved }
+      return { success: true, data: saved, meta: saveMeta }
     } catch (e) { return { success: false, error: e.message } }
   })
   ipcMain.handle('settings:updateOperatingProfile', async (_, profile) => {
@@ -10802,8 +11171,8 @@ app.whenReady().then(async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getFleetHealthSummary() }
     catch (error) { throw new Error(error?.message || 'Unable to load fleet health summary') }
   })
-  ipcMain.handle('trial:getStatus', async (_, lodgeId) => {
-    try { return await db.getTrialStatus(lodgeId) }
+  ipcMain.handle('trial:getStatus', async (_, lodgeId, options = {}) => {
+    try { return await db.getTrialStatus(lodgeId, { forceFresh: options?.forceFresh === true }) }
     catch { return null }
   })
   ipcMain.handle('usage:getSnapshot', async (_, options) => {
@@ -11075,6 +11444,22 @@ app.whenReady().then(async () => {
       console.error('Scheduled financial validation check failed:', error?.message || error)
     })
   }, 6 * 60 * 60 * 1000)
+
+  // Recover interrupted product saves and pending catalog publications on
+  // startup and periodically (which covers reconnects). Publication pauses
+  // while all desktops are closed; pending jobs survive and resume here.
+  const runCatalogRecoveryScheduler = (trigger) => {
+    db.recoverPendingProductRequests({ trigger }).catch((error) => {
+      console.warn('Catalog recovery check did not complete:', error?.message || error)
+    })
+  }
+  setTimeout(() => {
+    runCatalogRecoveryScheduler('startup')
+  }, 45_000)
+
+  setInterval(() => {
+    runCatalogRecoveryScheduler('periodic_or_reconnect')
+  }, 15 * 60 * 1000)
 
   // Keep Command Central fleet health current while this desktop app is active.
   setTimeout(() => {
@@ -14157,7 +14542,12 @@ app.whenReady().then(async () => {
     setPayrollAttendanceDisposition: ['accounting.payroll_manage', db.setRestaurantPayrollAttendanceDispositionV2],
     getPayrollAttendanceReconciliation: ['accounting.payroll_view', db.getRestaurantPayrollAttendanceReconciliationV2],
     getReadiness: ['accounting.read', db.getRestaurantAccountingReadinessV2],
+    getActivationState: ['accounting.read', db.getRestaurantAccountingActivationStateV2],
     prepareHistoricalCutover: ['accounting.manage', db.prepareRestaurantHistoricalCutoverV2],
+    approveCutover: ['accounting.manage', db.approveRestaurantHistoricalCutoverV2],
+    getCutoverBatches: ['accounting.read', db.getRestaurantHistoricalCutoverBatchesV2],
+    getCutoverBatch: ['accounting.read', db.getRestaurantHistoricalCutoverBatchV2],
+    applyCutover: ['accounting.manage', db.applyRestaurantHistoricalCutoverV2],
     activateAccounting: ['accounting.manage', db.activateRestaurantAccountingV2],
     suspendAccounting: ['accounting.manage', db.suspendRestaurantAccountingV2],
     getSourceCoverage: ['accounting.read', db.getRestaurantFinancialSourceCoverageV2],

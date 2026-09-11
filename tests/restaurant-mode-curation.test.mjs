@@ -64,7 +64,7 @@ test('restaurant + Pro nav includes required restaurant modules', () => {
     'Inventory',
     'Reports',
     'Expenses',
-    'Staff',
+    'Users & Access',
     'Settings'
   ]) {
     assert.equal(labels.includes(requiredLabel), true, `${requiredLabel} should be visible in restaurant mode`)
@@ -127,7 +127,7 @@ test('lodge + Pro still includes accommodation navigation', () => {
     'Guests',
     'Reports',
     'Expenses',
-    'Staff',
+    'Users & Access',
     'Settings'
   ]) {
     assert.equal(labels.includes(requiredLabel), true, `${requiredLabel} should be visible in lodge mode`)
@@ -171,11 +171,12 @@ test('restaurant mode has Finance group with restaurant-relevant items', () => {
   assert.ok(financeItems.includes('Inventory'), 'Inventory should be in Finance group')
 })
 
-test('restaurant mode has Team group with Staff', () => {
+test('restaurant mode has Team group with consolidated team and access workspaces', () => {
   const items = getDesktopNavItems('restaurant', fullAccess, 'restaurant', 'Pro', [])
   const teamItems = items.filter((item) => item.group === 'Team').map((item) => item.label)
 
-  assert.ok(teamItems.includes('Staff'), 'Staff should be in Team group')
+  assert.ok(teamItems.includes('Team'), 'Team workspace should be in Team group')
+  assert.ok(teamItems.includes('Users & Access'), 'Users & Access should be in Team group')
 })
 
 test('POS.jsx has restaurantMode guard for room/booking/folio paths', () => {
@@ -250,7 +251,7 @@ test('Staff.jsx defines restaurant labels inside StaffMembers', () => {
 
   assert.match(setupBlock, /const propertyType = settings\?\.property_type \|\| settings\?\.business_type \|\| 'lodge'/)
   assert.match(setupBlock, /const restaurantMode = isRestaurantOnly\(propertyType\)/)
-  assert.match(setupBlock, /const propertyLabel = restaurantMode \? 'restaurant' : 'lodge'/)
+  assert.match(setupBlock, /const propertyLabel = barOnly \? 'bar' : restaurantMode \? 'restaurant' : 'lodge'/)
 })
 
 test('Dashboard.jsx Online Booking Requests section is guarded', () => {
@@ -522,12 +523,12 @@ test('Lodge EXPORT_PRESETS still includes bookingGuest', async () => {
 test('DataManagement.jsx export tab description is restaurant-aware', async () => {
   const dmPath = new URL('../src/renderer/src/components/DataManagement.jsx', import.meta.url)
   const dmUi = await readFile(dmPath, 'utf8')
-  assert.match(dmUi, /restaurantMode \? 'restaurant' : 'lodge'/)
+  assert.match(dmUi, /const dataNoun = restaurantMode \? 'restaurant' : 'property'/)
 })
 
 test('DataManagement.jsx backup description is restaurant-aware', async () => {
   const dmPath = new URL('../src/renderer/src/components/DataManagement.jsx', import.meta.url)
   const dmUi = await readFile(dmPath, 'utf8')
-  assert.match(dmUi, /restaurantMode \? 'restaurant' : 'lodge'/)
+  assert.match(dmUi, /const dataNoun = restaurantMode \? 'restaurant' : 'property'/)
   assert.match(dmUi, /restaurantMode \? 'sales, stock, and operational' : 'transactions, guests, and operational'/)
 })

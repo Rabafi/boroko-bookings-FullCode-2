@@ -11,9 +11,11 @@ import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/payme
 import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { getRuntimeProductId } from '../../../shared/productIdentity'
 import { hasRecordedPosTenderEnvelope } from '../../../shared/posFinancialTruth'
 import { formatLocalDate } from '../utils/localDate'
 import { unpackTransport } from '../transportUnpack'
+import { useLocation, useNavigate } from 'react-router'
 
 const MENU_CATEGORIES = ['Food', 'Drinks', 'Other']
 const BAR_PACK_TEMPLATES = [
@@ -28,6 +30,7 @@ const POS_MENU_PAGE_SIZE = 72
 const POS_FAVOURITES_STORAGE_KEY = 'bb_pos_favourites'
 const POS_FAVOURITES_MAX = 30
 const POS_COMPACT_CART_THRESHOLD = 20
+const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
 
 const toLocalDateInput = (value = new Date()) => formatLocalDate(value)
 const formatIsoTimestamp = (value = new Date()) => {
@@ -44,6 +47,26 @@ const recordedLineAmount = (item = {}) => {
   return Number.isFinite(numeric) ? numeric : null
 }
 const ACTIVE_TABLE_STATUSES = new Set(['open', 'running', 'ready', 'delivered'])
+
+function normalizePosRouteHandoff(state) {
+  if (!state || typeof state !== 'object') return null
+  const envelope = state.posHandoff && typeof state.posHandoff === 'object' ? state.posHandoff : state
+  const tableName = envelope.tableName || envelope.table_name || state.tableName || state.table_name || ''
+  const outletId = envelope.outletId || envelope.outlet_id || state.outletId || state.outlet_id || null
+  const serviceMode = envelope.serviceMode || envelope.service_mode || state.serviceMode || state.service_mode || ''
+  const tab = envelope.tab && typeof envelope.tab === 'object' ? envelope.tab : null
+  const tabId = envelope.tabId || envelope.tab_id || tab?.id || state.tabId || state.tab_id || null
+  if (!tableName && !outletId && !serviceMode && !tabId && !tab) return null
+  return {
+    tableId: envelope.tableId || envelope.table_id || state.tableId || state.table_id || null,
+    tableName,
+    serviceMode,
+    outletId,
+    outletName: envelope.outletName || envelope.outlet_name || null,
+    tabId,
+    tab
+  }
+}
 
 function normalizeTableStatus(status) {
   const value = String(status || '').toLowerCase()
@@ -261,6 +284,11 @@ export default function POS() {
   const currency = settings?.currency || 'P'
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
+  const lodgeMode = IS_LODGE_PRODUCT && !restaurantMode
+  const location = useLocation()
+  const navigate = useNavigate()
+  const routeHandoff = useMemo(() => normalizePosRouteHandoff(location.state), [location.state])
+  const appliedRouteHandoffRef = useRef('')
   const access = useAccess()
   const { user: currentUser } = useAuth()
   const [touchMode, setTouchMode] = useState(() => {
@@ -273,7 +301,7 @@ export default function POS() {
   const [showStaffLogin, setShowStaffLogin] = useState(false)
   const [showPaymentDetails, setShowPaymentDetails] = useState(false)
   const [showManagerControls, setShowManagerControls] = useState(false)
-  const [setupSection, setSetupSection] = useState(() => restaurantMode ? 'displays' : 'tables')
+  const [setupSection, setSetupSection] = useState(() => (restaurantMode || lodgeMode) ? 'displays' : 'tables')
 
   // Permission flags
   const canVoid       = canAccessCapability(access, 'pos.void')
@@ -503,6 +531,36 @@ export default function POS() {
   const [menuError, setMenuError] = useState('')
   const [barTemplateSavingKey, setBarTemplateSavingKey] = useState('')
   const [kitchenStations, setKitchenStations] = useState([])
+
+  // Floor-plan navigation carries an explicit POS handoff. Apply it once per
+  // router navigation so a table click opens the same outlet, service mode,
+  // and (when supplied by the server) running tab in the canonical terminal.
+  useEffect(() => {
+    if (!routeHandoff) return
+    const handoffKey = `${location.key || 'initial'}:${routeHandoff.tableId || ''}:${routeHandoff.tabId || ''}:${routeHandoff.outletId || ''}:${routeHandoff.tableName || ''}`
+    if (appliedRouteHandoffRef.current === handoffKey) return
+    appliedRouteHandoffRef.current = handoffKey
+
+    const nextServiceMode = routeHandoff.serviceMode || (routeHandoff.tableName ? 'table' : '')
+    if (nextServiceMode) setServiceMode(nextServiceMode)
+    if (routeHandoff.tableName) {
+      setTableName(routeHandoff.tableName)
+      setWalkInName(routeHandoff.tab?.customer_name || routeHandoff.tab?.guest_name || routeHandoff.tableName)
+    }
+    if (routeHandoff.tab) {
+      setActiveTabId(routeHandoff.tab.id || routeHandoff.tabId || '')
+      setOrderItems(Array.isArray(routeHandoff.tab.items) ? routeHandoff.tab.items : [])
+      setOrderNotes(routeHandoff.tab.notes || '')
+      setWaiterName(routeHandoff.tab.waiter_name || '')
+    } else if (routeHandoff.tabId) {
+      setActiveTabId(routeHandoff.tabId)
+    }
+    if (routeHandoff.tableName || nextServiceMode === 'table') {
+      setCustomerType('walkin')
+      setSelectedRoom('')
+      setSelectedEventId('')
+    }
+  }, [location.key, routeHandoff])
 
   useEffect(() => {
     try {
@@ -813,12 +871,16 @@ export default function POS() {
         // Auto-select: use allowedOutletIds to pick first allowed outlet
         const allowed = access?.allowedOutletIds
         const allowedList = allowed ? posList.filter((o) => allowed.includes(o.id)) : posList
-        if (allowedList.length > 0) setSelectedOutlet(allowedList[0])
+        const requestedOutlet = routeHandoff?.outletId
+          ? allowedList.find((outlet) => String(outlet.id) === String(routeHandoff.outletId))
+          : null
+        if (requestedOutlet) setSelectedOutlet(requestedOutlet)
+        else if (allowedList.length > 0) setSelectedOutlet(allowedList[0])
         else if (posList.length === 0) setOutletsError(true)
       })
       .catch(() => setOutletsError(true))
       .finally(() => setOutletsLoading(false))
-  }, [access?.allowedOutletIds, loadInventoryItems, loadMenu, loadRooms])
+  }, [access?.allowedOutletIds, loadInventoryItems, loadMenu, loadRooms, routeHandoff?.outletId])
 
   useEffect(() => {
     if (tab === 'history') loadOrders()
@@ -1248,6 +1310,7 @@ export default function POS() {
       if (!tableName.trim()) { alert('Select a table first.'); return }
       if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
     }
+    if (activeTabId && (currentOpenTab?.id !== activeTabId || !Number.isInteger(Number(currentOpenTab?.tab_version)) || Number(currentOpenTab.tab_version) <= 0)) { alert('This open check changed. Refresh open tabs before taking payment.'); return }
     if (orderStockIssues.length > 0) {
       alert(`${orderStockIssues[0].itemName} no longer has enough stock for this order. Refresh the quantities and try again.`)
       return
@@ -1316,22 +1379,13 @@ export default function POS() {
 
       let tabIdForOrder = activeTabId || null
       let tabNameForOrder = activeTabId ? openTabs.find((row) => row.id === activeTabId)?.tab_name || null : null
-      if (serviceMode === 'table' && !tabIdForOrder) {
-        const tableSession = await window.api.pos.openTableSession?.({
-          outlet_id: selectedOutlet.id,
-          table_name: tableName.trim(),
-          tab_name: tableName.trim(),
-          waiter_name: tableWaiterName || currentOperator.name || null,
-          waiter_id: tableWaiterId,
-          items: orderItems
-        })
-        if (!tableSession?.success) {
-          alert(tableSession?.error || 'Could not open table before completing the order.')
-          setSubmitting(false)
-          return
-        }
-        tabIdForOrder = tableSession.tab?.id || null
-        tabNameForOrder = tableSession.tab?.tab_name || tableName.trim()
+      // Table settlement resolves and closes inside create_pos_order_v3 in a
+      // single authorized call. A separate openTableSession call here would
+      // consume a second Strict Till authorization and fail the payment, so
+      // new tables resolve by name on the server instead.
+      const resolveTabFromName = serviceMode === 'table' && !tabIdForOrder
+      if (resolveTabFromName) {
+        tabNameForOrder = tableName.trim() || null
       }
 
       const result = await window.api.pos.createOrder({
@@ -1368,6 +1422,8 @@ export default function POS() {
         cashier_id: currentOperator.id || null,
         cashier_name: currentOperator.name || currentOperator.email || null,
         tab_id: tabIdForOrder,
+        expected_tab_version: activeTabId ? (currentOpenTab?.tab_version ?? null) : null,
+        resolve_tab: resolveTabFromName,
         shift_id: currentShift?.id || null,
         outlet_id: selectedOutlet.id,
         outlet_name: selectedOutlet.name,
@@ -2071,6 +2127,8 @@ export default function POS() {
     const name = tableName.trim() || walkInName.trim() || `Tab ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     const res = await window.api.pos.saveTab?.({
       id: activeTabId || undefined,
+      expected_version: activeTabId ? (currentOpenTab?.tab_version ?? currentOpenTab?.version ?? null) : null,
+      tab_version: activeTabId ? (currentOpenTab?.tab_version ?? currentOpenTab?.version ?? null) : undefined,
       outlet_id: selectedOutlet?.id || null,
       table_name: serviceMode === 'table' ? tableName.trim() || null : null,
       service_mode: serviceMode,
@@ -2221,6 +2279,7 @@ export default function POS() {
           source_tab_id: currentOpenTab.id,
           split_count: splitEvenCount,
           target_table_names: splitEvenNames.slice(0, splitEvenCount),
+          source_tab_version: currentOpenTab.tab_version ?? currentOpenTab.version ?? null,
           idempotency_key: splitOperationIdRef.current
         })
       } else {
@@ -2477,7 +2536,7 @@ export default function POS() {
             <div className="bb-card flex gap-1 p-0.5">
               {[
                 ['terminal', 'Terminal'],
-                ...(canManageMenu ? [['menu', 'Menu Items']] : []),
+                ...(canManageMenu && !lodgeMode ? [['menu', 'Menu Items']] : []),
                 ...(canManageMenu ? [['history', 'History']] : []),
                 ...(canCloseCashup ? [['cashup', 'Cash-Up']] : []),
                 ['tickets', 'Tickets'],
@@ -2498,6 +2557,11 @@ export default function POS() {
                 </button>
               ))}
             </div>
+            {lodgeMode && canManageMenu && (
+              <button type="button" onClick={() => navigate('/food-beverage/menu')} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100">
+                Food &amp; Beverage setup
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -4221,16 +4285,22 @@ export default function POS() {
 
       {tab === 'setup' && (
         <>
-        {restaurantMode && (
+        {(restaurantMode || lodgeMode) && (
           <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
             <p className="font-semibold">POS setup is for device configuration.</p>
-            <p className="mt-1">Use the restaurant workspaces in the sidebar for menu, stock, team, cash, control, and service operations.</p>
+            <p className="mt-1">Use the {lodgeMode ? 'Food & Beverage and Inventory workspaces' : 'restaurant workspaces in the sidebar'} for menu, stock, team, cash, control, and service operations.</p>
           </div>
         )}
         <div className="mb-4 flex flex-wrap gap-2">
           {(restaurantMode ? [
             ['displays', 'Displays'],
             ['hardware', 'Hardware']
+          ] : lodgeMode ? [
+            ['shift', 'Shift'],
+            ['displays', 'Displays'],
+            ['hardware', 'Hardware'],
+            ['promos', 'Promos'],
+            ['audit', 'Audit']
           ] : [
             ['shift', 'Shift'],
             ['tables', 'Tables'],

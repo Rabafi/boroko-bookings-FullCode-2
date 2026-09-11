@@ -72,13 +72,6 @@ html[data-product="hospitality-pos"] body::before {
     linear-gradient(145deg, #f8f2ea 0%, #f2e9df 52%, #f6efe8 100%);
 }
 
-/* The custom Electron title bar occupies 36px above the renderer workspace.
-   Keep the POS rail inside the remaining fullscreen height so its anchored
-   Manage action is never clipped below the window edge. */
-html.has-app-window-titlebar .hpos-app-shell {
-  height: calc(100vh - 36px);
-  height: calc(100dvh - 36px);
-}
 
 .hpos-workspace-body {
   display: flex;
@@ -227,6 +220,8 @@ html.has-app-window-titlebar .hpos-app-shell {
 }
 
 .hpos-manage-heading span { color: #7b7a70; font-size: 13px; }
+.hpos-manage-guide-teaser { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; padding: 0; border: 0; background: none; color: #a83c26; font-size: 12px; font-weight: 800; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.hpos-manage-guide-teaser:hover { color: #7e2c1b; }
 .hpos-manage-heading { padding: 24px 26px; border: 1px solid rgba(115,76,91,.12); border-radius: 24px; background: linear-gradient(135deg, rgba(255,253,248,.94), rgba(245,226,215,.82)); box-shadow: 0 20px 50px rgba(70,43,55,.09); }
 .hpos-manage-group { margin-top: 30px; }
 .hpos-manage-group h2 { margin: 0 0 10px; color: #526157; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
@@ -256,7 +251,7 @@ html.has-app-window-titlebar .hpos-app-shell {
 .hpos-manage-empty { margin-top: 28px; padding: 28px; border: 1px dashed rgba(55, 70, 57, .2); border-radius: 16px; color: #7b7a70; text-align: center; }
 
 /* ── Bar package guide ─────────────────────────────────────────────────── */
-.hpos-bar-package-guide { margin-top: 24px; padding: 22px; border: 1px solid rgba(92, 62, 76, .16); border-radius: 22px; background: linear-gradient(135deg, #fffaf3, #f7ece4); box-shadow: 0 14px 34px rgba(70, 43, 55, .08); }
+.hpos-bar-package-guide { margin-top: 32px; scroll-margin-top: 12px; padding: 22px; border: 1px solid rgba(92, 62, 76, .16); border-radius: 22px; background: linear-gradient(135deg, #fffaf3, #f7ece4); box-shadow: 0 14px 34px rgba(70, 43, 55, .08); }
 .hpos-bar-package-guide__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .hpos-bar-package-guide__heading p { margin: 0 0 5px; color: #a83c26; font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .hpos-bar-package-guide__heading h2 { margin: 0; color: #33232b; font-size: 20px; letter-spacing: -.025em; }
@@ -275,6 +270,8 @@ html.has-app-window-titlebar .hpos-app-shell {
 .hpos-bar-package-guide__cards h3 { margin: 12px 0 5px; color: #33232b; font-size: 14px; }
 .hpos-bar-package-guide__cards p { flex: 1; margin: 0; color: #695961; font-size: 11px; line-height: 1.5; }
 .hpos-bar-package-guide__cards > article > strong { margin-top: 13px; color: #4b3040; font-size: 12px; }
+.hpos-bar-package-guide__card-cta { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid rgba(124, 74, 97, .22); border-radius: 9px; background: #fff; color: #4b3040; font-size: 11px; font-weight: 800; cursor: pointer; }
+.hpos-bar-package-guide__card-cta:hover { border-color: #c95635; color: #a83c26; }
 
 /* ── Service staff: self shift ───────────────────────────────────────────── */
 .hpos-my-shift { width: min(820px, 100%); margin: 0 auto; padding: 14px 4px 44px; }
@@ -762,6 +759,7 @@ html[data-product="hospitality-pos"] textarea {
 }
 
 html[data-product="hospitality-pos"] button:focus-visible,
+html[data-product="hospitality-pos"] [role="button"]:focus-visible,
 html[data-product="hospitality-pos"] input:focus-visible,
 html[data-product="hospitality-pos"] select:focus-visible,
 html[data-product="hospitality-pos"] textarea:focus-visible {
@@ -904,9 +902,24 @@ html[data-product="hospitality-pos"] .hpos-animate-slide-up {
     display: none !important;
   }
 
+  /* The global print policy (index.css) hides the entire body by visibility
+     and whitelists specific printable overlays. Without joining that
+     whitelist, the sheet kept its layout but painted nothing: every page
+     printed blank. */
+  html[data-product="hospitality-pos"] .hpos-stock-print-sheet,
+  html[data-product="hospitality-pos"] .hpos-stock-print-sheet * {
+    visibility: visible !important;
+  }
+
   html[data-product="hospitality-pos"] .hpos-stock-print-sheet {
     display: block !important;
-    width: 100%;
+    /* absolute (not fixed) so a long count sheet flows across multiple pages,
+     anchored to the top of the printed page like the report overlay. */
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    overflow: visible !important;
     color: #111 !important;
     background: #fff !important;
     font: 12px/1.45 Arial, sans-serif;
@@ -974,7 +987,7 @@ html[data-product="hospitality-pos"] .hpos-animate-slide-up {
 .hpos-rail-badge{position:absolute;top:6px;right:8px;min-width:19px;height:19px;padding:0 5px;border-radius:999px;display:grid!important;place-items:center;background:#d76543;color:#fff!important;font-size:10px!important;font-weight:900!important;box-shadow:0 0 0 3px rgba(54,33,51,.8)}.hpos-primary-rail button{position:relative}.hpos-command-trigger{height:34px;display:flex;align-items:center;gap:7px;padding:0 8px 0 10px;border:1px solid rgba(55,70,57,.14);border-radius:9px;background:#fff;color:#687169;font-size:12px;font-weight:650}.hpos-command-trigger kbd{margin-left:5px;padding:2px 5px;border:1px solid #ddd5d9;border-radius:5px;background:#f5f1f3;color:#877d83;font:10px inherit}.hpos-command-backdrop{position:fixed;inset:0;z-index:2000;display:flex;align-items:flex-start;justify-content:center;padding:10vh 20px;background:rgba(30,20,29,.48);backdrop-filter:blur(7px)}.hpos-command{width:min(640px,100%);overflow:hidden;border:1px solid rgba(255,255,255,.35);border-radius:20px;background:#fffdfb;box-shadow:0 30px 90px rgba(25,14,24,.38)}.hpos-command-search{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #eee5e9;color:#775d70}.hpos-command-search input{flex:1;border:0;outline:0;background:transparent;color:#302a2f;font-size:16px}.hpos-command-search kbd{padding:4px 7px;border:1px solid #ddd3d8;border-radius:7px;background:#f6f1f3;color:#81767c;font-size:11px}.hpos-command-results{max-height:440px;overflow:auto;padding:8px}.hpos-command-results button{width:100%;display:flex;align-items:center;gap:12px;padding:11px 12px;border:0;border-radius:11px;background:transparent;text-align:left}.hpos-command-results button:hover,.hpos-command-results button.is-first{background:#f5edef}.hpos-command-results button>span{flex:1;display:grid;gap:2px}.hpos-command-results small{color:#9a818f;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.hpos-command-results strong{color:#362e34;font-size:13px}.hpos-command-results em{padding:2px 7px;border-radius:999px;background:#d76543;color:#fff;font-size:10px;font-style:normal;font-weight:850}.hpos-command-results>p{padding:30px;text-align:center;color:#81777d}.hpos-command footer{display:flex;justify-content:space-between;padding:10px 18px;border-top:1px solid #eee5e9;background:#faf7f8;color:#92868c;font-size:10px}.hpos-page-frame{max-width:1360px;margin:0 auto;padding:28px}.hpos-page-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:25px 27px;border:1px solid rgba(77,45,74,.12);border-radius:23px;background:linear-gradient(135deg,#fffaf5,#f7eef4);box-shadow:0 15px 40px rgba(54,33,51,.07)}.hpos-page-hero h1{margin:2px 0 5px;color:#2e3330;font-size:29px;letter-spacing:-.04em}.hpos-page-hero>div>p:last-child{margin:0;color:#747a75;font-size:13px}.hpos-secondary-action{display:flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid #d9cdd4;border-radius:11px;background:#fff;color:#54434f;font-weight:750}.is-spinning{animation:spin 1s linear infinite}.hpos-summary-strip{display:grid;grid-template-columns:180px 260px minmax(260px,1fr);gap:12px;margin:16px 0}.hpos-summary-strip>div,.hpos-summary-strip>label{min-height:67px;padding:13px 16px;border:1px solid rgba(55,70,57,.1);border-radius:15px;background:#fff}.hpos-summary-strip>div{display:grid;gap:3px}.hpos-summary-strip span{color:#81787d;font-size:11px;font-weight:750}.hpos-summary-strip strong{color:#2d3832;font-size:19px}.hpos-summary-strip label{display:flex;align-items:center;gap:9px}.hpos-summary-strip input{width:100%;border:0;outline:0;background:transparent}.hpos-check-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}.hpos-check-card{padding:18px;border:1px solid rgba(77,45,74,.13);border-radius:18px;background:#fff;text-align:left;box-shadow:0 8px 23px rgba(50,34,47,.045);transition:transform .15s,box-shadow .15s,border-color .15s}.hpos-check-card:hover,.hpos-check-card:focus-visible{transform:translateY(-2px);border-color:#c95635;box-shadow:0 15px 34px rgba(80,43,65,.12);outline:none}.hpos-check-card-head{display:flex;justify-content:space-between;gap:12px}.hpos-check-card-head span{color:#342d32;font-size:17px;font-weight:850}.hpos-check-card-head strong{color:#c95635}.hpos-check-card>p{margin:8px 0 14px;color:#82777d;font-size:12px}.hpos-check-card>div:nth-of-type(2){display:flex;flex-wrap:wrap;gap:9px 14px;padding-top:12px;border-top:1px solid #eee7ea}.hpos-check-card>div:nth-of-type(2) span{display:flex;align-items:center;gap:5px;color:#726970;font-size:11px}.hpos-check-card em{display:block;margin-top:15px;color:#78556b;font-size:11px;font-style:normal;font-weight:850}.hpos-empty-state{grid-column:1/-1;display:grid;place-items:center;min-height:260px;padding:30px;border:1px dashed #d8ccd2;border-radius:20px;background:rgba(255,255,255,.55);color:#877a82;text-align:center}.hpos-empty-state h2{margin:10px 0 3px;color:#4b4047;font-size:17px}.hpos-empty-state p{margin:0;font-size:12px}.hpos-inline-error{margin:12px 0;padding:12px 15px;border:1px solid #e2b9ad;border-radius:12px;background:#fff0eb;color:#a84430}
 html[data-hpos-density="compact"] .hpos-primary-rail{width:76px}html[data-hpos-density="compact"] .hpos-primary-rail button{min-height:54px;font-size:10px}html[data-hpos-density="compact"] .hpos-primary-rail .hpos-rail-icon{width:29px;height:29px}html[data-hpos-density="compact"] .hpos-terminal button{min-height:34px}html[data-hpos-density="compact"] .hpos-page-frame{padding:18px}html[data-hpos-density="touch"] .hpos-terminal button:focus-visible,html[data-hpos-density="touch"] .hpos-primary-rail button:focus-visible{outline:3px solid rgba(201,86,53,.35);outline-offset:2px}
 @media(max-width:800px){.hpos-command-trigger span,.hpos-command-trigger kbd{display:none}.hpos-summary-strip{grid-template-columns:1fr 1fr}.hpos-summary-strip label{grid-column:1/-1}.hpos-page-hero{align-items:flex-start;flex-direction:column}}@media(max-width:520px){.hpos-page-frame{padding:14px}.hpos-summary-strip{grid-template-columns:1fr}.hpos-summary-strip label{grid-column:auto}.hpos-check-grid{grid-template-columns:1fr}.hpos-command footer{display:none}}
-.hpos-skip-link{position:fixed;left:12px;top:-60px;z-index:3000;padding:10px 14px;border-radius:9px;background:#2d1d2b;color:#fff;font-weight:800;transition:top .15s}.hpos-skip-link:focus{top:10px}.hpos-app-shell :where(button,a,input,select,textarea):focus-visible{outline:3px solid rgba(201,86,53,.38);outline-offset:2px}.hpos-app-main:focus{outline:none}@media(prefers-reduced-motion:reduce){.hpos-app-shell *{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.hpos-skip-link{position:fixed;left:12px;top:-60px;z-index:3000;padding:10px 14px;border-radius:9px;background:#2d1d2b;color:#fff;font-weight:800;transition:top .15s}.hpos-skip-link:focus{top:10px}.hpos-app-shell :where(button,a,input,select,textarea,[role="button"]):focus-visible{outline:3px solid rgba(201,86,53,.38);outline-offset:2px}.hpos-app-main:focus{outline:none}@media(prefers-reduced-motion:reduce){.hpos-app-shell *{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 /* Do not use a blur compositor layer behind interactive dialogs. On some
    Windows/Electron setups it can intermittently swallow form clicks. */
@@ -1231,6 +1244,7 @@ html[data-hpos-density="compact"] .hpos-primary-rail{width:76px}html[data-hpos-d
 .hpos-sync-list article p { margin: 3px 0; overflow: hidden; color: #81767c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .hpos-sync-list article small { color: #a0949a; font-size: 9px; }
 .hpos-sync-list.is-pending > header { background: #fff5e8; }
+.hpos-sync-header-actions, .hpos-sync-row-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .hpos-health-guidance { margin-top: 15px; }
 .hpos-device-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 16px; }
 .hpos-device-panel .hpos-form-grid { margin-top: 18px; }
@@ -1377,6 +1391,7 @@ html[data-hpos-density="compact"] .hpos-primary-rail{width:76px}html[data-hpos-d
   .hpos-alert-list article > .hpos-secondary-action { grid-column: 2; justify-self: start; }
   .hpos-sync-list > article { grid-template-columns: 38px 1fr; }
   .hpos-sync-list article > .hpos-status-badge,
+  .hpos-sync-list article > .hpos-sync-row-actions,
   .hpos-sync-list article > .hpos-secondary-action { grid-column: 2; justify-self: start; }
   .hpos-audit-list article { grid-template-columns: 1fr; }
   .hpos-audit-list time { text-align: left; }

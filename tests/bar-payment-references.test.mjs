@@ -32,7 +32,37 @@ test('payment references remain visible on receipts and transaction detail', () 
   assert.match(report, /reference &&/)
 })
 
-test('database guard rejects provider tenders without audit references', () => {
+test('bar POS provider references are optional with length guards', () => {
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  const domain = read('src/main/domains/pos.js')
+  const migration = read('supabase/migrations/20260905000001_pos_provider_references_optional.sql')
+  assert.match(terminal, /Card approval\/reference \(optional\)/)
+  assert.match(terminal, /Mobile money reference \(optional\)/)
+  assert.doesNotMatch(terminal, /required=\{(splitRemainderMethod|paymentMethod) ===/)
+  assert.match(terminal, /missingReferences/)
+  assert.match(domain, /must be 120 characters or fewer/)
+  assert.doesNotMatch(domain, /Enter the mobile money transaction or approval reference/)
+  assert.match(migration, /v_mobile_seen/)
+  assert.match(migration, /v_card_seen/)
+  assert.match(migration, /must be 120 characters or fewer/)
+  assert.doesNotMatch(migration, /requires a transaction or approval reference/)
+  assert.match(migration, /trg_validate_pos_tender_references/)
+})
+
+test('domain forwards tab version and never backfills retries', () => {
+  // Retry byte-equivalence: optional tab-identity fields travel only when
+  // the caller sent them, and a brand-new version-less tab_id settlement
+  // fails closed before journaling. Cache state must never leak into a
+  // rebuilt envelope.
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /applyOptionalV3TabFields\(v3OfflinePayload, data\)/)
+  assert.match(domain, /applyOptionalV3TabFields\(v3Payload, data\)/)
+  assert.match(domain, /hasPosSubmitAttempt\(submitIntentId\)/)
+  assert.match(domain, /This sale is missing its tab version/)
+  assert.doesNotMatch(domain, /resolveCachedTabVersion/)
+})
+
+test('historical tender-reference guard required audit references (superseded by optional-reference contract)', () => {
   const sql = read('supabase/migrations/20260729120000_pos_tender_reference_guard.sql')
   const repair = read('supabase/migrations/20260729150000_pos_tender_reference_guard_v2.sql')
   assert.match(sql, /validate_pos_tender_references/)

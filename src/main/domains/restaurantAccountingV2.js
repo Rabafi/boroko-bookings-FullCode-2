@@ -113,7 +113,18 @@ export const getRestaurantPayrollReadinessV2 = (periodId) => rpc('get_restaurant
 export const setRestaurantPayrollAttendanceDispositionV2 = (data) => rpc('set_restaurant_payroll_attendance_disposition_v3',{p_pay_period_id:data.payPeriodId,p_staff_user_id:data.staffUserId,p_attendance_source:data.attendanceSource,p_expected_hours:data.expectedHours,p_approved_hours:data.approvedHours,p_disposition:data.disposition,p_exclusion_reason:data.exclusionReason||null,p_operation_id:requireKey(data.operationKey)})
 export const getRestaurantPayrollAttendanceReconciliationV2 = (periodId) => rpc('get_restaurant_payroll_attendance_reconciliation_v3',{p_pay_period_id:periodId})
 export const getRestaurantAccountingReadinessV2 = () => dedupePromise('accounting:v2:readiness', () => rpc('get_restaurant_accounting_readiness'))
+export const getRestaurantAccountingActivationStateV2 = () => rpc('get_restaurant_accounting_activation_state')
 export const prepareRestaurantHistoricalCutoverV2 = (data) => rpc('prepare_restaurant_historical_cutover',{p_cutover_date:data.cutoverDate,p_opening_balances:data.openingBalances||[],p_evidence_manifest:data.evidenceManifest||{},p_operation_key:requireKey(data.operationKey)})
+export const approveRestaurantHistoricalCutoverV2 = (data) => rpc('approve_restaurant_historical_cutover',{p_batch_id:data.batchId,p_review_notes:data.reviewNotes,p_expected_opening_payload_hash:data.expectedOpeningPayloadHash||null,p_expected_source_manifest_hash:data.expectedSourceManifestHash ?? null,p_expected_prepared_by:data.expectedPreparedBy ?? null})
+export const getRestaurantHistoricalCutoverBatchesV2 = (limit = 20) => dedupePromise('accounting:v2:cutover-batches', () => rpc('get_restaurant_historical_cutover_batches',{p_limit:Math.min(Math.max(Number(limit) || 20, 1), 100)}))
+export const getRestaurantHistoricalCutoverBatchV2 = (batchId) => {
+  if (!batchId || !String(batchId).trim()) throw new Error('A cutover batch ID is required to load its authoritative state.')
+  return rpc('get_restaurant_historical_cutover_batch',{p_batch_id:String(batchId).trim()})
+}
+export const applyRestaurantHistoricalCutoverV2 = (batchId) => {
+  if (!batchId || !String(batchId).trim()) throw new Error('A cutover batch ID is required to apply opening balances.')
+  return rpc('apply_restaurant_historical_cutover',{p_batch_id:String(batchId).trim()})
+}
 export const activateRestaurantAccountingV2 = (data) => rpc('activate_restaurant_accounting',{p_effective_from:data.effectiveFrom,p_configuration_version:data.configurationVersion,p_policy_version:data.policyVersion,p_cutover_batch_id:data.cutoverBatchId||null})
 export const suspendRestaurantAccountingV2 = (reason) => rpc('suspend_restaurant_accounting',{p_reason:reason})
 export const getRestaurantFinancialSourceCoverageV2 = (startDate,endDate) => rpc('get_restaurant_financial_source_coverage',{p_start_date:startDate,p_end_date:endDate})

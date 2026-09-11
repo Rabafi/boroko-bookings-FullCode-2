@@ -1,0 +1,39 @@
+ID,Part,Workflow,Procedure page(s),Evidence class,Screenshot IDs,Status
+A1,Welcome,Guide orientation and workspace,2-4,source+component,S01,covered
+A2,Welcome,Reader map glossary and first-sale path,2-4,source,none,covered
+B1,Setup,Install first launch and version,5-7,source+component,S00,covered with provider installer gap
+B2,Setup,Business outlet Bar mode currency receipt and time,5-7,source,none,covered with customer configuration step
+B3,Setup,Products categories prices packs and availability,8-9,source+component,S02;S20,covered
+B4,Setup,Opening stock staff PINs roles and outlets,10-11,source+component,S03;S06,covered
+B5,Setup,Printer drawer scanner and customer display,11-12,source+component,none,covered with site hardware acceptance
+B6,Setup,Setup acceptance checklist,12,source,none,covered
+C1,Shift,Opening checklist opening float and shift start,13-14,source+component,S07,covered
+C2,Shift,Shared Till operator unlock,15,source+component,S08,covered
+C3,Shift,Unpaid basket correction,16,source+component,S01,covered
+C4,Shift,Counter sale tenders references change and confirmation,17,source+component,S09;S17,covered with external-collection distinction
+C5,Shift,Immediate receipt printing and previous-sale lookup,18-19,source+component,S17;S18,covered with historical reprint limitation
+C6,Shift,Operator handover and customer display,20,source,none,covered
+D1,Tabs,Create name reopen and add items,22-23,source+component,S05,covered
+D2,Tabs,Split tab,24,source+component,S13,separate procedure covered
+D3,Tabs,Transfer waiter,25,source+component,S14,separate procedure covered
+D4,Tabs,Final payment and close,26,source+component,S05,covered
+D5,Tabs,Interrupted split recovery,27,contract+harness,S15,covered
+D6,Tabs,Interrupted transfer recovery,28,contract+harness,S15,covered separately from split
+D7,Tabs,Uncertain tab settlement recovery,29,source,none,covered separately from split and transfer
+D8,Tabs,Correction request and correction boundaries,30,source+component,S19,covered; request is not a refund
+D9,Tabs,Manager correction review and approval,31-32,source,S10,covered with live staff approval acceptance
+E1,Stock,Products edit and availability,8-9,source+component,S20,covered
+E2,Stock,Simple delivery,34,source+component,S21,covered
+E3,Stock,Individual count and Count All,35-36,source+component,S22;S26,covered
+E4,Stock,Zero blank breakage variance and history,37,source,none,covered
+E5,Stock,Worked arithmetic and opening/closing routines,37,source,none,covered
+F1,Cash,Operator cash-up submission and returned/resubmit status,39,source+component,S23,covered
+F2,Cash,Manager cash-up review evidence and closure,40,source+component,S24,covered
+F3,Cash,Reports filters receipts corrections and exports,41-43,source+component,S10;S17,covered
+G1,Add-ons,Stock & Purchasing Pro daily receiving supplier lots recipes and variance,45,source,S06,covered with package-screen gap
+G2,Add-ons,Accounting & Workforce daily expenses bills ledger reconciliation payroll and statements,46-48,source+component,S12,covered with signed package assumption
+G3,Add-ons,Growth & Multi-outlet customers loyalty vouchers outlets and reports,49-50,source+component,S06;S11,covered with tile-specific live gaps
+H1,Recovery,Offline matrix reconnect and multiple-terminal limits,51-52,source+harness,S15,covered with device-drill gap
+H2,Recovery,Maintenance backups restore replacement departure subscription health audit and support,53,source,S06,covered with provider-support gap
+H3,Recovery,Troubleshooting and printable opening/closing/emergency cards,54-55,source,none,covered
+

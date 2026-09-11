@@ -58,6 +58,16 @@ The remediation plan is a nine-phase, forward-only migration chain. Before enabl
 
 No-ship conditions include any missing source posting, duplicate or ambiguous financial operation, failed required export section, offline statutory statement, unsigned release artifact, unverified migration deployment, unavailable disposable database, non-zero linked SQL lint error in the affected schema, or missing authenticated production smoke evidence. The operator-facing UI must remain gated and explicitly mark financial data unavailable until these conditions are cleared.
 
+## Bar customer documentation and packaged-guide gate
+
+When releasing `hospitality-pos` in Bar operating mode:
+
+- Complete the Bar manual impact assessment for every relevant customer-facing change. Update instructions, affected screenshots, the quick-start where relevant, `coverage.csv`, `evidence.md`, `screenshots.csv` and `qa-report.md` together.
+- Verify the approved pair in `output/pdf/` against `docs/bar-manual/document-manifest.json`; do not treat an arbitrary latest generated PDF as approved.
+- Run `npm run test:bar-guides` and `npm run build:hospitality-pos`. The Bar builder must package only the approved pair and manifest at `resources/bar-guides/`.
+- From the packaged Bar application, verify an ordinary authenticated cashier can find the Bar shell top-right profile menu -> Help & guides, open both PDFs without internet access, save both through the native Save dialog, cancel safely, and open the saved copies.
+- Verify missing-resource, open-failure and copy-failure feedback, and verify that unknown document identifiers or arbitrary renderer paths are rejected. These guide actions must not require a package, manager permission or connectivity and must not create operational records.
+- Record source implementation, packaged-app testing, signing/publication and any remaining hardware or deployment limitations as separate evidence. A source build or checksum test is not proof of a signed published installer.
 ## Product release-feed gate
 
 Tsa Bonno LodgingOS is the renamed existing customer application. Its compatibility Windows identity `com.boroko.bookings`, stored-data identity `boroko-bookings`, and update feed `Rabafi/boroko-bookings-releases` are fixed until a tested bridge migration explicitly replaces them. Do not change those values in an ordinary release: LodgingOS updates must install over the existing customer application. Customer-facing installer, shortcut, and uninstall labels use the Tsa Bonno LodgingOS name.

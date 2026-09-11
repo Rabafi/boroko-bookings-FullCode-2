@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { NavLink } from 'react-router'
 import { AlertTriangle, Download, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
@@ -99,7 +100,7 @@ export function AccountingPage({ eyebrow, title, description, actions, children 
   const readinessNotice = readiness?.error
     ? <AccountingNotice type="warning">Accounting readiness could not be verified. This surface is not cleared for financial reliance: {readiness.error}</AccountingNotice>
     : readiness && readiness.ready === false
-      ? <AccountingNotice type="warning">Accounting is not enabled for posting. Resolve the server readiness gate before relying on statements, exports, or subledger totals{readiness.missing_requirements?.length ? `: ${readiness.missing_requirements.join(', ')}` : '.'}</AccountingNotice>
+      ? <AccountingNotice type="warning">Accounting is not enabled for posting. Resolve the server readiness gate before relying on statements, exports, or subledger totals{readiness.missing_requirements?.length ? `: ${readiness.missing_requirements.join(', ')}` : '.'} <NavLink className="underline font-bold" to="/restaurant/accounting-setup">Open Accounting setup</NavLink> to work through readiness, cutover approval, and activation.</AccountingNotice>
       : null
   return <div className="hpos-page-frame min-h-full bg-slate-50 p-4 md:p-6">
     <header className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

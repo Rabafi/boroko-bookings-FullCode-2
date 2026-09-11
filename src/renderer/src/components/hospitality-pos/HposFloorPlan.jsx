@@ -35,7 +35,12 @@ function TableCard({ table, onAction }) {
   </button>
 }
 
-export default function HposFloorPlan({ posRoute = '/hpos/pos', contextLabel = 'Floor plan' }) {
+export default function HposFloorPlan({
+  posRoute = '/hpos/pos',
+  reservationsRoute = null,
+  outletId = null,
+  contextLabel = 'Floor plan'
+}) {
   const navigate = useNavigate()
   const [tables, setTables] = useState([])
   const [viewMode, setViewMode] = useState('floor')
@@ -44,10 +49,10 @@ export default function HposFloorPlan({ posRoute = '/hpos/pos', contextLabel = '
   const loadTables = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true)
     setActionError('')
-    try { setTables(await window.api?.pos?.getTablesWithStatus?.() || []) }
+    try { setTables(await window.api?.pos?.getTablesWithStatus?.(outletId || null) || []) }
     catch (error) { setActionError(error?.message || 'The live floor could not be refreshed.') }
     finally { if (!quiet) setLoading(false) }
-  }, [])
+  }, [outletId])
 
   useEffect(() => {
     loadTables()
@@ -58,12 +63,42 @@ export default function HposFloorPlan({ posRoute = '/hpos/pos', contextLabel = '
   }, [loadTables])
 
   const stats = Object.fromEntries(Object.keys(TABLE_STATES).map((status) => [status, tables.filter((table) => normalizeTableStatus(table.status) === status).length]))
-  const openTill = (table) => navigate(posRoute, { state: { tableName: table.table_number || table.name || '' } })
+  const isLodgeFlow = posRoute === '/pos'
+  const resolvedReservationsRoute = reservationsRoute || (isLodgeFlow ? '/food-beverage/floor?tab=reservations' : '/hpos/service')
+  const floorDescription = isLodgeFlow
+    ? 'A real-time view of available, reserved and occupied tables. Tap a table to start or continue its POS order.'
+    : 'A real-time view of available, reserved and occupied tables. Tap a table to start or continue its Till transaction.'
+  const openTill = (table) => {
+    const tableName = table.table_number || table.name || ''
+    const tableOutletId = table.outlet_id || outletId || null
+    const tab = table.tab || null
+    navigate(posRoute, {
+      state: {
+        // Keep the explicit envelope so future route state can be extended
+        // without making POS guess whether a navigation came from the floor.
+        posHandoff: {
+          tableId: table.id || null,
+          tableName,
+          serviceMode: 'table',
+          outletId: tableOutletId,
+          outletName: table.outlet?.name || null,
+          tabId: tab?.id || null,
+          tab
+        },
+        // Top-level aliases preserve compatibility with older POS builds and
+        // make this handoff inspectable in router-level integration tests.
+        tableName,
+        serviceMode: 'table',
+        outletId: tableOutletId,
+        tabId: tab?.id || null
+      }
+    })
+  }
 
   return <div className="hpos-page-frame hpos-service-floor">
-    <HposPageHero eyebrow="Live dining room" title={contextLabel} description="A real-time view of available, reserved and occupied tables. Tap a table to start or continue its Till transaction." actions={<div className="flex gap-2"><HposButton onClick={() => navigate('/hpos/service')}>Reservations & waitlist</HposButton><HposButton icon={RefreshCw} onClick={() => loadTables()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}/>
+    <HposPageHero eyebrow={isLodgeFlow ? 'Live outlet floor' : 'Live dining room'} title={contextLabel} description={floorDescription} actions={<div className="flex gap-2"><HposButton onClick={() => navigate(resolvedReservationsRoute)}>Reservations & waitlist</HposButton><HposButton icon={RefreshCw} onClick={() => loadTables()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}/>
     <section className="hpos-service-floor-toolbar" aria-label="Floor controls"><div className="hpos-service-floor-stats">{Object.entries(stats).map(([status, count]) => <div key={status} className={`is-${status}`}><span>{TABLE_STATES[status].label}</span><strong>{count}</strong></div>)}</div><div className="hpos-service-view-toggle" aria-label="View mode"><button type="button" className={viewMode === 'floor' ? 'is-active' : ''} onClick={() => setViewMode('floor')}><LayoutGrid size={16}/>Floor</button><button type="button" className={viewMode === 'list' ? 'is-active' : ''} onClick={() => setViewMode('list')}><List size={16}/>List</button></div></section>
     {actionError && <HposNotice tone="error">{actionError}</HposNotice>}
-    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22}/><span>Preparing the dining room…</span></div> : !tables.length ? <HposEmptyState icon={MapPinned} title="No tables configured" description="A manager can add tables from Manage → Floor & Service before service begins."/> : viewMode === 'floor' ? <section className="hpos-service-floor-map"><div className="hpos-service-floor-map__label"><span>Main dining room</span><small>Tap a table to start or continue its transaction</small></div><div className="hpos-service-table-grid">{tables.map((table) => <TableCard key={table.id} table={table} onAction={openTill}/>)}</div></section> : <section className="hpos-service-table-list"><table><thead><tr>{['Table', 'Seats', 'Status', 'Guest', 'Server', 'Open time', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{tables.map((table) => { const status = normalizeTableStatus(table.status); const tab = table.tab || {}; const elapsed = elapsedMinutes(table); return <tr key={table.id} onClick={() => openTill(table)}><td><strong>{table.name || table.table_number || `Table ${table.id}`}</strong></td><td>{table.seats || 4}</td><td><HposStatusBadge tone={TABLE_STATES[status].tone}>{TABLE_STATES[status].label}</HposStatusBadge></td><td>{tab.customer_name || tab.guest_name || table.reservation?.customer_name || '—'}</td><td>{tab.waiter_name || (table.reservation ? 'Reservation' : '—')}</td><td className={elapsed > 60 ? 'is-late' : ''}>{elapsed ? `${elapsed} min` : '—'}</td><td><ArrowRight size={16}/></td></tr> })}</tbody></table></section>}
+    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22}/><span>Preparing the dining room…</span></div> : !tables.length ? <HposEmptyState icon={MapPinned} title="No tables configured" description={isLodgeFlow ? 'Add tables from Food & Beverage → Tables & service before service begins.' : 'A manager can add tables from Manage → Floor & Service before service begins.'}/> : viewMode === 'floor' ? <section className="hpos-service-floor-map"><div className="hpos-service-floor-map__label"><span>Main dining room</span><small>Tap a table to start or continue its transaction</small></div><div className="hpos-service-table-grid">{tables.map((table) => <TableCard key={table.id} table={table} onAction={openTill}/>)}</div></section> : <section className="hpos-service-table-list"><table><thead><tr>{['Table', 'Seats', 'Status', 'Guest', 'Server', 'Open time', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{tables.map((table) => { const status = normalizeTableStatus(table.status); const tab = table.tab || {}; const elapsed = elapsedMinutes(table); return <tr key={table.id} onClick={() => openTill(table)}><td><strong>{table.name || table.table_number || `Table ${table.id}`}</strong></td><td>{table.seats || 4}</td><td><HposStatusBadge tone={TABLE_STATES[status].tone}>{TABLE_STATES[status].label}</HposStatusBadge></td><td>{tab.customer_name || tab.guest_name || table.reservation?.customer_name || '—'}</td><td>{tab.waiter_name || (table.reservation ? 'Reservation' : '—')}</td><td className={elapsed > 60 ? 'is-late' : ''}>{elapsed ? `${elapsed} min` : '—'}</td><td><ArrowRight size={16}/></td></tr> })}</tbody></table></section>}
   </div>
 }

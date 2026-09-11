@@ -1,6 +1,7 @@
 import { Link } from 'react-router'
 import { useEffect, useState } from 'react'
 import {
+  Activity,
   Bell,
   Briefcase,
   Building2,
@@ -206,6 +207,7 @@ export default function More() {
         </SectionGroup>
 
         <SectionGroup label="Finance and reporting">
+          {can('dashboard.view') && <SectionCard to="/performance" title="Activity & performance" sub="Cross-property operations, trends, and recent activity" icon={Activity} />}
           {can('reports.view') && isEnabled('reports') && (
             <SectionCard
               to="/reports"

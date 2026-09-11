@@ -33,9 +33,17 @@ describe('Restaurant Accounting P2 financial containment', () => {
   })
 
   it('unwraps the chart-of-accounts RPC result before rendering bank-account options', () => {
-    assert.match(bankUi, /setGlAccounts\(Array\.isArray\(result\?\.data\) \? result\.data : \[\]\)/)
-    assert.match(bankUi, /setPreviewTxns\(\[\]\)/)
-    assert.match(bankUi, /disabled=\{Boolean\(editAccount\)\}/)
+    // The shared unwrap() helper normalizes envelope-or-array RPC results;
+    // the invariant is that raw result envelopes never reach option state.
+    assert.match(bankUi, /setAccounts\(unwrap\(a,\[\]\)\)/)
+    // Import preview derives from file state and resets by clearing it.
+    // Import preview derives from file state and resets by clearing it.
+    assert.match(bankUi, /previewRows=useMemo/)
+    assert.match(bankUi, /normalizeBankRows\(file\.records,file\.mapping\)/)
+    assert.match(bankUi, /setFile\(\{name:'',headers:\[\],records:\[\],mapping:\{\}\}\)/)
+    // Bank-account configuration stays behind accounting.manage, with
+    // opening values posted in Chart of Accounts instead of stored here.
+    assert.match(bankUi, /\{canManage&&<AccountingPanel title="Configure bank account"/)
   })
 
   it('removes authenticated execution from every temporarily contained financial transition', () => {

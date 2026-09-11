@@ -51,32 +51,37 @@ test('recipe depletion is atomic, authoritative and serialized in PostgreSQL', a
   const concurrentRecipeId = randomUUID()
 
   try {
-    await connection.query(`
-      insert into public.settings(lodge_id, lodge_name, company_name, business_type, property_type, currency)
-      values ($1, 'Recipe Test', 'Recipe Test', 'restaurant', 'restaurant', 'BWP');
-      insert into public.users(id, lodge_id, name, email, role, password_hash, status)
-      values ($2, $1, 'Recipe Test Manager', $2::text || '@example.invalid', 'admin', 'unused', 'active');
-      insert into public.outlets(id, lodge_id, name, type)
-      values ($3, $1, 'Recipe Outlet', 'food');
-      insert into public.restaurant_stock_locations(id, lodge_id, name, is_default)
-      values ($4, $1, 'Recipe Location', true);
-      insert into public.restaurant_outlet_stock_locations(lodge_id, outlet_id, stock_location_id)
-      values ($1, $3, $4);
-      insert into public.inventory_items(id, lodge_id, outlet_id, name, category, unit, current_stock, latest_unit_cost)
-      values ($5, $1, $3, 'Recipe Ingredient', 'Food', 'each', 20, 2),
-             ($8, $1, $3, 'Concurrent Ingredient', 'Food', 'each', 5, 2);
-      insert into public.restaurant_stock_location_balances(lodge_id, inventory_item_id, stock_location_id, quantity)
-      values ($1, $5, $4, 20), ($1, $8, $4, 5);
-      insert into public.pos_menu_items(id, lodge_id, outlet_id, name, category, price, is_available)
-      values ($6, $1, $3, 'Recipe Meal', 'Food', 10, true),
-             ($9, $1, $3, 'Concurrent Meal', 'Food', 10, true);
-      insert into public.restaurant_recipes(id, lodge_id, menu_item_id, name, version, active)
-      values ($7, $1, $6, 'Recipe Meal Formula', 1, true),
-             ($10, $1, $9, 'Concurrent Formula', 1, true);
-      insert into public.restaurant_recipe_ingredients(lodge_id, recipe_id, inventory_item_id, quantity, unit, sort_order)
-      values ($1, $7, $5, 2, 'each', 1), ($1, $7, $5, 3, 'each', 2),
-             ($1, $10, $8, 3, 'each', 1);
-    `, [lodgeId, actorId, outletId, locationId, inventoryId, menuItemId, recipeId, concurrentInventoryId, concurrentMenuItemId, concurrentRecipeId])
+    // One statement per query: node-pg uses the extended protocol for
+    // parameterized queries, which rejects multi-command strings on every
+    // PostgreSQL target (local or hosted). Same rows, same order.
+    const setup = [
+      [`insert into public.settings(lodge_id, lodge_name, company_name, business_type, property_type, currency)
+       values ($1, 'Recipe Test', 'Recipe Test', 'restaurant', 'restaurant', 'BWP')`, [lodgeId]],
+      [`insert into public.users(id, lodge_id, name, email, role, password_hash, status)
+       values ($1, $2, 'Recipe Test Manager', $3, 'admin', 'unused', 'active')`, [actorId, lodgeId, `${actorId}@example.invalid`]],
+      [`insert into public.outlets(id, lodge_id, name, type)
+       values ($1, $2, 'Recipe Outlet', 'food')`, [outletId, lodgeId]],
+      [`insert into public.restaurant_stock_locations(id, lodge_id, name, is_default)
+       values ($1, $2, 'Recipe Location', true)`, [locationId, lodgeId]],
+      [`insert into public.restaurant_outlet_stock_locations(lodge_id, outlet_id, stock_location_id)
+       values ($1, $2, $3)`, [lodgeId, outletId, locationId]],
+      [`insert into public.inventory_items(id, lodge_id, outlet_id, name, category, unit, current_stock, latest_unit_cost)
+       values ($1, $2, $3, 'Recipe Ingredient', 'Food', 'each', 20, 2),
+              ($4, $2, $3, 'Concurrent Ingredient', 'Food', 'each', 5, 2)`, [inventoryId, lodgeId, outletId, concurrentInventoryId]],
+      [`insert into public.restaurant_stock_location_balances(lodge_id, inventory_item_id, stock_location_id, quantity)
+       values ($1, $2, $3, 20), ($1, $4, $3, 5)
+       on conflict (inventory_item_id, stock_location_id) do update set quantity = excluded.quantity`, [lodgeId, inventoryId, locationId, concurrentInventoryId]],
+      [`insert into public.pos_menu_items(id, lodge_id, outlet_id, name, category, price, is_available, stock_method, inventory_item_id)
+       values ($1, $2, $3, 'Recipe Meal', 'Food', 10, true, 'recipe', null),
+              ($4, $2, $3, 'Concurrent Meal', 'Food', 10, true, 'recipe', null)`, [menuItemId, lodgeId, outletId, concurrentMenuItemId]],
+      [`insert into public.restaurant_recipes(id, lodge_id, menu_item_id, name, version, active)
+       values ($1, $2, $3, 'Recipe Meal Formula', 1, true),
+              ($4, $2, $5, 'Concurrent Formula', 1, true)`, [recipeId, lodgeId, menuItemId, concurrentRecipeId, concurrentMenuItemId]],
+      [`insert into public.restaurant_recipe_ingredients(lodge_id, recipe_id, inventory_item_id, quantity, unit, sort_order)
+       values ($1, $2, $3, 2, 'each', 1), ($1, $2, $3, 3, 'each', 2),
+              ($1, $4, $5, 3, 'each', 1)`, [lodgeId, recipeId, inventoryId, concurrentRecipeId, concurrentInventoryId]],
+    ]
+    for (const [text, params] of setup) await connection.query(text, params)
     await setActor(connection, actorId, lodgeId)
 
     const firstOrder = randomUUID()

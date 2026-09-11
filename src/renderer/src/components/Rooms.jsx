@@ -10,7 +10,7 @@ import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useAccess, useSettings, useFeatures } from '../app-context'
-import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getPlanUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { getAccommodationInventoryLabel, getAccommodationKindLabel, isCampsiteUnit, ACCOMMODATION_KIND_LABELS, RATE_MODE_LABELS } from '../../../shared/accommodation'
 import { isCampPropertyType, normalizePropertyType } from '../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
@@ -327,7 +327,7 @@ function RoomsTab() {
     if (editing) {
       res = await window.api.rooms.update(editing, data)
     } else {
-      const roomLimitStatus = canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length })
+      const roomLimitStatus = canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length, limits: usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {}) })
       if (roomLimitStatus.isBlocked) {
         const plan = access?.entitlement?.plan || 'Starter'
         const nextPlan = plan === 'Starter' ? 'Standard' : 'Pro'
@@ -370,9 +370,9 @@ function RoomsTab() {
   const available = roomStatusCounts.available || 0
   const occupied = roomStatusCounts.occupied || 0
   const maintenance = roomStatusCounts.maintenance || 0
-  const usageLimits = getPlanUsageLimits(access?.entitlement?.plan || 'Starter')
+  const usageLimits = usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {})
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
-  const roomLimitStatus = usageSnapshot?.statuses?.rooms || canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length })
+  const roomLimitStatus = usageSnapshot?.statuses?.rooms || canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length, limits: usageLimits })
   const roomEarlyPrompt = getEarlyUpgradePromptState({
     plan: currentPlan,
     bookingsUsage: usageSnapshot?.usage?.monthlyBookings ?? 0,

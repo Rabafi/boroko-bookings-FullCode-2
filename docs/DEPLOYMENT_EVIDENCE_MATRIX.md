@@ -1,5 +1,23 @@
 # Deployment Evidence Matrix
 
+## 2026-09-04 — F&B and verified booking contracts (database deployed; lint blocked)
+
+Linked project `Tsa Bonno HospitalityOS` (`oicgpknsmtvcsjacymum`) is applied
+through `20260904090000_verified_booking_contracts.sql`. Local and remote
+migration history match, and the post-deployment dry run reports the remote
+database up to date. The deployment also applied F&B migrations
+`20260904000000` through `20260904020000`; invalid function `%rowtype`
+declarations in that pending chain were corrected before successful
+application.
+
+Post-push error-level SQL lint is not clean. It reports schema mismatches in
+`fnb_module_disable_blockers` (`pos_cashup_sessions.status`),
+`get_fnb_consolidated_report` (`pos_orders.grand_total`), and
+`get_fnb_demand_recommendations` (`rooms.deleted`). No booking-contract lint
+finding was reported. No client surface was published and no authenticated
+production workflow smoke is claimed; release remains blocked pending a
+forward F&B repair migration and clean linked lint.
+
 ## 2026-08-27 — Starter recovery and weekly automation (database deployed; desktop not released)
 
 Local source implements a v3 encrypted `.tbbackup` contract, the

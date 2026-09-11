@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw, History, Upload } from 'lucide-react'
+import { NavLink, useSearchParams } from 'react-router'
+import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw, History, Upload, ArrowLeft } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
@@ -38,6 +39,13 @@ function movementLabel(type) {
 export default function Inventory() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
+  const [searchParams] = useSearchParams()
+  // Canonical cross-module navigation (F&B Phase 2): when opened with
+  // ?scope=food-beverage, this stays the one canonical Inventory workflow —
+  // F&B only filters the signal and preserves the return context.
+  const fnbScope = searchParams.get('scope') === 'food-beverage'
+  const fnbOutlet = searchParams.get('outlet') || ''
+  const fnbReturn = searchParams.get('from') === 'food-beverage'
 
   const [tab, setTab] = useState('stock') // stock | purchases | movements | stocktake
 
@@ -629,7 +637,11 @@ export default function Inventory() {
 
   const filtered = useMemo(() => {
     return [...items.filter((i) => {
+      // Delisted stock (product deleted with no remaining references) stays
+      // out of the operational list; movement history is preserved for audit.
+      if (i.is_active === false) return false
       if (catFilter !== 'all' && i.category !== catFilter) return false
+      if (fnbOutlet && String(i.outlet_id || '') !== String(fnbOutlet)) return false
       if (stockFilter === 'low') {
         const isLow = Number(i.current_stock || 0) <= Number(i.reorder_level || 0)
         return isLow
@@ -655,11 +667,18 @@ export default function Inventory() {
           return String(a.name || '').localeCompare(String(b.name || ''))
       }
     })
-  }, [catFilter, items, outletMap, sortBy])
+  }, [catFilter, fnbOutlet, items, outletMap, sortBy])
   const lowStockCount = items.filter((i) => i.current_stock <= i.reorder_level).length
+  const fnbBackTo = fnbOutlet ? `/food-beverage/stock?outlet=${encodeURIComponent(fnbOutlet)}` : '/food-beverage/stock'
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      {(fnbScope || fnbReturn) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-sm text-slate-700">
+          <p><strong className="font-bold text-emerald-800">F&amp;B-filtered view.</strong> This is the canonical Lodge Inventory — F&amp;B only filters it{fnbOutlet ? ' to the selected outlet' : ''}. Stock truth stays here.</p>
+          <NavLink to={fnbBackTo} className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-xs font-bold text-white hover:bg-emerald-800"><ArrowLeft size={14} />Back to F&amp;B</NavLink>
+        </div>
+      )}
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Stock Control</p>

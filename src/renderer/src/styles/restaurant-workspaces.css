@@ -514,3 +514,219 @@ html[data-product="hospitality-pos"] .restaurant-reservation-table-picker > smal
   .restaurant-staff-permission-row { align-items: stretch; flex-direction: column; }
   .restaurant-staff-permission-row > div:last-child { justify-content: space-between; }
 }
+
+/* LodgingOS embeds mature restaurant workflows without inheriting the
+   Restaurant & Bar plum/copper brand. Keep this adapter scoped to the lodge
+   F&B shell so the standalone restaurant product remains unchanged. */
+.lodge-food-beverage-hub :is(
+  [class*="bg-[#30212a]"],
+  [class*="bg-[#34242d]"],
+  [class*="bg-[#49303a]"],
+  [class*="bg-[#56323b]"],
+  [class*="bg-[linear-gradient(135deg,#30212a,#56323b)]"]
+) {
+  background-color: #145c4b !important;
+  background-image: linear-gradient(135deg, #123d38, #1f725d) !important;
+}
+
+.lodge-food-beverage-hub :is(
+  [class*="bg-[#e8994e]"],
+  [class*="bg-[#c96b3e]"]
+) {
+  background-color: #16735a !important;
+  background-image: none !important;
+  color: #fff !important;
+}
+
+.lodge-food-beverage-hub :is(
+  [class*="text-[#f0a35c]"],
+  [class*="text-[#e8994e]"],
+  [class*="text-[#c8784c]"],
+  [class*="text-[#a06f5c]"],
+  [class*="text-[#9d4c34]"],
+  [class*="text-[#8f4936]"],
+  [class*="text-[#713f35]"]
+) { color: #14745a !important; }
+
+.lodge-food-beverage-hub :is(
+  [class*="text-[#30212a]"],
+  [class*="text-[#34242d]"],
+  [class*="text-[#35242c]"],
+  [class*="text-[#2a1c23]"],
+  [class*="text-[#291b21]"]
+) { color: #172b25 !important; }
+
+.lodge-food-beverage-hub :is(
+  [class*="text-[#765f68]"],
+  [class*="text-[#806d73]"],
+  [class*="text-[#6d565e]"],
+  [class*="text-[#604a52]"],
+  [class*="text-[#5d464e]"]
+) { color: #52655e !important; }
+
+.lodge-food-beverage-hub :is(
+  [class*="border-[#49303a]"],
+  [class*="border-[#decfd0]"],
+  [class*="border-[#d9c7bc]"],
+  [class*="border-[#d9b59e]"],
+  [class*="border-[#d8c8c7]"],
+  [class*="border-[#eadedb]"],
+  [class*="border-[#ecdfdc]"],
+  [class*="border-[#f0e6e2]"]
+) { border-color: #cfe0d8 !important; }
+
+.lodge-food-beverage-hub :is(
+  [class*="bg-[#fffaf7]"],
+  [class*="bg-[#fff8f3]"],
+  [class*="bg-[#f6eee9]"]
+) { background-color: #fff !important; background-image: none !important; }
+
+.lodge-food-beverage-hub :is([class*="bg-[#e8994e]"], [class*="bg-[#c96b3e]"]) {
+  color: #fff !important;
+}
+
+.lodge-food-beverage-hub :is(input, select, textarea):focus {
+  border-color: #248064 !important;
+  box-shadow: 0 0 0 3px rgba(36, 128, 100, .14) !important;
+}
+
+/* ── F&B progressive activation: complete lodge token adapter ─────────────
+   Every embedded restaurant primitive below .lodge-food-beverage-hub renders
+   in LodgingOS surface tokens only: emerald primary/active/success, slate
+   navigation/text/neutral, white + light slate/emerald surfaces. Amber and
+   red appear only for genuine warnings or destructive actions. No plum,
+   copper, beige gradients, or restaurant typography may render here. The
+   standalone Restaurant & Bar product keeps its own theme untouched. */
+
+/* Beige / warm surfaces → white or light emerald */
+.lodge-food-beverage-hub :is(
+  [class*="bg-[#fff7f2]"],
+  [class*="bg-[#fdf6f0]"],
+  [class*="bg-[#fef9f4]"],
+  [class*="bg-[#fffdfb]"],
+  [class*="bg-[#fffdf9]"],
+  [class*="bg-[#fffefb]"],
+  [class*="bg-[#fbf8f9]"],
+  [class*="bg-[#f8e5dd]"],
+  [class*="bg-[#f2e7df]"],
+  [class*="bg-[#eadbd3]"],
+  [class*="bg-[#efe4de]"],
+  [class*="bg-[#f6eee9]"],
+  [class*="bg-[#f6eee8]"]
+) { background-color: #fff !important; background-image: none !important; }
+
+/* Warm muted text → lodge slate */
+.lodge-food-beverage-hub :is(
+  [class*="text-[#795f68]"],
+  [class*="text-[#675b62]"],
+  [class*="text-[#51454d]"],
+  [class*="text-[#766971]"],
+  [class*="text-[#81747c]"],
+  [class*="text-[#91838a]"],
+  [class*="text-[#897c83]"],
+  [class*="text-[#867981]"],
+  [class*="text-[#87544e]"],
+  [class*="text-[#725c57]"]
+) { color: #52655e !important; }
+
+/* Warm borders → lodge line */
+.lodge-food-beverage-hub :is(
+  [class*="border-[#d8c0b9]"],
+  [class*="border-[#e3cfc4]"],
+  [class*="border-[#ead5c8]"],
+  [class*="border-[#efddd4]"],
+  [class*="border-[#ede4e1]"],
+  [class*="border-[#eeded6]"],
+  [class*="border-[#e4c6b9]"],
+  [class*="border-[#e6b7a7]"],
+  [class*="border-[#d9c7bc]"]
+) { border-color: #cfe0d8 !important; }
+
+/* Plum / copper gradients → flat lodge emerald */
+.lodge-food-beverage-hub :is(
+  [class*="linear-gradient(135deg,#261b23"],
+  [class*="linear-gradient(135deg,#351d22"],
+  [class*="linear-gradient(135deg,#30212a"],
+  [class*="from-[#"],
+  [class*="to-[#764335"]
+) { background-image: linear-gradient(135deg, #123d38, #1f725d) !important; }
+
+/* Coral / copper buttons → emerald primary */
+.lodge-food-beverage-hub :is(
+  .bb-card > button.bb-btn-primary,
+  button.restaurant-primary-action,
+  .restaurant-staff-add,
+  .restaurant-staff-tab-active
+) {
+  background-color: #047857 !important;
+  background-image: none !important;
+  color: #fff !important;
+  box-shadow: 0 1px 2px rgba(4, 120, 87, .25) !important;
+}
+
+/* Restaurant hero / header plum → lodge emerald (single title, no banner) */
+.lodge-food-beverage-hub :is(
+  .restaurant-native-hero,
+  .restaurant-staff-workspace .bb-page-header
+) {
+  background-color: #134e4a !important;
+  background-image: linear-gradient(135deg, #123d38, #1f725d) !important;
+  border-color: #0f766e !important;
+}
+.lodge-food-beverage-hub :is(.restaurant-native-hero h1, .restaurant-native-hero h2) {
+  font-family: inherit !important;
+  letter-spacing: -0.01em !important;
+}
+
+/* ── Compact hierarchy: buttons / fields / modals / tables / empty / error ── */
+.lodge-food-beverage-hub .bb-btn-primary {
+  min-height: 44px;
+  border-radius: 12px !important;
+  font-weight: 700 !important;
+}
+.lodge-food-beverage-hub .bb-btn-outline {
+  min-height: 44px;
+  border-radius: 12px !important;
+  border-color: #cbd5e1 !important;
+  color: #334155 !important;
+  font-weight: 700 !important;
+}
+.lodge-food-beverage-hub :is(.bb-input, .input, input:not([type="checkbox"]):not([type="radio"]), select) {
+  min-height: 44px;
+}
+/* Form stack applies through .fnb-field only: a blanket descendant-label rule
+   would override intentional flex checkbox/toggle layouts. */
+.lodge-food-beverage-hub .fnb-field {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+.lodge-food-beverage-hub table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.lodge-food-beverage-hub thead { position: sticky; top: 0; z-index: 1; background: #f8fafc !important; }
+.lodge-food-beverage-hub thead th {
+  color: #475569 !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.lodge-food-beverage-hub tbody td { vertical-align: middle; }
+.lodge-food-beverage-hub tbody td[class*="text-right"], .lodge-food-beverage-hub td.tabular-nums { text-align: right; font-variant-numeric: tabular-nums; }
+.lodge-food-beverage-hub .restaurant-native-empty {
+  border-color: #cbd5e1 !important;
+  background: #f8fafc !important;
+  color: #64748b !important;
+}
+.lodge-food-beverage-hub .fixed.inset-0 { background: rgba(15, 23, 42, .5) !important; backdrop-filter: none; }
+.lodge-food-beverage-hub .fixed.inset-0 > .bg-white {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, .25) !important;
+}
+
+@media (max-width: 720px) {
+  .lodge-food-beverage-hub table thead { position: static; }
+  .lodge-food-beverage-hub .fnb-table-cards tbody { display: grid; gap: 8px; }
+  .lodge-food-beverage-hub .fnb-table-cards tbody tr { display: grid; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff; }
+}

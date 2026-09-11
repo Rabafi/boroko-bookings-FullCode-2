@@ -57,6 +57,47 @@ test('Bar Base hides and rejects voucher/tip tenders while eligible add-ons rema
   assert.equal(isCommercialFeatureIncluded('restaurant-product', 'restaurant_growth', 'tips_payouts'), true)
 })
 
+test('Bar base open-tab sales are not blocked by the restaurant tables gate', () => {
+  // Bar POS base sells via Counter + Open tab and includes `tabs` but
+  // deliberately excludes restaurant floor `tables`. The table-session IPC
+  // backs both flows, so it must accept either feature.
+  assert.equal(isCommercialFeatureIncluded('hospitality-pos', 'bar_pos', 'tabs'), true)
+  assert.equal(isCommercialFeatureIncluded('hospitality-pos', 'bar_pos', 'tables'), false)
+  const main = read('src/main/index.js')
+  assert.match(main, /requireTablesOrTabsFeature/)
+  assert.match(main, /pos:openTableSession[\s\S]{0,400}requireTablesOrTabsFeature/)
+})
+
+test('reopened tab saves preserve the loaded version before the RPC response', () => {
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  const lodgePos = read('src/renderer/src/components/POS.jsx')
+  const domain = read('src/main/domains/pos.js')
+
+  // Both terminal surfaces must send the optimistic version and retain it as
+  // tab_version; the domain must reject an existing tab with no version rather
+  // than silently defaulting it to v1.
+  assert.match(terminal, /expected_version: location\.state\?\.tabVersion \?\? selectedOpenTab\?\.tab_version \?\? undefined,/)
+  assert.match(terminal, /tab_version: location\.state\?\.tabVersion \?\? selectedOpenTab\?\.tab_version \?\? undefined,/)
+  assert.match(lodgePos, /expected_version: activeTabId \? \(currentOpenTab\?\.tab_version \?\? currentOpenTab\?\.version \?\? null\) : null,/)
+  assert.match(lodgePos, /tab_version: activeTabId \? \(currentOpenTab\?\.tab_version \?\? currentOpenTab\?\.version \?\? null\) : undefined,/)
+  assert.match(domain, /code: 'tab_version_required'/)
+  assert.match(domain, /expected_version: hasExistingId \? parsedVersion : null,/ )
+  assert.match(domain, /tab_version: hasExistingId \? parsedVersion : 1/ )
+})
+
+test('rejected tab saves restore the pre-save cache instead of losing the open check', () => {
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /const localRowsBeforeSave = readPosTabs\(\)/)
+  assert.match(domain, /const previousLocalTab = hasExistingId[\s\S]*localRowsBeforeSave\.find/ )
+  assert.match(domain, /const restoreLocalTabAfterRejectedSave = \(\) => \{/ )
+  assert.match(domain, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: rpcData\?\.error/ )
+  assert.match(domain, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: error\?\.message/ )
+  // A genuinely new optimistic tab has no previous row and is removed by the
+  // same helper; only an existing row is restored.
+  assert.match(domain, /const currentRows = readPosTabs\(\)\.filter\(\(entry\) => entry\.id !== id\)/)
+  assert.match(domain, /if \(previousLocalTab\) \{/ )
+})
+
 test('desktop and Legacy POS enforce the same Base tender boundary before queueing', () => {
   const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
   const legacyTerminal = read('legacy-pos/src/renderer/src/screens/POSTerminal.jsx')
@@ -113,8 +154,23 @@ test('provisional offline Till unlock remains usable for counter sales but not B
   assert.match(main, /const provisionalOfflineUnlock = result\.offline === true/)
   assert.match(main, /String\(data\?\.service_mode \|\| ''\)\.toLowerCase\(\) === 'tab'/)
   assert.match(main, /if \(tabProofError\) return tabProofError/)
-  assert.match(terminal, /openTableSession/)
   assert.match(terminal, /servicePayload\.openSession/)
+})
+
+test('tab payment is one authorized call so Strict mode survives it', () => {
+  // completeOrder used to call openTableSession (consumes Strict) and then
+  // createOrder (no session left). Tab resolution now happens inside
+  // create_pos_order_v3, so the terminal makes exactly one gated call whose
+  // tab identity is resolved fail-closed (exact resumed id or block) and
+  // whose name-resolution path is explicitly flagged for the server.
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  assert.doesNotMatch(terminal, /\.openTableSession\(/)
+  assert.equal((terminal.match(/window\.api\.pos\.createOrder\(/g) || []).length, 1)
+  assert.match(terminal, /resolveResumedTabPayment\(\{/)
+  assert.match(terminal, /resumeIntent: location\.state\?\.resumeIntent === true/)
+  assert.match(terminal, /tab_id: tabId,/)
+  assert.match(terminal, /expected_tab_version: tabPayment\.expectedVersion/)
+  assert.match(terminal, /resolve_tab: servicePayload\.openSession/)
 })
 
 test('forward tender repair resolves replay before the Base entitlement guard', () => {

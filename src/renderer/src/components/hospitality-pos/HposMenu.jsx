@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import {
   Archive,
   Boxes,
@@ -24,6 +24,7 @@ import {
 } from "../../../../shared/barModeProfile";
 import { getCommercialFeatureSet } from "../../../../shared/commercialAccess";
 import { createBarcodeScannerDecoder } from "../../../../shared/barcodeScanner";
+import HposProductWizard from "./HposProductWizard";
 
 const RESTAURANT_MENU_SECTIONS = [
   "Breakfast",
@@ -44,6 +45,7 @@ const RECIPE_REQUIRED_SECTIONS = new Set([
   "cocktails",
   "food",
 ]);
+const DEFAULT_RECIPE_DEEP_LINK = '/restaurant/menu-production?tab=recipes';
 const categoryRequiresRecipe = (category) =>
   RECIPE_REQUIRED_SECTIONS.has(String(category || "").trim().toLowerCase());
 // Every available item must have one stock method: a direct stock link or a recipe.
@@ -52,6 +54,7 @@ function MenuItemCard({
   item,
   onEdit,
   onDelete,
+  onReceive,
   onToggleAvailability,
   availabilityBusy,
   barOnly,
@@ -122,6 +125,16 @@ function MenuItemCard({
           >
             <Edit2 size={14} /> Edit
           </button>
+          {barOnly && stockMethod === "direct" && item.inventory_item_id && (
+            <button
+              type="button"
+              aria-label={`Receive stock for ${item.name}`}
+              onClick={() => onReceive?.(item)}
+              title="Receive a delivery for the linked stock item"
+            >
+              <Boxes size={14} /> Receive
+            </button>
+          )}
           <button
             type="button"
             className="is-danger"
@@ -206,8 +219,9 @@ const emptyDraft = () => ({
   pack24Barcode: "",
 });
 
-export default function HposMenu() {
+export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { settings } = useSettings();
   const access = useAccess();
   const barOnly = isBarOnlyMode(settings);
@@ -218,6 +232,8 @@ export default function HposMenu() {
         access?.entitlement?.product_id || "hospitality-pos",
         access?.entitlement?.commercial_package_key,
         access?.entitlement?.enterprise_addons || [],
+        access?.entitlement,
+        access?.entitlement?.lodge_id || null
       ),
     [access?.entitlement],
   );
@@ -248,6 +264,87 @@ export default function HposMenu() {
   const barcodeInputRef = useRef(null);
   const packBarcodeInputRefs = useRef({});
   const [availabilityBusyId, setAvailabilityBusyId] = useState(null);
+  // Unified wizard (Bar): same flow as Stock. Legacy editor stays for
+  // restaurant mode.
+  const [wizard, setWizard] = useState(null);
+
+  // Till unknown-barcode entry: open the wizard with the scanned code.
+  useEffect(() => {
+    if (barOnly && location.state?.createBarcode && !wizard) {
+      setWizard({ initialBarcode: String(location.state.createBarcode) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [barOnly, location.state?.createBarcode]);
+
+  const closeWizard = () => {
+    setWizard(null);
+    if (location.state?.createBarcode) {
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  };
+
+  const openWizardFor = (product = null) => {
+    const stock = product?.inventory_item_id
+      ? inventoryItems.find((row) => String(row.id) === String(product.inventory_item_id)) || null
+      : null;
+    // Hydrate existing packs, barcodes and availability so unchanged edits
+    // preserve the current configuration instead of resetting it.
+    const packs = { pack6: false, pack12: false, pack24: false, pack6Barcode: "", pack12Barcode: "", pack24Barcode: "" };
+    if (product?.inventory_item_id) {
+      for (const row of items) {
+        if (row.inventory_item_id === product.inventory_item_id && row.template_kind === "bar_pack") {
+          if (Number(row.template_pack_size) === 6) {
+            packs.pack6 = true;
+            packs.pack6Barcode = row.barcode || "";
+          }
+          if (Number(row.template_pack_size) === 12) {
+            packs.pack12 = true;
+            packs.pack12Barcode = row.barcode || "";
+          }
+          if (Number(row.template_pack_size) === 24) {
+            packs.pack24 = true;
+            packs.pack24Barcode = row.barcode || "";
+          }
+        }
+      }
+    }
+    setWizard({
+      initialBarcode: "",
+      initialProduct: product,
+      initialStock: stock,
+      initialPacks: packs,
+      initialAvailable: product ? product.is_available !== false && product.available !== false : true,
+      hasRecipe: product ? recipeMenuItemIds.has(product.id) : false,
+    });
+  };
+
+  // Interrupted product saves and pending publications stay recoverable
+  // after the wizard closes (per-operation retry, never a blind resubmit).
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const refreshPendingRequests = async () => {
+    try {
+      const result = await window.api?.pos?.getProductRequestStatus?.();
+      setPendingRequests(Array.isArray(result?.requests) ? result.requests : []);
+    } catch {
+      setPendingRequests([]);
+    }
+  };
+  useEffect(() => {
+    if (barOnly) refreshPendingRequests();
+  }, [barOnly]);
+  const retryRequest = async (operationKey) => {
+    setSaveError("");
+    try {
+      const result = await window.api?.pos?.retryProductRequest?.(operationKey);
+      if (!result?.success) throw new Error(result?.error || "Retry did not complete.");
+      setActionNotice("Save replayed under its original key.");
+      await loadMenu();
+      await refreshPendingRequests();
+    } catch (error) {
+      setSaveError(error?.message || "Retry did not complete.");
+      await refreshPendingRequests();
+    }
+  };
   const [showArchived, setShowArchived] = useState(false);
   const [showModifiers, setShowModifiers] = useState(false);
   const [modifierGroups, setModifierGroups] = useState([]);
@@ -337,7 +434,13 @@ export default function HposMenu() {
           ]);
         if (!active) return;
         setItems(Array.isArray(menuData) ? menuData : []);
-        setInventoryItems(Array.isArray(inventoryRows) ? inventoryRows : []);
+        // Delisted stock (product deleted, nothing else references it) stays
+        // out of link/edit pickers; its rows and history remain server-side.
+        setInventoryItems(
+          (Array.isArray(inventoryRows) ? inventoryRows : []).filter(
+            (row) => row?.is_active !== false,
+          ),
+        );
         setOutlets(Array.isArray(outletRows) ? outletRows : []);
         setModifierGroups(Array.isArray(modifierRows) ? modifierRows : []);
         setRecipeMenuItemIds(
@@ -372,6 +475,11 @@ export default function HposMenu() {
   }, []);
 
   const openCreate = () => {
+    if (barOnly) {
+      setSaveError("");
+      setWizard({ initialBarcode: "" });
+      return;
+    }
     setSaveError("");
     setBarcodeScanStatus("");
     setBarcodeCaptureActive(false);
@@ -382,6 +490,11 @@ export default function HposMenu() {
   };
 
   const openEdit = (item) => {
+    if (barOnly) {
+      setSaveError("");
+      openWizardFor(item);
+      return;
+    }
     setSaveError("");
     setBarcodeScanStatus("");
     setBarcodeCaptureActive(false);
@@ -505,7 +618,8 @@ export default function HposMenu() {
       setEditing(null);
       await loadMenu();
       if (isRecipe && menuItemId) {
-        navigate(`/restaurant/menu-production?tab=recipes&menu_item_id=${encodeURIComponent(menuItemId)}&recipe_name=${encodeURIComponent(draft.name.trim())}`);
+        const recipeBase = recipeRoute === '/restaurant/menu-production' ? DEFAULT_RECIPE_DEEP_LINK : `${recipeRoute}?tab=recipes`;
+        navigate(`${recipeBase}&menu_item_id=${encodeURIComponent(menuItemId)}&recipe_name=${encodeURIComponent(draft.name.trim())}`);
       }
     } catch (error) {
       setSaveError(error?.message || "Could not save this product.");
@@ -527,7 +641,9 @@ export default function HposMenu() {
       setActionNotice(
         result?.soft_deleted
           ? "Item archived because it has sale history."
-          : "Item deleted.",
+          : result?.stock_delisted
+            ? "Product deleted and its stock item delisted. Movement history is preserved for audit."
+            : "Item deleted.",
       );
       await loadMenu();
     } catch (error) {
@@ -540,7 +656,7 @@ export default function HposMenu() {
     setSaveError("");
     setAvailabilityBusyId(item.id);
     try {
-      await window.api.pos.updateMenuItem(item.id, {
+      const result = await window.api.pos.updateMenuItem(item.id, {
         name: item.name,
         category: item.category || defaultCategory,
         price: Number(item.price || 0),
@@ -554,6 +670,9 @@ export default function HposMenu() {
         kitchen_station_id: item.kitchen_station_id || null,
         is_available: !isAvailable,
       });
+      if (!result?.success) {
+        throw new Error(result?.error || "Could not update item availability.");
+      }
       setItems((current) =>
         current.map((row) =>
           row.id === item.id
@@ -782,6 +901,27 @@ export default function HposMenu() {
           {actionNotice}
         </div>
       )}
+      {barOnly && pendingRequests.length > 0 && (
+        <div className="hpos-inline-notice" role="status">
+          <strong>
+            {pendingRequests.length} interrupted save{pendingRequests.length === 1 ? "" : "s"} waiting
+          </strong>{" "}
+          — retry replays the original save under its own key, never a duplicate.
+          {pendingRequests.map((request) => (
+            <span key={request.operation_key} style={{ display: "block", marginTop: 6 }}>
+              {request.name} · {request.state}
+              {request.publication && request.publication !== "published" ? ` · publication ${request.publication}` : ""}
+              {request.error ? ` · ${request.error}` : ""}{" "}
+              <button
+                type="button"
+                onClick={() => retryRequest(request.operation_key)}
+              >
+                Retry this save
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {saveError && !editing && (
         <div className="hpos-inline-error">{saveError}</div>
       )}
@@ -812,6 +952,11 @@ export default function HposMenu() {
               item={item}
               onEdit={openEdit}
               onDelete={deleteItem}
+              onReceive={(entry) => {
+                if (entry?.inventory_item_id) {
+                  navigate("/hpos/stock", { state: { receiveStockId: entry.inventory_item_id } });
+                }
+              }}
               onToggleAvailability={toggleAvailability}
               availabilityBusy={availabilityBusyId === item.id}
               barOnly={barOnly}
@@ -819,6 +964,21 @@ export default function HposMenu() {
             />
           ))}
         </section>
+      )}
+
+      {wizard && barOnly && (
+        <HposProductWizard
+          initialBarcode={wizard.initialBarcode || ""}
+          initialProduct={wizard.initialProduct || null}
+          initialStock={wizard.initialStock || null}
+          hasRecipe={wizard.hasRecipe === true}
+          onEditExisting={(duplicate) => openWizardFor(duplicate)}
+          onClose={closeWizard}
+          onSaved={() => {
+            loadMenu();
+            refreshPendingRequests();
+          }}
+        />
       )}
 
       {editing && (

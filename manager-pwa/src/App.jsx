@@ -32,6 +32,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Rooms = lazy(() => import('./pages/Rooms'))
 const Bookings = lazy(() => import('./pages/Bookings'))
 const Reports = lazy(() => import('./pages/Reports'))
+const Performance = lazy(() => import('./pages/Performance'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const Money = lazy(() => import('./pages/Money'))
 const More = lazy(() => import('./pages/More'))
@@ -1014,7 +1015,7 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
     )
   }
 
-  if (entitlement?.effective_features?.pwa === false) {
+  if (!entitlement || entitlement.entitlement_unverified === true || entitlement?.effective_features?.pwa !== true) {
     return <ManagerPwaPlanLocked />
   }
 
@@ -1068,6 +1069,7 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
           <Route path="/rooms" element={<ProductRouteGuard path="/rooms" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Rooms /></Suspense></ProductRouteGuard>} />
           <Route path="/bookings" element={<ProductRouteGuard path="/bookings" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Bookings /></Suspense></ProductRouteGuard>} />
           <Route path="/reports" element={<Suspense fallback={<PageLoader />}><Guard capability="reports.view"><Reports /></Guard></Suspense>} />
+          <Route path="/performance" element={<Suspense fallback={<PageLoader />}><Guard capability="dashboard.view"><Performance /></Guard></Suspense>} />
           <Route path="/alerts" element={<Suspense fallback={<PageLoader />}><Alerts onCountChange={setAlertCount} /></Suspense>} />
           <Route path="/money" element={<Suspense fallback={<PageLoader />}><Money /></Suspense>} />
           <Route path="/more" element={<Suspense fallback={<PageLoader />}><More /></Suspense>} />

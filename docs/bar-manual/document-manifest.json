@@ -1,0 +1,23 @@
+{
+  "productId": "hospitality-pos",
+  "operatingMode": "bar_only",
+  "appVersion": "1.5.7",
+  "supportedVersionRange": "1.5.7",
+  "reviewDate": "2026-09-09",
+  "documents": [
+    {
+      "id": "bar-manual",
+      "revision": "bar-manual-2026.09.09",
+      "label": "Bar customer manual",
+      "filename": "Tsa-Bonno-Bar-Customer-Manual.pdf",
+      "sha256": "682AB70A868C706B9AB0DDE18A1272F40791B968B91963F62D481B6FD79C3356"
+    },
+    {
+      "id": "bar-quick-start",
+      "revision": "bar-quick-start-2026.09.09",
+      "label": "Bar quick-start",
+      "filename": "Tsa-Bonno-Bar-Quick-Start.pdf",
+      "sha256": "DE66637B4C8D2E1A44F1F8E2943D9A88C3784838F317B0C55E2F6434AE0C350B"
+    }
+  ]
+}

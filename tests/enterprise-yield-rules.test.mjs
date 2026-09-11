@@ -293,13 +293,13 @@ test('preload includes getOccupancyForecast in rateCalendar section', () => {
 })
 
 test('preload rateCalendar section bridges to correct IPC channels', () => {
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:getYieldRules'"), 'getYieldRules must bridge to rateCalendar:getYieldRules')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:createYieldRule'"), 'createYieldRule must bridge to rateCalendar:createYieldRule')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:updateYieldRule'"), 'updateYieldRule must bridge to rateCalendar:updateYieldRule')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:deleteYieldRule'"), 'deleteYieldRule must bridge to rateCalendar:deleteYieldRule')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:getApplicableYieldAdjustment'"), 'getApplicableYieldAdjustment must bridge to rateCalendar:getApplicableYieldAdjustment')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:calculateOccupancyBasedRate'"), 'calculateOccupancyBasedRate must bridge to rateCalendar:calculateOccupancyBasedRate')
-  assert.ok(preloadSource.includes("ipcRenderer.invoke('rateCalendar:getOccupancyForecast'"), 'getOccupancyForecast must bridge to rateCalendar:getOccupancyForecast')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:getYieldRules'"), 'getYieldRules must bridge to rateCalendar:getYieldRules')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:createYieldRule'"), 'createYieldRule must bridge to rateCalendar:createYieldRule')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:updateYieldRule'"), 'updateYieldRule must bridge to rateCalendar:updateYieldRule')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:deleteYieldRule'"), 'deleteYieldRule must bridge to rateCalendar:deleteYieldRule')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:getApplicableYieldAdjustment'"), 'getApplicableYieldAdjustment must bridge to rateCalendar:getApplicableYieldAdjustment')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:calculateOccupancyBasedRate'"), 'calculateOccupancyBasedRate must bridge to rateCalendar:calculateOccupancyBasedRate')
+  assert.ok(preloadSource.includes("invoke('rateCalendar:getOccupancyForecast'"), 'getOccupancyForecast must bridge to rateCalendar:getOccupancyForecast')
 })
 
 // ── DEV_ENTERPRISE_PREVIEW_CAPABILITIES ───────────────────────────────────────

@@ -128,13 +128,19 @@ export function getStoredEntitlement(lodgeId = getSession()?.lodge_id) {
 
   const offlineValidUntil = entitlement.offline_valid_until
     || entitlement.offlineValidUntil
-    || (entitlement.cached_at
-      ? new Date(new Date(entitlement.cached_at).getTime() + (7 * 24 * 60 * 60 * 1000)).toISOString()
-      : null)
-  if (!offlineValidUntil) return entitlement
+  // A cache timestamp is not an entitlement lease.  Without a server-issued
+  // lease, an offline client must fail closed rather than inventing access.
+  if (!offlineValidUntil) return null
 
   const validUntil = new Date(offlineValidUntil)
-  if (!Number.isFinite(validUntil.getTime()) || validUntil >= new Date()) return entitlement
+  if (Number.isFinite(validUntil.getTime()) && validUntil >= new Date()) {
+    return {
+      ...entitlement,
+      offline_valid_until: validUntil.toISOString(),
+      source: entitlement.source || 'offline_lease',
+      offline: true
+    }
+  }
 
   return {
     ...entitlement,

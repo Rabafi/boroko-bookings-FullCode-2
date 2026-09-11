@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, CreditCard, DoorClosed, DoorOpen, ExternalLi
 import { useNavigate } from 'react-router'
 import { useSettings } from '../app-context'
 import { formatLocalDate, localToday } from '../utils/localDate'
+import { getBookingFinancialView, bookingPaymentStatusLabel } from '../../../shared/bookingFinancials.js'
 
 const DAYS_SHOWN = 14
 
@@ -58,14 +59,8 @@ const HOUSEKEEPING = {
   }
 }
 
-const PAYMENT_STATUS_LABELS = {
-  paid: 'Paid',
-  partial: 'Part Paid',
-  unpaid: 'Unpaid'
-}
-
 function bookingOutstandingAmount(booking) {
-  return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
+  return getBookingFinancialView(booking).outstanding
 }
 
 function formatMoney(currency, amount) {
@@ -185,10 +180,8 @@ function RoomRow({ room, bookings, locks, days, today, currency, onSelect }) {
 
 function BookingPopup({ booking, currency, today, actionLoading, onClose, onOpenBooking, onCollectPayment, onStatusChange }) {
   const nights = Math.max(0, daysBetween(booking.check_in, booking.check_out))
-  const total = Number(booking.total_amount || 0)
-  const charges = Number(booking.charges_total || 0)
-  const paid = Number(booking.amount_paid || 0)
-  const outstanding = bookingOutstandingAmount(booking)
+  const financial = getBookingFinancialView(booking)
+  const { total, charges, amountPaid: paid, outstanding } = financial
   const housekeeping = HOUSEKEEPING[booking.housekeeping_status || 'clean'] || HOUSEKEEPING.clean
   const statusLabels = {
     confirmed: 'Confirmed',
@@ -224,7 +217,12 @@ function BookingPopup({ booking, currency, today, actionLoading, onClose, onOpen
           <Row label="Extras" value={formatMoney(currency, charges)} />
           <Row label="Paid" value={formatMoney(currency, paid)} />
           <Row label="Balance" value={formatMoney(currency, outstanding)} valueClassName={outstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} />
-          <Row label="Payment" value={PAYMENT_STATUS_LABELS[booking.payment_status] || booking.payment_status || 'Unpaid'} />
+          <Row label="Payment" value={bookingPaymentStatusLabel(booking)} valueClassName={financial.pending ? 'text-amber-700' : 'text-gray-800'} />
+          {financial.pending ? (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-700">
+              Money shown here is a local estimate until the server confirms sync.
+            </p>
+          ) : null}
           {booking.notes ? <Row label="Notes" value={booking.notes} /> : null}
         </div>
 
