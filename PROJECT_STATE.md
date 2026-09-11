@@ -1,6 +1,12 @@
 # Tsa Bonno HospitalityOS Project State
 
-## 2026-09-11 — Base Bar no-stock products for in-house food (local; zero SQL)
+## 2026-09-11 — Auto-menu sync no longer mints duplicates for wizard-covered stock (deployed to linked oicgpknsmtvcsjacymum)
+
+- Incident: renaming wizard-made stock in Stock re-ran `sync_inventory_item_to_pos`, which found no auto row and inserted a new auto sellable, duplicating the wizard product(s) at the Till (Russian/Russian Half case).
+- Fix as `20260912000000_bar_sync_skip_covered_stock.sql`: the INSERT branch now fires only when no `pos_menu_items` row of any kind references the stock. Early-return cleanup, in-place auto-row maintenance, and standalone-stock minting are byte-identical to `20260911000000`. No privilege statements in the file (`CREATE OR REPLACE` keeps existing access); pinned by contract test.
+- Deployment: linked project `oicgpknsmtvcsjacymum` (this worktree's app target) was at parity through `20260911000000`, so the push applied exactly this one migration. Post-checks: `migration list` parity through `20260912000000`, dry-run `Remote database is up to date`, `db lint --level error` zero errors. Live function-body read-back was not performed (no SQL console path from here); evidence is push success + parity + lint + static contract tests.
+- Operator note: the already-minted auto `Russian` row is not removed by this migration — delete it once from Products (its stock stays listed via the Half), then add Russian Full. Future stock edits will no longer re-mint it.
+- Evidence: `bar-product-contracts` +1 block; full `test:bar` 438/440 with only the 2 pre-existing `bar-guides-contract` PDF-checksum failures. Bar manual impact: none beyond the existing rename guidance (no new operator workflow).
 
 - In-house food cooked by the tray (hundreds of fatcakes a day) can now skip stock entirely: the Bar wizard's Stock source offers No stock tracking, persisted as `stock_method = 'non_stock'` through the existing `create/update_pos_menu_item` contracts (tip definitions from `20260716025000` accept and store it; the Till/readiness path already sells it with no depletion). No migration written or deployed.
 - Server-shape findings pinned by tests rather than new SQL: outlet stays null on create (the current tip has no beverage-outlet guard; null-outlet items pass the Till outlet filter so fatcakes sell at the Bar), edits keep the existing outlet scope, recipe-forced sections (breakfast/starters/mains/sides/desserts/cocktails/food) fail closed client-side because the server would silently force the recipe method, and linking from a stockless product now offers the selected row's version instead of a null that the server rejects.

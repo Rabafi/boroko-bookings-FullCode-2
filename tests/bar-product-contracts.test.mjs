@@ -373,3 +373,29 @@ test('Till enforces readiness and requirements before Hold and Pay', () => {
   assert.match(source, /payModifierCheck/)
   assert.match(source, /refreshReadiness/)
 })
+
+test('auto-menu sync never mints duplicates for wizard-covered stock', () => {
+  // The Russian rename incident: editing a wizard-made stock item re-ran the
+  // stock-update sync, which found no auto row and inserted a brand-new auto
+  // sellable duplicating the wizard product(s) at the Till.
+  const sql = migrations('20260912000000_bar_sync_skip_covered_stock.sql')
+  assert.match(sql, /create or replace function public\.sync_inventory_item_to_pos\(p_inventory_id uuid, p_lodge_id uuid\)/)
+  // Delisted/off-outlet stock still clears its auto rows and returns early.
+  assert.match(sql, /coalesce\(v_item\.is_active, true\) is false/)
+  assert.match(sql, /and auto_from_inventory = true;\s*return;/)
+  // Existing auto rows are still maintained in place, auto rows only.
+  assert.match(sql, /and auto_from_inventory = true\s*and coalesce\(template_kind, 'standard'\) in \('standard', 'bar_single'\)/)
+  // The mint fires only when nothing references the stock: any
+  // pos_menu_items row (wizard products included, archived included) blocks
+  // it, matching the delist migration's definition of kept-in-service.
+  assert.match(sql, /if v_rows_updated = 0 and not exists \(\s*select 1 from public\.pos_menu_items\s+where lodge_id = p_lodge_id\s+and inventory_item_id = p_inventory_id\s*\) then/)
+  // Privilege safety: replace keeps existing access, and this file must
+  // issue no privilege statements of its own.
+  assert.doesNotMatch(sql, /revoke/i)
+  assert.doesNotMatch(sql, /grant\s+(all|execute|select|insert|update|delete)/i)
+  // No other writes: the single product delete stays the auto-row cleanup,
+  // and stock flags plus movement history are never written here.
+  assert.equal([...sql.matchAll(/delete from public\.pos_menu_items/g)].length, 1)
+  assert.doesNotMatch(sql, /set is_active/)
+  assert.doesNotMatch(sql, /inventory_movements/)
+})
