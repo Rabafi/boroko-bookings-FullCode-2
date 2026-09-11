@@ -135,3 +135,10 @@ test('menu list read carries stock_method so non-stock never reads as missing', 
   const domain = read('src/main/domains/pos.js')
   assert.match(domain, /barcode, stock_method, inventory_item_id/)
 })
+
+test('save-and-add-another reloads lists so new stock is linkable', () => {
+  const source = wizard()
+  assert.match(source, /const refreshLists = async \(\)/)
+  assert.match(source, /getMenuItems\?\.\(\) \?\? \[\]/)
+  assert.match(source, /await refreshLists\(\)\.catch\(\(\) => \{\}\)/)
+})

@@ -130,23 +130,31 @@ export default function HposProductWizard({
     setUnknownOutcome(false);
   };
 
-  useEffect(() => {
-    let active = true;
-    Promise.all([
+  // Shared by the mount load and post-save refresh: after "Save & add
+  // another" the just-created stock must appear in Link existing stock
+  // instead of waiting for the wizard to be closed and reopened.
+  const refreshLists = async () => {
+    const [menu, stock, outletRows] = await Promise.all([
       window.api?.pos?.getMenuItems?.() ?? [],
       window.api?.inventory?.getItems?.() ?? [],
       window.api?.outlets?.getAll?.() ?? [],
-    ])
-      .then(([menu, stock, outletRows]) => {
+    ]);
+    setMenuItems(Array.isArray(menu) ? menu : []);
+    // Delisted stock is never offered for linking: deleting its product
+    // delists it, and re-creating the product mints fresh stock instead.
+    setInventoryItems(
+      (Array.isArray(stock) ? stock : []).filter((row) => row?.is_active !== false),
+    );
+    const rows = Array.isArray(outletRows) ? outletRows : [];
+    setOutlets(rows);
+    return rows;
+  };
+
+  useEffect(() => {
+    let active = true;
+    refreshLists()
+      .then((rows) => {
         if (!active) return;
-        setMenuItems(Array.isArray(menu) ? menu : []);
-        // Delisted stock is never offered for linking: deleting its product
-        // delists it, and re-creating the product mints fresh stock instead.
-        setInventoryItems(
-          (Array.isArray(stock) ? stock : []).filter((row) => row?.is_active !== false),
-        );
-        const rows = Array.isArray(outletRows) ? outletRows : [];
-        setOutlets(rows);
         if (!editing && !form.outletId) {
           const beverage = rows.find((outlet) => outlet?.type === "beverage" && outlet?.is_active !== false);
           if (beverage) set({ outletId: beverage.id });
@@ -410,6 +418,9 @@ export default function HposProductWizard({
         ? { ...emptyForm(), operationKey: newOperationKey(), category: form.category, unit: form.unit, outletId: form.outletId, mode: form.mode, stockChoice: form.stockChoice }
         : null;
       if (keep) {
+        // Reload so the stock (and product) just created is linkable and
+        // duplicate-checked in the next round without reopening the wizard.
+        await refreshLists().catch(() => {});
         setForm(keep);
         onSaved?.({ success: true }, { addAnother: true });
       } else {
