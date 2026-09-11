@@ -271,14 +271,14 @@ export default function HposProductWizard({
     if (form.stockChoice === "none") {
       return "No stock tracking: each sale records revenue only and depletes nothing. Mark the product unavailable yourself when the tray runs out.";
     }
-    const unit = form.unit || "unit";
+    const unit = (form.stockChoice === "link" ? linkedStock?.unit : null) || form.unit || "unit";
     const perSale = Number.isFinite(depletion) && depletion > 0 ? depletion : 1;
     const packs = BAR_PACK_SIZES.filter((size) => form[`pack${size}`]);
     const packText = packs.length && outletIsBeverage
       ? ` A ${packs.map((size) => (size === 24 ? "case of 24" : `${size}-pack`)).join(", ")} removes ${packs.join(", ")} ${unit}s.`
       : "";
     return `One sale removes ${perSale} ${unit}${perSale === 1 ? "" : "s"}.${packText}`;
-  }, [form, depletion, outletIsBeverage]);
+  }, [form, depletion, outletIsBeverage, linkedStock]);
 
   const validate = () => {
     if (!form.name.trim()) return "Enter the product name.";

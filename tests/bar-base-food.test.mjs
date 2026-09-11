@@ -136,6 +136,11 @@ test('menu list read carries stock_method so non-stock never reads as missing', 
   assert.match(domain, /barcode, stock_method, inventory_item_id/)
 })
 
+test('review sentence uses the linked stock unit, not the form default', () => {
+  const source = wizard()
+  assert.match(source, /\(form\.stockChoice === "link" \? linkedStock\?\.unit : null\) \|\| form\.unit/)
+})
+
 test('save-and-add-another reloads lists so new stock is linkable', () => {
   const source = wizard()
   assert.match(source, /const refreshLists = async \(\)/)
