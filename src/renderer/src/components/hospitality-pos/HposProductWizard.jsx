@@ -24,6 +24,7 @@ const emptyForm = (initialBarcode = "") => ({
   depletionQty: "1",
   stockChoice: "create",
   linkStockId: "",
+  stockName: "",
   unit: "bottle",
   outletId: "",
   openingStock: "",
@@ -233,9 +234,14 @@ export default function HposProductWizard({
   }, [menuItems, nameNeedle, barcodeNeedle, editing, initialProduct]);
   const duplicateStock = useMemo(() => {
     if (editing || form.stockChoice !== "create") return null;
-    if (!barcodeNeedle) return null;
-    return inventoryItems.find((row) => String(row.barcode || "").trim() === barcodeNeedle) || null;
-  }, [inventoryItems, barcodeNeedle, editing, form.stockChoice]);
+    const stockNeedle = String(form.stockName || "").trim().toLowerCase() || nameNeedle;
+    if (barcodeNeedle) {
+      const byBarcode = inventoryItems.find((row) => String(row.barcode || "").trim() === barcodeNeedle);
+      if (byBarcode) return byBarcode;
+    }
+    if (!stockNeedle) return null;
+    return inventoryItems.find((row) => String(row.name || "").trim().toLowerCase() === stockNeedle) || null;
+  }, [inventoryItems, barcodeNeedle, nameNeedle, form.stockName, editing, form.stockChoice]);
   // A <select> shows every category without filtering. Legacy rows may carry
   // a custom category outside BAR_PRODUCT_CATEGORIES; keep that exact value
   // visible while editing instead of silently resetting it to Beer.
@@ -320,7 +326,7 @@ export default function HposProductWizard({
     // sold-out unless the operator explicitly re-enables it.
     is_available: editing ? form.available !== false : true,
     stock_mode: form.stockChoice === "link" ? "link" : "create",
-    stock_name: form.name.trim(),
+    stock_name: String(form.stockName || "").trim() || form.name.trim(),
     stock_category: form.category.trim() || "Beer",
     stock_unit: form.unit,
     stock_barcode: form.barcode.trim() || null,
@@ -575,7 +581,7 @@ export default function HposProductWizard({
             {(duplicateProduct || duplicateStock) && (
               <div className="hpos-inline-notice" role="status">
                 <strong>Already exists:</strong>{" "}
-                {duplicateProduct ? `“${duplicateProduct.name}” is already a sellable product` : `barcode is already on stock “${duplicateStock.name}”`}
+                {duplicateProduct ? `“${duplicateProduct.name}” is already a sellable product` : barcodeNeedle && String(duplicateStock.barcode || "").trim() === barcodeNeedle ? `barcode is already on stock “${duplicateStock.name}”` : `“${duplicateStock.name}” is already a stock item — link it instead of creating a second one`}
                 {duplicateProduct && onEditExisting && (
                   <>
                     {" — "}
@@ -614,7 +620,7 @@ export default function HposProductWizard({
                       <option value="link">Link existing stock</option>
                       <option value="none" disabled={form.mode === "stock-only"}>No stock tracking — sell without depleting anything</option>
                     </select>
-                    <small>Creating copies the name, category and barcode once. Linking preserves the existing stock metadata unless you edit it in Stock. No tracking suits in-house food cooked by the tray, such as fatcakes: sales record revenue only, and you mark the product unavailable yourself when it runs out.</small>
+                    <small>Creating copies the name, category and barcode once — edit the stock name first when one stock serves several products. Linking preserves the existing stock metadata unless you edit it in Stock. No tracking suits in-house food cooked by the tray, such as fatcakes: sales record revenue only, and you mark the product unavailable yourself when it runs out.</small>
                   </label>
                   {form.stockChoice === "link" ? (
                     <label className="is-wide">
@@ -630,6 +636,11 @@ export default function HposProductWizard({
                     </label>
                   ) : form.stockChoice === "create" ? (
                     <>
+                      <label>
+                        Stock item name
+                        <input type="text" value={form.stockName} onChange={(event) => set({ stockName: event.target.value })} placeholder={form.name.trim() ? `Same as product (“${form.name.trim()}”)` : "Same as product"} />
+                        <small>Name the counted thing, not the variation — for example stock “Russian” serves products “Russian (Full)” and “Russian (Half)”.</small>
+                      </label>
                       <label>
                         Counted unit
                         <select value={form.unit} onChange={(event) => set({ unit: event.target.value })}>

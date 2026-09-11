@@ -142,3 +142,13 @@ test('save-and-add-another reloads lists so new stock is linkable', () => {
   assert.match(source, /getMenuItems\?\.\(\) \?\? \[\]/)
   assert.match(source, /await refreshLists\(\)\.catch\(\(\) => \{\}\)/)
 })
+
+test('matching stock gets its own editable name, not the variant name', () => {
+  const source = wizard()
+  assert.match(source, /Stock item name/)
+  assert.match(source, /stockName/)
+  assert.match(source, /stock_name: String\(form\.stockName \|\| ""\)\.trim\(\) \|\| form\.name\.trim\(\)/)
+  assert.match(source, /Name the counted thing, not the variation/)
+  // A clashing stock name is caught before save, by barcode or by name.
+  assert.match(source, /is already a stock item — link it instead/)
+})
