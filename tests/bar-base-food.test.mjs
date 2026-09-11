@@ -243,8 +243,7 @@ test('waste summary counts Waste-action quantities with no money anywhere', () =
   assert.deepEqual(summarizeWasteMovements(null), { items: [], detail: [], totalEntries: 0 })
 })
 
-test('pos history exports carry detailed waste sections without money', () => {
-  const main = read('src/main/index.js')
+test('pos history exports carry detailed waste sections without money', () => {  const main = read('src/main/index.js')
   assert.match(main, /buildWasteExportSection\(movementRead/)
   assert.match(main, /getInventoryMovementsWithReadStatus\(\{ start_date: start, end_date: end, limit: 500 \}\)/)
   assert.match(main, /requireCapability\('inventory\.view'\)/)
@@ -258,4 +257,36 @@ test('pos history exports carry detailed waste sections without money', () => {
   assert.match(main, /waste_status: wasteSection\.status/)
   assert.match(main, /waste_summary: wasteSection\.items/)
   assert.match(main, /waste_detail: wasteSection\.detail/)
+})
+
+test('sales report flags slow movers from certified stock reads', () => {
+  const source = read('src/renderer/src/components/hospitality-pos/HposReports.jsx')
+  assert.match(source, /getItemsWithReadStatus\?\.\(\)/)
+  assert.match(source, /getBarStockAging\?\.\(null\)/)
+  assert.match(source, /<h2>Slow movers<\/h2>/)
+  assert.match(source, /Nothing idle: every stocked item sold in the last 14 days\./)
+  assert.match(source, /No sale in the last 14 days\. Quantities only\./)
+  assert.match(source, /last_sold_at/)
+  assert.match(source, /14 \* 24 \* 60 \* 60 \* 1000/)
+  // Descriptive quantities only: no money, no reorder advice, no costs.
+  const block = source.match(/slowMovers = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[barOnly, canViewWaste, slowStock\]\);/)[0]
+  assert.match(block, /current_stock/)
+  assert.doesNotMatch(block, /money\(|total_cost|unit_cost|reorder|suggest/i)
+})
+
+test('my shift shows a money-free handover for the open shift', () => {
+  const source = read('src/renderer/src/components/hospitality-pos/HposMyShift.jsx')
+  assert.match(source, /aria-label="Shift handover"/)
+  assert.match(source, /getCertifiedReportHistory\?\.\(openDate, today\)/)
+  assert.match(source, /getTabs\?\.\(\{ status: 'active' \}\)/)
+  assert.match(source, /summarizeWasteMovements\(rows\)/)
+  assert.match(source, /Sales completed/)
+  assert.match(source, /Waste this shift/)
+  assert.match(source, /Needs stock permission/)
+  assert.match(source, /classifyPosTransaction\(order\) === 'sale'/)
+  // Blind cash-up: the handover reports counts and names, never takings.
+  const block = source.match(/if \(!shift\?\.id\)[\s\S]*?return \(\) => \{ active = false \}/)[0]
+  assert.match(block, /salesCount/)
+  assert.match(block, /wasteText/)
+  assert.doesNotMatch(block, /currency|tender|expected_cash|netTotal|money\(/i)
 })

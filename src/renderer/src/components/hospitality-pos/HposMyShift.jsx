@@ -3,6 +3,9 @@ import { ArrowRight, CircleDollarSign, ClipboardList, Clock3, LogIn, LogOut, Mes
 import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
+import { classifyPosTransaction } from '../../../../shared/posFinancialTruth'
+import { summarizeWasteMovements } from '../../../../shared/wasteSummary'
+import { unpackTransport } from '../../transportUnpack'
 import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
 
 function formatTime(value) {
@@ -29,6 +32,11 @@ export default function HposMyShift() {
   const [dailyOpening, setDailyOpening] = useState(null)
   const [feedback, setFeedback] = useState({ rating: '5', channel: 'in_store', message: '' })
   const [feedbackSaving, setFeedbackSaving] = useState(false)
+  // Handover at a glance for the open shift. Counts and names only: blind
+  // cash-up hides expected takings from the operator, so money never
+  // appears here. Every figure fails soft to Unavailable, never estimates.
+  const [handover, setHandover] = useState(null)
+  const canHandoverWaste = canAccessCapability(access, 'inventory.view')
 
   const refresh = useCallback(async (preferredOutletId = outletId) => {
     setLoading(true)
@@ -60,6 +68,58 @@ export default function HposMyShift() {
   }, [barOnly, canManagePos, outletId, user?.id])
 
   useEffect(() => { refresh() }, [refresh])
+
+  useEffect(() => {
+    if (!shift?.id) { setHandover(null); return }
+    let active = true
+    setHandover(null)
+    const openedAt = shift.opened_at || null
+    const openDate = String(openedAt || '').slice(0, 10) || new Date().toLocaleDateString('en-CA')
+    const today = new Date().toLocaleDateString('en-CA')
+    Promise.all([
+      window.api?.pos?.getCertifiedReportHistory?.(openDate, today).catch(() => null),
+      window.api?.pos?.getTabs?.({ status: 'active' }).catch(() => null),
+      canHandoverWaste
+        ? window.api?.inventory?.getMovementsWithReadStatus?.({ start_date: openDate, end_date: today, limit: 500 }).catch(() => null)
+        : Promise.resolve(null),
+    ]).then(([history, tabRows, movements]) => {
+      if (!active) return
+      const allOrders = unpackTransport(history?.orders) || []
+      const shiftOrders = allOrders.filter((order) => order?.shift_id
+        ? String(order.shift_id) === String(shift.id)
+        : openedAt && String(order?.created_at || '') >= String(openedAt))
+      const tabs = (Array.isArray(tabRows) ? tabRows : [])
+        .filter((row) => !['closed', 'paid', 'cancelled', 'voided'].includes(String(row.status || '').toLowerCase()))
+        .filter((row) => !row.outlet_id || !shift.outlet_id || String(row.outlet_id) === String(shift.outlet_id))
+        .map((row) => ({
+          name: String(row.tab_name || row.table_name || 'Tab'),
+          waiter: String(row.waiter_name || row.cashier_name || ''),
+        }))
+      let wasteText = 'None recorded'
+      let wasteReady = false
+      if (canHandoverWaste && movements?.complete === true && movements?.source === 'server') {
+        const rows = (movements.rows || []).filter((row) => !openedAt || String(row?.created_at || '') >= String(openedAt))
+        const summary = summarizeWasteMovements(rows)
+        wasteReady = true
+        wasteText = summary.totalEntries
+          ? summary.items.slice(0, 3).map((item) => `${item.quantity} ${item.unit} ${item.label}`).join(' · ') +
+            (summary.items.length > 3 ? ` +${summary.items.length - 3} more` : '')
+          : 'None recorded'
+      }
+      setHandover({
+        salesCount: shiftOrders.filter((order) => classifyPosTransaction(order) === 'sale').length,
+        salesReady: history?.complete === true && history?.source === 'server',
+        tabs,
+        tabsReady: Array.isArray(tabRows),
+        wasteText,
+        wasteReady,
+      })
+    }).catch(() => {
+      if (active) setHandover({ salesCount: 0, salesReady: false, tabs: null, tabsReady: false, wasteText: '', wasteReady: false })
+    })
+    return () => { active = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shift])
 
   const changeOutlet = async (nextOutletId) => {
     setOutletId(nextOutletId)
@@ -154,6 +214,15 @@ export default function HposMyShift() {
       {!outlets.length && !loading && <div className="hpos-my-shift-warning">No service outlet is assigned to this account. Ask an administrator to assign one in Staff Management.</div>}
       {shift || attendance ? <div className="hpos-my-shift-open-details"><div><small>Started</small><strong>{formatTime(shift?.opened_at || attendance?.clock_in)}</strong></div><div><small>Opening float</small><strong>{shift ? Number(shift.opening_float || 0).toFixed(2) : '—'}</strong></div><div><small>Outlet</small><strong>{activeOutlet?.name || shift?.outlet_name || 'Assigned outlet'}</strong></div><div className="hpos-my-shift-manager-note">{shift ? cashupSubmission?.status === 'submitted' ? 'Cash-up submitted. You can clock out attendance while a manager reviews the handover.' : 'Submit My Cash-up before clocking out. A supervisor or manager reviews it later.' : 'Your Till shift is closed. You can now clock out of attendance.'}</div>{shift && <><HposButton tone="primary" icon={ArrowRight} onClick={() => { window.location.hash = '/hpos/pos' }}>Go to Till</HposButton><HposButton icon={ShieldAlert} onClick={() => { window.location.hash = '/hpos/sale-correction' }}>Request sale correction</HposButton><HposButton icon={WalletCards} onClick={() => { window.location.hash = '/hpos/my-cashup' }}>Go to My Cash-up</HposButton></>}{attendance && <HposButton icon={LogOut} onClick={clockOut} disabled={saving}>{saving ? 'Clocking out…' : 'Clock out attendance'}</HposButton>}</div> : <div className="hpos-my-shift-start"><label><CircleDollarSign size={18}/><span>Opening cash float</span><input type="number" min="0" step="0.01" inputMode="decimal" value={openingFloat} onChange={(event) => setOpeningFloat(event.target.value)} placeholder="0.00" disabled={loading || saving || !outletId}/></label><p>Enter the float explicitly each shift — type 0.00 when you have no cash float. You cannot take payment until this shift is open.</p><HposButton tone="primary" icon={LogIn} onClick={startShift} disabled={loading || saving || !outletId || String(openingFloat ?? '').trim() === ''}>{saving ? 'Starting shift…' : 'Start my shift'}</HposButton></div>}
     </section>
+    {shift && <section className="hpos-my-shift-card" aria-label="Shift handover">
+      <div className="hpos-my-shift-open-details">
+        <div><small>Sales completed</small><strong>{handover ? (handover.salesReady ? handover.salesCount : 'Unavailable') : '…'}</strong></div>
+        <div><small>Open tabs</small><strong>{handover ? (handover.tabsReady ? handover.tabs.length : 'Unavailable') : '…'}</strong></div>
+        <div><small>Waste this shift</small><strong>{!canHandoverWaste ? 'Needs stock permission' : handover ? (handover.wasteReady ? handover.wasteText : 'Unavailable') : '…'}</strong></div>
+        <div><small>Cash-up</small><strong>{!cashupSubmission ? 'Not submitted' : cashupSubmission.status === 'approved' ? 'Approved' : cashupSubmission.status === 'submitted' ? 'Submitted' : String(cashupSubmission.status || 'In progress')}</strong></div>
+        {handover && handover.tabsReady && handover.tabs.length > 0 && <div className="hpos-my-shift-manager-note">Open now: {handover.tabs.map((tab) => tab.waiter ? `${tab.name} (${tab.waiter})` : tab.name).join(' · ')}</div>}
+      </div>
+    </section>}
     {!barOnly && <section className="hpos-staff-feedback-card">
       <div><span><MessageSquareHeart size={20}/></span><div><p>Guest voice</p><h2>Log guest feedback</h2><small>Send a compliment, concern or request to the manager follow-up queue.</small></div></div>
       <form onSubmit={submitFeedback}><label>Rating<select value={feedback.rating} onChange={(event) => setFeedback({ ...feedback, rating: event.target.value })}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} / 5</option>)}</select></label><label>Channel<select value={feedback.channel} onChange={(event) => setFeedback({ ...feedback, channel: event.target.value })}>{['in_store', 'phone', 'online', 'delivery_platform'].map((channel) => <option key={channel} value={channel}>{channel.replaceAll('_', ' ')}</option>)}</select></label><label className="is-wide">What did the guest say?<textarea required rows="3" value={feedback.message} onChange={(event) => setFeedback({ ...feedback, message: event.target.value })} placeholder="Keep it factual so the manager can follow up." /></label><HposButton tone="primary" type="submit" disabled={feedbackSaving || !feedback.message.trim()}>{feedbackSaving ? 'Sending…' : 'Send to manager'}</HposButton></form>

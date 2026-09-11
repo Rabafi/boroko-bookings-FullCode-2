@@ -89,6 +89,9 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   // Waste summary (Bar base, quantities only): recent stock-waste movements
   // for the selected period. Costed waste and margin stay in Pro.
   const [waste, setWaste] = useState({ rows: [], source: 'unknown', complete: false });
+  // Slow movers (Bar base, quantities only): stocked items with no sale in
+  // the last 14 days. Descriptive only — no reorder advice, no costs.
+  const [slowStock, setSlowStock] = useState({ items: [], aging: [], itemsComplete: false, agingOk: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,6 +176,32 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       active = false;
     };
   }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste, start, end]);
+  useEffect(() => {
+    if (!barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
+      setSlowStock({ items: [], aging: [], itemsComplete: false, agingOk: false });
+      return;
+    }
+    let active = true;
+    Promise.all([
+      window.api?.inventory?.getItemsWithReadStatus?.(),
+      window.api?.inventory?.getBarStockAging?.(null),
+    ])
+      .then(([itemsResult, agingResult]) => {
+        if (!active) return;
+        setSlowStock({
+          items: unpackTransport(itemsResult?.items) || [],
+          aging: Array.isArray(agingResult) ? agingResult : [],
+          itemsComplete: itemsResult?.complete === true,
+          agingOk: true,
+        });
+      })
+      .catch(() => {
+        if (active) setSlowStock({ items: [], aging: [], itemsComplete: false, agingOk: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste]);
 
   const rows = useMemo(
     () =>
@@ -263,6 +292,37 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     if (!barOnly || !canViewWaste || waste.source !== 'server' || waste.complete !== true) return null;
     return summarizeWasteMovements(waste.rows).items.slice(0, 8);
   }, [barOnly, canViewWaste, waste]);
+
+  // Idle threshold for the slow-movers card: stocked items with no sale in
+  // this window read as gathering dust. Fixed and labeled, never advice.
+  const slowMovers = useMemo(() => {
+    if (!barOnly || !canViewWaste || !slowStock.itemsComplete || !slowStock.agingOk) return null;
+    const idleMs = 14 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const lastSoldByItem = new Map((slowStock.aging || []).map((row) => [String(row?.item_id || ''), row?.last_sold_at || null]));
+    return (slowStock.items || [])
+      .filter((item) => item?.is_active !== false && Number(item?.current_stock || 0) > 0)
+      .map((item) => {
+        const lastSoldAt = lastSoldByItem.get(String(item?.id || ''));
+        const lastSoldTime = lastSoldAt ? new Date(lastSoldAt).getTime() : NaN;
+        if (Number.isFinite(lastSoldTime) && now - lastSoldTime < idleMs) return null;
+        if (!Number.isFinite(lastSoldTime)) {
+          const createdTime = new Date(item?.created_at || 0).getTime();
+          if (Number.isFinite(createdTime) && now - createdTime < idleMs) return null;
+        }
+        const idleDays = Number.isFinite(lastSoldTime) ? Math.floor((now - lastSoldTime) / (24 * 60 * 60 * 1000)) : null;
+        return {
+          label: String(item?.name || 'Inventory item'),
+          unit: String(item?.unit || 'unit'),
+          onHand: Number(item?.current_stock || 0),
+          idleLabel: idleDays === null ? 'never sold' : `last sold ${idleDays} days ago`,
+          idleRank: idleDays === null ? Number.MAX_SAFE_INTEGER : idleDays,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.idleRank - a.idleRank || b.onHand - a.onHand)
+      .slice(0, 8);
+  }, [barOnly, canViewWaste, slowStock]);
 
   const exportReport = async (format) => {
     setExporting(format);
@@ -479,6 +539,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         <section className="hpos-insight-card"><h2>Bar sales by category</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.categories.length ? basicBarBreakdown.categories.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
         <section className="hpos-insight-card"><h2>Top products</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.products.length ? basicBarBreakdown.products.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
         <section className="hpos-insight-card"><h2>Waste</h2>{!canViewWaste ? <p>Waste needs the stock permission.</p> : !wasteBreakdown ? <p>Unavailable until the server confirms the complete movement ledger.</p> : wasteBreakdown.length ? wasteBreakdown.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label} · {row.topReason}</span><strong>{row.quantity} {row.unit}</strong></div>) : <p>No recorded waste in this period.</p>}{canViewWaste && wasteBreakdown && wasteBreakdown.length > 0 && <p>Quantities only; no cost values.</p>}</section>
+        <section className="hpos-insight-card"><h2>Slow movers</h2>{!canViewWaste ? <p>Slow movers need the stock permission.</p> : !slowMovers ? <p>Unavailable until the server confirms complete stock and aging reads.</p> : slowMovers.length ? slowMovers.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.onHand} {row.unit} · {row.idleLabel}</strong></div>) : <p>Nothing idle: every stocked item sold in the last 14 days.</p>}{canViewWaste && slowMovers && slowMovers.length > 0 && <p>No sale in the last 14 days. Quantities only.</p>}</section>
       </div>}
       <section className="hpos-money-ledger">
         <div className="hpos-ledger-title">

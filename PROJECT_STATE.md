@@ -1,5 +1,12 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-09-11 — Base Bar slow movers and shift handover (local; zero SQL)
+
+- Sales report gains a Slow movers card: stocked items with no sale in the last 14 days (never-sold items count once matured past 14 days), quantities only, from the existing stock-list and stock-aging reads. No costs, no reorder advice — Pro purchasing suggestions and valuation untouched.
+- My Shift gains a handover section for the open shift: completed sales count (certified reads only), open tabs with names, waste since shift start, and cash-up state. Counts and names only, never takings, preserving blind cash-up; every figure fails soft to Unavailable.
+- Bar manual impact: Required — Part C (handover) and Part F (slow movers) one-liners; PDF rebuild/manifest approval still pending with the guides workstream.
+- Evidence: `bar-base-food` 21/21; full `test:bar` 445 pass with only the 2 pre-existing `bar-guides-contract` PDF-checksum failures (plus one transient ENOSPC flake in the same file while C: was completely full — passes with space freed); `build:hospitality-pos` passes. Nothing published; relaunch required for UI.
+
 ## 2026-09-11 — Base Bar waste summary in Sales report and POS exports (local; zero SQL)
 
 - The Sales report carries a quantity-only Waste card (per-item wasted quantities with top reason for the selected period), and the POS history Excel/PDF exports carry Waste Summary plus line-level Waste Detail with the same numbers; the JSON companion adds the same waste dataset. One shared `src/shared/wasteSummary.js` aggregator serves all three surfaces.
