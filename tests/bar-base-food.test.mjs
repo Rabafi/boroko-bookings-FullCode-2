@@ -65,6 +65,22 @@ test('wizard surfaces sizes & extras from existing modifier groups', () => {
   assert.match(styles, /\.hpos-inline-notice\.is-stack \.hpos-secondary-action/)
 })
 
+test('wizard notices stack with visible buttons instead of squeezing', () => {
+  const source = wizard()
+  // The generic notice is a single flex row, which crushes long text and
+  // buttons; every long or button-bearing wizard notice must stack.
+  for (const marker of ['is-stack" role="status"', 'is-wide is-stack']) {
+    assert.ok(source.includes(marker), `missing stacked notice ${marker}`)
+  }
+  assert.match(source, /No stock tracking\.<\/strong>/)
+  assert.match(source, /<strong>Review:<\/strong>/)
+  assert.match(source, /<strong>Already exists:<\/strong>/)
+  assert.match(source, /<strong>Outcome unknown/)
+  // Action buttons inside notices use the visible secondary style.
+  const buttons = [...source.matchAll(/<button type="button" className="hpos-secondary-action"/g)].length
+  assert.ok(buttons >= 4, `expected stacked notice buttons, found ${buttons}`)
+})
+
 test('packs stay 6/12/24 and the copy admits portion bundles', () => {
   const source = wizard()
   assert.match(source, /BAR_PACK_SIZES/)
@@ -148,6 +164,30 @@ test('menu list read carries stock_method so non-stock never reads as missing', 
 test('review sentence uses the linked stock unit, not the form default', () => {
   const source = wizard()
   assert.match(source, /\(form\.stockChoice === "link" \? linkedStock\?\.unit : null\) \|\| form\.unit/)
+})
+
+test('Till cards show a matching icon and tone per Bar category', () => {
+  const shared = profile()
+  // Every Bar category has a visual; drink categories never share one icon.
+  for (const category of ['Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other']) {
+    assert.ok(shared.includes(`${category.toLowerCase()}: Object.freeze({ icon:`) || shared.includes(`'${category.toLowerCase()}': Object.freeze({ icon:`), `missing visual for ${category}`)
+  }
+  const icons = [...shared.matchAll(/icon: '(\w+)'/g)].map((match) => match[1])
+  for (const icon of ['beer', 'apple', 'martini', 'cupSoda', 'wine']) {
+    assert.ok(icons.includes(icon), `missing icon ${icon}`)
+  }
+  assert.equal(new Set(icons).size, icons.length)
+  const tones = [...shared.matchAll(/tone: '(#[0-9a-f]{6})'/g)].map((match) => match[1])
+  assert.ok(tones.length >= 8)
+  // No new colors: every visual reuses the existing Till card palette.
+  const palette = new Set(['#f3c981', '#c8dfd9', '#f2b5aa', '#e6be69', '#d8dec0', '#efe2cf'])
+  for (const tone of tones) assert.ok(palette.has(tone), `new color ${tone}`)
+  // The Till resolves Bar visuals first and keeps the restaurant chain.
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  assert.match(terminal, /BAR_CATEGORY_VISUALS/)
+  assert.match(terminal, /BAR_CATEGORY_ICON_COMPONENTS\[barVisual\.icon\]/)
+  assert.match(terminal, /barVisual\?\.tone/)
+  assert.match(terminal, /normalizedCategory\.includes\("drink"\)/)
 })
 
 test('save-and-add-another reloads lists so new stock is linkable', () => {

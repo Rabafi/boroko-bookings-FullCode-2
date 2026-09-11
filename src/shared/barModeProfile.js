@@ -174,6 +174,24 @@ export const BAR_PRODUCT_CATEGORIES = Object.freeze([
 ])
 
 /**
+ * Till card visuals per Bar category (keys are lowercase category names).
+ * `icon` is resolved to a lucide component by the Till; `tone` reuses the
+ * existing Till card palette (no new colors).
+ * Restaurant keyword matching in the Till stays as the fallback
+ * for non-Bar categories.
+ */
+export const BAR_CATEGORY_VISUALS = Object.freeze({
+  beer: Object.freeze({ icon: 'beer', tone: '#e6be69' }),
+  cider: Object.freeze({ icon: 'apple', tone: '#f3c981' }),
+  spirits: Object.freeze({ icon: 'martini', tone: '#efe2cf' }),
+  softs: Object.freeze({ icon: 'cupSoda', tone: '#c8dfd9' }),
+  wine: Object.freeze({ icon: 'wine', tone: '#f2b5aa' }),
+  snacks: Object.freeze({ icon: 'cookie', tone: '#f3c981' }),
+  'simple food': Object.freeze({ icon: 'utensils', tone: '#f3c981' }),
+  other: Object.freeze({ icon: 'package', tone: '#efe2cf' }),
+})
+
+/**
  * Counted stock units offered by the base Bar product/stock flow.
  * The server contract stores the unit as free text and depletes any
  * positive decimal per sale, so weighed food ingredients (kg/g) and

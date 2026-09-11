@@ -11,12 +11,18 @@ import {
   Trash2,
   Star,
   Clock,
+  Apple,
+  Beer,
   Coffee,
+  Cookie,
   CupSoda,
   IceCream,
+  Martini,
+  Package,
   Salad,
   Soup,
   UtensilsCrossed,
+  Wine,
   AlertCircle,
   CheckCircle,
   ReceiptText,
@@ -25,6 +31,7 @@ import {
 import { useSettings, useAuth, useAccess } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import {
+  BAR_CATEGORY_VISUALS,
   getBarModeProfile,
   getDefaultHposServiceMode,
   getHposServiceModes,
@@ -111,6 +118,19 @@ function readTillFavourites(lodgeId, outletId) {
   }
 }
 
+// Resolves BAR_CATEGORY_VISUALS icon keys to lucide components for Till
+// product cards. Unknown keys fall back to the restaurant keyword chain.
+const BAR_CATEGORY_ICON_COMPONENTS = {
+  beer: Beer,
+  apple: Apple,
+  martini: Martini,
+  cupSoda: CupSoda,
+  wine: Wine,
+  cookie: Cookie,
+  utensils: UtensilsCrossed,
+  package: Package,
+};
+
 function terminalOutletStorageKey(lodgeId) {
   return lodgeId ? `${TERMINAL_OUTLET_STORAGE_PREFIX}${lodgeId}` : null;
 }
@@ -146,8 +166,12 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
       ? "Stock setup required"
       : "Sold out";
   const normalizedCategory = String(item.category || "").toLowerCase();
+  // Bar categories resolve to their own icon and tone first; the restaurant
+  // keyword chain below stays the fallback for everything else.
+  const barVisual = BAR_CATEGORY_VISUALS[normalizedCategory] || null;
   const CategoryIcon =
-    normalizedCategory.includes("drink") ||
+    (barVisual && BAR_CATEGORY_ICON_COMPONENTS[barVisual.icon]) ||
+    (normalizedCategory.includes("drink") ||
     normalizedCategory.includes("juice") ||
     normalizedCategory.includes("bar")
       ? CupSoda
@@ -164,9 +188,10 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
             : normalizedCategory.includes("soup") ||
                 normalizedCategory.includes("bowl")
               ? Soup
-              : UtensilsCrossed;
+              : UtensilsCrossed);
   const categoryTone =
-    {
+    barVisual?.tone ||
+    ({
       food: "#f3c981",
       drinks: "#c8dfd9",
       dessert: "#f2b5aa",
@@ -174,7 +199,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
       sides: "#e6be69",
       starter: "#d8dec0",
       starters: "#d8dec0",
-    }[String(item.category || "").toLowerCase()] || "#efe2cf";
+    }[String(item.category || "").toLowerCase()] || "#efe2cf");
   return (
     <div
       role="button"

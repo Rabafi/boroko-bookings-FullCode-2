@@ -579,16 +579,15 @@ export default function HposProductWizard({
             </div>
 
             {(duplicateProduct || duplicateStock) && (
-              <div className="hpos-inline-notice" role="status">
-                <strong>Already exists:</strong>{" "}
-                {duplicateProduct ? `“${duplicateProduct.name}” is already a sellable product` : barcodeNeedle && String(duplicateStock.barcode || "").trim() === barcodeNeedle ? `barcode is already on stock “${duplicateStock.name}”` : `“${duplicateStock.name}” is already a stock item — link it instead of creating a second one`}
+              <div className="hpos-inline-notice is-stack" role="status">
+                <span>
+                  <strong>Already exists:</strong>{" "}
+                  {duplicateProduct ? `“${duplicateProduct.name}” is already a sellable product` : barcodeNeedle && String(duplicateStock.barcode || "").trim() === barcodeNeedle ? `barcode is already on stock “${duplicateStock.name}”` : `“${duplicateStock.name}” is already a stock item — link it instead of creating a second one`}
+                </span>
                 {duplicateProduct && onEditExisting && (
-                  <>
-                    {" — "}
-                    <button type="button" onClick={() => onEditExisting(duplicateProduct)}>
-                      Use existing product
-                    </button>
-                  </>
+                  <button type="button" className="hpos-secondary-action" onClick={() => onEditExisting(duplicateProduct)}>
+                    Use existing product
+                  </button>
                 )}
               </div>
             )}
@@ -690,9 +689,11 @@ export default function HposProductWizard({
                       </label>
                     </>
                   ) : (
-                    <div className="hpos-inline-notice is-wide">
-                      <strong>No stock tracking.</strong> This product sells at the Till without depleting anything and never runs out on its own — mark it unavailable when the tray is empty.
-                      {editing && initialStock ? " Its previous stock item stays listed in Stock with its history." : ""}
+                    <div className="hpos-inline-notice is-wide is-stack">
+                      <span>
+                        <strong>No stock tracking.</strong> This product sells at the Till without depleting anything and never runs out on its own — mark it unavailable when the tray is empty.
+                        {editing && initialStock ? " Its previous stock item stays listed in Stock with its history." : ""}
+                      </span>
                     </div>
                   )}
                   {editing && (
@@ -760,32 +761,36 @@ export default function HposProductWizard({
               </>
             )}
 
-            <div className="hpos-inline-notice" role="status">
-              <strong>Review:</strong> {reviewSentence}
-              {form.stockChoice === "create" && !editing && Number(form.openingStock || 0) > 0 && (
-                <> Opening {form.openingStock} is added once.</>
-              )}
+            <div className="hpos-inline-notice is-stack" role="status">
+              <span>
+                <strong>Review:</strong> {reviewSentence}
+                {form.stockChoice === "create" && !editing && Number(form.openingStock || 0) > 0 && (
+                  <> Opening {form.openingStock} is added once.</>
+                )}
+              </span>
             </div>
             {scanStatus && <div role="status" className="hpos-inline-notice">{scanStatus}</div>}
             {saveError && <div className="hpos-inline-error" role="alert">{saveError}</div>}
             {unknownOutcome && (
-              <div className="hpos-inline-notice" role="status">
-                <strong>Outcome unknown — nothing was confirmed.</strong>{" "}
-                {form.mode === "stock-only"
-                  ? "Check Stock for this item before retrying; retrying blindly may duplicate it."
-                  : form.stockChoice === "none"
-                  ? "Check Products for this item before retrying; retrying blindly may duplicate it."
-                  : "Retrying reuses the original save — it cannot duplicate stock or products."}{" "}
-                <button type="button" onClick={() => save(false)} disabled={saving}>
+              <div className="hpos-inline-notice is-stack" role="status">
+                <span>
+                  <strong>Outcome unknown — nothing was confirmed.</strong>{" "}
+                  {form.mode === "stock-only"
+                    ? "Check Stock for this item before retrying; retrying blindly may duplicate it."
+                    : form.stockChoice === "none"
+                    ? "Check Products for this item before retrying; retrying blindly may duplicate it."
+                    : "Retrying reuses the original save — it cannot duplicate stock or products."}{" "}
+                </span>
+                <button type="button" className="hpos-secondary-action" onClick={() => save(false)} disabled={saving}>
                   I checked — retry
                 </button>
               </div>
             )}
             {publicationNotice && (
-              <div className="hpos-inline-notice" role="status">
-                {publicationNotice}{" "}
+              <div className="hpos-inline-notice is-stack" role="status">
+                <span>{publicationNotice}</span>{" "}
                 {publicationNotice.includes("pending") && (
-                  <button type="button" onClick={retryPublication} disabled={saving}>
+                  <button type="button" className="hpos-secondary-action" onClick={retryPublication} disabled={saving}>
                     Retry publication
                   </button>
                 )}
