@@ -170,7 +170,27 @@ export const HPOS_SERVICE_MODES_BAR = Object.freeze([
 export const BAR_PACK_SIZES = Object.freeze([6, 12, 24])
 
 export const BAR_PRODUCT_CATEGORIES = Object.freeze([
-  'Beer', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other'
+  'Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other'
+])
+
+/**
+ * Counted stock units offered by the base Bar product/stock flow.
+ * The server contract stores the unit as free text and depletes any
+ * positive decimal per sale, so weighed food ingredients (kg/g) and
+ * measured pours (l/ml) work without the recipes add-on. Single-level
+ * depletion only: one product still consumes one stock item per sale.
+ */
+export const BAR_COUNTED_UNITS = Object.freeze([
+  { value: 'bottle', label: 'Bottle' },
+  { value: 'can', label: 'Can' },
+  { value: 'keg', label: 'Keg' },
+  { value: 'packet', label: 'Packet' },
+  { value: 'portion', label: 'Prepared portion' },
+  { value: 'each', label: 'Each' },
+  { value: 'kg', label: 'Kilogram (kg)' },
+  { value: 'g', label: 'Gram (g)' },
+  { value: 'l', label: 'Litre (l)' },
+  { value: 'ml', label: 'Millilitre (ml)' },
 ])
 
 /** Evidence keys used by the focused Bar POS launch checklist. */

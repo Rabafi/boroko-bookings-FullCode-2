@@ -9,7 +9,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 
 test('Bar category list still carries Softs for Coke', () => {
   const profile = read('src/shared/barModeProfile.js')
-  for (const category of ['Beer', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other']) {
+  for (const category of ['Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other']) {
     assert.ok(profile.includes(`'${category}'`), `missing category ${category}`)
   }
 })

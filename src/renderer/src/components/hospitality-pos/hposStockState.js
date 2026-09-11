@@ -6,6 +6,8 @@ export function validateSingleStockQuantity(rawValue, mode) {
       code: 'blank',
       message: mode === 'receive'
         ? 'Enter a positive quantity received.'
+        : mode === 'waste'
+        ? 'Enter a positive quantity wasted.'
         : 'Enter a physical quantity, including 0 when the count is zero.'
     }
   }
@@ -23,6 +25,10 @@ export function validateSingleStockQuantity(rawValue, mode) {
     return { ok: false, code: 'not_positive', message: 'Receive quantity must be greater than zero.' }
   }
 
+  if (mode === 'waste' && quantity <= 0) {
+    return { ok: false, code: 'not_positive', message: 'Waste quantity must be greater than zero.' }
+  }
+
   if (mode === 'count' && quantity < 0) {
     return { ok: false, code: 'negative', message: 'Physical count must be zero or more.' }
   }
@@ -38,7 +44,7 @@ export function isPendingStockMutation(result = {}) {
 }
 
 export function formatStockMutationNotice(mode, itemName, result) {
-  const subject = mode === 'count' ? 'Physical count' : 'Delivery'
+  const subject = mode === 'count' ? 'Physical count' : mode === 'waste' ? 'Waste' : 'Delivery'
   if (isPendingStockMutation(result)) {
     return subject + ' for ' + itemName + ' was saved provisionally and is pending server confirmation. It is not yet server-posted.'
   }

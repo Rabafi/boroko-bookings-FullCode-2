@@ -10,7 +10,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 test('Bar Base stock ergonomics keep low-stock and categories operationally simple', () => {
   const stock = read('src/renderer/src/components/hospitality-pos/HposStock.jsx')
 
-  assert.match(stock, /import \{ BAR_PRODUCT_CATEGORIES \} from '\.\.\/\.\.\/\.\.\/\.\.\/shared\/barModeProfile'/)
+  assert.match(stock, /import \{ BAR_PRODUCT_CATEGORIES, BAR_COUNTED_UNITS \} from '\.\.\/\.\.\/\.\.\/\.\.\/shared\/barModeProfile'/)
   assert.match(stock, /const BAR_CATEGORY_SUGGESTIONS = BAR_PRODUCT_CATEGORIES/)
   assert.match(stock, /setNewItem\(\(current\) => \(\{ \.\.\.current, category \}\)\)/)
   assert.match(stock, /const \[lowOnly, setLowOnly\] = useState\(false\)/)

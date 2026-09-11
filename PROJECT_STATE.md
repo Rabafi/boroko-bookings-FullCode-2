@@ -1,5 +1,13 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-09-11 — Base Bar food improvements: weighed units, clearer flow, sizes & extras, waste action (local; zero SQL)
+
+- Base Bar (`bar_pos`, no add-on) food gaps closed without any migration: the server contract already stores any unit text and accepts any positive decimal `depletion_qty` (`20260909000000`), so no `REVOKE`/`GRANT` risk was taken after the 2026-09-10 anon-grant outage. No files under `supabase/` were touched.
+- `BAR_COUNTED_UNITS` (new shared list): bottle/can/keg/packet/portion/each plus kg/g/l/ml, used by both the product wizard and the stock dialog. `BAR_PRODUCT_CATEGORIES` gains `Cider`. Fries can now consume weighed ingredients (e.g. Potatoes in kg at 0.3 per sale) with the existing atomic `save_bar_product_with_stock` + Till depletion path, idempotent and audited as before. Pack sizes stay server-pinned 6/12/24; copy now states packs work for portions too.
+- Wizard `Flow` relabelled `What are you adding?` (option contracts unchanged), depletion help carries the weighed example, and a Sizes & extras notice surfaces applicable modifier groups with a manage shortcut (Products; Stock entry shows the notice read-only). Waste action on each Stock row posts a negative delta through the existing idempotent `adjust_inventory_stock` RPC (`inventory.manage`, lodge assertion, fresh operation key, offline-queued) with structured `Waste · reason_code=…` notes and required reason/detail; validation/notice helpers gained additive `waste` branches.
+- Bar manual impact: Required — `manuscript.md` Part E extended (weighed depletion, sizes/extras, portion packs, Waste). PDF rebuild/manifest approval still pending with the guides workstream.
+- Evidence: new `bar-base-food` 8/8; full `test:bar` 432/434 with only the 2 pre-existing `bar-guides-contract` PDF-checksum failures (output/pdf vs manifest drift from the parallel guides workstream; reproduced at baseline, untouched by this change); `build:hospitality-pos` passes; `git diff --check` clean. Migrations NOT pushed (none written), nothing published; relaunch required for UI.
+
 ## 2026-09-11 — Product delete delists stock automatically; opening-stock exactly-once (deployed to linked Theko)
 
 - Operator requirement: deleting a product must delist its stock item in Stock automatically, with movement history preserved for financial truth and auditing. Deployed as `20260911000000_bar_product_delete_delists_stock.sql` on linked `hwzkwdfmoeayophaktsq` (Theko); live-verified by query.

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ScanLine, X } from "lucide-react";
 import { useSettings } from "../../app-context";
-import { BAR_PRODUCT_CATEGORIES, BAR_PACK_SIZES } from "../../../../shared/barModeProfile";
+import { BAR_PRODUCT_CATEGORIES, BAR_PACK_SIZES, BAR_COUNTED_UNITS } from "../../../../shared/barModeProfile";
 import { createBarcodeScannerDecoder } from "../../../../shared/barcodeScanner";
 
 /**
@@ -54,6 +54,8 @@ export default function HposProductWizard({
   initialPacks = null,
   initialAvailable = true,
   hasRecipe = false,
+  modifierGroups = [],
+  onManageModifiers = null,
   onEditExisting = null,
   onClose = null,
   onSaved = null,
@@ -227,6 +229,18 @@ export default function HposProductWizard({
     if (!current || BAR_PRODUCT_CATEGORIES.includes(current)) return BAR_PRODUCT_CATEGORIES;
     return Object.freeze([...BAR_PRODUCT_CATEGORIES, current]);
   }, [form.category]);
+  // Modifier groups that offer sizes & extras for the chosen category.
+  // An empty applies_to_categories list means the group covers all sections.
+  const applicableModifiers = useMemo(() => {
+    const needle = String(form.category || "").trim().toLowerCase();
+    return (Array.isArray(modifierGroups) ? modifierGroups : []).filter((group) => {
+      const scopes = Array.isArray(group?.applies_to_categories)
+        ? group.applies_to_categories.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)
+        : [];
+      if (scopes.length === 0 || scopes.includes("all")) return true;
+      return needle !== "" && scopes.includes(needle);
+    });
+  }, [modifierGroups, form.category]);
 
   const depletion = Number(form.depletionQty ?? "1");
   const reviewSentence = useMemo(() => {
@@ -452,12 +466,12 @@ export default function HposProductWizard({
           <>
             <div className="hpos-service-form hpos-service-form--two">
               <label className="is-wide">
-                Flow
+                What are you adding?
                 <select value={form.mode} onChange={(event) => set({ mode: event.target.value })} disabled={editing || hasRecipe}>
                   <option value="product">Sellable product (with stock)</option>
                   <option value="stock-only">Stock only (not sold directly)</option>
                 </select>
-                <small>Stock-only items are counted and received but never need a selling price or menu entry.</small>
+                <small>Sellable products appear at the Till with a selling price. Stock-only items are counted and received but never sold directly and need no selling price or menu entry.</small>
               </label>
               <label className="is-wide">
                 Product name
@@ -485,7 +499,7 @@ export default function HposProductWizard({
                 <label>
                   Stock units consumed per sale
                   <input type="number" min="0.000001" step="any" inputMode="decimal" value={form.depletionQty ?? "1"} onChange={(event) => set({ depletionQty: event.target.value })} />
-                  <small>1 for one bottle or can; a decimal for measured pours (for example 0.05).</small>
+                  <small>1 for one bottle, can or portion. Use a decimal for weighed or measured use, for example 0.3 for 0.3 kg of potatoes per Fries, or 0.05 litres per pour.</small>
                 </label>
               )}
               {editing && (
@@ -512,6 +526,22 @@ export default function HposProductWizard({
                       Use existing product
                     </button>
                   </>
+                )}
+              </div>
+            )}
+
+            {form.mode === "product" && !hasRecipe && (
+              <div className="hpos-inline-notice" role="status">
+                <strong>Sizes &amp; extras:</strong>{" "}
+                {applicableModifiers.length > 0 ? (
+                  <>offered at the Till for {form.category || "this category"}: {applicableModifiers.map((group) => group.name).join(", ")}.</>
+                ) : (
+                  <>no modifier group covers {form.category || "this category"} yet — add one for sizes (Small / Large) or extras instead of duplicating products.</>
+                )}{" "}
+                {onManageModifiers && (
+                  <button type="button" onClick={() => onManageModifiers()}>
+                    Manage sizes &amp; extras
+                  </button>
                 )}
               </div>
             )}
@@ -545,13 +575,13 @@ export default function HposProductWizard({
                       <label>
                         Counted unit
                         <select value={form.unit} onChange={(event) => set({ unit: event.target.value })}>
-                          <option value="bottle">Bottle</option>
-                          <option value="can">Can</option>
-                          <option value="keg">Keg</option>
-                          <option value="packet">Packet</option>
-                          <option value="portion">Prepared portion</option>
-                          <option value="each">Each</option>
+                          {BAR_COUNTED_UNITS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
                         </select>
+                        <small>Use kilograms or grams for weighed ingredients such as potatoes, litres for measured pours.</small>
                       </label>
                       <label>
                         Stock location
@@ -602,6 +632,10 @@ export default function HposProductWizard({
                         Assign the stock to an active Bar outlet to enable 6-packs, 12-packs and cases.
                       </div>
                     ) : (
+                      <>
+                        <div className="hpos-inline-notice">
+                          Packs work for any counted unit: a 6-pack of fatcake portions removes 6 portions, just as a 6-pack of bottles removes 6 bottles. Sizes stay 6, 12 and 24.
+                        </div>
                       <div style={{ display: "grid", gap: 10 }}>
                         {BAR_PACK_SIZES.map((size) => {
                           const key = `pack${size}`;
@@ -641,6 +675,7 @@ export default function HposProductWizard({
                           );
                         })}
                       </div>
+                      </>
                     )}
                   </>
                 )}

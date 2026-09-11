@@ -972,6 +972,11 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
           initialProduct={wizard.initialProduct || null}
           initialStock={wizard.initialStock || null}
           hasRecipe={wizard.hasRecipe === true}
+          modifierGroups={modifierGroups}
+          onManageModifiers={() => {
+            setModifierError("");
+            setShowModifiers(true);
+          }}
           onEditExisting={(duplicate) => openWizardFor(duplicate)}
           onClose={closeWizard}
           onSaved={() => {
