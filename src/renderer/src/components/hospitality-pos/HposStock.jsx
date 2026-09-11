@@ -10,6 +10,7 @@ import { unpackTransport } from '../../transportUnpack'
 import { buildOptionalUnitCostPatch } from '../../../../shared/inventoryStockForm'
 import { createBarcodeScannerDecoder } from '../../../../shared/barcodeScanner'
 import { formatStockMutationNotice, validateSingleStockQuantity } from './hposStockState'
+import { WASTE_MOVEMENT_PREFIX } from '../../../../shared/wasteSummary'
 
 const stockNumber = (item) => Number(item.current_stock || 0)
 const reorderNumber = (item) => Number(item.reorder_level || 0)
@@ -413,7 +414,7 @@ export default function HposStock() {
         ? await window.api.inventory.adjustStock(
             stockAction.item.id,
             -entered,
-            `Waste · reason_code=${actionForm.reasonCode} · ${actionReasonLabel(stockAction.mode, actionForm.reasonCode)} · ${reasonDetail}`,
+            `${WASTE_MOVEMENT_PREFIX} reason_code=${actionForm.reasonCode} · ${actionReasonLabel(stockAction.mode, actionForm.reasonCode)} · ${reasonDetail}`,
             null,
             stockAction.operationId,
           )

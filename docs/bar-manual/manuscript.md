@@ -64,7 +64,7 @@ Worked example: 48 opening bottles + 24 received − 19 sold − 2 broken = 51 e
 
 Cash & close is part of the base Bar workflow; the Accounting add-on is not required for Bar cash-up. The operator opens My Cash-up, enters Physical cash counted (P), and chooses Submit cash-up for review. A manager opens Cash & close, chooses Refresh, reviews Expected cash, Counted cash, Variance and Cash-up evidence, then chooses Return for correction or enters the Manager PIN and chooses Approve & close shift. Unavailable evidence is not zero activity.
 
-Sales supports From and To dates, receipt/tab/operator/tender search, completed and exception review, receipt detail and supported exports. Cashier cash-up and Accounting close are separate records.
+Sales supports From and To dates, receipt/tab/operator/tender search, completed and exception review, receipt detail and supported exports. The Sales report also carries a Waste card: quantities wasted per item with the top reason for the selected period, taken from the Waste actions only. Costed waste stays in Stock & Purchasing Pro. The Excel export adds Waste Summary and Waste Detail sheets and the PDF adds a waste section with the same quantities; the JSON companion carries the same waste dataset. Cashier cash-up and Accounting close are separate records.
 
 ## Part G — Optional packages
 

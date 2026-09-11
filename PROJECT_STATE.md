@@ -1,5 +1,12 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-09-11 — Base Bar waste summary in Sales report and POS exports (local; zero SQL)
+
+- The Sales report carries a quantity-only Waste card (per-item wasted quantities with top reason for the selected period), and the POS history Excel/PDF exports carry Waste Summary plus line-level Waste Detail with the same numbers; the JSON companion adds the same waste dataset. One shared `src/shared/wasteSummary.js` aggregator serves all three surfaces.
+- Boundaries kept: only Waste-action movements count (other decreases excluded), money never appears (costed waste/margin stay Pro), sections render only on a complete server movement ledger (labeled UNAVAILABLE otherwise), and exports omit waste without the stock permission. No migration, no new RPC.
+- Bar manual impact: Required — Part F documents the card and export sections (PDF rebuild/manifest approval still pending with the guides workstream).
+- Evidence: `bar-base-food` 19/19; full `test:bar` + `build:hospitality-pos` rerun below. Nothing published; relaunch required for UI.
+
 ## 2026-09-11 — Auto-menu sync no longer mints duplicates for wizard-covered stock (deployed to linked oicgpknsmtvcsjacymum)
 
 - Incident: renaming wizard-made stock in Stock re-ran `sync_inventory_item_to_pos`, which found no auto row and inserted a new auto sellable, duplicating the wizard product(s) at the Till (Russian/Russian Half case).
@@ -7,6 +14,8 @@
 - Deployment: linked project `oicgpknsmtvcsjacymum` (this worktree's app target) was at parity through `20260911000000`, so the push applied exactly this one migration. Post-checks: `migration list` parity through `20260912000000`, dry-run `Remote database is up to date`, `db lint --level error` zero errors. Live function-body read-back was not performed (no SQL console path from here); evidence is push success + parity + lint + static contract tests.
 - Operator note: the already-minted auto `Russian` row is not removed by this migration — delete it once from Products (its stock stays listed via the Half), then add Russian Full. Future stock edits will no longer re-mint it.
 - Evidence: `bar-product-contracts` +1 block; full `test:bar` 438/440 with only the 2 pre-existing `bar-guides-contract` PDF-checksum failures. Bar manual impact: none beyond the existing rename guidance (no new operator workflow).
+
+## 2026-09-11 — Base Bar no-stock products for in-house food (local; zero SQL)
 
 - In-house food cooked by the tray (hundreds of fatcakes a day) can now skip stock entirely: the Bar wizard's Stock source offers No stock tracking, persisted as `stock_method = 'non_stock'` through the existing `create/update_pos_menu_item` contracts (tip definitions from `20260716025000` accept and store it; the Till/readiness path already sells it with no depletion). No migration written or deployed.
 - Server-shape findings pinned by tests rather than new SQL: outlet stays null on create (the current tip has no beverage-outlet guard; null-outlet items pass the Till outlet filter so fatcakes sell at the Bar), edits keep the existing outlet scope, recipe-forced sections (breakfast/starters/mains/sides/desserts/cocktails/food) fail closed client-side because the server would silently force the recipe method, and linking from a stockless product now offers the selected row's version instead of a null that the server rejects.
@@ -31,6 +40,7 @@
 - `save_bar_product_with_stock` stock duplicate-name guard now excludes inactive items, so a delisted name is reusable when the product is re-created. `sync_inventory_item_to_pos` refuses to resurrect auto sellables for inactive stock.
 - Desktop/UI: `deletePosMenuItem` passes the server outcome flags through; HposMenu reports "Product deleted and its stock item delisted. Movement history is preserved for audit."; delisted stock is excluded from HposStock list + Count-All scope, lodge Inventory list, the wizard's link list, HposMenu pickers, and day-use lists. `get_bar_stock_aging` already excluded inactive items server-side.
 - Incident remediation on Theko: the three phantom "Coke 330ml" stock items from the 2026-09-10 retry storm (products already deleted by the operator, 0 purchases, only defect-written openings) were deduplicated to one opening movement each and delisted with three `stock_delisted_with_product_delete` audit entries. Operator next step: re-create Coke 330ml normally — one save now yields exactly one product, one stock item and one opening movement.
+- Blank count sheet printed blank (reported by operator): `index.css` runs a global print policy (`body * { visibility: hidden !important }`) that whitelists specific printable overlays; the Bar count sheet used display-only print rules, so it kept layout but painted nothing. Fixed in `hospitality-pos.css` by joining the visibility whitelist and anchoring the sheet `position: absolute` at the page top (the established multi-page report-overlay pattern, so long sheets flow across pages). Regression pinned in `bar-stock-base-ergonomics`; the browser harness bundle CSS regenerates from source via esbuild on each suite run. No manual update required (restores already-documented behavior; defect printed empty pages).
 - Evidence: `bar-product-contracts` +2 blocks (delist SQL contract incl. movement-delete count = 2 dedup rules only; operational-filter wiring across surfaces); full `test:bar` 424/431 — only failures remain the pre-existing `bar-guides-contract` PDF-checksum pair; `build:hospitality-pos` passes; `git diff --check` clean. Bar manual impact: Required — manuscript Part E updated (delete delists stock, history preserved, freed names reusable); PDF rebuild/manifest approval still pending with the guides workstream. `20260909060000` verification migration still deliberately local-only.
 
 ## 2026-09-11 — Bar product save: duplicate-name guard, terminal rejections, queue resolved-detection, Bar sync Clear (deployed to linked Theko)

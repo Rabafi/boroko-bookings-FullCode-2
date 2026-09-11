@@ -7,6 +7,7 @@ import {
   formatStockMutationNotice,
   validateSingleStockQuantity,
 } from '../src/renderer/src/components/hospitality-pos/hposStockState.js'
+import { summarizeWasteMovements, WASTE_MOVEMENT_PREFIX } from '../src/shared/wasteSummary.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -112,7 +113,7 @@ test('base Stock offers a waste action on the audited adjustment contract', () =
   // Waste posts a negative delta through the existing idempotent adjustment
   // RPC (same capability, lodge assertion and operation key as Receive).
   assert.match(source, /-entered/)
-  assert.match(source, /Waste · reason_code=/)
+  assert.match(source, /\$\{WASTE_MOVEMENT_PREFIX\} reason_code=/)
   assert.match(source, />Waste<\/button>/)
 })
 
@@ -166,8 +167,7 @@ test('review sentence uses the linked stock unit, not the form default', () => {
   assert.match(source, /\(form\.stockChoice === "link" \? linkedStock\?\.unit : null\) \|\| form\.unit/)
 })
 
-test('Till cards show a matching icon and tone per Bar category', () => {
-  const shared = profile()
+test('Till cards show a matching icon and tone per Bar category', () => {  const shared = profile()
   // Every Bar category has a visual; drink categories never share one icon.
   for (const category of ['Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other']) {
     assert.ok(shared.includes(`${category.toLowerCase()}: Object.freeze({ icon:`) || shared.includes(`'${category.toLowerCase()}': Object.freeze({ icon:`), `missing visual for ${category}`)
@@ -209,4 +209,53 @@ test('matching stock gets its own editable name, not the variant name', () => {
   assert.match(source, /Name the counted thing, not the variation/)
   // A clashing stock name is caught before save, by barcode or by name.
   assert.match(source, /is already a stock item — link it instead/)
+})
+
+test('sales report carries a quantity-only waste summary on certified reads', () => {
+  const source = read('src/renderer/src/components/hospitality-pos/HposReports.jsx')
+  assert.match(source, /canViewWaste = canAccessCapability\(access, 'inventory\.view'\)/)
+  assert.match(source, /getMovementsWithReadStatus\?\.\(\{ start_date: start, end_date: end, limit: 500 \}\)/)
+  assert.match(source, /<h2>Waste<\/h2>/)
+  assert.match(source, /Waste needs the stock permission\./)
+  assert.match(source, /No recorded waste in this period\./)
+  assert.match(source, /Quantities only; no cost values\./)
+  // Uncertified reads never render: the card needs a complete server ledger.
+  assert.match(source, /waste\.source !== 'server' \|\| waste\.complete !== true/)
+  // Aggregation is shared with the exports, never local math here.
+  assert.match(source, /summarizeWasteMovements\(waste\.rows\)\.items\.slice\(0, 8\)/)
+})
+
+test('waste summary counts Waste-action quantities with no money anywhere', () => {
+  assert.equal(WASTE_MOVEMENT_PREFIX, 'Waste ·')
+  const summary = summarizeWasteMovements([
+    { item_id: 'a', item_name: 'Fries', item_unit: 'portion', movement_type: 'adjustment_decrease', quantity: -2, notes: 'Waste · reason_code=burnt_spoilt · Burnt / spoilt food · batch', created_at: '2026-09-11T10:00:00Z' },
+    { item_id: 'a', item_name: 'Fries', item_unit: 'portion', movement_type: 'adjustment_decrease', quantity: -1, notes: 'Waste · reason_code=expired · Expired · old tray', created_at: '2026-09-11T11:00:00Z' },
+    // Other decreases must not inflate waste, even with waste-like notes.
+    { item_id: 'b', item_name: 'Milk', item_unit: 'l', movement_type: 'adjustment_decrease', quantity: -5, notes: 'Simple delivery · reason_code=delivery_received · Delivery received · x', created_at: '2026-09-11T12:00:00Z' },
+    { item_id: 'c', item_name: 'Beer', item_unit: 'bottle', movement_type: 'adjustment_increase', quantity: 10, notes: 'Waste · reason_code=breakage · Breakage · x', created_at: '2026-09-11T13:00:00Z' },
+    { item_id: 'd', item_name: 'Soda', item_unit: 'can', movement_type: 'adjustment_decrease', quantity: 0, notes: 'Waste · reason_code=spillage · Spillage · x', created_at: '2026-09-11T14:00:00Z' },
+  ])
+  assert.equal(summary.totalEntries, 2)
+  assert.deepEqual(summary.items, [{ label: 'Fries', unit: 'portion', quantity: 3, entries: 2, topReason: 'Burnt / spoilt food' }])
+  assert.equal(summary.detail.length, 2)
+  assert.equal(summary.detail[0].reason, 'Expired')
+  assert.ok(!('total_cost' in summary.items[0]) && !('unit_cost' in summary.items[0]))
+  assert.deepEqual(summarizeWasteMovements(null), { items: [], detail: [], totalEntries: 0 })
+})
+
+test('pos history exports carry detailed waste sections without money', () => {
+  const main = read('src/main/index.js')
+  assert.match(main, /buildWasteExportSection\(movementRead/)
+  assert.match(main, /getInventoryMovementsWithReadStatus\(\{ start_date: start, end_date: end, limit: 500 \}\)/)
+  assert.match(main, /requireCapability\('inventory\.view'\)/)
+  // Excel: summary plus line-level detail, fixed headers without currency.
+  assert.match(main, /\['Item', 'Unit', 'Quantity Wasted', 'Top Reason', 'Entries'\]/)
+  assert.match(main, /\['Date', 'Item', 'Unit', 'Quantity', 'Reason', 'Note'\]/)
+  assert.match(main, /\]\), 'Waste Summary'\)/)
+  assert.match(main, /\]\), 'Waste Detail'\)/)
+  // PDF section plus additive companion keys.
+  assert.match(main, /<h2>Waste \(quantities only, no cost values\)<\/h2>/)
+  assert.match(main, /waste_status: wasteSection\.status/)
+  assert.match(main, /waste_summary: wasteSection\.items/)
+  assert.match(main, /waste_detail: wasteSection\.detail/)
 })

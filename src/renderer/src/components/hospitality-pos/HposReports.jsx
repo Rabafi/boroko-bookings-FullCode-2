@@ -17,6 +17,7 @@ import { unpackTransport } from '../../transportUnpack';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 import { BAR_PRODUCT_CATEGORIES } from '../../../../shared/barModeProfile';
+import { summarizeWasteMovements } from '../../../../shared/wasteSummary';
 import { calculatePosFinancialTruth, classifyPosTransaction, hasRecordedPosTenderEnvelope, posTenderRows } from '../../../../shared/posFinancialTruth';
 
 const dateKeyInTimeZone = (date, timeZone) => {
@@ -59,6 +60,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const barOnly = isBarOnlyMode(settings);
   const canRequestVoid = canAccessCapability(access, 'pos.view');
   const canExport = canAccessCapability(access, 'reports.export');
+  const canViewWaste = canAccessCapability(access, 'inventory.view');
   const now = new Date();
   const [start, setStart] = useState(
     sharedTillHistoryMode
@@ -84,6 +86,9 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const [readCompleteness, setReadCompleteness] = useState({ source: 'unknown', complete: false });
   const [serverControls, setServerControls] = useState(null);
   const [voidTemplates, setVoidTemplates] = useState([]);
+  // Waste summary (Bar base, quantities only): recent stock-waste movements
+  // for the selected period. Costed waste and margin stay in Pro.
+  const [waste, setWaste] = useState({ rows: [], source: 'unknown', complete: false });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -146,6 +151,28 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       if (Array.isArray(result)) setVoidTemplates(result);
     }).catch(() => {});
   }, [barOnly, correctionMode, sharedTillHistoryMode]);
+  useEffect(() => {
+    if (!barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
+      setWaste({ rows: [], source: 'unknown', complete: false });
+      return;
+    }
+    let active = true;
+    window.api?.inventory?.getMovementsWithReadStatus?.({ start_date: start, end_date: end, limit: 500 })
+      .then((result) => {
+        if (!active) return;
+        setWaste({
+          rows: Array.isArray(result?.rows) ? result.rows : [],
+          source: result?.source || 'unknown',
+          complete: result?.complete === true,
+        });
+      })
+      .catch(() => {
+        if (active) setWaste({ rows: [], source: 'unavailable', complete: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste, start, end]);
 
   const rows = useMemo(
     () =>
@@ -229,6 +256,13 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       products: [...productTotals.values()].sort((a, b) => b.quantity - a.quantity || b.amount - a.amount).slice(0, 8),
     };
   }, [barOnly, itemDetailReady, rows]);
+
+  // Quantities only: costed waste, valuation and margin stay Pro-exclusive,
+  // so money never appears here. Shared with the POS history exports.
+  const wasteBreakdown = useMemo(() => {
+    if (!barOnly || !canViewWaste || waste.source !== 'server' || waste.complete !== true) return null;
+    return summarizeWasteMovements(waste.rows).items.slice(0, 8);
+  }, [barOnly, canViewWaste, waste]);
 
   const exportReport = async (format) => {
     setExporting(format);
@@ -444,6 +478,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       {barOnly && !correctionMode && !sharedTillHistoryMode && <div className="hpos-report-grid hpos-bar-basic-report-grid">
         <section className="hpos-insight-card"><h2>Bar sales by category</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.categories.length ? basicBarBreakdown.categories.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
         <section className="hpos-insight-card"><h2>Top products</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.products.length ? basicBarBreakdown.products.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
+        <section className="hpos-insight-card"><h2>Waste</h2>{!canViewWaste ? <p>Waste needs the stock permission.</p> : !wasteBreakdown ? <p>Unavailable until the server confirms the complete movement ledger.</p> : wasteBreakdown.length ? wasteBreakdown.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label} · {row.topReason}</span><strong>{row.quantity} {row.unit}</strong></div>) : <p>No recorded waste in this period.</p>}{canViewWaste && wasteBreakdown && wasteBreakdown.length > 0 && <p>Quantities only; no cost values.</p>}</section>
       </div>}
       <section className="hpos-money-ledger">
         <div className="hpos-ledger-title">

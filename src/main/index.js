@@ -124,6 +124,24 @@ import { isBarOnlyMode } from '../shared/propertyTypes.js'
 import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
 import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
+import { summarizeWasteMovements } from '../shared/wasteSummary.js'
+
+// Waste sections for the POS history exports (quantities only, never money).
+// The movement ledger has its own completeness: certified sections carry
+// detail, anything else is labeled UNAVAILABLE, and operators without the
+// stock permission get no waste section at all.
+function buildWasteExportSection(movementRead, includeWaste) {
+  if (!includeWaste) return { status: 'OMITTED (no stock permission)', items: [], detail: [] }
+  if (!movementRead || movementRead.source !== 'server' || movementRead.complete !== true) {
+    return { status: `UNAVAILABLE (movement ledger ${movementRead?.source || 'unknown'}, incomplete)`, items: [], detail: [] }
+  }
+  const summary = summarizeWasteMovements(movementRead?.rows)
+  return {
+    status: summary.totalEntries ? 'COMPLETE' : 'COMPLETE (no waste recorded)',
+    items: summary.items,
+    detail: summary.detail
+  }
+}
 import { writePosHistoryExcelArtifact, writePosHistoryJsonArtifact, writePosHistoryPdfArtifact } from './posHistoryExportArtifacts.js'
 import { registerBarGuideIpc } from './barGuidesIpc.js'
 
@@ -2053,6 +2071,7 @@ function buildPosHistoryPdfHtml({
   currency = 'P',
   orders = [],
   voidHistory = [],
+  wasteSection = null,
   reportRunId = '',
   dataHash = '',
   companionFilePath = ''
@@ -2096,6 +2115,18 @@ function buildPosHistoryPdfHtml({
       </tr>
     `).join('')
     : '<tr><td colspan="4" class="empty">No voids in this period.</td></tr>'
+  const wasteItems = Array.isArray(wasteSection?.items) ? wasteSection.items : []
+  const wasteTableRows = wasteItems.length
+    ? wasteItems.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.label || '')}</td>
+        <td>${escapeHtml(row.unit || '')}</td>
+        <td class="num">${escapeHtml(row.quantity)}</td>
+        <td>${escapeHtml(row.topReason || '')}</td>
+        <td class="num">${escapeHtml(row.entries)}</td>
+      </tr>
+    `).join('')
+    : `<tr><td colspan="5" class="empty">${escapeHtml(wasteSection ? `Waste ${wasteSection.status}.` : 'Waste unavailable.')}</td></tr>`
   const paymentCards = Object.entries(summary.paymentTotals).map(([method, amount]) => `
     <div class="card"><div class="label">${escapeHtml(method)}</div><div class="value">${escapeHtml(fmt(amount))}</div></div>
   `).join('')
@@ -2164,6 +2195,14 @@ function buildPosHistoryPdfHtml({
         <table>
           <thead><tr><th>Time</th><th>Order</th><th>Approver</th><th>Reason</th></tr></thead>
           <tbody>${voidRows}</tbody>
+        </table>
+      </section>
+      <section class="section">
+        <h2>Waste (quantities only, no cost values)</h2>
+        <div class="meta"><div>Status: ${escapeHtml(wasteSection?.status || 'Unavailable')}</div></div>
+        <table>
+          <thead><tr><th>Item</th><th>Unit</th><th class="num">Qty Wasted</th><th>Top Reason</th><th class="num">Entries</th></tr></thead>
+          <tbody>${wasteTableRows}</tbody>
         </table>
       </section>
     </body>
@@ -8473,16 +8512,20 @@ app.whenReady().then(async () => {
 
        const outletFilter = db.getUserPosOutletFilter()
        const outletId = certifiedOutletId
-       const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
+       let includeWaste = true
+       try { await requireCapability('inventory.view') } catch { includeWaste = false }
+       const [authoritative, voidHistory, localOrders, settings, movementRead] = await Promise.all([
          loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
          db.getPosVoidHistory(start, end, outletFilter),
          db.getPosOrders(start, end, outletFilter),
-         db.getSettings().catch(() => ({}))
+         db.getSettings().catch(() => ({})),
+         db.getInventoryMovementsWithReadStatus({ start_date: start, end_date: end, limit: 500 }).catch(() => ({ rows: [], source: 'unavailable', complete: false }))
        ])
        const orders = authoritative.orders
        reportRunId = authoritative.reportRunId
        assertCompletePosHistoryExport(orders, voidHistory, localOrders)
-      const currency = settings?.currency || 'P'
+       const wasteSection = buildWasteExportSection(movementRead, includeWaste)
+       const currency = settings?.currency || 'P'
       const resolvedLodge = settings?.lodge_name || settings?.company_name || APP_BRAND_NAME
       const periodLabel = start && end ? `${start} to ${end}` : 'All dates'
       const generatedAt = new Date().toLocaleString()
@@ -8605,6 +8648,22 @@ app.whenReady().then(async () => {
         'Reason': row.reason || ''
       }))), 'Voids')
 
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ['Waste (quantities only, no cost values)'],
+        ['Status', wasteSection.status],
+        [],
+        ['Item', 'Unit', 'Quantity Wasted', 'Top Reason', 'Entries'],
+        ...wasteSection.items.map((row) => [row.label, row.unit, row.quantity, row.topReason, row.entries])
+      ]), 'Waste Summary')
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ['Waste Detail (quantities only, no cost values)'],
+        ['Status', wasteSection.status],
+        [],
+        ['Date', 'Item', 'Unit', 'Quantity', 'Reason', 'Note'],
+        ...wasteSection.detail.map((row) => [row.date || '', row.label, row.unit, row.quantity, row.reason, row.note])
+      ]), 'Waste Detail')
+
        const saved = writePosHistoryExcelArtifact(filePath, wb)
        const fileHash = saved.fileHash
        await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', filePath, fileHash, byteCount: saved.byteCount }).catch(() => {})
@@ -8632,15 +8691,19 @@ app.whenReady().then(async () => {
 
        const outletFilter = db.getUserPosOutletFilter()
        const outletId = certifiedOutletId
-       const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
+       let includeWastePdf = true
+       try { await requireCapability('inventory.view') } catch { includeWastePdf = false }
+       const [authoritative, voidHistory, localOrders, settings, movementReadPdf] = await Promise.all([
          loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
          db.getPosVoidHistory(start, end, outletFilter),
          db.getPosOrders(start, end, outletFilter),
-         db.getSettings().catch(() => ({}))
+         db.getSettings().catch(() => ({})),
+         db.getInventoryMovementsWithReadStatus({ start_date: start, end_date: end, limit: 500 }).catch(() => ({ rows: [], source: 'unavailable', complete: false }))
        ])
        const orders = authoritative.orders
        reportRunId = authoritative.reportRunId
        assertCompletePosHistoryExport(orders, voidHistory, localOrders)
+       const wasteSection = buildWasteExportSection(movementReadPdf, includeWastePdf)
        const summary = getPosHistorySummary(orders || [])
        Object.assign(summary, {
          ...authoritative.controls,
@@ -8666,6 +8729,9 @@ app.whenReady().then(async () => {
         database_cutoff_at: authoritative.databaseCutoff,
         orders,
         void_history: voidHistory,
+        waste_status: wasteSection.status,
+        waste_summary: wasteSection.items,
+        waste_detail: wasteSection.detail,
         control_totals: authoritative.controls
       })
       await db.recordReportArtifactResult({ reportRunId, artifactType: 'json', filePath: companionFilePath, fileHash: companion.fileHash, byteCount: companion.byteCount })
@@ -8678,6 +8744,7 @@ app.whenReady().then(async () => {
         currency: settings?.currency || 'P',
         orders: orders || [],
         voidHistory: voidHistory || [],
+        wasteSection,
         reportRunId,
         dataHash,
         companionFilePath
