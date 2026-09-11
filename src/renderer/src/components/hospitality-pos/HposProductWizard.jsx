@@ -47,6 +47,13 @@ function newOperationKey() {
   }
 }
 
+// Mirror of public.restaurant_menu_category_requires_recipe (20260716025000).
+// The server silently forces these sections onto the recipe method, so the
+// no-stock choice fails closed here instead of saving an unavailable draft.
+const SERVER_RECIPE_FORCED_CATEGORIES = Object.freeze([
+  "breakfast", "starters", "mains", "sides", "desserts", "cocktails", "food",
+]);
+
 export default function HposProductWizard({
   initialBarcode = "",
   initialProduct = null,
@@ -75,7 +82,7 @@ export default function HposProductWizard({
       price: initialProduct.price != null ? String(initialProduct.price) : "",
       barcode: initialProduct.barcode || initialBarcode || "",
       available: initialAvailable,
-      stockChoice: initialProduct.inventory_item_id ? "link" : "create",
+      stockChoice: initialProduct.inventory_item_id ? "link" : initialProduct.stock_method === "non_stock" ? "none" : "create",
       linkStockId: initialProduct.inventory_item_id || "",
       unit: initialStock?.unit || "bottle",
       outletId: initialStock?.outlet_id || "",
@@ -247,6 +254,9 @@ export default function HposProductWizard({
     if (form.mode === "stock-only") {
       return "Stock-only: counted but not sold directly. No selling price or packs.";
     }
+    if (form.stockChoice === "none") {
+      return "No stock tracking: each sale records revenue only and depletes nothing. Mark the product unavailable yourself when the tray runs out.";
+    }
     const unit = form.unit || "unit";
     const perSale = Number.isFinite(depletion) && depletion > 0 ? depletion : 1;
     const packs = BAR_PACK_SIZES.filter((size) => form[`pack${size}`]);
@@ -259,8 +269,17 @@ export default function HposProductWizard({
   const validate = () => {
     if (!form.name.trim()) return "Enter the product name.";
     if (!String(form.category || "").trim()) return "Choose a category.";
+    if (form.mode === "stock-only" && form.stockChoice === "none") {
+      return "Stock-only items always create counted stock. Switch back to a sellable product for no-stock tracking.";
+    }
     if (form.mode === "product") {
       if (!(Number(form.price) > 0)) return "Set a selling price greater than zero.";
+      if (form.stockChoice === "none") {
+        if (SERVER_RECIPE_FORCED_CATEGORIES.includes(String(form.category || "").trim().toLowerCase())) {
+          return "This section needs a recipe with ingredients — no-stock tracking is not allowed here. Use Simple Food or Snacks for in-house food sold without stock.";
+        }
+        return null;
+      }
       if (!Number.isFinite(depletion) || depletion <= 0) return "Enter the positive stock quantity consumed by one sale.";
       if (form.stockChoice === "link" && !form.linkStockId) return "Choose the existing stock item to link, or switch to creating matching stock.";
       if (BAR_PACK_SIZES.some((size) => form[`pack${size}`]) && !outletIsBeverage) {
@@ -279,7 +298,11 @@ export default function HposProductWizard({
     inventory_item_id:
       form.stockChoice === "link" ? form.linkStockId : initialStock?.id || undefined,
     expected_menu_version: editing ? initialProduct.updated_at || null : null,
-    expected_stock_version: initialStock?.updated_at || null,
+    // Linking needs the selected row's version: a product that currently
+    // tracks nothing has no stock version of its own to offer.
+    expected_stock_version: form.stockChoice === "link"
+      ? linkedStock?.updated_at || initialStock?.updated_at || null
+      : initialStock?.updated_at || null,
     name: form.name.trim(),
     category: form.category.trim() || "Beer",
     price: Number(form.price),
@@ -346,6 +369,29 @@ export default function HposProductWizard({
           is_available: initialProduct.is_available !== false,
         });
         if (!result?.success) throw new Error(result?.error || "Could not save this product.");
+      } else if (form.stockChoice === "none" && !hasRecipe) {
+        // In-house food sold without depleting anything (fatcakes by the
+        // tray). The atomic product+stock contract requires a stock identity,
+        // so this uses the plain menu-item contract with an explicit
+        // non-stock method instead. Outlet stays null (global, sells at the
+        // Bar Till) on create and untouched on edit; a delinked stock item
+        // stays listed in Stock with its history. Like stock-only creation
+        // this carries no operation key: an ambiguous failure must be checked
+        // in Products before any retry, never replayed blindly.
+        const payload = {
+          name: form.name.trim(),
+          category: form.category.trim() || "Beer",
+          price: Number(form.price),
+          barcode: form.barcode.trim() || null,
+          stock_method: "non_stock",
+          inventory_item_id: null,
+          depletion_qty: null,
+          is_available: editing ? form.available !== false : true,
+        };
+        const result = editing
+          ? await window.api?.pos?.updateMenuItem?.(initialProduct.id, payload)
+          : await window.api?.pos?.createMenuItem?.(payload);
+        if (!result?.success) throw new Error(result?.error || "Could not save this product.");
       } else {
         const payload = buildPayload();
         // No staged legacy fallback: when the atomic contract is missing
@@ -361,7 +407,7 @@ export default function HposProductWizard({
         }
       }
       const keep = addAnother
-        ? { ...emptyForm(), operationKey: newOperationKey(), category: form.category, unit: form.unit, outletId: form.outletId, mode: form.mode }
+        ? { ...emptyForm(), operationKey: newOperationKey(), category: form.category, unit: form.unit, outletId: form.outletId, mode: form.mode, stockChoice: form.stockChoice }
         : null;
       if (keep) {
         setForm(keep);
@@ -467,7 +513,7 @@ export default function HposProductWizard({
             <div className="hpos-service-form hpos-service-form--two">
               <label className="is-wide">
                 What are you adding?
-                <select value={form.mode} onChange={(event) => set({ mode: event.target.value })} disabled={editing || hasRecipe}>
+                <select value={form.mode} onChange={(event) => set({ mode: event.target.value, stockChoice: event.target.value === "stock-only" && form.stockChoice === "none" ? "create" : form.stockChoice })} disabled={editing || hasRecipe}>
                   <option value="product">Sellable product (with stock)</option>
                   <option value="stock-only">Stock only (not sold directly)</option>
                 </select>
@@ -495,7 +541,7 @@ export default function HposProductWizard({
                 </label>
               )}
               {barcodeField("barcode", form.mode === "product" ? "Single barcode (optional)" : "Barcode (optional)", "Scan or enter barcode")}
-              {form.mode === "product" && !hasRecipe && (
+              {form.mode === "product" && !hasRecipe && form.stockChoice !== "none" && (
                 <label>
                   Stock units consumed per sale
                   <input type="number" min="0.000001" step="any" inputMode="decimal" value={form.depletionQty ?? "1"} onChange={(event) => set({ depletionQty: event.target.value })} />
@@ -555,8 +601,9 @@ export default function HposProductWizard({
                     <select value={form.stockChoice} onChange={(event) => set({ stockChoice: event.target.value })} disabled={editing && form.stockChoice === "link"}>
                       <option value="create">Create matching stock</option>
                       <option value="link">Link existing stock</option>
+                      <option value="none" disabled={form.mode === "stock-only"}>No stock tracking — sell without depleting anything</option>
                     </select>
-                    <small>Creating copies the name, category and barcode once. Linking preserves the existing stock metadata unless you edit it in Stock.</small>
+                    <small>Creating copies the name, category and barcode once. Linking preserves the existing stock metadata unless you edit it in Stock. No tracking suits in-house food cooked by the tray, such as fatcakes: sales record revenue only, and you mark the product unavailable yourself when it runs out.</small>
                   </label>
                   {form.stockChoice === "link" ? (
                     <label className="is-wide">
@@ -570,7 +617,7 @@ export default function HposProductWizard({
                         ))}
                       </select>
                     </label>
-                  ) : (
+                  ) : form.stockChoice === "create" ? (
                     <>
                       <label>
                         Counted unit
@@ -616,6 +663,11 @@ export default function HposProductWizard({
                         <small>Defaults to the selling price. Required above zero for Bar locations.</small>
                       </label>
                     </>
+                  ) : (
+                    <div className="hpos-inline-notice is-wide">
+                      <strong>No stock tracking.</strong> This product sells at the Till without depleting anything and never runs out on its own — mark it unavailable when the tray is empty.
+                      {editing && initialStock ? " Its previous stock item stays listed in Stock with its history." : ""}
+                    </div>
                   )}
                   {editing && (
                     <div className="hpos-inline-notice is-wide">
@@ -624,7 +676,7 @@ export default function HposProductWizard({
                   )}
                 </div>
 
-                {form.mode === "product" && (
+                {form.mode === "product" && form.stockChoice !== "none" && (
                   <>
                     <h3>Packs (optional)</h3>
                     {!outletIsBeverage ? (
@@ -695,6 +747,8 @@ export default function HposProductWizard({
                 <strong>Outcome unknown — nothing was confirmed.</strong>{" "}
                 {form.mode === "stock-only"
                   ? "Check Stock for this item before retrying; retrying blindly may duplicate it."
+                  : form.stockChoice === "none"
+                  ? "Check Products for this item before retrying; retrying blindly may duplicate it."
                   : "Retrying reuses the original save — it cannot duplicate stock or products."}{" "}
                 <button type="button" onClick={() => save(false)} disabled={saving}>
                   I checked — retry

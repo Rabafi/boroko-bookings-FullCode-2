@@ -1,5 +1,14 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-09-11 — Base Bar no-stock products for in-house food (local; zero SQL)
+
+- In-house food cooked by the tray (hundreds of fatcakes a day) can now skip stock entirely: the Bar wizard's Stock source offers No stock tracking, persisted as `stock_method = 'non_stock'` through the existing `create/update_pos_menu_item` contracts (tip definitions from `20260716025000` accept and store it; the Till/readiness path already sells it with no depletion). No migration written or deployed.
+- Server-shape findings pinned by tests rather than new SQL: outlet stays null on create (the current tip has no beverage-outlet guard; null-outlet items pass the Till outlet filter so fatcakes sell at the Bar), edits keep the existing outlet scope, recipe-forced sections (breakfast/starters/mains/sides/desserts/cocktails/food) fail closed client-side because the server would silently force the recipe method, and linking from a stockless product now offers the selected row's version instead of a null that the server rejects.
+- Display repair included: the desktop menu list read omitted `stock_method`, which would have shown non-stock products as needing stock setup; the column is now selected (additive, cache-compatible). Availability toggles round-trip `non_stock` because updates omit `stock_method` and the server preserves the stored method.
+- Retry discipline mirrors stock-only creation (no operation key on the plain contract): ambiguous failures must be checked in Products before any explicit retry, never replayed blindly; the wizard says so.
+- Bar manual impact: Required — Part E gains the no-stock paragraph (manual availability, recipe-forced exclusion). PDF rebuild/manifest approval still pending with the guides workstream.
+- Evidence: `bar-base-food` 11/11; full `test:bar` + `build:hospitality-pos` rerun below. Migrations NOT pushed (none written), nothing published; relaunch required for UI.
+
 ## 2026-09-11 — Base Bar food improvements: weighed units, clearer flow, sizes & extras, waste action (local; zero SQL)
 
 - Base Bar (`bar_pos`, no add-on) food gaps closed without any migration: the server contract already stores any unit text and accepts any positive decimal `depletion_qty` (`20260909000000`), so no `REVOKE`/`GRANT` risk was taken after the 2026-09-10 anon-grant outage. No files under `supabase/` were touched.

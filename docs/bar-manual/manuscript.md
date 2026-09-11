@@ -56,6 +56,8 @@ Use Stock > Receive delivery for stock that physically arrived, or choose Receiv
 
 Simple food can consume weighed ingredients without the recipes package: count Potatoes in kilograms with an opening quantity such as 10, then set the Fries product to consume 0.3 stock units per sale so each sale removes 0.3 kg. Sizes and extras (Small/Large, fillings) are modifier groups: the product wizard shows which groups cover the chosen category, and Till offers them at sale time instead of needing duplicate products. A 6-pack works for portions as well as bottles: a 6-pack of fatcakes removes 6 portions. Pack sizes stay 6, 12 and 24.
 
+Food cooked in-house by the tray, such as hundreds of fatcakes a day, can skip stock entirely: choose No stock tracking when adding the product. Sales record revenue only and deplete nothing, so mark the product unavailable yourself when the tray runs out. This choice is not available for recipe-forced sections.
+
 Worked example: 48 opening bottles + 24 received − 19 sold − 2 broken = 51 expected. A physical count of 50 gives a variance of −1 bottle.
 
 ## Part F — Cash-up and reports

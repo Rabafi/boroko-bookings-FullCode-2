@@ -62,8 +62,7 @@ test('packs stay 6/12/24 and the copy admits portion bundles', () => {
   assert.match(source, /Sizes stay 6, 12 and 24/)
 })
 
-test('server contract already allows weighed direct depletion (no migration)', () => {
-  const sql = read('supabase/migrations/20260909000000_bar_atomic_product_with_stock.sql')
+test('server contract already allows weighed direct depletion (no migration)', () => {  const sql = read('supabase/migrations/20260909000000_bar_atomic_product_with_stock.sql')
   // Any positive decimal depletion is accepted server-side.
   assert.match(sql, /Stock consumed per sale must be greater than zero/)
   // The unit is free text with a fallback, never an allowlist.
@@ -103,4 +102,35 @@ test('waste quantities validate positive and report honestly', () => {
   assert.match(formatStockMutationNotice('waste', 'Fries', { success: true }), /^Waste for Fries was posted/)
   assert.match(formatStockMutationNotice('waste', 'Fries', { offline: true }), /provisionally/)
   assert.match(formatStockMutationNotice('receive', 'Milk', { success: true }), /^Delivery for Milk was posted/)
+})
+
+test('wizard offers no-stock tracking for in-house food like fatcakes', () => {
+  const source = wizard()
+  assert.match(source, /No stock tracking — sell without depleting anything/)
+  assert.match(source, /stockChoice === "none"/)
+  assert.match(source, /No stock tracking: each sale records revenue only/)
+  assert.match(source, /mark it unavailable when the tray is empty/)
+  // Depletion, packs and the create-stock fields stay hidden without stock.
+  assert.match(source, /form\.stockChoice !== "none" && \(/)
+  assert.match(source, /SERVER_RECIPE_FORCED_CATEGORIES/)
+  assert.match(source, /needs a recipe with ingredients/)
+  // Stock-only mode can never combine with no tracking.
+  assert.match(source, /Stock-only items always create counted stock/)
+})
+
+test('no-stock saves use the plain menu-item contract, never the atomic one', () => {
+  const source = wizard()
+  assert.match(source, /stock_method: "non_stock"/)
+  assert.match(source, /createMenuItem\?\.\(payload\)/)
+  assert.match(source, /updateMenuItem\?\.\(initialProduct\.id, payload\)/)
+  assert.match(source, /never replayed blindly/)
+  // Editing a non-stock product reopens the wizard in the none choice.
+  assert.match(source, /initialProduct\.stock_method === "non_stock" \? "none"/)
+  // Linking from a stockless product offers the selected row's version.
+  assert.match(source, /linkedStock\?\.updated_at \|\| initialStock\?\.updated_at/)
+})
+
+test('menu list read carries stock_method so non-stock never reads as missing', () => {
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /barcode, stock_method, inventory_item_id/)
 })

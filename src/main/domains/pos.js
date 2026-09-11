@@ -662,7 +662,7 @@ async function _getPosMenuItems(outletFilter = null) {
   if (state.isOnline) {
     let query = state.supabase.
     from('pos_menu_items').
-    select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
+    select('id, name, category, price, is_available, archived_at, barcode, stock_method, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
     eq('lodge_id', state.lodgeId).
     order('category').
     order('name').
