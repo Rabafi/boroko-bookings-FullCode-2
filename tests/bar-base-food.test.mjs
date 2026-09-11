@@ -182,6 +182,10 @@ test('Till cards show a matching icon and tone per Bar category', () => {
   // No new colors: every visual reuses the existing Till card palette.
   const palette = new Set(['#f3c981', '#c8dfd9', '#f2b5aa', '#e6be69', '#d8dec0', '#efe2cf'])
   for (const tone of tones) assert.ok(palette.has(tone), `new color ${tone}`)
+  // Beer must never share its tone with food: the Till's main split.
+  const visualFor = (key) => shared.match(new RegExp(`${key}: Object\\.freeze\\(\\{ icon: '\\w+', tone: '(#[0-9a-f]{6})'`))?.[1]
+  assert.notEqual(visualFor('beer'), visualFor("'simple food'"))
+  assert.notEqual(visualFor('beer'), visualFor('snacks'))
   // The Till resolves Bar visuals first and keeps the restaurant chain.
   const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
   assert.match(terminal, /BAR_CATEGORY_VISUALS/)

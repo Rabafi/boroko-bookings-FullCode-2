@@ -186,8 +186,8 @@ export const BAR_CATEGORY_VISUALS = Object.freeze({
   spirits: Object.freeze({ icon: 'martini', tone: '#efe2cf' }),
   softs: Object.freeze({ icon: 'cupSoda', tone: '#c8dfd9' }),
   wine: Object.freeze({ icon: 'wine', tone: '#f2b5aa' }),
-  snacks: Object.freeze({ icon: 'cookie', tone: '#f3c981' }),
-  'simple food': Object.freeze({ icon: 'utensils', tone: '#f3c981' }),
+  snacks: Object.freeze({ icon: 'cookie', tone: '#d8dec0' }),
+  'simple food': Object.freeze({ icon: 'utensils', tone: '#d8dec0' }),
   other: Object.freeze({ icon: 'package', tone: '#efe2cf' }),
 })
 
