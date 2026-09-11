@@ -38,7 +38,8 @@ test('wizard explains weighed depletion for food like Fries', () => {
 test('wizard Flow question stays plain-language with stable option contracts', () => {
   const source = wizard()
   assert.match(source, /What are you adding\?/)
-  assert.match(source, /Sellable product \(with stock\)/)
+  assert.match(source, /For sale at the Till/)
+  assert.match(source, /whether sales deplete stock or sell without tracking/)
   assert.match(source, /Stock only \(not sold directly\)/)
   assert.match(source, /Stock-only: counted but not sold directly/)
 })

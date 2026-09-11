@@ -514,10 +514,10 @@ export default function HposProductWizard({
               <label className="is-wide">
                 What are you adding?
                 <select value={form.mode} onChange={(event) => set({ mode: event.target.value, stockChoice: event.target.value === "stock-only" && form.stockChoice === "none" ? "create" : form.stockChoice })} disabled={editing || hasRecipe}>
-                  <option value="product">Sellable product (with stock)</option>
+                  <option value="product">For sale at the Till</option>
                   <option value="stock-only">Stock only (not sold directly)</option>
                 </select>
-                <small>Sellable products appear at the Till with a selling price. Stock-only items are counted and received but never sold directly and need no selling price or menu entry.</small>
+                <small>For-sale products appear at the Till with a selling price — choose below whether sales deplete stock or sell without tracking. Stock-only items are counted and received but never sold directly and need no selling price or menu entry.</small>
               </label>
               <label className="is-wide">
                 Product name
