@@ -1108,7 +1108,28 @@ export async function saveBarProductWithStock(data = {}) {
 
 /** Explicit retry of a stored product request (recovery UI, startup sweep). */
 export async function retryProductRequest(operationKey) {
-  return productSaveFlow.retry(operationKey);
+  const outcome = await productSaveFlow.retry(operationKey);
+  // A committed entry replays verbatim, which never touches catalog
+  // publication — so without this sweep the Products banner's retry could
+  // never clear a stuck pending-publication notice.
+  try {
+    const entry = productSaveFlow.list().find((row) => row?.operation_key === String(operationKey || ""));
+    if (entry?.state === "committed" && entry?.publication && entry.publication !== "published") {
+      const outletIds = [...new Set([entry.payload?.stock?.outlet_id].filter(Boolean))];
+      if (outletIds.length && state.isOnline) {
+        const sweep = await processPendingPublicationJobs(outletIds);
+        const summary = summarizePublication(outletIds, sweep.outlets);
+        const publication = summary.every((row) => row.status === "published")
+          ? "published"
+          : summary.some((row) => row.status === "failed") ? "failed" : "pending";
+        markProductRequest(entry.operation_key, { publication });
+        return { ...outcome, publication };
+      }
+    }
+  } catch {
+    /* The banner stays retryable; never report published on a failed sweep. */
+  }
+  return outcome;
 }
 
 /** Actionable stored requests for the Products recovery banner. */

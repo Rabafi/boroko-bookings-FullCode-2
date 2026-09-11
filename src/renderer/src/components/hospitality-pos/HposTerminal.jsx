@@ -2658,6 +2658,17 @@ export default function HposTerminal() {
       }
       const result = await window.api.pos.createOrder(orderPayload);
       if (!result?.success) {
+        if (result?.code === "catalog_refresh_required" || /immutable catalog snapshot/i.test(result?.error || "")) {
+          // The menu changed under this basket: a new or edited product is
+          // not in the published Till catalog yet. The server rejects before
+          // recording anything, so the basket is safe to rebuild after a
+          // refresh — never re-collect payment for this attempt.
+          submitEnvelopeRef.current = null;
+          setRecoveredAttempt(null);
+          setSubmitNotice("");
+          setSubmitError("The menu changed while selling — this item is not in the Till menu yet. Refresh the Till to load the latest menu, rebuild the basket, and take payment again. Nothing was charged.");
+          return;
+        }
         if (String(result?.code || "").startsWith("till_operator_") || result?.code === "till_shift_closed" || result?.code === "shift_not_open") {
           // Till/PIN gates must not settle the attempt: the sale may already
           // be recorded server-side. Keep the envelope so the retry after PIN

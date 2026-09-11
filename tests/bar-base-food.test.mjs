@@ -274,8 +274,7 @@ test('sales report flags slow movers from certified stock reads', () => {
   assert.doesNotMatch(block, /money\(|total_cost|unit_cost|reorder|suggest/i)
 })
 
-test('my shift shows a money-free handover for the open shift', () => {
-  const source = read('src/renderer/src/components/hospitality-pos/HposMyShift.jsx')
+test('my shift shows a money-free handover for the open shift', () => {  const source = read('src/renderer/src/components/hospitality-pos/HposMyShift.jsx')
   assert.match(source, /aria-label="Shift handover"/)
   assert.match(source, /getCertifiedReportHistory\?\.\(openDate, today\)/)
   assert.match(source, /getTabs\?\.\(\{ status: 'active' \}\)/)
@@ -289,4 +288,20 @@ test('my shift shows a money-free handover for the open shift', () => {
   assert.match(block, /salesCount/)
   assert.match(block, /wasteText/)
   assert.doesNotMatch(block, /currency|tender|expected_cash|netTotal|money\(/i)
+})
+
+test('stale catalog failures guide refresh, and publication retry uses one path', () => {
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+  assert.match(terminal, /catalog_refresh_required/)
+  assert.match(terminal, /immutable catalog snapshot/i)
+  assert.match(terminal, /Refresh the Till to load the latest menu/)
+  assert.match(terminal, /Nothing was charged/)
+  const source = wizard()
+  // One path for banner and wizard: the stored-request retry replays,
+  // sweeps and marks. Sweeping the form outlet directly could report
+  // success without touching the request's outlets.
+  assert.match(source, /retryProductRequest\?\.\(form\.operationKey\)/)
+  assert.match(source, /result\?\.publication === "published"/)
+  assert.match(source, /needs manager review\. Use Retry publication\./)
+  assert.doesNotMatch(source, /processPendingPublications\?\.\(/)
 })

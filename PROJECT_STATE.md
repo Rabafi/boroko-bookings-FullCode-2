@@ -1,5 +1,12 @@
 # Tsa Bonno HospitalityOS Project State
 
+## 2026-09-11 — Stuck publication retries and stale-catalog Till recovery (local; zero SQL)
+
+- Two live defects behind one operator report (Russian Full unpublished, Till rejecting with the raw snapshot error): the Products banner retry replayed committed entries verbatim without ever sweeping publication, and the wizard's publication retry swept only the form outlet (empty list reported success). `retryProductRequest` now sweeps a committed entry's stored outlets and marks the outcome; the wizard reuses that stored-request path so banner and dialog always agree.
+- The Till maps `catalog_refresh_required` (and the raw snapshot message) to refresh-and-rebuild guidance; the server rejects pre-write, so the copy states nothing was charged.
+- Bar manual impact: Required — Part E gains the publication/refresh paragraph (PDF rebuild/manifest approval still pending with the guides workstream).
+- Evidence: `bar-product-contracts` +1, `bar-base-food` +1; full `test:bar` + `build:hospitality-pos` rerun below. Nothing published; relaunch required for UI.
+
 ## 2026-09-11 — Base Bar slow movers and shift handover (local; zero SQL)
 
 - Sales report gains a Slow movers card: stocked items with no sale in the last 14 days (never-sold items count once matured past 14 days), quantities only, from the existing stock-list and stock-aging reads. No costs, no reorder advice — Pro purchasing suggestions and valuation untouched.

@@ -450,11 +450,19 @@ export default function HposProductWizard({
   const retryPublication = async () => {
     setSaveError("");
     try {
-      const result = await window.api?.pos?.processPendingPublications?.(
-        form.outletId ? [form.outletId] : [],
-      );
+      // One path for banner and wizard: replays the stored save verbatim,
+      // sweeps its outlets, and marks the request, so the notice always
+      // agrees with the Products banner. Sweeping the form outlet directly
+      // could report success without touching the request's outlets.
+      const result = await window.api?.pos?.retryProductRequest?.(form.operationKey);
       if (!result?.success) throw new Error(result?.error || "Publication is still pending.");
-      setPublicationNotice("Catalog published.");
+      if (result?.publication === "published") {
+        setPublicationNotice("Catalog published.");
+      } else if (result?.publication === "failed") {
+        setPublicationNotice("Saved, but catalog publication needs manager review. Use Retry publication.");
+      } else {
+        throw new Error(result?.error || "Publication is still pending.");
+      }
     } catch (error) {
       setSaveError(error?.message || "Publication is still pending.");
     }

@@ -361,8 +361,7 @@ test('domain and IPC wire the new contracts with dual capabilities', () => {
   assert.match(database, /getMenuStockReadiness,/)
 })
 
-test('Till enforces readiness and requirements before Hold and Pay', () => {
-  const source = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
+test('Till enforces readiness and requirements before Hold and Pay', () => {  const source = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
   assert.match(source, /getMenuStockReadiness/)
   assert.match(source, /canUseBarCommercialFeature\("recipes"\)/)
   assert.match(source, /getStockIssue/)
@@ -372,6 +371,18 @@ test('Till enforces readiness and requirements before Hold and Pay', () => {
   assert.match(source, /holdModifierCheck/)
   assert.match(source, /payModifierCheck/)
   assert.match(source, /refreshReadiness/)
+})
+
+test('banner retry sweeps publication for committed requests', () => {
+  // A committed entry replays verbatim, which never touches publication —
+  // without this sweep the Products retry could never clear a stuck
+  // pending-publication notice.
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /entry\?\.state === "committed" && entry\?\.publication && entry\.publication !== "published"/)
+  assert.match(domain, /entry\.payload\?\.stock\?\.outlet_id/)
+  assert.match(domain, /processPendingPublicationJobs\(outletIds\)/)
+  assert.match(domain, /markProductRequest\(entry\.operation_key, \{ publication \}\)/)
+  assert.match(domain, /never report published on a failed sweep/i)
 })
 
 test('auto-menu sync never mints duplicates for wizard-covered stock', () => {
