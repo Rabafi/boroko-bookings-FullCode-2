@@ -51,9 +51,18 @@ test('wizard surfaces sizes & extras from existing modifier groups', () => {
   assert.match(source, /Sizes &amp; extras/)
   assert.match(source, /applicableModifiers/)
   assert.match(source, /Manage sizes &amp; extras/)
+  // The notice stacks instead of squeezing into the generic flex row, and
+  // its button uses the visible secondary style; without a manager the
+  // notice points at Products instead of a dead end.
+  assert.match(source, /hpos-inline-notice is-stack/)
+  assert.match(source, /className="hpos-secondary-action"/)
+  assert.match(source, /Manage groups in Products/)
   const menuSource = menu()
   assert.match(menuSource, /modifierGroups=\{modifierGroups\}/)
   assert.match(menuSource, /onManageModifiers/)
+  const styles = read('src/renderer/src/styles/hospitality-pos.css')
+  assert.match(styles, /\.hpos-inline-notice\.is-stack\{display:block\}/)
+  assert.match(styles, /\.hpos-inline-notice\.is-stack \.hpos-secondary-action/)
 })
 
 test('packs stay 6/12/24 and the copy admits portion bundles', () => {

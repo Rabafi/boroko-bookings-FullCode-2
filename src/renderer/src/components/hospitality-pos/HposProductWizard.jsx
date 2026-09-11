@@ -594,17 +594,21 @@ export default function HposProductWizard({
             )}
 
             {form.mode === "product" && !hasRecipe && (
-              <div className="hpos-inline-notice" role="status">
-                <strong>Sizes &amp; extras:</strong>{" "}
-                {applicableModifiers.length > 0 ? (
-                  <>offered at the Till for {form.category || "this category"}: {applicableModifiers.map((group) => group.name).join(", ")}.</>
-                ) : (
-                  <>no modifier group covers {form.category || "this category"} yet — add one for sizes (Small / Large) or extras instead of duplicating products.</>
-                )}{" "}
-                {onManageModifiers && (
-                  <button type="button" onClick={() => onManageModifiers()}>
+              <div className="hpos-inline-notice is-stack" role="status">
+                <span>
+                  <strong>Sizes &amp; extras: </strong>
+                  {applicableModifiers.length > 0 ? (
+                    <>offered at the Till for {form.category || "this category"}: {applicableModifiers.map((group) => group.name).join(", ")}.</>
+                  ) : (
+                    <>no modifier group covers {form.category || "this category"} yet. Add one for sizes (Small / Large) or extras instead of duplicating products.</>
+                  )}
+                </span>
+                {onManageModifiers ? (
+                  <button type="button" className="hpos-secondary-action" onClick={() => onManageModifiers()}>
                     Manage sizes &amp; extras
                   </button>
+                ) : (
+                  <span> Manage groups in Products › Modifiers.</span>
                 )}
               </div>
             )}
