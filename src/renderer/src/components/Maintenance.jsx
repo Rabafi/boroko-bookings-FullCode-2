@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 import { Plus, CheckCircle, Wrench, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { StatusBadge } from './shared/StatusBadge'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { localToday } from '../utils/localDate'
 import { useFeatures } from '../app-context'
 
@@ -229,12 +230,12 @@ function TicketsTab() {
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
       {loadError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {loadError}
-        </div>
+        </ErrorNotice>
       )}
 
       {loading ? (
@@ -602,7 +603,7 @@ function PreventiveTab() {
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
       {error && (
-        <div className="lg:col-span-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="lg:col-span-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
 
       <section className="bb-card p-5">
@@ -764,7 +765,7 @@ function OooTab() {
         </div>
       ) : null}
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
 
       {dashboard && (
@@ -893,7 +894,7 @@ function DowntimeTab() {
         Return-to-service uses the authoritative <code>return_room_to_service</code> RPC.
       </p>
       {error && (
-        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
       <div className="flex gap-3 mb-4">
         <select

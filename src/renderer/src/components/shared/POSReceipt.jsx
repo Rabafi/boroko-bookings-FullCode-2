@@ -37,6 +37,24 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
   const { settings } = useSettings()
   const [saving, setSaving] = useState(false)
   const autoPrintDoneRef = useRef(false)
+  // A cleared or not-yet-loaded sale must never throw during render (that
+  // path lands on the app recovery screen). Show an explicit empty state.
+  if (!order) {
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 print:hidden">
+        <div className="relative w-full max-w-md bg-white shadow-2xl rounded-3xl p-8 text-center">
+          <h2 className="font-bold text-slate-800">Receipt unavailable</h2>
+          <p className="mt-2 text-sm text-slate-500">This sale is no longer open on this terminal. Check Sales for the recorded receipt.</p>
+          <button
+            onClick={onClose}
+            className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white"
+          >
+            <X size={20} /> Close
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   const currency = settings?.currency || 'P'
   const logo = settings?.logo || ''
@@ -162,7 +180,7 @@ export function POSReceipt({ order, onClose, autoPrint = false }) {
         <div className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible">
           <div id="receipt-content" className="max-w-md mx-auto space-y-8">
             {order?._pending_sync === true && (
-              <div className="border-2 border-dashed border-amber-500 bg-amber-50 px-4 py-3 text-center text-xs font-black uppercase tracking-widest text-amber-800">
+              <div className="border-2 border-dashed border-amber-500 bg-amber-50 px-4 py-3 text-center text-xs font-black uppercase tracking-widest text-amber-800 print:hidden">
                 PROVISIONAL — PENDING SERVER CONFIRMATION
               </div>
             )}

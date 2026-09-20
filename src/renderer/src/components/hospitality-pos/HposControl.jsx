@@ -51,7 +51,8 @@ export default function HposControl() {
     setActionError('');
     try {
       if (barOnly) {
-        await window.api?.pos?.seedBarChecklistTemplates?.();
+        // Best-effort seed: templates load from cache offline.
+        await window.api?.pos?.seedBarChecklistTemplates?.().catch(() => null);
       }
       const [checklistResult, alertResult, historyResult, templateResult] = await Promise.all([
         window.api?.pos?.getChecklists?.() ?? [],
@@ -91,11 +92,11 @@ export default function HposControl() {
         previous.map((checklist) => ({
           ...checklist,
           items: (checklist.items || []).map((entry) =>
-            entry.id === item.id ? { ...entry, completed: true, is_completed: true } : entry,
+            entry.id === item.id ? { ...entry, completed: true, is_completed: true, _pending_sync: result?.offline === true ? true : entry?._pending_sync } : entry,
           ),
         })),
       );
-      setNotice(`Completed: ${itemLabel(item)}`);
+      setNotice(result?.offline === true ? `Completed (sends when online): ${itemLabel(item)}` : `Completed: ${itemLabel(item)}`);
     } catch (error) {
       setActionError(error?.message || 'Could not complete this item.');
     } finally {
@@ -112,8 +113,10 @@ export default function HposControl() {
       checklistOperationIds.current.set(template.template_key, operationId);
       const result = await window.api?.pos?.createBarChecklistFromTemplate?.({ templateKey: template.template_key, operationId });
       if (!result?.success) throw new Error(result?.error || 'Could not start this checklist.');
-      checklistOperationIds.current.delete(template.template_key);
-      setNotice(`${template.name || 'Bar checklist'} started.`);
+      // Offline the checklist is queued: keep the operation id so retries
+      // replay the same key instead of starting a duplicate checklist.
+      if (result?.offline !== true) checklistOperationIds.current.delete(template.template_key);
+      setNotice(result?.offline === true ? `${template.name || 'Bar checklist'} started (sends when online).` : `${template.name || 'Bar checklist'} started.`);
       const refreshed = await window.api?.pos?.getChecklists?.();
       setChecklists(Array.isArray(refreshed) ? refreshed : []);
     } catch (error) {
@@ -251,6 +254,7 @@ export default function HposControl() {
                       >
                         {isComplete(item) ? <CheckCircle2 size={17} /> : <Circle size={17} />}
                         <span>{itemLabel(item)}</span>
+                        {isComplete(item) && item._pending_sync === true && <em>Pending sync</em>}
                         {!isComplete(item) && canManage && <em>{busyId === item.id ? 'Saving…' : 'Mark done'}</em>}
                       </button>
                     ))}

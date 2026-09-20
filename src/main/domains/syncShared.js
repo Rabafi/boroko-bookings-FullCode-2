@@ -216,3 +216,103 @@ export function normalizeQueuedSyncItemForReplay(item = {}) {
 
   return next;
 }
+
+/**
+ * Pure replay-write-fence helper (P0-1). Given the replay loop's in-memory
+ * `pending` and a fresh on-disk snapshot, returns disk rows the loop has never
+ * seen: not already pending, not the current in-flight item, not already
+ * completed this run, and not already dead-lettered this run. Callers append
+ * the result to `pending` before every whole-file write so a sale queued
+ * during an RPC await can never be erased by a stale snapshot. No IO here.
+ */
+export function collectNewDiskQueueArrivals(pending = [], diskQueue = [], { completedIds = new Set(), deadIds = new Set(), inFlightId = null } = {}) {
+  const pendingIds = new Set((Array.isArray(pending) ? pending : []).map((entry) => entry?._queue_id).filter(Boolean));
+  const arrivals = [];
+  for (const raw of Array.isArray(diskQueue) ? diskQueue : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = ensureQueuedItem(raw, raw?.type || 'op');
+    const id = item?._queue_id || null;
+    if (!id) continue;
+    if (pendingIds.has(id)) continue;
+    if (inFlightId && id === inFlightId) continue;
+    if (completedIds && typeof completedIds.has === 'function' && completedIds.has(id)) continue;
+    if (deadIds && typeof deadIds.has === 'function' && deadIds.has(id)) continue;
+    arrivals.push(normalizeQueuedSyncItemForReplay(item));
+    pendingIds.add(id);
+  }
+  return arrivals;
+}
+
+/**
+ * Pure dead-letter merge (P0-2). Dedupes by _queue_id so incremental persists
+ * plus the run-end flush can never duplicate entries, and rows without an id
+ * are preserved verbatim. No IO here.
+ */
+export function mergeDeadLetterQueues(existing = [], incoming = []) {
+  const byId = new Map();
+  const withoutId = [];
+  for (const row of Array.isArray(existing) ? existing : []) {
+    if (row?._queue_id) {
+      if (!byId.has(row._queue_id)) byId.set(row._queue_id, row);
+    } else if (row && typeof row === 'object') {
+      withoutId.push(row);
+    }
+  }
+  for (const row of Array.isArray(incoming) ? incoming : []) {
+    if (row?._queue_id) byId.set(row._queue_id, row);
+    else if (row && typeof row === 'object') withoutId.push(row);
+  }
+  return [...withoutId, ...byId.values()];
+}
+
+/**
+ * Rewrites provisional pending:<operation_key> menu identities in queued
+ * order payloads to the real server ids minted by a product replay. Returns
+ * the number of queued payloads touched. Pure mutation of the passed list.
+ */
+export function rewritePendingProductReferences(pendingList, operationKey, menuId, inventoryId = null) {
+  if (!operationKey || !menuId) return 0;
+  const provisionalMenuId = 'pending:' + operationKey;
+  const provisionalStockId = provisionalMenuId + ':stock';
+  let rewritten = 0;
+  for (const queued of Array.isArray(pendingList) ? pendingList : []) {
+    const payload = queued && queued.data ? queued.data.payload : null;
+    if (!payload || !Array.isArray(payload.items)) continue;
+    let touched = false;
+    for (const line of payload.items) {
+      if (String(line && line.menu_item_id || '') === provisionalMenuId) {
+        line.menu_item_id = menuId;
+        touched = true;
+      }
+      if (inventoryId && String(line && line.inventory_item_id || '') === provisionalStockId) {
+        line.inventory_item_id = inventoryId;
+        touched = true;
+      }
+    }
+    if (touched) rewritten += 1;
+  }
+  return rewritten;
+}
+
+/**
+ * Finds the current open shift for replay reattribution (weeks-old offline
+ * work replays under today's open shift, never a closed originating one).
+ * Pure over cached rows so both the interactive retry path (pos.js) and the
+ * queue replay path (infrastructure.js) resolve identically. Returns the
+ * shift id or null when no open shift matches (caller leaves the payload
+ * untouched and the server error stays actionable).
+ */
+export function resolveCurrentOpenShiftId(cachedShifts, { outletId = null, cashierId = null } = {}) {
+  const rows = Array.isArray(cachedShifts) ? cachedShifts : [];
+  const sameOutlet = (row) => (row?.outlet_id || null) === (outletId || null);
+  const sameCashier = (row) => !cashierId || !row?.cashier_id || String(row.cashier_id) === String(cashierId);
+  const open = rows.filter((row) =>
+    String(row?.status || '').toLowerCase() === 'open' &&
+    !row?.closed_at &&
+    sameOutlet(row) &&
+    sameCashier(row)
+  );
+  if (open.length === 0) return null;
+  open.sort((a, b) => String(b.opened_at || '').localeCompare(String(a.opened_at || '')));
+  return open[0]?.id || null;
+}

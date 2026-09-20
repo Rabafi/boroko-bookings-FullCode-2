@@ -25,7 +25,7 @@ import {
   requeueEligibleFailedSyncItems,
 } from './infrastructure.js';
 import { broadcastSyncStatus, checkOnline } from './connectivity.js';
-import { buildSyncStatusSnapshot } from './syncStatus.js';
+import { buildSyncStatusSnapshot, createDependencyCacheResolver } from './syncStatus.js';
 import { markClearedSyncItemForManualReview, patchCachedPosOrderSyncState, patchCachedInventoryItemSyncState, patchCachedDayUseSyncState } from './syncCache.js';
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
@@ -106,7 +106,7 @@ function readCacheFreshness() {
   }
 }
 
-function classifySyncDependencyCategory(item = {}, pending = [], failed = []) {
+function classifySyncDependencyCategory(item = {}, pending = [], failed = [], resolveDep = null) {
   const dependencyIds = [...new Set([
     item?._depends_on,
     ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
@@ -119,7 +119,11 @@ function classifySyncDependencyCategory(item = {}, pending = [], failed = []) {
   if (dependencyIds.some((dependencyId) => pending.some((entry) => entry?._queue_id === dependencyId))) {
     return 'blocked_dependencies';
   }
-  if (dependencyIds.every((dependencyId) => isQueuedDependencyResolved(dependencyId))) {
+  // Bulk offline runs can attach thousands of dependency ids to one item;
+  // resolve them through the caller's shared index (one cache parse total),
+  // never one file read per id (see createDependencyCacheResolver).
+  const isResolved = resolveDep || isQueuedDependencyResolved;
+  if (dependencyIds.every((dependencyId) => isResolved(dependencyId))) {
     return 'resolved';
   }
   return 'resolved';
@@ -146,11 +150,11 @@ function getSyncDisplayError(item = {}, dependencyCategory = 'none') {
   return item?.lastError || '';
 }
 
-function buildSyncGroupedCounts(pending = [], failed = []) {
-  const pendingMissingParent = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'missing_parent').length;
-  const failedMissingParent = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'missing_parent').length;
-  const pendingBlockedDependencies = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'blocked_dependencies').length;
-  const failedBlockedDependencies = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed) === 'blocked_dependencies').length;
+function buildSyncGroupedCounts(pending = [], failed = [], resolveDep = null) {
+  const pendingMissingParent = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'missing_parent').length;
+  const failedMissingParent = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'missing_parent').length;
+  const pendingBlockedDependencies = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'blocked_dependencies').length;
+  const failedBlockedDependencies = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'blocked_dependencies').length;
   const financialRiskItems = pending.filter(isFinancialSyncItem).length + failed.filter(isFinancialSyncItem).length;
 
   return {
@@ -170,9 +174,16 @@ export function getSyncDetails() {
   const cacheFreshness = readCacheFreshness();
   const resolvedLastSync = state.lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null;
   const now = Date.now();
+  // One shared dependency index for the whole details computation: a single
+  // bulk-run item can carry thousands of dependency ids, and resolving each
+  // against a freshly parsed cache file would block the main thread for
+  // minutes (see createDependencyCacheResolver).
+  const depResolver = createDependencyCacheResolver().isResolved;
+  const pendingIdSet = new Set(pending.map((entry) => entry?._queue_id).filter(Boolean));
+  const failedIdSet = new Set(failed.map((entry) => entry?._queue_id).filter(Boolean));
 
   const enrichPending = (item) => {
-    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed);
+    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed, depResolver);
     const dependencyIds = [...new Set([
       item?._depends_on,
       ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
@@ -183,9 +194,9 @@ export function getSyncDetails() {
       // `_depends_on` remains the primary compatibility marker; the checks
       // below include every `_depends_on_all` prerequisite.
       dependencyState: item?._depends_on ?
-      dependencyIds.some((dependencyId) => failed.some((f) => f?._queue_id === dependencyId)) ?
+      dependencyIds.some((dependencyId) => failedIdSet.has(dependencyId)) ?
       'failed_parent' :
-      dependencyIds.some((dependencyId) => pending.some((p) => p?._queue_id === dependencyId)) ?
+      dependencyIds.some((dependencyId) => pendingIdSet.has(dependencyId)) ?
       'waiting_for_parent' :
       'ready_or_external' :
       'none',
@@ -202,7 +213,7 @@ export function getSyncDetails() {
     new Date(attemptedAtMs + DEAD_LETTER_AUTO_RETRY_AFTER_MS).toISOString() :
     null;
     const autoRetryEligible = isAutoRetryable && (Number.isNaN(attemptedAtMs) || ageMs >= DEAD_LETTER_AUTO_RETRY_AFTER_MS);
-    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed);
+    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed, depResolver);
     return {
       ...item,
       isFinancial: isFinancialSyncItem(item),
@@ -223,7 +234,7 @@ export function getSyncDetails() {
   const financialFailedBookingIds = [...new Set(failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(Boolean))];
   const financialPendingCount = pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
   const financialFailedCount = failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
-  const groupedCounts = buildSyncGroupedCounts(pending, failed);
+  const groupedCounts = buildSyncGroupedCounts(pending, failed, depResolver);
   const bookings = readCache('bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
   const customers = readCache('customers').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
   const rooms = readCache('rooms').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { ErrorNotice } from "../shared/ErrorNotice";
 import { useLocation, useNavigate } from "react-router";
 import {
   Archive,
@@ -59,6 +60,7 @@ function MenuItemCard({
   availabilityBusy,
   barOnly,
   stockMethod,
+  stockQty,
 }) {
   const packLabel =
     item.template_kind === "bar_pack" && item.template_pack_size
@@ -77,6 +79,15 @@ function MenuItemCard({
     Number.isFinite(rawDepletionQty) && rawDepletionQty > 0
       ? rawDepletionQty
       : 1;
+  // Counted stock behind this product (direct links only). Non-stock and
+  // recipe items show no badge — the Till is the source of truth there.
+  const countedQty = stockQty && Number.isFinite(Number(stockQty.qty)) ? Number(stockQty.qty) : null;
+  const outOfStock = countedQty !== null && countedQty <= 0;
+  const lowStock =
+    countedQty !== null &&
+    countedQty > 0 &&
+    Number(stockQty.reorder) > 0 &&
+    countedQty <= Number(stockQty.reorder);
 
   return (
     <article
@@ -114,6 +125,42 @@ function MenuItemCard({
             )}
             {stockMethod === "missing" && (
               <span className="is-info">Stock setup required</span>
+            )}
+            {item._pending_sync === true && item._operation_key && (
+              <span
+                role="status"
+                style={{
+                  background: "rgba(166, 118, 42, 0.12)",
+                  color: "#7a5710",
+                  fontWeight: 800,
+                }}
+              >
+                Pending sync — sells offline now
+              </span>
+            )}
+            {outOfStock && (
+              <span
+                role="status"
+                style={{
+                  background: "rgba(191, 72, 45, 0.14)",
+                  color: "#8d2f24",
+                  fontWeight: 800,
+                }}
+              >
+                Out of stock
+              </span>
+            )}
+            {!outOfStock && lowStock && (
+              <span
+                role="status"
+                style={{
+                  background: "rgba(166, 118, 42, 0.12)",
+                  color: "#7a5710",
+                  fontWeight: 800,
+                }}
+              >
+                Only {countedQty} {stockQty.unit} left
+              </span>
             )}
           </div>
         </div>
@@ -157,6 +204,7 @@ function MenuItemCard({
         <div className="hpos-service-menu-archive">
           <Boxes size={14} />
           Uses {depletionQty.toLocaleString(undefined, { maximumFractionDigits: 6 })} stock unit{depletionQty === 1 ? "" : "s"} per sale
+          {countedQty !== null && ` · ${countedQty} ${stockQty.unit} on hand`}
         </div>
       )}
       {isArchived ? (
@@ -321,6 +369,14 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
   // Interrupted product saves and pending publications stay recoverable
   // after the wizard closes (per-operation retry, never a blind resubmit).
   const [pendingRequests, setPendingRequests] = useState([]);
+  const [requestFilter, setRequestFilter] = useState("all");
+  const rejectedRequestCount = pendingRequests.filter((request) => request?.state === "rejected").length;
+  const retryableRequestCount = pendingRequests.length - rejectedRequestCount;
+  const visibleRequests = requestFilter === "rejected"
+    ? pendingRequests.filter((request) => request?.state === "rejected")
+    : requestFilter === "retryable"
+      ? pendingRequests.filter((request) => request?.state !== "rejected")
+      : pendingRequests;
   const refreshPendingRequests = async () => {
     try {
       const result = await window.api?.pos?.getProductRequestStatus?.();
@@ -342,6 +398,24 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
       await refreshPendingRequests();
     } catch (error) {
       setSaveError(error?.message || "Retry did not complete.");
+      await refreshPendingRequests();
+    }
+  };
+  const discardRequest = async (request) => {
+    setSaveError("");
+    try {
+      const okToDiscard = window.confirm(
+        `Discard the rejected save "${request?.name || "Product"}"? Its pending menu and stock rows are removed from this computer. The server is untouched — rejected saves never reached it. Discard anyway?`,
+      );
+      if (!okToDiscard) return;
+      const result = await window.api?.pos?.discardProductRequest?.(request?.operation_key);
+      if (!result?.success) throw new Error(result?.error || "Discard did not complete.");
+      const purged = result?.purged || {};
+      setActionNotice(`Rejected save discarded (menu rows cleared: ${purged.menu ?? 0}, stock rows cleared: ${purged.stock ?? 0}).`);
+      await loadMenu();
+      await refreshPendingRequests();
+    } catch (error) {
+      setSaveError(error?.message || "Discard did not complete.");
       await refreshPendingRequests();
     }
   };
@@ -413,6 +487,12 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
       const menuData = (await window.api?.pos?.getMenuItems?.()) ?? [];
       const rows = Array.isArray(menuData) ? menuData : [];
       setItems(rows);
+      // Stock counts refresh with the catalogue so out-of-stock badges never
+      // go stale after a save; failures keep the last counts silently.
+      const inventoryRows = await window.api?.inventory?.getItems?.().catch(() => null);
+      if (Array.isArray(inventoryRows)) {
+        setInventoryItems(inventoryRows.filter((row) => row?.is_active !== false));
+      }
       setLoadError("");
       setCategories([...new Set(rows.map((item) => item.category).filter(Boolean))]);
     } catch (error) {
@@ -785,6 +865,25 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
       (item.is_available === false || item.available === false) &&
       !["missing", "conflict"].includes(stockMethodFor(item)),
   ).length;
+  // Counted out-of-stock behind direct links (informational: the Till greys
+  // these out automatically, this page names them for receiving).
+  const stockQtyFor = (item) => {
+    if (!item?.inventory_item_id || stockMethodFor(item) !== "direct") return null;
+    const row = (inventoryItems || []).find((entry) => String(entry.id) === String(item.inventory_item_id));
+    if (!row || !Number.isFinite(Number(row.current_stock))) return null;
+    return {
+      qty: Number(row.current_stock),
+      unit: String(row.unit || "each"),
+      reorder: Number(row.reorder_level || 0),
+    };
+  };
+  const outOfStockCount = items.filter(
+    (item) => {
+      if (item.archived_at) return false;
+      const stock = stockQtyFor(item);
+      return stock !== null && stock.qty <= 0;
+    },
+  ).length;
   const editingStockMethod = editing ? draft.stock_method || (editing !== "new" ? stockMethodFor(editing) : "direct") : null;
 
   return (
@@ -832,6 +931,10 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
             <span>Sold out</span>
             <strong>{soldOutCount}</strong>
           </div>
+          <div className={outOfStockCount ? "is-warning" : ""}>
+            <span>Out of stock</span>
+            <strong>{outOfStockCount}</strong>
+          </div>
           <div className={setupRequiredCount ? "is-warning" : ""}>
             <span>Needs stock setup</span>
             <strong>{setupRequiredCount}</strong>
@@ -843,7 +946,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
         </div>
       </header>
 
-      {loadError && <div className="hpos-inline-error" role="alert">{loadError} No catalogue read is treated as an empty or sellable catalogue.</div>}
+      {loadError && <ErrorNotice className="hpos-inline-error">{loadError} No catalogue read is treated as an empty or sellable catalogue.</ErrorNotice>}
 
       <section className="hpos-service-catalogue-tools">
         <label className="hpos-service-search">
@@ -906,33 +1009,59 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
           <strong>
             {pendingRequests.length} interrupted save{pendingRequests.length === 1 ? "" : "s"} waiting
           </strong>{" "}
-          — retry replays the original save under its own key, never a duplicate.
-          {pendingRequests.map((request) => (
+          — retry replays the original save under its own key, never a duplicate. Rejected saves can be discarded once reviewed; discarding also clears their pending rows.
+          <span style={{ display: "block", marginTop: 8 }} role="group" aria-label="Filter interrupted saves">
+            {[
+              ["all", `All (${pendingRequests.length})`],
+              ["retryable", `Needs retry (${retryableRequestCount})`],
+              ["rejected", `Rejected (${rejectedRequestCount})`],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setRequestFilter(value)}
+                aria-pressed={requestFilter === value}
+                style={{ fontWeight: requestFilter === value ? 800 : 500, textDecoration: requestFilter === value ? "underline" : "none", marginRight: 10 }}
+              >
+                {label}
+              </button>
+            ))}
+          </span>
+          {visibleRequests.map((request) => (
             <span key={request.operation_key} style={{ display: "block", marginTop: 6 }}>
               {request.name} · {request.state}
               {request.publication && request.publication !== "published" ? ` · publication ${request.publication}` : ""}
               {request.error ? ` · ${request.error}` : ""}{" "}
-              <button
-                type="button"
-                onClick={() => retryRequest(request.operation_key)}
-              >
-                Retry this save
-              </button>
+              {request.state === "rejected" ? (
+                <button
+                  type="button"
+                  onClick={() => discardRequest(request)}
+                >
+                  Discard rejected save
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => retryRequest(request.operation_key)}
+                >
+                  Retry this save
+                </button>
+              )}
             </span>
           ))}
         </div>
       )}
       {saveError && !editing && (
-        <div className="hpos-inline-error">{saveError}</div>
+        <ErrorNotice className="hpos-inline-error">{saveError}</ErrorNotice>
       )}
       {setupRequiredCount > 0 && (
-        <div className="hpos-inline-error">
+        <ErrorNotice className="hpos-inline-error">
           <strong>
             {setupRequiredCount} menu item{setupRequiredCount === 1 ? "" : "s"}{" "}
             need stock setup — they are not sold out.
           </strong>{" "}
           {barOnly ? <>Choose its <strong>Direct stock link</strong> in Edit. Simple food should link to a counted prepared-portion stock item.</> : <>To repair a packaged item, choose its <strong>Direct stock link</strong> in Edit. For prepared food, leave the direct link blank, create a recipe with stock ingredients in <strong>Menu &amp; Production → Recipes &amp; Costing</strong>, then return here and make it available.</>}
-        </div>
+        </ErrorNotice>
       )}
       {loading ? (
         <div className="hpos-service-loading">
@@ -961,6 +1090,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
               availabilityBusy={availabilityBusyId === item.id}
               barOnly={barOnly}
               stockMethod={stockMethodFor(item)}
+              stockQty={stockQtyFor(item)}
             />
           ))}
         </section>
@@ -1037,11 +1167,11 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
               </div>
             )}
             {editingStockMethod === "conflict" && (
-              <div className="hpos-inline-error">
+              <ErrorNotice className="hpos-inline-error">
                 <strong>Choose one stock method.</strong> Keep the direct link
                 for packaged goods, or remove it and use the recipe for prepared
                 food.
-              </div>
+              </ErrorNotice>
             )}
             <div className="hpos-service-form hpos-service-form--two">
               <label className="is-wide">
@@ -1287,7 +1417,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
                 non-Bar stock.
               </div>
             )}
-            {saveError && <div className="hpos-inline-error">{saveError}</div>}
+            {saveError && <ErrorNotice className="hpos-inline-error">{saveError}</ErrorNotice>}
             <footer>
               <button
                 type="button"
@@ -1437,7 +1567,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
                 </label>
               </div>
               {modifierError && (
-                <div className="hpos-inline-error">{modifierError}</div>
+                <ErrorNotice className="hpos-inline-error">{modifierError}</ErrorNotice>
               )}
             </div>
             <footer>

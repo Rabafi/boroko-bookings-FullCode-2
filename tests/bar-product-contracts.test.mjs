@@ -410,3 +410,31 @@ test('auto-menu sync never mints duplicates for wizard-covered stock', () => {
   assert.doesNotMatch(sql, /set is_active/)
   assert.doesNotMatch(sql, /inventory_movements/)
 })
+
+test('Discarding a rejected product save retires its provisional shelf rows', () => {
+  // Rejected saves never replay, so their pending menu/stock rows would sit
+  // in the caches forever (blocking certified stock reads with a phantom
+  // "offline" banner). Discard must gate on terminal state, purge exactly
+  // that key's provisional rows, and journal the retirement.
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /export function purgeProvisionalProductRows\(operationKey\)/)
+  assert.match(domain, /row\?\._operation_key !== key/)
+  assert.match(domain, /Only definitively rejected saves can be discarded\. Retry this save instead\./)
+  assert.match(domain, /purgeProvisionalProductRows\(key\)/)
+  assert.match(domain, /provisional_product_purged/)
+  // The startup recovery sweep backfills the same purge for already-rejected
+  // requests; the requests themselves stay listed for explicit discard.
+  assert.match(domain, /entry\?\.state !== "rejected" \|\| !entry\?\.operation_key/)
+  // Rejected requests must surface in the Products banner (the actionable
+  // filter alone hides them, stranding their orphans with no UI path).
+  assert.match(domain, /if \(entry\.state === "rejected"\) return true;/)
+  const menu = read('src/renderer/src/components/hospitality-pos/HposMenu.jsx')
+  assert.match(menu, /discardProductRequest\?\.\(request\?\.operation_key\)/)
+  assert.match(menu, /request\.state === "rejected" \? \(/)
+  assert.match(menu, /Discard rejected save/)
+  assert.match(menu, /discarding also clears their pending rows\./)
+  assert.match(menu, /setRequestFilter/)
+  assert.match(menu, /Rejected \(\$?\{rejectedRequestCount\}\)/)
+  const preload = read('src/preload/index.js')
+  assert.match(preload, /discardProductRequest: \(operationKey\) => invoke\('pos:discardProductRequest', operationKey\)/)
+})

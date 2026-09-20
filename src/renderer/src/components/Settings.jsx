@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
 import { useAccess, useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode, resolveThemeMode, saveThemeMode } from '../utils/themeMode'
 import {
@@ -2074,9 +2075,9 @@ export default function Settings() {
                 </span>
               )}
               {saveError && (
-                <span className="text-sm text-red-600 font-medium flex items-center gap-1">
+                <ErrorNotice className="text-sm text-red-600 font-medium flex items-center gap-1">
                   <AlertTriangle size={15} /> {saveError}
-                </span>
+                </ErrorNotice>
               )}
             </div>
             </fieldset>

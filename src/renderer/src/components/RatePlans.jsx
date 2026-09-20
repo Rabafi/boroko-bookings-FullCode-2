@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, CreditCard, AlertTriangle, RefreshCw, Calendar, C
 import { useSearchParams } from 'react-router'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useSettings, useFeatures } from '../app-context'
 
 const RateCalendar = lazy(() => import('./RateCalendar'))
@@ -200,7 +201,7 @@ export default function RatePlans() {
           </div>
 
           {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
-          {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>}
+          {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
           {plans.length === 0 ? (
             <div className="bb-card flex flex-col items-center justify-center py-16 text-center">
@@ -318,7 +319,7 @@ export default function RatePlans() {
                     ))}
                   </div>
                 </div>
-                {error && <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} className="shrink-0" />{error}</div>}
+                {error && <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} className="shrink-0" />{error}</ErrorNotice>}
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">Cancel</button>
                   <button type="submit" disabled={saving} className="btn-primary flex-1">{saving ? 'Saving...' : editing ? 'Save Changes' : 'Create Rate Plan'}</button>

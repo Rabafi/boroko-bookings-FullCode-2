@@ -6,6 +6,27 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 const CONNECTIVITY_PROBE_TIMEOUT_MS = 10000;
 const CONNECTIVITY_OFFLINE_FAILURE_THRESHOLD = 3;
+export const NETWORK_READ_TIMEOUT_MS = 12000;
+
+/**
+ * Races any network-backed read against a timeout so an unreachable network
+ * fails fast to the caller's cache fallback instead of hanging the Till.
+ * The underlying promise is left to settle; only the waiter moves on.
+ */
+export function withNetworkTimeout(promise, ms = NETWORK_READ_TIMEOUT_MS, label = 'network read') {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${ms}ms. Showing last saved data.`);
+      error.code = 'network_read_timeout';
+      reject(error);
+    }, ms);
+    if (timer?.unref) timer.unref();
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 export function broadcastSyncStatus() {
   try {

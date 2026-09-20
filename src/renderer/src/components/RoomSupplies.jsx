@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useSettings } from '../app-context'
 import { formatLocalDate, localToday } from '../utils/localDate'
 
@@ -729,7 +730,7 @@ export default function RoomSupplies() {
         </div>
       </div>
 
-      {pageError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
+      {pageError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</ErrorNotice>}
 
       {tab === 'stock' && (
         <div className="flex flex-col gap-5">
@@ -923,7 +924,7 @@ export default function RoomSupplies() {
           </div>
 
           <div className="bb-card p-5">
-            {stocktakeError && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{stocktakeError}</div>}
+            {stocktakeError && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{stocktakeError}</ErrorNotice>}
             {!currentStocktakeId ? (
               <div className="bb-empty-state min-h-[320px]">
                 <p className="text-base font-semibold text-slate-800">Choose a room supplies stock-take session</p>
@@ -1102,7 +1103,7 @@ export default function RoomSupplies() {
       {itemModal && (
         <Modal title={editingItem ? 'Edit Supply Item' : 'Add Supply Item'} onClose={() => setItemModal(false)} size="sm">
           <form onSubmit={handleItemSubmit} className="space-y-4">
-            {itemError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{itemError}</div>}
+            {itemError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{itemError}</ErrorNotice>}
             <div><label className="mb-1 block text-sm font-medium text-slate-700">Item Name *</label><input type="text" className="input" value={itemForm.name} onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })} required /></div>
             <div className="grid grid-cols-2 gap-4"><div><label className="mb-1 block text-sm font-medium text-slate-700">Category *</label><select className="input" value={itemForm.category} onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })}>{SUPPLY_CATEGORIES.map((value) => <option key={value} value={value}>{value}</option>)}</select></div><div><label className="mb-1 block text-sm font-medium text-slate-700">Unit *</label><select className="input" value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })}>{SUPPLY_UNITS.map((value) => <option key={value} value={value}>{value}</option>)}</select></div></div>
             <div><label className="mb-1 block text-sm font-medium text-slate-700">Store Reorder Level ({itemForm.unit})</label><input type="number" step="0.1" min="0" className="input" value={itemForm.reorder_level} onChange={(e) => setItemForm({ ...itemForm, reorder_level: e.target.value })} /></div>
@@ -1115,7 +1116,7 @@ export default function RoomSupplies() {
       {purchaseModal && (
         <Modal title={purchaseItem ? `Record Purchase — ${purchaseItem.name}` : 'Record Purchase'} onClose={() => setPurchaseModal(false)} size="sm">
           <form onSubmit={handlePurchaseSubmit} className="space-y-4">
-            {purchaseError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{purchaseError}</div>}
+            {purchaseError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{purchaseError}</ErrorNotice>}
             
             {!purchaseItem && (
               <div>
@@ -1157,7 +1158,7 @@ export default function RoomSupplies() {
       {adjustModal && adjustItem && (
         <Modal title={`Adjust Store Stock — ${adjustItem.name}`} onClose={() => setAdjustModal(false)} size="sm">
           <form onSubmit={handleAdjustSubmit} className="space-y-4">
-            {adjustError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{adjustError}</div>}
+            {adjustError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{adjustError}</ErrorNotice>}
             <p className="text-sm text-gray-600">Current store stock: <strong>{fmtQty(adjustItem.current_stock)} {adjustItem.unit}</strong></p>
             <div><label className="mb-1 block text-sm font-medium text-gray-700">Adjustment ({adjustItem.unit}) *</label><input type="number" step="0.1" className="input" value={adjustDelta} onChange={(e) => setAdjustDelta(e.target.value)} required /></div>
             <div><label className="mb-1 block text-sm font-medium text-gray-700">Reason</label><input type="text" className="input" value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} /></div>
@@ -1170,7 +1171,7 @@ export default function RoomSupplies() {
       {movementModal && (
         <Modal title={movementType === 'load' ? 'Load Supply Into Room' : movementType === 'use' ? 'Record Supply Usage' : 'Return Unused Supply'} onClose={() => setMovementModal(false)} size="sm">
           <form onSubmit={handleMovementSubmit} className="space-y-4">
-            {movementError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{movementError}</div>}
+            {movementError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{movementError}</ErrorNotice>}
             {movementType === 'load' ? (
               <>
                 <div><label className="mb-1 block text-sm font-medium text-slate-700">Supply Item *</label><select className="input" value={movementForm.item_id} onChange={(e) => setMovementForm({ ...movementForm, item_id: e.target.value })} required><option value="">Select supply item</option>{supplyItems.map((item) => <option key={item.id} value={item.id}>{item.name} ({fmtQty(item.current_stock)} {item.unit} in store)</option>)}</select></div>

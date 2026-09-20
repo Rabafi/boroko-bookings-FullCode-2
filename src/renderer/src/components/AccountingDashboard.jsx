@@ -3,6 +3,7 @@ import { DollarSign, TrendingUp, AlertTriangle, RefreshCw, Users, CreditCard } f
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 import { callAdminApi } from '../utils/adminApi'
 import { formatMoney } from '../utils/timeAgo'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const LOAD_LABELS = ['MRR/ARR', 'Revenue', 'Lodge Finances', 'Collections', 'Revenue by Method']
 
@@ -71,11 +72,11 @@ export default function AccountingDashboard() {
       </div>
 
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
           <AlertTriangle size={14} className="text-red-400 shrink-0" />
           <p className="text-red-300 text-xs flex-1">{error}</p>
           <button onClick={load} className="text-xs text-red-400 hover:text-white underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {loadWarnings && !error && (

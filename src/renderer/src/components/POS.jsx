@@ -2,6 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils, FileSpreadsheet, FileDown, Star } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
+import { ErrorNotice } from './shared/ErrorNotice'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import POSFavouritesBar from './pos/POSFavouritesBar'
 import POSTerminalCartLine from './pos/POSTerminalCartLine'
@@ -4041,9 +4042,9 @@ export default function POS() {
             </div>
 
             {cashupError && (
-              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {cashupError}
-              </div>
+              </ErrorNotice>
             )}
 
             <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -5253,9 +5254,9 @@ export default function POS() {
         >
           <form onSubmit={handleMenuSubmit} className="space-y-4">
             {menuError && (
-              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {menuError}
-              </div>
+              </ErrorNotice>
             )}
             {editingItem?.template_kind === 'bar_single' ? (
               <>
@@ -5486,9 +5487,9 @@ export default function POS() {
             </p>
 
             {voidError && (
-              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {voidError}
-              </div>
+              </ErrorNotice>
             )}
 
             <div>
@@ -5556,9 +5557,9 @@ export default function POS() {
             </p>
 
             {returnError && (
-              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {returnError}
-              </div>
+              </ErrorNotice>
             )}
 
             <div className="bb-table-shell">
@@ -5685,9 +5686,9 @@ export default function POS() {
             </div>
 
             {splitError && (
-              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {splitError}
-              </div>
+              </ErrorNotice>
             )}
 
             {splitMode === 'items' && (
@@ -5801,9 +5802,9 @@ export default function POS() {
             </p>
 
             {discountApprovalError && (
-              <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {discountApprovalError}
-              </div>
+              </ErrorNotice>
             )}
 
             <div>

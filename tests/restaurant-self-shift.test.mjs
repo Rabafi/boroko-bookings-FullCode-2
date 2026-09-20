@@ -86,9 +86,14 @@ test('cash tips retained from all-cash sales lower the drawer handover without b
   assert.match(sharedCashup, /Loading this person’s Till shift/)
 })
 
-test('supervisors and managers get a visible attendance kiosk without exposing team management', () => {
-  assert.match(layout, /label: 'Clock in\/out'/)
-  assert.match(layout, /route: '\/hpos\/attendance'/)
+test('supervisors and managers get a single shared shift-close entry without exposing team management', () => {
+  assert.match(layout, /label: 'Staff shift close'/)
+  assert.match(layout, /route: '\/hpos\/shift-close'/)
+  assert.match(app, /path="hpos\/shift-close"/)
+  // Legacy deep links keep working as redirects to the combined screen.
+  assert.match(app, /path="hpos\/attendance"/)
+  assert.match(app, /path="hpos\/shared-cashup"/)
+  assert.match(app, /Navigate to="\/hpos\/shift-close"/)
 })
 
 test('opening a service shift is server-authoritative when online', () => {
@@ -108,5 +113,6 @@ test('a shared Till cannot be unlocked before attendance is active', () => {
   assert.match(sharedTillAttendanceSql, /attendance_shift_id = v_attendance\.id/)
   assert.match(terminal, /error=\{submitError\}/)
   assert.match(tillOperatorDialog, /hpos-till-unlock-error/)
-  assert.match(tillOperatorDialog, /role="alert"/)
+  assert.match(tillOperatorDialog, /ErrorNotice/)
+  assert.match(tillOperatorDialog, /scrollInDialog/, 'long staff lists must scroll the unlock error into view')
 })

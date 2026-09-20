@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Clock, AlertTriangle, RefreshCw, CalendarDays } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 const STATUSES = ['all', 'pending', 'preparing', 'ready', 'served']
 
@@ -205,7 +206,7 @@ export default function RestaurantKitchen() {
         <button onClick={loadTickets} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} /> Refresh</button>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Clock, AlertTriangle, ChefHat } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantKitchenAnalytics() {
   const [report, setReport] = useState([])
@@ -73,7 +74,7 @@ export default function RestaurantKitchenAnalytics() {
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="restaurant-native-loading">

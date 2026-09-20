@@ -4,6 +4,7 @@ import { useAccess, useSettings } from '../../app-context'
 import { getProductDefinition, getRuntimeProductId } from '../../../../shared/productIdentity'
 import { getUiVocabulary } from '../../../../shared/uiVocabulary'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { ErrorNotice } from './ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 
@@ -182,14 +183,14 @@ export default function StaffProductivityPanel() {
       </div>
 
       {error && (
-        <div className="bb-card mb-4 border-rose-200 bg-rose-50 p-4">
+        <ErrorNotice className="bb-card mb-4 border-rose-200 bg-rose-50 p-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-medium text-rose-700">{error}</p>
             <button onClick={() => load(startDate, endDate)} className="shrink-0 text-xs font-semibold text-rose-800 hover:underline">
               Try again
             </button>
           </div>
-        </div>
+        </ErrorNotice>
       )}
 
       {loading ? (

@@ -23,13 +23,12 @@ const barSettings = {
 
 test('base Bar POS navigation keeps selling simple and includes essential staff and audit controls', () => {
   const routes = getHposDockItems(barSettings).map((item) => item.route)
+  // Stock, Cash & close and Sales moved under Manage (manager PIN-gated);
+  // the rail keeps Sell, tabs and products only. Direct URLs keep working.
   assert.deepEqual(routes, [
     '/hpos/pos',
     '/hpos/checks',
-    '/hpos/menu',
-    '/hpos/stock',
-    '/hpos/cash',
-    '/hpos/reports'
+    '/hpos/menu'
   ])
 
   const manageRoutes = getHposMoreItems(barSettings).filter((item) => !item.feature).map((item) => item.route)

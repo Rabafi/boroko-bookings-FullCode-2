@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { state } from '../state.js'
+import { withNetworkTimeout } from './connectivity.js'
 import { recordCriticalError } from './operationalLog.js'
 import {
   applyQueuedDayUseInventoryReservations,
@@ -185,11 +186,16 @@ async function _getInventoryItems(options = {}) {
     let error = null;
     let legacyShape = false;
     for (let from = 0; from < maxRows; from += pageSize) {
-      let result = await selectInventoryItems(legacyShape ? INVENTORY_ITEM_LEGACY_SELECT : INVENTORY_ITEM_SELECT, from, pageSize);
+      const fetchPage = (select, offset) => withNetworkTimeout(
+        selectInventoryItems(select, offset, pageSize),
+        undefined,
+        'Stock list'
+      ).catch((timeoutError) => ({ data: null, error: timeoutError }));
+      let result = await fetchPage(legacyShape ? INVENTORY_ITEM_LEGACY_SELECT : INVENTORY_ITEM_SELECT, from);
       if (result.error && !legacyShape && isMissingInventoryCompatibilityColumnError(result.error)) {
         console.warn('inventory_items compatibility columns are missing in the remote schema; loading inventory with defaults until the migration is applied');
         legacyShape = true;
-        result = await selectInventoryItems(INVENTORY_ITEM_LEGACY_SELECT, from, pageSize);
+        result = await fetchPage(INVENTORY_ITEM_LEGACY_SELECT, from);
       }
       error = result.error;
       if (error) break;

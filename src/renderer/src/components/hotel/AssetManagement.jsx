@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, Search, RefreshCw, AlertTriangle, FileText, Wrench, Calendar, DollarSign, CheckCircle, XCircle, Clock, Tag, Paperclip, Shield } from 'lucide-react'
 import { Modal } from '../shared/Modal'
 import { StatusBadge } from '../shared/StatusBadge'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 const COST_TYPES = ['purchase', 'installation', 'repair', 'maintenance', 'upgrade', 'other']
 const ASSET_TYPES = ['equipment', 'furniture', 'fixture', 'vehicle', 'tool', 'appliance', 'system', 'other']
@@ -228,7 +229,7 @@ function AssetsTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[200px]">
@@ -493,7 +494,7 @@ function CategoriesTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">{categories.length} categories</p>
@@ -601,7 +602,7 @@ function WarrantiesTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">{warranties.length} warranties</p>
@@ -746,7 +747,7 @@ function InspectionsTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="flex flex-wrap items-center gap-3">
         <select value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)} className="flex-1 min-w-[200px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
@@ -933,7 +934,7 @@ function PreventiveTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -1116,7 +1117,7 @@ function CostsTab() {
 
   return (
     <div className="grid grid-cols-1 gap-5">
-      {error && <div className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></div>}
+      {error && <ErrorNotice className="bb-card p-3 border-red-200 bg-red-50"><p className="text-xs text-red-600">{error}</p></ErrorNotice>}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div>

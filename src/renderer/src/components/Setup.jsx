@@ -6,6 +6,7 @@ import { productLogoLight } from '../assets/productLogos'
 import { HOSPITALITY_MODES, PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const ALLOWED_PROPERTY_TYPES = new Set(BUILD_PRODUCT.allowedPropertyTypes)
@@ -901,7 +902,7 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
 
-              {adminError && <p className="text-red-500 text-sm">{adminError}</p>}
+              {adminError && <ErrorNotice className="text-red-500 text-sm">{adminError}</ErrorNotice>}
 
               <div className="flex gap-3 pt-1">
                 <button onClick={() => setStep(4)} className="btn-secondary flex-1">← Back</button>

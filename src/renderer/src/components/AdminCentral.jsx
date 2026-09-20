@@ -6,6 +6,7 @@ import { useToast } from './shared/Toast'
 import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
 import { useTableSort, SortableHeader } from '../hooks/useTableSort'
 import { BarChart, DonutChart, Sparkline, HorizontalBar } from './shared/Charts'
+import { ErrorNotice } from './shared/ErrorNotice'
 const LicensingWorkbench = lazy(() => import('./LicensingWorkbench'))
 const ExecutiveCockpit = lazy(() => import('./ExecutiveCockpit'))
 const Client360 = lazy(() => import('./Client360'))
@@ -536,6 +537,17 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [pwaDisabledReason, setPwaDisabledReason] = useState('')
   const [showPwaPassword, setShowPwaPassword] = useState(false)
 
+  // ─── staff PIN reset state ────────────────────────────────────────────────
+  const [pinResetTarget, setPinResetTarget] = useState(null)
+  const [pinResetUsers, setPinResetUsers] = useState([])
+  const [pinResetUsersLoading, setPinResetUsersLoading] = useState(false)
+  const [pinResetUsersError, setPinResetUsersError] = useState('')
+  const [pinResetUserId, setPinResetUserId] = useState('')
+  const [newPin, setNewPin] = useState('')
+  const [showNewPin, setShowNewPin] = useState(false)
+  const [pinResetSaving, setPinResetSaving] = useState(false)
+  const [pinResetError, setPinResetError] = useState('')
+
   const eligibleUsers = useMemo(
     () => companyUsers.filter((user) => user.role === 'manager' || user.role === 'admin'),
     [companyUsers]
@@ -798,6 +810,65 @@ function Companies({ companies, licenses, loading, onReload }) {
     const externalOpen = window.api?.shell?.openExternal
     if (typeof externalOpen === 'function') {
       await externalOpen(`https://wa.me/?text=${encodeURIComponent(message.whatsappText)}`).catch(() => {})
+    }
+  }
+
+  const openPinReset = async (company) => {
+    setPinResetTarget(company)
+    setPinResetUsers([])
+    setPinResetUserId('')
+    setNewPin('')
+    setShowNewPin(false)
+    setPinResetError('')
+    setPinResetUsersError('')
+    setPinResetUsersLoading(true)
+    try {
+      const rows = await window.api.admin.getCompanyUsers(company.lodge_id)
+      if (!Array.isArray(rows)) throw new Error('Company user response was not authoritative')
+      const active = rows.filter((user) => String(user.status || 'active').toLowerCase() === 'active')
+      setPinResetUsers(active)
+      setPinResetUserId(active[0]?.id || '')
+      if (active.length === 0) setPinResetUsersError('This company has no active staff accounts.')
+    } catch (error) {
+      setPinResetUsersError(error?.message || 'Company users are unavailable.')
+    } finally {
+      setPinResetUsersLoading(false)
+    }
+  }
+
+  const closePinReset = () => {
+    setPinResetTarget(null)
+    setPinResetUsers([])
+    setPinResetUserId('')
+    setNewPin('')
+    setShowNewPin(false)
+    setPinResetSaving(false)
+    setPinResetError('')
+    setPinResetUsersError('')
+  }
+
+  const confirmPinReset = async () => {
+    const pin = newPin.trim()
+    if (!/^\d{4,6}$/.test(pin)) {
+      setPinResetError('Staff PIN must be 4–6 digits.')
+      return
+    }
+    if (!pinResetTarget || !pinResetUserId) {
+      setPinResetError('Choose the staff account first.')
+      return
+    }
+    setPinResetSaving(true)
+    setPinResetError('')
+    try {
+      const result = await window.api.admin.resetCompanyUserPin(pinResetTarget.lodge_id, pinResetUserId, pin)
+      if (result?.success === false) throw new Error(result.error || 'Could not reset staff PIN')
+      const who = pinResetUsers.find((user) => user.id === pinResetUserId)
+      toast.success(`Staff PIN reset for ${who?.name || 'staff member'}. Share it with the verified manager only, then reply on their support ticket.`)
+      closePinReset()
+    } catch (err) {
+      setPinResetError(err?.message || 'Could not reset staff PIN')
+    } finally {
+      setPinResetSaving(false)
     }
   }
 
@@ -1264,6 +1335,12 @@ function Companies({ companies, licenses, loading, onReload }) {
           >
             {repairLoading ? 'Repairing Events...' : 'Repair Duplicate Events'}
           </button>
+          <button
+            onClick={() => openPinReset(selected)}
+            className="w-full text-xs py-2 px-3 rounded-lg bg-amber-600/20 hover:bg-amber-600 text-amber-200 hover:text-white transition-all"
+          >
+            Reset staff PIN
+          </button>
               </>
             ) : (
               <div className="space-y-2 max-h-48 overflow-y-auto">
@@ -1351,6 +1428,82 @@ function Companies({ companies, licenses, loading, onReload }) {
                   lifecycleMode === 'archive' ? 'Archive Company' :
                     lifecycleMode === 'restore' ? 'Restore Company' :
                       'Delete Permanently'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Reset staff PIN modal */}
+      {pinResetTarget && (
+        <Modal
+          title={`Reset Staff PIN — ${pinResetTarget.lodge_name}`}
+          onClose={closePinReset}
+        >
+          <div className="space-y-4">
+            <div className="rounded-lg border border-amber-700/60 bg-amber-900/30 p-3 text-xs text-amber-200">
+              Verify the manager by phone before resetting. Share the new PIN with them only, ask them to change it in Staff accounts afterwards, and reply on their support ticket.
+            </div>
+            {pinResetUsersLoading ? (
+              <p className="text-sm text-gray-400">Loading company users…</p>
+            ) : pinResetUsersError && pinResetUsers.length === 0 ? (
+              <div className="rounded-lg border border-amber-700 bg-amber-900/30 p-3 text-sm text-amber-200">
+                <p>Company users could not be verified.</p>
+                <p className="text-xs mt-1">{pinResetUsersError}</p>
+                <button onClick={() => openPinReset(pinResetTarget)} className="text-xs underline mt-3">Retry</button>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <p className="text-xs text-gray-400 mb-1">Staff account</p>
+                  <select
+                    value={pinResetUserId}
+                    onChange={(event) => setPinResetUserId(event.target.value)}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    {pinResetUsers.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name} ({user.role})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showNewPin ? 'text' : 'password'}
+                    inputMode="numeric"
+                    value={newPin}
+                    onChange={(event) => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    placeholder="New PIN (4–6 digits)"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPin((value) => !value)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200"
+                  >
+                    {showNewPin ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </>
+            )}
+            {pinResetError && (
+              <ErrorNotice className="rounded-lg border border-red-800 bg-red-950/50 p-3 text-xs text-red-200">{pinResetError}</ErrorNotice>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={closePinReset}
+                className="flex-1 py-2 px-4 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmPinReset}
+                disabled={pinResetSaving || pinResetUsersLoading || !pinResetUserId}
+                className="flex-1 py-2 px-4 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 transition-colors"
+              >
+                {pinResetSaving ? 'Resetting...' : 'Reset PIN'}
               </button>
             </div>
           </div>
@@ -2174,9 +2327,9 @@ function SupportTickets({ companies, onOpenCompany }) {
                   <textarea className={`${inp} h-24 resize-none`} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Write the next reply in this inbox conversation…" />
                 </Field>
                 {saveError && (
-                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                  <ErrorNotice className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
                     {saveError}
-                  </div>
+                  </ErrorNotice>
                 )}
                 <div className="flex gap-3">
                   <button onClick={() => setDetail(null)} className={`flex-1 ${btn('ghost')} py-2 rounded-lg text-sm`}>Cancel</button>
@@ -2937,7 +3090,7 @@ function Bookkeeping({ companies }) {
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
               <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2"><FileText size={14} className="text-purple-400" /> New Invoice</h3>
               <form onSubmit={handleCreateInvoice} className="space-y-3">
-                {createError && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{createError}</div>}
+                {createError && <ErrorNotice className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{createError}</ErrorNotice>}
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Company *">
                     <select className={inp} value={createForm.lodge_id} onChange={e => {
@@ -3238,7 +3391,7 @@ function Bookkeeping({ companies }) {
             <div className="rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300">
               Outstanding balance: <span className="font-semibold text-white">{paymentInvoice.currency} {Number(paymentInvoice.balance_due ?? paymentInvoice.amount ?? 0).toFixed(2)}</span>
             </div>
-            {paymentError && <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{paymentError}</div>}
+            {paymentError && <ErrorNotice className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-3 py-2 text-xs">{paymentError}</ErrorNotice>}
             <Field label="Amount *">
               <input type="number" min="0.01" step="0.01" className={inp} value={paymentForm.amount} onChange={e => setPaymentForm(v => ({ ...v, amount: e.target.value }))} required />
             </Field>
@@ -4116,11 +4269,11 @@ function Leads() {
       </div>
 
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
           <AlertCircle size={14} className="text-red-400 shrink-0" />
           <p className="text-red-300 text-xs flex-1">{error}</p>
           <button onClick={load} className="text-xs text-red-400 hover:text-white underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {/* Overdue follow-ups */}
@@ -4501,7 +4654,7 @@ export default function AdminCentral() {
           <form onSubmit={submitReauth} className="space-y-4">
             <p className="text-sm text-gray-300">Confirm the current master password. High-risk changes remain unlocked for 10 minutes; read-only control-tower views stay available.</p>
             <input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} autoFocus autoComplete="current-password" className="w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="Master password" />
-            {reauthError && <p className="text-xs text-red-300">{reauthError}</p>}
+            {reauthError && <ErrorNotice className="text-xs text-red-300">{reauthError}</ErrorNotice>}
             <div className="flex gap-3">
               <button type="button" onClick={() => { setShowReauth(false); setReauthPassword(''); setReauthError('') }} className="flex-1 rounded-lg bg-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600">Cancel</button>
               <button type="submit" disabled={reauthLoading || !reauthPassword} className="flex-1 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50">{reauthLoading ? 'Confirming…' : 'Unlock changes'}</button>
@@ -4511,11 +4664,11 @@ export default function AdminCentral() {
       )}
 
       {loadError && (
-        <div className="bg-red-900/40 border-b border-red-700 px-6 py-3 flex items-center gap-3 print:hidden">
+        <ErrorNotice className="bg-red-900/40 border-b border-red-700 px-6 py-3 flex items-center gap-3 print:hidden">
           <AlertTriangle size={16} className="text-red-400 shrink-0" />
           <p className="text-sm text-red-300 flex-1">{loadError}</p>
           <button onClick={loadAll} className="text-xs text-red-400 hover:text-red-300 underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {loadWarnings && !loadError && (

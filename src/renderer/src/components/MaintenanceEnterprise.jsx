@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, AlertTriangle, Wrench } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function MaintenanceEnterprise() {
   const [loading, setLoading] = useState(false)
@@ -160,10 +161,10 @@ export default function MaintenanceEnterprise() {
       </div>
 
       {error && (
-        <div className="bb-card p-4 mb-4 border-red-200 bg-red-50">
+        <ErrorNotice className="bb-card p-4 mb-4 border-red-200 bg-red-50">
           <p className="text-xs text-red-600 font-medium">{error}</p>
           <button onClick={() => setError(null)} className="text-xs text-slate-500 mt-1 hover:underline">Dismiss</button>
-        </div>
+        </ErrorNotice>
       )}
 
       <div className="flex gap-1 border-b border-slate-200 mb-4">

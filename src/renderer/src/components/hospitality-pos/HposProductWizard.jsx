@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ScanLine, X } from "lucide-react";
 import { useSettings } from "../../app-context";
+import { ErrorNotice } from "../shared/ErrorNotice";
 import { BAR_PRODUCT_CATEGORIES, BAR_PACK_SIZES, BAR_COUNTED_UNITS } from "../../../../shared/barModeProfile";
 import { createBarcodeScannerDecoder } from "../../../../shared/barcodeScanner";
 
@@ -262,6 +263,7 @@ export default function HposProductWizard({
       return needle !== "" && scopes.includes(needle);
     });
   }, [modifierGroups, form.category]);
+  const isPool = String(form.category || '').trim().toLowerCase() === 'pool';
 
   const depletion = Number(form.depletionQty ?? "1");
   const reviewSentence = useMemo(() => {
@@ -287,7 +289,12 @@ export default function HposProductWizard({
       return "Stock-only items always create counted stock. Switch back to a sellable product for no-stock tracking.";
     }
     if (form.mode === "product") {
-      if (!(Number(form.price) > 0)) return "Set a selling price greater than zero.";
+      if (!(Number(isPool ? 1 : form.price) > 0)) return "Set a selling price greater than zero.";
+      if (isPool) {
+        if (form.stockChoice !== "none") return "Pool tables must use No stock tracking — sales record cash only and deplete nothing.";
+        if (BAR_PACK_SIZES.some((size) => form[`pack${size}`])) return "Pool tables do not use packs. Keep all pack boxes unticked.";
+        return null;
+      }
       if (form.stockChoice === "none") {
         if (SERVER_RECIPE_FORCED_CATEGORIES.includes(String(form.category || "").trim().toLowerCase())) {
           return "This section needs a recipe with ingredients — no-stock tracking is not allowed here. Use Simple Food or Snacks for in-house food sold without stock.";
@@ -395,7 +402,7 @@ export default function HposProductWizard({
         const payload = {
           name: form.name.trim(),
           category: form.category.trim() || "Beer",
-          price: Number(form.price),
+          price: String(form.category || '').trim().toLowerCase() === 'pool' ? 1 : Number(form.price),
           barcode: form.barcode.trim() || null,
           stock_method: "non_stock",
           inventory_item_id: null,
@@ -550,19 +557,34 @@ export default function HposProductWizard({
               </label>
               <label>
                 Category (shared with stock)
-                <select value={form.category} onChange={(event) => set({ category: event.target.value })}>
+                <select value={form.category} onChange={(event) => {
+                  const next = event.target.value;
+                  if (String(next || '').trim().toLowerCase() === 'pool') {
+                    set({ category: next, mode: "product", price: "1", stockChoice: "none", name: form.name || "Pool Table 1" });
+                  } else {
+                    set({ category: next });
+                  }
+                }}>
                   {visibleCategories.map((category) => (
                     <option key={category} value={category}>
                       {category}
                     </option>
                   ))}
                 </select>
-                <small>For example, Coke uses Softs. Shared with stock.</small>
+                <small>For example, Coke uses Softs. Pool tables use Pool. Shared with stock.</small>
               </label>
+              {isPool && form.mode === "product" && !hasRecipe && (
+                <div className="hpos-inline-notice is-stack" role="status">
+                  <span>
+                    <strong>Pool table cash.</strong> Price stays P1, No stock tracking. At night type cash from each table box as quantity: Table 1 P80 = quantity 80. One table = one product (Pool Table 1, Pool Table 2).
+                  </span>
+                </div>
+              )}
               {form.mode === "product" && (
                 <label>
                   Selling price ({currency})
-                  <input type="number" min="0.01" step="0.01" value={form.price} onChange={(event) => set({ price: event.target.value })} />
+                  <input type="number" min="0.01" step="0.01" value={isPool ? "1" : form.price} onChange={(event) => set({ price: event.target.value })} disabled={isPool} />
+                  {isPool ? <small>Pool price is fixed P1. You type the cash as quantity at night.</small> : null}
                 </label>
               )}
               {barcodeField("barcode", form.mode === "product" ? "Single barcode (optional)" : "Barcode (optional)", "Scan or enter barcode")}
@@ -600,7 +622,7 @@ export default function HposProductWizard({
               </div>
             )}
 
-            {form.mode === "product" && !hasRecipe && (
+            {form.mode === "product" && !hasRecipe && !isPool && (
               <div className="hpos-inline-notice is-stack" role="status">
                 <span>
                   <strong>Sizes &amp; extras: </strong>
@@ -626,12 +648,12 @@ export default function HposProductWizard({
                 <div className="hpos-service-form hpos-service-form--two">
                   <label className="is-wide">
                     Stock source
-                    <select value={form.stockChoice} onChange={(event) => set({ stockChoice: event.target.value })} disabled={editing && form.stockChoice === "link"}>
+                    <select value={isPool ? "none" : form.stockChoice} onChange={(event) => set({ stockChoice: event.target.value })} disabled={isPool || (editing && form.stockChoice === "link")}>
                       <option value="create">Create matching stock</option>
                       <option value="link">Link existing stock</option>
                       <option value="none" disabled={form.mode === "stock-only"}>No stock tracking — sell without depleting anything</option>
                     </select>
-                    <small>Creating copies the name, category and barcode once — edit the stock name first when one stock serves several products. Linking preserves the existing stock metadata unless you edit it in Stock. No tracking suits in-house food cooked by the tray, such as fatcakes: sales record revenue only, and you mark the product unavailable yourself when it runs out.</small>
+                    {isPool ? <small>Pool tables never track stock. Cash only. This box is locked.</small> : <small>Creating copies the name, category and barcode once — edit the stock name first when one stock serves several products. Linking preserves the existing stock metadata unless you edit it in Stock. No tracking suits in-house food cooked by the tray, such as fatcakes: sales record revenue only, and you mark the product unavailable yourself when it runs out.</small>}
                   </label>
                   {form.stockChoice === "link" ? (
                     <label className="is-wide">
@@ -778,7 +800,7 @@ export default function HposProductWizard({
               </span>
             </div>
             {scanStatus && <div role="status" className="hpos-inline-notice">{scanStatus}</div>}
-            {saveError && <div className="hpos-inline-error" role="alert">{saveError}</div>}
+            {saveError && <ErrorNotice className="hpos-inline-error">{saveError}</ErrorNotice>}
             {unknownOutcome && (
               <div className="hpos-inline-notice is-stack" role="status">
                 <span>

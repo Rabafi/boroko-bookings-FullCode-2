@@ -4,6 +4,7 @@ import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, Clipbo
 import { useFeatures, useSettings } from '../app-context'
 import { formatLocalDate, localDateStringFromOffset, localToday } from '../utils/localDate'
 import { StatusBadge } from './shared/StatusBadge'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const STATUS_CONFIG = {
   clean: {
@@ -279,10 +280,10 @@ function BoardTab() {
       </div>
 
       {error && (
-        <div className="flex items-start justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="flex items-start justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{error}</span>
           <button onClick={() => setError('')} className="text-red-400 hover:text-red-600 font-bold flex-shrink-0">✕</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {arrivalAttention.length > 0 && (
@@ -511,10 +512,10 @@ function TurnoverTab() {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           <AlertTriangle size={16} className="mr-2 inline" />
           {error}
-        </div>
+        </ErrorNotice>
       )}
 
       <div className="grid gap-3 md:grid-cols-4">
@@ -706,7 +707,7 @@ function AssignmentsTab() {
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
 
       <div className="flex gap-1 border-b border-slate-200">
@@ -890,7 +891,7 @@ function InspectionTab() {
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>
       )}
 
       <section className="bb-card overflow-hidden">

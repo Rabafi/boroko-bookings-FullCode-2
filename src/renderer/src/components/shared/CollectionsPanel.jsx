@@ -14,6 +14,7 @@ import {
   Zap
 } from 'lucide-react'
 import { localToday } from '../../utils/localDate'
+import { ErrorNotice } from './ErrorNotice'
 
 function fmt(currency, val) {
   return `${currency} ${Number(val || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -459,9 +460,9 @@ export default function CollectionsCard({ currency = 'P', onSendToChat }) {
         {summary && phase === 'idle' && (
           <div className="border-t border-slate-100 bg-slate-50 p-4 space-y-3">
             {previewError && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              <ErrorNotice className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
                 {previewError}
-              </div>
+              </ErrorNotice>
             )}
 
             {/* Method selector */}

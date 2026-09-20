@@ -113,7 +113,7 @@ test('desktop and Legacy POS enforce the same Base tender boundary before queuei
   assert.match(main, /enforceBarTenderEntitlements/)
   assert.match(main, /provisionalOfflineUnlock = result\.offline === true \|\| result\.provisional === true \|\| result\.queued === true/)
   assert.match(main, /getBarOfflineTabProofError/)
-  assert.match(main, /Bar tabs require a live shared-Till operator proof/)
+  assert.match(main, /Unlock Till with the serving staff PIN before opening or changing a tab while offline\./)
   assert.match(domain, /enforceBarBaseTenderBoundary/)
   assert.match(legacyMain, /enforceLegacyBarBaseTenderBoundary/)
   assert.match(domain, /if \(!hasVoucher && tip === 0\) return/)

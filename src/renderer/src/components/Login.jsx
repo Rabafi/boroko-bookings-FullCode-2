@@ -7,6 +7,7 @@ import { getProductDefinition, getRuntimeProductId } from '../../../shared/produ
 import { isBarOnlyMode } from '../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOSPITALITY_POS = BUILD_PRODUCT.id === 'hospitality-pos'
@@ -467,9 +468,9 @@ export default function Login() {
           </div>
 
         {error && (
-            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
+            <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
               {error}
-            </div>
+            </ErrorNotice>
           )}
 
           {warning && (

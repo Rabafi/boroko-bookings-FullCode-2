@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, AlertTriangle, CheckCircle, XCircle } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const TABS = [
   ['linen', 'Linen & Laundry'],
@@ -123,10 +124,10 @@ export default function OperationsCompliance() {
       </div>
 
       {error && (
-        <div className="bb-card p-4 mb-4 border-red-200 bg-red-50">
+        <ErrorNotice className="bb-card p-4 mb-4 border-red-200 bg-red-50">
           <p className="text-xs text-red-600 font-medium">{error}</p>
           <button onClick={() => setError(null)} className="text-xs text-slate-500 mt-1 hover:underline">Dismiss</button>
-        </div>
+        </ErrorNotice>
       )}
       {warnings.length > 0 && !error && (
         <div className="bb-card p-4 mb-4 border-amber-200 bg-amber-50">

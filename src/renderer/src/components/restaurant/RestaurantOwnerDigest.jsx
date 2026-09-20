@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { RefreshCw, TrendingUp, ShoppingCart, Users, AlertTriangle, Package, ClipboardCheck, Wallet } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantOwnerDigest() {
   const [digest, setDigest] = useState(null)
@@ -39,7 +40,7 @@ export default function RestaurantOwnerDigest() {
       </div>
 
       {error && (
-        <div className="mb-6 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-4">{error}</div>
+        <ErrorNotice className="mb-6 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-4">{error}</ErrorNotice>
       )}
 
       {!digest && !loading && (

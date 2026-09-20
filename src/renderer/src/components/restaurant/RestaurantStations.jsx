@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { WifiOff } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantStations() {
   const [stations, setStations] = useState([])
@@ -124,9 +125,9 @@ export default function RestaurantStations() {
       </div>
 
       {saveError && (
-        <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
           {saveError}
-        </div>
+        </ErrorNotice>
       )}
 
       {stationEditorOpen && (

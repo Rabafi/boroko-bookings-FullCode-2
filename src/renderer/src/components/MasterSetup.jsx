@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Shield, Eye, EyeOff } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function MasterSetup({ onComplete }) {
   const [checking, setChecking] = useState(true)
@@ -79,9 +80,9 @@ export default function MasterSetup({ onComplete }) {
 
         <form onSubmit={handleSubmit} className="px-8 py-6 space-y-4">
           {error && (
-            <div className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm">
+            <ErrorNotice className="bg-red-900/50 border border-red-700 text-red-300 rounded-lg px-4 py-3 text-sm">
               {error}
-            </div>
+            </ErrorNotice>
           )}
 
           <div>

@@ -5,6 +5,7 @@ import { useProfiles } from '../app-context'
 import { productLogoColor } from '../assets/productLogos'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOSPITALITY_POS = BUILD_PRODUCT.id === 'hospitality-pos'
@@ -56,9 +57,9 @@ export default function Welcome() {
         <p className={`mb-8 text-sm ${IS_HOTEL ? HOTEL_CHROME.mute : 'text-slate-500'}`}>{BUILD_PRODUCT.tagline}</p>
 
         {error && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <ErrorNotice className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
-          </div>
+          </ErrorNotice>
         )}
 
         <div className="flex flex-col gap-3">

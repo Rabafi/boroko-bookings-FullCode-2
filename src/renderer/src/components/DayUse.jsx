@@ -41,6 +41,7 @@ import {
   normalizeDayUseReportRow,
   summarizeDayUseExtras
 } from '../../../shared/dayUseReporting'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const PAYMENT_METHODS = PAYMENT_METHOD_PLAIN_OPTIONS
 const ACTIVITY_OPTIONS = [
@@ -1056,7 +1057,7 @@ export default function DayUse() {
             </div>
 
             <form onSubmit={handleSave} className="px-6 py-5 space-y-5">
-              {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</div>}
+              {error && <ErrorNotice className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</ErrorNotice>}
               {resourceConflict && form.date === selectedDate && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0" />

@@ -6,6 +6,7 @@ import { useSettings, useAccess, useFeatures } from '../app-context'
 import HotelKpis from './HotelKpis'
 import AdvancedReports from './AdvancedReports'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { unpackTransport } from '../transportUnpack'
 import { getDayUseActivityLabel, normalizeDayUseReportRow, summarizeDayUseExtras } from '../../../shared/dayUseReporting'
@@ -974,9 +975,9 @@ export default function Reports() {
       </div>
 
       {error && (
-        <div className="no-print flex items-start gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="no-print flex items-start gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>⚠</span><span>{error}</span>
-        </div>
+        </ErrorNotice>
       )}
       {tabError && (
         <div className="no-print flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

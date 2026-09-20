@@ -1,5 +1,18 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { state } from '../src/main/state.js'
+import { readCache, writeCache } from '../src/main/domains/cacheStore.js'
+import { readSyncQueue, writeSyncQueue } from '../src/main/domains/syncStore.js'
+import {
+  applyQueuedPosInventoryReservations,
+  buildInventoryNameIndex,
+  buildPosMenuIndex,
+  collectQueuedBarStockDeltas,
+  refreshOfflinePosInventoryProjection,
+  resolveQueuedPosInventoryLinkIndexed
+} from '../src/main/domains/posOffline.js'
 
 async function read(path) {
   try {
@@ -77,6 +90,63 @@ async function run() {
   assert.match(launchReadinessSql, /public\._positive_depletion_qty/)
   assert.match(launchReadinessSql, /inventory_item_id, depletion_qty/)
   assert.match(launchReadinessSql, /v_required_stock <= 0 or coalesce\(current_stock, 0\) >= v_required_stock/)
+
+  // P0-3a delivery-aware projection: a queued offline delivery must survive a
+  // projection rebuild (previously only queued sales were subtracted, so
+  // 10 -> 30 locally collapsed back to 10 and the Till greyed items out).
+  assert.match(database, /function collectQueuedBarStockDeltas\(/)
+  assert.match(database, /post_bar_simple_delivery/)
+  assert.match(database, /post_bar_physical_count/)
+  assert.match(database, /function buildPosMenuIndex\(/)
+  assert.match(database, /function buildInventoryNameIndex\(/)
+  assert.match(database, /function resolveQueuedPosInventoryLinkIndexed\(/)
+  {
+    const menuById = buildPosMenuIndex([{ id: 'm1', inventory_item_id: 'i1', depletion_qty: 2 }])
+    const nameIndex = buildInventoryNameIndex([{ id: 'i9', name: 'Cola' }])
+    assert.equal(resolveQueuedPosInventoryLinkIndexed({ inventory_item_id: 'i1', depletion_qty: 3 }, { menuById, inventoryByName: nameIndex }).inventoryItemId, 'i1')
+    assert.equal(resolveQueuedPosInventoryLinkIndexed({ menu_item_id: 'm1' }, { menuById, inventoryByName: nameIndex }).inventoryItemId, 'i1')
+    assert.equal(resolveQueuedPosInventoryLinkIndexed({ menu_item_id: 'm1' }, { menuById, inventoryByName: nameIndex }).depletionQty, 2)
+    const deltas = collectQueuedBarStockDeltas([
+      { type: 'rpc', table: 'post_bar_simple_delivery', data: { p_lines: [{ item_id: 'i1', quantity: 20 }] } },
+      { type: 'rpc', table: 'adjust_inventory_stock', data: { p_item_id: 'i1', p_delta: -2 } },
+      { type: 'rpc', table: 'post_bar_physical_count', data: { p_lines: [{ item_id: 'i2', actual_qty: 7 }] } }
+    ])
+    assert.equal(deltas.deliveryDeltas.get('i1'), 20)
+    assert.equal(deltas.adjustDeltas.get('i1'), -2)
+    assert.equal(deltas.countOverrides.get('i2'), 7)
+    assert.ok(deltas.touched.has('i1') && deltas.touched.has('i2'))
+
+    // End-to-end against real cache files: synced 10 + queued delivery 20,
+    // minus one queued 2x sale (depletion 1) = 28, not 10.
+    const projectionRoot = await mkdtemp(path.join(os.tmpdir(), 'boroko-pos-projection-'))
+    const savedCacheDir = state.cacheDir
+    try {
+      state.cacheDir = projectionRoot
+      writeCache('inventory-items', [{ id: 'i1', name: 'Beer', synced_current_stock: 10, current_stock: 10 }])
+      writeCache('pos-menu-items', [{ id: 'm1', inventory_item_id: 'i1', depletion_qty: 1 }])
+      writeSyncQueue([
+        { _queue_id: 'd1', type: 'rpc', table: 'post_bar_simple_delivery', data: { p_lodge_id: 'l1', p_operation_id: 'op1', p_lines: [{ item_id: 'i1', quantity: 20 }] } },
+        {
+          _queue_id: 's1',
+          type: 'rpc',
+          table: 'create_pos_order_v3',
+          data: { payload: { id: 'o1', lodge_id: 'l1', outlet_id: null, items: [{ menu_item_id: 'm1', quantity: 2 }] } }
+        }
+      ])
+      const projected = applyQueuedPosInventoryReservations(readCache('inventory-items'))
+      assert.equal(projected[0].current_stock, 28)
+      assert.equal(projected[0].synced_current_stock, 10)
+      assert.equal(projected[0]._pending_sync, true)
+      // The Till refresh path (local cache -> projection -> write) keeps it.
+      writeCache('inventory-items', [{ id: 'i1', name: 'Beer', synced_current_stock: 10, current_stock: 30, _pending_sync: true, _sync_state: 'pending' }])
+      const refreshed = refreshOfflinePosInventoryProjection()
+      assert.equal(refreshed[0].current_stock, 28)
+      void readSyncQueue
+    } finally {
+      state.cacheDir = savedCacheDir
+      await rm(projectionRoot, { recursive: true, force: true })
+    }
+  }
 
   console.log('offline-pos-regression: ok')
 }

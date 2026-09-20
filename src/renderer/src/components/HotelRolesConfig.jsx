@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, Check, Search, Briefcase, Users, Shield } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function HotelRolesConfig() {
   const [templates, setTemplates] = useState([])
@@ -70,7 +71,7 @@ export default function HotelRolesConfig() {
         </div>
       </div>
 
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</ErrorNotice>}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">

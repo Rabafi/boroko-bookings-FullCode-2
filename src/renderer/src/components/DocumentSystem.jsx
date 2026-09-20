@@ -6,6 +6,7 @@ import { getProductDefinition, getRuntimeProductId } from '../../../shared/produ
 import { useAccess } from '../app-context'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 /** Must match document_templates.check + documentSystem.HOTEL_DOCUMENT_TYPES */
 const DOCUMENT_TYPES = [
@@ -289,10 +290,10 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
       </div>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700">
+        <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700">
           <AlertTriangle className="w-4 h-4" />
           {error}
-        </div>
+        </ErrorNotice>
       )}
       {success && (
         <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700">

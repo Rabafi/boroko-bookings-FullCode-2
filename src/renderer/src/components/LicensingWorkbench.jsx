@@ -22,6 +22,7 @@ import { formatLocalDate } from '../utils/localDate'
 import { getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
 import { formatCommercialMoney } from '../../../shared/commercialPackages'
 import { getProductFamilyLabel, resolveProductFamily } from '../../../shared/productIdentity'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const PLAN_FLAGS = {
   Starter: {
@@ -565,9 +566,9 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         </div>
 
         {error && (
-          <div className="rounded-xl border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+          <ErrorNotice className="rounded-xl border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-300">
             {error}
-          </div>
+          </ErrorNotice>
         )}
 
         {notice && (
@@ -1155,7 +1156,7 @@ function OverrideDesk({ companies, licenses }) {
       </div>
       {selectedLodge && selectedProduct && referenceOffer && <p className="mt-2 text-xs text-gray-500">Comparing against {referenceOffer.displayName} defaults. This selector does not change the live licence; saved overrides remain attached to this client and product.</p>}
       {selectedLodge && selectedProduct && <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_0.35fr]"><div><label className="mb-1 block text-xs text-gray-400">Mandatory reason (minimum 8 characters)</label><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Business reason for this exception or revocation" className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white" /></div><div><label className="mb-1 block text-xs text-gray-400">Optional expiry</label><input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} className="w-full rounded-xl border border-gray-700 bg-black/20 px-3 py-2 text-sm text-white" /></div></div>}
-      {error && <p className="mt-3 rounded-xl border border-red-800 bg-red-950/30 px-3 py-2 text-sm text-red-300">{error}</p>}
+      {error && <ErrorNotice className="mt-3 rounded-xl border border-red-800 bg-red-950/30 px-3 py-2 text-sm text-red-300">{error}</ErrorNotice>}
       {notice && <p className="mt-3 rounded-xl border border-green-800 bg-green-950/30 px-3 py-2 text-sm text-green-300">{notice}</p>}
     </section>
 

@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, TrendingUp, Search } from 'lucide-react'
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { unpackTransport } from '../../transportUnpack'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 const SEVERITY_COLORS = {
   ok: 'bg-emerald-100 text-emerald-700 border-emerald-200',
@@ -89,7 +90,7 @@ export default function RestaurantRecipeVariance() {
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="restaurant-native-loading">

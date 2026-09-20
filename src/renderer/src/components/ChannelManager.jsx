@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Settings, Check, X, AlertTriangle, ExternalLink } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const emptyMapping = { channel_key: '', source_type: 'room_type', local_id: '', channel_code: '', channel_name: '' }
 const emptyConfig = { channel_key: '', channel_label: '', enabled: true, sync_availability: true, sync_rates: false, import_reservations: false }
@@ -213,7 +214,7 @@ export default function ChannelManager() {
         </div>
       </div>
 
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><AlertTriangle className="w-4 h-4" />{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><AlertTriangle className="w-4 h-4" />{error}</ErrorNotice>}
       {success && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700"><Check className="w-4 h-4" />{success}</div>}
 
       {activeTab === 'dashboard' && (

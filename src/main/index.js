@@ -31,7 +31,8 @@ const TRANSPORT_ENVELOPE_CHANNELS = new Set([
   'pos:getRecipeVarianceReport',
   'pos:getRecipePreparationLosses',
   'pos:getRecipePreparationLossIngredientSummary',
-  'inventory:getItemsWithReadStatus'
+  'inventory:getItemsWithReadStatus',
+  'expenses:getAll'
 ])
 function toTransport(value) {
   if (Array.isArray(value)) {
@@ -120,6 +121,7 @@ import {
 } from './hardware/posHardwareAdapter.js'
 import { getProductDefinition, getRuntimeProductId } from '../shared/productIdentity.js'
 import { getTillOperatorPolicy, TILL_OPERATOR_MODES } from '../shared/tillOperatorPolicy.js'
+import { resolveAuthorizeShiftId } from '../shared/tillAuthorizeShift.js'
 import { isBarOnlyMode } from '../shared/propertyTypes.js'
 import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
@@ -2034,6 +2036,23 @@ async function loadAuthoritativePosHistoryExport({ startDate, endDate, outletId 
     databaseCutoff: envelope.database_cutoff_at,
     filters: envelope.filters || {}
   }
+}
+
+// Single-flight for the certified export: concurrent callers with the same
+// range (StrictMode double-mounts, a report view plus an export click)
+// share one multi-MB report statement instead of each running it. Bursts of
+// duplicate statements trip the 8s statement timeout for every caller while
+// also writing duplicate report runs. Sequential calls always re-run.
+const authoritativePosHistoryInflight = new Map()
+async function loadAuthoritativePosHistoryExportDeduped(args = {}) {
+  const key = `${args.startDate || ''}|${args.endDate || ''}|${args.outletId || ''}`
+  const existing = authoritativePosHistoryInflight.get(key)
+  if (existing) return existing
+  const promise = loadAuthoritativePosHistoryExport(args).finally(() => {
+    if (authoritativePosHistoryInflight.get(key) === promise) authoritativePosHistoryInflight.delete(key)
+  })
+  authoritativePosHistoryInflight.set(key, promise)
+  return promise
 }
 
 function assertCompletePosHistoryExport(orders, voidHistory, localOrders = []) {
@@ -4059,7 +4078,9 @@ app.whenReady().then(async () => {
   createStartupSplashWindow()
 
   // Init DB
+  try { console.log('[BOOT] initDatabase start'); } catch {}
   await db.initDatabase()
+  try { console.log('[BOOT] ipc handlers registering'); } catch {}
 
   // -- Auth ------------------------------------------------------------------
   ipcMain.handle('auth:login', async (_, email, password, selectedLodgeId = null) => {
@@ -4446,10 +4467,20 @@ app.whenReady().then(async () => {
     const requestedOperatorId = data?.cashier_id || data?.cashierId || data?.waiter_id || data?.waiterId || null
     const outletId = data?.outlet_id || data?.outletId || null
     const shiftId = data?.shift_id || data?.shiftId || null
+    // Retry loop-breaker: an interactive retry replays its original bytes with
+    // a possibly-closed shift_id, while the server-payload rewrite runs after
+    // this gate. Reattribute to the operator's current open shift for the
+    // authorize check only; the payload (and journal digest) below is
+    // untouched, and any doubt keeps the original shift (fail closed).
+    let authorizeShiftId = shiftId
+    if (requestedOperatorId && shiftId) {
+      const currentOpen = await db.getStaffOpenPosShift(requestedOperatorId).catch(() => null)
+      authorizeShiftId = resolveAuthorizeShiftId({ requestedShiftId: shiftId, outletId, openShift: currentOpen })
+    }
     const authorized = sharedTillOperatorSessions.authorize(event?.sender?.id, {
       outletId,
       operatorId: requestedOperatorId,
-      shiftId
+      shiftId: authorizeShiftId
     })
     if (!authorized.success) {
       return { shared: true, session: null, policy, code: authorized.code, error: authorized.error }
@@ -4509,11 +4540,16 @@ app.whenReady().then(async () => {
     if (state.isOnline) return null
     const settings = await db.getSettings().catch(() => ({}))
     if (!isBarOnlyMode(settings)) return null
+    // Unlocked Till (verified operator session, proof optional offline):
+    // offline unlocks mint no server proof, but the PIN-verified session is
+    // the same trust root the Till uses for offline counter sales. A locked
+    // Till (no session at all) still cannot touch tabs.
     if (sharedTillOperatorSessions.getOperatorProof(event?.sender?.id)) return null
+    if (sharedTillOperatorSessions.get(event?.sender?.id)) return null
     return {
       success: false,
       code: 'operator_proof_required',
-      error: 'Bar tabs require a live shared-Till operator proof. Reconnect before opening or changing a tab.'
+      error: 'Unlock Till with the serving staff PIN before opening or changing a tab while offline.'
     }
   }
 
@@ -5505,6 +5541,10 @@ app.whenReady().then(async () => {
     try { requireFreshCommandCentralReauth(); return await db.resetCompanyUserPassword(lodgeId, userId, password) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('admin:resetCompanyUserPin', async (_, lodgeId, userId, pin) => {
+    try { requireFreshCommandCentralReauth(); return await db.resetCompanyUserPin(lodgeId, userId, pin) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('admin:updateCompanyUserPwaAccess', async (_, lodgeId, userId, payload) => {
     try { requireFreshCommandCentralReauth(); return await db.updateCompanyUserPwaAccess(lodgeId, userId, payload || {}) }
     catch (e) { return { success: false, error: e.message } }
@@ -5857,6 +5897,15 @@ app.whenReady().then(async () => {
       await requireCapability('staff.manage')
       return { success: true, entries: await db.getStaffAccessAudit(100) }
     } catch (e) { return { success: false, error: e.message, entries: [] } }
+  })
+  ipcMain.handle('users:changeOwnPin', async (_, data) => {
+    // Self-service Staff PIN: any signed-in operator with Till access can
+    // change their own PIN. Target is forced to the current user inside the
+    // domain + server RPC, so this never needs staff.manage and never lets
+    // one operator change another operator's PIN. Admin override stays on
+    // users:update (staff.manage).
+    try { await requireCapability('pos.view'); return await db.changeOwnStaffPin(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
   })
 
   // -- Staff Scheduling & Attendance --------------------------------------------
@@ -8452,7 +8501,7 @@ app.whenReady().then(async () => {
     try {
       const outletId = resolveCertifiedPosExportOutletId()
       const [authoritative, voidHistory, localOrders] = await Promise.all([
-        loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+        loadAuthoritativePosHistoryExportDeduped({ startDate: start, endDate: end, outletId }),
         db.getPosVoidHistory(start, end, outletFilter),
         db.getPosOrders(start, end, outletFilter)
       ])
@@ -8494,6 +8543,14 @@ app.whenReady().then(async () => {
       throw new Error(e?.message || 'Failed to load POS void history')
     }
   })
+  ipcMain.handle('pos:discardLocalVoidRecord', async (_, overrideId, options = {}) => {
+    try {
+      await requireCapability('sync.manage')
+      return await db.discardLocalPosVoidRecord(overrideId, { reason: options?.reason || '' })
+    } catch (e) {
+      return { success: false, error: e?.message || 'This void record could not be discarded.' }
+    }
+  })
   ipcMain.handle('pos:exportHistoryExcel', async (event, payload = {}) => {
     let reportRunId = null
     try {
@@ -8515,7 +8572,7 @@ app.whenReady().then(async () => {
        let includeWaste = true
        try { await requireCapability('inventory.view') } catch { includeWaste = false }
        const [authoritative, voidHistory, localOrders, settings, movementRead] = await Promise.all([
-         loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+         loadAuthoritativePosHistoryExportDeduped({ startDate: start, endDate: end, outletId }),
          db.getPosVoidHistory(start, end, outletFilter),
          db.getPosOrders(start, end, outletFilter),
          db.getSettings().catch(() => ({})),
@@ -8694,7 +8751,7 @@ app.whenReady().then(async () => {
        let includeWastePdf = true
        try { await requireCapability('inventory.view') } catch { includeWastePdf = false }
        const [authoritative, voidHistory, localOrders, settings, movementReadPdf] = await Promise.all([
-         loadAuthoritativePosHistoryExport({ startDate: start, endDate: end, outletId }),
+         loadAuthoritativePosHistoryExportDeduped({ startDate: start, endDate: end, outletId }),
          db.getPosVoidHistory(start, end, outletFilter),
          db.getPosOrders(start, end, outletFilter),
          db.getSettings().catch(() => ({})),
@@ -8763,8 +8820,147 @@ app.whenReady().then(async () => {
       return { success: false, error: e?.message || 'Could not export POS history PDF.' }
     }
   })
-  ipcMain.handle('pos:exportDailyCloseSummaryPdf', async (event, payload = {}) => {
-    let reportRunId = null
+  // Device-records exports: this terminal's saved sales for offline bars.
+  // Deliberately separate from the certified pos:exportHistory* path above:
+  // no server controls, no report run, no dataset hash, every figure labeled
+  // UNCONFIRMED. Certified gates and writers are never touched.
+  const loadDevicePosRecords = async (start, end, outletFilter) => {
+    const [orders, settings] = await Promise.all([
+      db.getPosOrders(start, end, outletFilter).catch(() => []),
+      db.getSettings().catch(() => ({})),
+    ])
+    let voidHistory = []
+    try {
+      voidHistory = await db.getPosVoidHistory(start, end, outletFilter)
+    } catch {
+      voidHistory = []
+    }
+    return {
+      orders: Array.isArray(orders) ? orders : [],
+      voidHistory: Array.isArray(voidHistory) ? voidHistory : [],
+      settings: settings || {},
+    }
+  }
+  const deviceRecordsSummary = (orders = [], voidHistory = []) => {
+    let gross = 0
+    let pending = 0
+    for (const order of orders) {
+      const total = Number(order?.total)
+      if (Number.isFinite(total)) gross += total
+      if (order?._pending_sync === true) pending += 1
+    }
+    return { count: orders.length, gross, pending, voids: voidHistory.length }
+  }
+  const buildDeviceRecordsPdfHtml = ({ lodgeName, periodLabel, generatedAt, currency, orders, summary }) => {
+    const rows = (orders || []).map((order) => `
+      <tr>
+        <td>${escapeHtml(order.receipt_number || String(order.id || '').slice(0, 8))}</td>
+        <td>${escapeHtml(String(order.business_date || order.created_at || '').slice(0, 10))}</td>
+        <td>${escapeHtml(order.table_name || order.tab_name || order.service_mode || 'Counter')}</td>
+        <td>${escapeHtml(order.status || '')}${order._pending_sync === true ? ' (pending sync)' : ''}</td>
+        <td style="text-align:right">${escapeHtml(formatReportMoney(currency, order.total))}</td>
+      </tr>`).join('')
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+      body{font-family:Arial,sans-serif;color:#222;font-size:12px}
+      h1{font-size:18px;margin:0 0 4px} .meta{color:#666;margin-bottom:12px}
+      .banner{border:2px dashed #a66;background:#fff6df;padding:10px;font-weight:bold;text-align:center;margin:12px 0}
+      table{width:100%;border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}
+      th{background:#f2f2f2} tfoot td{font-weight:bold}
+    </style></head><body>
+      <h1>${escapeHtml(lodgeName)} — Device sales records</h1>
+      <div class="meta">${escapeHtml(periodLabel)} · Generated ${escapeHtml(generatedAt)}</div>
+      <div class="banner">UNCONFIRMED — SAVED ON THIS DEVICE ONLY. NOT SERVER-CERTIFIED. PENDING SYNC: ${summary.pending} OF ${summary.count}.</div>
+      <table><thead><tr><th>Receipt</th><th>Date</th><th>Table / mode</th><th>Status</th><th style="text-align:right">Total (${escapeHtml(currency)})</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="4">Device total (unconfirmed)</td><td style="text-align:right">${escapeHtml(formatReportMoney(currency, summary.gross))}</td></tr></tfoot></table>
+    </body></html>`
+  }
+  ipcMain.handle('pos:exportDeviceRecordsExcel', async (event, payload = {}) => {
+    try {
+      await requireCapability('reports.export')
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const start = payload.start || ''
+      const end = payload.end || ''
+      const period = start && end ? `${start}-to-${end}` : ''
+      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+        title: 'Export Device Sales Records to Excel',
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'device-records-pos', period, extension: 'xlsx' }),
+        filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+      })
+      if (canceled || !filePath) return { success: false }
+      const outletFilter = db.getUserPosOutletFilter()
+      const { orders, voidHistory, settings } = await loadDevicePosRecords(start, end, outletFilter)
+      const currency = settings?.currency || 'P'
+      const resolvedLodge = settings?.lodge_name || settings?.company_name || APP_BRAND_NAME
+      const periodLabel = start && end ? `${start} to ${end}` : 'All dates'
+      const summary = deviceRecordsSummary(orders, voidHistory)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        [`${resolvedLodge} - Device Sales Records`],
+        ...buildWorkbookMetaRows({
+          lodgeName: settings?.lodge_name || resolvedLodge,
+          companyName: settings?.company_name || '',
+          periodLabel,
+          generatedAt: new Date().toLocaleString()
+        }),
+        ['Completeness', 'UNCONFIRMED'],
+        ['Source', 'device cache; not server-certified; pending rows included'],
+        ['Records', summary.count],
+        ['Pending sync', summary.pending],
+        ['Recorded voids', summary.voids],
+        [`Device total (${currency}, unconfirmed)`, Number(summary.gross).toFixed(2)],
+      ]), 'Summary')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((orders || []).map((order) => ({
+        'Receipt': order.receipt_number || String(order.id || '').slice(0, 8),
+        'Business Date': String(order.business_date || order.created_at || '').slice(0, 10),
+        'Table / Mode': order.table_name || order.tab_name || order.service_mode || 'Counter',
+        'Status': `${order.status || ''}${order._pending_sync === true ? ' (pending sync)' : ''}`,
+        [`Total (${currency}, unconfirmed)`]: Number(order.total || 0).toFixed(2),
+        'Tender': Array.isArray(order.payment_breakdown) ? order.payment_breakdown.map((tender) => `${tender.method || tender.type || ''}:${tender.amount ?? ''}`).join(' · ') : '',
+      }))), 'Records')
+      const saved = writePosHistoryExcelArtifact(filePath, wb)
+      return { success: true, filePath, rows: orders.length, unconfirmed: true, fileHash: saved.fileHash }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not export device records.' }
+    }
+  })
+  ipcMain.handle('pos:exportDeviceRecordsPdf', async (event, payload = {}) => {
+    try {
+      await requireCapability('reports.export')
+      const parentWin = BrowserWindow.fromWebContents(event.sender)
+      const start = payload.start || ''
+      const end = payload.end || ''
+      const period = start && end ? `${start}-to-${end}` : ''
+      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+        title: 'Export Device Sales Records as PDF',
+        defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'device-records-pos', period, extension: 'pdf' }),
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+      })
+      if (canceled || !filePath) return { success: false }
+      const outletFilter = db.getUserPosOutletFilter()
+      const { orders, settings } = await loadDevicePosRecords(start, end, outletFilter)
+      const currency = settings?.currency || 'P'
+      const summary = deviceRecordsSummary(orders, [])
+      const html = buildDeviceRecordsPdfHtml({
+        lodgeName: settings?.lodge_name || settings?.company_name || APP_BRAND_NAME,
+        periodLabel: start && end ? `${start} to ${end}` : 'All dates',
+        generatedAt: new Date().toLocaleString(),
+        currency,
+        orders,
+        summary
+      })
+      const pdfBuffer = await renderHtmlToPdfBuffer(html, {
+        pageSize: 'A4',
+        printBackground: true,
+        margins: { marginType: 'default' }
+      }, { minTextLength: 20 })
+      const saved = writePosHistoryPdfArtifact(filePath, pdfBuffer)
+      return { success: true, filePath, rows: orders.length, unconfirmed: true, fileHash: saved.fileHash }
+    } catch (e) {
+      return { success: false, error: e?.message || 'Could not export device records.' }
+    }
+  })
+  ipcMain.handle('pos:exportDailyCloseSummaryPdf', async (event, payload = {}) => {    let reportRunId = null
     try {
       await requireCapability('reports.export')
       const date = String(payload.date || '').trim()
@@ -8772,7 +8968,7 @@ app.whenReady().then(async () => {
       const outletId = resolveCertifiedPosExportOutletId()
       const outletFilter = db.getUserPosOutletFilter()
       const [authoritative, voidHistory, localOrders, settings] = await Promise.all([
-        loadAuthoritativePosHistoryExport({ startDate: date, endDate: date, outletId }),
+        loadAuthoritativePosHistoryExportDeduped({ startDate: date, endDate: date, outletId }),
         db.getPosVoidHistory(date, date, outletFilter),
         db.getPosOrders(date, date, outletFilter),
         db.getSettings().catch(() => ({}))
@@ -9247,6 +9443,10 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.view'); return await db.selectPosStaffWithPin(data || {}) }
     catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:verifyManagerPin', async (_, data) => {
+    try { await requireCapability('pos.view'); return await db.verifyManagerPinForManage(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('pos:getModifierGroups', async () => {
     try { await requireCapability('pos.view'); return await db.getPosModifierGroups() }
     catch { return [] }
@@ -9524,6 +9724,34 @@ app.whenReady().then(async () => {
   ipcMain.handle('pos:reviewCashupSubmission', async (_, data) => {
     try { await requireCapability('pos.cashup'); return await db.reviewPosCashupSubmission(data || {}) }
     catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:openDrawerPeriod', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.openDrawerPeriod(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:recordCashMovement', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.recordCashMovement(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:recordCashCount', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.recordCashCount(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:submitDrawerPeriodCashup', async (_, data) => {
+    try { await requireCapability('pos.manage'); return await db.submitDrawerPeriodCashup(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:reviewDrawerPeriodCashup', async (_, data) => {
+    try { await requireCapability('pos.cashup'); return await db.reviewDrawerPeriodCashup(data || {}) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:getDrawerPeriodState', async (_, outletId) => {
+    try { await requireCapability('pos.view'); return await db.getDrawerPeriodState(outletId) }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('pos:setOutletCashModel', async (_, outletId, cashModel) => {
+    try { await requireCapability('pos.manage'); return await db.setOutletCashModel(outletId, cashModel) }
+    catch (e) { return { success: false, error: e?.message || 'Could not change how cash is counted.' } }
   })
   ipcMain.handle('pos:updateSupplier', async (_, supplierId, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('suppliers'); return await db.updatePosSupplier(supplierId, data || {}) }
@@ -10308,9 +10536,24 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('inventory.view')
       const itemId = filters?.item_id || filters?.itemId || null
-      if (!itemId) throw new Error('An inventory item is required for scoped movement history.')
-      const item = await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
       const outletFilter = db.getUserPosOutletFilter()
+      if (!itemId) {
+        // Lodge-wide movement ledger for the Waste card and waste export
+        // sections: the domain read supports item-less queries, and decorated
+        // rows carry outlet_id, so scope them to the operator outlet instead
+        // of refusing the call. Single-item scoping below is unchanged.
+        const result = await db.getInventoryMovementsWithReadStatus({
+          ...(filters || {}),
+          item_id: null,
+          limit: Math.min(500, Math.max(1, Number(filters?.limit || 500)))
+        })
+        const rows = Array.isArray(result?.rows) ? result.rows : []
+        const scoped = outletFilter !== null
+          ? rows.filter((row) => outletFilter.map(String).includes(String(row?.outlet_id || '')))
+          : rows
+        return { ...result, rows: scoped }
+      }
+      const item = await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
       if (outletFilter !== null && (!item?.outlet_id || !outletFilter.map(String).includes(String(item.outlet_id)))) {
         throw new Error('Access denied: this inventory item is outside the operator outlet scope.')
       }
@@ -11457,6 +11700,7 @@ app.whenReady().then(async () => {
   })
 
   const mainWindow = createWindow()
+  try { console.log('[BOOT] main window created'); } catch {}
   setupAutoUpdater(mainWindow)
 
   setTimeout(() => {

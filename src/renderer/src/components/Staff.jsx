@@ -28,6 +28,7 @@ import {
   BarChart3
 } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
 import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
@@ -1284,7 +1285,7 @@ function StaffMembers() {
                 You can create and update service-team accounts. Administrator approval is required for finance, manager, owner, or custom-permission access.
               </div>
             )}
-            {error && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>}
+            {error && <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{error}</ErrorNotice>}
           </form>
         </Modal>
       )}
@@ -1363,7 +1364,7 @@ function StaffMembers() {
             <p className="text-xs text-slate-500">
               This changes the staff member&apos;s sign-in password. For linked Supabase Auth users, it also updates their Auth password when Command Central service access is available.
             </p>
-            {resetError && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{resetError}</div>}
+            {resetError && <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{resetError}</ErrorNotice>}
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setResetTarget(null)} className="btn-secondary flex-1">Cancel</button>
               <button type="submit" disabled={resetLoading} className="btn-primary flex-1">
@@ -1393,7 +1394,7 @@ function StaffMembers() {
             <p className="text-sm text-slate-500">
               This action removes the staff member from this {propertyLabel}. It cannot be undone from the Staff screen.
             </p>
-            {deleteError && <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{deleteError}</div>}
+            {deleteError && <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{deleteError}</ErrorNotice>}
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">Cancel</button>
               <button type="button" disabled={deleteLoading} onClick={handleDelete} className="flex-1 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { RefreshCw } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantAlerts() {
   const [alerts, setAlerts] = useState([])
@@ -92,7 +93,7 @@ export default function RestaurantAlerts() {
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="restaurant-native-loading">

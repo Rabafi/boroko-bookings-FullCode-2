@@ -64,6 +64,19 @@ test('Open Tabs keeps Resume distinct from Settle', () => {
   const source = checks()
   assert.match(source, /resumeIntent: true,\s*\n\s*settle: true,/)
   assert.match(source, /Resume tab →/)
-  // Settle requires a certified total; otherwise the operator resumes.
-  assert.match(source, /disabled=\{!canControl\(tab\) \|\| tabValue\(tab\) === null\}/)
+  // Settle accepts an uncertified offline estimate (marked); the Till
+  // rebuilds the basket and the server prices at replay.
+  assert.match(source, /disabled=\{!canControl\(tab\) \|\| tabSettleValue\(tab\) === null\}/)
+  assert.match(source, /tabSettleEstimated/)
+})
+
+test('Till warns when the shared drawer has no open period', () => {
+  const source = terminal()
+  // Guidance only, on the open-tabs pill cadence: the domain refuses at Pay,
+  // the pill never blocks. Personal outlets never show it.
+  assert.match(source, /drawerGateNeeded/)
+  assert.match(source, /Drawer not open/)
+  assert.match(source, /getDrawerPeriodState/)
+  assert.match(source, /navigate\("\/hpos\/shift-close"\)/)
+  assert.match(source, /cash_model !== "shared_drawer"/)
 })

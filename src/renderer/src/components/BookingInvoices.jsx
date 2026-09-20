@@ -7,6 +7,7 @@ import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { DataViewToolbar } from './shared/DataViewToolbar'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
 import { useAuth, useSettings } from '../app-context'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const PAYMENT_STATUS_STYLES = {
   paid: 'bg-green-100 text-green-700',
@@ -199,9 +200,9 @@ function LedgerModal({ invoice, currency, onClose }) {
         </div>
 
         {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
-          </div>
+          </ErrorNotice>
         )}
 
         {loading ? (
@@ -293,9 +294,9 @@ function AuditModal({ invoice, currency, onClose }) {
         </div>
 
         {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
-          </div>
+          </ErrorNotice>
         )}
 
         {loading ? (
@@ -628,9 +629,9 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
         </div>
 
         {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
-          </div>
+          </ErrorNotice>
         )}
 
         <div className="flex justify-end gap-2">
@@ -685,9 +686,9 @@ function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, on
           </select>
         </label>
         {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
-          </div>
+          </ErrorNotice>
         )}
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50">

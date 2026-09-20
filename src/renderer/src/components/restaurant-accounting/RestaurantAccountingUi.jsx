@@ -3,6 +3,7 @@ import { NavLink } from 'react-router'
 import { AlertTriangle, Download, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { ErrorNotice } from '../shared/ErrorNotice'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 
 export async function accountingInvoke(operation, ...args) {
@@ -133,6 +134,10 @@ export function AccountingPanel({ title, description, actions, children, classNa
 export function AccountingNotice({ type = 'info', children }) {
   const styles = type === 'error' ? 'border-rose-200 bg-rose-50 text-rose-800' : type === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-900' : type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-sky-200 bg-sky-50 text-sky-800'
   const Icon = type === 'error' || type === 'warning' ? AlertTriangle : ShieldCheck
+  // Error notices bring themselves into view so a failure below the fold is never missed.
+  if (type === 'error') {
+    return <ErrorNotice className={`mb-4 flex gap-3 rounded-xl border p-3 text-sm leading-5 ${styles}`} role="alert"><Icon size={18} className="mt-0.5 shrink-0" /><div>{children}</div></ErrorNotice>
+  }
   return <div className={`mb-4 flex gap-3 rounded-xl border p-3 text-sm leading-5 ${styles}`}><Icon size={18} className="mt-0.5 shrink-0" /><div>{children}</div></div>
 }
 
@@ -141,7 +146,7 @@ export function AccountingLoading({ label = 'Loading accounting data…' }) {
 }
 
 export function AccountingError({ error, onRetry }) {
-  return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-900"><div className="flex gap-3"><AlertTriangle className="shrink-0" /><div><h2 className="font-extrabold">This accounting view could not be loaded</h2><p className="mt-1 text-sm">{error || 'Unknown error'}</p>{onRetry && <AccountingButton tone="secondary" className="mt-4" onClick={onRetry}><RefreshCw size={15} />Retry</AccountingButton>}</div></div></div>
+  return <ErrorNotice className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-900"><div className="flex gap-3"><AlertTriangle className="shrink-0" /><div><h2 className="font-extrabold">This accounting view could not be loaded</h2><p className="mt-1 text-sm">{error || 'Unknown error'}</p>{onRetry && <AccountingButton tone="secondary" className="mt-4" onClick={onRetry}><RefreshCw size={15} />Retry</AccountingButton>}</div></div></ErrorNotice>
 }
 
 export function EmptyState({ title, description }) {

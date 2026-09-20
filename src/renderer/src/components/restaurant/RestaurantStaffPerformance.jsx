@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Users, TrendingUp, AlertTriangle, Clock, Award } from 'lucide-react'
 import { unpackTransport } from '../../transportUnpack'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantStaffPerformance() {
   const [shifts, setShifts] = useState([])
@@ -114,7 +115,7 @@ export default function RestaurantStaffPerformance() {
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="restaurant-native-loading">

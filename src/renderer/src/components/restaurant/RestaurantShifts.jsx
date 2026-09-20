@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantShifts() {
   const { settings } = useSettings()
@@ -91,7 +92,7 @@ export default function RestaurantShifts() {
         <button onClick={loadShifts} className="bb-btn-outline text-sm">Refresh</button>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
       {notice && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div>}
 
       <div className="bb-card p-5 mb-6">

@@ -5,6 +5,7 @@ import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const CATEGORIES = ['Bar', 'Kitchen', 'Other']
 const UNITS = ['bottle', 'can', 'piece', 'roll', 'packet', 'pack', 'box', 'crate', 'tray', 'carton', 'case', 'kg', 'g', 'L', 'ml']
@@ -709,9 +710,9 @@ export default function Inventory() {
       </div>
 
       {pageError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {pageError}
-        </div>
+        </ErrorNotice>
       )}
 
       {tab === 'stocktake' && (
@@ -804,9 +805,9 @@ export default function Inventory() {
 
           <div className="bb-card p-5">
             {stocktakeError && (
-              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {stocktakeError}
-              </div>
+              </ErrorNotice>
             )}
             {!activeStocktakeId ? (
               <div className="bb-empty-state min-h-[320px]">
@@ -1397,9 +1398,9 @@ export default function Inventory() {
         >
           <form onSubmit={handleItemSubmit} className="space-y-4">
             {itemError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {itemError}
-              </div>
+              </ErrorNotice>
             )}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Item Name *</label>
@@ -1526,9 +1527,9 @@ export default function Inventory() {
         >
           <form onSubmit={handlePurchaseSubmit} className="space-y-4">
             {purchaseError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {purchaseError}
-              </div>
+              </ErrorNotice>
             )}
             {!purchaseItem && (
               <div>
@@ -1677,9 +1678,9 @@ export default function Inventory() {
         >
           <form onSubmit={handleOpeningSubmit} className="space-y-4">
             {openingError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {openingError}
-              </div>
+              </ErrorNotice>
             )}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Product *</label>
@@ -1761,9 +1762,9 @@ export default function Inventory() {
         >
           <form onSubmit={handleAdjustSubmit} className="space-y-4">
             {adjustError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {adjustError}
-              </div>
+              </ErrorNotice>
             )}
             <p className="text-sm text-gray-600">
               Current stock: <strong>{fmt(adjustItem.current_stock, 1)} {adjustItem.unit}</strong>

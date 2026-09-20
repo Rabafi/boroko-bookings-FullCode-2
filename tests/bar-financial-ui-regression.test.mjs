@@ -221,15 +221,22 @@ test('desktop financial read metadata survives the Electron IPC structured clone
   assert.match(main, /_tender_complete: \{ value: rows\?\._tender_complete === true/)
 })
 
-test('PIN-verified Till history withholds cached totals and corrections until complete', async () => {
+test('PIN-verified Till history marks cached totals as estimates until complete', async () => {
   const pos = await read('src/main/domains/pos.js')
   const mySales = await read('src/renderer/src/components/hospitality-pos/HposMySales.jsx')
 
   assert.match(pos, /complete: false/)
   assert.match(pos, /hasUnresolvedPosRows/)
   assert.match(mySales, /const financialReady = readCompleteness\.complete === true/)
-  assert.match(mySales, /financialReady \? money\(order\.total, currency\) : 'Unavailable'/)
-  assert.match(mySales, /financialReady && isCompleted\(selected\)/)
+  // Cached figures always show, but uncertified ones carry an explicit
+  // estimate mark plus a footnote — never presented as confirmed truth.
+  assert.match(mySales, /const est = \(text\) => \(financialReady \? text : `\$\{text\} \*`\)/)
+  assert.match(mySales, /not yet confirmed by the server/)
+  assert.match(mySales, /Confirmed figures replace these estimates on refresh/)
+  // Corrections open on completed and still-syncing sales; approval itself
+  // stays server-side at replay (queued PIN, never locally approved).
+  assert.match(mySales, /isCompleted\(selected\) \|\| transactionState\(selected\) === 'pending'/)
+  assert.match(mySales, /the correction queues and the server approves it on sync/)
 })
 
 test('Bar report and business-control detail do not expose incomplete monetary aggregates', async () => {
@@ -240,7 +247,9 @@ test('Bar report and business-control detail do not expose incomplete monetary a
   const preload = await read('src/preload/index.js')
 
   assert.match(main, /ipcMain\.handle\('pos:getCertifiedReportHistory'/)
-  assert.match(main, /loadAuthoritativePosHistoryExport\(\{ startDate: start, endDate: end, outletId \}\)/)
+  assert.match(main, /loadAuthoritativePosHistoryExportDeduped\(\{ startDate: start, endDate: end, outletId \}\)/)
+  assert.match(main, /authoritativePosHistoryInflight/)
+  assert.match(main, /loadAuthoritativePosHistoryExportDeduped\(\{ startDate: date, endDate: date, outletId \}\)/)
   assert.match(main, /assertCompletePosHistoryExport\(authoritative\.orders, voidHistory, localOrders\)/)
   assert.match(main, /control_totals: authoritative\.controls/)
   assert.match(main, /complete: false/)
@@ -512,4 +521,57 @@ test('finance overview does not convert unavailable settlement, deposit, tip or 
   assert.match(main, /unavailablePosRead\(e, 'Settlements'\)/)
   assert.match(main, /unavailablePosRead\(e, 'Reservation deposits'\)/)
   assert.match(main, /unavailablePosRead\(e, 'Tip balances'\)/)
+})
+
+test('certified POS export scales past bulk offline months without changing money', async () => {
+  const migration = await read('supabase/migrations/20260915010000_pos_report_export_timeout_fix.sql')
+  // Covering indexes for the two hot probes (per-order item checks and the
+  // per-line depletion-cost lookup that used to sequential-scan per row).
+  assert.match(migration, /create index if not exists pos_order_items_order_lodge_idx/)
+  assert.match(migration, /on public\.pos_order_items \(order_id, lodge_id\)/)
+  assert.match(migration, /create index if not exists inventory_movements_lodge_reference_item_idx/)
+  assert.match(migration, /on public\.inventory_movements \(lodge_id, reference_id, item_id\)/)
+  // The depletion cost is aggregated once for the period, not correlated per
+  // order line; NULL-item movements stay excluded exactly like the old
+  // per-line predicate (m.item_id = NULL never matched).
+  assert.match(migration, /movement_costs as \(/)
+  assert.match(migration, /m\.item_id is not null/)
+  assert.match(migration, /m\.reference_id in \(select f\.id from filtered f\)/)
+  assert.match(migration, /left join movement_costs mc on mc\.order_id = i\.order_id and mc\.item_id = i\.inventory_item_id/)
+  assert.match(migration, /'cost', mc\.cost/)
+  assert.doesNotMatch(migration, /m\.reference_id = c\.id and m\.item_id = i\.inventory_item_id/)
+  // Read-path-only file: no privilege or data changes ride along.
+  assert.doesNotMatch(migration, /^\s*(grant|revoke|drop)\s/im)
+  assert.match(migration, /create or replace function public\.get_pos_financial_report_export_v2_unscoped\(/)
+  // Certification contract and output keys are byte-identical to the prior body.
+  assert.match(migration, /'dataset_status', v_dataset_status/)
+  assert.match(migration, /'control_totals', v_controls/)
+  assert.match(migration, /'pos-financial-report-v3'/)
+  assert.match(migration, /POS reporting range cannot exceed 367 days/)
+})
+
+test('certified POS export aggregates lines in one pass instead of per order', async () => {
+  const migration = await read('supabase/migrations/20260915020000_pos_report_export_item_agg_fix.sql')
+  // One grouped pass over the period's lines; per-order correlated jsonb_agg
+  // subqueries (thousands inside a single statement) are gone.
+  assert.match(migration, /order_items_agg as \(/)
+  assert.match(migration, /join filtered f on f\.id = i\.order_id/)
+  assert.match(migration, /group by i\.order_id/)
+  assert.match(migration, /left join order_items_agg a on a\.order_id = c\.id/)
+  assert.match(migration, /coalesce\(a\.item_rows, '\[\]'::jsonb\) as item_rows/)
+  assert.doesNotMatch(migration, /\) order by i\.id\) from public\.pos_order_items i where i\.order_id = c\.id/)
+  // Read-path-only file: no privilege or data changes ride along.
+  assert.doesNotMatch(migration, /^\s*(grant|revoke|drop)\s/im)
+  assert.match(migration, /create or replace function public\.get_pos_financial_report_export_v2_unscoped\(/)
+})
+
+test('lodge-wide waste ledger read keeps outlet scope without demanding an item', async () => {
+  const main = await read('src/main/index.js')
+  assert.match(main, /ipcMain\.handle\('inventory:getMovementsWithReadStatus'/)
+  // The Waste card queries the period ledger with no item_id; scope its rows
+  // to the operator outlet instead of refusing the call.
+  assert.match(main, /Lodge-wide movement ledger for the Waste card/)
+  assert.match(main, /rows\.filter\(\(row\) => outletFilter\.map\(String\)\.includes\(String\(row\?\.outlet_id \|\| ''\)\)\)/)
+  // The single-item scoped path (lodge + outlet assertions) is unchanged.
+  assert.match(main, /assertResourceBelongsToCurrentLodge\('Inventory item', itemId, db\.getInventoryItemById\)/)
 })

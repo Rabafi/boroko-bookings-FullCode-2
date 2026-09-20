@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Bell, Play, Pause, RefreshCw, AlertTriangle, CheckCircle, Clock, ChevronRight, Settings, Zap } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const SEVERITY_COLORS = {
   info: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
@@ -97,11 +98,11 @@ export default function NotificationAutomation() {
       </div>
 
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
           <AlertTriangle size={14} className="text-red-400 shrink-0" />
           <p className="text-red-300 text-xs flex-1">{error}</p>
           <button onClick={() => { setError(null); load() }} className="text-xs text-red-400 hover:text-white underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {/* Summary cards */}

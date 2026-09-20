@@ -4,6 +4,7 @@ import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronD
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const EVENT_TYPES = [
   { value: 'conference', label: 'Conference' },
@@ -518,7 +519,7 @@ export default function Conference() {
                         {b.catering_notes && <p>Catering Notes: <span className="font-medium">{b.catering_notes}</span></p>}
                         {b.notes && <p>Notes: <span className="font-medium">{b.notes}</span></p>}
                         {detailsLoadingId === b.id && <p className="text-gray-400">Loading event folio…</p>}
-                        {folioError && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-700">{folioError}</p>}
+                        {folioError && <ErrorNotice className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-700">{folioError}</ErrorNotice>}
                         {detailsById[b.id] && (() => {
                           const details = detailsById[b.id]
                           const activeLines = (details.line_items || []).filter((line) => !line.voided_at)
@@ -597,7 +598,7 @@ export default function Conference() {
 
             <form onSubmit={handleSave} className="px-6 py-5 space-y-4">
               {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</div>
+                <ErrorNotice className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</ErrorNotice>
               )}
 
               <div>
@@ -866,7 +867,7 @@ export default function Conference() {
             </div>
             <form onSubmit={handlePaymentSave} className="px-6 py-5 space-y-4">
               {payError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{payError}</div>
+                <ErrorNotice className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{payError}</ErrorNotice>
               )}
               <div>
                 <p className="text-sm font-medium text-gray-900">{payBooking.event_name || payBooking.client_name}</p>

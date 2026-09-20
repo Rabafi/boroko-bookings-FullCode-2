@@ -4,6 +4,7 @@ import Pagination, { usePagination } from './shared/Pagination'
 import { useToast } from './shared/Toast'
 import { timeAgo as sharedTimeAgo } from '../utils/timeAgo'
 import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const timeAgo = sharedTimeAgo
 
@@ -205,11 +206,11 @@ function AppVersionsTab() {
         </div>
       </div>
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
           <AlertTriangle size={14} className="text-red-400 shrink-0" />
           <p className="text-red-300 text-xs flex-1">{error}</p>
           <button onClick={load} className="text-xs text-red-400 hover:text-white underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
       {showCreate && (
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">

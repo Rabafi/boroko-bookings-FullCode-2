@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Building2, Layers, MapPin, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const SECTION_TYPES = [
   { value: 'building', label: 'Building' },
@@ -215,9 +216,9 @@ export default function FloorsSections({ embedded = false }) {
         </div>
       )}
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+        <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
           {error}
-        </div>
+        </ErrorNotice>
       )}
 
       {activeSections.length === 0 ? (
@@ -321,10 +322,10 @@ export default function FloorsSections({ embedded = false }) {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
+              <ErrorNotice className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
                 <AlertTriangle size={14} className="shrink-0" />
                 {error}
-              </div>
+              </ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-2">

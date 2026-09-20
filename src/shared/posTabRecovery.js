@@ -216,6 +216,53 @@ export function writeRecoveryEnvelope(kind, envelope, { tenantId = null, sourceT
   }
 }
 
+/**
+ * Exact-key companions to the derived-key helpers above. The inbox lists by
+ * scanning stored keys, but replay re-derives `[scoped, legacy]` keys — a
+ * record stored under any other key shape (tenant segment from another
+ * session, pre-scoping layout) is listed yet unreplayable, surfacing as
+ * "no saved operation". Reading and writing back the exact listed key keeps
+ * one record, never duplicates, and lets the server answer truthfully.
+ */
+export function readRecoveryEnvelopeByKey(key) {
+  const store = storage()
+  if (!store) return { envelope: null, corrupt: false, key, storageError: true }
+  let raw = null
+  try {
+    raw = store.getItem(key)
+  } catch {
+    return { envelope: null, corrupt: false, key, storageError: true }
+  }
+  if (!raw) return { envelope: null, corrupt: false, key }
+  try {
+    const envelope = normalizeEnvelope(JSON.parse(raw))
+    if (!envelope) return { envelope: null, corrupt: true, key, raw }
+    return { envelope, corrupt: false, key }
+  } catch {
+    return { envelope: null, corrupt: true, key, raw }
+  }
+}
+
+export function writeRecoveryEnvelopeByKey(key, envelope) {
+  const store = storage()
+  if (!store) return { ok: false, key, error: 'Local recovery storage is unavailable.' }
+  try {
+    store.setItem(key, JSON.stringify(envelope))
+    return { ok: true, key }
+  } catch (error) {
+    const detail = error?.message || 'Local recovery storage is full or unavailable.'
+    return { ok: false, key, error: `Local recovery storage failed (${detail}).` }
+  }
+}
+
+export function removeRecoveryKey(key) {
+  const store = storage()
+  if (!store) return
+  try {
+    store.removeItem(key)
+  } catch {}
+}
+
 export function clearRecoveryEnvelope(kind, { tenantId = null, sourceTabId = '' } = {}) {
   const store = storage()
   if (!store) return
@@ -433,7 +480,10 @@ export function listRecoveryEnvelopes({ tenantId = null } = {}) {
       // never surfaced here. Legacy unstamped envelopes stay listed so
       // their original key can still be recovered, clearly marked.
       if (envelope.tenantId && tenant && envelope.tenantId.toLowerCase() !== tenant.toLowerCase()) continue
-      envelopes.push({ key, kind, corrupt: false, legacy: !envelope.tenantId, envelope })
+      // The body is the source of truth for kind: keys from older builds can
+      // label a record differently than the operation stored inside, and the
+      // inbox replays by this kind — a key-derived mismatch replays nothing.
+      envelopes.push({ key, kind: envelope.kind, corrupt: false, legacy: !envelope.tenantId, envelope })
     } catch {
       envelopes.push({ key, kind, corrupt: true, raw })
     }
@@ -441,7 +491,7 @@ export function listRecoveryEnvelopes({ tenantId = null } = {}) {
   return { envelopes, storageError: false }
 }
 
-const REPLAY_MANAGER_ROLES = new Set(['manager', 'admin', 'super_admin', 'owner'])
+export const REPLAY_MANAGER_ROLES = new Set(['manager', 'admin', 'super_admin', 'owner'])
 
 /**
  * Authorize inspection/replay of one saved operation WITHOUT granting
@@ -521,7 +571,7 @@ function validateReplayScope(kind, envelope, { tenantId = null, sourceTabId = ''
   return { ok: true }
 }
 
-async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent }) {
+async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent, storageKey = null }) {
   const classification = classifyTabOperationOutcome(result, error, { keyPreviouslySent })
   const stored = {
     ...envelope,
@@ -532,9 +582,15 @@ async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, 
   }
   if (classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
     const { key } = archiveRecoveryEnvelope(kind, stored, { tenantId, sourceTabId })
+    // An exact-key replay may resolve a record stored outside the derived
+    // keys; the archive clears derived keys, so drop the listed key too —
+    // one logical record, never two rows.
+    if (storageKey && storageKey !== key) removeRecoveryKey(storageKey)
     return { classification, result, envelope: stored, archivedKey: key, outcome: stored.outcome }
   }
-  const persisted = writeRecoveryEnvelope(kind, stored, { tenantId, sourceTabId })
+  const persisted = storageKey
+    ? writeRecoveryEnvelopeByKey(storageKey, stored)
+    : writeRecoveryEnvelope(kind, stored, { tenantId, sourceTabId })
   if (!persisted.ok) {
     throw recoveryError(
       'storage_write_failed',
@@ -554,10 +610,12 @@ async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, 
  */
 export async function replaySavedTabOperation({
   kind, tenantId = null, sourceTabId = '', actorId = null, actorRole = null,
-  canReplay = defaultCanReplayOperation, dispatch
+  canReplay = defaultCanReplayOperation, dispatch, storageKey = null
 } = {}) {
   if (typeof dispatch !== 'function') throw recoveryError('missing_dispatch', 'No dispatch channel was provided for the replay.')
-  const read = readRecoveryEnvelope(kind, { tenantId, sourceTabId })
+  // Inbox replays pass the exact listed storage key: records stored under
+  // any other key shape must still replay instead of reporting no record.
+  const read = storageKey ? readRecoveryEnvelopeByKey(storageKey) : readRecoveryEnvelope(kind, { tenantId, sourceTabId })
   if (read.storageError) {
     throw recoveryError('storage_read_failed', 'Local recovery storage could not be read, so no dispatch was attempted. Free device storage and retry Check status.')
   }
@@ -571,6 +629,31 @@ export async function replaySavedTabOperation({
   if (!canReplay({ envelope, actorId, actorRole })) {
     throw recoveryError('replay_forbidden', 'Only the originating operator (or a manager) can inspect or replay this saved operation.')
   }
+  // A record without its tab reference can never dispatch: every server
+  // contract and local validation needs the tab. Route it to manager review
+  // with a truthful message instead of looping "not confirmed" forever.
+  if (!asId(envelope.sourceTabId)) {
+    const stored = {
+      ...envelope,
+      outcome: TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW,
+      lastCheckedAt: new Date().toISOString(),
+      lastCode: 'missing_source_tab',
+      authoritativeResult: null
+    }
+    const persisted = storageKey
+      ? writeRecoveryEnvelopeByKey(storageKey, stored)
+      : writeRecoveryEnvelope(kind, stored, { tenantId, sourceTabId })
+    if (!persisted.ok) {
+      throw recoveryError(
+        'storage_write_failed',
+        `The review state could not be recorded locally (${persisted.error || 'storage unavailable'}). Free device storage and try again.`
+      )
+    }
+    throw recoveryError(
+      'missing_source_tab',
+      'This saved record is missing its tab reference, so it cannot be replayed. Keep this record and ask support to verify whether the operation committed before clearing it.'
+    )
+  }
   const args = {
     ...buildReplayArgs(kind, envelope),
     ...(kind === 'split' ? { idempotency_key: envelope.operationId } : { operation_id: envelope.operationId }),
@@ -578,7 +661,9 @@ export async function replaySavedTabOperation({
   }
   const execKey = `${kind}:${envelope.operationId}`
   const { promise } = withSingleExecution(execKey, async () => {
-    const persisted = writeRecoveryEnvelope(kind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
+    const persisted = storageKey
+      ? writeRecoveryEnvelopeByKey(storageKey, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT })
+      : writeRecoveryEnvelope(kind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
     if (!persisted.ok) {
       throw recoveryError(
         'storage_write_failed',
@@ -592,7 +677,7 @@ export async function replaySavedTabOperation({
     } catch (dispatchError) {
       error = dispatchError
     }
-    return finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: true })
+    return finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: true, storageKey })
   })
   return promise
 }

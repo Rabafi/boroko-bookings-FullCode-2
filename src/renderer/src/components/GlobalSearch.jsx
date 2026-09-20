@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Search, Building2, Home, Receipt, LifeBuoy, Users, Server, X } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const TYPE_ICONS = {
   company: Building2,
@@ -82,7 +83,7 @@ export default function GlobalSearch({ onNavigate, onOpenCompany, companies = []
       </div>
 
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 text-red-300 text-xs">{error}</div>
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 text-red-300 text-xs">{error}</ErrorNotice>
       )}
 
       {/* Results */}

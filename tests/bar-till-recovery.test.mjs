@@ -49,7 +49,7 @@ test('cash tendering never alters the sale allocation', () => {
 })
 
 test('quick-cash defaults and rounding helpers are stable', () => {
-  assert.deepEqual([...QUICK_CASH_AMOUNTS], [50, 100, 200])
+  assert.deepEqual([...QUICK_CASH_AMOUNTS], [20, 50, 100, 200])
   assert.equal(roundCash(10.005), 10.01)
   assert.equal(roundCash(10.004), 10)
   assert.equal(basketScopeKey('lodge', 'outlet', 'op', 'shift'), 'lodge:outlet:op:shift')
@@ -128,4 +128,31 @@ test('receipt renders tendering aids only when recorded', () => {
   assert.match(source, /order\?\.cash_received != null/)
   assert.match(source, /order\?\.change_due != null/)
   assert.match(source, /are never[\s\S]{0,30}back-filled/)
+})
+
+test('definitive replay refusals never block the Till; ambiguous ones still recover', () => {
+  const infra = read('src/main/domains/infrastructure.js')
+  // Only truly uncertain outcomes reopen the journal to pending.
+  assert.match(infra, /isAmbiguousPosOrderReplayError/)
+  assert.match(infra, /fetch failed\|network\|timeout/i)
+  assert.match(infra, /reopenPosSubmitAttempt\(deadIntentId, errorMessage\)/)
+  // Definitive refusals (e.g. Insufficient stock) clear the journal so the
+  // Till stays sellable; the failed row + dead-letter remain for review.
+  assert.match(infra, /clearPosSubmitAttempt\(deadIntentId\)/)
+  assert.match(infra, /definitive/i)
+  const journal = read('src/main/domains/posSubmitJournal.js')
+  assert.match(journal, /countPendingPosSubmitAttempts/)
+  const domain = read('src/main/domains/pos.js')
+  assert.match(domain, /pendingCount: countPendingSubmitAttemptRecords/)
+})
+
+test('recovery banner persists collapse, shows stacked count, and offers re-check', () => {
+  const source = terminal()
+  assert.match(source, /hpos-recovery-collapsed:/)
+  assert.match(source, /toggleRecoveryCollapsed/)
+  assert.match(source, /pendingCount/)
+  assert.match(source, /Re-check Sales/)
+  assert.match(source, /recheckRecovery/)
+  // Single-attempt copy is unchanged so existing guidance still matches.
+  assert.match(source, /Earlier sale needs checking — tap for details\./)
 })

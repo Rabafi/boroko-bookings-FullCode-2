@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Building2, ChevronDown, Check, AlertTriangle } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function PropertySwitcher({ currentLodgeId, onSwitch }) {
   const [groups, setGroups] = useState([])
@@ -75,10 +76,10 @@ export default function PropertySwitcher({ currentLodgeId, onSwitch }) {
   return (
     <div className="relative">
       {error && (
-        <div className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
+        <ErrorNotice className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>{error}</span>
-        </div>
+        </ErrorNotice>
       )}
       <button
         onClick={() => setOpen(!open)}

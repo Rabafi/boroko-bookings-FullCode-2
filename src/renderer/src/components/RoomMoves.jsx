@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ArrowRightLeft, AlertTriangle, RefreshCw, Search } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useSettings } from '../app-context'
 
 export default function RoomMoves() {
@@ -170,7 +171,7 @@ export default function RoomMoves() {
           </button>
         </div>
       )}
-      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
       <div className="bb-card p-4">
         <div className="relative">
@@ -269,10 +270,10 @@ export default function RoomMoves() {
             </div>
 
             {moveError && (
-              <div className="flex items-start gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700">
+              <ErrorNotice className="flex items-start gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                 <span>{moveError}</span>
-              </div>
+              </ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-2">

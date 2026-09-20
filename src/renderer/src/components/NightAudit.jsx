@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const todayStr = () => localToday()
 
@@ -240,10 +241,10 @@ export default function NightAudit() {
 
       {/* Messages */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-center gap-3 text-red-700 no-print">
+        <ErrorNotice className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-center gap-3 text-red-700 no-print">
           <AlertCircle size={18} className="shrink-0" />
           <p className="text-sm">{error}</p>
-        </div>
+        </ErrorNotice>
       )}
 
       {success && (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BarChart3, Download, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const REPORT_TYPES = [
   { key: 'occupancy', label: 'Occupancy Report' },
@@ -399,7 +400,7 @@ export default function AdvancedReports({ embedded = false }) {
         </div>
       </div>
 
-      {error && <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 mb-4"><AlertTriangle size={14} />{error}</div>}
+      {error && <ErrorNotice className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 mb-4"><AlertTriangle size={14} />{error}</ErrorNotice>}
 
       {authority === 'ledger_derived' && !error && (
         <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">

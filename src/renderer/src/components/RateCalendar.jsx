@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Calendar, AlertTriangle, RefreshCw, Tag, Save, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useSettings } from '../app-context'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -159,7 +160,7 @@ export default function RateCalendar() {
       </div>
 
       {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
-      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
       {conflicts && (conflicts.multiple_entries_per_day?.length > 0 || conflicts.days_without_restrictions?.length > 0) && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -219,7 +220,7 @@ export default function RateCalendar() {
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Rate Amount ({currency})</label>
               <input className="input" type="number" min="0" step="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} autoFocus />
             </div>
-            {error && <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} />{error}</div>}
+            {error && <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} />{error}</ErrorNotice>}
             <div className="flex gap-3">
               <button onClick={() => setEditCell(null)} className="btn-secondary flex-1">Cancel</button>
               <button onClick={handleSaveRate} disabled={saving} className="btn-primary flex-1"><Save size={14} /> {saving ? 'Saving...' : 'Save Rate'}</button>

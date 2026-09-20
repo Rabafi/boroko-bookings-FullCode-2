@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Users, Calendar, CheckSquare, BookOpen, BarChart3, Layers, Clock, Plus, Edit3, Trash2, RefreshCw, AlertTriangle, X, CheckCircle } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 function rollupProductivity(metrics = []) {
   const grouped = new Map()
@@ -263,12 +264,12 @@ export default function StaffOperations() {
       </div>
 
       {error && (
-        <div className="bb-card p-4 mb-4 border-red-200 bg-red-50">
+        <ErrorNotice className="bb-card p-4 mb-4 border-red-200 bg-red-50">
           <div className="flex items-center justify-between">
             <p className="text-xs text-red-600 font-medium flex items-center gap-2"><AlertTriangle size={14} />{error}</p>
             <button onClick={() => setError(null)} className="text-xs text-slate-500 hover:underline">Dismiss</button>
           </div>
-        </div>
+        </ErrorNotice>
       )}
       {warnings.length > 0 && !error && (
         <div className="bb-card p-4 mb-4 border-amber-200 bg-amber-50">

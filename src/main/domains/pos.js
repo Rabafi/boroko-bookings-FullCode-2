@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
-import { checkOnline } from './connectivity.js'
+import { resolveCurrentOpenShiftId } from './syncShared.js'
+import { checkOnline, withNetworkTimeout, broadcastSyncStatus } from './connectivity.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
+import { appendHealthFault, appendOperationJournalEntry } from './syncStore.js'
 import { patchCachedPosOrderSyncState } from './syncCache.js'
 import {
   applyOfflinePosInventoryReservation,
@@ -13,16 +15,23 @@ import {
   queueOperation,
   readCache,
   readSyncQueue,
+  readFailedSyncQueue,
+  writeSyncQueue,
   readLocalPosVoidHistory,
+  patchLocalPosVoidHistory,
   refreshCache,
   upsertLocalPosVoidHistory,
+  removeLocalPosVoidHistory,
   writeCache,
   dedupePromise
 } from './infrastructure.js'
 import {
   resolvePosSubmitAttempt,
   commitPosSubmitAttempt,
+  markPosSubmitAttemptProvisional,
   hasPosSubmitAttempt,
+  getPosSubmitAttempt,
+  countPendingPosSubmitAttempts as countPendingSubmitAttemptRecords,
   getPendingPosSubmitAttempt as getPendingSubmitAttemptRecord,
   clearPosSubmitAttempt as clearPosSubmitAttemptRecord
 } from './posSubmitJournal.js'
@@ -116,6 +125,19 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
 }
 
 async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [], paymentMethod = 'cash') {
+  const items = Array.isArray(payload?.items) ? payload.items : []
+  const hasPoolLines = items.some((item) => String(item?.category || item?.menu_category || '').trim().toLowerCase() === 'pool')
+  if (hasPoolLines) {
+    const method = String(paymentMethod || '').trim().toLowerCase()
+    const tenders = (Array.isArray(paymentBreakdown) ? paymentBreakdown : []).map((tender) => String(tender?.method || '').trim().toLowerCase()).filter(Boolean)
+    const singleCash = method === 'cash' && tenders.length === 1 && tenders[0] === 'cash'
+    const hasAccountCharge = payload?.customer_account_charge !== null && payload?.customer_account_charge !== undefined && payload?.customer_account_charge !== '' && payload?.customer_account_charge !== false
+    const tip = payload?.tip_total === null || payload?.tip_total === undefined || payload?.tip_total === '' ? 0 : Number(payload.tip_total)
+    if (!singleCash || hasAccountCharge || !(tip === 0)) {
+      throw new Error('Pool tables pay Cash only. Remove card, mobile money, split and account charge from this sale.')
+    }
+    return
+  }
   const settings = readCache('settings')?.[0] || null
   if (!isBarOnlyMode(settings)) return
   const hasVoucher = String(paymentMethod || '').toLowerCase() === 'voucher' || paymentBreakdown.some((tender) => String(tender?.method || '').toLowerCase() === 'voucher')
@@ -138,11 +160,68 @@ async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [],
 const POS_ATTENDANCE_CACHE = 'restaurant-shifts'
 const POS_CASHUP_SUBMISSION_CACHE = 'pos-cashup-submissions'
 
+// Operator-facing PIN guidance: a wrong Till/attendance/cash-up PIN must tell
+// bartenders, cashiers and everyone else to ask an admin for a reset instead
+// of retrying blindly. The Manage PIN dialog keeps its own support-ticket help
+// flow, so this hint is for operator PINs only.
+const OPERATOR_PIN_RESET_HINT = ' If you forgot it, ask an admin to reset it in Staff Management.';
+
+function withOperatorPinResetHint(message) {
+  const text = String(message || '');
+  if (!text) return text;
+  if (text.includes('ask an admin to reset it')) return text;
+  if (/incorrect staff pin|invalid pin/i.test(text)) {
+    return `${text.replace(/\s+$/, '')}${OPERATOR_PIN_RESET_HINT}`;
+  }
+  return text;
+}
+
+function withOperatorPinResult(result) {
+  if (!result || result.success !== false) return result;
+  if (!result.error) return result;
+  return { ...result, error: withOperatorPinResetHint(result.error) };
+}
+
+// PostgREST surfaces a missing EXECUTE grant as a bare "permission denied
+// for function ..." which tells the operator nothing to do. Map it to the
+// recovery path: the shift stays open, cash-up is kept, no repeat tapping.
+// The raw detail stays in the main-process log for support.
+function withAttendancePermissionGuidance(rawMessage, action) {
+  const message = String(rawMessage || '');
+  if (!/permission denied for function/i.test(message)) return message;
+  return `Clock ${action} was refused by the database permission check. Your shift stays open and any cash-up is kept — do not tap repeatedly. Ask a manager to update the database permissions, then relaunch and try again.`;
+}
+
 function getCachedPosUser(userId) {
   return (readCache('users') || []).find((row) =>
     row?.id === userId &&
     (!row?.lodge_id || row.lodge_id === state.lodgeId)
   ) || null
+}
+
+const MANAGER_MANAGE_UNLOCK_ROLES = Object.freeze(['manager', 'admin', 'super_admin']);
+
+// Transport failures mean the server verdict is unknown (cable unplugged,
+// router down, fetch aborted, statement timed out). Those must fall back to
+// the trusted offline PIN cache so Manage/Till unlock keeps working offline.
+// Anything else (permission denied, RLS, validation, server PIN rejection in
+// result.success === false) is an authoritative answer and must fail closed.
+function isPosPinTransportFailure(error) {
+  if (!error) return false;
+  if (error?.code === 'network_read_timeout') return true;
+  const message = String(error?.message || error || '');
+  return /fetch failed|failed to fetch|network|timeout|timed out|abort|aborted|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|connection|offline|load failed|temporarily unavailable/i.test(message);
+}
+
+function resolveOfflineManageUnlock(staff, pin) {
+  const verified = validateCachedPosPin(staff.id, pin, { manager: true });
+  if (!verified.success) return verified;
+  const role = String(verified.staff?.role || staff.role || '').toLowerCase();
+  if (!MANAGER_MANAGE_UNLOCK_ROLES.includes(role)) {
+    return { success: false, error: 'A manager PIN is required to open Manage.' };
+  }
+  appendPosAudit('manager_manage_unlocked_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+  return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
 }
 
 function validateCachedPosPin(userId, pin, { manager = false } = {}) {
@@ -157,7 +236,7 @@ function validateCachedPosPin(userId, pin, { manager = false } = {}) {
     return { success: false, error: 'This staff PIN was not prepared on this computer. Connect once and refresh staff access.' }
   }
   if (!String(pin || '').trim() || !bcrypt.compareSync(String(pin).trim(), user.pin_hash)) {
-    return { success: false, error: 'Incorrect staff PIN.' }
+    return { success: false, error: `Incorrect staff PIN.${OPERATOR_PIN_RESET_HINT}` }
   }
   return {
     success: true,
@@ -660,17 +739,23 @@ function writeCustomerDisplaySnapshot(snapshot = {}) {
 // outletFilter: null = all outlets, [] = no access, [uuid1,...] = restrict to these outlet IDs
 async function _getPosMenuItems(outletFilter = null) {
   if (state.isOnline) {
-    let query = state.supabase.
-    from('pos_menu_items').
-    select('id, name, category, price, is_available, archived_at, barcode, stock_method, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
-    eq('lodge_id', state.lodgeId).
-    order('category').
-    order('name').
-    limit(500);
-    const { data, error } = await query;
-    if (error) throw new Error(error.message);
-    writeCache('pos-menu-items', data || []);
-    return applyPosMenuOutletFilter(data || [], outletFilter);
+    try {
+      let query = state.supabase.
+      from('pos_menu_items').
+      select('id, name, category, price, is_available, archived_at, barcode, stock_method, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
+      eq('lodge_id', state.lodgeId).
+      order('category').
+      order('name').
+      limit(500);
+      const { data, error } = await withNetworkTimeout(query, undefined, 'Menu list');
+      if (error) throw new Error(error.message);
+      writeCache('pos-menu-items', data || []);
+      return applyPosMenuOutletFilter(data || [], outletFilter);
+    } catch {
+      // A hung or failed network must not hang the Till: serve the trusted
+      // offline cache and let the next refresh repair it.
+      return applyPosMenuOutletFilter(readCache('pos-menu-items'), outletFilter);
+    }
   }
   return applyPosMenuOutletFilter(readCache('pos-menu-items'), outletFilter);
 }
@@ -793,8 +878,12 @@ export async function createPosMenuItem(data) {
     return { success: true, id: result?.id };
   }
   const pending = { ...item, _pending_sync: true, _sync_state: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-  writeCache('pos-menu-items', [pending, ...(readCache('pos-menu-items') || []).filter((row) => row.id !== localId)]);
   const queueId = `pos-menu-item-${localId}`;
+  // Tag offline creates so the Till names them provisional (sellable offline
+  // at the entered price, blocked once the server is reachable but the sync
+  // is still outstanding) and replays can pair them if ever needed.
+  pending._operation_key = queueId;
+  writeCache('pos-menu-items', [pending, ...(readCache('pos-menu-items') || []).filter((row) => row.id !== localId)]);
   const inventory = item.inventory_item_id ? (readCache('inventory-items') || []).find((row) => row.id === item.inventory_item_id) : null;
   queueOperation('rpc', 'create_pos_menu_item_offline', { payload: item }, null, {
     _queue_id: queueId,
@@ -1034,6 +1123,75 @@ const productSaveFlow = createProductSaveFlow({
     queueOperation("rpc", "save_bar_product_with_stock", { payload: entry.payload }, null, {
       _queue_id: `bar-product-stock-${entry.operation_key}`,
     });
+    // Queue a local catalog snapshot behind the product replay so offline
+    // sales of this product resolve server pricing at replay time. The
+    // snapshot carries the entered prices; the server rebuilds it from the
+    // live catalog (including this product) when it replays.
+    // Optimistic provisional rows so an offline save stays visible (marked
+    // pending) instead of "disappearing" until the replay lands. Creates use
+    // provisional `pending:` ids the Till sells offline at the entered price
+    // (clearly marked provisional); the replay rewrites them to the real
+    // server ids and purges them by operation key on success. Edits update
+    // the cached row in place and keep selling.
+    try {
+      const product = entry.payload?.product || {};
+      const stock = entry.payload?.stock || {};
+      const nowIso = new Date().toISOString();
+      const isCreate = !entry.payload?.menu_item_id;
+      const menuId = entry.payload?.menu_item_id || `pending:${entry.operation_key}`;
+      const cachedMenu = readCache('pos-menu-items') || [];
+      const menuRow = {
+        ...(cachedMenu.find((row) => row?.id === menuId) || {}),
+        id: menuId,
+        lodge_id: state.lodgeId,
+        name: product.name || 'Product',
+        category: product.category || 'Drinks',
+        price: Number(product.price) || 0,
+        is_available: product.is_available !== false,
+        barcode: product.barcode || null,
+        stock_method: 'direct',
+        inventory_item_id: stock.mode === 'link'
+          ? (entry.payload?.inventory_item_id || null)
+          : (`pending:${entry.operation_key}:stock`),
+        depletion_qty: Number(product.depletion_qty) || 1,
+        outlet_id: stock.outlet_id || null,
+        updated_at: nowIso,
+        ...(cachedMenu.some((row) => row?.id === menuId) ? {} : { created_at: nowIso }),
+        _pending_sync: true,
+        _sync_state: 'pending',
+        ...(isCreate ? { _operation_key: entry.operation_key } : {}),
+      };
+      writeCache('pos-menu-items', [menuRow, ...cachedMenu.filter((row) => row?.id !== menuId)]);
+      if (stock.mode !== 'link') {
+        const stockId = entry.payload?.inventory_item_id || `pending:${entry.operation_key}:stock`;
+        const cachedStock = readCache('inventory-items') || [];
+        const stockRow = {
+          ...(cachedStock.find((row) => row?.id === stockId) || {}),
+          id: stockId,
+          lodge_id: state.lodgeId,
+          name: stock.name || product.name || 'Stock item',
+          category: stock.category || 'Bar',
+          unit: stock.unit || 'unit',
+          current_stock: Number(stock.opening_stock) || 0,
+          reorder_level: Number(stock.reorder_level) || 0,
+          outlet_id: stock.outlet_id || null,
+          is_active: true,
+          updated_at: nowIso,
+          ...(cachedStock.some((row) => row?.id === stockId) ? {} : { created_at: nowIso }),
+          _pending_sync: true,
+          _sync_state: 'pending',
+          ...(isCreate ? { _operation_key: entry.operation_key } : {}),
+        };
+        writeCache('inventory-items', [stockRow, ...cachedStock.filter((row) => row?.id !== stockId)]);
+      }
+    } catch {
+      /* Provisional display must never fail the queued save. */
+    }
+    try {
+      queueLocalPosCatalogSnapshot(entry.payload?.stock?.outlet_id || null, `bar-product-stock-${entry.operation_key}`);
+    } catch {
+      /* Snapshot queueing must never fail the queued save. */
+    }
   },
   dispatchOnline: async (payload) => {
     const { data: rpcData, error } = await state.supabase.rpc("save_bar_product_with_stock", { payload });
@@ -1139,6 +1297,9 @@ export function getProductRequestStatus() {
     .filter((entry) => {
       if (!entry?.operation_key) return false;
       if (productSaveFlow.ACTIONABLE.has(entry.state)) return true;
+      // Definitively rejected saves need an explicit manager discard (which
+      // also retires their provisional rows); hiding them strands orphans.
+      if (entry.state === "rejected") return true;
       return (
         entry.state === "committed" &&
         entry.publication &&
@@ -1158,8 +1319,50 @@ export function getProductRequestStatus() {
 
 /** Retire a terminally rejected request key. */
 export function discardProductRequest(operationKey) {
-  productSaveFlow.discard(operationKey);
-  return { success: true };
+  const key = String(operationKey || "");
+  if (!key) throw new Error("A product request is required.");
+  const entry = productSaveFlow.status(key);
+  if (entry && entry.state !== "rejected") {
+    throw new Error("Only definitively rejected saves can be discarded. Retry this save instead.");
+  }
+  productSaveFlow.discard(key);
+  // Retiring the key must also retire its provisional shelf presence:
+  // rejected saves never replay, so their pending menu/stock rows would
+  // otherwise sit in the caches forever (blocking certified stock reads).
+  const purged = purgeProvisionalProductRows(key);
+  appendOperationJournalEntry("provisional_product_purged", {
+    type: "rpc",
+    table: "save_bar_product_with_stock",
+    _queue_id: `bar-product-stock-${key}`,
+    data: { payload: { operation_key: key } },
+  }, {
+    financial: false,
+    message: `Provisional menu/stock rows retired with discarded product request ${key} (menu: ${purged.menu}, stock: ${purged.stock}).`,
+  });
+  return { success: true, purged };
+}
+
+// Remove provisional cache rows minted for one offline product save.
+// Only rows carrying that save's operation key are touched, so server
+// rows and other saves are never affected. Idempotent and safe to rerun.
+export function purgeProvisionalProductRows(operationKey) {
+  const key = String(operationKey || "");
+  if (!key) return { menu: 0, stock: 0 };
+  let menu = 0;
+  let stock = 0;
+  try {
+    const menuRows = readCache("pos-menu-items") || [];
+    const keptMenu = menuRows.filter((row) => row?._operation_key !== key);
+    menu = menuRows.length - keptMenu.length;
+    if (menu > 0) writeCache("pos-menu-items", keptMenu);
+  } catch { /* purge is best-effort; caches reconverge on refresh */ }
+  try {
+    const stockRows = readCache("inventory-items") || [];
+    const keptStock = stockRows.filter((row) => row?._operation_key !== key);
+    stock = stockRows.length - keptStock.length;
+    if (stock > 0) writeCache("inventory-items", keptStock);
+  } catch { /* purge is best-effort; caches reconverge on refresh */ }
+  return { menu, stock };
 }
 
 /** Crash/startup recovery: re-dispatch actionable stored requests, then sweep their outlets. */
@@ -1182,7 +1385,22 @@ export async function recoverPendingProductRequests() {
       /* Recovery is best-effort; requests remain retryable. */
     }
   }
-  return { requests: acted, publication: sweep.outlets || [] };
+  // Backfill: rejected saves never replay, so any provisional rows they
+  // minted are orphans by definition. Purge them so retired test/failed
+  // saves stop blocking certified stock reads. The requests themselves stay
+  // listed until a manager explicitly discards them.
+  let purged = { menu: 0, stock: 0 };
+  try {
+    for (const entry of productSaveFlow.list()) {
+      if (entry?.state !== "rejected" || !entry?.operation_key) continue;
+      const counts = purgeProvisionalProductRows(entry.operation_key);
+      purged.menu += counts.menu;
+      purged.stock += counts.stock;
+    }
+  } catch {
+    /* Purge is best-effort; explicit discards converge the rest. */
+  }
+  return { requests: acted, publication: sweep.outlets || [], purged };
 }
 
 /**
@@ -1446,6 +1664,128 @@ export async function getPosVoidHistory(startDate, endDate, outletFilter = null)
   return applyVoidFilters([...pendingLocalRows.filter((row) => !remoteIds.has(row?.id)), ...remoteRows]);
 }
 
+// Eligibility for discarding an orphaned local void-history row. Pure: every
+// input is passed in, so the matrix is unit-testable without a database.
+// A discard only ever removes an UNCONFIRMED local request record after a
+// manager decision — server-confirmed voids resolve to synced instead, and
+// rows still backed by a live queue/failed item must go through the queue
+// Retry/Clear path so their audit trail stays intact.
+export function resolveLocalVoidDiscardEligibility({
+  localRow = null,
+  queueRefs = [],
+  failedRefs = [],
+  serverOverrideById = null,
+  serverOrder = null,
+  serverVoidsForOrder = []
+} = {}) {
+  if (!localRow) {
+    return { ok: false, code: 'not_found', error: 'This void record is no longer on this computer. Refresh and try again.' };
+  }
+  const unsynced = localRow?._pending_sync === true
+    || ['pending', 'failed', 'manual_review_required'].includes(String(localRow?._sync_state || ''));
+  if (!unsynced) {
+    return { ok: false, code: 'already_synced', error: 'This void is already confirmed. Refresh instead of discarding.' };
+  }
+  if ((queueRefs || []).length > 0 || (failedRefs || []).length > 0) {
+    return { ok: false, code: 'queue_backed', error: 'This void is still in the sync queue — Retry or Clear it in System Health instead of discarding the record.' };
+  }
+  if (serverOverrideById) {
+    return { ok: false, code: 'server_confirmed', resolve: 'synced', error: 'The server already recorded this void. It will be marked confirmed instead.' };
+  }
+  if (!serverOrder) {
+    return {
+      ok: true,
+      disposition: 'orphan',
+      confirmCopy: 'The order no longer exists on the server, so there is nothing real to void. Discarding removes only this computer\u2019s unfulfilled request record.'
+    };
+  }
+  const voidedServerSide = String(serverOrder.status || '').toLowerCase() === 'voided' || (serverVoidsForOrder || []).length > 0;
+  if (voidedServerSide) {
+    return {
+      ok: true,
+      disposition: 'superseded',
+      confirmCopy: 'The server already voids this order under a different record. Discarding removes only the duplicate local request.'
+    };
+  }
+  const total = Number(serverOrder.total);
+  return {
+    ok: true,
+    disposition: 'order_stands',
+    confirmCopy: `Order ${String(serverOrder.id || '').slice(0, 8)} still stands ${String(serverOrder.status || 'completed')}${Number.isFinite(total) ? ` for ${total.toFixed(2)}` : ''} on the server. Discarding keeps the sale and drops only the unfulfilled void request. Re-void at the Till with a supervisor PIN if the sale should not stand.`
+  };
+}
+
+// Manager-reviewed discard of an orphaned local void record that can never
+// sync (e.g. its queue item was cleared, or its order never committed).
+// Fail-closed: offline refuses (the server must confirm there is nothing to
+// lose), server-confirmed voids resolve to synced, queue-backed rows refuse.
+export async function discardLocalPosVoidRecord(overrideId, { reason = '' } = {}) {
+  const id = String(overrideId || '').trim();
+  if (!id) throw new Error('A void record is required.');
+  if (!state.lodgeId) throw new Error('Select a business profile first.');
+  const localRow = readLocalPosVoidHistory().find((row) => String(row?.id || '') === id) || null;
+  if (!localRow) throw new Error('This void record is no longer on this computer. Refresh and try again.');
+  const matchesRef = (item) => String(item?.data?.payload?.override_log_id || '') === id;
+  const queueRefs = [...readSyncQueue(), ...readFailedSyncQueue()].filter(matchesRef);
+  const unsynced = localRow?._pending_sync === true
+    || ['pending', 'failed', 'manual_review_required'].includes(String(localRow?._sync_state || ''));
+  if (!unsynced) throw new Error('This void is already confirmed. Refresh instead of discarding.');
+  if (queueRefs.length > 0) throw new Error('This void is still in the sync queue — Retry or Clear it in System Health instead of discarding the record.');
+  if (!state.isOnline || !state.supabase) {
+    throw new Error('Reconnect before discarding a void record — the server must confirm there is nothing to lose. The record was kept.');
+  }
+  const orderId = localRow?.order_id || null;
+  const [overrideRead, orderRead] = await Promise.all([
+    state.supabase.from('pos_override_log').select('id, order_id, action').eq('id', id).eq('lodge_id', state.lodgeId).maybeSingle(),
+    orderId
+      ? state.supabase.from('pos_orders').select('id, status, total').eq('id', orderId).eq('lodge_id', state.lodgeId).maybeSingle()
+      : Promise.resolve({ data: null, error: null })
+  ]);
+  if (overrideRead?.error) throw new Error(`Server void check failed (${overrideRead.error.message}). Reconnect and try again — the record was kept.`);
+  if (orderRead?.error) throw new Error(`Server order check failed (${orderRead.error.message}). Reconnect and try again — the record was kept.`);
+  const serverOrder = orderRead?.data || null;
+  let serverVoidsForOrder = [];
+  if (serverOrder) {
+    const voidsRead = await state.supabase.from('pos_override_log').select('id').eq('lodge_id', state.lodgeId).eq('order_id', serverOrder.id).eq('action', 'void');
+    if (voidsRead?.error) throw new Error(`Server void check failed (${voidsRead.error.message}). Reconnect and try again — the record was kept.`);
+    serverVoidsForOrder = Array.isArray(voidsRead?.data) ? voidsRead.data : [];
+  }
+  const eligibility = resolveLocalVoidDiscardEligibility({
+    localRow,
+    queueRefs: [],
+    failedRefs: [],
+    serverOverrideById: overrideRead?.data || null,
+    serverOrder,
+    serverVoidsForOrder
+  });
+  if (!eligibility.ok && eligibility.resolve === 'synced') {
+    patchLocalPosVoidHistory(id, { _pending_sync: false, _sync_state: 'synced', _sync_error: null, _synced_at: new Date().toISOString() });
+    broadcastSyncStatus();
+    return { success: true, resolved: 'synced', overrideId: id };
+  }
+  if (!eligibility.ok) throw new Error(eligibility.error || 'This void record cannot be discarded.');
+  const removed = removeLocalPosVoidHistory([id]);
+  if (removed === 0) throw new Error('This void record is no longer on this computer. Refresh and try again.');
+  const at = new Date().toISOString();
+  const auditMessage = `Local void record ${id} (order ${String(orderId || '').slice(0, 8) || 'unknown'}) discarded by manager review without server confirmation [${eligibility.disposition}]${reason ? `: ${String(reason).slice(0, 200)}` : ''}. Verify manually that this was handled.`;
+  appendHealthFault({
+    type: 'financial_void_record_discarded',
+    scope: `pos-void:${id}`,
+    severity: 'error',
+    message: auditMessage,
+    at,
+    context: { override_id: id, order_id: orderId, disposition: eligibility.disposition }
+  });
+  appendOperationJournalEntry('void_record_discarded', {
+    type: 'rpc',
+    table: 'approve_pos_void_with_pin',
+    _queue_id: `pos-void-${orderId || id}`,
+    data: { payload: { override_log_id: id, order_id: orderId } }
+  }, { financial: true, message: auditMessage });
+  broadcastSyncStatus();
+  return { success: true, discarded: id, disposition: eligibility.disposition, orderId };
+}
+
 async function _getOutlets() {
   const normalizeOutletRows = (rows = []) => {
     const seen = new Set();
@@ -1476,17 +1816,17 @@ async function _getOutlets() {
 
 
   try {
-    let { data, error } = await state.supabase.
+    let { data, error } = await withNetworkTimeout(state.supabase.
     from('outlets').
-    select('id, name, type, sort_order').
+    select('id, name, type, sort_order, cash_model').
     eq('lodge_id', state.lodgeId).
     eq('is_active', true).
-    order('sort_order');
+    order('sort_order'), undefined, 'Outlet list');
     if (error) {
-      const fallback = await state.supabase.
+      const fallback = await withNetworkTimeout(state.supabase.
       from('outlets').
       select('id, name, type, is_active').
-      eq('lodge_id', state.lodgeId);
+      eq('lodge_id', state.lodgeId), undefined, 'Outlet list');
       data = fallback.data;
       error = fallback.error;
     }
@@ -1581,7 +1921,8 @@ export async function getPendingPosSubmitAttempt({ lodgeId, userId } = {}) {
     orderId: attempt.orderId,
     createdAtClient: attempt.createdAtClient,
     payload: attempt.payload,
-    status: attempt.status
+    status: attempt.status,
+    pendingCount: countPendingSubmitAttemptRecords({ lodgeId, userId })
   };
 }
 
@@ -1605,15 +1946,41 @@ async function getPosOrderWithItemsById(id) {
   return cached || null;
 }
 
+// Shared-drawer sale gate: every sale must land inside one open drawer
+// period, or it belongs to no review window (expectations are computed per
+// period from opened_at). The period read is cached for seconds, not minutes:
+// Till selling speed matters, and a stale-open view can only admit sales
+// seconds past a close, which still reconcile inside that window.
+const DRAWER_SALE_GATE_TTL_MS = 20000;
+const drawerSaleGateCache = new Map();
+
+async function findSaleDrawerPeriod(outletId) {
+  const cacheKey = String(outletId || '');
+  const cached = drawerSaleGateCache.get(cacheKey);
+  if (cached && Date.now() - cached.checkedAt < DRAWER_SALE_GATE_TTL_MS && cached.period) return cached.period;
+  let period = null;
+  if (state.isOnline && state.supabase) {
+    try {
+      const fetched = await withNetworkTimeout(getDrawerPeriodState(outletId), undefined, 'Drawer check');
+      period = fetched?.period || null;
+    } catch {
+      period = null;
+    }
+  }
+  if (!period) period = findLocalOpenDrawerPeriod(outletId);
+  if (period) drawerSaleGateCache.set(cacheKey, { period, checkedAt: Date.now() });
+  else drawerSaleGateCache.delete(cacheKey);
+  return period;
+}
+
 export async function createPosOrder(data) {
   try {
     const operatorProof = String(data?._operator_proof || '').trim() || null;
     data = { ...(data || {}) };
     delete data._operator_proof;
-    const tabScope = getCachedTabScope();
-    if (!state.isOnline && data.tab_id && (!tabScope.known || tabScope.isBar)) {
-      throw new Error('Bar tab sales require a live connection so the assigned waiter and active Till shift can be confirmed. Counter sales may continue offline.');
-    }
+    // Bar tab sales queue offline behind their tab create (unlocked Till is
+    // the trust root, same as counter sales). The version guard below still
+    // applies, and replay order is enforced through queue dependencies.
     const items = data.items || [];
     const totals = buildPosTotals(items, data);
     const total = totals.total;
@@ -1621,6 +1988,21 @@ export async function createPosOrder(data) {
     const paymentMethod = data.payment_method || (paymentBreakdown.length > 1 ? 'split' : paymentBreakdown[0]?.method || 'cash');
     await enforceBarBaseTenderBoundary(data, paymentBreakdown, paymentMethod);
     validateProviderPaymentReferences(paymentBreakdown, paymentMethod);
+    // Shared drawers reconcile every sale inside one open period: without it
+    // the sale belongs to no review window. Fail closed here (before any
+    // journal residue) for shared outlets only; personal outlets and unknown
+    // models keep the old path. A submitted period is frozen for review, so
+    // only open (or rejected, back for correction) periods admit sales.
+    const saleOutletId = data.outlet_id || data.outletId || null;
+    if (saleOutletId && getOutletCashModel(saleOutletId) === 'shared_drawer') {
+      const salePeriod = await findSaleDrawerPeriod(saleOutletId);
+      if (!salePeriod) {
+        throw new Error('Open the drawer in Staff shift close before selling — cash sales have nowhere to reconcile without an open drawer period.');
+      }
+      if (!['open', 'rejected'].includes(String(salePeriod.status || ''))) {
+        throw new Error('The drawer close is submitted and awaiting manager review. Review it in Cash & close before selling on.');
+      }
+    }
     const callerOrderId = String(data?.id || '').trim();
     const callerSubmitIntentId = String(data?.submit_intent_id || '').trim();
     const submitIntentId = callerSubmitIntentId || randomUUID();
@@ -1684,9 +2066,6 @@ export async function createPosOrder(data) {
 
     // Offline path: queue v3 payload (server resolves prices from catalog on replay)
     if (!state.isOnline) {
-      if (data.tab_id && isBarTabScopeCached()) {
-        throw new Error('Bar tab sales require a live connection so the assigned waiter and active Till operator proof can be confirmed. Counter sales may continue offline.');
-      }
       // If a booking_id was explicitly provided, verify it exists in cache
       if (data.booking_id && !cachedBooking) {
         throw new Error(`Booking ${data.booking_id} not found locally. Sync the latest bookings and try again.`);
@@ -1805,10 +2184,29 @@ export async function createPosOrder(data) {
       if (!attemptResolution.reused) assertSaleModifierRequirements(effectiveOfflinePayload.items);
 
       const cachedShift = readPosShifts().find((shift) => shift.id === data.shift_id) || null;
+      // Provisional products (created offline) must replay before this sale:
+      // their queue ids join the dependency chain so the runner creates the
+      // products (and their catalog snapshot) first, then rewrites this
+      // payload to the real server ids on product success. Atomic-path rows
+      // use `pending:<operation_key>` ids; legacy-path rows use their local
+      // UUID while still marked pending in cache.
+      const menuCacheById = new Map(((readCache('pos-menu-items') || []).map((row) => [String(row?.id || ''), row])));
+      const provisionalProductDeps = [...new Set(
+        (effectiveOfflinePayload.items || []).flatMap((line) => {
+          const menuId = String(line?.menu_item_id || '');
+          if (menuId.startsWith('pending:')) return [`bar-product-stock-${menuId.slice('pending:'.length)}`];
+          if (menuId && menuCacheById.get(menuId)?._pending_sync === true) return [`pos-menu-item-${menuId}`];
+          return [];
+        })
+      )];
       const orderDependencies = [
         offlineCatalogSnapshot?._pending_sync ? offlineCatalogSnapshot._queue_id : null,
         cachedShift?._pending_sync ? (cachedShift._queue_id || `pos-shift-${cachedShift.id}`) : null,
-        cachedBooking?._pending_sync ? `booking-${cachedBooking.id}` : null
+        cachedBooking?._pending_sync ? `booking-${cachedBooking.id}` : null,
+        ...provisionalProductDeps,
+        // A tab settle replays only after its tab exists server-side. Absent
+        // parents resolve immediately, so synced tabs pay no penalty.
+        ...(data.tab_id ? [`pos-tab-${data.tab_id}`] : [])
       ].filter(Boolean);
       queueOperation('rpc', 'create_pos_order_v3', {
         payload: {
@@ -1819,6 +2217,11 @@ export async function createPosOrder(data) {
         _queue_id: `pos-order-${id}`,
         ...(orderDependencies[0] ? { _depends_on: orderDependencies[0], _depends_on_all: orderDependencies } : {})
       });
+      // Recorded locally and queued: the outcome is no longer unknown, so the
+      // attempt leaves 'pending' for 'provisional'. Recovery banners and the
+      // new-sale block ignore it while the queue owns it; replay success
+      // commits it and dead-letter reopens it.
+      markPosSubmitAttemptProvisional(submitIntentId, `pos-order-${id}`);
 
       // Recipe stock depletion is server-authoritative inside create_pos_order_v3
       // (see 20260805090000_pos_recipe_stock_depletion_server_atomic.sql). New
@@ -1889,10 +2292,13 @@ export async function createPosOrder(data) {
       appendPosAudit('order_completed_offline', { entity_type: 'pos_order', entity_id: id, details: { total, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: offlineCatalogSnapshotId, v3: true } });
       let tabCloseWarning = null;
       if (data.tab_id) {
-        const closeResult = await closePosTab(data.tab_id, 'closed', { _operator_proof: operatorProof || null })
-          .catch((closeError) => ({ success: false, error: closeError?.message || 'Could not close the tab.' }));
-        if (closeResult?.success === false) {
-          tabCloseWarning = closeResult.error || 'The payment was recorded but the tab did not close.';
+        // The server closes the tab atomically when this sale replays, so no
+        // separate close is queued here (it would race the settlement into a
+        // spurious already-settled dead-letter). The local row is marked
+        // closed-pending for display; a dead-lettered replay reopens it.
+        const localTab = readPosTabs().find((row) => row.id === data.tab_id) || null;
+        if (localTab && localTab.status !== 'closed') {
+          upsertLocalPosTab({ ...localTab, status: 'closed', updated_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending', _pending_settlement: true });
         }
       }
 
@@ -1996,10 +2402,36 @@ export async function createPosOrder(data) {
     if (data.tab_id && !isPositiveTabVersion(data.expected_tab_version) && !hasPosSubmitAttempt(submitIntentId)) {
       throw new Error('This sale is missing its tab version. Refresh the open check before taking payment.');
     }
-    const onlineAttemptError = recordAttempt(v3Payload);
+      // Retry byte-equivalence (mirrors the offline path): the journal digest
+      // covers the exact RPC envelope, and a rebuilt envelope after catalog or
+      // shift changes never hashes equal to the original — tripping the
+      // changed-payload conflict on a legitimate same-intent retry. Swap in
+      // the journalled bytes BEFORE recording so the retry reuses its
+      // envelope (idempotent under the original operation key) instead of
+      // conflicting with itself. Genuinely new intents are unaffected, and a
+      // changed sale still gets a fresh intent id upstream.
+      if (hasPosSubmitAttempt(submitIntentId)) {
+        const storedRetry = getPosSubmitAttempt(submitIntentId)
+        if (storedRetry?.payload) v3Payload = { ...storedRetry.payload }
+      }
+      const onlineAttemptError = recordAttempt(v3Payload);
     if (onlineAttemptError) return onlineAttemptError;
     if (attemptResolution.reused && attemptRecord?.payload) {
       v3Payload = { ...attemptRecord.payload };
+      // Loop breaker: a retry replays the original bytes, but a shift closed
+      // since the first attempt would fail every retry identically (unlock
+      // prompt, unlock, same failure). Reattribute to the current open shift
+      // exactly like queue replays do; amounts, waiter, outlet and timestamps
+      // are untouched, the journal keeps the original bytes, and the server
+      // still decides (claim-first returns the stored result when recorded).
+      const retryShiftId = resolveCurrentOpenShiftId(readCache('pos-shifts'), {
+        outletId: v3Payload.outlet_id || null,
+        cashierId: v3Payload.waiter_id || v3Payload.cashier_id || null,
+      });
+      if (retryShiftId && String(v3Payload.shift_id || '') !== String(retryShiftId)) {
+        v3Payload = { ...v3Payload, shift_id: retryShiftId };
+        appendPosAudit('retry_shift_rewritten', { entity_type: 'pos_order', entity_id: orderId, details: { shift_id: retryShiftId } });
+      }
     }
     // Fresh attempts only (see offline path): replays reuse journalled bytes
     // so configuration changes can never block committed work.
@@ -2907,13 +3339,28 @@ export async function savePosTab(data = {}) {
       return { success: false, error: error?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
     }
   } else {
-    if (isBarTabScopeCached() || isTabScopeUnknown()) {
-      writePosTabs(readPosTabs().filter((entry) => entry.id !== row.id));
-      return { success: false, error: 'Tab changes require a live connection so the package scope, assigned waiter, and active Till shift can be confirmed.' };
+    // Offline tabs for Bar: the unlocked Till (PIN-verified session) is the
+    // trust root, same as offline counter sales. The row is stored locally
+    // (never inventing a version) and the identical RPC replays later;
+    // version conflicts dead-letter visibly instead of overwriting.
+    const pending = { ...row, _pending_sync: true, _sync_state: 'pending' };
+    // Last-writer-wins per tab: same-queue-id pushes are skipped by the
+    // queue, so refresh the queued payload in place when this tab already
+    // has a save queued. Otherwise later holds would replay stale lines.
+    const tabQueueId = `pos-tab-${id}`;
+    const queuedTabs = readSyncQueue();
+    const queuedTabIndex = queuedTabs.findIndex((entry) => entry?._queue_id === tabQueueId);
+    if (queuedTabIndex >= 0) {
+      queuedTabs[queuedTabIndex] = { ...queuedTabs[queuedTabIndex], data: { payload: row }, timestamp: new Date().toISOString() };
+      writeSyncQueue(queuedTabs);
+    } else {
+      queueOperation('rpc', 'upsert_pos_tab', { payload: row }, null, {
+        _queue_id: tabQueueId
+      });
     }
-    queueOperation('rpc', 'upsert_pos_tab', { payload: row }, null, {
-      _queue_id: `pos-tab-${id}`
-    });
+    upsertLocalPosTab(pending);
+    appendPosAudit('tab_saved', { entity_type: 'pos_tab', entity_id: row.id, details: { table_name: row.table_name, status: row.status, waiter_name: row.waiter_name, source: 'offline_queue' } });
+    return { success: true, tab: pending, offline: true, queued: true };
   }
 
   appendPosAudit('tab_saved', { entity_type: 'pos_tab', entity_id: row.id, details: { table_name: row.table_name, status: row.status, waiter_name: row.waiter_name } });
@@ -2947,22 +3394,18 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
       return { success: false, error: error?.message || 'Could not confirm the tab status change with the server.' };
     }
   } else {
-    // Bar ownership/current-shift proof cannot safely survive a replay under a
-    // different desktop actor. Preserve the older restaurant queue contract,
-    // but fail closed for the Bar package where the assigned waiter is part of
-    // the authoritative mutation boundary.
-    if (isBarTabScopeCached() || isTabScopeUnknown()) {
-      return { success: false, error: 'Tab status changes require a live connection so the package scope, assigned waiter, and active Till shift can be confirmed.' };
-    }
+    // Offline status changes queue behind the tab create so the replay order
+    // stays create-then-status. Same trust root as offline counter sales.
     const pending = { ...updated, _pending_sync: true, financial_complete: false, _financial_complete: false };
-    upsertLocalPosTab(pending);
     queueOperation('rpc', 'update_pos_tab_status', {
       p_tab_id: id,
       p_status: nextStatus,
       p_notes: extra.notes || null
     }, null, {
-      _queue_id: `pos-tab-status-${id}-${nextStatus}`
+      _queue_id: `pos-tab-status-${id}-${nextStatus}`,
+      ...(current?._pending_sync ? { _depends_on: `pos-tab-${id}` } : {})
     });
+    upsertLocalPosTab(pending);
     appendPosAudit('tab_status_updated', { entity_type: 'pos_tab', entity_id: id, details: { status: nextStatus, table_name: updated.table_name || null, source: 'offline_queue' } });
     return { success: true, tab: pending, offline: true, pending: true };
   }
@@ -3292,6 +3735,31 @@ export async function splitBillEvenly(data = {}) {
   return { success: false, code: 'unknown_split_error', provenance: 'transport-error', error: 'Could not split the bill.', idempotency_key: idempotencyKey, outcome: 'unknown' };
 }
 
+function getPosCashupQueueDependencies(shift) {
+  const dependencies = new Set();
+  if (shift._pending_sync) dependencies.add(shift._queue_id || `pos-shift-${shift.id}`);
+  const orders = new Map(readCache('pos-orders').map((row) => [row.id, row]));
+  for (const item of [...readSyncQueue(), ...readFailedSyncQueue()]) {
+    if (item?.type !== 'rpc') continue;
+    const payload = item.data?.payload || {};
+    if (payload.lodge_id && payload.lodge_id !== state.lodgeId) continue;
+    let affectsShift = false;
+    if (['create_pos_order_v3', 'create_pos_return_v3'].includes(item.table)) {
+      affectsShift = payload.shift_id === shift.id;
+    } else if (item.table === 'approve_pos_void_with_pin') {
+      const order = orders.get(payload.order_id);
+      if (order?.lodge_id && order.lodge_id !== state.lodgeId) continue;
+      affectsShift = order?.shift_id
+        ? order.shift_id === shift.id
+        : !payload.outlet_id || payload.outlet_id === shift.outlet_id;
+    }
+    if (!affectsShift) continue;
+    if (!item._queue_id) throw new Error('A pending cash transaction has no retry reference. Ask a manager to resolve it in System Health before submitting cash-up.');
+    dependencies.add(item._queue_id);
+  }
+  return [...dependencies];
+}
+
 export async function submitPosCashup(payload = {}) {
   if (!state.isOnline || !state.supabase) {
     const shift = readPosShifts().find((row) => row.id === payload.shift_id);
@@ -3309,10 +3777,7 @@ export async function submitPosCashup(payload = {}) {
       submitted_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending',
       _queue_id: `pos-cashup-submission-${key}`
     });
-    const dependencies = [
-      shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
-      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
-    ].filter(Boolean);
+    const dependencies = getPosCashupQueueDependencies(shift);
     queueOperation('rpc', 'submit_pos_shift_cashup', { payload: { ...payload, lodge_id: state.lodgeId, idempotency_key: key } }, null, {
       _queue_id: submission._queue_id,
       ...(dependencies[0] ? { _depends_on: dependencies[0], _depends_on_all: dependencies } : {})
@@ -3344,10 +3809,7 @@ export async function submitPosCashupWithAttendancePin(payload = {}) {
       submitted_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending',
       _queue_id: `pos-cashup-submission-${key}`
     });
-    const dependencies = [
-      shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
-      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
-    ].filter(Boolean);
+    const dependencies = getPosCashupQueueDependencies(shift);
     queueOperation('rpc', 'submit_pos_shift_cashup_with_attendance_pin', { payload: {
       ...payload, lodge_id: state.lodgeId, idempotency_key: key, device_id: getDesktopPosDeviceId()
     } }, null, {
@@ -3358,6 +3820,7 @@ export async function submitPosCashupWithAttendancePin(payload = {}) {
   }
   const { data, error } = await state.supabase.rpc('submit_pos_shift_cashup_with_attendance_pin', { payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() } });
   if (error) throw new Error(error.message);
+  if (data && data.success === false) return withOperatorPinResult(data);
   return data || { success: false, error: 'Could not submit the shared-terminal cash-up.' };
 }
 
@@ -3398,6 +3861,349 @@ export async function getPendingPosCashupSubmissions() {
   if (error) throw new Error(error.message);
   const result = data || { success: true, submissions: [] };
   if (Array.isArray(result.submissions)) writePosCashupSubmissions(result.submissions);
+  return result;
+}
+
+// ---- Village drawer periods (shared-drawer cash model) ----
+// One shared drawer gets one reconciliation. Movements change balances;
+// handover/closing counts are observations only. Local provisional rows live
+// in pos-drawer-periods / pos-cash-movements / pos-cash-counts caches and
+// replay through the same RPC names. Expected cash is never computed here.
+
+function readDrawerPeriods() {
+  return readCache('pos-drawer-periods') || [];
+}
+
+function writeDrawerPeriods(rows) {
+  writeCache('pos-drawer-periods', Array.isArray(rows) ? rows : []);
+}
+
+function upsertDrawerPeriod(row) {
+  const rows = readDrawerPeriods();
+  const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
+  const index = rows.findIndex((item) => String(item?.id || '') === String(next.id || ''));
+  if (index >= 0) rows[index] = { ...rows[index], ...next };
+  else rows.unshift(next);
+  writeDrawerPeriods(rows);
+  return rows[index >= 0 ? index : 0];
+}
+
+function readCashMovements() {
+  return readCache('pos-cash-movements') || [];
+}
+
+function writeCashMovements(rows) {
+  writeCache('pos-cash-movements', Array.isArray(rows) ? rows : []);
+}
+
+function upsertCashMovement(row) {
+  const rows = readCashMovements();
+  const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
+  const index = rows.findIndex((item) => String(item?.id || '') === String(next.id || ''));
+  if (index >= 0) rows[index] = { ...rows[index], ...next };
+  else rows.unshift(next);
+  writeCashMovements(rows);
+  return rows[index >= 0 ? index : 0];
+}
+
+function readCashCounts() {
+  return readCache('pos-cash-counts') || [];
+}
+
+function writeCashCounts(rows) {
+  writeCache('pos-cash-counts', Array.isArray(rows) ? rows : []);
+}
+
+function upsertCashCount(row) {
+  const rows = readCashCounts();
+  const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
+  const index = rows.findIndex((item) => String(item?.id || '') === String(next.id || ''));
+  if (index >= 0) rows[index] = { ...rows[index], ...next };
+  else rows.unshift(next);
+  writeCashCounts(rows);
+  return rows[index >= 0 ? index : 0];
+}
+
+// Unknown or missing model fails closed to the long-standing personal rules.
+function getOutletCashModel(outletId) {
+  const row = (readCache('outlets') || []).find((item) => String(item?.id || '') === String(outletId || ''));
+  return row?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank';
+}
+
+function findLocalOpenDrawerPeriod(outletId) {
+  return readDrawerPeriods().find((row) =>
+    String(row?.outlet_id || '') === String(outletId || '') &&
+    ['open', 'submitted', 'rejected'].includes(String(row?.status || ''))) || null;
+}
+
+// Drawer writes must never hang the terminal on "Recording…": a stalled
+// connection rejects after the standard read timeout with an explicitly
+// ambiguous message. Retrying is safe — every drawer write carries a stable
+// per-attempt key, so a retry replays instead of recording twice.
+function drawerWriteTimeout(label) {
+  return (timeoutError) => {
+    if (timeoutError?.code === 'network_read_timeout') {
+      throw new Error(`${label} timed out — it may already be recorded. Refresh the drawer list; if it is missing, retry and the same retry key replays instead of recording twice.`);
+    }
+    throw timeoutError;
+  };
+}
+
+export async function openDrawerPeriod({ outlet_id, outletId, opening_float, openingFloat, notes, idempotency_key, idempotencyKey, device_id } = {}) {
+  const resolvedOutlet = outlet_id || outletId || null;
+  const key = idempotency_key || idempotencyKey || `pos-drawer-open:${resolvedOutlet || 'unknown'}:${randomUUID()}`;
+  const payload = {
+    lodge_id: state.lodgeId, outlet_id: resolvedOutlet,
+    opening_float: opening_float ?? openingFloat ?? null,
+    notes: notes || null, idempotency_key: key, device_id: device_id || getDesktopPosDeviceId()
+  };
+  if (!state.isOnline || !state.supabase) {
+    if (payload.opening_float === null || payload.opening_float === '' || !Number.isFinite(Number(payload.opening_float)) || Number(payload.opening_float) < 0) {
+      return { success: false, error: 'Count the starting change and enter it before opening the drawer (0.00 starts empty).' };
+    }
+    const existing = resolvedOutlet ? findLocalOpenDrawerPeriod(resolvedOutlet) : null;
+    if (existing) return { success: true, period_id: existing.id, already_open: true, offline: true };
+    const queueId = `pos-drawer-period-${key}`;
+    const period = upsertDrawerPeriod({
+      id: randomUUID(), outlet_id: resolvedOutlet, business_date: getLocalDateKey ? getLocalDateKey() : null,
+      status: 'open', opening_float: Number(payload.opening_float), opened_by: state.currentUser?.id || null,
+      opened_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'open_pos_drawer_period', { payload }, null, { _queue_id: queueId });
+    return { success: true, period_id: period.id, offline: true, queued: true, provisional: true };
+  }
+  const { data: result, error } = await withNetworkTimeout(
+    state.supabase.rpc('open_pos_drawer_period', { payload }),
+    undefined,
+    'Drawer open'
+  ).catch(drawerWriteTimeout('Drawer open'));
+  if (error) throw new Error(error.message);
+  if (result?.success && result?.period_id) {
+    upsertDrawerPeriod({ id: result.period_id, outlet_id: resolvedOutlet, business_date: result.business_date || null, status: 'open', opening_float: result.opening_float ?? null, _sync_state: 'synced' });
+  }
+  return result || { success: false, error: 'Could not open the drawer period.' };
+}
+
+export async function recordCashMovement({ outlet_id, outletId, movement_type, movementType, amount, operator_id, operatorId, notes, pin, idempotency_key, idempotencyKey, device_id } = {}) {
+  const resolvedOutlet = outlet_id || outletId || null;
+  const resolvedType = movement_type || movementType || null;
+  const key = idempotency_key || idempotencyKey || `pos-cash-movement:${resolvedOutlet || 'unknown'}:${randomUUID()}`;
+  const payload = {
+    lodge_id: state.lodgeId, outlet_id: resolvedOutlet, movement_type: resolvedType,
+    amount: amount ?? null, operator_id: operator_id || operatorId || null,
+    notes: notes || null, pin: pin || null, idempotency_key: key, device_id: device_id || getDesktopPosDeviceId()
+  };
+  if (!state.isOnline || !state.supabase) {
+    if (!Number.isFinite(Number(payload.amount)) || Number(payload.amount) <= 0) {
+      return { success: false, error: 'Enter the amount of cash moved.' };
+    }
+    if (resolvedType === 'paid_out' && !String(payload.notes || '').trim()) {
+      return { success: false, error: 'Say what the paid-out cash was for.' };
+    }
+    const period = resolvedOutlet ? findLocalOpenDrawerPeriod(resolvedOutlet) : null;
+    const queueId = `pos-cash-movement-${key}`;
+    const row = upsertCashMovement({
+      id: randomUUID(), outlet_id: resolvedOutlet, period_id: period?.id || null,
+      movement_type: resolvedType, amount: Number(payload.amount),
+      operator_id: payload.operator_id || state.currentUser?.id || null,
+      actor_id: state.currentUser?.id || null, notes: payload.notes || null,
+      idempotency_key: key, created_at: new Date().toISOString(),
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'record_pos_cash_movement', { payload }, null, {
+      _queue_id: queueId,
+      ...(period?._pending_sync && period?._queue_id ? { _depends_on: period._queue_id } : {})
+    });
+    return { success: true, movement_id: row.id, offline: true, queued: true, provisional: true };
+  }
+  const { data: result, error } = await withNetworkTimeout(
+    state.supabase.rpc('record_pos_cash_movement', { payload }),
+    undefined,
+    'Cash movement'
+  ).catch(drawerWriteTimeout('Cash movement'));
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not record the cash movement.' };
+}
+
+export async function recordCashCount({ period_id, periodId, count_type, countType, counted_cash, countedCash, operator_id, operatorId, notes, pin, idempotency_key, idempotencyKey, device_id } = {}) {
+  const resolvedPeriod = period_id || periodId || null;
+  const resolvedType = count_type || countType || null;
+  const key = idempotency_key || idempotencyKey || `pos-cash-count:${resolvedPeriod || 'unknown'}:${randomUUID()}`;
+  const payload = {
+    lodge_id: state.lodgeId, period_id: resolvedPeriod, count_type: resolvedType,
+    counted_cash: counted_cash ?? countedCash ?? null,
+    operator_id: operator_id || operatorId || null,
+    notes: notes || null, pin: pin || null, idempotency_key: key, device_id: device_id || getDesktopPosDeviceId()
+  };
+  if (resolvedType !== 'handover') {
+    return { success: false, error: 'Choose a handover count. Opening counts happen when the drawer opens; closing counts happen at cash-up.' };
+  }
+  if (!state.isOnline || !state.supabase) {
+    const period = (readDrawerPeriods() || []).find((row) => String(row?.id || '') === String(resolvedPeriod || ''));
+    if (!period) return { success: false, error: 'Open the drawer period first — count the starting change, then record counts.' };
+    if (String(period.status || '') !== 'open') {
+      return { success: false, error: 'This drawer period is already submitted. A manager reviews it in Cash & close.' };
+    }
+    if (payload.counted_cash === null || payload.counted_cash === '' || !Number.isFinite(Number(payload.counted_cash)) || Number(payload.counted_cash) < 0) {
+      return { success: false, error: 'Count the drawer and enter what is in it.' };
+    }
+    const queueId = `pos-cash-count-${key}`;
+    const row = upsertCashCount({
+      id: randomUUID(), period_id: resolvedPeriod, count_type: resolvedType,
+      counted_cash: Number(payload.counted_cash),
+      operator_id: payload.operator_id || state.currentUser?.id || null,
+      actor_id: state.currentUser?.id || null, notes: payload.notes || null,
+      idempotency_key: key, created_at: new Date().toISOString(),
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    queueOperation('rpc', 'record_pos_cash_count', { payload }, null, {
+      _queue_id: queueId,
+      ...(period?._pending_sync && period?._queue_id ? { _depends_on: period._queue_id } : {})
+    });
+    return { success: true, count_id: row.id, offline: true, queued: true, provisional: true };
+  }
+  const { data: result, error } = await withNetworkTimeout(
+    state.supabase.rpc('record_pos_cash_count', { payload }),
+    undefined,
+    'Handover count'
+  ).catch(drawerWriteTimeout('Handover count'));
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not record the count.' };
+}
+
+export async function submitDrawerPeriodCashup({ period_id, periodId, counted_cash, countedCash, notes, operator_id, operatorId, pin, idempotency_key, idempotencyKey, device_id } = {}) {
+  const resolvedPeriod = period_id || periodId || null;
+  const key = idempotency_key || idempotencyKey || `pos-drawer-submit:${resolvedPeriod || 'unknown'}:${randomUUID()}`;
+  const payload = {
+    lodge_id: state.lodgeId, period_id: resolvedPeriod,
+    counted_cash: counted_cash ?? countedCash ?? null,
+    notes: notes || null, operator_id: operator_id || operatorId || null,
+    pin: pin || null, idempotency_key: key, device_id: device_id || getDesktopPosDeviceId()
+  };
+  if (!state.isOnline || !state.supabase) {
+    const period = (readDrawerPeriods() || []).find((row) => String(row?.id || '') === String(resolvedPeriod || ''));
+    if (!period) return { success: false, error: 'This drawer period was not found on this device. Refresh and try again.' };
+    if (String(period.status || '') !== 'open' && String(period.status || '') !== 'rejected') {
+      return { success: false, error: 'This cash-up is already submitted. A manager reviews it in Cash & close.' };
+    }
+    if (payload.counted_cash === null || payload.counted_cash === '' || !Number.isFinite(Number(payload.counted_cash)) || Number(payload.counted_cash) < 0) {
+      return { success: false, error: 'Count the drawer and enter what is in it.' };
+    }
+    const queueId = `pos-drawer-submit-${key}`;
+    const updated = upsertDrawerPeriod({
+      ...period, status: 'submitted', counted_cash: Number(payload.counted_cash),
+      submit_notes: payload.notes || null, submitted_by: payload.operator_id || state.currentUser?.id || null,
+      submitted_at: new Date().toISOString(), submit_idempotency_key: key,
+      _pending_sync: true, _sync_state: 'pending', _queue_id: queueId
+    });
+    upsertCashCount({
+      id: randomUUID(), period_id: resolvedPeriod, count_type: 'closing',
+      counted_cash: Number(payload.counted_cash),
+      operator_id: payload.operator_id || state.currentUser?.id || null,
+      actor_id: state.currentUser?.id || null, notes: payload.notes || null,
+      idempotency_key: `${key}:closing`, created_at: new Date().toISOString(),
+      _pending_sync: true, _sync_state: 'pending'
+    });
+    queueOperation('rpc', 'submit_pos_drawer_period_cashup', { payload }, null, {
+      _queue_id: queueId,
+      ...(period?._pending_sync && period?._queue_id && period._queue_id !== queueId ? { _depends_on: period._queue_id } : {})
+    });
+    return { success: true, period_id: updated.id, status: 'submitted', offline: true, queued: true, provisional: true };
+  }
+  const { data: result, error } = await withNetworkTimeout(
+    state.supabase.rpc('submit_pos_drawer_period_cashup', { payload }),
+    undefined,
+    'Drawer cash-up submit'
+  ).catch(drawerWriteTimeout('Drawer cash-up submit'));
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not submit the drawer cash-up.' };
+}
+
+export async function reviewDrawerPeriodCashup({ period_id, periodId, decision, notes, manager_pin, managerPin } = {}) {
+  const payload = {
+    period_id: period_id || periodId || null,
+    decision: String(decision || '').toLowerCase(),
+    notes: notes || null, manager_pin: manager_pin || managerPin || null
+  };
+  if (!state.isOnline || !state.supabase) {
+    const period = (readDrawerPeriods() || []).find((row) => String(row?.id || '') === String(payload.period_id || ''));
+    if (!period) return { success: false, error: 'Drawer period not found in the offline cache.' };
+    const verified = validateCachedPosPin(state.currentUser?.id, payload.manager_pin, { manager: true });
+    if (!verified.success) return verified;
+    if (!['approve', 'reject'].includes(payload.decision)) {
+      return { success: false, error: 'Choose approve or return for correction.' };
+    }
+    if (payload.decision === 'reject' && !String(payload.notes || '').trim()) {
+      return { success: false, error: 'Enter a correction note before returning this cash-up.' };
+    }
+    // The Till keeps trading on a shared drawer, so — unlike a personal
+    // cash-up — review never closes local Till shifts. The server resolves
+    // shift closure authoritatively at replay.
+    const updated = upsertDrawerPeriod({
+      ...period, status: payload.decision === 'approve' ? 'approved' : 'rejected',
+      review_notes: payload.notes || null, reviewed_at: new Date().toISOString(),
+      reviewed_by: state.currentUser?.id || null,
+      _pending_sync: true, _sync_state: 'pending'
+    });
+    const queueId = `pos-drawer-review-${period.id}-${payload.decision}`;
+    queueOperation('rpc', 'review_pos_drawer_period_cashup', { payload: {
+      lodge_id: state.lodgeId, period_id: period.id, decision: payload.decision,
+      notes: payload.notes || null, manager_pin: payload.manager_pin,
+      device_id: getDesktopPosDeviceId()
+    } }, null, {
+      _queue_id: queueId,
+      ...(period?._pending_sync && period?._queue_id ? { _depends_on: period._queue_id } : {})
+    });
+    return { success: true, period_id: updated.id, status: updated.status, offline: true, queued: true, provisional: true };
+  }
+  const { data: result, error } = await withNetworkTimeout(
+    state.supabase.rpc('review_pos_drawer_period_cashup', {
+      payload: { ...payload, lodge_id: state.lodgeId, device_id: getDesktopPosDeviceId() }
+    }),
+    undefined,
+    'Drawer cash-up review'
+  ).catch(drawerWriteTimeout('Drawer cash-up review'));
+  if (error) throw new Error(error.message);
+  return result || { success: false, error: 'Could not review the drawer cash-up.' };
+}
+
+export async function getDrawerPeriodState(outlet_id, outletId) {
+  const resolvedOutlet = outlet_id || outletId || null;
+  if (!state.isOnline || !state.supabase) {
+    const period = resolvedOutlet ? findLocalOpenDrawerPeriod(resolvedOutlet) : null;
+    if (!period) return { success: true, period: null, movements: [], counts: [], offline: true };
+    return {
+      success: true, period,
+      movements: readCashMovements().filter((row) => String(row?.period_id || '') === String(period.id)),
+      counts: readCashCounts().filter((row) => String(row?.period_id || '') === String(period.id)),
+      offline: true
+    };
+  }
+  try {
+    const { data, error } = await withNetworkTimeout(state.supabase.rpc('get_pos_drawer_period_state', {
+      payload: { lodge_id: state.lodgeId, outlet_id: resolvedOutlet }
+    }), undefined, 'Drawer period');
+    if (error) throw new Error(error.message);
+    return data || { success: false, error: 'Could not load the drawer period.' };
+  } catch (error) {
+    const period = resolvedOutlet ? findLocalOpenDrawerPeriod(resolvedOutlet) : null;
+    if (!period) throw error;
+    return {
+      success: true, period,
+      movements: readCashMovements().filter((row) => String(row?.period_id || '') === String(period.id)),
+      counts: readCashCounts().filter((row) => String(row?.period_id || '') === String(period.id)),
+      offline: true, degraded: true
+    };
+  }
+}
+
+export async function setOutletCashModel(outletId, cashModel) {
+  if (!state.isOnline || !state.supabase) throw new Error('Changing how cash is counted requires an online connection');
+  const { data: result, error } = await state.supabase.rpc('set_outlet_cash_model', {
+    p_lodge_id: state.lodgeId, p_outlet_id: outletId, p_cash_model: cashModel
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not change how cash is counted.');
   return result;
 }
 
@@ -4121,6 +4927,42 @@ export async function activateSharedTillOperator({ staff_id, staffId, outlet_id,
     const verified = validateCachedPosPin(resolvedStaffId, pin);
     if (!verified.success) return verified;
     if (!resolvedOutletId) return { success: false, error: 'Choose an outlet before unlocking Till.' };
+    // Guardrail: never queue a duplicate Till open while one is already open
+    // for the same staff + outlet. The server keeps one open shift per
+    // outlet/cashier (`open_pos_shift_with_id` returns already_open); a
+    // second queued open dead-letters on the proof FK / remap path.
+    const existingOpenTill = readPosShifts().find((row) =>
+      String(row?.status || '').toLowerCase() === 'open' &&
+      !row?.closed_at &&
+      String(row?.outlet_id || '') === String(resolvedOutletId || '') &&
+      String(row?.cashier_id || '') === String(resolvedStaffId || '')
+    ) || null;
+    if (existingOpenTill) {
+      return {
+        success: true, staff: verified.staff, shift: existingOpenTill,
+        attendance_shift_id: existingOpenTill.attendance_shift_id || null,
+        already_open: true, offline: true, queued: false, provisional: !!existingOpenTill._pending_sync
+      };
+    }
+    try {
+      const queuedTill = (readSyncQueue() || []).find((item) =>
+        item?.table === 'activate_shared_till_operator_offline' &&
+        String(item?.data?.payload?.staff_user_id || '') === String(resolvedStaffId || '') &&
+        String(item?.data?.payload?.outlet_id || '') === String(resolvedOutletId || '')
+      ) || null;
+      if (queuedTill?.data?.payload?.pos_shift_id) {
+        const queuedShift = readPosShifts().find((row) => String(row?.id || '') === String(queuedTill.data.payload.pos_shift_id)) || null;
+        if (queuedShift) {
+          return {
+            success: true, staff: verified.staff, shift: queuedShift,
+            attendance_shift_id: queuedShift.attendance_shift_id || null,
+            already_open: true, offline: true, queued: false, provisional: true
+          };
+        }
+      }
+    } catch {
+      /* Queue guard is best-effort; fall through to normal offline open. */
+    }
     let attendance = readAttendanceShifts().find((row) => row.staff_user_id === resolvedStaffId && row.status === 'active') || null;
     if (!attendance) {
       const attendanceId = randomUUID();
@@ -4175,6 +5017,7 @@ export async function activateSharedTillOperator({ staff_id, staffId, outlet_id,
     }
   });
   if (error) throw new Error(error.message);
+  if (!result?.success) return withOperatorPinResult(result);
   return result || { success: false, error: 'Could not unlock Till.' };
 }
 
@@ -4527,13 +5370,22 @@ export async function recordPosAudit(action = 'pos_audit', details = {}) {
 
 export async function getPosStaff() {
   if (state.isOnline && state.supabase) {
-    const { data, error } = await state.supabase.rpc('pos_get_safe_staff', {
-      p_lodge_id: state.lodgeId
-    });
-    if (error) throw new Error(error.message);
-    const rows = Array.isArray(data) ? data : [];
-    writeCache('pos-staff', rows);
-    return rows;
+    try {
+      const { data, error } = await withNetworkTimeout(
+        state.supabase.rpc('pos_get_safe_staff', { p_lodge_id: state.lodgeId }),
+        undefined,
+        'Staff list'
+      );
+      if (error) throw new Error(error.message);
+      const rows = Array.isArray(data) ? data : [];
+      writeCache('pos-staff', rows);
+      return rows;
+    } catch {
+      // Unlock Till must never wait on a dead network: team list comes from
+      // cache and PIN checks fall back to the cached verifier below.
+      const cached = readCache('pos-staff');
+      return Array.isArray(cached) ? cached : [];
+    }
   }
   const cached = readCache('pos-staff');
   return Array.isArray(cached) ? cached : [];
@@ -4552,16 +5404,129 @@ export async function selectPosStaffWithPin(data = {}) {
     appendPosAudit('staff_selected_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
     return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
   }
-  const { data: result, error } = await state.supabase.rpc('pos_validate_pin', {
-    p_lodge_id: state.lodgeId,
-    p_staff_id: staff.id,
-    p_pin: pin,
-    p_required_capability: 'pos.manage',
-    p_device_id: getDesktopPosDeviceId()
-  });
+  let result = null;
+  let error = null;
+  try {
+    const response = await withNetworkTimeout(
+      state.supabase.rpc('pos_validate_pin', {
+        p_lodge_id: state.lodgeId,
+        p_staff_id: staff.id,
+        p_pin: pin,
+        p_required_capability: 'pos.manage',
+        p_device_id: getDesktopPosDeviceId()
+      }),
+      undefined,
+      'Staff PIN check'
+    ).catch((transportError) => {
+      // A dead network must not trap the Till at unlock: fall back to the
+      // cached PIN verifier exactly as the offline path does below.
+      if (isPosPinTransportFailure(transportError)) {
+        return { data: { timedOut: true }, error: null };
+      }
+      throw transportError;
+    });
+    result = response?.data ?? null;
+    error = response?.error ?? null;
+  } catch (transportError) {
+    if (isPosPinTransportFailure(transportError)) {
+      const verified = validateCachedPosPin(staff.id, pin);
+      if (!verified.success) return verified;
+      appendPosAudit('staff_selected_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+      return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
+    }
+    throw transportError;
+  }
+  if (error && isPosPinTransportFailure(error)) {
+    const verified = validateCachedPosPin(staff.id, pin);
+    if (!verified.success) return verified;
+    appendPosAudit('staff_selected_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+    return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
+  }
   if (error) throw new Error(error.message);
-  if (!result?.success) return { success: false, error: result?.error || 'Incorrect staff PIN.' };
+  if (result?.timedOut || result === null) {
+    const verified = validateCachedPosPin(staff.id, pin);
+    if (!verified.success) return verified;
+    appendPosAudit('staff_selected_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+    return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
+  }
+  if (!result?.success) return withOperatorPinResult({ success: false, error: result?.error || 'Incorrect staff PIN.' });
   appendPosAudit('staff_selected', {
+    staff_id: result.staff?.id,
+    staff_name: result.staff?.name,
+    entity_type: 'pos_staff'
+  });
+  return result;
+}
+
+/**
+ * Verify a manager PIN to unlock the Manage workspace (Stock, Cash & close,
+ * Sales and the hub itself). Server-enforced via pos_validate_pin with the
+ * manager-only pos.menu_manage capability (the server's PIN capability
+ * allowlist in 20260618210000 only knows pos.* / sync.manage /
+ * settings.manage_general — staff.manage is unknown there and would reject
+ * every PIN); offline falls back to the cached PIN verifier with a
+ * manager-only role check. Supervisors and cashiers can never unlock, even
+ * with a correct PIN — the server capability check and the offline role check
+ * both fail closed. Audit-logged either way on success.
+ */
+export async function verifyManagerPinForManage(data = {}) {
+  const pin = String(data.pin || '').trim();
+  const staffId = String(data.staff_id || '').trim();
+  if (!staffId) return { success: false, error: 'Staff session is required to unlock Manage.' };
+  if (!pin) return { success: false, error: 'Manager PIN is required.' };
+  const staffRows = await getPosStaff();
+  const staff = staffRows.find((user) => user.id === staffId);
+  if (!staff) return { success: false, error: 'Staff member not found.' };
+  if (!staff.has_pin) return { success: false, error: 'This staff member does not have a POS PIN set.' };
+  if (!state.isOnline || !state.supabase) {
+    const verified = validateCachedPosPin(staff.id, pin, { manager: true });
+    if (!verified.success) return verified;
+    const role = String(verified.staff?.role || staff.role || '').toLowerCase();
+    if (!MANAGER_MANAGE_UNLOCK_ROLES.includes(role)) {
+      return { success: false, error: 'A manager PIN is required to open Manage.' };
+    }
+    appendPosAudit('manager_manage_unlocked_offline', { staff_id: staff.id, staff_name: staff.name, entity_type: 'pos_staff' });
+    return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
+  }
+  let result = null;
+  let error = null;
+  try {
+    const response = await withNetworkTimeout(
+      state.supabase.rpc('pos_validate_pin', {
+        p_lodge_id: state.lodgeId,
+        p_staff_id: staff.id,
+        p_pin: pin,
+        p_required_capability: 'pos.menu_manage',
+        p_device_id: getDesktopPosDeviceId()
+      }),
+      undefined,
+      'Manager PIN check'
+    ).catch((transportError) => {
+      // Offline-first Manage unlock: a dead network (fetch failed, abort,
+      // timeout) falls back to the trusted cached PIN verifier. Any other
+      // failure rethrows and fails closed below.
+      if (isPosPinTransportFailure(transportError)) {
+        return { data: { timedOut: true }, error: null };
+      }
+      throw transportError;
+    });
+    result = response?.data ?? null;
+    error = response?.error ?? null;
+  } catch (transportError) {
+    if (isPosPinTransportFailure(transportError)) {
+      return resolveOfflineManageUnlock(staff, pin);
+    }
+    throw transportError;
+  }
+  if (error && isPosPinTransportFailure(error)) {
+    return resolveOfflineManageUnlock(staff, pin);
+  }
+  if (error) throw new Error(error.message);
+  if (result?.timedOut || result === null) {
+    return resolveOfflineManageUnlock(staff, pin);
+  }
+  if (!result?.success) return { success: false, error: result?.error || 'Invalid PIN or unauthorized staff member' };
+  appendPosAudit('manager_manage_unlocked', {
     staff_id: result.staff?.id,
     staff_name: result.staff?.name,
     entity_type: 'pos_staff'
@@ -5380,6 +6345,32 @@ export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId
     if (!verified.success) return verified;
     const existing = readAttendanceShifts().find((row) => row.staff_user_id === resolvedStaffId && row.status === 'active');
     if (existing) return { success: true, shift_id: existing.id, already_active: true, offline: true };
+    // Guardrail: an optimistic local clock-out still pending sync means the
+    // server still holds this staff member active. Queuing a new clock-in
+    // would dead-letter with "already has an active shift".
+    try {
+      const queue = readSyncQueue() || [];
+      const pendingClockOut = queue.find((item) =>
+        item?.table === 'clock_out_staff_with_attendance_pin' &&
+        String(item?.data?.payload?.lodge_id || '') === String(state.lodgeId || '')
+      ) || null;
+      if (pendingClockOut) {
+        const pendingShiftId = String(pendingClockOut?.data?.payload?.shift_id || '');
+        const pendingShift = pendingShiftId ? readAttendanceShifts().find((row) => String(row?.id || '') === pendingShiftId) : null;
+        if (pendingShift && String(pendingShift?.staff_user_id || '') === String(resolvedStaffId || '')) {
+          return { success: false, code: 'clockout_pending', error: 'A clock-out for this staff member is still syncing. Wait for sync before clocking in again.' };
+        }
+      }
+      const pendingClockIn = queue.find((item) =>
+        (item?.table === 'clock_in_staff_with_attendance_pin_offline' || item?.table === 'clock_in_staff_offline') &&
+        String(item?.data?.payload?.staff_user_id || '') === String(resolvedStaffId || '')
+      ) || null;
+      if (pendingClockIn?.data?.payload?.shift_id) {
+        return { success: true, shift_id: pendingClockIn.data.payload.shift_id, already_active: true, offline: true, queued: true, provisional: true };
+      }
+    } catch {
+      /* Queue guard is best-effort; fall through to normal offline clock-in. */
+    }
     const shiftId = randomUUID();
     const queueId = `attendance-shift-${shiftId}`;
     upsertAttendanceShift({
@@ -5398,7 +6389,8 @@ export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId
   const { data: result, error } = await state.supabase.rpc('clock_in_staff_with_attendance_pin', {
     payload: { lodge_id: state.lodgeId, staff_user_id: staff_user_id || staffUserId || null, pin: String(pin || ''), role, expected_hours: expected_hours ?? expectedHours ?? null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(withAttendancePermissionGuidance(error.message, 'in'));
+  if (result && result.success === false) return withOperatorPinResult(result);
   return result || { success: false, error: 'Clock-in failed.' };
 }
 
@@ -5613,26 +6605,90 @@ export async function updatePosSupplier(supplierId, supplierData) {
 
 export async function clockOutStaffWithAttendancePin({ shiftId, pin, notes, idempotency_key, idempotencyKey } = {}) {
   const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
+  // Cash-up before clock-out, enforced for every clock-out path (Till,
+  // team list, kiosk): an open POS shift without a submitted or approved
+  // cash-up blocks the clock-out with guidance. No open shift means nothing
+  // to cash up, so the clock-out proceeds.
+  const attendanceRow = readAttendanceShifts().find((row) => row.id === shiftId) || null;
+  if (attendanceRow?.staff_user_id) {
+    let openShift = null;
+    try {
+      openShift = await withNetworkTimeout(
+        getStaffOpenPosShift(attendanceRow.staff_user_id),
+        undefined,
+        'Shift check'
+      );
+    } catch {
+      openShift = readPosShifts().find((row) => row.cashier_id === attendanceRow.staff_user_id && row.status === 'open') || null;
+    }
+    if (openShift?.id && getOutletCashModel(openShift.outlet_id) !== 'shared_drawer') {
+      let submission = null;
+      try {
+        const fetched = await withNetworkTimeout(
+          getStaffPosCashupSubmission(openShift.id),
+          undefined,
+          'Cash-up check'
+        );
+        submission = fetched?.submission || null;
+      } catch {
+        submission = readPosCashupSubmissions().find((row) => row.shift_id === openShift.id) || null;
+      }
+      if (!['submitted', 'approved'].includes(submission?.status)) {
+        return { success: false, code: 'cashup_required', error: 'Submit My Cash-up before clocking out. A manager can review it after your attendance is closed.' };
+      }
+    }
+  }
   if (!state.isOnline || !state.supabase) {
     const shift = readAttendanceShifts().find((row) => row.id === shiftId);
     if (!shift) return { success: false, error: 'Active attendance shift not found in the offline cache.' };
     const verified = validateCachedPosPin(shift.staff_user_id, pin);
     if (!verified.success) return verified;
+    // Offline fail-closed mirror of the server cash-up guard: never queue a
+    // clock-out (and never flip the local row to completed) while a local
+    // open Till for this staff member lacks a submitted/approved cash-up.
+    // Queuing it would dead-letter with "Submit My Cash-up before clocking
+    // out" and poison a subsequent clock-in via optimistic completion.
+    const localOpenTill = readPosShifts().find((row) =>
+      String(row?.status || '').toLowerCase() === 'open' &&
+      !row?.closed_at &&
+      (String(row?.attendance_shift_id || '') === String(shiftId || '') ||
+        String(row?.cashier_id || '') === String(shift?.staff_user_id || ''))
+    ) || null;
+    // Shared-drawer outlets reconcile collectively at period close, so the
+    // queued replay enforces the same rule server-side. Unknown models keep
+    // the old guard (fail closed).
+    const localTillModel = localOpenTill?.outlet_id ? getOutletCashModel(localOpenTill.outlet_id) : 'personal_bank';
+    // Replay ordering: a provisional cash-up queued just before this clock-out
+    // must commit first. Without an explicit dependency the clock-out could
+    // replay first and dead-letter with "Submit My Cash-up before clocking
+    // out" while its own cash-up still waits in the queue.
+    let provisionalCashupQueueId = null;
+    if (localOpenTill?.id && localTillModel !== 'shared_drawer') {
+      const localSubmission = readPosCashupSubmissions().find((row) => String(row?.shift_id || '') === String(localOpenTill.id)) || null;
+      if (!['submitted', 'approved'].includes(localSubmission?.status)) {
+        return { success: false, code: 'cashup_required', error: 'Submit My Cash-up before clocking out. A manager can review it after your attendance is closed.' };
+      }
+      if (localSubmission?._pending_sync && localSubmission?._queue_id) provisionalCashupQueueId = localSubmission._queue_id;
+    }
     upsertAttendanceShift({ ...shift, status: 'completed', clock_out: new Date().toISOString(), notes: notes || shift.notes || null, _pending_sync: true, _sync_state: 'pending' });
     const queueId = `attendance-pin-clock-out-${shiftId}-${resolvedKey}`;
+    const clockOutShiftDep = shift._pending_sync ? (shift._queue_id || `attendance-shift-${shiftId}`) : null;
+    const clockOutOrderedDeps = [clockOutShiftDep, provisionalCashupQueueId].filter(Boolean);
     queueOperation('rpc', 'clock_out_staff_with_attendance_pin', { payload: {
       lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null,
       idempotency_key: resolvedKey, device_id: getDesktopPosDeviceId()
     } }, null, {
       _queue_id: queueId,
-      ...(shift._pending_sync ? { _depends_on: shift._queue_id || `attendance-shift-${shiftId}` } : {})
+      ...(clockOutOrderedDeps[0] ? { _depends_on: clockOutOrderedDeps[0] } : {}),
+      ...(clockOutOrderedDeps.length > 1 ? { _depends_on_all: clockOutOrderedDeps } : {})
     });
     return { success: true, offline: true, queued: true, provisional: true };
   }
   const { data: result, error } = await state.supabase.rpc('clock_out_staff_with_attendance_pin', {
     payload: { lodge_id: state.lodgeId, shift_id: shiftId, pin: String(pin || ''), notes: notes || null, idempotency_key: idempotency_key || idempotencyKey || randomUUID(), device_id: getDesktopPosDeviceId() }
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(withAttendancePermissionGuidance(error.message, 'out'));
+  if (result && result.success === false) return withOperatorPinResult(result);
   return result || { success: false, error: 'Clock-out failed.' };
 }
 
@@ -5721,7 +6777,29 @@ export async function createStockTransfer(transferData) {
 }
 
 export async function createDailyChecklist({ checklistType, items }) {
-  if (!state.isOnline || !state.supabase) throw new Error('Cannot create checklist offline');
+  if (!state.isOnline || !state.supabase) {
+    const row = {
+      id: randomUUID(),
+      lodge_id: state.lodgeId,
+      checklist_type: checklistType || 'daily_opening',
+      status: 'open',
+      items: (Array.isArray(items) ? items : []).map((label) => ({
+        id: randomUUID(),
+        item_label: String(label?.item_label || label || ''),
+        is_completed: false,
+      })),
+      created_at: new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending',
+    };
+    const queueId = `pos-checklist-${row.id}`;
+    row._queue_id = queueId;
+    writeCache('pos-checklists', [row, ...(readCache('pos-checklists') || []).filter((entry) => entry?.id !== row.id)]);
+    queueOperation('rpc', 'create_daily_checklist', {
+      payload: { lodge_id: state.lodgeId, checklist_type: row.checklist_type, items: row.items.map((entry) => ({ label: entry.item_label })) },
+    }, null, { _queue_id: queueId });
+    return { success: true, offline: true, queued: true, id: row.id };
+  }
 
   try {
     const { data: result, error } = await state.supabase.rpc('create_daily_checklist', {
@@ -5740,7 +6818,22 @@ export async function createDailyChecklist({ checklistType, items }) {
 }
 
 export async function completeChecklistItem({ itemId, notes }) {
-  if (!state.isOnline || !state.supabase) throw new Error('Cannot complete checklist item offline');
+  if (!state.isOnline || !state.supabase) {
+    // Check-offs are idempotent (SET is_completed=true): queue the same RPC
+    // with a stable per-item queue id and mark the cached row ticked so the
+    // state survives restarts until the replay lands.
+    const cached = readCache('pos-checklists') || [];
+    writeCache('pos-checklists', cached.map((entry) => ({
+      ...entry,
+      items: (Array.isArray(entry.items) ? entry.items : []).map((line) =>
+        String(line?.id || '') === String(itemId || '') ? { ...line, is_completed: true, notes: notes || line?.notes || null, _pending_sync: true } : line,
+      ),
+    })));
+    queueOperation('rpc', 'complete_checklist_item', {
+      payload: { lodge_id: state.lodgeId, item_id: itemId, notes: notes || null },
+    }, null, { _queue_id: `checklist-item-${itemId}` });
+    return { success: true, offline: true, queued: true };
+  }
 
   try {
     const { data: result, error } = await state.supabase.rpc('complete_checklist_item', {
@@ -5930,19 +7023,21 @@ export async function getCashDrawerSessions(startDate, endDate) {
 }
 
 export async function getChecklists() {
-  if (!state.isOnline || !state.supabase) return [];
+  if (!state.isOnline || !state.supabase) return readCache('pos-checklists') || [];
 
   try {
-    const { data, error } = await state.supabase
+    const { data, error } = await withNetworkTimeout(state.supabase
       .from('restaurant_checklists')
       .select('*, items:restaurant_checklist_items(*)')
       .eq('lodge_id', state.lodgeId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false }), undefined, 'Checklists');
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    const rows = Array.isArray(data) ? data : [];
+    writeCache('pos-checklists', rows.slice(0, 200));
+    return rows;
   } catch (error) {
     console.error('[POS CHECKLISTS] List failed:', error?.message || error);
-    return [];
+    return readCache('pos-checklists') || [];
   }
 }
 
@@ -6466,14 +7561,53 @@ export async function seedBarChecklistTemplates() {
 }
 
 export async function getBarChecklistTemplates() {
-  if (!state.isOnline || !state.supabase) return [];
-  const { data, error } = await state.supabase.rpc('get_bar_checklist_templates', { p_lodge_id: state.lodgeId });
-  if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  if (!state.isOnline || !state.supabase) return readCache('bar-checklist-templates') || [];
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_bar_checklist_templates', { p_lodge_id: state.lodgeId }),
+      undefined,
+      'Checklist templates'
+    );
+    if (error) throw new Error(error.message);
+    const rows = Array.isArray(data) ? data : [];
+    writeCache('bar-checklist-templates', rows);
+    return rows;
+  } catch (error) {
+    console.error('[POS CHECKLISTS] Templates failed:', error?.message || error);
+    return readCache('bar-checklist-templates') || [];
+  }
 }
 
 export async function createBarChecklistFromTemplate({ templateKey, outletId, operationId } = {}) {
-  if (!state.isOnline || !state.supabase) throw new Error('Bar checklist templates require an online connection');
+  if (!state.isOnline || !state.supabase) {
+    const stableOperationId = String(operationId || '').trim() || randomUUID();
+    const template = (readCache('bar-checklist-templates') || [])
+      .find((entry) => String(entry?.template_key || '') === String(templateKey || ''));
+    const row = {
+      id: randomUUID(),
+      lodge_id: state.lodgeId,
+      template_key: templateKey || null,
+      checklist_type: template?.checklist_type || 'daily_opening',
+      outlet_id: outletId || null,
+      status: 'open',
+      operation_id: stableOperationId,
+      items: (Array.isArray(template?.items) ? template.items : []).map((label) => ({
+        id: randomUUID(),
+        item_label: String(label?.label || label || ''),
+        is_completed: false,
+      })),
+      created_at: new Date().toISOString(),
+      _pending_sync: true,
+      _sync_state: 'pending',
+    };
+    const queueId = `bar-checklist-${stableOperationId}`;
+    row._queue_id = queueId;
+    writeCache('pos-checklists', [row, ...(readCache('pos-checklists') || []).filter((entry) => entry?.id !== row.id)]);
+    queueOperation('rpc', 'create_bar_checklist_from_template', {
+      p_payload: { lodge_id: state.lodgeId, template_key: templateKey, outlet_id: outletId || null, operation_id: stableOperationId },
+    }, null, { _queue_id: queueId });
+    return { success: true, offline: true, queued: true, operation_id: stableOperationId, id: row.id };
+  }
   const { data: result, error } = await state.supabase.rpc('create_bar_checklist_from_template', {
     p_payload: { lodge_id: state.lodgeId, template_key: templateKey, outlet_id: outletId || null, operation_id: operationId || randomUUID() },
   });

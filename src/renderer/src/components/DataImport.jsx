@@ -18,6 +18,7 @@ import {
 import { formatLocalDate } from '../utils/localDate'
 import { useSettings } from '../app-context'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 // ── Field definitions ────────────────────────────────────────────────────────
 const IMPORT_FIELD_SETS = {
@@ -552,9 +553,9 @@ function UploadStep({ onParsed, importType, setImportType, importTypes, restaura
         </button>
       </div>
       {err && (
-        <div className="flex items-center gap-2 text-red-600 bg-red-50 border border-red-200 px-4 py-2 rounded-lg text-sm">
+        <ErrorNotice className="flex items-center gap-2 text-red-600 bg-red-50 border border-red-200 px-4 py-2 rounded-lg text-sm">
           <XCircle size={16} />{err}
-        </div>
+        </ErrorNotice>
       )}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 max-w-md w-full text-xs text-blue-700 space-y-1">
         <p className="font-semibold text-blue-800">Tips for best results:</p>

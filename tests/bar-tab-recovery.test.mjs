@@ -10,9 +10,13 @@ import {
   buildTransferPayload,
   classifyTabOperationOutcome,
   clearRecoveryEnvelope,
+  listRecoveryEnvelopes,
   newRecoveryEnvelope,
   quarantineRecoveryRecord,
   readRecoveryEnvelope,
+  readRecoveryEnvelopeByKey,
+  replaySavedTabOperation,
+  resolvedRecoveryKey,
   scopedRecoveryKey,
   legacyRecoveryKey,
   stableFingerprint,
@@ -24,11 +28,15 @@ const read = (relativePath) => readFileSync(resolve(root, relativePath), 'utf8')
 
 function memoryStorage() {
   const map = new Map()
-  return {
+  const store = {
     getItem: (k) => (map.has(k) ? map.get(k) : null),
     setItem: (k, v) => { map.set(k, String(v)) },
     removeItem: (k) => { map.delete(k) }
   }
+  // listRecoveryEnvelopes scans via length/key like Web Storage.
+  Object.defineProperty(store, 'length', { get: () => map.size })
+  store.key = (i) => [...map.keys()][i] ?? null
+  return store
 }
 
 function withStorage(store, fn) {
@@ -36,6 +44,19 @@ function withStorage(store, fn) {
   globalThis.window = { localStorage: store }
   try {
     return fn()
+  } finally {
+    if (priorWindow === undefined) delete globalThis.window
+    else globalThis.window = priorWindow
+  }
+}
+
+// Async variant: replay awaits dispatch, so the stub must stay mounted
+// across microtasks, not just the synchronous call.
+async function withStorageAsync(store, fn) {
+  const priorWindow = globalThis.window
+  globalThis.window = { localStorage: store }
+  try {
+    return await fn()
   } finally {
     if (priorWindow === undefined) delete globalThis.window
     else globalThis.window = priorWindow
@@ -194,8 +215,7 @@ test('server contracts replay the original result and reject same-key payload ch
   assert.match(transfer, /replayed/)
 })
 
-test('open-tabs UI exposes check-status, retry-original, and corrected-attempt recovery without deletion advice', () => {
-  const ui = read('src/renderer/src/components/hospitality-pos/HposOpenChecks.jsx')
+test('open-tabs UI exposes check-status, retry-original, and corrected-attempt recovery without deletion advice', () => {  const ui = read('src/renderer/src/components/hospitality-pos/HposOpenChecks.jsx')
   assert.match(ui, /Check status/)
   assert.match(ui, /Retry original/)
   assert.match(ui, /Start corrected attempt/)
@@ -208,4 +228,134 @@ test('open-tabs UI exposes check-status, retry-original, and corrected-attempt r
   assert.match(ui, /TAB_RECOVERY_OUTCOMES/)
   assert.doesNotMatch(ui, /delete.*localStorage|clear.*localStorage|localStorage\.removeItem\(`hpos:pending/i)
   assert.doesNotMatch(ui, /manually delete|delete.*browser data/i)
+})
+
+test('inbox replay reaches records stored outside the derived keys', async () => {
+  // Regression: the inbox lists by scanning stored keys, but replay
+  // re-derived [scoped, legacy] keys — a record stored under any other key
+  // shape (tenant segment from another session) was listed yet reported
+  // "no saved operation" on Check status.
+  const store = memoryStorage()
+  await withStorageAsync(store, async () => {
+    const envelope = newRecoveryEnvelope({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      expectedVersion: 5,
+      payload: buildTransferPayload({ targetWaiterId: 'w2', targetShiftId: 's2', expectedTabVersion: 5, notes: null })
+    })
+    const foreignKey = `hpos:pending-tab-op:transfer:ffffffff-ffff-4fff-8fff-ffffffffffff:${TAB}`
+    store.setItem(foreignKey, JSON.stringify(envelope))
+    // Derived read misses, exactly like the reported inbox row.
+    assert.equal(readRecoveryEnvelope('transfer', { tenantId: TENANT, sourceTabId: TAB }).envelope, null)
+
+    let dispatched = null
+    const out = await replaySavedTabOperation({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      storageKey: foreignKey,
+      dispatch: async (args) => {
+        dispatched = args
+        return { success: false, code: 'tab_not_owned', error: 'Only the assigned waiter can edit this tab.' }
+      }
+    })
+    // The saved key went out verbatim as a replay and the server answer —
+    // not "no saved operation" — decided the outcome.
+    assert.ok(dispatched)
+    assert.equal(dispatched.operation_id, envelope.operationId)
+    assert.equal(dispatched.is_replay, true)
+    assert.equal(out.outcome, TAB_RECOVERY_OUTCOMES.UNKNOWN)
+    // Outcome persisted back to the same record: no duplicate derived row.
+    assert.equal(readRecoveryEnvelope('transfer', { tenantId: TENANT, sourceTabId: TAB }).envelope, null)
+    const { envelope: kept, corrupt } = readRecoveryEnvelopeByKey(foreignKey)
+    assert.equal(corrupt, false)
+    assert.equal(kept.operationId, envelope.operationId)
+    assert.equal(kept.outcome, TAB_RECOVERY_OUTCOMES.UNKNOWN)
+    assert.ok(kept.lastCheckedAt)
+  })
+})
+
+test('committed exact-key replay archives without leaving a duplicate row', async () => {
+  const store = memoryStorage()
+  await withStorageAsync(store, async () => {
+    const envelope = newRecoveryEnvelope({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      expectedVersion: 5,
+      payload: buildTransferPayload({ targetWaiterId: 'w2', targetShiftId: 's2', expectedTabVersion: 5, notes: null })
+    })
+    const foreignKey = `hpos:pending-tab-op:transfer:ffffffff-ffff-4fff-8fff-ffffffffffff:${TAB}`
+    store.setItem(foreignKey, JSON.stringify(envelope))
+
+    const out = await replaySavedTabOperation({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      storageKey: foreignKey,
+      dispatch: async () => ({ success: true, tab: { id: TAB } })
+    })
+    assert.equal(out.outcome, TAB_RECOVERY_OUTCOMES.COMMITTED)
+    // One logical record: exact key gone, no derived row minted, inbox empty.
+    assert.equal(readRecoveryEnvelopeByKey(foreignKey).envelope, null)
+    assert.equal(readRecoveryEnvelope('transfer', { tenantId: TENANT, sourceTabId: TAB }).envelope, null)
+    assert.ok(store.getItem(resolvedRecoveryKey('transfer', { tenantId: TENANT, sourceTabId: TAB })))
+    assert.deepEqual(listRecoveryEnvelopes({ tenantId: TENANT }).envelopes, [])
+  })
+})
+
+test('replay without a tab reference routes to review instead of looping', async () => {
+  // A record that lost its tab can never dispatch: mark it for manager
+  // review with a truthful message rather than "not confirmed" forever.
+  const store = memoryStorage()
+  await withStorageAsync(store, async () => {
+    const envelope = newRecoveryEnvelope({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: null, actorId: ACTOR,
+      expectedVersion: 5,
+      payload: buildTransferPayload({ targetWaiterId: 'w2', targetShiftId: 's2', expectedTabVersion: 5, notes: null })
+    })
+    const key = `hpos:pending-tab-op:transfer:${TENANT}:unknown-tab`
+    store.setItem(key, JSON.stringify(envelope))
+
+    let dispatched = false
+    await assert.rejects(
+      () => replaySavedTabOperation({
+        kind: 'transfer', tenantId: TENANT, sourceTabId: null, actorId: ACTOR,
+        storageKey: key,
+        dispatch: async () => { dispatched = true; return { success: true, tab: { id: TAB } } }
+      }),
+      /missing its tab reference/
+    )
+    assert.equal(dispatched, false)
+    const { envelope: kept } = readRecoveryEnvelopeByKey(key)
+    assert.equal(kept.outcome, TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW)
+    assert.equal(kept.lastCode, 'missing_source_tab')
+  })
+})
+
+test('inbox trusts the record body for kind when the storage key disagrees', async () => {
+  // Regression: a transfer body stored under a split-shaped key was listed
+  // as a split and replayed as one, failing with "different kind" instead
+  // of reaching the server.
+  const store = memoryStorage()
+  await withStorageAsync(store, async () => {
+    const envelope = newRecoveryEnvelope({
+      kind: 'transfer', tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      expectedVersion: 5,
+      payload: buildTransferPayload({ targetWaiterId: 'w2', targetShiftId: 's2', expectedTabVersion: 5, notes: null })
+    })
+    store.setItem(`hpos:pending-split:${TAB}`, JSON.stringify(envelope))
+
+    const { envelopes } = listRecoveryEnvelopes({ tenantId: TENANT })
+    assert.equal(envelopes.length, 1)
+    assert.equal(envelopes[0].kind, 'transfer')
+    assert.equal(envelopes[0].envelope.kind, 'transfer')
+
+    let dispatched = null
+    const out = await replaySavedTabOperation({
+      kind: envelopes[0].kind, tenantId: TENANT, sourceTabId: TAB, actorId: ACTOR,
+      storageKey: envelopes[0].key,
+      dispatch: async (args) => {
+        dispatched = args
+        return { success: true, tab: { id: TAB } }
+      }
+    })
+    assert.ok(dispatched)
+    assert.equal(dispatched.operation_id, envelope.operationId)
+    assert.equal(out.outcome, TAB_RECOVERY_OUTCOMES.COMMITTED)
+    assert.deepEqual(listRecoveryEnvelopes({ tenantId: TENANT }).envelopes, [])
+  })
 })

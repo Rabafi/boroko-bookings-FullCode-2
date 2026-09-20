@@ -13,6 +13,7 @@ import {
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useSettings } from '../app-context'
 
 const emptyForm = {
@@ -409,10 +410,10 @@ export default function RoomTypes({ embedded = false }) {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700">
+              <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700">
                 <AlertTriangle size={14} className="shrink-0" />
                 {error}
-              </div>
+              </ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-2">

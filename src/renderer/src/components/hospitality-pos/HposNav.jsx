@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import {
   Bell, Wifi, WifiOff, Clock, User, ChevronDown,
   RefreshCw, Plus, LogOut, Settings, ShieldCheck, Database, Search, Rows3,
-  BookOpen, ExternalLink, Download, Loader2, X
+  BookOpen, ExternalLink, Download, Loader2, X, KeyRound
 } from 'lucide-react'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../../shared/uiVocabulary'
@@ -424,6 +424,18 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                     Help &amp; guides
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => goTo('/hpos/my-shift#my-staff-pin')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                    padding: '9px 14px', border: 'none', background: 'transparent',
+                    color: '#24362c', fontSize: '12px', fontWeight: 600, cursor: 'pointer', textAlign: 'left'
+                  }}
+                >
+                  <KeyRound size={14} />
+                  My Staff PIN
+                </button>
                 <button
                   type="button"
                   onClick={() => goTo('/settings')}

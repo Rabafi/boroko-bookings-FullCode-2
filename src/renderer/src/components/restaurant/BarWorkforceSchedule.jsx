@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 const iso = (value) => value.toISOString().slice(0, 10)
 const mondayOf = (value) => {
@@ -94,7 +95,7 @@ export default function BarWorkforceSchedule() {
           <button className="bb-btn-secondary" onClick={load} disabled={loading}><RefreshCw size={16} className={loading ? 'animate-spin' : ''}/>Refresh</button>
         </div>
       </div>
-      {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</ErrorNotice>}
     </section>
 
     <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">

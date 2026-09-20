@@ -126,7 +126,7 @@ function readAttempts() {
       typeof entry !== 'object' ||
       !asId(entry.submitIntentId) ||
       !asId(entry.orderId) ||
-      !['pending', 'committed'].includes(String(entry.status || '')) ||
+      !['pending', 'provisional', 'committed'].includes(String(entry.status || '')) ||
       !entry.payload ||
       !entry.digest
     ))
@@ -233,10 +233,19 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
 }
 
 export function hasPosSubmitAttempt(submitIntentId) {
-  const normalizedIntentId = asId(submitIntentId);
-  if (!normalizedIntentId) return false;
-  return findAttempt(readAttempts(), normalizedIntentId) !== null;
-}
+    const normalizedIntentId = asId(submitIntentId);
+    if (!normalizedIntentId) return false;
+    return findAttempt(readAttempts(), normalizedIntentId) !== null;
+  }
+
+  // Read-only accessor for retry paths: a same-intent retry must reuse the
+  // originally journalled bytes instead of digesting a rebuilt envelope
+  // (fresh catalog snapshot, recomputed totals) that can never hash equal.
+  export function getPosSubmitAttempt(submitIntentId) {
+    const normalizedIntentId = asId(submitIntentId);
+    if (!normalizedIntentId) return null;
+    return findAttempt(readAttempts(), normalizedIntentId);
+  }
 
 export function commitPosSubmitAttempt(submitIntentId) {  const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return null
@@ -246,6 +255,42 @@ export function commitPosSubmitAttempt(submitIntentId) {  const normalizedIntent
   const updated = attempts.map((attempt) =>
     attempt.submitIntentId === normalizedIntentId
       ? { ...attempt, status: 'committed', lastAttemptAt: new Date().toISOString() }
+      : attempt
+  )
+  writeAttempts(updated)
+  return updated.find((attempt) => attempt.submitIntentId === normalizedIntentId) || null
+}
+
+// Offline success records the sale locally and queues the server replay.
+// The outcome is no longer unknown, so the attempt leaves 'pending' for
+// 'provisional': recovery banners and new-sale blocks ignore it while the
+// queue owns it. Replay success commits it; dead-letter reopens it.
+export function markPosSubmitAttemptProvisional(submitIntentId, queueId = null) {
+  const normalizedIntentId = asId(submitIntentId)
+  if (!normalizedIntentId) return null
+  const attempts = readAttempts()
+  const existing = findAttempt(attempts, normalizedIntentId)
+  if (!existing || existing.status !== 'pending') return existing || null
+  const updated = attempts.map((attempt) =>
+    attempt.submitIntentId === normalizedIntentId
+      ? { ...attempt, status: 'provisional', queueId: queueId || attempt.queueId || null, lastAttemptAt: new Date().toISOString() }
+      : attempt
+  )
+  writeAttempts(updated)
+  return updated.find((attempt) => attempt.submitIntentId === normalizedIntentId) || null
+}
+
+// A provisional attempt whose queue replay reached a dead end returns to
+// 'pending' so manager recovery surfaces it again instead of losing it.
+export function reopenPosSubmitAttempt(submitIntentId, reason = null) {
+  const normalizedIntentId = asId(submitIntentId)
+  if (!normalizedIntentId) return null
+  const attempts = readAttempts()
+  const existing = findAttempt(attempts, normalizedIntentId)
+  if (!existing || existing.status !== 'provisional') return existing || null
+  const updated = attempts.map((attempt) =>
+    attempt.submitIntentId === normalizedIntentId
+      ? { ...attempt, status: 'pending', reopenReason: reason || attempt.reopenReason || null, lastAttemptAt: new Date().toISOString() }
       : attempt
   )
   writeAttempts(updated)
@@ -270,6 +315,14 @@ export function findCommittedPosSubmitAttempt({ submitIntentId, orderId }) {
 // Renderer reload recovery: the newest unresolved attempt for this lodge/user
 // is returned so the renderer can offer to retry the original sale instead of
 // silently starting a second one.
+export function countPendingPosSubmitAttempts({ lodgeId, userId } = {}) {
+  return readAttempts().filter((attempt) =>
+    attempt.status === 'pending' &&
+    (!lodgeId || attempt.lodgeId === asId(lodgeId)) &&
+    (!userId || attempt.userId === asId(userId))
+  ).length;
+}
+
 export function getPendingPosSubmitAttempt({ lodgeId, userId }) {
   const attempts = readAttempts()
   const candidates = attempts.filter((attempt) =>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AlertTriangle, CheckCircle2, Clock, RefreshCw, Search, ShowerHead, Sparkles } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const HOUSEKEEPING_STATES = [
   { key: 'dirty', label: 'Dirty', icon: ShowerHead, tone: 'bg-amber-100 text-amber-700 border-amber-200' },
@@ -137,10 +138,10 @@ export default function AdvancedHousekeeping() {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           <AlertTriangle size={16} className="mr-2 inline" />
           {error}
-        </div>
+        </ErrorNotice>
       )}
       {warnings.length > 0 && !error && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">

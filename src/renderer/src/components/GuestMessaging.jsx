@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, Eye, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const TRIGGER_EVENTS = [
   'booking_confirmed', 'checkin_done', 'checkout_done',
@@ -262,7 +263,7 @@ export default function GuestMessaging() {
         </div>
       </div>
 
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</ErrorNotice>}
       {warning && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-start gap-2">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -382,7 +383,7 @@ export default function GuestMessaging() {
             </div>
           </div>
           {deliveryError && (
-            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{deliveryError}</div>
+            <ErrorNotice className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{deliveryError}</ErrorNotice>
           )}
           <div className="mt-4 space-y-2">
             {deliveryStatus.length === 0 && !deliveryError && <p className="text-sm text-slate-500">No messages found.</p>}
@@ -490,7 +491,7 @@ export default function GuestMessaging() {
                 try { setTemplateForm((f) => ({ ...f, variables: JSON.parse(e.target.value) })) } catch { /* keep prior valid JSON while typing */ }
               }} placeholder='["guest_name", "check_in"]' />
             </div>
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <ErrorNotice className="text-sm text-red-600">{error}</ErrorNotice>}
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setShowTemplateModal(false)} className="btn-secondary">Cancel</button>
               <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : (editingTemplate ? 'Update' : 'Create')}</button>
@@ -525,7 +526,7 @@ export default function GuestMessaging() {
               <label className="text-xs font-semibold text-slate-600">Delay (minutes)</label>
               <input className="input w-full" type="number" min="0" value={triggerForm.delay_minutes} onChange={(e) => setTriggerForm((f) => ({ ...f, delay_minutes: Number(e.target.value) || 0 }))} />
             </div>
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <ErrorNotice className="text-sm text-red-600">{error}</ErrorNotice>}
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setShowTriggerModal(false)} className="btn-secondary">Cancel</button>
               <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving...' : (editingTrigger ? 'Update' : 'Create')}</button>

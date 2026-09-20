@@ -8,7 +8,11 @@ import { state } from '../src/main/state.js'
 import {
   resolvePosSubmitAttempt,
   commitPosSubmitAttempt,
+  markPosSubmitAttemptProvisional,
+  reopenPosSubmitAttempt,
   hasPosSubmitAttempt,
+  clearPosSubmitAttempt,
+  countPendingPosSubmitAttempts,
   getPendingPosSubmitAttempt,
   prunePosSubmitAttempts
 } from '../src/main/domains/posSubmitJournal.js'
@@ -137,6 +141,64 @@ test('pending attempts are scoped to the lodge and user that created them', () =
     assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-2', userId: 'user-1' }), null)
     assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-2' }), null)
     assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' })?.submitIntentId, 'intent-5')
+  }))
+
+test('provisional attempts hide from recovery and free new sales until replayed', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'intent-prov',
+      orderId: 'intent-prov',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'intent-prov', submit_intent_id: 'intent-prov' })
+    })
+    const marked = markPosSubmitAttemptProvisional('intent-prov', 'pos-order-intent-prov')
+    assert.equal(marked?.status, 'provisional')
+    assert.equal(marked?.queueId, 'pos-order-intent-prov')
+    // Recorded locally + queued: no recovery banner, no new-sale block.
+    assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' }), null)
+    const next = resolvePosSubmitAttempt({
+      submitIntentId: 'intent-next',
+      orderId: 'intent-next',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'intent-next', submit_intent_id: 'intent-next' })
+    })
+    assert.equal(next.conflict, false)
+    // Replay success commits; the journal then stays silent.
+    commitPosSubmitAttempt('intent-prov')
+    assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' })?.submitIntentId, 'intent-next')
+  }))
+
+test('dead-lettered provisional attempts reopen for manager recovery', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'intent-dead',
+      orderId: 'intent-dead',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'intent-dead', submit_intent_id: 'intent-dead' })
+    })
+    markPosSubmitAttemptProvisional('intent-dead', 'pos-order-intent-dead')
+    assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' }), null)
+    const reopened = reopenPosSubmitAttempt('intent-dead', 'replay rejected')
+    assert.equal(reopened?.status, 'pending')
+    assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' })?.submitIntentId, 'intent-dead')
+  }))
+
+test('provisional journals survive validation and pruning', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'intent-keep',
+      orderId: 'intent-keep',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'intent-keep', submit_intent_id: 'intent-keep' })
+    })
+    markPosSubmitAttemptProvisional('intent-keep', 'pos-order-intent-keep')
+    // Malformed-file guard accepts the new status and pruning retains it.
+    assert.ok(prunePosSubmitAttempts() >= 1)
+    assert.equal(hasPosSubmitAttempt('intent-keep'), true)
   }))
 
 test('a different sale intent is blocked while the same operator has an unresolved attempt', () =>
@@ -313,6 +375,39 @@ test('a recovery-marker write failure retains corrupt evidence and keeps the pro
       userId: 'user-1',
       payload: buildPayload({ id: 'must-stay-blocked', submit_intent_id: 'must-stay-blocked' })
     }), (error) => error?.code === 'pos_submit_journal_unavailable' && /blocked for manager or support recovery/i.test(error.message))
+  }))
+
+test('pending counts scope like recovery and clearing a definitive refusal frees new sales', () =>
+  withJournalFile(() => {
+    resolvePosSubmitAttempt({
+      submitIntentId: 'count-one',
+      orderId: 'count-one',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'count-one', submit_intent_id: 'count-one' })
+    })
+    resolvePosSubmitAttempt({
+      submitIntentId: 'count-other-user',
+      orderId: 'count-other-user',
+      lodgeId: 'lodge-1',
+      userId: 'user-2',
+      payload: buildPayload({ id: 'count-other-user', submit_intent_id: 'count-other-user' })
+    })
+    assert.equal(countPendingPosSubmitAttempts({ lodgeId: 'lodge-1', userId: 'user-1' }), 1)
+    // A definitive replay refusal (e.g. Insufficient stock) clears the journal
+    // instead of reopening it, so the Till is not blocked by a sale the
+    // server proved was never recorded.
+    clearPosSubmitAttempt('count-one')
+    assert.equal(countPendingPosSubmitAttempts({ lodgeId: 'lodge-1', userId: 'user-1' }), 0)
+    assert.equal(getPendingPosSubmitAttempt({ lodgeId: 'lodge-1', userId: 'user-1' }), null)
+    const next = resolvePosSubmitAttempt({
+      submitIntentId: 'count-next',
+      orderId: 'count-next',
+      lodgeId: 'lodge-1',
+      userId: 'user-1',
+      payload: buildPayload({ id: 'count-next', submit_intent_id: 'count-next' })
+    })
+    assert.equal(next.conflict, false)
   }))
 
 test('old version-less journal replays byte-equivalently despite newer cache', () =>

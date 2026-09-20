@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Server, Smartphone, ShoppingCart, Globe2, Megaphone, LifeBuoy } from 'lucide-react'
 import { callAdminApi } from '../utils/adminApi'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const SURFACE_ICON = {
   desktop: Server,
@@ -141,10 +142,10 @@ export default function SurfaceIntelligence() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-3 rounded-lg border border-red-900/40 bg-red-950/30 p-3">
+        <ErrorNotice className="flex items-center gap-3 rounded-lg border border-red-900/40 bg-red-950/30 p-3">
           <AlertTriangle size={14} className="shrink-0 text-red-400" />
           <p className="flex-1 text-xs text-red-300">{error}</p>
-        </div>
+        </ErrorNotice>
       )}
 
       {data?.errors?.length > 0 && (

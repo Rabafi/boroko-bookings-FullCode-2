@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Grid3X3 } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const emptyForm = { attribute_key: '', label: '', attribute_type: 'text', room_type_id: '', options: '', sort_order: 0 }
 
@@ -143,7 +144,7 @@ export default function RoomAttributes({ embedded = false }) {
         </div>
       )}
 
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><Grid3X3 className="w-4 h-4" />{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><Grid3X3 className="w-4 h-4" />{error}</ErrorNotice>}
       {success && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700"><Grid3X3 className="w-4 h-4" />{success}</div>}
 
       <div className="mb-4">

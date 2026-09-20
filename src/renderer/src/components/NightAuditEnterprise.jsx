@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 function severityClass(severity) {
   const s = String(severity || '').toLowerCase()
@@ -176,7 +177,7 @@ export default function NightAuditEnterprise() {
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</ErrorNotice>
       )}
       {success && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{success}</div>

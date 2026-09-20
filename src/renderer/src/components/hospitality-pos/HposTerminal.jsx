@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router";
+import { ErrorNotice } from "../shared/ErrorNotice";
 import {
   Search,
   Plus,
@@ -13,6 +14,7 @@ import {
   Clock,
   Apple,
   Beer,
+  CircleDot,
   Coffee,
   Cookie,
   CupSoda,
@@ -35,6 +37,7 @@ import {
   getBarModeProfile,
   getDefaultHposServiceMode,
   getHposServiceModes,
+  isPoolCategory,
   resolvePosServicePayload,
   resolveResumedTabPayment,
   shouldLoadTillTables,
@@ -129,6 +132,7 @@ const BAR_CATEGORY_ICON_COMPONENTS = {
   cookie: Cookie,
   utensils: UtensilsCrossed,
   package: Package,
+  circleDot: CircleDot,
 };
 
 function terminalOutletStorageKey(lodgeId) {
@@ -156,15 +160,19 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
   }
 }
 
-function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stockSetupRequired = false, statusUnknown = false }) {
+function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stockSetupRequired = false, statusUnknown = false, lowStock = null, finishedStock = false, syncBlocked = false, pendingSync = false }) {
   const isSoldOut =
     item.is_available === false || item.available === false || item.sold_out;
-  const blocked = isSoldOut || stockSetupRequired || statusUnknown;
+  const blocked = isSoldOut || finishedStock || syncBlocked || stockSetupRequired || statusUnknown;
   const unavailableLabel = statusUnknown
     ? "Refresh required"
     : stockSetupRequired
       ? "Stock setup required"
-      : "Sold out";
+      : finishedStock
+        ? "Finished — out of stock"
+        : syncBlocked
+          ? "Syncing — sells after sync"
+          : "Sold out";
   const normalizedCategory = String(item.category || "").toLowerCase();
   // Bar categories resolve to their own icon and tone first; the restaurant
   // keyword chain below stays the fallback for everything else.
@@ -342,6 +350,50 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           zIndex: 1,
         }}
       >
+        {lowStock && (
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 800,
+              color: "#8d2f24",
+              background: "rgba(191, 72, 45, 0.12)",
+              padding: "3px 7px",
+              borderRadius: "999px",
+            }}
+          >
+            Only {lowStock.qty} {lowStock.unit} left
+          </span>
+        )}
+        {blocked && (
+          <span
+            role="status"
+            style={{
+              fontSize: "11px",
+              fontWeight: 800,
+              color: "#fffdf8",
+              background: "#8d2f24",
+              padding: "3px 7px",
+              borderRadius: "999px",
+            }}
+          >
+            {unavailableLabel}
+          </span>
+        )}
+        {pendingSync && (
+          <span
+            role="status"
+            style={{
+              fontSize: "11px",
+              fontWeight: 800,
+              color: "#7a5710",
+              background: "rgba(166, 118, 42, 0.12)",
+              padding: "3px 7px",
+              borderRadius: "999px",
+            }}
+          >
+            Pending sync — sells offline now
+          </span>
+        )}
         {item.category && (
           <span
             style={{
@@ -418,22 +470,25 @@ function packBadgeLabel(line) {
 function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency, highlight = false, highlightFresh = false }) {
   const fmt = (n) => Number(n || 0).toFixed(2);
   const packLabel = packBadgeLabel(line);
+  const isPoolLine = String(line.category || '').trim().toLowerCase() === 'pool';
+  const unit = Number(line.unit_price) + Number(line.modifier_total || 0);
   return (
     <div
       ref={highlightFresh ? (el) => el?.scrollIntoView?.({ block: "nearest" }) : undefined}
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "10px",
-        padding: "10px 14px",
+        gap: "6px",
+        padding: "6px 8px",
         borderBottom: "1px solid rgba(55,70,57,.09)",
         background: highlight ? "rgba(201,86,53,.08)" : "transparent",
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
+          title={line.item_name}
           style={{
-            fontSize: "13px",
+            fontSize: "12px",
             fontWeight: 700,
             color: "#24362c",
             whiteSpace: "nowrap",
@@ -442,109 +497,88 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           }}
         >
           {line.item_name}
+          {packLabel && packLabel !== "Single" ? ` · ${packLabel}` : ""}
         </div>
-        {packLabel && (
-          <span
-            style={{
-              display: "inline-block",
-              marginTop: "3px",
-              fontSize: "10px",
-              fontWeight: 800,
-              color: packLabel === "Single" ? "#526157" : "#356ed8",
-              background: packLabel === "Single" ? "rgba(55,70,57,.08)" : "rgba(53,110,216,.12)",
-              padding: "2px 7px",
-              borderRadius: "999px",
-            }}
-          >
-            {packLabel}
-          </span>
-        )}
         {line.modifiers?.length > 0 && (
-          <div style={{ fontSize: "11px", color: "#7b7a70", marginTop: "2px" }}>
+          <div style={{ fontSize: "11px", color: "#7b7a70", marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {line.modifiers.join(", ")}
           </div>
         )}
-        <div style={{ fontSize: "12px", color: "#647066", marginTop: "2px" }}>
-          {currency}{" "}
-          {fmt(Number(line.unit_price) + Number(line.modifier_total || 0))} each
-        </div>
-      </div>
-
-      {/* Qty Controls: 44px minimum targets for touch tills. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <button
-          onClick={() => onUpdateQty(line.id, Number(line.quantity) - 1)}
-          aria-label={`Decrease ${line.item_name} quantity`}
-          style={{
-            width: "44px",
-            height: "44px",
-            borderRadius: "10px",
-            border: "1px solid rgba(55,70,57,.16)",
-            background: "#fffdf8",
-            color: "#24362c",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Minus size={16} />
-        </button>
-        <input
-          type="number"
-          min="0"
-          step="any"
-          inputMode="decimal"
-          value={line.quantity}
-          aria-label={`Quantity for ${line.item_name}`}
-          onChange={(event) => onSetQty(line.id, event.target.value)}
-          style={{
-            width: "64px",
-            height: "44px",
-            textAlign: "center",
-            fontSize: "15px",
-            fontWeight: 700,
-            color: "#24362c",
-            borderRadius: "10px",
-            border: "1px solid rgba(55,70,57,.16)",
-            background: "#fffdf8",
-          }}
-        />
-        <button
-          onClick={() => onUpdateQty(line.id, Number(line.quantity) + 1)}
-          aria-label={`Increase ${line.item_name} quantity`}
-          style={{
-            width: "44px",
-            height: "44px",
-            borderRadius: "10px",
-            border: "1px solid rgba(55,70,57,.16)",
-            background: "#fffdf8",
-            color: "#24362c",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Plus size={16} />
-        </button>
       </div>
 
       <span
+        title={`Line total ${currency} ${fmt(unit * line.quantity)}`}
         style={{
-          fontSize: "13px",
-          fontWeight: 700,
+          fontSize: "12px",
+          fontWeight: 800,
           color: "#24362c",
-          minWidth: "64px",
-          textAlign: "right",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
         }}
       >
-        {currency}{" "}
-        {fmt(
-          (Number(line.unit_price) + Number(line.modifier_total || 0)) *
-            line.quantity,
-        )}
+        {currency} {fmt(unit * line.quantity)}
       </span>
+
+      {/* Qty Controls: 44px minimum targets for touch tills. One compact row so several items fit without scrolling. */}
+      <button
+        onClick={() => onUpdateQty(line.id, Number(line.quantity) - 1)}
+        aria-label={`Decrease ${line.item_name} quantity`}
+        style={{
+          width: "44px",
+          height: "44px",
+          borderRadius: "10px",
+          border: "1px solid rgba(55,70,57,.16)",
+          background: "#fffdf8",
+          color: "#24362c",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        <Minus size={16} />
+      </button>
+      <input
+        type="number"
+        min="0"
+        step="any"
+        inputMode="decimal"
+        value={line.quantity}
+        aria-label={`Quantity for ${line.item_name}`}
+        onChange={(event) => onSetQty(line.id, event.target.value)}
+        style={{
+          width: "54px",
+          flexShrink: 0,
+          height: "44px",
+          textAlign: "center",
+          fontSize: "15px",
+          fontWeight: 700,
+          color: "#24362c",
+          borderRadius: "10px",
+          border: "1px solid rgba(55,70,57,.16)",
+          background: "#fffdf8",
+        }}
+      />
+      <button
+        onClick={() => onUpdateQty(line.id, Number(line.quantity) + 1)}
+        aria-label={`Increase ${line.item_name} quantity`}
+        style={{
+          width: "44px",
+          height: "44px",
+          borderRadius: "10px",
+          border: "1px solid rgba(55,70,57,.16)",
+          background: "#fffdf8",
+          color: "#24362c",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        <Plus size={16} />
+      </button>
 
       <button
         onClick={() => onRemove(line.id)}
@@ -560,18 +594,22 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          flexShrink: 0,
         }}
       >
         <Trash2 size={16} />
       </button>
-      <button
-        onClick={() => onCustomize(line)}
-        aria-label={`Options for ${line.item_name}`}
-        title="Modifiers and options"
-        className="hpos-service-line-options"
-      >
-        Options
-      </button>
+      {!isPoolLine && (
+        <button
+          onClick={() => onCustomize(line)}
+          aria-label={`Options for ${line.item_name}`}
+          title="Modifiers and options"
+          className="hpos-service-line-options"
+          style={{ flexShrink: 0, minHeight: "44px", padding: "0 8px" }}
+        >
+          ···
+        </button>
+      )}
     </div>
   );
 }
@@ -644,11 +682,19 @@ export default function HposTerminal() {
   );
   const [menuItems, setMenuItems] = useState([]);
   const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(() => new Set());
+  // Low-stock badges by inventory_item_id. Informational only: loaded idle
+  // after the Till opens, capability-gated server-side (cashiers without
+  // inventory.view simply see no badges), never blocking a sale.
+  const [lowStockMap, setLowStockMap] = useState({});
   const [cart, setCart] = useState([]);
   const [lastAdded, setLastAdded] = useState(null);
   const [lastRemoved, setLastRemoved] = useState(null);
   const [favourites, setFavourites] = useState([]);
   const [openTabCount, setOpenTabCount] = useState(0);
+  // Shared drawers reconcile every sale inside one open period. The domain
+  // refuses sales without one; this pill says so before the operator builds
+  // a basket. Personal outlets never show it.
+  const [drawerGateNeeded, setDrawerGateNeeded] = useState(false);
   const [openTabsBrief, setOpenTabsBrief] = useState([]);
   const [resumedTabInfo, setResumedTabInfo] = useState(null);
   const [pendingRestore, setPendingRestore] = useState(null);
@@ -734,7 +780,7 @@ export default function HposTerminal() {
   const [modifiersReady, setModifiersReady] = useState("loading");
   // Server-authoritative stock readiness per sellable (outcome only, no
   // recipe disclosure). Base Till never infers from recipe membership.
-  const [stockReadiness, setStockReadiness] = useState({ status: "loading", map: new Map() });
+  const [stockReadiness, setStockReadiness] = useState({ status: "loading", map: new Map(), counts: new Map() });
   const [modifierLineId, setModifierLineId] = useState(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
@@ -782,6 +828,11 @@ export default function HposTerminal() {
     canAccessCapability(access, "inventory.manage");
   const [completedReceipt, setCompletedReceipt] = useState(null);
   const [serviceStaff, setServiceStaff] = useState([]);
+  // Who is clocked in right now (staff_user_ids) + whether the terminal is
+  // online, refreshed each time the unlock dialog opens. Both stay null when
+  // unknown so the dialog fails open to today's full staff list.
+  const [unlockActiveStaffIds, setUnlockActiveStaffIds] = useState(null);
+  const [unlockIsOnline, setUnlockIsOnline] = useState(null);
   const [operatorStaffId, setOperatorStaffId] = useState("");
   const [operatorPin, setOperatorPin] = useState("");
   const [verifiedOperator, setVerifiedOperator] = useState(null);
@@ -797,7 +848,33 @@ export default function HposTerminal() {
   const scannerFeedbackTimerRef = useRef(null);
   const tillActivityLastSentAtRef = useRef(0);
   const submitEnvelopeRef = useRef(null);
-  const [recoveredAttempt, setRecoveredAttempt] = useState(null);
+  const [recoveredAttempt, setRecoveredAttempt] = useState(null)
+  // The recovery banner collapses to one line (never dismissed: Pay stays
+  // bound to the original attempt while one is unresolved). Collapse is
+  // persisted per attempt so a remount does not re-expand what the operator
+  // already minimized; a newly recovered attempt re-expands once.
+  const recoveryCollapseKey = recoveredAttempt?.submitIntentId
+    ? `hpos-recovery-collapsed:${recoveredAttempt.submitIntentId}`
+    : null;
+  const [recoveryCollapsed, setRecoveryCollapsed] = useState(false)
+  useEffect(() => {
+    if (!recoveredAttempt?.submitIntentId) return;
+    try {
+      setRecoveryCollapsed(window.localStorage?.getItem(`hpos-recovery-collapsed:${recoveredAttempt.submitIntentId}`) === "1");
+    } catch {
+      setRecoveryCollapsed(false);
+    }
+  }, [recoveredAttempt?.submitIntentId]);;
+  const toggleRecoveryCollapsed = () => {
+    setRecoveryCollapsed((current) => {
+      const next = !current;
+      try {
+        if (recoveryCollapseKey) window.localStorage?.setItem(recoveryCollapseKey, next ? "1" : "0");
+      } catch { /* collapse persistence is best-effort */ }
+      return next;
+    });
+  };
+  const [recoveryChecking, setRecoveryChecking] = useState(false)
   const [submitNotice, setSubmitNotice] = useState("");
   if (!barcodeDecoderRef.current)
     barcodeDecoderRef.current = createBarcodeScannerDecoder();
@@ -843,6 +920,47 @@ export default function HposTerminal() {
       });
     return () => { active = false; };
   }, []);
+
+  // Manual re-check: the mount probe does one server lookup (auto-resolving
+  // already-recorded sales). Definitive replay failures never reach this
+  // banner anymore; this button lets the operator re-run that lookup after
+  // checking Sales, clearing the banner without a retry when the server
+  // proves there is nothing unresolved.
+  const recheckRecovery = useCallback(async () => {
+    if (recoveryChecking) return;
+    setRecoveryChecking(true);
+    try {
+      const attempt = await window.api?.pos?.getPendingPosSubmitAttempt?.();
+      if (attempt?.success === false) {
+        setSubmitError(attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+        return;
+      }
+      if (attempt?.resolved) {
+        submitEnvelopeRef.current = null;
+        setRecoveredAttempt(null);
+        setSubmitNotice(attempt.message || "The original sale was already recorded and has been safely recovered.");
+        return;
+      }
+      if (!attempt?.submitIntentId) {
+        submitEnvelopeRef.current = null;
+        setRecoveredAttempt(null);
+        setSubmitNotice("Re-checked Sales: no unresolved earlier sale. You can continue selling.");
+        return;
+      }
+      submitEnvelopeRef.current = {
+        status: "pending",
+        submitIntentId: attempt.submitIntentId,
+        orderId: attempt.orderId,
+        createdAtClient: attempt.createdAtClient,
+        payload: attempt.payload,
+      };
+      setRecoveredAttempt(attempt);
+    } catch (error) {
+      setSubmitError(error?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+    } finally {
+      setRecoveryChecking(false);
+    }
+  }, [recoveryChecking]);
 
   const scannerOptions = useMemo(() => ({
     minLength: Number(scannerSettings.barcode_scanner_min_length) || 4,
@@ -1176,7 +1294,11 @@ export default function HposTerminal() {
           window.api?.outlets?.getAll?.() ?? [],
           tillEntitlements.canAccounts ? (window.api?.pos?.getCustomers?.() ?? []) : [],
           tillEntitlements.canPromos ? (window.api?.pos?.getPromotions?.() ?? []) : [],
-          window.api?.pos?.getTabs?.() ?? [],
+          // Same authoritative read as Open Tabs, Cash & close and the rail
+          // badge: active-filtered server truth plus pending local estimates.
+          // An unfiltered read would also merge non-pending local orphans and
+          // inflate this count past what Open Tabs shows.
+          window.api?.pos?.getTabs?.({ status: "active" }) ?? [],
           // Recipes are an entitled capability: base Bar loads server
           // readiness instead (outcome only, no disclosure).
           !barOnly || canUseRecipes ? (window.api?.pos?.getRecipes?.() ?? []) : [],
@@ -1196,8 +1318,8 @@ export default function HposTerminal() {
           });
         }
         setStockReadiness(resolved.status === "ready" || resolved.status === "stale"
-          ? { status: resolved.status, map: resolved.map, cachedAt: resolved.cachedAt || null }
-          : { status: "failed", map: new Map(), error: resolved.error || null, code: resolved.code || null });
+          ? { status: resolved.status, map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt || null }
+          : { status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
         setRecipeMenuItemIds(
           new Set(
             (Array.isArray(recipeRows) ? recipeRows : [])
@@ -1378,6 +1500,140 @@ export default function HposTerminal() {
   }, [location.state?.tabId, outletIsAllowed, barOnly, canUseRecipes, tillEntitlements]);
 
   useEffect(() => {
+    // The Till pill ("Open tabs · N") must never drift from Open Tabs: that
+    // page re-reads every 15s, while this count was previously set once at
+    // mount. Refresh the same active-filtered read on the same cadence (plus
+    // on return to the tab) so a tab settled elsewhere stops counting here.
+    // Count/brief/names use the exact predicates as the initial load above.
+    let active = true;
+    const isOpenTabRow = (tab) =>
+      !["closed", "paid", "cancelled", "voided"].includes(
+        String(tab.status || "").toLowerCase(),
+      );
+    const refreshOpenTabs = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const rows = (await window.api?.pos?.getTabs?.({ status: "active" })) ?? [];
+        if (!active || !Array.isArray(rows)) return;
+        const open = rows.filter(isOpenTabRow);
+        setOpenTabCount(open.length);
+        setOpenTabsBrief(
+          open
+            .map((tab) => ({
+              id: tab?.id || null,
+              name: String(tab?.tab_name || tab?.table_name || tab?.customer_name || "").trim(),
+              outlet_id: tab?.outlet_id || null,
+              updated_at: tab?.updated_at || tab?.created_at || null,
+            }))
+            .filter((tab) => tab.id && tab.name),
+        );
+        setOpenTabNames(
+          Array.from(
+            new Set(
+              open
+                .map((tab) =>
+                  String(tab?.tab_name || tab?.table_name || tab?.customer_name || "").trim(),
+                )
+                .filter(Boolean),
+            ),
+          ).slice(0, 50),
+        );
+      } catch {
+        /* A failed refresh keeps the last-known count; Open Tabs owns loud errors. */
+      }
+    };
+    const interval = setInterval(refreshOpenTabs, 15000);
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") refreshOpenTabs();
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisible);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Drawer gate pill: shared outlet with no open (or correction) period.
+    // Same 15s + visibility cadence as the open-tabs pill. A failed read
+    // hides the banner; the domain remains the backstop at Pay.
+    let active = true;
+    const refreshDrawerGate = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const outletId = selectedOutlet?.id || null;
+        if (!outletId) {
+          if (active) setDrawerGateNeeded(false);
+          return;
+        }
+        const outlet = outlets.find(
+          (row) => String(row?.id || "") === String(outletId),
+        );
+        if (outlet?.cash_model !== "shared_drawer") {
+          if (active) setDrawerGateNeeded(false);
+          return;
+        }
+        const state = await window.api?.pos?.getDrawerPeriodState?.(outletId);
+        if (!active) return;
+        const period = state?.period || null;
+        setDrawerGateNeeded(
+          !period || !["open", "rejected"].includes(String(period.status || "")),
+        );
+      } catch {
+        /* A failed refresh hides the banner; the domain still refuses at Pay. */
+      }
+    };
+    refreshDrawerGate();
+    const interval = setInterval(refreshDrawerGate, 15000);
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") refreshDrawerGate();
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisible);
+    };
+  }, [selectedOutlet?.id, outlets]);
+
+  useEffect(() => {
+    // Low-stock badges load idle after opening, never in the critical path.
+    // Denied or failed reads resolve to no badges; selling never waits.
+    if (!barOnly) return;
+    let active = true;
+    const loadLowStock = async () => {
+      try {
+        const rows = await window.api?.inventory?.getLowStock?.() ?? [];
+        if (!active || !Array.isArray(rows)) return;
+        const map = {};
+        rows.forEach((row) => {
+          if (!row?.id) return;
+          map[String(row.id)] = {
+            qty: Number(row.current_stock || 0),
+            unit: String(row.unit || "each"),
+          };
+        });
+        if (active) setLowStockMap(map);
+      } catch {
+        /* Badges stay hidden; the Stock page remains the source of truth. */
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(() => loadLowStock(), { timeout: 4000 });
+      return () => {
+        active = false;
+        window.cancelIdleCallback?.(handle);
+      };
+    }
+    const timer = window.setTimeout(() => loadLowStock(), 1500);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [barOnly, selectedOutlet?.id, lodgeId]);
+
+  useEffect(() => {
     if (!selectedOutlet?.id) {
       setTables([]);
       setCurrentShift(null);
@@ -1532,6 +1788,16 @@ export default function HposTerminal() {
     () => menuItems.filter((item) => !item.archived_at),
     [menuItems],
   );
+  // Provisional products (saved offline, not yet confirmed by the server)
+  // sell at the Till while the server is unreachable, at their entered
+  // price and clearly marked. Once the server is reachable again
+  // (readiness fresh) they block with "Syncing" until the replay lands.
+  const isProvisionalMenuItem = (item) =>
+    String(item?.id || "").startsWith("pending:") || Boolean(item?._operation_key);
+  const isProvisionalBlocked = useCallback((item) => {
+    if (!isProvisionalMenuItem(item)) return false;
+    return stockReadiness.status === "ready";
+  }, [stockReadiness]);
   const hasStockSetupIssue = useCallback(
     (item) => {
       if (String(item?.stock_method || "").toLowerCase() === "non_stock") return false;
@@ -1547,8 +1813,12 @@ export default function HposTerminal() {
   // often unloadable there); restaurant keeps the established
   // recipe-membership inference. Stale approved cache still decides (labeled
   // in the banner); unknown never renders as ready or sold out.
+  // Provisional (offline-created, unconfirmed) rows report 'provisional':
+  // callers sell them while the server is unreachable and block them with a
+  // syncing message once readiness is fresh again.
   const getStockIssue = useCallback(
     (item) => {
+      if (isProvisionalMenuItem(item)) return "provisional";
       if (String(item?.stock_method || "").toLowerCase() === "non_stock") return "ok";
       if (!barOnly) return hasStockSetupIssue(item) ? "issue" : "ok";
       if (stockReadiness.status !== "ready" && stockReadiness.status !== "stale") return "unknown";
@@ -1560,9 +1830,47 @@ export default function HposTerminal() {
     [barOnly, hasStockSetupIssue, stockReadiness],
   );
 
-  const refreshReadiness = useCallback(async () => {
-    setStockReadiness({ status: "loading", map: new Map() });
-    setSubmitError("");
+  // Counted on-hand per sellable from readiness rows (direct items only).
+  // Missing counts (old server, recipe, non-stock) keep today's behavior;
+  // the server remains the backstop at Pay.
+  const salesLeftForCount = useCallback((menuItemId, depletionQty) => {
+    const entry = stockReadiness.counts?.get(menuItemId);
+    if (!entry) return null;
+    const qty = Number(entry.qty);
+    const perSale = Number(depletionQty || 1);
+    if (!Number.isFinite(qty) || !Number.isFinite(perSale) || perSale <= 0) return null;
+    return Math.floor(qty / perSale + 1e-9);
+  }, [stockReadiness]);
+  const onHandRefusal = useCallback((menuItemId, depletionQty, itemName, newQty, category = null) => {
+    // Pool tables are box cash, never counted stock — even a table product
+    // created long ago with a stock link must keep selling. (Recreate it as
+    // Pool/no-stock when convenient; the server path stays cash-only.)
+    if (isPoolCategory(category)) return null;
+    const left = salesLeftForCount(menuItemId, depletionQty);
+    if (left === null) return null;
+    if (left < 1) return `${itemName || "Product"} is finished — out of stock. Receive stock first.`;
+    if (Number(newQty) > left) return `Only ${left} ${itemName || "product"} left in stock.`;
+    return null;
+  }, [salesLeftForCount]);
+  const isFinishedStock = useCallback((item) => {
+    if (isPoolCategory(item?.category)) return false;
+    const left = salesLeftForCount(item?.id, item?.depletion_qty || 1);
+    return left !== null && left < 1;
+  }, [salesLeftForCount]);
+  // Provisional rows (saved offline) sell while the server is unreachable.
+  // Once readiness is fresh the server is back and the replay owns them, so
+  // new taps wait for the sync instead of failing at Pay.
+  const provisionalBlock = useCallback((item) => {
+    if (getStockIssue(item) !== "provisional") return null;
+    if (stockReadiness.status === "ready") {
+      return `${item?.name || "Product"} is still syncing. Sell it after the sync lands.`;
+    }
+    return null;
+  }, [getStockIssue, stockReadiness]);
+
+  const refreshReadiness = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setStockReadiness((current) => ({ status: "loading", map: new Map(), counts: new Map(), cachedAt: null }));
+    if (!silent) setSubmitError("");
     try {
       const result = await window.api?.pos?.getMenuStockReadiness?.();
       const resolved = resolveReadinessState(result, readJsonSetting(readinessCacheKey(lodgeId)));
@@ -1571,11 +1879,11 @@ export default function HposTerminal() {
           at: Date.now(),
           rows: Array.isArray(result.rows) ? result.rows : [],
         });
-        setStockReadiness({ status: "ready", map: resolved.map, cachedAt: null });
+        setStockReadiness({ status: "ready", map: resolved.map, counts: resolved.counts, cachedAt: null });
       } else if (resolved.status === "stale") {
-        setStockReadiness({ status: "stale", map: resolved.map, cachedAt: resolved.cachedAt });
-      } else {
-        setStockReadiness({ status: "failed", map: new Map(), error: resolved.error || null, code: resolved.code || null });
+        setStockReadiness({ status: "stale", map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt });
+      } else if (!silent) {
+        setStockReadiness({ status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
         setSubmitError(
           resolved.code === "backend-update-required" && resolved.error
             ? resolved.error
@@ -1583,7 +1891,8 @@ export default function HposTerminal() {
         );
       }
     } catch (error) {
-      setStockReadiness({ status: "failed", map: new Map() });
+      if (silent) return;
+      setStockReadiness({ status: "failed", map: new Map(), counts: new Map() });
       setSubmitError(error?.message || "Stock status could not be verified. Refresh before selling.");
     }
   }, [lodgeId]);
@@ -1643,6 +1952,11 @@ export default function HposTerminal() {
       // A completed sale is acknowledged until the operator begins the next one.
       registerTillActivity();
       setSuccessMessage("");
+      // Fresh input retires a stale sale error (e.g. a server stock refusal
+      // from an earlier Pay): the next Pay revalidates from scratch instead
+      // of leaving the old message to block the new basket. Uncertain-attempt
+      // recovery state is separate and never cleared here.
+      setSubmitError("");
       // Fail closed on stock state: unknown renders as Refresh-required and
       // setup issues never reach the basket (the server would reject them).
       const issue = getStockIssue(item);
@@ -1654,7 +1968,23 @@ export default function HposTerminal() {
         setSubmitError(`${item.name || "Product"} needs stock setup before it can be sold.`);
         return;
       }
+      const syncBlock = provisionalBlock(item);
+      if (syncBlock) {
+        setSubmitError(syncBlock);
+        return;
+      }
       setLastAdded({ key: item.id, at: Date.now() });
+      // Automatic sold-out: never let the basket exceed the counted stock.
+      // The server re-checks at Pay regardless; this stops the extra taps
+      // before they reach the error stage.
+      const existingQty = cart
+        .filter((c) => c.menu_item_id === item.id)
+        .reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+      const onHandBlock = onHandRefusal(item.id, item.depletion_qty || 1, item.name, existingQty + 1, item.category);
+      if (onHandBlock) {
+        setSubmitError(onHandBlock);
+        return;
+      }
       setCart((prev) => {
         const existing = prev.find((c) => c.menu_item_id === item.id);
         if (existing) {
@@ -1683,7 +2013,7 @@ export default function HposTerminal() {
         ];
       });
     },
-    [location.state?.tabId, registerTillActivity, getStockIssue],
+    [cart, location.state?.tabId, onHandRefusal, provisionalBlock, registerTillActivity, getStockIssue],
   );
 
   const outletName = useCallback(
@@ -1759,9 +2089,22 @@ export default function HposTerminal() {
           barcode,
           message: `${match.name || "Product"} needs stock setup before it can be sold.`,
         };
+      if (isFinishedStock(match))
+        return {
+          success: false,
+          code: "product_finished",
+          barcode,
+          message: `${match.name || "Product"} is finished — out of stock. Receive stock first.`,
+        };
+      {
+        const syncBlock = provisionalBlock(match);
+        if (syncBlock) {
+          return { success: false, code: "product_syncing", barcode, message: syncBlock };
+        }
+      }
       return { success: true, barcode, item: match };
     },
-    [getStockIssue, outletName, selectedOutlet?.id, tillMenuItems],
+    [getStockIssue, isFinishedStock, outletName, provisionalBlock, selectedOutlet?.id, tillMenuItems],
   );
 
   const handleCompletedScan = useCallback(
@@ -1909,6 +2252,17 @@ export default function HposTerminal() {
 
   const updateQty = useCallback((id, qty) => {
     registerTillActivity();
+    setSubmitError("");
+    if (Number(qty) > 0) {
+      const line = cart.find((c) => c.id === id);
+      const block = line
+        ? onHandRefusal(line.menu_item_id, line.depletion_qty || 1, line.item_name, qty, line.category)
+        : null;
+      if (block) {
+        setSubmitError(block);
+        return;
+      }
+    }
     if (qty <= 0) {
       setCart((prev) => prev.filter((c) => c.id !== id));
     } else {
@@ -1916,15 +2270,26 @@ export default function HposTerminal() {
         prev.map((c) => (c.id === id ? { ...c, quantity: qty } : c)),
       );
     }
-  }, [registerTillActivity]);
+  }, [cart, onHandRefusal, registerTillActivity]);
 
   // Direct quantity entry preserves Till behavior: any positive quantity is
   // accepted (per-caller integer rules are enforced downstream, never here),
   // zero/negative removes the line, non-numeric input is ignored.
   const setQty = useCallback((id, raw) => {
     registerTillActivity();
+    setSubmitError("");
     const qty = Number(raw);
     if (!Number.isFinite(qty)) return;
+    if (qty > 0) {
+      const line = cart.find((c) => c.id === id);
+      const block = line
+        ? onHandRefusal(line.menu_item_id, line.depletion_qty || 1, line.item_name, qty, line.category)
+        : null;
+      if (block) {
+        setSubmitError(block);
+        return;
+      }
+    }
     if (qty <= 0) {
       setCart((prev) => prev.filter((c) => c.id !== id));
     } else {
@@ -1932,10 +2297,11 @@ export default function HposTerminal() {
         prev.map((c) => (c.id === id ? { ...c, quantity: qty } : c)),
       );
     }
-  }, [registerTillActivity]);
+  }, [cart, onHandRefusal, registerTillActivity]);
 
   const removeLine = useCallback((id) => {
     registerTillActivity();
+    setSubmitError("");
     setCart((prev) => {
       const index = prev.findIndex((c) => c.id === id);
       if (index < 0) return prev;
@@ -1962,10 +2328,114 @@ export default function HposTerminal() {
   const clearCart = useCallback(() => {
     registerTillActivity();
     if (!window.confirm("Clear this sale? All unpaid lines will be removed.")) return;
+    setSubmitError("");
     if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
     setLastRemoved(null);
     setCart([]);
   }, [registerTillActivity]);
+
+  // Same again: one tap rebuilds the previous sale from the live catalog
+  // (fresh prices). Missing, unavailable or stock-blocked lines are skipped
+  // and reported instead of failing the whole round. Pay revalidates.
+  const reorderLastSale = useCallback(() => {
+    registerTillActivity();
+    setSubmitError("");
+    setSuccessMessage("");
+    const entries = Array.isArray(lastReceipt?.pos_order_items) ? lastReceipt.pos_order_items : [];
+    if (entries.length === 0) {
+      setSubmitError("No previous sale on this terminal yet.");
+      return;
+    }
+    let skipped = 0;
+    const lines = [];
+    entries.forEach((entry, index) => {
+      const qty = Number(entry?.quantity || 0);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        skipped += 1;
+        return;
+      }
+      const idKey = String(entry?.menu_item_id || entry?.product_id || entry?.item_id || "");
+      const nameKey = String(entry?.item_name || entry?.name || "").toLowerCase();
+      const menu = (tillMenuItems || []).find((row) => String(row.id) === idKey)
+        || (tillMenuItems || []).find((row) => String(row.name || "").toLowerCase() === nameKey);
+      if (!menu) {
+        skipped += 1;
+        return;
+      }
+      if (menu.is_available === false || menu.available === false || menu.sold_out) {
+        skipped += 1;
+        return;
+      }
+      const issue = getStockIssue(menu);
+      if (issue === "unknown" || issue === "issue") {
+        skipped += 1;
+        return;
+      }
+      // Finished, short or still-syncing stock never re-enters through Same again.
+      if (onHandRefusal(menu.id, menu.depletion_qty || 1, menu.name, qty, menu.category)) {
+        skipped += 1;
+        return;
+      }
+      if (provisionalBlock(menu)) {
+        skipped += 1;
+        return;
+      }
+      const modifiers = (Array.isArray(entry?.modifiers) ? entry.modifiers : []).map((modifier) => ({
+        id: modifier?.id || modifier?.name || `mod-${index}`,
+        group_id: modifier?.group_id || null,
+        name: modifier?.name || "Option",
+        price_delta: Number(modifier?.price_delta || 0),
+      }));
+      lines.push({
+        id: `${Date.now()}-${menu.id}-${lines.length}`,
+        menu_item_id: menu.id,
+        item_name: menu.name,
+        unit_price: Number(menu.price || 0),
+        quantity: qty,
+        modifiers,
+        modifier_total: modifiers.reduce((sum, modifier) => sum + Number(modifier.price_delta || 0), 0),
+        inventory_item_id: menu.inventory_item_id || null,
+        depletion_qty: Number(menu.depletion_qty || 1),
+        kitchen_station_id: menu.kitchen_station_id || null,
+        category: menu.category || null,
+        template_kind: menu.template_kind || null,
+        template_pack_size: menu.template_pack_size || null,
+        barcode: menu.barcode || null,
+      });
+    });
+    if (lines.length === 0) {
+      setSubmitError("Last sale items are unavailable now. Pick from the menu instead.");
+      return;
+    }
+    setCart(lines);
+    setLastAdded({ key: lines[lines.length - 1].menu_item_id, at: Date.now() });
+    setSuccessMessage(
+      skipped > 0
+        ? `Same again added. ${skipped} unavailable ${skipped === 1 ? "line" : "lines"} skipped.`
+        : "Same again added.",
+    );
+  }, [getStockIssue, lastReceipt, onHandRefusal, provisionalBlock, registerTillActivity, tillMenuItems]);
+
+  // Pool night: one tap adds every table product (quantity 1). The cashier
+  // then types each table-box cash as its quantity and pays once.
+  const poolNightProducts = useMemo(() => {
+    if (!barOnly) return [];
+    return (tillMenuItems || []).filter((item) => {
+      if (String(item.category || "").trim().toLowerCase() !== "pool") return false;
+      if (item.is_available === false || item.available === false || item.sold_out) return false;
+      if (item.outlet_id && selectedOutlet?.id && item.outlet_id !== selectedOutlet.id) return false;
+      return true;
+    });
+  }, [barOnly, tillMenuItems, selectedOutlet?.id]);
+  const startPoolNight = useCallback(() => {
+    registerTillActivity();
+    if (poolNightProducts.length === 0) {
+      setSubmitError("No pool tables found. Add Pool Table 1 in Products first.");
+      return;
+    }
+    poolNightProducts.forEach((item) => addToCart(item));
+    if (narrowViewport) setBasketOpen(true);
+  }, [addToCart, narrowViewport, poolNightProducts, registerTillActivity]);
 
   const toggleModifier = (line, option, group) => {
     registerTillActivity();
@@ -2119,6 +2589,18 @@ export default function HposTerminal() {
     ],
   );
   const itemCount = cart.reduce((sum, c) => sum + c.quantity, 0);
+  // Pool-table daily cash is box cash: card, mobile money, split and account
+  // charge must never be offered for a basket holding Pool lines.
+  const hasPoolLines = useMemo(
+    () => cart.some((line) => String(line.category || '').trim().toLowerCase() === 'pool'),
+    [cart],
+  );
+  useEffect(() => {
+    if (hasPoolLines) {
+      setChargeToAccount(false);
+      setPaymentMethod('cash');
+    }
+  }, [hasPoolLines]);
   const selectedTable =
     tables.find(
       (table) => String(table.name || table.table_number || "") === tableName,
@@ -2325,7 +2807,7 @@ export default function HposTerminal() {
         }
       }
       setSuccessMessage(
-        `${tableName || tabName || "Check"} held. Resume it from Open Checks.`,
+        `${tableName || tabName || "Check"} held. Resume it from Open Checks.${result?.offline === true ? " Will send when online." : ""}`,
       );
       if (shouldLoadTillTables(barOnly)) {
         const latestTables = await Promise.resolve(
@@ -2454,6 +2936,12 @@ export default function HposTerminal() {
     // These are tendering aids recorded on the receipt, not ledger fields.
     let cashTenderMeta = null;
     if (!retryingSubmit && !chargeToAccount && paymentMethod === "cash") {
+      // Bar sales must record what the customer handed over: a blank
+      // received box blocks Pay so every cash receipt carries received/change.
+      if (barOnly && String(cashReceived ?? "").trim() === "") {
+        setSubmitError("Enter the cash received before taking payment — tap Exact, P20, P50, P100, P200, or type the amount.");
+        return;
+      }
       const tenderCheck = computeCashTender(cashReceived, tenderBreakdownResult.total);
       if (!tenderCheck.ok) {
         setSubmitError(
@@ -2809,6 +3297,11 @@ export default function HposTerminal() {
         ).catch(() => null);
         if (Array.isArray(latestTables)) setTables(latestTables);
       }
+      // Counts just moved on the server: re-read readiness quietly so newly
+      // finished items grey out without another sale failing first. Silent
+      // failures keep the current badges; the manual Refresh path still
+      // reports errors loudly.
+      refreshReadiness({ silent: true }).catch(() => {});
     } catch (error) {
       setSubmitError(
         error?.message || "Could not complete this order. Nothing was cleared.",
@@ -2830,6 +3323,7 @@ export default function HposTerminal() {
     modifiersReady,
     paymentMethod,
     paymentReferences,
+    refreshReadiness,
     splitCashAmount,
     splitRemainderMethod,
     sharedTerminalMode,
@@ -3239,6 +3733,15 @@ export default function HposTerminal() {
                     clearTillOperatorState({ showUnlock: true });
                   } else {
                     setShowOperatorUnlock(true);
+                    // Fresh attendance for the unlock list; failures fail open.
+                    setUnlockActiveStaffIds(null);
+                    setUnlockIsOnline(null);
+                    window.api?.pos?.getActiveShifts?.().then((rows) => {
+                      setUnlockActiveStaffIds((Array.isArray(rows) ? rows : []).map((row) => row.staff_user_id));
+                    }).catch(() => setUnlockActiveStaffIds(null));
+                    window.api?.sync?.getStatus?.().then((status) => {
+                      setUnlockIsOnline(status?.isOnline !== false);
+                    }).catch(() => setUnlockIsOnline(null));
                   }
                 }}
               >
@@ -3439,7 +3942,7 @@ export default function HposTerminal() {
               overflow: "auto",
               padding: "16px 18px",
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(174px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
               gap: "12px",
               alignContent: "start",
             }}
@@ -3471,6 +3974,7 @@ export default function HposTerminal() {
             ) : (
               filtered.map((item) => {
                 const issue = getStockIssue(item);
+                const provisionalSyncing = issue === "provisional" && stockReadiness.status === "ready";
                 return (
                   <ProductCard
                     key={item.id}
@@ -3480,6 +3984,10 @@ export default function HposTerminal() {
                     isFavourite={favouriteIdSet.has(item.id)}
                     stockSetupRequired={issue === "issue"}
                     statusUnknown={issue === "unknown"}
+                    lowStock={lowStockMap[item.inventory_item_id] || null}
+                    finishedStock={isFinishedStock(item)}
+                    syncBlocked={provisionalSyncing}
+                    pendingSync={issue === "provisional" && !provisionalSyncing}
                   />
                 );
               })
@@ -3581,8 +4089,7 @@ export default function HposTerminal() {
           )}
           {/* Order Header */}
           {draftPersistFailed && (
-            <div
-              role="alert"
+            <ErrorNotice
               style={{
                 margin: "12px 16px 0",
                 padding: "10px 12px",
@@ -3596,7 +4103,7 @@ export default function HposTerminal() {
             >
               This terminal cannot store the unsent basket. Complete, hold, or
               pay for this sale promptly — it will not survive a restart.
-            </div>
+            </ErrorNotice>
           )}
           {barOnly && stockReadiness.status === "stale" && (
             <div
@@ -3643,8 +4150,7 @@ export default function HposTerminal() {
             </div>
           )}
           {barOnly && stockReadiness.status === "failed" && (
-            <div
-              role="alert"
+            <ErrorNotice
               style={{
                 margin: "12px 16px 0",
                 padding: "10px 12px",
@@ -3678,7 +4184,7 @@ export default function HposTerminal() {
               >
                 Refresh
               </button>
-            </div>
+            </ErrorNotice>
           )}
           {resumedTabInfo && (
             <div
@@ -3864,28 +4370,75 @@ export default function HposTerminal() {
                   Open tabs · {openTabCount}
                 </button>
               )}
+              {drawerGateNeeded && (
+                <button
+                  type="button"
+                  onClick={() => navigate("/hpos/shift-close")}
+                  aria-label="Drawer is not open. Open the drawer in Staff shift close before selling."
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 800,
+                    minHeight: "44px",
+                    padding: "0 10px",
+                    borderRadius: "999px",
+                    border: "1px solid rgba(184,74,56,.4)",
+                    background: "rgba(184,74,56,.1)",
+                    color: "#b84a38",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Drawer not open
+                </button>
+              )}
             </div>
             {cart.length > 0 && (
-              <button
-                onClick={clearCart}
-                style={{
-                  fontSize: "13px",
-                  minHeight: "44px",
-                  padding: "0 12px",
-                  color: "#b84a38",
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                }}
-              >
-                Clear
-              </button>
+              <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                {poolNightProducts.length > 0 && !hasPoolLines && (
+                  <button
+                    type="button"
+                    onClick={startPoolNight}
+                    aria-label="Add all pool tables for the night entry"
+                    title="Add every pool table, then type each box cash as quantity"
+                    style={{
+                      fontSize: "12px",
+                      minHeight: "44px",
+                      padding: "0 12px",
+                      color: "#2f6b42",
+                      background: "rgba(47, 107, 66, 0.08)",
+                      border: "1px solid rgba(47, 107, 66, 0.25)",
+                      borderRadius: "10px",
+                      cursor: "pointer",
+                      fontWeight: 800,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Pool night
+                  </button>
+                )}
+                <button
+                  onClick={clearCart}
+                  style={{
+                    fontSize: "13px",
+                    minHeight: "44px",
+                    padding: "0 12px",
+                    color: "#b84a38",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                  }}
+                >
+                  Clear
+                </button>
+              </span>
             )}
           </div>
 
-          {/* Cart Lines */}
-          <div style={{ flex: 1, overflow: "auto" }}>
+          {/* Cart Lines: minHeight 0 lets the list shrink so the payment
+              footer (Take payment) always stays on screen instead of being
+              pushed out of the basket column. */}
+          <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
             {cart.length === 0 ? (
               <div
                 style={{
@@ -3932,26 +4485,65 @@ export default function HposTerminal() {
                     : "Choose a table or service mode, then tap menu items to build the order."}
                 </p>
                 {lastReceipt && !showPayment && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCompletedReceipt({ order: lastReceipt, autoPrint: false })
-                    }
-                    style={{
-                      marginTop: "14px",
-                      minHeight: "48px",
-                      padding: "0 18px",
-                      borderRadius: "10px",
-                      border: "1px solid rgba(55,70,57,.2)",
-                      background: "#fffdf8",
-                      color: "#24362c",
-                      fontSize: "14px",
-                      fontWeight: 800,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Reprint last receipt
-                  </button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+                    <button
+                      type="button"
+                      onClick={reorderLastSale}
+                      aria-label="Add the last sale items again"
+                      style={{
+                        minHeight: "48px",
+                        padding: "0 18px",
+                        borderRadius: "10px",
+                        border: "none",
+                        background: "#c95635",
+                        color: "#fffdf8",
+                        fontSize: "14px",
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Same again
+                    </button>
+                    {poolNightProducts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={startPoolNight}
+                        aria-label="Add all pool tables for the night entry"
+                        style={{
+                          minHeight: "48px",
+                          padding: "0 18px",
+                          borderRadius: "10px",
+                          border: "1px solid rgba(47, 107, 66, 0.3)",
+                          background: "rgba(47, 107, 66, 0.08)",
+                          color: "#2f6b42",
+                          fontSize: "14px",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Pool night
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCompletedReceipt({ order: lastReceipt, autoPrint: false })
+                      }
+                      style={{
+                        minHeight: "48px",
+                        padding: "0 18px",
+                        borderRadius: "10px",
+                        border: "1px solid rgba(55,70,57,.2)",
+                        background: "#fffdf8",
+                        color: "#24362c",
+                        fontSize: "14px",
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Reprint last receipt
+                    </button>
+                  </div>
                 )}
               </div>
             ) : (
@@ -3974,6 +4566,25 @@ export default function HposTerminal() {
               ))
             )}
           </div>
+
+          {cart.some((line) => String(line.category || '').trim().toLowerCase() === 'pool') && (
+            <div
+              role="status"
+              style={{
+                margin: '10px 16px 0',
+                padding: '10px 14px',
+                borderRadius: '12px',
+                background: '#eef6f3',
+                border: '1px solid rgba(55,70,57,.14)',
+                color: '#24362c',
+                fontSize: '13px',
+                fontWeight: 600,
+                lineHeight: 1.4,
+              }}
+            >
+              Pool tables: quantity means pula collected. Example Table 1 quantity 80 = P80. Type the cash from each table box, then Pay once.
+            </div>
+          )}
 
           {(submitNotice || recoveredAttempt) && (
             <div
@@ -3998,30 +4609,74 @@ export default function HposTerminal() {
               <AlertCircle size={21} aria-hidden="true" />
               {recoveredAttempt ? (
                 <div style={{ flex: 1 }}>
-                  <span>
-                    An earlier sale attempt from {recoveredAttempt.createdAtClient ? new Date(recoveredAttempt.createdAtClient).toLocaleString() : "an unknown time"} is still unresolved. Retry uses its original operation key: if the server already recorded it, the original result is returned; if it was not recorded, retry may complete that older sale now. Check Sales first and do not retry if you already entered a replacement sale.
-                  </span>
-                  {Array.isArray(recoveredAttempt?.payload?.items) && <small style={{ display: "block", marginTop: 6 }}>
-                    Attempt details: {recoveredAttempt.payload.items.map((item) => `${Number(item.quantity || 0)} × ${item.item_name || "item"}`).join(", ")} · submitted tender {currency} {fmt(recoveredAttempt.payload.payment_breakdown?.reduce((sum, tender) => sum + Number(tender.amount || 0), 0) || 0)}
-                  </small>}
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span>{Number(recoveredAttempt.pendingCount || 0) > 1 ? `${Number(recoveredAttempt.pendingCount)} earlier sales need checking — tap for details.` : "Earlier sale needs checking — tap for details."}</span>
                     <button
                       type="button"
-                      onClick={completeOrder}
-                      disabled={submitting}
+                      onClick={toggleRecoveryCollapsed}
+                      aria-expanded={!recoveryCollapsed}
+                      aria-label={recoveryCollapsed ? "Show earlier sale details" : "Hide earlier sale details"}
                       style={{
-                        padding: "8px 14px",
+                        minWidth: "44px",
+                        minHeight: "44px",
                         borderRadius: 10,
                         border: "1px solid rgba(166, 118, 42, 0.45)",
                         background: "#fff8ea",
                         color: "#6b4a0b",
                         fontWeight: 800,
-                        cursor: submitting ? "wait" : "pointer",
+                        fontSize: "16px",
+                        cursor: "pointer",
+                        flexShrink: 0,
                       }}
                     >
-                      Retry this exact attempt
+                      {recoveryCollapsed ? "+" : "–"}
                     </button>
                   </div>
+                  {!recoveryCollapsed && (
+                    <>
+                      <span>
+                        An earlier sale attempt from {recoveredAttempt.createdAtClient ? new Date(recoveredAttempt.createdAtClient).toLocaleString() : "an unknown time"} is still unresolved. Retry uses its original operation key: if the server already recorded it, the original result is returned; if it was not recorded, retry may complete that older sale now. Check Sales first and do not retry if you already entered a replacement sale.
+                      </span>
+                      {Array.isArray(recoveredAttempt?.payload?.items) && <small style={{ display: "block", marginTop: 6 }}>
+                        Attempt details: {recoveredAttempt.payload.items.map((item) => `${Number(item.quantity || 0)} × ${item.item_name || "item"}`).join(", ")} · submitted tender {currency} {fmt(recoveredAttempt.payload.payment_breakdown?.reduce((sum, tender) => sum + Number(tender.amount || 0), 0) || 0)}
+                      </small>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={completeOrder}
+                          disabled={submitting}
+                          style={{
+                            padding: "8px 14px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(166, 118, 42, 0.45)",
+                            background: "#fff8ea",
+                            color: "#6b4a0b",
+                            fontWeight: 800,
+                            cursor: submitting ? "wait" : "pointer",
+                          }}
+                        >
+                          Retry this exact attempt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={recheckRecovery}
+                          disabled={recoveryChecking || submitting}
+                          aria-label="Re-check whether the earlier sale was recorded"
+                          style={{
+                            padding: "8px 14px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(166, 118, 42, 0.45)",
+                            background: "transparent",
+                            color: "#6b4a0b",
+                            fontWeight: 800,
+                            cursor: recoveryChecking || submitting ? "wait" : "pointer",
+                          }}
+                        >
+                          {recoveryChecking ? "Checking…" : "Re-check Sales"}
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <span>{submitNotice}</span>
@@ -4195,9 +4850,15 @@ export default function HposTerminal() {
                     gap: "6px",
                   }}
                 >
+                  {hasPoolLines && (
+                    <div role="status" style={{ gridColumn: "1 / -1", padding: "10px 12px", borderRadius: "10px", background: "#eef6f3", border: "1px solid rgba(55,70,57,.14)", color: "#24362c", fontSize: "13px", fontWeight: 700 }}>
+                      Pool tables pay Cash only. Card, mobile money, split and account are disabled for this sale.
+                    </div>
+                  )}
                   {selectedCustomer &&
                     selectedCustomer.account_status === "active" &&
-                    Number(selectedCustomer.available_credit || 0) >= Number(total || 0) && (
+                    Number(selectedCustomer.available_credit || 0) >= Number(total || 0) &&
+                    !hasPoolLines && (
                       <button
                         onClick={() => {
                           setChargeToAccount(true);
@@ -4242,7 +4903,7 @@ export default function HposTerminal() {
                       icon: Smartphone,
                       color: "#8a5d3b",
                     },
-                  ].map((pm) => (
+                  ].filter((pm) => !hasPoolLines || pm.id === "cash").map((pm) => (
                     <button
                       key={pm.id}
                       onClick={() => {
@@ -4270,6 +4931,7 @@ export default function HposTerminal() {
                       {pm.label}
                     </button>
                   ))}
+                  {!hasPoolLines && (
                   <button
                     onClick={() => {
                       setChargeToAccount(false);
@@ -4281,6 +4943,7 @@ export default function HposTerminal() {
                   >
                     <WalletCards size={20} /> Split payment
                   </button>
+                  )}
                 </div>
               ) : (
                 <div style={{ padding: "0 16px 14px" }}>
@@ -4298,7 +4961,7 @@ export default function HposTerminal() {
                           marginBottom: "6px",
                         }}
                       >
-                        Cash received
+                        Cash received{barOnly ? " (required)" : ""}
                       </div>
                       <div
                         style={{
@@ -4461,20 +5124,17 @@ export default function HposTerminal() {
                   )}
                   <div
                     style={{
-                      padding: "14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "10px",
+                      padding: "8px 12px",
                       borderRadius: "10px",
                       background: "rgba(245, 158, 11, 0.06)",
                       border: "1px solid rgba(245, 158, 11, 0.12)",
-                      textAlign: "center",
                     }}
                   >
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        color: "#7b7a70",
-                        marginBottom: "4px",
-                      }}
-                    >
+                    <span style={{ fontSize: "12px", fontWeight: 800, color: "#7b7a70" }}>
                       {chargeToAccount
                         ? `Charge ${selectedCustomer?.name || "customer"} account`
                         : paymentMethod === "split"
@@ -4484,18 +5144,20 @@ export default function HposTerminal() {
                             : paymentMethod === "mobile_money"
                               ? "Confirm mobile money"
                               : "Process Card"}
-                    </div>
-                    <div
+                    </span>
+                    <strong
                       style={{
-                        fontSize: "22px",
+                        fontSize: "16px",
                         fontWeight: 800,
                         color: "#c95635",
                         fontVariantNumeric: "tabular-nums",
+                        whiteSpace: "nowrap",
                       }}
-                   >
-                     {currency} {fmt(total)}
-                   </div>
+                    >
+                      {currency} {fmt(total)}
+                    </strong>
                   </div>
+                  {(!tenderBreakdownResult.ok || chargeToAccount || (tenderBreakdownResult.ok && tenderBreakdownResult.breakdown.length > 1)) && (
                   <div
                     aria-label="Tender breakdown"
                     style={{
@@ -4543,6 +5205,7 @@ export default function HposTerminal() {
                       </span>
                     )}
                   </div>
+                  )}
                   <button
                     onClick={completeOrder}
                     disabled={submitting || !tenderBreakdownResult.ok}
@@ -4870,6 +5533,8 @@ export default function HposTerminal() {
         {sharedTerminalMode && showOperatorUnlock && (
           <HposTillOperatorDialog
             staff={serviceStaff}
+            activeStaffIds={unlockActiveStaffIds}
+            isOnline={unlockIsOnline}
             staffId={operatorStaffId}
             pin={operatorPin}
             error={submitError}

@@ -5,6 +5,7 @@ import { useProfiles } from '../app-context'
 import { productLogoLight } from '../assets/productLogos'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_LODGE = BUILD_PRODUCT.id === 'lodge-camp'
@@ -135,9 +136,9 @@ export default function LodgeChooser() {
             </div>
 
             {error && (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {error}
-              </div>
+              </ErrorNotice>
             )}
 
             {profilesLoading ? (

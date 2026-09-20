@@ -23,6 +23,7 @@ import {
 import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { Receipt } from './shared/Receipt'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
@@ -1923,7 +1924,7 @@ export default function Bookings() {
                   <p className="mt-1 text-xs text-slate-400">Front Desk for room/admin charges. Kitchen or Bar for food/beverage.</p>
                 </div>
               )}
-              {chargeError && <p className="text-sm text-red-500">{chargeError}</p>}
+              {chargeError && <ErrorNotice className="text-sm text-red-500">{chargeError}</ErrorNotice>}
               <button type="submit" disabled={chargeLoading || chargesUnavailable} className="btn-primary w-full">
                 {chargeLoading ? 'Adding...' : 'Add charge'}
               </button>
@@ -2087,7 +2088,7 @@ export default function Bookings() {
               </div>
             )}
             {payError && (
-              <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{payError}</p>
+              <ErrorNotice className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{payError}</ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-1">
@@ -2249,7 +2250,7 @@ export default function Bookings() {
               </div>
 
               {error && (
-                <div className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
+                <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</ErrorNotice>
               )}
 
               <div className="flex gap-3 pt-1">
@@ -2349,7 +2350,7 @@ export default function Bookings() {
             )}
 
             {rescheduleError && (
-              <div className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{rescheduleError}</div>
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{rescheduleError}</ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-1">
@@ -2713,7 +2714,7 @@ export default function Bookings() {
             </F>
 
             {error && (
-              <div className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</ErrorNotice>
             )}
 
             {modalWarning && (

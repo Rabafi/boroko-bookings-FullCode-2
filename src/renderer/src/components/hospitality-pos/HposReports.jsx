@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ErrorNotice } from '../shared/ErrorNotice';
 import {
   AlertTriangle,
   BarChart3,
@@ -262,7 +263,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const tenderReady = financialReady && readCompleteness.tenderComplete === true && rows.filter((order) => ['sale', 'return'].includes(classifyPosTransaction(order))).every(hasRecordedPosTenderEnvelope);
   const itemDetailReady = financialReady && readCompleteness.itemDetailComplete === true;
   const basicBarBreakdown = useMemo(() => {
-    if (!barOnly || !itemDetailReady) return { categories: [], products: [] };
+    if (!barOnly || !itemDetailReady) return { categories: [], products: [], poolTables: [], poolTotal: 0 };
     const categoryTotals = new Map();
     const productTotals = new Map();
     rows.filter((order) => classifyPosTransaction(order) === 'sale').forEach((order) => {
@@ -276,13 +277,20 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         const currentCategory = categoryTotals.get(category) || { quantity: 0, amount: 0 };
         categoryTotals.set(category, { quantity: currentCategory.quantity + quantity, amount: currentCategory.amount + amount });
         const productId = String(item.product_id || item.menu_item_id || item.item_id || item.id || `custom:${name.toLowerCase()}`);
-        const currentProduct = productTotals.get(productId) || { label: name, quantity: 0, amount: 0 };
-        productTotals.set(productId, { label: currentProduct.label, quantity: currentProduct.quantity + quantity, amount: currentProduct.amount + amount });
+        const currentProduct = productTotals.get(productId) || { label: name, category, quantity: 0, amount: 0 };
+        productTotals.set(productId, { label: currentProduct.label, category, quantity: currentProduct.quantity + quantity, amount: currentProduct.amount + amount });
       });
     });
+    const products = [...productTotals.values()].sort((a, b) => b.quantity - a.quantity || b.amount - a.amount);
+    const poolTables = products
+      .filter((row) => String(row.category || '').trim().toLowerCase() === 'pool')
+      .sort((a, b) => b.amount - a.amount);
+    const poolTotal = poolTables.reduce((sum, row) => sum + Number(row.amount || 0), 0);
     return {
       categories: [...categoryTotals.entries()].map(([label, value]) => ({ label, ...value })).sort((a, b) => b.amount - a.amount),
-      products: [...productTotals.values()].sort((a, b) => b.quantity - a.quantity || b.amount - a.amount).slice(0, 8),
+      products: products.slice(0, 8),
+      poolTables,
+      poolTotal,
     };
   }, [barOnly, itemDetailReady, rows]);
 
@@ -328,14 +336,19 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     setExporting(format);
     setNotice('');
     try {
+      const device = String(format || '').startsWith('device-');
       const fn =
         format === 'pdf'
           ? window.api?.pos?.exportHistoryPdf
-          : window.api?.pos?.exportHistoryExcel;
+          : format === 'device-pdf'
+            ? window.api?.pos?.exportDeviceRecordsPdf
+            : format === 'device-excel'
+              ? window.api?.pos?.exportDeviceRecordsExcel
+              : window.api?.pos?.exportHistoryExcel;
       const result = await fn?.({ start, end });
       setNotice(
         result?.success
-          ? `${format === 'pdf' ? 'PDF' : 'Excel workbook'} created${result.filePath ? `: ${result.filePath}` : '.'}`
+          ? `${device ? 'Unconfirmed device records' : format === 'pdf' ? 'PDF' : 'Excel workbook'} created${result.filePath ? `: ${result.filePath}` : '.'}${device ? ' Marked UNCONFIRMED — not server-certified.' : ''}`
           : result?.error || 'Export was cancelled.',
       );
     } catch (error) {
@@ -448,13 +461,21 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             <Download size={16} />
             {exporting === 'pdf' ? 'Building…' : 'PDF'}
           </button>}
+          {!correctionMode && !sharedTillHistoryMode && canExport && <button onClick={() => exportReport('device-excel')} disabled={!!exporting || !visibleRows.length} title="Export this terminal's saved records, marked UNCONFIRMED. Works offline.">
+            <FileSpreadsheet size={16} />
+            {exporting === 'device-excel' ? 'Building…' : 'Device Excel'}
+          </button>}
+          {!correctionMode && !sharedTillHistoryMode && canExport && <button onClick={() => exportReport('device-pdf')} disabled={!!exporting || !visibleRows.length} title="Export this terminal's saved records, marked UNCONFIRMED. Works offline.">
+            <Download size={16} />
+            {exporting === 'device-pdf' ? 'Building…' : 'Device PDF'}
+          </button>}
           <button type="button" onClick={load} disabled={loading} title="Refresh report">
             <RefreshCw size={16} className={loading ? 'is-spinning' : ''} />
             Refresh
           </button>
         </div>
       </header>
-      {error && <div className="hpos-inline-error" role="alert">{error}</div>}
+      {error && <ErrorNotice className="hpos-inline-error">{error}</ErrorNotice>}
       {notice && (
         <div className="hpos-inline-notice" role="status">
           {notice}
@@ -537,6 +558,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       </div>}
       {barOnly && !correctionMode && !sharedTillHistoryMode && <div className="hpos-report-grid hpos-bar-basic-report-grid">
         <section className="hpos-insight-card"><h2>Bar sales by category</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.categories.length ? basicBarBreakdown.categories.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
+        <section className="hpos-insight-card" aria-label="Pool tables"><h2>Pool tables</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.poolTables.length ? (<>{basicBarBreakdown.poolTables.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{money(row.amount, currency)} collected</strong></div>)}<div className="hpos-insight-row"><span>All pool tables</span><strong>{money(basicBarBreakdown.poolTotal, currency)}</strong></div><p>Each table is entered once per day: quantity means pula.</p></>) : <p>No pool cash in this period. Add Pool Table 1 in Products, price P1, then type each table box cash as quantity at night.</p>}</section>
         <section className="hpos-insight-card"><h2>Top products</h2>{!itemDetailReady ? <p>Unavailable until the server certifies complete item detail.</p> : basicBarBreakdown.products.length ? basicBarBreakdown.products.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.quantity} units · {money(row.amount, currency)}</strong></div>) : <p>No certified item sales in this period.</p>}</section>
         <section className="hpos-insight-card"><h2>Waste</h2>{!canViewWaste ? <p>Waste needs the stock permission.</p> : !wasteBreakdown ? <p>Unavailable until the server confirms the complete movement ledger.</p> : wasteBreakdown.length ? wasteBreakdown.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label} · {row.topReason}</span><strong>{row.quantity} {row.unit}</strong></div>) : <p>No recorded waste in this period.</p>}{canViewWaste && wasteBreakdown && wasteBreakdown.length > 0 && <p>Quantities only; no cost values.</p>}</section>
         <section className="hpos-insight-card"><h2>Slow movers</h2>{!canViewWaste ? <p>Slow movers need the stock permission.</p> : !slowMovers ? <p>Unavailable until the server confirms complete stock and aging reads.</p> : slowMovers.length ? slowMovers.map((row) => <div className="hpos-insight-row" key={row.label}><span>{row.label}</span><strong>{row.onHand} {row.unit} · {row.idleLabel}</strong></div>) : <p>Nothing idle: every stocked item sold in the last 14 days.</p>}{canViewWaste && slowMovers && slowMovers.length > 0 && <p>No sale in the last 14 days. Quantities only.</p>}</section>
@@ -593,11 +615,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             </div>
              <div className="hpos-report-detail-items"><h3>Items</h3>{itemDetailReady && (selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => { const lineAmount = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{hasRecordedMoney(lineAmount) ? money(lineAmount, currency) : 'Unavailable'}</strong></p> }) : <p>Item detail is unavailable until the server confirms recorded line amounts.</p>}</div>
             {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(selectedVoid.created_at).toLocaleString()}</span></div>}
-            {!sharedTillHistoryMode && !selectedVoid && classifyPosTransaction(selectedOrder) === 'sale' && canRequestVoid && (
+            {!sharedTillHistoryMode && !selectedVoid && ['sale', 'pending'].includes(classifyPosTransaction(selectedOrder)) && canRequestVoid && (
               <form onSubmit={submitVoid} className="hpos-report-void-form">
                 <h3><LockKeyhole size={18} /> {correctionMode ? 'Request supervisor correction' : 'Void this sale'}</h3>
-                <p>{correctionMode ? 'You can request a correction for your own sale. A supervisor, manager or admin must enter their PIN; you cannot approve it yourself.' : 'This is irreversible. An authorised supervisor, manager, or admin must supply their PIN.'} Packaged stock is restored only when returned unopened. Food, cocktails and recipe items remain consumed.</p>
-                {voidError && <div className="hpos-inline-error" role="alert">{voidError}</div>}
+                <p>{correctionMode ? 'You can request a correction for your own sale. A supervisor, manager or admin must enter their PIN; you cannot approve it yourself.' : 'This is irreversible. An authorised supervisor, manager, or admin must supply their PIN.'} Packaged stock is restored only when returned unopened. Food, cocktails and recipe items remain consumed.{classifyPosTransaction(selectedOrder) === 'pending' ? ' This sale has not synced yet: the correction queues behind it and applies on the server in order.' : ''}</p>
+                {voidError && <ErrorNotice className="hpos-inline-error">{voidError}</ErrorNotice>}
                 <label>Authorised approver PIN<input type="password" inputMode="numeric" value={voidPin} onChange={(event) => setVoidPin(event.target.value.replace(/\D/g, '').slice(0, 6))} maxLength="6" disabled={voiding} required /></label>
                 {barOnly && voidTemplates.length > 0 && <label>Reason template<select value="" onChange={(event) => { const template = voidTemplates.find((row) => row.code === event.target.value); if (template) setVoidReason(`${template.label}: `); }} disabled={voiding}><option value="">Choose a starting point…</option>{voidTemplates.map((template) => <option key={template.id || template.code} value={template.code}>{template.label}</option>)}</select></label>}
                 <label>Reason and detail<input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength="200" placeholder="Choose a template, then explain what happened" disabled={voiding} required /></label>

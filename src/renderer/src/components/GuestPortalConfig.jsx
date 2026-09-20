@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Save, RefreshCw, Globe, Users, CheckCircle2, XCircle, ExternalLink } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const ALL_ACTIONS = [
   { key: 'view_booking', label: 'View Booking' },
@@ -136,7 +137,7 @@ export default function GuestPortalConfig() {
         </div>
       </div>
 
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</ErrorNotice>}
       {staleWarning && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">{staleWarning}</div>}
       {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
 

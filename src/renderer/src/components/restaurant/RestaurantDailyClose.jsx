@@ -3,6 +3,7 @@ import { CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wallet, TrendingU
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { unpackTransport } from '../../transportUnpack'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantDailyClose() {
   const { settings } = useSettings()
@@ -122,7 +123,7 @@ export default function RestaurantDailyClose() {
         </div>
         <button onClick={loadStatus} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} /> Recheck</button>
       </div>
-      {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="restaurant-native-loading">

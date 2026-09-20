@@ -73,6 +73,7 @@ export default function HposSystemHealth() {
   const [scannerCaptureCount, setScannerCaptureCount] = useState(0);
   const [pendingScannerVerification, setPendingScannerVerification] = useState(null);
   const [criticalErrors, setCriticalErrors] = useState([]);
+  const [unsyncedVoids, setUnsyncedVoids] = useState([]);
   const [rendererErrors, setRendererErrors] = useState([]);
 
   const scannerVerification = useCallback(async (result) => {
@@ -157,6 +158,7 @@ export default function HposSystemHealth() {
         canAudit ? window.api?.users?.getAccessAudit?.() : Promise.resolve({ success: true, entries: [] }),
         window.api?.reports?.criticalErrors?.(12).catch(() => []) || Promise.resolve([]),
         window.api?.app?.getRendererErrors?.(6).catch(() => []) || Promise.resolve([]),
+        window.api?.pos?.getVoidHistory?.('', '').catch(() => []) || Promise.resolve([]),
       ]);
       setStatus(results[0].status === 'fulfilled' ? results[0].value || {} : {});
       setDetails(results[1].status === 'fulfilled' ? results[1].value || {} : {});
@@ -171,6 +173,9 @@ export default function HposSystemHealth() {
         .slice(0, 150));
       setCriticalErrors(results[6].status === 'fulfilled' && Array.isArray(results[6].value) ? results[6].value : []);
       setRendererErrors(results[7].status === 'fulfilled' && Array.isArray(results[7].value) ? results[7].value : []);
+      const voidRows = results[8].status === 'fulfilled' && Array.isArray(results[8].value) ? results[8].value : [];
+      setUnsyncedVoids(voidRows.filter((row) => row?._pending_sync === true
+        || ['pending', 'failed', 'manual_review_required'].includes(String(row?._sync_state || ''))));
       if (results[0].status === 'rejected' && results[1].status === 'rejected') {
         throw new Error('System status could not be loaded.');
       }
@@ -243,6 +248,31 @@ export default function HposSystemHealth() {
       await load();
     } catch (clearError) {
       setError(clearError?.message || 'Failed operations could not be cleared.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const discardVoidRecord = async (row) => {
+    setRunning(true);
+    setNotice('');
+    setError('');
+    try {
+      const overrideId = row?.id || null;
+      if (!overrideId) throw new Error('This void record has no reference to discard.');
+      const orderShort = String(row?.order_id || '').slice(0, 8) || 'unknown order';
+      const okToDiscard = window.confirm(
+        `Discard the unconfirmed void record for order ${orderShort} (${row?.reason || 'no reason recorded'})? The server is checked first — a confirmed void is never discarded. Discarding keeps the server state as-is and records the decision for manager review. Discard anyway?`,
+      );
+      if (!okToDiscard) return;
+      const result = await window.api?.pos?.discardLocalVoidRecord?.(overrideId);
+      if (!result?.success) throw new Error(result?.error || 'Void record could not be discarded.');
+      setNotice(result?.resolved === 'synced'
+        ? 'The server already recorded that void — marked confirmed.'
+        : `Void record discarded (${result?.disposition || 'reviewed'}). Recorded for manager review on this computer.`);
+      await load();
+    } catch (discardError) {
+      setError(discardError?.message || 'Void record could not be discarded.');
     } finally {
       setRunning(false);
     }
@@ -388,7 +418,20 @@ export default function HposSystemHealth() {
                 ))}
               </div>
             )}
-            {!loading && !(details?.failed || []).length && !(details?.pending || []).length && (
+            {unsyncedVoids.length > 0 && (
+              <div className="hpos-sync-list">
+                <header><strong>Void records awaiting confirmation</strong><HposStatusBadge tone="danger">{unsyncedVoids.length} unconfirmed</HposStatusBadge></header>
+                {unsyncedVoids.map((row) => (
+                  <article key={row?.id || JSON.stringify(row)}>
+                    <span className="hpos-health-icon is-danger"><AlertTriangle size={17} /></span>
+                    <div><strong>Void order {String(row?.order_id || '').slice(0, 8) || 'unknown'}</strong><p>{row?.reason || 'No reason recorded.'}</p><small>Financial record · {row?._sync_error || (row?._sync_state === 'pending' ? 'never sent — its queue entry is gone' : 'needs manager review')} · {issueTime(row?.created_at)}</small></div>
+                    <HposStatusBadge tone="danger">Financial</HposStatusBadge>
+                    {canSync && <span className="hpos-sync-row-actions"><HposButton onClick={() => discardVoidRecord(row)} disabled={running}>Discard</HposButton></span>}
+                  </article>
+                ))}
+              </div>
+            )}
+            {!loading && !(details?.failed || []).length && !(details?.pending || []).length && unsyncedVoids.length === 0 && (
               <HposEmptyState icon={CheckCircle2} title="Operation queue is clear" description="No pending or failed operations are waiting on this computer." />
             )}
           </section>

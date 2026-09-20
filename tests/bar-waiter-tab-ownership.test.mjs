@@ -119,14 +119,14 @@ test('Bar Open Tabs exposes an explicit active-shift transfer workflow with stab
   assert.match(checks, /target_waiter_id: target\.staff_user_id/)
 })
 
-test('paid tab auto-close carries the operator proof and reports close failures', () => {
-  // The post-payment close is a tab mutation like any other: without the
-  // proof the server rejects it as tab_not_owned while the payment stands,
-  // so the tab silently stays open. The payment must never fail because
-  // the follow-up close failed; the warning must reach the operator.
-  assert.match(pos, /closePosTab\(data\.tab_id, 'closed', \{ _operator_proof: operatorProof \|\| null \}\)/)
-  assert.match(pos, /tab_close_warning/)
-  assert.match(terminal, /tab_close_warning/)
+test('offline tab settlement closes server-side without a second close call', () => {
+  // The offline v3 sale settles (and closes) the tab atomically at replay,
+  // so queuing a separate close would race into a spurious already-settled
+  // dead-letter. The local row is marked closed-pending for display and a
+  // dead-lettered replay reopens it visibly instead of losing the tab.
+  assert.doesNotMatch(pos, /closePosTab\(data\.tab_id, 'closed', \{ _operator_proof: operatorProof \|\| null \}\)/)
+  assert.match(pos, /_pending_settlement: true/)
+  assert.match(pos, /pos-tab-\$\{data\.tab_id\}/)
 })
 
 test('atomic settlement rejects second payments and replays the stored result', () => {

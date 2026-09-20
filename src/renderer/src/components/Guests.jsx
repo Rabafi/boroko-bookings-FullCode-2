@@ -5,6 +5,7 @@ import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useAccess, useSettings } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const emptyGuestForm = {
   name: '',
@@ -577,9 +578,9 @@ export default function Guests() {
               </div>
             </div>
             {guestError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {guestError}
-              </div>
+              </ErrorNotice>
             )}
             <div className="flex gap-3">
               <button type="button" onClick={closeGuestModal} className="btn-secondary flex-1" disabled={guestSaving}>

@@ -3,6 +3,7 @@ import { CheckCircle2, MessageSquareHeart, RefreshCw, ShieldCheck, WalletCards }
 import { useAccess } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { unpackTransport } from '../../transportUnpack'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear()
@@ -166,7 +167,7 @@ export default function RestaurantCommercialControl({ section = 'all' }) {
         <button onClick={load} disabled={loading} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh</button>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
       {notice && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div>}
 
       <div className="grid gap-6 xl:grid-cols-2">

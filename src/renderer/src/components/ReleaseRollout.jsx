@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Rocket, AlertTriangle, RefreshCw, Plus, Pause, Play, ArrowUp, ChevronRight } from 'lucide-react'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const STATUS_COLORS = {
   draft: 'bg-gray-500/20 text-gray-300',
@@ -78,11 +79,11 @@ export default function ReleaseRollout() {
       </div>
 
       {error && (
-        <div className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
+        <ErrorNotice className="bg-red-950/30 border border-red-900/40 rounded-xl p-3 flex items-center gap-3">
           <AlertTriangle size={14} className="text-red-400 shrink-0" />
           <p className="text-red-300 text-xs flex-1">{error}</p>
           <button onClick={load} className="text-xs text-red-400 hover:text-white underline">Retry</button>
-        </div>
+        </ErrorNotice>
       )}
 
       {/* Create form */}

@@ -8,6 +8,7 @@ import {
 import { useSettings } from '../app-context'
 import { isBarOnlyMode, isHotelPropertyType, isRestaurantOnly } from '../../../shared/propertyTypes'
 import { sanitizeForOperator } from '../../../shared/operatorSyncText'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 // ─── Pill helpers ──────────────────────────────────────────────────────────────
 
@@ -1192,7 +1193,7 @@ export default function SystemHealthPanel() {
             Last successful send: {lastSyncAt ? formatTs(lastSyncAt) : 'No successful send recorded yet'}
           </p>
           {lastSyncError && (
-            <p className="mt-1 text-xs text-red-600">{lastSyncError}</p>
+            <ErrorNotice className="mt-1 text-xs text-red-600">{lastSyncError}</ErrorNotice>
           )}
         </div>
 
@@ -1651,7 +1652,7 @@ export default function SystemHealthPanel() {
                 <StatusPill ok={!syncRunning} warn={syncRunning} label={syncRunning ? 'Sending' : 'Idle'} />
               </div>
               {lastSyncError && (
-                <p className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{lastSyncError}</p>
+                <ErrorNotice className="rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{lastSyncError}</ErrorNotice>
               )}
             </div>
 

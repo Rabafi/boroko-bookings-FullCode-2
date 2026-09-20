@@ -153,6 +153,12 @@ const META = {
   ],
   '/pos/bar-display': [Wine, 'Open the live bar preparation board.'],
   '/hpos/control': [ClipboardCheck, 'Run opening, closing, safety and service controls.'],
+  '/hpos/stock': [
+    Boxes,
+    'Fast service stock counts, deliveries and shortages for the shift.',
+  ],
+  '/hpos/cash': [ReceiptText, 'Open, count and reconcile the cash drawer and staff handovers.'],
+  '/hpos/reports': [BarChart3, 'Review sales, tenders, tabs, discounts, voids and receipt history.'],
   '/settings': [Settings, 'Restaurant identity, preferences and integrations.'],
   '/hpos/system-health': [
     ShieldCheck,

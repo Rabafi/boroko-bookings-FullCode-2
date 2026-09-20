@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, Building2, AlertTriangle, RefreshCw, Phone, Mail,
 import { useSearchParams } from 'react-router'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const CorporateBilling = lazy(() => import('./CorporateBilling'))
 
@@ -155,7 +156,7 @@ export default function CorporateAccounts() {
       {activeTab === 'accounts' && (
         <>
           {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
-          {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>}
+          {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-500">{accounts.length} account{accounts.length !== 1 ? 's' : ''}</p>
@@ -262,7 +263,7 @@ export default function CorporateAccounts() {
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Notes</label>
               <textarea className="input" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </div>
-            {error && <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} className="shrink-0" />{error}</div>}
+            {error && <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-700"><AlertTriangle size={14} className="shrink-0" />{error}</ErrorNotice>}
             <div className="flex gap-3 pt-2">
               <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">Cancel</button>
               <button type="submit" disabled={saving} className="btn-primary flex-1">{saving ? 'Saving...' : editing ? 'Save Changes' : 'Create Account'}</button>

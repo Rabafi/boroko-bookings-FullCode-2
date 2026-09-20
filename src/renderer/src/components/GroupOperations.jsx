@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { LogIn, LogOut, UserCheck, Gift, RefreshCw, AlertTriangle, Users, ArrowLeft } from 'lucide-react'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 function formatCurrency(amount, currency = 'P') {
   return `${currency}${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -117,7 +118,7 @@ function BlockDetail({ blockId, blockName, onBack }) {
 
   return (
     <div className="p-4">
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">{error}</ErrorNotice>}
       {success && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded text-green-700 text-sm">{success}</div>}
 
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -244,7 +245,7 @@ export default function GroupOperations({ blockId: propBlockId, blockName: propB
         <button onClick={loadBlocks} className="btn-ghost p-2" title="Refresh"><RefreshCw size={15} /></button>
       </div>
 
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</ErrorNotice>}
 
       {loading ? (
         <div className="flex items-center justify-center p-12"><RefreshCw className="animate-spin w-6 h-6 text-gray-400" /></div>

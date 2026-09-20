@@ -13,6 +13,8 @@ import { useAuth, useSettings } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import {
   TAB_RECOVERY_OUTCOMES,
+  REPLAY_MANAGER_ROLES,
+  archiveRecoveryEnvelope,
   buildSplitPayload,
   buildTransferPayload,
   defaultCanReplayOperation,
@@ -20,6 +22,7 @@ import {
   listRecoveryEnvelopes,
   readRecoveryEnvelope,
   recoveryResultMessage,
+  removeRecoveryKey,
   replaySavedTabOperation,
   submitNewTabOperation
 } from "../../../../shared/posTabRecovery";
@@ -40,6 +43,24 @@ const tabValue = (tab) => {
   const value = Number(tab.total);
   return Number.isFinite(value) ? value : null;
 };
+
+// Offline estimate from saved lines (uncertified): settle stays possible
+// while disconnected, clearly marked. The Till rebuilds the basket from the
+// same lines and the server prices at replay.
+const tabLocalValue = (tab) => {
+  const lines = Array.isArray(tab?.items) ? tab.items : [];
+  if (!lines.length) return null;
+  let sum = 0;
+  for (const line of lines) {
+    const qty = Number(line?.quantity || 0);
+    const price = Number(line?.unit_price ?? line?.price ?? 0) + Number(line?.modifier_total || 0);
+    if (!Number.isFinite(qty) || !Number.isFinite(price) || qty <= 0) return null;
+    sum += qty * price;
+  }
+  return sum;
+};
+const tabSettleValue = (tab) => tabValue(tab) ?? tabLocalValue(tab);
+const tabSettleEstimated = (tab) => tabValue(tab) === null && tabSettleValue(tab) !== null;
 
 export default function HposOpenChecks() {
   const navigate = useNavigate();
@@ -196,6 +217,44 @@ export default function HposOpenChecks() {
   const ownerTitle = (tab) => canControl(tab)
     ? "Only the assigned waiter or verified Till operator can change this tab."
     : `Assigned to ${tab?.waiter_name || tab?.opened_by_name || "another waiter"}. Unlock that waiter or ask them to transfer it.`;
+  // Recovery inbox copy: envelopes carry only ids and keys, never tab or
+  // waiter names, so rows resolve display names from the loaded tab list and
+  // fall back to plain language. Raw key slices and server codes stay in the
+  // title tooltip for support; the visible line is operator-readable.
+  const inboxStatusCopy = (row) => {
+    if (row?.corrupt) return "Needs a look — the saved record can't be read";
+    switch (row?.envelope?.outcome) {
+      case TAB_RECOVERY_OUTCOMES.IN_FLIGHT: return "Sending…";
+      case TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW: return "Needs a manager to review";
+      case TAB_RECOVERY_OUTCOMES.REJECTED: return "Not posted — needs a fresh attempt";
+      case TAB_RECOVERY_OUTCOMES.NOT_SENT: return "Couldn't send yet";
+      default: return "Not confirmed yet";
+    }
+  };
+  const inboxTabLabel = (sourceTabId) => {
+    const found = (tabs || []).find((entry) => String(entry?.id || "") === String(sourceTabId || ""));
+    return found?.table_name || found?.tab_name || found?.customer_name || null;
+  };
+  const inboxDetail = (row) => {
+    const envelope = row?.envelope || {};
+    const bits = [];
+    if (row?.kind === "split" && Number(envelope?.payload?.split_count) > 0) {
+      bits.push(`Split into ${Number(envelope.payload.split_count)}`);
+    }
+    const tabName = inboxTabLabel(envelope?.sourceTabId);
+    bits.push(tabName ? `Tab ${tabName}` : "For a tab that is no longer open");
+    if (envelope?.createdAt) {
+      bits.push(`Saved ${new Date(envelope.createdAt).toLocaleString()}`);
+    }
+    return bits.join(" · ");
+  };
+  const inboxSupportTitle = (row) => {
+    const envelope = row?.envelope || {};
+    const key = envelope?.operationId ? `Operation ${envelope.operationId}` : "Operation key unavailable";
+    const tab = envelope?.sourceTabId ? `Tab ${envelope.sourceTabId}` : "Tab unknown";
+    const code = envelope?.lastCode ? `Last server code: ${envelope.lastCode}` : "No server code recorded";
+    return `${key} · ${tab} · ${code}`;
+  };
   const resume = (tab) => {
     if (!canControl(tab)) return;
     return navigate("/hpos/pos", {
@@ -210,9 +269,10 @@ export default function HposOpenChecks() {
   };
   // Settle resumes the tab and opens payment immediately so adding items and
   // paying stay distinct actions: Resume tab = keep selling, Settle = pay now.
-  // A certified total is required; without one the operator resumes instead.
+  // Certified totals are preferred; an uncertified local estimate (offline
+  // tab) still settles, marked, with server pricing at replay.
   const settle = (tab) => {
-    if (!canControl(tab) || tabValue(tab) === null) return;
+    if (!canControl(tab) || tabSettleValue(tab) === null) return;
     return navigate("/hpos/pos", {
       state: {
         tableName: tab.table_name || "",
@@ -418,6 +478,38 @@ export default function HposOpenChecks() {
   // authorized per operation (originator or manager); the server enforces
   // the rest. Committed attempts are archived out of this list.
   const [inboxBusyKey, setInboxBusyKey] = useState(null);
+  // Per-row outcome notes: a replay that stays unresolved must still tell
+  // the operator what the server said — otherwise Check status looks dead.
+  const [inboxNotes, setInboxNotes] = useState({});
+  const isManagerForRecovery = actorRole && REPLAY_MANAGER_ROLES.has(String(actorRole).trim().toLowerCase());
+  // Manager-only escape hatch for records that can never resolve by replay
+  // (missing tab reference, unreadable record): archive keeps the envelope
+  // in the resolved slot for audit instead of deleting evidence. Only after
+  // support verifies whether the operation committed.
+  const archiveInboxItem = (row) => {
+    if (!row?.envelope || inboxBusyKey || !isManagerForRecovery) return;
+    const label = row.kind === 'split' ? 'bill split' : 'waiter transfer';
+    const confirmed = window.confirm(
+      `Archive this ${label} record? Only do this after support has verified whether it committed. The archived record is kept for audit.`
+    );
+    if (!confirmed) return;
+    const key = `${row.kind}:${row.envelope?.operationId || row.key}`;
+    try {
+      archiveRecoveryEnvelope(row.kind, row.envelope, { tenantId, sourceTabId: row.envelope.sourceTabId });
+      // The archive clears derived keys; drop the exact listed key too so
+      // records stored outside the derived shapes leave together with it.
+      removeRecoveryKey(row.key);
+    } catch {
+      // Refresh below surfaces whatever remains.
+    }
+    setInboxNotes((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    refreshInbox();
+  };
   const replayInboxItem = async (row) => {
     if (!row?.envelope || inboxBusyKey) return;
     const key = `${row.kind}:${row.envelope.operationId}`;
@@ -429,15 +521,25 @@ export default function HposOpenChecks() {
         sourceTabId: row.envelope.sourceTabId,
         actorId,
         actorRole,
+        storageKey: row.key,
         dispatch: (args) => row.kind === 'split'
           ? window.api?.pos?.splitBillEvenly?.(args)
           : window.api?.pos?.transferTabWaiter?.(args),
       });
       if (out.classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
+        setInboxNotes((prev) => {
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
         await load({ quiet: true });
+      } else {
+        const message = recoveryResultMessage(row.kind, out.classification, out.result, row.envelope?.operationId);
+        if (message) setInboxNotes((prev) => ({ ...prev, [key]: message }));
       }
-    } catch {
-      // Errors are reflected through the refreshed inbox record below.
+    } catch (replayError) {
+      setInboxNotes((prev) => ({ ...prev, [key]: replayError?.message || "Check status could not reach the server. Try again." }));
     } finally {
       refreshInbox();
       if (splitTab?.id) refreshSplitPending(splitTab);
@@ -503,26 +605,37 @@ export default function HposOpenChecks() {
       {inbox.length > 0 && (
         <section className="hpos-service-inbox" data-testid="recovery-inbox" aria-live="polite">
           <h2>Unresolved operations ({inbox.length})</h2>
-          <p className="hpos-service-dialog__hint">Saved split and transfer attempts that have not reached a confirmed outcome — including tabs that already closed or changed owner. Status check replays the saved operation under its original key without duplicating.</p>
+          <p className="hpos-service-dialog__hint">A bill split or waiter transfer was saved but the till never got a confirmed answer — even if the tab has since closed. Check status asks the server again with the same reference, so it can never post twice.</p>
           {inbox.map((row) => {
             const allowed = row.corrupt
               ? false
               : defaultCanReplayOperation({ envelope: row.envelope, actorId, actorRole });
+            const noteKey = `${row.kind}:${row.envelope?.operationId || row.key}`;
             return (
-              <div key={`${row.kind}:${row.envelope?.operationId || row.key}`} className="hpos-service-inbox__row">
+              <div key={noteKey} className="hpos-service-inbox__row" title={inboxSupportTitle(row)}>
                 <div>
-                  <strong>{row.kind === 'split' ? 'Split' : 'Waiter transfer'}</strong>
-                  <span> · tab {String(row.envelope?.sourceTabId || '').slice(0, 8)}… · key {String(row.envelope?.operationId || '').slice(0, 8)}…</span>
-                  <span> · status {row.corrupt ? 'needs review (unreadable record)' : row.envelope?.outcome}{row.envelope?.lastCode ? ` (${row.envelope.lastCode})` : ''}</span>
-                  {row.legacy && <span> · legacy record</span>}
+                  <strong>{row.kind === 'split' ? 'Bill split' : 'Waiter transfer'} — {inboxStatusCopy(row)}</strong>
+                  <span>{inboxDetail(row)}</span>
+                  {row.envelope?.lastCheckedAt && <span>Last checked {new Date(row.envelope.lastCheckedAt).toLocaleString()}</span>}
+                  {inboxNotes[noteKey] && <span className="hpos-service-inbox__note">{inboxNotes[noteKey]}</span>}
+                  {!allowed && <span>Only the person who started it or a manager can check it.</span>}
                 </div>
                 <HposButton
                   disabled={inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` || !allowed}
                   onClick={() => replayInboxItem(row)}
-                  title={allowed ? 'Replay the saved operation under its original key' : 'Only the originating operator or a manager can replay this operation'}
+                  title={allowed ? 'Ask the server for the confirmed outcome of this saved operation' : 'Only the originating operator or a manager can replay this operation'}
                 >
                   {inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` ? 'Checking…' : 'Check status'}
                 </HposButton>
+                {(row.corrupt || row.envelope?.outcome === TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW) && isManagerForRecovery && (
+                  <HposButton
+                    disabled={Boolean(inboxBusyKey)}
+                    onClick={() => archiveInboxItem(row)}
+                    title="After support verifies whether this operation committed, archive this record. The archived record is kept for audit."
+                  >
+                    Archive
+                  </HposButton>
+                )}
               </div>
             );
           })}
@@ -540,13 +653,15 @@ export default function HposOpenChecks() {
               <div className="hpos-check-card-head">
                 <span>{tab.table_name || tab.tab_name || "Open tab"}</span>
                 <strong>
-                  {tabValue(tab) === null ? 'Unavailable' : `${currency} ${tabValue(tab).toFixed(2)}`}
+                  {tabSettleValue(tab) === null ? 'Unavailable' : `${currency} ${tabSettleValue(tab).toFixed(2)}${tabSettleEstimated(tab) ? ' *' : ''}`}
                 </strong>
               </div>
               <p>
                 {tab.customer_name ||
                   tab.tab_name ||
                   (barOnly ? "Walk-in tab" : "Table service")}
+                {tab._pending_sync === true ? " · Pending sync" : ""}
+                {tabSettleEstimated(tab) ? " · estimate" : ""}
               </p>
               <div>
                 <span>
@@ -595,8 +710,8 @@ export default function HposOpenChecks() {
                 <button
                   type="button"
                   onClick={() => settle(tab)}
-                  disabled={!canControl(tab) || tabValue(tab) === null}
-                  title={!canControl(tab) ? ownerTitle(tab) : (tabValue(tab) === null ? "The certified total is unavailable. Resume the tab instead." : "Resume this tab and open payment.")}
+                  disabled={!canControl(tab) || tabSettleValue(tab) === null}
+                  title={!canControl(tab) ? ownerTitle(tab) : (tabSettleValue(tab) === null ? "No lines to settle. Resume the tab instead." : (tabSettleEstimated(tab) ? "Resume this tab and open payment (uncertified estimate; server prices at replay)." : "Resume this tab and open payment."))}
                 >
                   Settle
                 </button>

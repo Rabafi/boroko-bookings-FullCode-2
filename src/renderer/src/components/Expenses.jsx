@@ -7,6 +7,7 @@ import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import { unpackTransport } from '../transportUnpack'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const LODGE_CATEGORIES = [
   'Food & Beverage',
@@ -337,9 +338,9 @@ export default function Expenses() {
       </div>
 
       {pageError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {pageError}
-        </div>
+        </ErrorNotice>
       )}
 
       {/* Filters */}
@@ -747,9 +748,9 @@ export default function Expenses() {
         >
           <form onSubmit={handleSubmit} className="space-y-4">
             {formError && (
-              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {formError}
-              </div>
+              </ErrorNotice>
             )}
             <div className="grid grid-cols-2 gap-4">
               <div>

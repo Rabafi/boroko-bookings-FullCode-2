@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BarChart3, CircleAlert, Clock3, Download, Printer, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const RANGES = [
   { days: 1, label: 'Today' },
@@ -180,7 +181,7 @@ export default function BasicReports() {
         </div>
       )}
 
-      {artifactError && <div className="no-print rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">{artifactError}</div>}
+      {artifactError && <ErrorNotice className="no-print rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{artifactError}</ErrorNotice>}
       {artifactNotice && <div className="no-print rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800" role="status">{artifactNotice}</div>}
 
       {loading ? (

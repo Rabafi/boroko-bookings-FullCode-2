@@ -4,6 +4,7 @@ import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, C
 import { StatusBadge } from './shared/StatusBadge'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { ContextDrawer } from './shared/ContextDrawer'
 import { DataViewToolbar } from './shared/DataViewToolbar'
 import UsageLimitIndicator from './shared/UsageLimitIndicator'
@@ -889,7 +890,7 @@ function RoomsTab() {
             </Field>
 
             {error && (
-              <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{error}</ErrorNotice>
             )}
 
             <div className="flex gap-3 pt-2">
@@ -1260,7 +1261,7 @@ function AvailabilityRulesTab() {
               </p>
             )}
             {rateError && (
-              <div className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{rateError}</div>
+              <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2 text-sm text-red-600">{rateError}</ErrorNotice>
             )}
             <div className="flex gap-3">
               <button type="button" onClick={() => { setRateForm(null); setEditingRate(null) }} className="btn-secondary flex-1">Cancel</button>

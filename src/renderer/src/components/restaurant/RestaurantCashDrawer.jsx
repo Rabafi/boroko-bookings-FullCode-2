@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Wallet, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
 import { unpackTransport } from '../../transportUnpack'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 export default function RestaurantCashDrawer() {
   const [drawer, setDrawer] = useState(null)
@@ -125,7 +126,7 @@ export default function RestaurantCashDrawer() {
         <button onClick={loadDrawer} className="bb-btn-outline flex items-center gap-2 px-4 text-sm"><RefreshCw size={14} /> Refresh</button>
       </div>
 
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
       {notice && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div>}
 
       {loading ? (

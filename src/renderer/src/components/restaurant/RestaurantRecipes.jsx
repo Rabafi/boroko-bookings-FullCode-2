@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { Plus, Pencil, Trash2, X } from "lucide-react";
+import { ErrorNotice } from "../shared/ErrorNotice";
 
 export default function RestaurantRecipes() {
   const [searchParams] = useSearchParams();
@@ -215,9 +216,9 @@ export default function RestaurantRecipes() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <ErrorNotice className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error}
-        </div>
+        </ErrorNotice>
       )}
       {notice && (
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
@@ -386,9 +387,9 @@ export default function RestaurantRecipes() {
             </div>
             <div className="space-y-3">
               {error && (
-                <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
                   {error}
-                </div>
+                </ErrorNotice>
               )}
               <div>
                 <label className="text-xs font-medium text-gray-600">

@@ -425,6 +425,39 @@ export async function resetCompanyUserPassword(targetLodgeId, userId, password) 
   return { success: true, audit };
 }
 
+export async function resetCompanyUserPin(targetLodgeId, userId, pin) {
+  if (!state.isOnline) throw new Error('Requires internet connection');
+  const digits = String(pin || '').trim();
+  if (!/^\d{4,6}$/.test(digits)) throw new Error('Staff PIN must be 4–6 digits.');
+
+  const user = (await getCompanyUsers(targetLodgeId)).find((entry) => entry.id === userId);
+  if (!user) throw new Error('Staff account not found.');
+  if (String(user.status || 'active').toLowerCase() !== 'active') {
+    throw new Error('PINs can only be reset on active staff accounts.');
+  }
+
+  // Hash lodge-side exactly like the lodge Staff screen does; the plaintext
+  // PIN never leaves this call frame and is never logged or audited.
+  const pin_hash = bcrypt.hashSync(digits, 10);
+  const { data: result, error } = await requireAdmin().rpc('update_user_profile', {
+    p_id: userId,
+    p_lodge_id: targetLodgeId,
+    payload: { pin_hash }
+  });
+  if (error) throw new Error(error.message);
+  if (!result?.success) throw new Error(result?.error || 'Could not reset staff PIN');
+
+  // The pin_hash change also fires the server staff_approval_pin_changed
+  // audit trigger; this records the Command Central actor alongside it.
+  const audit = await logAdminActivity(targetLodgeId, null, 'company_user_pin_reset', {
+    entity_type: 'user',
+    entity_id: userId,
+    user_email: user?.email || null,
+    user_role: user?.role || null
+  });
+  return { success: true, audit };
+}
+
 export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
 
@@ -1082,13 +1115,19 @@ export async function createSupportTicket({ lodge_id, lodge_name, title, descrip
   single();
   if (error) throw new Error(error.message);
   if (data?.id) {
-    await state.adminDb.from('support_ticket_messages').insert({
-      ticket_id: data.id,
-      lodge_id: targetLodgeId,
-      body: description,
-      ...author,
-      metadata: { source: 'desktop_support_modal' }
-    }).catch(() => {});
+    // PostgREST query builders are thenable via await but do not implement
+    // .catch — chain it and every ticket creation on an adminDb machine throws
+    // "catch is not a function" AFTER the ticket already exists. try/catch
+    // around await is the safe fire-and-forget shape here.
+    try {
+      await state.adminDb.from('support_ticket_messages').insert({
+        ticket_id: data.id,
+        lodge_id: targetLodgeId,
+        body: description,
+        ...author,
+        metadata: { source: 'desktop_support_modal' }
+      });
+    } catch {}
   }
   return { success: true, id: data?.id || null };
 }
@@ -1206,13 +1245,17 @@ export async function updateSupportTicket(id, updates) {
     maybeSingle();
     const author = getSupportAuthor('command_central');
     if (ticket?.lodge_id) {
-      await requireAdmin().from('support_ticket_messages').insert({
-        ticket_id: id,
-        lodge_id: ticket.lodge_id,
-        body: note,
-        ...author,
-        metadata: { source: 'command_central_update' }
-      }).catch(() => {});
+      // Same builder rule as createSupportTicket above: await in try/catch,
+      // never .catch() on the builder itself.
+      try {
+        await requireAdmin().from('support_ticket_messages').insert({
+          ticket_id: id,
+          lodge_id: ticket.lodge_id,
+          body: note,
+          ...author,
+          metadata: { source: 'command_central_update' }
+        });
+      } catch {}
     }
   }
   return { success: true };

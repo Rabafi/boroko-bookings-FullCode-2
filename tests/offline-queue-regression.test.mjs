@@ -5,13 +5,20 @@ import path from 'node:path'
 import { state } from '../src/main/state.js'
 import {
   appendOperationJournalEntry,
+  readFailedSyncQueue,
   readOfflineModeState,
   readOperationJournal,
+  readSyncQueue,
+  writeFailedSyncQueue,
   writeLocalOperationsBundle,
   writeOfflineModeState,
   writeSyncQueue
 } from '../src/main/domains/syncStore.js'
 import { pickNextReadySyncItemIndex } from '../src/shared/syncQueue.js'
+import {
+  collectNewDiskQueueArrivals,
+  mergeDeadLetterQueues
+} from '../src/main/domains/syncShared.js'
 
 async function read(path) {
   try {
@@ -420,7 +427,7 @@ async function run() {
   assert.match(database, /modifier_option_ids: Array\.isArray\(item\.modifier_option_ids\)/)
   assert.match(database, /modifier_option_ids: Array\.isArray\(i\.modifier_option_ids\)/)
   assert.match(database, /refreshTargets\.push\('pos-orders'\)/)
-  assert.match(database, /const link = resolveQueuedPosInventoryLink\(entry, \{ outletId \}\)/)
+  assert.match(database, /resolveQueuedPosInventoryLinkIndexed\(entry, \{ outletId/)
   assert.match(posUi, /Pending Sync/)
   assert.match(posUi, /Failed Sync/)
   assert.match(posUi, /Needs Attention/)
@@ -467,6 +474,165 @@ async function run() {
   assert.match(dayUseUi, /window\.api\.dayuse\.getAll\(selectedDate, selectedDate\)/)
   assert.match(dayUseUi, /window\.api\.sync\.onStatusChanged\(\(\) => \{/)
   assert.match(dayUseUi, /window\.api\.dayuse\.delete\(id\)/)
+
+  // POS void deterministic outcomes must not churn the queue forever: a void
+  // refused with `Order not found` (server checks the order row before any
+  // PIN validation) or `Cannot void a settled order` can never succeed with
+  // identical bytes, so it dead-letters manual-review-only (visible in System
+  // Health, excluded from auto-retry) instead of cycling retries and the
+  // 30-minute auto-requeue. `Order is already voided` is the desired end
+  // state and is consumed as synced.
+  assert.match(database, /function isTerminalPosVoidFailure\(item, errorMessage = ''\)/)
+  assert.match(database, /item\?\.table !== 'approve_pos_void_with_pin'/)
+  assert.match(database, /Order not found\|Cannot void a settled order/)
+  assert.match(database, /if \(isTerminalPosVoidFailure\(item, errorMessage\)\) return true/)
+  assert.match(database, /item\?\.table === 'approve_pos_void_with_pin' && \/Order is already voided\/i/)
+  // A skip behind a parent that can never replay (manual-only dead this run,
+  // already manual-only, or gone entirely) parks the child manual-only too;
+  // a fail-then-succeed parent in the same run must not keep blocking.
+  assert.match(database, /failedQueueIds\.has\(dependencyId\) && !completedQueueIds\.has\(dependencyId\)/)
+  assert.match(database, /parentUnresolvable/)
+  assert.match(database, /can no longer succeed; manager review required/)
+
+  const terminalVoidMatch = database.match(/function isTerminalPosVoidFailure\(item, errorMessage = ''\) \{[\s\S]*?\n\}/)
+  assert.ok(terminalVoidMatch, 'isTerminalPosVoidFailure helper missing')
+  const isTerminalPosVoidFailure = new Function(`${terminalVoidMatch[0]}; return isTerminalPosVoidFailure;`)()
+  const voidItem = { type: 'rpc', table: 'approve_pos_void_with_pin' }
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'Order not found'), true)
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'Cannot void a settled order'), true)
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'Order is already voided'), false)
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'Invalid PIN or unauthorized approver'), false)
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'TypeError: fetch failed'), false)
+  assert.equal(isTerminalPosVoidFailure({ type: 'rpc', table: 'create_pos_order_v3' }, 'Order not found'), false)
+  assert.equal(isTerminalPosVoidFailure({ type: 'insert', table: 'approve_pos_void_with_pin' }, 'Order not found'), false)
+
+  // Sync-status dependency resolution must never re-read a cache file per
+  // dependency id: a bulk-run cash-up can fan out to thousands of
+  // `_depends_on_all` ids, and one 4.5MB pos-orders parse per id blocked the
+  // main thread for minutes on every 30s UI status poll (frozen boot).
+  // One shared index per computation parses each touched file once.
+  assert.match(database, /function createDependencyCacheResolver\(\)/)
+  assert.match(database, /rowsByCache/)
+  assert.match(database, /const resolver = createDependencyCacheResolver\(\)/)
+  assert.match(database, /resolver\.isResolved\(dependencyId\)/)
+  assert.match(database, /classifySyncDependencyCategory\(item = \{\}, pending = \[\], failed = \[\], resolveDep = null\)/)
+  assert.match(database, /const depResolver = createDependencyCacheResolver\(\)\.isResolved/)
+  assert.match(database, /buildSyncGroupedCounts\(pending, failed, depResolver\)/)
+  assert.match(database, /pendingIdSet/)
+  assert.match(database, /failedIdSet/)
+
+  // Orphaned local void records (queue entry gone, row still pending) must
+  // never silently block certified history forever, and must never be
+  // discarded when the server actually confirmed them. Eligibility is pure
+  // and fail-closed: server-confirmed resolves to synced, queue-backed rows
+  // stay on the queue path, offline-equivalent unknowns refuse.
+  assert.match(database, /function resolveLocalVoidDiscardEligibility\(/)
+  assert.match(database, /discardLocalPosVoidRecord/)
+  assert.match(database, /financial_void_record_discarded/)
+  assert.match(database, /void_record_discarded/)
+  assert.match(database, /removeLocalPosVoidHistory/)
+  assert.match(mainIndex, /ipcMain\.handle\('pos:discardLocalVoidRecord'/)
+  assert.match(mainIndex, /pos:discardLocalVoidRecord[\s\S]{0,140}requireCapability\('sync\.manage'\)/)
+  assert.match(preload, /discardLocalVoidRecord/)
+  const discardMatch = database.match(/export function resolveLocalVoidDiscardEligibility\(\{[\s\S]*?\r?\n\}\r?\n/)
+  assert.ok(discardMatch, 'resolveLocalVoidDiscardEligibility helper missing')
+  const resolveLocalVoidDiscardEligibility = new Function(`${discardMatch[0].replace(/^export\s+/, '')}; return resolveLocalVoidDiscardEligibility;`)()
+  const pendingRow = { id: 'v1', order_id: 'o1', _pending_sync: true, _sync_state: 'failed' }
+  assert.equal(resolveLocalVoidDiscardEligibility({}).ok, false)
+  assert.equal(resolveLocalVoidDiscardEligibility({ localRow: { id: 'v1', _pending_sync: false, _sync_state: 'synced' } }).code, 'already_synced')
+  assert.equal(resolveLocalVoidDiscardEligibility({ localRow: pendingRow, queueRefs: [{ _queue_id: 'q' }] }).code, 'queue_backed')
+  assert.equal(resolveLocalVoidDiscardEligibility({ localRow: pendingRow, serverOverrideById: { id: 'v1' } }).code, 'server_confirmed')
+  const orphan = resolveLocalVoidDiscardEligibility({ localRow: pendingRow })
+  assert.equal(orphan.ok, true)
+  assert.equal(orphan.disposition, 'orphan')
+  const stands = resolveLocalVoidDiscardEligibility({ localRow: pendingRow, serverOrder: { id: 'o1', status: 'completed', total: 48 } })
+  assert.equal(stands.ok, true)
+  assert.equal(stands.disposition, 'order_stands')
+  const superseded = resolveLocalVoidDiscardEligibility({ localRow: pendingRow, serverOrder: { id: 'o1', status: 'completed' }, serverVoidsForOrder: [{ id: 'other' }] })
+  assert.equal(superseded.ok, true)
+  assert.equal(superseded.disposition, 'superseded')
+
+  // P0-1 replay write fence: every whole-file queue write inside the replay
+  // loop must merge unknown on-disk arrivals first, or a sale rung during an
+  // RPC await is silently erased by the stale in-memory snapshot.
+  assert.match(database, /function collectNewDiskQueueArrivals\(/)
+  assert.match(database, /function absorbNewDiskQueueArrivals\(/)
+  assert.match(database, /function writeReplayQueue\(/)
+  assert.match(database, /writeReplayQueue\(pending, \{ inFlightItem: item, completedQueueIds, deadLetter \}\)/)
+  assert.match(database, /writeReplayQueue\(pending, \{ completedQueueIds, deadLetter \}\)/)
+  assert.match(database, /absorbNewDiskQueueArrivals\(pending, \{ completedQueueIds, deadLetter, inFlightItem: null \}\)/)
+  {
+    const pending = [{ _queue_id: 'a', type: 'rpc', table: 'create_pos_order_v3', data: {} }]
+    const disk = [
+      { _queue_id: 'a', type: 'rpc', table: 'create_pos_order_v3', data: {} },
+      { _queue_id: 'b', type: 'rpc', table: 'create_pos_order_v3', data: { payload: { id: 'b' } } }
+    ]
+    // New arrival B must be returned; in-flight/currently-pending A must not.
+    const arrivals = collectNewDiskQueueArrivals(pending, disk, { completedIds: new Set(), deadIds: new Set(), inFlightId: null })
+    assert.equal(arrivals.length, 1)
+    assert.equal(arrivals[0]._queue_id, 'b')
+    // Completed and dead ids must never resurrect, even if a concurrent
+    // writer still shows them on disk.
+    assert.equal(collectNewDiskQueueArrivals([], disk, { completedIds: new Set(['a', 'b']), deadIds: new Set() }).length, 0)
+    assert.equal(collectNewDiskQueueArrivals([], disk, { completedIds: new Set(), deadIds: new Set(['a', 'b']) }).length, 0)
+    assert.equal(collectNewDiskQueueArrivals([], disk, { completedIds: new Set(), deadIds: new Set(), inFlightId: 'b' }).map((row) => row._queue_id).join(','), 'a')
+    // Enqueue-during-in-flight end-to-end against real queue files: replay
+    // holds [A] in memory showing in-flight on disk, B arrives on disk, the
+    // fence absorbs B instead of erasing it.
+    const fenceRoot = await mkdtemp(path.join(os.tmpdir(), 'boroko-replay-fence-'))
+    const savedCacheDir = state.cacheDir
+    try {
+      state.cacheDir = fenceRoot
+      writeSyncQueue([{ _queue_id: 'a', type: 'rpc', table: 'create_pos_order_v3', data: {}, _state: 'in_flight' }])
+      const replayPending = [{ _queue_id: 'a', type: 'rpc', table: 'create_pos_order_v3', data: {} }]
+      // Concurrent sale B lands on disk while replay awaits the RPC.
+      writeSyncQueue([
+        { _queue_id: 'a', type: 'rpc', table: 'create_pos_order_v3', data: {}, _state: 'in_flight' },
+        { _queue_id: 'b', type: 'rpc', table: 'create_pos_order_v3', data: { payload: { id: 'b' } } }
+      ])
+      // Exercise the same pure contract the loop uses (infrastructure imports
+      // Electron, so the file-level pin above guards the wiring instead).
+      const absorbed = collectNewDiskQueueArrivals(replayPending, readSyncQueue(), { completedIds: new Set(), deadIds: new Set(), inFlightId: 'a' })
+      for (const row of absorbed) replayPending.push(row)
+      assert.equal(replayPending.map((row) => row._queue_id).sort().join(','), 'a,b')
+    } finally {
+      state.cacheDir = savedCacheDir
+      await rm(fenceRoot, { recursive: true, force: true })
+    }
+  }
+
+  // P0-2 incremental dead-letter persistence: a poison op must reach
+  // sync-failed.json immediately, not only at run end, or a crash mid-replay
+  // drops it from both operational queues.
+  assert.match(database, /function persistDeadLetterIncrementally\(/)
+  assert.match(database, /persistDeadLetterIncrementally\(blockedItem\)/)
+  assert.match(database, /persistDeadLetterIncrementally\(skipped\)/)
+  assert.match(database, /persistDeadLetterIncrementally\(updatedItem\)/)
+  assert.match(database, /mergeDeadLetterQueues\(readFailedSyncQueue\(\), deadLetter\)/)
+  assert.match(database, /function mergeDeadLetterQueues\(/)
+  {
+    assert.deepEqual(mergeDeadLetterQueues([], [{ _queue_id: 'a' }]).map((row) => row._queue_id), ['a'])
+    assert.deepEqual(
+      mergeDeadLetterQueues([{ _queue_id: 'a', lastError: 'old' }], [{ _queue_id: 'a', lastError: 'new' }]).map((row) => row.lastError),
+      ['new']
+    )
+    assert.equal(mergeDeadLetterQueues([{ _queue_id: 'a' }], [{ _queue_id: 'a' }]).length, 1)
+    const crashRoot = await mkdtemp(path.join(os.tmpdir(), 'boroko-dead-letter-'))
+    const savedCacheDir = state.cacheDir
+    try {
+      state.cacheDir = crashRoot
+      writeFailedSyncQueue([])
+      // Simulate two incremental persists with a crash between them: the first
+      // must already be durable without any run-end flush.
+      writeFailedSyncQueue(mergeDeadLetterQueues(readFailedSyncQueue(), [{ _queue_id: 'poison-1', lastError: 'Order not found' }]))
+      assert.equal(readFailedSyncQueue().map((row) => row._queue_id).join(','), 'poison-1')
+      writeFailedSyncQueue(mergeDeadLetterQueues(readFailedSyncQueue(), [{ _queue_id: 'poison-2', lastError: 'Cannot void a settled order' }]))
+      assert.equal(readFailedSyncQueue().map((row) => row._queue_id).sort().join(','), 'poison-1,poison-2')
+    } finally {
+      state.cacheDir = savedCacheDir
+      await rm(crashRoot, { recursive: true, force: true })
+    }
+  }
 
   console.log('offline-queue-regression: ok')
 }

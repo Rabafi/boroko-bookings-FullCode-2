@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Search, Star, Ban, Eye, ThumbsUp, ThumbsDown, Crown, StickyNote } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { useAccess } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
 
@@ -210,7 +211,7 @@ export default function GuestCRM() {
         <button onClick={loadVipList} className="btn-primary"><Crown size={15} /> VIP List</button>
       </div>
 
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</ErrorNotice>}
       {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
 
       <section className="bb-card p-5">

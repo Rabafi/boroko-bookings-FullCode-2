@@ -6,6 +6,7 @@ import { useAccess, useSettings } from '../app-context'
 import { isBarOnlyMode, isRestaurantOnly } from '../../../shared/propertyTypes'
 import { canAccessCapability } from '../../../shared/accessControl'
 import { HposButton, HposEmptyState, HposNotice, HposPageHero, HposStatusBadge } from './hospitality-pos/HposUi'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const emptyOutlet = { name: '', code: '', pos_type: 'restaurant', active: true }
 
@@ -52,7 +53,7 @@ function RestaurantMultiOutlet({ barOnly = false }) {
   const [editingStockLocation, setEditingStockLocation] = useState(null)
   const [stockLocationName, setStockLocationName] = useState('')
   const [editingOutlet, setEditingOutlet] = useState(null)
-  const [outletForm, setOutletForm] = useState({ name: '', type: barOnly ? 'beverage' : 'food', is_active: true, sort_order: '0' })
+  const [outletForm, setOutletForm] = useState({ name: '', type: barOnly ? 'beverage' : 'food', is_active: true, sort_order: '0', cash_model: barOnly ? 'shared_drawer' : 'personal_bank' })
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -174,6 +175,7 @@ function RestaurantMultiOutlet({ barOnly = false }) {
       type: outlet?.type || (barOnly ? 'beverage' : 'food'),
       is_active: outlet?.is_active !== false,
       sort_order: String(outlet?.sort_order ?? outlets.length),
+      cash_model: outlet?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank',
     })
     setError('')
   }
@@ -188,6 +190,15 @@ function RestaurantMultiOutlet({ barOnly = false }) {
         ? await window.api?.pos?.updateRestaurantOutlet?.(editingOutlet.id, payload)
         : await window.api?.pos?.createRestaurantOutlet?.(payload)
       if (!result?.success) throw new Error(result?.error || 'Could not save outlet.')
+      // Cash counting changes only through the guarded switch: it needs an
+      // admin and zero open financial activity in the outlet.
+      const savedId = editingOutlet?.id || result?.outlet?.id || null
+      const wantedModel = payload.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
+      const currentModel = editingOutlet?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
+      if (savedId && (!editingOutlet?.id || wantedModel !== currentModel)) {
+        const modelResult = await window.api?.pos?.setOutletCashModel?.(savedId, wantedModel)
+        if (!modelResult?.success) throw new Error(modelResult?.error || 'Outlet saved, but the cash counting model could not be changed.')
+      }
       setEditingOutlet(null)
       setNotice(editingOutlet?.id ? 'Outlet updated. Its future sales, stock custody, and reporting scope remain traceable.' : 'Outlet created. Assign appropriate staff access before using it for service.')
       await load()
@@ -267,6 +278,7 @@ function RestaurantMultiOutlet({ barOnly = false }) {
           <p className="hpos-outlet-editor__intro">Create a separate outlet only when it needs its own cash accountability, stock custody, or reporting. Another till at the same {barOnly ? 'bar' : 'venue'} does not need another outlet.</p>
           <label className="hpos-outlet-editor__field">Outlet name<span>Use the name staff and managers will recognise.</span><input autoFocus required value={outletForm.name} onChange={(event) => setOutletForm({ ...outletForm, name: event.target.value })} placeholder="For example, Rooftop Bar" /></label>
           <label className="hpos-outlet-editor__field">Service type<select value={outletForm.type} onChange={(event) => setOutletForm({ ...outletForm, type: event.target.value })}>{!barOnly && <option value="food">Restaurant / food service</option>}<option value="beverage">Bar / beverage service</option><option value="accommodation">Other service outlet</option></select></label>
+          <label className="hpos-outlet-editor__field">Cash counting<span>One shared drawer counts once; separate pouches keep personal cash-ups. Changing this later needs an admin and zero open shifts, periods or reviews.</span><select value={outletForm.cash_model} onChange={(event) => setOutletForm({ ...outletForm, cash_model: event.target.value })}><option value="shared_drawer">One shared drawer</option><option value="personal_bank">Separate pouches</option></select></label>
           <label className="hpos-outlet-editor__field hpos-outlet-editor__field--order">Display priority<span>Lower numbers appear first.</span><input type="number" min="0" max="9999" inputMode="numeric" value={outletForm.sort_order} onChange={(event) => setOutletForm({ ...outletForm, sort_order: event.target.value })} /></label>
           {editingOutlet.id && <label className="hpos-outlet-editor__toggle"><input type="checkbox" checked={outletForm.is_active} onChange={(event) => setOutletForm({ ...outletForm, is_active: event.target.checked })} /><span><strong>Active outlet</strong><small>Available for new service and reporting.</small></span></label>}
           <div className="hpos-outlet-editor__actions"><button type="button" className="bb-btn-outline" onClick={() => setEditingOutlet(null)}>Cancel</button><button disabled={saving} className="bb-btn-primary">{saving ? 'Saving…' : editingOutlet.id ? 'Save changes' : 'Create outlet'}</button></div>
@@ -384,7 +396,7 @@ function LegacyMultiOutletPos() {
         </div>
       </div>
 
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"><AlertTriangle size={14} className="mr-1 inline" />{error}</div>}
+      {error && <ErrorNotice className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"><AlertTriangle size={14} className="mr-1 inline" />{error}</ErrorNotice>}
       {success && <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700">✓ {success}</div>}
 
       <div className="flex gap-1 border-b border-gray-200">

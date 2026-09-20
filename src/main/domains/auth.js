@@ -103,6 +103,7 @@ export {
   createUser,
   updateUser,
   resetUserPassword,
+  changeOwnStaffPin,
   getStaffAccessAudit,
   getAuthStatus,
   deleteUser

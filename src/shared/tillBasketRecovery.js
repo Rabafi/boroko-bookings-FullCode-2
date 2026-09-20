@@ -7,7 +7,7 @@
 
 export const BASKET_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
-export const QUICK_CASH_AMOUNTS = Object.freeze([50, 100, 200]);
+export const QUICK_CASH_AMOUNTS = Object.freeze([20, 50, 100, 200]);
 
 /**
  * Scope an unsent basket/hold intent to tenant + outlet + operator + shift.
@@ -123,13 +123,28 @@ export function readinessCacheKey(lodgeId) {
  * Resolve a readiness fetch into Till state. Success replaces the cache;
  * failure falls back to a fresh approved cache as "stale" (selling
  * continues on last verified data, explicitly labeled); with no cache the
- * state is failed and selling blocks until refresh.
+ * state is failed and selling blocks until refresh. `counts` carries the
+ * counted on-hand quantity per sellable for automatic sold-out (direct
+ * rows only; absent on old servers and stays empty there).
  */
 export function resolveReadinessState(fetchResult, cached, now = Date.now()) {
+  const countsOf = (rows) => {
+    const counts = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      // Null means "uncounted" (non-stock, recipe, unlinked): it must never
+      // read as zero — Number(null) is 0, so null is skipped explicitly.
+      if (row?.on_hand === null || row?.on_hand === undefined) continue;
+      const qty = Number(row.on_hand);
+      if (!row?.menu_item_id || !Number.isFinite(qty)) continue;
+      counts.set(row.menu_item_id, { qty, unit: String(row?.stock_unit || 'each') });
+    }
+    return counts;
+  };
   if (fetchResult?.success && Array.isArray(fetchResult.rows)) {
     return {
       status: "ready",
       map: new Map(fetchResult.rows.map((row) => [row?.menu_item_id, row?.readiness])),
+      counts: countsOf(fetchResult.rows),
       cachedAt: null,
     };
   }
@@ -141,10 +156,11 @@ export function resolveReadinessState(fetchResult, cached, now = Date.now()) {
     return {
       status: "stale",
       map: new Map(freshCache.rows.map((row) => [row?.menu_item_id, row?.readiness])),
+      counts: countsOf(freshCache.rows),
       cachedAt: freshCache.at,
     };
   }
-  return { status: "failed", map: new Map(), cachedAt: null, error: fetchResult?.error || null, code: fetchResult?.code || null };
+  return { status: "failed", map: new Map(), counts: new Map(), cachedAt: null, error: fetchResult?.error || null, code: fetchResult?.code || null };
 }
 
 /**

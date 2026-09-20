@@ -862,6 +862,75 @@ export async function resetUserPassword(id, password) {
   logActivity('staff_password_reset', `${existingUser.name || existingUser.email} · desktop password updated`);
 }
 
+export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newPin } = {}) {
+  // Self-service Staff PIN change for the signed-in operator (bartenders,
+  // cashiers and everyone else). Admin/manager override via updateUser is
+  // unchanged. Online-only: the authoritative check + hash live in the
+  // change_own_staff_pin RPC so retries stay idempotent and audited via the
+  // existing staff_approval_pin_changed trigger.
+  const actorId = state.currentUser?.id || null;
+  if (!actorId) throw new Error('Sign in again before changing your Staff PIN.');
+  const newDigits = String(new_pin ?? newPin ?? '').trim();
+  if (!/^[0-9]{4,6}$/.test(newDigits)) throw new Error('Staff PIN must be 4–6 digits.');
+  const currentDigits = String(current_pin ?? currentPin ?? '').trim();
+
+  const cachedUsers = readCache('users') || [];
+  const cachedSelf = cachedUsers.find((entry) => entry?.id === actorId) || null;
+  const hasPin = Boolean(cachedSelf?.pin_hash);
+  if (hasPin && !currentDigits) {
+    throw new Error('Enter your current Staff PIN to set a new one. If you forgot it, ask an admin to reset it in Staff Management.');
+  }
+  if (hasPin && currentDigits && currentDigits === newDigits) {
+    throw new Error('The new PIN must be different from the current PIN.');
+  }
+
+  if (!state.isOnline || !state.supabase) {
+    throw new Error('Connect to the internet to change your Staff PIN, then try again.');
+  }
+  if (!state.lodgeId) throw new Error('A business context is required to change your Staff PIN.');
+
+  const { data: result, error } = await state.supabase.rpc('change_own_staff_pin', {
+    payload: {
+      lodge_id: state.lodgeId,
+      current_pin: currentDigits || null,
+      new_pin: newDigits,
+      device_id: `desktop-${String(state.lodgeId).slice(0, 8)}`
+    }
+  });
+  if (error) {
+    const message = String(error.message || '');
+    if (/could not find the function|PGRST202|does not exist|schema cache/i.test(message)) {
+      throw new Error('This app can change your PIN, but the database update is not deployed yet. Ask an admin to set it in Staff Management for now.');
+    }
+    throw new Error(message || 'Could not change your Staff PIN.');
+  }
+  if (!result?.success) throw new Error(result?.error || 'Could not change your Staff PIN.');
+
+  // Keep the trusted offline verifier working on this computer without
+  // queueing a second write (the server already committed + audited).
+  try {
+    const newHash = bcrypt.hashSync(newDigits, 10);
+    const cached = readCache('users') || [];
+    const idx = cached.findIndex((entry) => entry?.id === actorId);
+    if (idx >= 0) {
+      cached[idx] = { ...cached[idx], pin_hash: newHash };
+      writeCache('users', cached);
+    }
+    await refreshCache('users').catch(() => {});
+    try {
+      const after = readCache('users') || [];
+      const nextIdx = after.findIndex((entry) => entry?.id === actorId);
+      if (nextIdx >= 0 && !after[nextIdx]?.pin_hash) {
+        after[nextIdx] = { ...after[nextIdx], pin_hash: newHash };
+        writeCache('users', after);
+      }
+    } catch { /* keep the locally-hashed PIN when the server read omits it */ }
+  } catch { /* cache update is best-effort; the server commit already succeeded */ }
+
+  logActivity('staff_approval_pin_changed', `${state.currentUser?.name || state.currentUser?.email || 'Staff account'} · own Staff PIN updated`);
+  return { success: true };
+}
+
 export async function getAuthStatus(email = '') {
   await checkOnline();
   if (!state.lodgeId) {

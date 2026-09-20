@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Plus, X, Clock, Users, Phone, CalendarDays, MessageCircle, Check, Armchair, CircleOff, Edit3, Trash2 } from 'lucide-react'
+import { ErrorNotice } from '../shared/ErrorNotice'
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear()
@@ -248,7 +249,7 @@ export default function RestaurantReservations() {
           </button>
         </div>
       </div>
-      {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</ErrorNotice>}
       {notice && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</div>}
 
       {loading ? (

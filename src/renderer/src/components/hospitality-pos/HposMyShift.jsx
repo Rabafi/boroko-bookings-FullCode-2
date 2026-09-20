@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ArrowRight, CircleDollarSign, ClipboardList, Clock3, LogIn, LogOut, MessageSquareHeart, RefreshCw, Store, WalletCards, ShieldAlert } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowRight, CircleDollarSign, ClipboardList, Clock3, KeyRound, LogIn, LogOut, MessageSquareHeart, RefreshCw, ShieldCheck, Store, WalletCards, ShieldAlert } from 'lucide-react'
 import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
@@ -11,6 +11,91 @@ import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
 function formatTime(value) {
   if (!value) return '—'
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function MyStaffPinCard() {
+  const { user } = useAuth()
+  const [hasPin, setHasPin] = useState(null)
+  const [currentPin, setCurrentPin] = useState('')
+  const [newPin, setNewPin] = useState('')
+  const [confirmPin, setConfirmPin] = useState('')
+  const [savingPin, setSavingPin] = useState(false)
+  const [pinError, setPinError] = useState('')
+  const [pinNotice, setPinNotice] = useState('')
+
+  useEffect(() => {
+    let active = true
+    window.api?.pos?.getStaff?.().then((rows) => {
+      if (!active) return
+      const list = Array.isArray(rows) ? rows : []
+      const self = list.find((row) => row?.id === user?.id) || null
+      setHasPin(self ? self.has_pin !== false : null)
+    }).catch(() => { if (active) setHasPin(null) })
+    return () => { active = false }
+  }, [user?.id])
+
+  useEffect(() => {
+    if (String(window.location.hash || '').includes('my-staff-pin')) {
+      const timer = window.setTimeout(() => {
+        document.getElementById('my-staff-pin')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 150)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [])
+
+  const submitPin = async (event) => {
+    event.preventDefault()
+    if (savingPin) return
+    setPinError('')
+    setPinNotice('')
+    const next = String(newPin || '').trim()
+    const confirm = String(confirmPin || '').trim()
+    const current = String(currentPin || '').trim()
+    if (!/^[0-9]{4,6}$/.test(next)) { setPinError('Staff PIN must be 4–6 digits.'); return }
+    if (next !== confirm) { setPinError('The new PIN entries do not match.'); return }
+    if (hasPin !== false && !current) { setPinError('Enter your current Staff PIN to set a new one. If you forgot it, ask an admin to reset it in Staff Management.'); return }
+    if (hasPin !== false && current === next) { setPinError('The new PIN must be different from the current PIN.'); return }
+    if (typeof window.api?.users?.changeOwnPin !== 'function') {
+      setPinError('This app build cannot change your PIN yet. Close and reopen the app fully (not just refresh), then try again.');
+      return
+    }
+    setSavingPin(true)
+    try {
+      const result = await window.api.users.changeOwnPin({ current_pin: current || null, new_pin: next })
+      if (!result?.success) throw new Error(result?.error || 'Could not change your Staff PIN.')
+      setCurrentPin(''); setNewPin(''); setConfirmPin('')
+      setHasPin(true)
+      setPinNotice('Your Staff PIN was updated. Use the new PIN at the Till from now on.')
+    } catch (pinSaveError) {
+      setPinError(pinSaveError?.message || 'Could not change your Staff PIN.')
+    } finally {
+      setSavingPin(false)
+    }
+  }
+
+  return <section className="hpos-my-shift-card" aria-label="My Staff PIN" id="my-staff-pin">
+    <div className="hpos-my-shift-status">
+      <span><KeyRound size={24} /></span>
+      <div><p>Personal account</p><h2>My Staff PIN</h2></div>
+      <HposStatusBadge tone={hasPin === false ? 'warning' : 'neutral'}>{hasPin === false ? 'No PIN yet' : 'Private to you'}</HposStatusBadge>
+    </div>
+    <form onSubmit={submitPin} style={{ display: 'grid', gap: '12px', padding: '8px 24px 26px' }}>
+      <p style={{ margin: 0, color: '#7f6e76', fontSize: '12px', lineHeight: 1.55 }}>
+        {user?.name ? `${user.name}, set` : 'Set'} your own Till PIN here while signed in. Admins keep the right to reset it in Staff Management.
+        If you forgot your current PIN, ask an admin to reset it — never share PINs.
+      </p>
+      {pinError && <HposNotice tone="error">{pinError}</HposNotice>}
+      {pinNotice && <HposNotice>{pinNotice}</HposNotice>}
+      {hasPin !== false && <label style={{ display: 'grid', gap: '7px', color: '#613e36', fontSize: '13px', fontWeight: 800 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}><ShieldCheck size={15} /> Current PIN</span><input type="password" inputMode="numeric" autoComplete="off" value={currentPin} onChange={(event) => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={savingPin} placeholder="Enter current PIN" style={{ minHeight: '48px', border: '1px solid rgba(104,66,74,.2)', borderRadius: '11px', background: '#fff', padding: '0 12px', fontSize: '18px', letterSpacing: '.14em', textAlign: 'center' }} /></label>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+        <label style={{ display: 'grid', gap: '7px', color: '#613e36', fontSize: '13px', fontWeight: 800 }}><span>New PIN (4–6 digits)</span><input type="password" inputMode="numeric" autoComplete="new-password" value={newPin} onChange={(event) => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={savingPin} placeholder="New PIN" style={{ minHeight: '48px', border: '1px solid rgba(104,66,74,.2)', borderRadius: '11px', background: '#fff', padding: '0 12px', fontSize: '18px', letterSpacing: '.14em', textAlign: 'center' }} /></label>
+        <label style={{ display: 'grid', gap: '7px', color: '#613e36', fontSize: '13px', fontWeight: 800 }}><span>Confirm new PIN</span><input type="password" inputMode="numeric" autoComplete="new-password" value={confirmPin} onChange={(event) => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={savingPin} placeholder="Repeat new PIN" style={{ minHeight: '48px', border: '1px solid rgba(104,66,74,.2)', borderRadius: '11px', background: '#fff', padding: '0 12px', fontSize: '18px', letterSpacing: '.14em', textAlign: 'center' }} /></label>
+      </div>
+      <HposButton tone="primary" type="submit" icon={KeyRound} disabled={savingPin || !newPin || !confirmPin || (hasPin !== false && !currentPin)}>{savingPin ? 'Saving…' : hasPin === false ? 'Set my PIN' : 'Change my PIN'}</HposButton>
+      <small style={{ color: '#7f6e76', fontSize: '11px', lineHeight: 1.5 }}>Your PIN is checked by the server and never stored on this screen. Changing it here does not change anyone else’s PIN.</small>
+    </form>
+  </section>
 }
 
 export default function HposMyShift() {
@@ -29,6 +114,14 @@ export default function HposMyShift() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  // Errors render above the cards while the action buttons sit below them:
+  // bring a new error into view and focus so it is never missed off-screen.
+  const errorAnchorRef = useRef(null)
+  useEffect(() => {
+    if (!error || !errorAnchorRef.current) return
+    try { errorAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' }) } catch { /* best-effort */ }
+    try { errorAnchorRef.current.focus?.({ preventScroll: true }) } catch { /* best-effort */ }
+  }, [error])
   const [dailyOpening, setDailyOpening] = useState(null)
   const [feedback, setFeedback] = useState({ rating: '5', channel: 'in_store', message: '' })
   const [feedbackSaving, setFeedbackSaving] = useState(false)
@@ -169,7 +262,10 @@ export default function HposMyShift() {
 
   const clockOut = async () => {
     if (!attendance?.id || saving) return
-    if (shift && !['submitted', 'approved'].includes(cashupSubmission?.status)) { setError('Submit My Cash-up before clocking out. A manager can review it after your attendance is closed.'); return }
+    // Shared drawers reconcile collectively at period close: the server lets
+    // attendance close while the drawer stays open. Personal outlets keep the
+    // handover-first rule (unknown models fail closed to it).
+    if (shift && activeOutlet?.cash_model !== 'shared_drawer' && !['submitted', 'approved'].includes(cashupSubmission?.status)) { setError('Submit My Cash-up before clocking out. A manager can review it after your attendance is closed.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
       const result = await window.api?.pos?.clockOutStaff?.({ shiftId: attendance.id })
@@ -201,7 +297,7 @@ export default function HposMyShift() {
       description={shift ? 'Your Till payments are being attributed to this open shift.' : attendance ? 'Your attendance is still active. Clock out here when your work is finished.' : 'Record your opening float before taking payments so cash-up stays accurate.'}
       actions={<HposButton icon={RefreshCw} onClick={() => refresh(outletId)} disabled={loading || saving}>Refresh</HposButton>}
     />
-    {error && <HposNotice tone="error">{error}</HposNotice>}
+    {error && <div ref={errorAnchorRef} tabIndex={-1} data-testid="my-shift-error-anchor"><HposNotice tone="error">{error}</HposNotice></div>}
     {notice && <HposNotice>{notice}</HposNotice>}
     {!barOnly && canManagePos && !loading && dailyOpening?.status !== 'completed' && <section className="hpos-shift-readiness-reminder"><ClipboardList size={20}/><div><strong>{dailyOpening ? 'Opening checklist still has work to complete' : 'Opening checklist has not been started today'}</strong><p>Check service readiness before the shift begins. This reminder does not block an urgent operational start.</p></div><HposButton onClick={() => { window.location.hash = '/hpos/control' }}>Open checks</HposButton></section>}
     <section className="hpos-my-shift-card">
@@ -227,5 +323,6 @@ export default function HposMyShift() {
       <div><span><MessageSquareHeart size={20}/></span><div><p>Guest voice</p><h2>Log guest feedback</h2><small>Send a compliment, concern or request to the manager follow-up queue.</small></div></div>
       <form onSubmit={submitFeedback}><label>Rating<select value={feedback.rating} onChange={(event) => setFeedback({ ...feedback, rating: event.target.value })}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} / 5</option>)}</select></label><label>Channel<select value={feedback.channel} onChange={(event) => setFeedback({ ...feedback, channel: event.target.value })}>{['in_store', 'phone', 'online', 'delivery_platform'].map((channel) => <option key={channel} value={channel}>{channel.replaceAll('_', ' ')}</option>)}</select></label><label className="is-wide">What did the guest say?<textarea required rows="3" value={feedback.message} onChange={(event) => setFeedback({ ...feedback, message: event.target.value })} placeholder="Keep it factual so the manager can follow up." /></label><HposButton tone="primary" type="submit" disabled={feedbackSaving || !feedback.message.trim()}>{feedbackSaving ? 'Sending…' : 'Send to manager'}</HposButton></form>
     </section>}
+    <MyStaffPinCard />
   </div>
 }

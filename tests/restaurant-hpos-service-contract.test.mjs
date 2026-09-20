@@ -223,7 +223,7 @@ assert.match(restaurantGuardRepair, /WHERE lodge_id = p_lodge_id/, 'Restaurant g
 
 assert.match(layout, /hpos-primary-rail/, 'Daily service navigation must stay persistently visible.')
 assert.ok(barModeProfile.includes("{ route: '/hpos/menu', label: 'Menu', iconKey: 'menu'"), 'Restaurant operators must have always-visible menu access during service.')
-assert.match(layout, /navigate\('\/hpos\/manage'\)/, 'Secondary tools must open in a full manager workspace.')
+assert.match(layout, /(navigate|requestManageAccess)\('\/hpos\/manage'\)/, 'Secondary tools must open in a full manager workspace.')
 assert.match(layout, /canAccessCapability/, 'Primary navigation must respect role capabilities.')
 assert.match(manageHub, /getHposMoreItems/, 'The manager hub must use the shared product navigation profile.')
 assert.match(manageHub, /canAccessCapability/, 'The manager hub must filter tools by role capability.')
@@ -242,7 +242,7 @@ assert.match(hposStyles, /\.hpos-money-kpi/, 'Money KPIs must have their own dim
 assert.match(reports, /hpos-money-hero/, 'Restaurant reports must use the modern Money composition.')
 assert.match(expenses, /hpos-money-ledger/, 'Restaurant expenses must use the modern ledger composition.')
 assert.doesNotMatch(`${reports}\n${expenses}\n${cashClose}`, /#4d835d|#386b49|rgba\(34,\s*197,\s*94/, 'Restaurant Money surfaces must not regress to the inherited green palette.')
-assert.match(barModeProfile, /label: 'Cash & close', iconKey: 'cash'/, 'Cash and close must remain a primary action.')
+assert.match(barModeProfile, /route: '\/hpos\/cash', label: 'Cash & close'/, 'Cash and close must remain reachable under Manage.')
 assert.match(barModeProfile, /route: '\/staff', label: 'Staff management'/, 'Restaurant Manage must surface staff-account setup for roster-based shifts.')
 assert.match(accessControl, /'pos\.cashup': 'Open shifts and reconcile cash-up'/, 'Cash-up must be a real capability, not a dead UI permission.')
 

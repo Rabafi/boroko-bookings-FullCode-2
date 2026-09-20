@@ -3,6 +3,7 @@ import { AlertTriangle, Plus, ReceiptText, RefreshCw, Wallet, Split, ArrowRightL
 import { Modal } from './shared/Modal'
 import { StatusBadge } from './shared/StatusBadge'
 import { useSettings } from '../app-context'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const emptyCharge = {
   description: '',
@@ -322,7 +323,7 @@ export default function Folios() {
       </div>
 
       {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
-      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>}
+      {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
       <div className="mb-4 flex gap-1 border-b border-slate-200">
         <button
@@ -482,10 +483,10 @@ export default function Folios() {
                 </div>
 
                 {chargeError && (
-                  <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
+                  <ErrorNotice className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
                     <AlertTriangle size={14} className="shrink-0" />
                     {chargeError}
-                  </div>
+                  </ErrorNotice>
                 )}
 
                 <div className="flex gap-3 pt-2">

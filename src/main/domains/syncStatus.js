@@ -26,24 +26,63 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
 { prefix: 'pool-day-use-', cache: 'pool-day-use' }];
 
 export function isQueuedDependencyResolved(dependencyId) {
-  const normalizedDependencyId = String(dependencyId || '').trim();
-  if (!normalizedDependencyId) return false;
+  const resolved = createDependencyCacheResolver().isResolved(dependencyId);
+  return resolved;
+}
 
-  const target = QUEUED_DEPENDENCY_CACHE_MAP.find(({ prefix }) => normalizedDependencyId.startsWith(prefix));
-  if (!target) return false;
+// Single-id dependency checks read a whole cache file per id. A queue item
+// can legally carry thousands of dependency ids (e.g. a cash-up fanning out
+// to every unsynced order of a bulk offline run), so resolving them one file
+// read at a time blocks the main thread for minutes — every sync-status
+// broadcast and every 30s UI poll froze the app on a 4.5MB pos-orders cache.
+// A resolver parses each touched cache file ONCE per status computation and
+// serves the rest from an in-memory index. Same resolution semantics as
+// isQueuedDependencyResolved; scoped to one computation, never shared across
+// calls, so later file writes are always picked up fresh.
+export function createDependencyCacheResolver() {
+  const rowsByCache = new Map();
+  const indexByCacheField = new Map();
+  const readOnce = (cacheName) => {
+    if (!rowsByCache.has(cacheName)) {
+      const rows = readCache(cacheName);
+      rowsByCache.set(cacheName, Array.isArray(rows) ? rows : []);
+    }
+    return rowsByCache.get(cacheName);
+  };
+  const findRow = (cacheName, idField, entityId) => {
+    const mapKey = `${cacheName}::${idField}`;
+    if (!indexByCacheField.has(mapKey)) {
+      const index = new Map();
+      for (const row of readOnce(cacheName)) {
+        const key = row?.[idField];
+        if (key !== undefined && key !== null && !index.has(String(key))) index.set(String(key), row);
+      }
+      indexByCacheField.set(mapKey, index);
+    }
+    return indexByCacheField.get(mapKey).get(String(entityId)) || null;
+  };
+  const isResolved = (dependencyId) => {
+    const normalizedDependencyId = String(dependencyId || '').trim();
+    if (!normalizedDependencyId) return false;
 
-  const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
-  if (!entityId) return false;
+    const target = QUEUED_DEPENDENCY_CACHE_MAP.find(({ prefix }) => normalizedDependencyId.startsWith(prefix));
+    if (!target) return false;
 
-  const cachedRow = readCache(target.cache).find((entry) => entry?.[target.idField || 'id'] === entityId);
-  if (!cachedRow) return false;
+    const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
+    if (!entityId) return false;
 
-  return cachedRow._pending_sync !== true &&
-  cachedRow._sync_state !== 'manual_review_required' &&
-  cachedRow._sync_state !== 'failed';
+    const cachedRow = findRow(target.cache, target.idField || 'id', entityId);
+    if (!cachedRow) return false;
+
+    return cachedRow._pending_sync !== true &&
+    cachedRow._sync_state !== 'manual_review_required' &&
+    cachedRow._sync_state !== 'failed';
+  };
+  return { isResolved };
 }
 
 function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
+  const resolver = createDependencyCacheResolver();
   const classify = (item = {}, queuePending = [], queueFailed = []) => {
     const dependencyIds = [...new Set([
       item?._depends_on,
@@ -51,9 +90,11 @@ function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
     ].map((value) => String(value || '').trim()).filter(Boolean))];
     if (dependencyIds.length === 0) return 'none';
 
-    if (dependencyIds.some((dependencyId) => queueFailed.some((entry) => entry?._queue_id === dependencyId))) return 'blocked_dependencies';
-    if (dependencyIds.some((dependencyId) => queuePending.some((entry) => entry?._queue_id === dependencyId))) return 'blocked_dependencies';
-    if (dependencyIds.every((dependencyId) => isQueuedDependencyResolved(dependencyId))) return 'resolved';
+    const pendingIds = new Set((queuePending || []).map((entry) => entry?._queue_id).filter(Boolean));
+    const failedIds = new Set((queueFailed || []).map((entry) => entry?._queue_id).filter(Boolean));
+    if (dependencyIds.some((dependencyId) => failedIds.has(dependencyId))) return 'blocked_dependencies';
+    if (dependencyIds.some((dependencyId) => pendingIds.has(dependencyId))) return 'blocked_dependencies';
+    if (dependencyIds.every((dependencyId) => resolver.isResolved(dependencyId))) return 'resolved';
     return 'resolved';
   };
 

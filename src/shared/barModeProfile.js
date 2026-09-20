@@ -74,25 +74,24 @@ export const BAR_ADDON_PATH_FEATURES = Object.freeze({
   '/restaurant/outlet-control': 'multi_outlet_controls'
 })
 
-/** HPOS dock items for bar_only — no floor/kitchen. */
+/** HPOS dock items for bar_only — Sell, tabs and products stay on the rail.
+ *  Stock, Cash & close and Sales live under Manage (manager PIN-gated) so the
+ *  primary rail stays focused on service. Direct URLs keep working. */
 export const HPOS_DOCK_ITEMS_BAR = Object.freeze([
   { route: '/hpos/pos', label: 'Sell', iconKey: 'sell', capability: 'pos.view' },
   { route: '/hpos/checks', label: 'Open tabs', iconKey: 'checks', capability: 'pos.view' },
   { route: '/hpos/menu', label: 'Products', iconKey: 'menu', capability: 'pos.view' },
-  { route: '/hpos/stock', label: 'Stock', iconKey: 'stock', capability: 'inventory.view' },
-  { route: '/hpos/cash', label: 'Cash & close', iconKey: 'cash', capability: 'pos.cashup' },
-  { route: '/hpos/reports', label: 'Sales', iconKey: 'reports', capability: 'pos.reports' }
 ])
 
-/** HPOS dock items for restaurant service — floor and kitchen remain primary. */
+/** HPOS dock items for restaurant service — floor and kitchen remain primary.
+ *  Stock and Cash & close live under Manage (manager PIN-gated). Sales stays
+ *  in the Finance workspace. Direct /hpos/* URLs keep working. */
 export const HPOS_DOCK_ITEMS_RESTAURANT = Object.freeze([
   { route: '/hpos/pos', label: 'Sell', iconKey: 'sell', capability: 'pos.view' },
   { route: '/hpos/checks', label: 'Open checks', iconKey: 'checks', capability: 'pos.view' },
   { route: '/hpos/floor', label: 'Floor', iconKey: 'floor', capability: 'pos.view' },
   { route: '/hpos/kitchen', label: 'Kitchen', iconKey: 'kitchen', capability: 'pos.view' },
   { route: '/hpos/menu', label: 'Menu', iconKey: 'menu', capability: 'pos.view' },
-  { route: '/hpos/stock', label: 'Stock', iconKey: 'stock', capability: 'inventory.view' },
-  { route: '/hpos/cash', label: 'Cash & close', iconKey: 'cash', capability: 'pos.cashup' }
 ])
 
 export const HPOS_MORE_ITEMS_RESTAURANT = Object.freeze([
@@ -100,6 +99,9 @@ export const HPOS_MORE_ITEMS_RESTAURANT = Object.freeze([
   { route: '/restaurant/kitchen-workspace', label: 'Kitchen operations', capability: 'pos.manage' },
   { route: '/restaurant/menu-production', label: 'Menu & production', capability: 'pos.menu_manage' },
   { route: '/restaurant/inventory', label: 'Inventory control', capability: 'inventory.view' },
+  { route: '/hpos/stock', label: 'Service stock', capability: 'inventory.view' },
+  { route: '/hpos/cash', label: 'Cash & close', capability: 'pos.cashup' },
+  { route: '/hpos/reports', label: 'Sales report', capability: 'pos.reports' },
   { route: '/restaurant/team-workspace', label: 'Team & performance', capability: 'staff.view' },
   { route: '/restaurant/finance-close', label: 'Finance & close', capability: 'reports.view' },
   { route: '/restaurant/chart-of-accounts', label: 'Chart of accounts', capability: 'accounting.read' },
@@ -155,6 +157,59 @@ export const HPOS_MORE_ITEMS_BAR = Object.freeze([
   { route: '/data-management', label: 'Data & backup', capability: 'data.import' }
 ])
 
+/** Routes that require a fresh manager PIN unlock (entered at the Manage
+ *  button). Stock, Cash & close and Sales moved under Manage; the Manage hub
+ *  itself is gated too so deep links cannot bypass the PIN. Direct URLs keep
+ *  working — they prompt for the same unlock instead of redirecting. */
+export const HPOS_MANAGER_GATED_ROUTES = Object.freeze([
+  '/hpos/manage',
+  '/hpos/stock',
+  '/hpos/cash',
+  '/hpos/reports',
+])
+
+/** Manager PIN unlock lifetime for the Manage workspace (session + timeout).
+ *  Re-entering the PIN is required after this elapses, on logout, or when the
+ *  stored unlock is cleared. Matches the server PIN-attempt window. */
+export const HPOS_MANAGER_PIN_UNLOCK_TIMEOUT_MS = 15 * 60 * 1000
+
+export function isManagerGatedPath(path = '') {
+  const normalized = normalizeAppPath(path)
+  return HPOS_MANAGER_GATED_ROUTES.some(
+    (route) => normalized === route || normalized.startsWith(`${route}/`)
+  )
+}
+
+/** Every workspace listed in the Manage hub (both Bar and Restaurant modes).
+ *  Global search must route these through the same manager PIN unlock as the
+ *  Manage button, so a search result can never bypass the hub gate. Page-level
+ *  content blocking stays limited to HPOS_MANAGER_GATED_ROUTES; this set only
+ *  decides which search selections require the unlock first. */
+function collectManageHubRoutes() {
+  const routes = new Set()
+  for (const item of [...HPOS_MORE_ITEMS_BAR, ...HPOS_MORE_ITEMS_RESTAURANT, ...HPOS_MANAGER_GATED_ROUTES.map((route) => ({ route }))]) {
+    const raw = typeof item === 'string' ? item : item?.route
+    if (!raw) continue
+    routes.add(normalizeAppPath(raw))
+  }
+  return [...routes]
+}
+
+export const HPOS_MANAGE_HUB_ROUTES = Object.freeze(collectManageHubRoutes())
+
+export function isManageHubPath(path = '') {
+  const normalized = normalizeAppPath(path)
+  return HPOS_MANAGE_HUB_ROUTES.some(
+    (route) => normalized === route || normalized.startsWith(`${route}/`)
+  )
+}
+
+/** True when a global-search selection must go through the Manage PIN unlock:
+ *  either it is already page-gated, or it lives under the Manage hub. */
+export function requiresManagePinForSearch(path = '') {
+  return isManagerGatedPath(path) || isManageHubPath(path)
+}
+
 /** Service modes shown on the HPOS terminal. */
 export const HPOS_SERVICE_MODES_RESTAURANT = Object.freeze([
   { id: 'table', label: 'Table service', emoji: '🍽️' },
@@ -170,7 +225,7 @@ export const HPOS_SERVICE_MODES_BAR = Object.freeze([
 export const BAR_PACK_SIZES = Object.freeze([6, 12, 24])
 
 export const BAR_PRODUCT_CATEGORIES = Object.freeze([
-  'Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other'
+  'Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Pool', 'Other'
 ])
 
 /**
@@ -188,6 +243,7 @@ export const BAR_CATEGORY_VISUALS = Object.freeze({
   wine: Object.freeze({ icon: 'wine', tone: '#f2b5aa' }),
   snacks: Object.freeze({ icon: 'cookie', tone: '#d8dec0' }),
   'simple food': Object.freeze({ icon: 'utensils', tone: '#d8dec0' }),
+  pool: Object.freeze({ icon: 'circleDot', tone: '#d8dec0' }),
   other: Object.freeze({ icon: 'package', tone: '#efe2cf' }),
 })
 
@@ -210,6 +266,26 @@ export const BAR_COUNTED_UNITS = Object.freeze([
   { value: 'l', label: 'Litre (l)' },
   { value: 'ml', label: 'Millilitre (ml)' },
 ])
+
+/**
+ * Pool-table daily cash collection (Botswana bars).
+ * Each physical table is one non-stock product in the Pool category at P1:
+ * quantity typed at the Till equals pula collected (80 = P80). Games are
+ * never counted; the end-of-day total per table is the record.
+ * Price P1 keeps any amount possible (even odd pula); the server still
+ * prices from the catalog snapshot, so no open-price contract is needed.
+ */
+export const POOL_COLLECTION_UNIT_PRICE = 1
+export const POOL_CATEGORY = 'Pool'
+
+export function isPoolCategory(category) {
+  return String(category || '').trim().toLowerCase() === 'pool'
+}
+
+export function isPoolProduct(item) {
+  if (!item) return false
+  return isPoolCategory(item.category || item.menu_category)
+}
 
 /** Evidence keys used by the focused Bar POS launch checklist. */
 export const BAR_BASE_SETUP_STAGE_KEYS = Object.freeze([

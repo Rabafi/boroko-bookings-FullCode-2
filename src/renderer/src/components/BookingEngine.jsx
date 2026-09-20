@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Calculator, Check, Edit3, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const RULE_TYPES = ['availability', 'pricing', 'restriction', 'upsell']
 const UPSELL_TYPES = ['room_upgrade', 'addon_service', 'package']
@@ -253,7 +254,7 @@ export default function BookingEngine() {
       </div>
 
       {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
-      {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700"><AlertTriangle size={14} className="inline-block mr-2" />{error}</div>}
+      {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700"><AlertTriangle size={14} className="inline-block mr-2" />{error}</ErrorNotice>}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <div className="bb-card">

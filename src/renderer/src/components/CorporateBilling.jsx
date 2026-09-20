@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { FileText, DollarSign, Ban, CheckCircle, AlertTriangle, RefreshCw, CreditCard } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import { ConfirmDialog } from './shared/ConfirmDialog'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 function formatCurrency(amount, currency = 'P') {
   return `${currency}${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -144,7 +145,7 @@ export default function CorporateBilling({ accountId, accountName, onClose }) {
 
   return (
     <div className="p-4">
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">{error}</ErrorNotice>}
       {success && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded text-green-700 text-sm">{success}</div>}
 
       <div className="flex items-center justify-between mb-4">

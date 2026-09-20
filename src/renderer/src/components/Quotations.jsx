@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { Plus, Search, MoreVertical, FileText, Building2, BedDouble } from 'lucide-react'
 import { Modal } from './shared/Modal'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
+import { ErrorNotice } from './shared/ErrorNotice'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
 import { useAuth, useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
@@ -387,9 +388,9 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
           </div>
 
           {pdfError && (
-            <div className="mx-5 mt-3 bg-red-50 text-red-600 text-xs px-3 py-2 rounded-lg no-print">
+            <ErrorNotice className="mx-5 mt-3 bg-red-50 text-red-600 text-xs px-3 py-2 rounded-lg no-print">
               {pdfError}
-            </div>
+            </ErrorNotice>
           )}
 
           {/* Printable content */}
@@ -943,9 +944,9 @@ export default function Quotations() {
       </div>
 
       {pageError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {pageError}
-        </div>
+        </ErrorNotice>
       )}
 
       {/* Filters */}
@@ -1113,7 +1114,7 @@ export default function Quotations() {
         >
           <form onSubmit={handleSave} className="space-y-4">
             {formError && (
-              <div className="bg-red-50 text-red-600 text-sm px-3 py-2 rounded-lg">{formError}</div>
+              <ErrorNotice className="bg-red-50 text-red-600 text-sm px-3 py-2 rounded-lg">{formError}</ErrorNotice>
             )}
 
             {/* Financial lock warning */}
@@ -1538,7 +1539,7 @@ export default function Quotations() {
               </div>
 
               {convertError && (
-                <div className="bg-red-50 text-red-600 text-sm px-3 py-2 rounded-lg">{convertError}</div>
+                <ErrorNotice className="bg-red-50 text-red-600 text-sm px-3 py-2 rounded-lg">{convertError}</ErrorNotice>
               )}
 
               {/* Deposit */}

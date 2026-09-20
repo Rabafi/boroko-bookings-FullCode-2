@@ -35,6 +35,34 @@ test('Command Central target guard rejects ambiguous renderer targets', () => {
   assert.throws(() => assertCommandCentralTarget('not-a-lodge'), /valid target company/i)
 })
 
+test('Command Central staff PIN reset is actor-gated, lodge-scoped and never logs the PIN', () => {
+  const domain = fs.readFileSync(new URL('../src/main/domains/admin.js', import.meta.url), 'utf8')
+  const ipc = fs.readFileSync(new URL('../src/main/index.js', import.meta.url), 'utf8')
+  const preload = fs.readFileSync(new URL('../src/preload/index.js', import.meta.url), 'utf8')
+  const database = fs.readFileSync(new URL('../src/main/database.js', import.meta.url), 'utf8')
+  const component = fs.readFileSync(new URL('../src/renderer/src/components/AdminCentral.jsx', import.meta.url), 'utf8')
+  const start = domain.indexOf('export async function resetCompanyUserPin')
+  const end = domain.indexOf('export async function', start + 10)
+  const fn = domain.slice(start, end === -1 ? undefined : end)
+  assert.match(fn, /Requires internet connection/, 'PIN reset must refuse while offline')
+  assert.match(fn, /\^\\d\{4,6\}\$/, 'PIN reset must enforce the 4–6 digit staff PIN format')
+  assert.match(fn, /getCompanyUsers\(targetLodgeId\)/, 'PIN reset must resolve the target inside the target lodge')
+  assert.match(fn, /Staff account not found/, 'Unknown or foreign-lodge users must fail closed')
+  assert.match(fn, /active staff accounts/, 'Suspended or archived accounts must be refused')
+  assert.match(fn, /bcrypt\.hashSync\(digits, 10\)/, 'The PIN must be bcrypt-hashed lodge-side like the Staff screen')
+  assert.match(fn, /rpc\('update_user_profile'/, 'The hash must travel through the audited profile RPC, not a raw table write')
+  assert.match(fn, /payload: \{ pin_hash \}/, 'Only the hash may be sent — never the plaintext PIN')
+  assert.match(fn, /company_user_pin_reset/, 'The Command Central actor must be audit-logged alongside the server trigger')
+  assert.doesNotMatch(fn, /user_email:.*pin|pin.*user_email/, 'Audit details must carry identity, never secret material')
+  assert.match(database, /resetCompanyUserPin/, 'The facade must re-export the reset')
+  assert.match(preload, /resetCompanyUserPin: \(lodgeId, userId, pin\)/, 'Preload must expose the reset with an explicit lodge target')
+  assert.match(component, /Reset staff PIN/, 'Company detail must offer the reset where support works PIN tickets')
+  assert.match(component, /openPinReset/, 'The reset must load that company’s users into a picker')
+  assert.match(component, /confirmPinReset/, 'The reset must confirm through one guarded submitter')
+  assert.match(component, /Verify the manager by phone/, 'Support must be told to verify identity before resetting')
+  assert.match(component, /resetCompanyUserPin\(pinResetTarget\.lodge_id, pinResetUserId, pin\)/, 'The reset call must stay lodge-scoped to the picked user')
+})
+
 test('commercial billing remains a separate service-role-only ledger with retry-safe operations', () => {
   const foundation = fs.readFileSync(new URL('../supabase/migrations/20260721150000_command_central_control_plane_foundation.sql', import.meta.url), 'utf8')
   const billing = fs.readFileSync(new URL('../supabase/migrations/20260721151000_command_central_commercial_billing.sql', import.meta.url), 'utf8')
@@ -267,6 +295,7 @@ test('sensitive Command Central mutations require an actor-bound fresh reauthent
     'admin:createRelease',
     'admin:applyCompanyLifecycle',
     'admin:resetCompanyUserPassword',
+    'admin:resetCompanyUserPin',
     'admin:updateCompanyUserPwaAccess',
     'admin:deleteInvoice',
     'admin:createExpense',

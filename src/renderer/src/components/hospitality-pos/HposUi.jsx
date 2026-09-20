@@ -1,4 +1,6 @@
 /** Product-native primitives shared by Restaurant and Bar POS workspaces. */
+import { ErrorNotice } from '../shared/ErrorNotice'
+
 export function HposPageHero({ eyebrow, title, description, actions, children }) {
   return <header className="hpos-page-hero"><div><p className="hpos-eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p>{children}</div>{actions}</header>
 }
@@ -8,7 +10,11 @@ export function HposButton({ tone = 'secondary', icon: Icon, children, className
 }
 
 export function HposNotice({ tone = 'info', children }) {
-  return <div className={tone === 'error' ? 'hpos-inline-error' : 'hpos-inline-notice'} role={tone === 'error' ? 'alert' : 'status'} aria-live={tone === 'error' ? 'assertive' : 'polite'}>{children}</div>
+  // Error notices bring themselves into view so a failure below the fold is never missed.
+  if (tone === 'error') {
+    return <ErrorNotice className="hpos-inline-error" role="alert">{children}</ErrorNotice>
+  }
+  return <div className="hpos-inline-notice" role="status" aria-live="polite">{children}</div>
 }
 
 export function HposEmptyState({ icon: Icon, title, description }) {

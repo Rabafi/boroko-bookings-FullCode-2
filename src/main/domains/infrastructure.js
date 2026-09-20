@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { clearPosSubmitAttempt, commitPosSubmitAttempt, reopenPosSubmitAttempt } from './posSubmitJournal.js';
 import { getRoleCapabilities, normalizeAppRole } from "../../shared/accessControl.js";
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem, pickNextReadySyncItemIndex } from "../../shared/syncQueue.js";
 export { FINANCIAL_SYNC_TABLES, isFinancialSyncItem };
@@ -20,6 +21,7 @@ import {
 } from './syncStore.js';
 import {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
+  collectNewDiskQueueArrivals,
   ensureQueuedItem,
   getQueuedDayUseEntryId,
   getQueuedInventoryItemId,
@@ -31,7 +33,10 @@ import {
   isPosCreateOrderQueueItem,
   adaptLegacyPosOrderFinancialPayload,
   isPosVoidQueueItem,
-  normalizeQueuedSyncItemForReplay
+  mergeDeadLetterQueues,
+  normalizeQueuedSyncItemForReplay,
+  rewritePendingProductReferences,
+  resolveCurrentOpenShiftId
 } from './syncShared.js';
 import {
   DEBUG_CACHE_FALLBACKS,
@@ -122,6 +127,7 @@ export {
 } from './syncStore.js';
 export {
   DEAD_LETTER_AUTO_RETRY_AFTER_MS,
+  collectNewDiskQueueArrivals,
   ensureQueuedItem,
   getQueuedInventoryItemId,
   getQueuedPosOrderId,
@@ -132,6 +138,7 @@ export {
   isPosCreateOrderQueueItem,
   adaptLegacyPosOrderFinancialPayload,
   isPosVoidQueueItem,
+  mergeDeadLetterQueues,
   normalizeQueuedSyncItemForReplay
 } from './syncShared.js';
 export {
@@ -158,8 +165,10 @@ export {
   applyQueuedPosInventoryReservations,
   getOfflineDayUseInventoryReservation,
   getOfflinePosInventoryReservation,
+  patchLocalPosVoidHistory,
   readLocalPosVoidHistory,
   refreshOfflinePosInventoryProjection,
+  removeLocalPosVoidHistory,
   restoreOfflineDayUseInventoryReservation,
   restoreOfflinePosInventoryReservation,
   upsertLocalPosVoidHistory
@@ -362,8 +371,43 @@ function isBookingUpdateConflictError(message = '') {
 }
 
 function shouldManualReviewSyncItem(item, errorMessage = '') {
-  return ['update_booking', 'update_campsite_booking', 'reschedule_accommodation_booking'].includes(item?.table)
-    && isBookingUpdateConflictError(errorMessage);
+  if (['update_booking', 'update_campsite_booking', 'reschedule_accommodation_booking'].includes(item?.table)
+    && isBookingUpdateConflictError(errorMessage)) return true;
+  // Tab version/ownership conflicts can never converge by retrying the same
+  // bytes: two terminals changed the same tab, or it already settled. They
+  // go straight to manager review with the server's message intact.
+  if ((item?.table === 'upsert_pos_tab' || item?.table === 'create_pos_order_v3' || item?.table === 'update_pos_tab_status')
+    && /tab_version_conflict|tab_version_required|tab_not_owned|tab_already_settled/i.test(String(errorMessage || ''))) return true;
+  // POS void terminal outcomes go straight to manager review for the same
+  // reason (see isTerminalPosVoidFailure): identical bytes can never succeed.
+  if (isTerminalPosVoidFailure(item, errorMessage)) return true;
+  return false;
+}
+
+// POS void terminal outcomes: the server checks the order row BEFORE any PIN
+// or state validation, so `Order not found` (and the settled refusal below)
+// is deterministic and PIN-independent — replaying identical bytes can never
+// succeed, no matter how often the queue or the 30-minute auto-requeue
+// retries it. These dead-letter as manual-review-only (never auto-retried,
+// never silently dropped) with the server message intact, staying visible in
+// the System Health failed queue until a manager retries or clears them.
+// `Order is already voided` is NOT terminal here: it is the desired end state
+// and is consumed as synced by isAlreadyAppliedRpcError instead.
+// POS replay ambiguity gate: only a truly uncertain replay outcome may reopen
+// the submit journal to pending (Till banner + new-sale block). A definitive
+// server refusal proves the attempt did NOT commit (same rule as the online
+// path's outcomeMayStillBeAmbiguous), so the journal is cleared instead: the
+// Till stays sellable, while the local failed row + dead-letter remain for
+// review. Retrying identical definitive bytes can never succeed until the
+// cause is fixed (stock added, catalog refreshed), so parking them as
+// uncertain stacked 38 blocking banners from one bar night.
+export function isAmbiguousPosOrderReplayError(message = '') {
+  return /fetch failed|network|timeout|timed out|ambiguous|uncertain|till_operator_|till_shift_closed|shift_not_open|pos_submit_recovery_required|idempotency_conflict|idempotency_expired|statement timeout|canceling statement|connection|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(String(message || ''));
+}
+
+function isTerminalPosVoidFailure(item, errorMessage = '') {
+  if (item?.type !== 'rpc' || item?.table !== 'approve_pos_void_with_pin') return false;
+  return /Order not found|Cannot void a settled order/i.test(String(errorMessage || ''));
 }
 
 function isCreateBookingQueueItem(item) {
@@ -591,6 +635,15 @@ function isAlreadyAppliedRpcError(item, errorOrMessage) {
       /^A (?:product|stock item) named /i.test(String(message || ''))) {
     return true;
   }
+  // approve_pos_void_with_pin: the order is already voided server-side, which
+  // is exactly the end state this item wanted (e.g. voided from another
+  // terminal, or an ambiguous-timeout retry after the void landed). Consume
+  // as synced instead of retrying a refusal that can never clear. Placed
+  // before the payload-id gate on purpose: void items carry order_id inside
+  // the payload, not a top-level id.
+  if (item?.table === 'approve_pos_void_with_pin' && /Order is already voided/i.test(String(message || ''))) {
+    return true;
+  }
   // For create_quotation, a 23505 on the quotation_number unique constraint means
   // a DIFFERENT quotation with the same number exists — not that THIS quotation
   // was already applied. Only treat it as already-applied if the error references
@@ -604,6 +657,61 @@ function isAlreadyAppliedRpcError(item, errorOrMessage) {
   const code = String(errorOrMessage?.code || '').trim();
   return SYNC_ALREADY_APPLIED_CODES.has(code) ||
   /duplicate key|unique constraint|already exists|already applied|23505/i.test(message);
+}
+
+// ─── Replay write fence (P0-1) + incremental dead-letter persistence (P0-2) ───
+// _runSyncQueue holds `pending` in memory while awaiting RPCs. A sale rung
+// mid-replay runs queueOperation synchronously during that await: it reads the
+// on-disk queue (which still shows the in-flight item) and appends safely.
+// The replay loop must therefore merge unknown on-disk arrivals before every
+// whole-file write — otherwise its stale in-memory snapshot silently erases
+// the new sale. The in-memory set stays authoritative for replay decisions;
+// disk arrivals are only appended, never reordered or deduplicated beyond id.
+// Pure merge helpers live in syncShared.js (importable without Electron) and
+// are re-exported via the syncShared export block above.
+export function absorbNewDiskQueueArrivals(pending = [], { completedQueueIds = new Set(), deadLetter = [], inFlightItem = null } = {}) {
+  let disk = [];
+  try {
+    disk = readSyncQueue();
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(disk) || disk.length === 0) return 0;
+  const deadIds = new Set((Array.isArray(deadLetter) ? deadLetter : []).map((entry) => entry?._queue_id).filter(Boolean));
+  const arrivals = collectNewDiskQueueArrivals(pending, disk, {
+    completedIds: completedQueueIds,
+    deadIds,
+    inFlightId: inFlightItem?._queue_id || null
+  });
+  for (const arrival of arrivals) pending.push(arrival);
+  if (arrivals.length > 0) {
+    console.log(`[Sync] Preserved ${arrivals.length} operation(s) queued during replay`);
+  }
+  return arrivals.length;
+}
+
+function writeReplayQueue(pending = [], { inFlightItem = null, completedQueueIds = new Set(), deadLetter = [] } = {}) {
+  absorbNewDiskQueueArrivals(pending, { completedQueueIds, deadLetter, inFlightItem });
+  if (inFlightItem) {
+    writeSyncQueue([{ ...inFlightItem, _state: 'in_flight' }, ...pending]);
+  } else {
+    writeSyncQueue(pending);
+  }
+}
+
+// Dead letters must survive a crash mid-replay. The loop previously kept them
+// in memory and wrote sync-failed.json only at run end, so a crash dropped
+// them from both operational queues (journal kept a trace, but System Health
+// reads sync-failed.json). Persist each dead letter incrementally; the run-end
+// flush below is a deduped upsert so it cannot duplicate or resurrect clears
+// made concurrently from review surfaces beyond re-showing them for review.
+export function persistDeadLetterIncrementally(deadItem) {
+  if (!deadItem || typeof deadItem !== 'object') return;
+  try {
+    writeFailedSyncQueue(mergeDeadLetterQueues(readFailedSyncQueue(), [deadItem]));
+  } catch (error) {
+    console.error('[Sync] Incremental dead-letter persist failed (will retry at run end):', error?.message || error);
+  }
 }
 
 export async function processSyncQueue() {
@@ -725,22 +833,41 @@ async function _runSyncQueue() {
           message: blockedItem.lastError
         });
         deadLetter.push(blockedItem);
+        persistDeadLetterIncrementally(blockedItem);
       }
-      writeSyncQueue([]);
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
       break;
     }
 
     const [item] = pending.splice(nextIndex, 1);
-    // Skip items whose parent operation failed this run
+    // Skip items whose parent operation failed this run. A parent that failed
+    // but later succeeded in the same run must not keep blocking its
+    // children: the failed id lingers in failedQueueIds, so only treat it as
+    // blocking while it has NOT also completed.
     const dependencyIds = [...new Set([
       item?._depends_on,
       ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
     ].map((value) => String(value || '').trim()).filter(Boolean))];
-    const failedDependencyId = dependencyIds.find((dependencyId) => failedQueueIds.has(dependencyId));
+    const failedDependencyId = dependencyIds.find((dependencyId) => failedQueueIds.has(dependencyId) && !completedQueueIds.has(dependencyId));
     if (failedDependencyId) {
       console.warn('[SYNC SKIPPED DEPENDENT]', { operation: item.table, queueId: item._queue_id, dependsOn: failedDependencyId });
-      const retryCount = (item.retryCount || 0) + 1;
-      const skipped = { ...item, _state: 'pending', retryCount, lastError: 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString() };
+      // A skip behind a parent that can never replay again is permanent: the
+      // parent dead-lettered manual-only in this run, was already
+      // manual-only from a prior run, or is gone entirely (e.g. cleared by a
+      // manager after review). Park the child as manual-review-only instead
+      // of burning retries and 30-minute auto-requeues on it forever. A
+      // parent that is still pending (retried later in this run) or only
+      // retryably dead (its own auto-retry is still scheduled) keeps the
+      // child retryable so normal ordering still converges.
+      const parentDeadThisRun = deadLetter.find((row) => row?._queue_id === failedDependencyId);
+      const parentPrior = _priorDeadLetter.find((row) => row?._queue_id === failedDependencyId);
+      const parentStillPending = pending.some((queued) => queued?._queue_id === failedDependencyId);
+      const parentUnresolvable = !parentStillPending
+        && (parentDeadThisRun?.manualRetryOnly === true
+          || parentPrior?.manualRetryOnly === true
+          || (!parentDeadThisRun && !parentPrior));
+      const retryCount = parentUnresolvable ? MAX_SYNC_RETRIES : (item.retryCount || 0) + 1;
+      const skipped = { ...item, _state: 'pending', retryCount, lastError: parentUnresolvable ? `Skipped: parent operation ${failedDependencyId} can no longer succeed; manager review required` : 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString(), ...(parentUnresolvable ? { manualRetryOnly: true } : {}) };
       appendOperationJournalEntry('blocked', skipped, {
         financial: isFinancialSyncItem(skipped),
         message: skipped.lastError
@@ -772,10 +899,11 @@ async function _runSyncQueue() {
       }
       if (retryCount >= MAX_SYNC_RETRIES) {
         deadLetter.push(skipped);
+        persistDeadLetterIncrementally(skipped);
       } else {
         pending.push(skipped);
       }
-      writeSyncQueue(pending);
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
       continue;
     }
 
@@ -791,7 +919,9 @@ async function _runSyncQueue() {
 
     // Persist in_flight before issuing remote call.
     // Crash here → restart normalizes to pending and retries safely.
-    writeSyncQueue([{ ...item, _state: 'in_flight' }, ...pending]);
+    // Merge-with-disk first: a sale queued during the previous RPC await must
+    // survive this write (P0-1 replay write fence).
+    writeReplayQueue(pending, { inFlightItem: item, completedQueueIds, deadLetter });
 
     let supabaseError = null;
     let rpcResultData = null;
@@ -842,6 +972,33 @@ async function _runSyncQueue() {
         ({ error: supabaseError } = await state.supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
       } else if (item.type === 'rpc') {
         const replayData = resolveQueuedRpcData(item.data);
+        // Weeks-old offline work replays under today's open shift, never the
+        // long-closed originating shift: the server requires an OPEN shift
+        // for tab saves and order settlement (tab opening shift stays history,
+        // settlement attributes to the paying shift by server design). The
+        // waiter, outlet, amounts and timestamps are never rewritten.
+        if (item.table === 'upsert_pos_tab' || item.table === 'create_pos_order_v3') {
+          try {
+            const replayPayload = replayData?.payload || {};
+            const waiterId = String(replayPayload.waiter_id || replayPayload.cashier_id || '').trim() || null;
+            const outletId = replayPayload.outlet_id || null;
+            const openShiftId = resolveCurrentOpenShiftId(readCache('pos-shifts'), { outletId, cashierId: waiterId });
+            if (openShiftId && String(replayPayload.shift_id || '') !== String(openShiftId)) {
+              replayPayload.shift_id = openShiftId;
+              appendOperationJournalEntry('replay_shift_rewritten', item, {
+                message: `Replay attributed to current open shift ${openShiftId} (originating shift closed during outage).`
+              });
+            }
+          } catch {
+            /* Shift lookup is best-effort; the server error stays actionable. */
+          }
+        }
+        // A weeks-old operator proof cannot be revalidated: the replay
+        // authenticates as the current desktop session instead. Fresh
+        // interactive sales always mint their own proof and are untouched.
+        if (item.table === 'create_pos_order_v3' && replayData?.payload) {
+          delete replayData.payload._operator_proof;
+        }
         // Older desktop builds queued menu updates and plain clock-outs under
         // their non-idempotent RPC names. Replay those legacy rows through the
         // forward wrappers with a deterministic operation key derived from the
@@ -1094,6 +1251,38 @@ async function _runSyncQueue() {
           message: errorMessage
         });
         deadLetter.push(updatedItem);
+        persistDeadLetterIncrementally(updatedItem);
+        // A dead provisional order replay reached a dead end. Ambiguous
+        // outcomes (timeout/network/till/shift/idempotency) reopen the journal
+        // so manager recovery surfaces them; definitive refusals (insufficient
+        // stock, catalog snapshot, validation) clear it so the Till is not
+        // blocked by a sale the server proved was never recorded. Either way
+        // the local failed row + dead-letter stay visible for review.
+        if (isPosCreateOrderQueueItem(updatedItem)) {
+          const deadIntentId = String(updatedItem?.data?.payload?.submit_intent_id || '').trim();
+          if (deadIntentId) {
+            if (isAmbiguousPosOrderReplayError(errorMessage)) reopenPosSubmitAttempt(deadIntentId, errorMessage);
+            else clearPosSubmitAttempt(deadIntentId);
+          }
+          // A dead tab settlement must not leave the local tab marked closed:
+          // reopen the local row so Open Tabs shows it as failed and retryable.
+          const deadTabId = String(updatedItem?.data?.payload?.tab_id || '').trim();
+          if (deadTabId) {
+            try {
+              const tabRows = readCache('pos-tabs') || [];
+              const deadTab = tabRows.find((row) => String(row?.id || '') === deadTabId);
+              if (deadTab && String(deadTab.status || '').toLowerCase() === 'closed') {
+                writeCache('pos-tabs', tabRows.map((row) =>
+                  String(row?.id || '') === deadTabId
+                    ? { ...row, status: 'open', updated_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'failed', _sync_error: errorMessage }
+                    : row
+                ));
+              }
+            } catch {
+              /* Local tab recovery is best-effort; the dead-letter stays visible. */
+            }
+          }
+        }
       } else {
         console.warn(`[Sync] Failed (attempt ${updatedItem.retryCount}/${MAX_SYNC_RETRIES}) — ${item.type} ${item.table}:`, errorMessage);
         appendOperationJournalEntry('replay_failed', updatedItem, {
@@ -1113,7 +1302,7 @@ async function _runSyncQueue() {
           })
         }
       }
-      writeSyncQueue(pending);
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
     } else {
       if (isPosCreateOrderQueueItem(item)) {
         const orderId = getQueuedPosOrderId(item);
@@ -1125,6 +1314,56 @@ async function _runSyncQueue() {
             _synced_at: new Date().toISOString()
           });
           console.log('[POS SYNC] Synced order', orderId);
+        }
+        // The queued replay landed: the journal attempt is no longer
+        // provisional (or pending) but committed server truth.
+        const replayedIntentId = String(item?.data?.payload?.submit_intent_id || '').trim();
+        if (replayedIntentId) commitPosSubmitAttempt(replayedIntentId);
+      }
+      if (item?.table === 'save_bar_product_with_stock') {
+        // The server minted real ids but queued dependents (offline sales,
+        // snapshots reference catalog state, not rows) still carry the
+        // provisional `pending:<operation_key>` menu identity: rewrite them
+        // before they replay. Duplicate-name replays consumed as synced have
+        // no ids in the result, so resolve the surviving row by exact name.
+        const productKey = String(item?.data?.payload?.operation_key || '').trim();
+        if (productKey) {
+          try {
+            let realMenuId = String(rpcResultData?.menu_item_id || '').trim() || null;
+            let realInventoryId = String(rpcResultData?.inventory_item_id || '').trim() || null;
+            if (!realMenuId) {
+              const wanted = String(item?.data?.payload?.product?.name || '').trim();
+              if (wanted && state?.supabase) {
+                const found = await state.supabase
+                  .from('pos_menu_items')
+                  .select('id, inventory_item_id')
+                  .eq('lodge_id', state.lodgeId)
+                  .ilike('name', wanted)
+                  .limit(2);
+                const rows = Array.isArray(found?.data) ? found.data : [];
+                if (rows.length === 1 && rows[0]?.id) {
+                  realMenuId = String(rows[0].id);
+                  realInventoryId = rows[0]?.inventory_item_id ? String(rows[0].inventory_item_id) : realInventoryId;
+                }
+              }
+            }
+            if (realMenuId) {
+              const rewritten = rewritePendingProductReferences(pending, productKey, realMenuId, realInventoryId);
+              if (rewritten > 0) console.log('[POS SYNC] Rewrote provisional product refs', { productKey, menuId: realMenuId, orders: rewritten });
+            }
+          } catch {
+            /* Rewrite is best-effort; unreconciled dependents dead-letter visibly. */
+          }
+          try {
+            const menuRows = readCache('pos-menu-items') || [];
+            const keptMenu = menuRows.filter((row) => row?._operation_key !== productKey);
+            if (keptMenu.length !== menuRows.length) writeCache('pos-menu-items', keptMenu);
+            const stockRows = readCache('inventory-items') || [];
+            const keptStock = stockRows.filter((row) => row?._operation_key !== productKey);
+            if (keptStock.length !== stockRows.length) writeCache('inventory-items', keptStock);
+          } catch {
+            /* Purge is cosmetic; the next server read converges anyway. */
+          }
         }
       }
       if (isPosVoidQueueItem(item)) {
@@ -1401,15 +1640,19 @@ async function _runSyncQueue() {
       if ((item.type === 'rpc' && ['add_pool_day_use', 'update_pool_day_use', 'delete_pool_day_use'].includes(item.table)) || (item.type === 'update' && item.table === 'pool_day_use')) shouldRefreshPoolDayUse = true;
       // Phase 1: persist committed state before removing from queue file.
       // Crash here → restart sees 'committed' → skips RPC without retrying.
-      writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);
+      // Mark completed first so the stale on-disk in-flight copy of this same
+      // id is excluded from the arrival merge (P0-1); concurrent sales still
+      // merge in instead of being erased by the committed snapshot.
       if (item._queue_id) completedQueueIds.add(item._queue_id);
+      absorbNewDiskQueueArrivals(pending, { completedQueueIds, deadLetter, inFlightItem: null });
+      writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);
       appendOperationJournalEntry('replayed', { ...item, _state: 'committed' }, {
         financial: isFinancialSyncItem(item),
         message: 'Operation was accepted by the authoritative replay path.'
       });
       // Phase 2: remove item from queue
       successCount++;
-      writeSyncQueue(pending);
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
     }
   }
   const syncFinishedAt = new Date().toISOString();
@@ -1432,7 +1675,7 @@ async function _runSyncQueue() {
   } else {
     writeSyncMeta({ lastSyncFinishedAt: syncFinishedAt, lastSyncOutcome: 'empty' });
   }
-  writeSyncQueue(pending);
+  writeReplayQueue(pending, { completedQueueIds, deadLetter });
 
   if (shouldRefreshInventory) {
     refreshCache('inventory-items', 'inventory-purchases', 'inventory-stocktakes')
@@ -1520,8 +1763,11 @@ async function _runSyncQueue() {
   }
 
   if (deadLetter.length > 0) {
-    const existing = readFailedSyncQueue();
-    writeFailedSyncQueue([...existing, ...deadLetter]);
+    // Incremental persists above already wrote each entry; this final flush is
+    // a deduped upsert so a crash between the last item and this line cannot
+    // lose work, and concurrent manager clears are re-shown for review rather
+    // than silently dropping financial work.
+    writeFailedSyncQueue(mergeDeadLetterQueues(readFailedSyncQueue(), deadLetter));
     for (const item of deadLetter) {
       console.error('[SYNC DEAD LETTER]', item);
     }
@@ -1702,9 +1948,19 @@ export async function initDatabase() {
     console.warn('[DB] initDatabase called more than once — skipping')
     return
   }
+  // Boot-phase timing: each marker prints wall-clock elapsed since process
+  // start so a slow launch can be attributed to an exact phase from the
+  // terminal output. Markers are additive logging only; they change no
+  // behavior and never block.
+  const bootAt = Date.now();
+  const bootMark = (phase) => {
+    try { console.log(`[BOOT] ${phase} (+${Date.now() - bootAt}ms)`); } catch {}
+  };
+  bootMark('initDatabase start');
   state.cacheRootDir = path.join(app.getPath('userData'), 'boroko-cache');
   state.profilesCacheDir = path.join(state.cacheRootDir, 'profiles');
   await initializeProfileRuntime();
+  bootMark('profile runtime ready');
 
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     throw new Error(
@@ -1743,16 +1999,24 @@ export async function initDatabase() {
   }
   if (online && state.lodgeId) {
     // Fire-and-forget cache refresh — don't block startup on exhausted IO
-    refreshAllCaches().catch(() => {});
+    const bootRefreshAt = Date.now();
+    bootMark('cache refresh fired');
+    refreshAllCaches()
+      .then(() => { try { console.log(`[BOOT] cache refresh done (+${Date.now() - bootAt}ms, took ${Date.now() - bootRefreshAt}ms)`); } catch {} })
+      .catch(() => {});
     console.log('Connected to Supabase ✓ (replay deferred until user authenticates)');
   } else {
     console.log('Running in offline mode — using cached data');
   }
+  bootMark('connectivity probe done');
 
   if (!state.backupIntervalStarted) {
     state.backupIntervalStarted = true;
 
+    const bootBackupAt = Date.now();
+    bootMark('backup start');
     createBackup();
+    bootMark(`backup done (took ${Date.now() - bootBackupAt}ms)`);
     setInterval(() => createBackup(), 60 * 60 * 1000);
 
     // Reconnect detection: fires sync on network return
@@ -1816,6 +2080,7 @@ export async function initDatabase() {
       }
     }, PERIODIC_SYNC_INTERVAL_MS);
   }
+  bootMark('initDatabase done');
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -1839,6 +2104,7 @@ export { loginUser } from './authLogin.js';
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
 export {
+  changeOwnStaffPin,
   createUser,
   deleteUser,
   getStaffAccessAudit,

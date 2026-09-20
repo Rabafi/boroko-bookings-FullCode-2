@@ -1,11 +1,56 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
 
 import {
   clearCashupSubmissionRound,
   getCashupSubmissionRound
 } from '../src/renderer/src/utils/cashupSubmission.js'
+
+for (const functionName of ['submitPosCashup', 'submitPosCashupWithAttendancePin']) {
+  test(`${functionName} waits for cash-affecting returns and voids before offline submission`, async () => {
+    const source = readFileSync('src/main/domains/pos.js', 'utf8')
+    const start = source.indexOf(`export async function ${functionName}(`)
+    const end = source.indexOf('\nexport ', start + 1)
+    const shift = { id: 'shift-1', lodge_id: 'lodge-1', outlet_id: 'outlet-1', cashier_id: 'staff-1', status: 'open' }
+    const rpc = (table, id, payload) => ({ type: 'rpc', table, _queue_id: id, data: { payload: { lodge_id: 'lodge-1', ...payload } } })
+    const queue = [
+      rpc('create_pos_order_v3', 'sale-1', { shift_id: 'shift-1' }),
+      rpc('create_pos_return_v3', 'return-1', { shift_id: 'shift-1', order_id: 'older-sale' }),
+      rpc('approve_pos_void_with_pin', 'void-1', { order_id: 'original-sale', outlet_id: 'outlet-1' }),
+      rpc('create_pos_return_v3', 'other-return', { shift_id: 'shift-2' }),
+      rpc('approve_pos_void_with_pin', 'other-void', { order_id: 'other-sale', outlet_id: 'outlet-2' }),
+    ]
+    let recorded
+    const scope = {
+      state: { isOnline: false, lodgeId: 'lodge-1', currentUser: { id: 'staff-1' } },
+      readPosShifts: () => [shift],
+      readPosCashupSubmissions: () => [],
+      upsertPosCashupSubmission: (row) => row,
+      readSyncQueue: () => queue,
+      readFailedSyncQueue: () => [],
+      readCache: () => [
+        { id: 'original-sale', lodge_id: 'lodge-1', outlet_id: 'outlet-1', shift_id: 'shift-1' },
+        { id: 'other-sale', lodge_id: 'lodge-1', outlet_id: 'outlet-2', shift_id: 'shift-2' },
+      ],
+      normalizeMoney: Number,
+      randomUUID: () => 'submission-1',
+      validateCachedPosPin: () => ({ success: true, staff: { name: 'Staff' } }),
+      getDesktopPosDeviceId: () => 'device-1',
+      queueOperation: (...args) => { recorded = args },
+    }
+    const helperStart = source.indexOf('function getPosCashupQueueDependencies(')
+    const helperEnd = source.indexOf('\nexport async function submitPosCashup(', helperStart)
+    const helper = helperStart < 0 ? '' : source.slice(helperStart, helperEnd)
+    const submit = vm.runInNewContext(`${helper}\n${source.slice(start, end).replace('export ', '')}\n${functionName}`, scope)
+    const result = await submit({ shift_id: 'shift-1', counted_by_method: { cash: 80 }, pin: '1234', idempotency_key: 'count-1' })
+    assert.equal(result.success, true)
+    assert.deepEqual(Array.from(recorded[4]._depends_on_all).sort(), ['return-1', 'sale-1', 'void-1'])
+    assert.equal(recorded[2].payload.idempotency_key, 'count-1')
+    assert.equal(result.submission.expected_cash_drawer, null)
+  })
+}
 
 function storage() {
   const values = new Map()

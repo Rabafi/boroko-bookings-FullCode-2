@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, RefreshCw, Check, X, AlertTriangle, Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import { Modal } from './shared/Modal'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const PROVIDERS = [
   { key: 'dpo', label: 'DPO' },
@@ -140,7 +141,7 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
         <button onClick={openAdd} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 flex items-center gap-1"><Plus className="w-4 h-4" />Add Provider</button>
       </div>
 
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><AlertTriangle className="w-4 h-4" />{error}</div>}
+      {error && <ErrorNotice className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"><AlertTriangle className="w-4 h-4" />{error}</ErrorNotice>}
       {success && <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700"><Check className="w-4 h-4" />{success}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

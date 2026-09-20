@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Clock, Sun, Moon, Plus, CheckCircle, XCircle, DollarSign } from 'lucide-react'
 import { useSettings } from '../app-context'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 function PolicyCard({ policy, type, onEdit, onDelete }) {
   return (
@@ -204,7 +205,7 @@ export default function EarlyLateCheckout() {
         <p className="text-gray-500 text-sm mt-0.5">Manage policies and requests</p>
       </div>
 
-      {error && <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-sm text-red-700">{error}</div>}
+      {error && <ErrorNotice className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-sm text-red-700">{error}</ErrorNotice>}
       {success && <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-4 text-sm text-emerald-700">&#10003; {success}</div>}
 
       <div className="flex gap-2 mb-6">

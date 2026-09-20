@@ -9,6 +9,7 @@ import { getCommercialAddonOffers } from '../../../shared/commercialEntitlements
 import { getCommercialFeatureSet } from '../../../shared/commercialAccess'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getHospitalityMode, isBarOnlyMode } from '../../../shared/propertyTypes'
+import { ErrorNotice } from './shared/ErrorNotice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
@@ -311,7 +312,7 @@ export default function SubscriptionPackageBuilder() {
             <button onClick={submitRequest} disabled={submitting} className="btn-primary w-full justify-center"><Send size={14} /> {submitting ? 'Submitting...' : 'Generate & Submit Quote'}</button>
           </div>
 
-          {error && <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700"><AlertTriangle size={12} className="shrink-0" />{error}</div>}
+          {error && <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700"><AlertTriangle size={12} className="shrink-0" />{error}</ErrorNotice>}
 
           <p className="text-[10px] text-center text-slate-400">This is a request, not a payment. Our team will review and send a formal quotation.</p>
         </div>

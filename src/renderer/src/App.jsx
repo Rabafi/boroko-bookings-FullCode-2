@@ -160,6 +160,7 @@ const HposMyShift      = lazy(() => import('./components/hospitality-pos/HposMyS
 const HposMyCashup     = lazy(() => import('./components/hospitality-pos/HposMyCashup'))
 const HposAttendanceKiosk = lazy(() => import('./components/hospitality-pos/HposAttendanceKiosk'))
 const HposSharedCashup = lazy(() => import('./components/hospitality-pos/HposSharedCashup'))
+const HposSharedShiftClose = lazy(() => import('./components/hospitality-pos/HposSharedShiftClose'))
 const HposOpenChecks   = lazy(() => import('./components/hospitality-pos/HposOpenChecks'))
 const HposSystemHealth = lazy(() => import('./components/hospitality-pos/HposSystemHealth'))
 const HposBusinessControl = lazy(() => import('./components/hospitality-pos/HposBusinessControl'))
@@ -2102,8 +2103,9 @@ export default function App() {
                 <Route path="hpos/my-sales" element={<RestaurantOnlyRoute><Lazy><HposMySales /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/sale-correction" element={<RestaurantOnlyRoute><Lazy><HposReports correctionMode /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/my-cashup" element={<RestaurantOnlyRoute><Lazy><HposMyCashup /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="hpos/attendance" element={<RestaurantOnlyRoute><Lazy><HposAttendanceKiosk /></Lazy></RestaurantOnlyRoute>} />
-                <Route path="hpos/shared-cashup" element={<RestaurantOnlyRoute><Lazy><HposSharedCashup /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/shift-close" element={<RestaurantOnlyRoute><Lazy><HposSharedShiftClose /></Lazy></RestaurantOnlyRoute>} />
+                <Route path="hpos/attendance" element={<RestaurantOnlyRoute><Navigate to="/hpos/shift-close" replace /></RestaurantOnlyRoute>} />
+                <Route path="hpos/shared-cashup" element={<RestaurantOnlyRoute><Navigate to="/hpos/shift-close" replace /></RestaurantOnlyRoute>} />
                 <Route path="hpos/cash" element={<RestaurantOnlyRoute><Lazy><HposCashClose /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/reports" element={<RestaurantOnlyRoute><CapabilityRoute capability="pos.reports"><UpgradeWall feature="reports"><Lazy><HposReports /></Lazy></UpgradeWall></CapabilityRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/expenses" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="expenses"><UpgradeWall feature="expenses"><Lazy><HposExpenses /></Lazy></UpgradeWall></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
