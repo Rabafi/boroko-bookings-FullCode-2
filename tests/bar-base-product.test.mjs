@@ -253,11 +253,25 @@ test('Bar annual add-ons are collected in the first annual invoice as well as an
     commercialPackageKey: 'bar_pos',
     addonKeys: ['bar_stock_purchasing_pro', 'bar_accounting_workforce', 'bar_growth_multi_outlet'],
     operatingProfile: 'bar_only',
-    propertyType: 'restaurant'
+    propertyType: 'restaurant',
+    trialAlreadyUsed: true
   })
   assert.equal(quote.totals.total_due_now, 18500)
   assert.equal(quote.totals.recurring_annual, 18500)
   assert.deepEqual(quote.lines.filter((line) => line.line_type === 'addon').map((line) => line.amount_due_now), [3000, 6000, 5000])
+
+  // Trial once per property: P0 due now but full annual still shown.
+  const trialQuote = buildCommercialOfferSnapshot({
+    productId: 'hospitality-pos',
+    commercialPackageKey: 'bar_pos',
+    addonKeys: ['bar_stock_purchasing_pro', 'bar_accounting_workforce', 'bar_growth_multi_outlet'],
+    operatingProfile: 'bar_only',
+    propertyType: 'bar',
+    trialAlreadyUsed: false
+  })
+  assert.equal(trialQuote.totals.total_due_now, 0)
+  assert.equal(trialQuote.totals.recurring_annual, 18500)
+  assert.equal(trialQuote.trial.eligible, true)
 
   const migration = read('supabase/migrations/20260816090000_command_central_subscription_truth_hardening.sql')
   assert.match(migration, /v_addon_due_now/)

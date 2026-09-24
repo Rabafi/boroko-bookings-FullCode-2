@@ -38,9 +38,11 @@ function enrichOffer(offer) {
       : 'Pro is the highest LodgingOS package. Hotel operations are licensed separately through HotelOS.'
     : offer.productId === COMMERCIAL_PRODUCT_IDS.HOTEL
       ? 'Extend HotelOS with the optional services quoted for this property.'
-      : upgradeOffer
-        ? `Move to ${upgradeOffer.displayName} when this operation needs its additional workflows.`
-        : 'This is the highest package in this POS product line.'
+      : offer.productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && offer.commercialPackageKey === 'bar_pos'
+        ? 'Bar POS is the Bar package. Extend it with Stock & Purchasing Pro, Accounting & Workforce, or Growth & Multi-Outlet when this bar needs them.'
+        : upgradeOffer
+          ? `Move to ${upgradeOffer.displayName} when this operation needs its additional workflows.`
+          : 'This is the highest package in this POS product line.'
   return {
     ...plan,
     ...offer,
@@ -205,13 +207,18 @@ export function buildCommercialOfferSnapshot({
   commercialPackageKey,
   addonKeys = [],
   operatingProfile = null,
-  propertyType = null
+  propertyType = null,
+  trialAlreadyUsed = false,
+  trialEligible = null
 } = {}) {
   const selected = getCommercialOffer(productId, commercialPackageKey)
   if (!selected) throw new Error(`Unknown commercial package: ${productId}/${commercialPackageKey}`)
   if (selected.eligibleOperatingProfiles?.length && !selected.eligibleOperatingProfiles.includes(operatingProfile)) {
     throw new Error(`${selected.displayName} is not available for operating profile ${operatingProfile || 'unknown'}`)
   }
+  const resolvedTrialEligible = trialEligible === null || trialEligible === undefined
+    ? (TRIAL_POLICY.appliesToPlans.includes(selected.internalPlan) && trialAlreadyUsed !== true)
+    : Boolean(trialEligible)
 
   const lines = [{
     line_type: 'package',
@@ -244,9 +251,12 @@ export function buildCommercialOfferSnapshot({
       amount_due_now: addonDueNow
     })
   }
-  const totalDueNow = lines.reduce((sum, line) => sum + Number(line.amount_due_now || 0), 0)
+  const fullDueNow = lines.reduce((sum, line) => sum + Number(line.amount_due_now || 0), 0)
   const recurringAnnual = lines.reduce((sum, line) => sum + Number(line.recurring_amount || 0), 0)
   const oneTimeTotal = lines.reduce((sum, line) => sum + Number(line.one_time_amount || 0), 0)
+  // Trial: first term free once per property. Due now becomes 0 but the
+  // recurring annual still shows what applies after the trial.
+  const totalDueNow = resolvedTrialEligible ? 0 : fullDueNow
   return {
     product_id: productId,
     commercial_package_key: selected.commercialPackageKey,
@@ -258,7 +268,14 @@ export function buildCommercialOfferSnapshot({
     totals: {
       total_due_now: totalDueNow,
       one_time_total: oneTimeTotal,
-      recurring_annual: recurringAnnual
+      recurring_annual: recurringAnnual,
+      full_due_now_without_trial: fullDueNow
+    },
+    trial: {
+      eligible: resolvedTrialEligible,
+      already_used: trialAlreadyUsed === true,
+      days: TRIAL_POLICY.trialDays,
+      policy: TRIAL_POLICY.copy
     },
     included_features: getCommercialEntitlementKeys({ productId, commercialPackageKey: selected.commercialPackageKey, selectedAddonKeys: addonKeys }),
     excluded_features: selected.excludedFeatures,
@@ -277,7 +294,9 @@ export function buildCommercialPricingSnapshot(options = {}) {
       commercialPackageKey: options.commercialPackageKey,
       addonKeys: options.addons,
       operatingProfile: options.operatingProfile,
-      propertyType: options.propertyType
+      propertyType: options.propertyType,
+      trialAlreadyUsed: options.trialAlreadyUsed,
+      trialEligible: options.trialEligible
     })
   }
   return buildLegacyPricingSnapshot(options)

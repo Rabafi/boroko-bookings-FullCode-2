@@ -331,7 +331,12 @@ function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   const access = useContext(AccessContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const barOnlyMode = isRestaurantOnly(propertyType) && isBarOnlyMode(settings)
-  const location = normalizeAppPath(window.location.hash.replace('#', '').split('?')[0] || '/')
+  // Router-owned location: reading the URL hash during render misses
+  // HashRouter updates and can fight the layout effect. Single source is the
+  // guard's declarative <Navigate/> (the HposLayout imperative redirect was
+  // removed); this hook re-renders on every navigation.
+  const routerLocation = useLocation()
+  const appPath = normalizeAppPath(routerLocation.pathname || '/')
 
   const enabledFeatures = getCommercialFeatureSet(
     access?.entitlement?.product_id || BUILD_PRODUCT.id,
@@ -340,7 +345,7 @@ function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
     access?.entitlement,
     access?.entitlement?.lodge_id || null
   )
-  if (barOnlyMode && isBarOnlyBlockedPath(location, enabledFeatures)) {
+  if (barOnlyMode && isBarOnlyBlockedPath(appPath, enabledFeatures)) {
     return <Navigate to={redirectTo} replace />
   }
   return children
@@ -350,9 +355,10 @@ function RestaurantGuard({ children }) {
   const { settings } = useContext(SettingsContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
-  const location = normalizeAppPath(window.location.hash.replace('#', '').split('?')[0] || '/')
+  const routerLocation = useLocation()
+  const appPath = normalizeAppPath(routerLocation.pathname || '/')
 
-  if (restaurantMode && RESTAURANT_EXCLUDED_PATHS.some(path => location.startsWith(path))) {
+  if (restaurantMode && RESTAURANT_EXCLUDED_PATHS.some(path => appPath.startsWith(path))) {
     return <Navigate to="/" replace />
   }
 
@@ -2108,7 +2114,7 @@ export default function App() {
                 <Route path="hpos/shared-cashup" element={<RestaurantOnlyRoute><Navigate to="/hpos/shift-close" replace /></RestaurantOnlyRoute>} />
                 <Route path="hpos/cash" element={<RestaurantOnlyRoute><Lazy><HposCashClose /></Lazy></RestaurantOnlyRoute>} />
                 <Route path="hpos/reports" element={<RestaurantOnlyRoute><CapabilityRoute capability="pos.reports"><UpgradeWall feature="reports"><Lazy><HposReports /></Lazy></UpgradeWall></CapabilityRoute></RestaurantOnlyRoute>} />
-                <Route path="hpos/expenses" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="expenses"><UpgradeWall feature="expenses"><Lazy><HposExpenses /></Lazy></UpgradeWall></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
+                <Route path="hpos/expenses" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="expenses"><Lazy><HposExpenses /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/customers" element={<RestaurantOnlyRoute><UpgradeWall feature="customer_accounts"><Lazy><HposCustomers /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />
                 <Route path="hpos/growth-tools" element={<RestaurantOnlyRoute><BarAddonFeatureRoute feature="vouchers"><Lazy><RestaurantGrowthControls tabKey="growth" /></Lazy></BarAddonFeatureRoute></RestaurantOnlyRoute>} />
                 <Route path="hpos/control" element={<RestaurantOnlyRoute><UpgradeWall feature="checklists"><Lazy><HposControl /></Lazy></UpgradeWall></RestaurantOnlyRoute>} />

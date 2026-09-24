@@ -31,10 +31,17 @@ export default function HposControl() {
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
   const canManage = canAccessCapability(access, 'pos.manage');
+  // Incident log is a Bar POS base feature (incident_log): it must stay
+  // reachable from this base-visible board even without the Growth add-on.
+  // BusinessControl's Control & safety tab remains the Growth analytics home.
+  const canViewIncidents = canAccessCapability(access, 'incident_log.view');
+  const canLogIncidents = canAccessCapability(access, 'incident_log.manage') || canManage;
   const [checklists, setChecklists] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [alertHistory, setAlertHistory] = useState([]);
   const [barTemplates, setBarTemplates] = useState([]);
+  const [incidents, setIncidents] = useState([]);
+  const [incidentModalOpen, setIncidentModalOpen] = useState(false);
   const [alertCategory, setAlertCategory] = useState('all');
   const [alertSeverity, setAlertSeverity] = useState('all');
   const [showResolved, setShowResolved] = useState(false);
@@ -54,22 +61,24 @@ export default function HposControl() {
         // Best-effort seed: templates load from cache offline.
         await window.api?.pos?.seedBarChecklistTemplates?.().catch(() => null);
       }
-      const [checklistResult, alertResult, historyResult, templateResult] = await Promise.all([
+      const [checklistResult, alertResult, historyResult, templateResult, incidentResult] = await Promise.all([
         window.api?.pos?.getChecklists?.() ?? [],
         window.api?.pos?.getActiveAlerts?.() ?? [],
         window.api?.pos?.getAlertHistory?.({ includeResolved: true }) ?? [],
         barOnly ? (window.api?.pos?.getBarChecklistTemplates?.() ?? []) : [],
+        canViewIncidents ? (window.api?.incidents?.getAll?.() ?? []) : [],
       ]);
       setChecklists(Array.isArray(checklistResult) ? checklistResult : []);
       setAlerts(Array.isArray(alertResult) ? alertResult : []);
       setAlertHistory(Array.isArray(historyResult) ? historyResult : []);
       setBarTemplates(Array.isArray(templateResult) ? templateResult : []);
+      setIncidents(Array.isArray(incidentResult) ? incidentResult : []);
     } catch (error) {
       setActionError(error?.message || 'Control information could not be loaded.');
     } finally {
       setLoading(false);
     }
-  }, [barOnly]);
+  }, [barOnly, canViewIncidents]);
 
   useEffect(() => {
     load();
@@ -214,6 +223,11 @@ export default function HposControl() {
         <button type="button" role="tab" aria-selected={activeTab === 'alerts'} className={activeTab === 'alerts' ? 'is-active' : ''} onClick={() => setActiveTab('alerts')}>
           <AlertTriangle size={15} /> Alerts <span>{alerts.length}</span>
         </button>
+        {canViewIncidents && (
+          <button type="button" role="tab" aria-selected={activeTab === 'incidents'} className={activeTab === 'incidents' ? 'is-active' : ''} onClick={() => setActiveTab('incidents')}>
+            <ShieldCheck size={15} /> Incidents <span>{incidents.length}</span>
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -266,6 +280,44 @@ export default function HposControl() {
           </section>
           </>
         )
+      ) : activeTab === 'incidents' ? (
+        canViewIncidents ? (
+          <section className="hpos-alert-list" aria-label="Incident log">
+            <div className="hpos-alert-toolbar">
+              <span>Base Bar POS includes the incident log. Growth analytics stay in Business overview.</span>
+              {canLogIncidents && <HposButton onClick={() => setIncidentModalOpen(true)}>Log incident</HposButton>}
+            </div>
+            {incidents.length === 0 ? (
+              <HposEmptyState icon={ShieldCheck} title="No incidents logged" description="Safety, service, staff and security events appear here for manager follow-up." />
+            ) : (
+              incidents.slice(0, 20).map((row) => (
+                <article key={row.id || row.created_at}>
+                  <span className="hpos-alert-icon"><ShieldCheck size={19} /></span>
+                  <div>
+                    <strong>{row.title || row.incident_type || 'Incident'}</strong>
+                    <p>{String(row.incident_type || 'safety')} · {row.description || 'Review for manager follow-up.'}</p>
+                    <small>{row.created_at ? new Date(row.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable'}</small>
+                  </div>
+                  <HposStatusBadge tone={['critical', 'high'].includes(String(row.severity || '').toLowerCase()) ? 'danger' : 'warning'}>{String(row.severity || 'medium')}</HposStatusBadge>
+                </article>
+              ))
+            )}
+            {incidentModalOpen && (
+              <IncidentLogModal
+                onClose={() => setIncidentModalOpen(false)}
+                onLogged={(created) => {
+                  setIncidentModalOpen(false);
+                  setIncidents((prev) => (created?.id ? [created, ...prev] : prev));
+                  setNotice('Incident logged for manager follow-up.');
+                  load();
+                }}
+                onNotice={setNotice}
+              />
+            )}
+          </section>
+        ) : (
+          <HposEmptyState icon={ShieldCheck} title="Incident log requires permission" description="Ask a manager to grant incident log access." />
+        )
       ) : alerts.length === 0 ? (
         <>
           <AlertToolbar categories={alertCategories} value={alertCategory} onChange={setAlertCategory} severity={alertSeverity} onSeverityChange={setAlertSeverity} showResolved={showResolved} onToggleResolved={() => setShowResolved((value) => !value)} />
@@ -295,6 +347,37 @@ export default function HposControl() {
         {showResolved && <AlertHistoryList alerts={visibleHistory.filter((alert) => alert.is_resolved)} />}
         </>
       )}
+    </div>
+  );
+}
+
+function IncidentLogModal({ onClose, onLogged, onNotice }) {
+  const [form, setForm] = useState({ title: '', incident_type: 'safety', description: '', severity: 'medium' });
+  const [saving, setSaving] = useState(false);
+  const save = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const result = await window.api?.incidents?.create?.(form);
+      if (result?.success === false) throw new Error(result?.error || 'Could not log incident.');
+      onLogged?.(result?.incident || result || null);
+    } catch (error) {
+      onNotice?.(error?.message || 'Could not log incident.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="hpos-modal-backdrop">
+      <form className="hpos-control-modal" onSubmit={save}>
+        <p className="hpos-eyebrow">Compliance and safety</p>
+        <h2>Log incident</h2>
+        <label>Title<input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Short description" /></label>
+        <label>Type<select value={form.incident_type} onChange={(e) => setForm({ ...form, incident_type: e.target.value })}><option value="safety">Safety</option><option value="service">Service</option><option value="staff">Staff</option><option value="security">Security</option></select></label>
+        <label>Severity<select value={form.severity} onChange={(e) => setForm({ ...form, severity: e.target.value })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+        <label>Description<textarea rows="3" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+        <div className="hpos-alert-actions"><HposButton onClick={onClose}>Cancel</HposButton><button className="hpos-primary-action" disabled={saving}>{saving ? 'Logging…' : 'Log incident'}</button></div>
+      </form>
     </div>
   );
 }

@@ -24,3 +24,21 @@ export function HposEmptyState({ icon: Icon, title, description }) {
 export function HposStatusBadge({ tone = 'neutral', children }) {
   return <span className={`hpos-status-badge is-${tone}`}>{children}</span>
 }
+
+/**
+ * Small add-on ownership sign for Bar pages.
+ * Shows which commercial add-on a page belongs to, e.g. "Stock & Purchasing Pro".
+ * Render nothing for base-package pages so core till flows stay uncluttered.
+ */
+export function BarAddonBadge({ addonName, featureKey }) {
+  const label = addonName || null
+  if (!label) return null
+  return (
+    <span
+      className="hpos-addon-badge"
+      title={featureKey ? `Part of the ${label} add-on (${String(featureKey).replace(/_/g, ' ')})` : `Part of the ${label} add-on`}
+    >
+      {label} · add-on
+    </span>
+  )
+}

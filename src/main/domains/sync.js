@@ -106,17 +106,25 @@ function readCacheFreshness() {
   }
 }
 
-function classifySyncDependencyCategory(item = {}, pending = [], failed = [], resolveDep = null) {
+function classifySyncDependencyCategory(item = {}, pendingIds = null, failedIds = null, resolveDep = null) {
   const dependencyIds = [...new Set([
     item?._depends_on,
     ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
   ].map((value) => String(value || '').trim()).filter(Boolean))];
   if (dependencyIds.length === 0) return 'none';
 
-  if (dependencyIds.some((dependencyId) => failed.some((entry) => entry?._queue_id === dependencyId))) {
+  // Callers pass prebuilt Sets (one build per details computation). Accept
+  // raw arrays for backward compatibility with any external caller.
+  const failedSet = failedIds instanceof Set
+    ? failedIds
+    : new Set((Array.isArray(failedIds) ? failedIds : []).map((entry) => entry?._queue_id).filter(Boolean));
+  const pendingSet = pendingIds instanceof Set
+    ? pendingIds
+    : new Set((Array.isArray(pendingIds) ? pendingIds : []).map((entry) => entry?._queue_id).filter(Boolean));
+  if (dependencyIds.some((dependencyId) => failedSet.has(dependencyId))) {
     return 'blocked_dependencies';
   }
-  if (dependencyIds.some((dependencyId) => pending.some((entry) => entry?._queue_id === dependencyId))) {
+  if (dependencyIds.some((dependencyId) => pendingSet.has(dependencyId))) {
     return 'blocked_dependencies';
   }
   // Bulk offline runs can attach thousands of dependency ids to one item;
@@ -151,10 +159,12 @@ function getSyncDisplayError(item = {}, dependencyCategory = 'none') {
 }
 
 function buildSyncGroupedCounts(pending = [], failed = [], resolveDep = null) {
-  const pendingMissingParent = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'missing_parent').length;
-  const failedMissingParent = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'missing_parent').length;
-  const pendingBlockedDependencies = pending.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'blocked_dependencies').length;
-  const failedBlockedDependencies = failed.filter((item) => classifySyncDependencyCategory(item, pending, failed, resolveDep) === 'blocked_dependencies').length;
+  const pendingSet = new Set((pending || []).map((entry) => entry?._queue_id).filter(Boolean));
+  const failedSet = new Set((failed || []).map((entry) => entry?._queue_id).filter(Boolean));
+  const pendingMissingParent = pending.filter((item) => classifySyncDependencyCategory(item, pendingSet, failedSet, resolveDep) === 'missing_parent').length;
+  const failedMissingParent = failed.filter((item) => classifySyncDependencyCategory(item, pendingSet, failedSet, resolveDep) === 'missing_parent').length;
+  const pendingBlockedDependencies = pending.filter((item) => classifySyncDependencyCategory(item, pendingSet, failedSet, resolveDep) === 'blocked_dependencies').length;
+  const failedBlockedDependencies = failed.filter((item) => classifySyncDependencyCategory(item, pendingSet, failedSet, resolveDep) === 'blocked_dependencies').length;
   const financialRiskItems = pending.filter(isFinancialSyncItem).length + failed.filter(isFinancialSyncItem).length;
 
   return {
@@ -183,7 +193,7 @@ export function getSyncDetails() {
   const failedIdSet = new Set(failed.map((entry) => entry?._queue_id).filter(Boolean));
 
   const enrichPending = (item) => {
-    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed, depResolver);
+    const dependencyCategory = classifySyncDependencyCategory(item, pendingIdSet, failedIdSet, depResolver);
     const dependencyIds = [...new Set([
       item?._depends_on,
       ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
@@ -213,7 +223,7 @@ export function getSyncDetails() {
     new Date(attemptedAtMs + DEAD_LETTER_AUTO_RETRY_AFTER_MS).toISOString() :
     null;
     const autoRetryEligible = isAutoRetryable && (Number.isNaN(attemptedAtMs) || ageMs >= DEAD_LETTER_AUTO_RETRY_AFTER_MS);
-    const dependencyCategory = classifySyncDependencyCategory(item, pending, failed, depResolver);
+    const dependencyCategory = classifySyncDependencyCategory(item, pendingIdSet, failedIdSet, depResolver);
     return {
       ...item,
       isFinancial: isFinancialSyncItem(item),

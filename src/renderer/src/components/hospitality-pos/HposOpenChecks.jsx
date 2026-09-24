@@ -150,12 +150,17 @@ export default function HposOpenChecks() {
     return () => { active = false; };
   }, [barOnly]);
 
+  // Tabs being settled on the other till (mesh tab holds). Any live hold
+  // counts as foreign: this screen only ever reads, never holds.
+  const [settlingTabIds, setSettlingTabIds] = useState(new Set());
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true);
     setError("");
     try {
-      const rows =
-        (await window.api?.pos?.getTabs?.({ status: "active" })) || [];
+      const [rows, mesh] = await Promise.all([
+        window.api?.pos?.getTabs?.({ status: "active" }) || [],
+        Promise.resolve(window.api?.mesh?.getDiagnostics?.()).catch(() => null) || null,
+      ]);
       setTabs(
         rows.filter(
           (row) =>
@@ -164,6 +169,11 @@ export default function HposOpenChecks() {
             ),
         ),
       );
+      const holds = new Set();
+      for (const lock of mesh?.activeLocks || []) {
+        if (lock?.resourceKind === 'pos-tab' && lock?.resourceId) holds.add(String(lock.resourceId));
+      }
+      setSettlingTabIds(holds);
     } catch (loadError) {
       setError(loadError?.message || "Open tabs could not be loaded.");
     } finally {
@@ -707,11 +717,16 @@ export default function HposOpenChecks() {
                 >
                   Resume tab →
                 </button>
+                {settlingTabIds.has(String(tab.id)) && (
+                  <p role="status" style={{ margin: "0 0 8px", fontSize: "12px", fontWeight: 800, color: "#8b5a11" }}>
+                    Settling on the other till — wait a moment.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={() => settle(tab)}
-                  disabled={!canControl(tab) || tabSettleValue(tab) === null}
-                  title={!canControl(tab) ? ownerTitle(tab) : (tabSettleValue(tab) === null ? "No lines to settle. Resume the tab instead." : (tabSettleEstimated(tab) ? "Resume this tab and open payment (uncertified estimate; server prices at replay)." : "Resume this tab and open payment."))}
+                  disabled={!canControl(tab) || tabSettleValue(tab) === null || settlingTabIds.has(String(tab.id))}
+                  title={settlingTabIds.has(String(tab.id)) ? "This tab is being settled on the other till. Wait a moment, then refresh." : (!canControl(tab) ? ownerTitle(tab) : (tabSettleValue(tab) === null ? "No lines to settle. Resume the tab instead." : (tabSettleEstimated(tab) ? "Resume this tab and open payment (uncertified estimate; server prices at replay)." : "Resume this tab and open payment.")))}
                 >
                   Settle
                 </button>

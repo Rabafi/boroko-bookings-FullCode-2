@@ -120,6 +120,7 @@ export function CustomerDisplay() {
   const [display, setDisplay] = useState(null)
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(Date.now())
+  const [welcomeMessage, setWelcomeMessage] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -128,6 +129,14 @@ export function CustomerDisplay() {
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    Promise.resolve(window.api?.pos?.getHardwareSettings?.()).then((hardware) => {
+      if (hardware && typeof hardware === 'object' && hardware.display_welcome_message) {
+        setWelcomeMessage(String(hardware.display_welcome_message))
+      }
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -194,12 +203,22 @@ export function CustomerDisplay() {
               <p className="text-lg font-bold uppercase tracking-[0.18em] text-emerald-200">Total Due</p>
               <p className="mt-2 text-6xl font-black">{currency} {fmt(display?.total)}</p>
             </div>
+            {display?.change_due != null && Number.isFinite(Number(display.change_due)) ? (
+              <div className="mt-6 rounded-2xl border border-amber-300/40 bg-amber-400/10 p-5 text-center">
+                {display?.message ? <p className="text-xl font-bold text-amber-100">{display.message}</p> : null}
+                <p className="mt-2 text-lg font-bold uppercase tracking-[0.18em] text-amber-200">Change due</p>
+                <p className="mt-1 text-5xl font-black">{currency} {fmt(display.change_due)}</p>
+              </div>
+            ) : null}
           </aside>
         </div>
       ) : (
         <div className="flex min-h-[70vh] flex-col items-center justify-center rounded-3xl border border-white/10 bg-white/[0.03] text-center">
           <Monitor size={58} className="text-emerald-300" />
           <h2 className="mt-5 text-4xl font-bold">Welcome</h2>
+          {welcomeMessage ? (
+            <p className="mt-3 max-w-xl text-2xl font-semibold text-amber-100">{welcomeMessage}</p>
+          ) : null}
           <p className="mt-3 max-w-xl text-xl text-slate-300">Your order will appear here as items are added at the POS.</p>
         </div>
       )}

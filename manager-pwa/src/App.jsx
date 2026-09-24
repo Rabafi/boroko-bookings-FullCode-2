@@ -321,6 +321,14 @@ function SyncBanner() {
   const { user } = useAuth()
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
   const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? getQueueStatus(user.lodge_id).count : 0)
+  const [unresolvedCount, setUnresolvedCount] = useState(() => {
+    try {
+      const health = user?.lodge_id ? getPwaQueueHealth(user.lodge_id) : null
+      return (health?.blockedCount || 0) + (health?.deadLetterCount || 0)
+    } catch {
+      return 0
+    }
+  })
   const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
@@ -329,9 +337,15 @@ function SyncBanner() {
     const refresh = () => {
       setOnline(navigator.onLine)
       setQueueCount(getQueueStatus(user.lodge_id).count)
+      try {
+        const health = getPwaQueueHealth(user.lodge_id)
+        setUnresolvedCount((health?.blockedCount || 0) + (health?.deadLetterCount || 0))
+      } catch {
+        // Health is best effort; the count above is the source of truth.
+      }
     }
 
-    const onOnline = async () => {
+    const pushQueue = async () => {
       refresh()
       setSyncing(true)
       await flushOfflineQueue(user.lodge_id).catch(() => {})
@@ -339,13 +353,18 @@ function SyncBanner() {
       refresh()
     }
 
-    window.addEventListener('online', onOnline)
+    window.addEventListener('online', pushQueue)
     window.addEventListener('offline', refresh)
     const unsubscribe = subscribeRuntimeEvent('boroko:pwa-queue', refresh)
     refresh()
+    // Startup flush: the app can open already online with a waiting queue
+    // from a previous offline session. Push once on mount.
+    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+      pushQueue()
+    }
 
     return () => {
-      window.removeEventListener('online', onOnline)
+      window.removeEventListener('online', pushQueue)
       window.removeEventListener('offline', refresh)
       unsubscribe?.()
     }
@@ -362,6 +381,7 @@ function SyncBanner() {
             {online
               ? `${syncing ? 'Pushing' : 'Ready to push'} ${queueCount} queued change${queueCount === 1 ? '' : 's'}`
               : `${queueCount} change${queueCount === 1 ? '' : 's'} waiting to sync when the internet returns`}
+            {unresolvedCount > 0 ? ` · ${unresolvedCount} need${unresolvedCount === 1 ? 's' : ''} review in Support inbox` : ''}
           </p>
         </div>
         {online && queueCount > 0 && (

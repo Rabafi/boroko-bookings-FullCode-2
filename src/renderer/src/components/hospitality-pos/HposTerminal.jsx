@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ErrorNotice } from "../shared/ErrorNotice";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import {
   Search,
   Plus,
@@ -29,6 +30,9 @@ import {
   CheckCircle,
   ReceiptText,
   WalletCards,
+  Keyboard,
+  Delete,
+  X,
 } from "lucide-react";
 import { useSettings, useAuth, useAccess } from "../../app-context";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
@@ -55,6 +59,7 @@ import {
   TILL_OPERATOR_MODES,
   getTillOperatorPolicy,
 } from "../../../../shared/tillOperatorPolicy";
+import { playTillBeep } from "../../../../shared/tillSound";
 import { buildBarTenderBreakdown } from "../../../../shared/barTenderAllocation";
 import {
   validateSaleModifierRequirements,
@@ -77,6 +82,14 @@ import {
 const TERMINAL_OUTLET_STORAGE_PREFIX = "hpos-terminal-outlet:";
 const FAVOURITES_STORAGE_PREFIX = "hpos-till-favourites:";
 const MAX_FAVOURITES = 30;
+// Touch-only Sell search: in-app keyboard rows (barcode scanners and
+// physical keyboards still work through the focused input as before).
+const SEARCH_KEYBOARD_ROWS = [
+  ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+  ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+  ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+  ["z", "x", "c", "v", "b", "n", "m"],
+];
 const TOP_SELLER_POPULARITY = 80;
 const FAVOURITES_CATEGORY = "★ Favourites";
 const TOP_SELLERS_CATEGORY = "Top sellers";
@@ -160,7 +173,7 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
   }
 }
 
-function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stockSetupRequired = false, statusUnknown = false, lowStock = null, finishedStock = false, syncBlocked = false, pendingSync = false }) {
+function ProductCard({ item, onAdd, onAddQty, onToggleFavourite, isFavourite = false, stockSetupRequired = false, statusUnknown = false, lowStock = null, finishedStock = false, syncBlocked = false, pendingSync = false, inBasketQty = 0 }) {
   const isSoldOut =
     item.is_available === false || item.available === false || item.sold_out;
   const blocked = isSoldOut || finishedStock || syncBlocked || stockSetupRequired || statusUnknown;
@@ -208,30 +221,22 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
       starter: "#d8dec0",
       starters: "#d8dec0",
     }[String(item.category || "").toLowerCase()] || "#efe2cf");
+  const longPressFiredRef = useRef(false);
+  const longPressTimerRef = useRef(null);
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
   return (
     <div
-      role="button"
-      tabIndex={blocked ? -1 : 0}
-      aria-disabled={blocked}
-      aria-label={blocked ? `${item.name} (${unavailableLabel})` : `Add ${item.name} to order`}
-      onClick={() => {
-        if (!blocked) onAdd(item);
-      }}
-      onKeyDown={(event) => {
-        if (blocked) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onAdd(item);
-        }
-      }}
       style={{
         background: blocked ? "#f7f1e8" : categoryTone,
         border: `1px solid ${blocked ? "rgba(55,70,57,.08)" : "rgba(55,70,57,.12)"}`,
         borderRadius: "20px",
         padding: "18px",
         minHeight: "164px",
-        cursor: blocked ? "not-allowed" : "pointer",
-        opacity: blocked ? 0.4 : 1,
         textAlign: "left",
         transition:
           "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
@@ -243,6 +248,61 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
         overflow: "hidden",
       }}
     >
+      {/* Full-card hit target. A native button (not role=button on a div)
+          keeps keyboard activation free and lets the favourite star sit as a
+          real sibling control instead of nesting buttons. Blocked cards stay
+          discoverable via aria-disabled rather than disappearing. */}
+      <button
+        type="button"
+        tabIndex={blocked ? -1 : 0}
+        aria-disabled={blocked}
+        aria-label={
+          blocked
+            ? `${item.name} (${unavailableLabel})`
+            : inBasketQty > 0
+              ? `Add another ${item.name} to order — ${inBasketQty} already in basket`
+              : `Add ${item.name} to order`
+        }
+        onClick={() => {
+          if (longPressFiredRef.current) {
+            longPressFiredRef.current = false;
+            return;
+          }
+          if (!blocked) onAdd(item);
+        }}
+        onPointerDown={() => {
+          if (blocked) return;
+          // Long-press opens a multi-add sheet for rounds (4 beers, etc.).
+          // Suppress the subsequent click so one long-press never double-adds.
+          longPressFiredRef.current = false;
+          clearLongPress();
+          longPressTimerRef.current = window.setTimeout(() => {
+            longPressFiredRef.current = true;
+            longPressTimerRef.current = null;
+            onAddQty?.(item);
+          }, 480);
+        }}
+        onPointerUp={clearLongPress}
+        onPointerCancel={clearLongPress}
+        onPointerLeave={clearLongPress}
+        onContextMenu={(event) => {
+          if (!blocked) event.preventDefault();
+        }}
+        style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 1,
+          width: "100%",
+          height: "100%",
+          padding: 0,
+          margin: 0,
+          border: "none",
+          background: "transparent",
+          borderRadius: "20px",
+          cursor: blocked ? "not-allowed" : "pointer",
+          touchAction: "manipulation",
+        }}
+      />
       <span
         aria-hidden="true"
         style={{
@@ -257,6 +317,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           background: "rgba(255,253,248,.32)",
           color: "rgba(36,54,44,.48)",
           transform: "rotate(-8deg)",
+          pointerEvents: "none",
         }}
       >
         <CategoryIcon size={35} strokeWidth={1.45} />
@@ -267,15 +328,16 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           justifyContent: "space-between",
           alignItems: "flex-start",
           position: "relative",
-          zIndex: 1,
+          zIndex: 2,
           paddingRight: 42,
+          pointerEvents: "none",
         }}
       >
         <span
           style={{
             fontSize: "16px",
             fontWeight: 800,
-            color: "#24362c",
+            color: "var(--bb-text)",
             lineHeight: 1.2,
             flex: 1,
           }}
@@ -286,45 +348,75 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           {Number(item.popularity || 0) > TOP_SELLER_POPULARITY && !isFavourite && (
             <Star size={11} color="#c95635" fill="#c95635" />
           )}
-          <button
-            type="button"
-            aria-label={isFavourite ? `Remove ${item.name} from favourites` : `Pin ${item.name} to favourites`}
-            aria-pressed={isFavourite === true}
-            title={isFavourite ? "Remove from favourites" : "Pin to favourites"}
-            onClick={(event) => {
-              event.stopPropagation();
-              event.preventDefault();
-              onToggleFavourite?.(item.id);
-            }}
-            style={{
-              width: "40px",
-              height: "40px",
-              borderRadius: "10px",
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <Star
-              size={15}
-              color={isFavourite ? "#c95635" : "#8a8f88"}
-              fill={isFavourite ? "#c95635" : "transparent"}
-            />
-          </button>
         </span>
       </div>
+      <button
+        type="button"
+        aria-label={isFavourite ? `Remove ${item.name} from favourites` : `Pin ${item.name} to favourites`}
+        aria-pressed={isFavourite === true}
+        title={isFavourite ? "Remove from favourites" : "Pin to favourites"}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          onToggleFavourite?.(item.id);
+        }}
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          zIndex: 3,
+          width: "44px",
+          height: "44px",
+          borderRadius: "10px",
+          border: "none",
+          background: "transparent",
+          cursor: "pointer",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        <Star
+          size={15}
+          color={isFavourite ? "#c95635" : "#8a8f88"}
+          fill={isFavourite ? "#c95635" : "transparent"}
+        />
+      </button>
+      {inBasketQty > 0 && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 10,
+            top: 10,
+            zIndex: 3,
+            minWidth: 30,
+            height: 30,
+            padding: "0 8px",
+            borderRadius: 999,
+            display: "grid",
+            placeItems: "center",
+            background: "var(--bb-accent, #c95635)",
+            color: "#fffdf8",
+            fontSize: "13px",
+            fontWeight: 900,
+            boxShadow: "0 6px 14px rgba(201,86,53,.28)",
+            pointerEvents: "none",
+          }}
+        >
+          {inBasketQty}
+        </span>
+      )}
       <div
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
           position: "relative",
-          zIndex: 1,
+          zIndex: 2,
+          pointerEvents: "none",
         }}
       >
-        <span style={{ fontSize: "17px", fontWeight: 800, color: "#24362c" }}>
+        <span style={{ fontSize: "17px", fontWeight: 800, color: "var(--bb-text)" }}>
           P{Number(item.price || 0).toFixed(2)}
         </span>
         {item.prep_time && (
@@ -334,7 +426,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
               alignItems: "center",
               gap: "2px",
               fontSize: "10px",
-              color: "#7b7a70",
+              color: "var(--bb-text-muted)",
             }}
           >
             <Clock size={9} /> {item.prep_time}m
@@ -347,7 +439,8 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           flexWrap: "wrap",
           gap: 4,
           position: "relative",
-          zIndex: 1,
+          zIndex: 2,
+          pointerEvents: "none",
         }}
       >
         {lowStock && (
@@ -362,21 +455,6 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
             }}
           >
             Only {lowStock.qty} {lowStock.unit} left
-          </span>
-        )}
-        {blocked && (
-          <span
-            role="status"
-            style={{
-              fontSize: "11px",
-              fontWeight: 800,
-              color: "#fffdf8",
-              background: "#8d2f24",
-              padding: "3px 7px",
-              borderRadius: "999px",
-            }}
-          >
-            {unavailableLabel}
           </span>
         )}
         {pendingSync && (
@@ -399,7 +477,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
             style={{
               fontSize: "11px",
               fontWeight: 600,
-              color: "#c95635",
+              color: "var(--bb-accent)",
               background: "rgba(255,253,248,.38)",
               padding: "3px 7px",
               borderRadius: "999px",
@@ -415,7 +493,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
             style={{
               fontSize: "11px",
               fontWeight: 700,
-              color: "#356ed8",
+              color: "var(--bb-info)",
               background: "rgba(53,110,216,.12)",
               padding: "3px 7px",
               borderRadius: "999px",
@@ -429,7 +507,7 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
             style={{
               fontSize: "11px",
               fontWeight: 600,
-              color: "#647066",
+              color: "var(--bb-text-soft)",
               background: "rgba(255,253,248,.5)",
               padding: "3px 7px",
               borderRadius: "999px",
@@ -439,12 +517,18 @@ function ProductCard({ item, onAdd, onToggleFavourite, isFavourite = false, stoc
           </span>
         )}
       </div>
+      {/* Single visible unavailable label — full-contrast text on the muted
+          card (no opacity dimming), announced once via the button's
+          aria-label rather than duplicated as a status pill plus footer. */}
       {blocked && (
         <span
           style={{
+            position: "relative",
+            zIndex: 2,
+            pointerEvents: "none",
             fontSize: "12px",
             fontWeight: 700,
-            color: "#b84a38",
+            color: "var(--bb-danger)",
             textTransform: "uppercase",
           }}
         >
@@ -490,7 +574,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           style={{
             fontSize: "12px",
             fontWeight: 700,
-            color: "#24362c",
+            color: "var(--bb-text)",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -500,10 +584,25 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           {packLabel && packLabel !== "Single" ? ` · ${packLabel}` : ""}
         </div>
         {line.modifiers?.length > 0 && (
-          <div style={{ fontSize: "11px", color: "#7b7a70", marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <div style={{ fontSize: "11px", color: "var(--bb-text-muted)", marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {line.modifiers.join(", ")}
           </div>
         )}
+        {/* Unit price stays visible under the name so the cashier can verify
+            P-per-single against the line total without mental arithmetic
+            (restores the approved Sell-screen contract). */}
+        <div
+          style={{
+            fontSize: "11px",
+            color: "var(--bb-text-soft)",
+            marginTop: "1px",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {currency} {fmt(unit)} each
+        </div>
       </div>
 
       <span
@@ -511,7 +610,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
         style={{
           fontSize: "12px",
           fontWeight: 800,
-          color: "#24362c",
+          color: "var(--bb-text)",
           whiteSpace: "nowrap",
           flexShrink: 0,
         }}
@@ -529,7 +628,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           borderRadius: "10px",
           border: "1px solid rgba(55,70,57,.16)",
           background: "#fffdf8",
-          color: "#24362c",
+          color: "var(--bb-text)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -554,7 +653,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           textAlign: "center",
           fontSize: "15px",
           fontWeight: 700,
-          color: "#24362c",
+          color: "var(--bb-text)",
           borderRadius: "10px",
           border: "1px solid rgba(55,70,57,.16)",
           background: "#fffdf8",
@@ -569,7 +668,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           borderRadius: "10px",
           border: "1px solid rgba(55,70,57,.16)",
           background: "#fffdf8",
-          color: "#24362c",
+          color: "var(--bb-text)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -589,7 +688,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
           borderRadius: "10px",
           border: "1px solid rgba(184,74,56,.25)",
           background: "transparent",
-          color: "#b84a38",
+          color: "var(--bb-danger)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -681,6 +780,13 @@ export default function HposTerminal() {
     [barOnly],
   );
   const [menuItems, setMenuItems] = useState([]);
+  // Core-load failure is distinct from an empty catalogue: the grid must
+  // never render "No items found" for a read that never succeeded.
+  const [menuLoadFailed, setMenuLoadFailed] = useState(false);
+  const [coreLoadNonce, setCoreLoadNonce] = useState(0);
+  // In-app destructive confirms (Clear sale / switch table) instead of
+  // window.confirm: styled, keyboard-dismissable, screen-reader announced.
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(() => new Set());
   // Low-stock badges by inventory_item_id. Informational only: loaded idle
   // after the Till opens, capability-gated server-side (cashiers without
@@ -688,6 +794,9 @@ export default function HposTerminal() {
   const [lowStockMap, setLowStockMap] = useState({});
   const [cart, setCart] = useState([]);
   const [lastAdded, setLastAdded] = useState(null);
+  // One-level local undo for the most recent basket add (mis-taps only —
+  // never touches a paid order). Snackbars auto-expire; no financial state.
+  const [undoAdd, setUndoAdd] = useState(null);
   const [lastRemoved, setLastRemoved] = useState(null);
   const [favourites, setFavourites] = useState([]);
   const [openTabCount, setOpenTabCount] = useState(0);
@@ -725,7 +834,6 @@ export default function HposTerminal() {
     }
     return undefined;
   }, []);
-  const basketVisible = !narrowViewport || basketOpen || showPayment;
   const restoreCheckedRef = useRef(false);
   const undoTimerRef = useRef(null);
   const [search, setSearch] = useState("");
@@ -746,6 +854,13 @@ export default function HposTerminal() {
     const timer = window.setTimeout(() => setLastAdded(null), 2500);
     return () => window.clearTimeout(timer);
   }, [lastAdded]);
+
+  // Undo affordance expires so a stale snackbar never clears a later basket.
+  useEffect(() => {
+    if (!undoAdd) return undefined;
+    const timer = window.setTimeout(() => setUndoAdd(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [undoAdd]);
 
   const toggleFavourite = useCallback((menuItemId) => {
     if (!menuItemId) return;
@@ -799,6 +914,19 @@ export default function HposTerminal() {
   });
   const [tipAmount, setTipAmount] = useState("");
   const [showPayment, setShowPayment] = useState(false);
+  // Derived AFTER all state above: reading any useState binding before its
+  // declaration throws "Cannot access '...' before initialization" on every
+  // render and lands the whole Till on the recovery screen (this line once
+  // read showPayment from above its declaration). Do not move it back up.
+  const basketVisible = !narrowViewport || basketOpen || showPayment;
+  // Long-press multi-add: open a short qty sheet for rounds (2/3/4/6).
+  const [multiAddItem, setMultiAddItem] = useState(null);
+  const [multiAddQty, setMultiAddQty] = useState("2");
+  // This shift's sold-item chips (device-local): max 12 unique product ids.
+  const [recentSold, setRecentSold] = useState([]);
+  const [shiftPaceItems, setShiftPaceItems] = useState(0);
+  // Payment open too long with an untaken tender: soft nudge after 90s.
+  const [paymentIdleNudge, setPaymentIdleNudge] = useState(false);
   const [loading, setLoading] = useState(true);
   const [outlets, setOutlets] = useState([]);
   const [tables, setTables] = useState([]);
@@ -842,8 +970,21 @@ export default function HposTerminal() {
   const [operatorBusy, setOperatorBusy] = useState(false);
   const [showOperatorUnlock, setShowOperatorUnlock] = useState(false);
   const searchRef = useRef(null);
+  // In-app search keyboard for touch-only tills (no physical keyboard, no
+  // OSK dependency). Non-modal: product taps and barcode-wedge focus stay live.
+  const [showSearchKeyboard, setShowSearchKeyboard] = useState(false);
+  const searchKeyboardRef = useRef(null);
+  const searchKeyboardToggleRef = useRef(null);
+  const searchClearRef = useRef(null);
+  // Dialog a11y refs for the shift-start and modifier overlays (item 11):
+  // focus enters on open, Tab stays inside, focus returns to the opener.
+  const shiftDialogRef = useRef(null);
+  const modifierDialogRef = useRef(null);
   const barcodeDecoderRef = useRef(null);
   const [scannerSettings, setScannerSettings] = useState({});
+  const [terminalHardware, setTerminalHardware] = useState({});
+  const [terminalSending, setTerminalSending] = useState(false);
+  const [terminalMessage, setTerminalMessage] = useState('');
   const scannerIdleTimerRef = useRef(null);
   const scannerFeedbackTimerRef = useRef(null);
   const tillActivityLastSentAtRef = useRef(0);
@@ -881,11 +1022,65 @@ export default function HposTerminal() {
 
   useEffect(() => {
     let active = true;
-    window.api?.pos?.getHardwareSettings?.().then((settings) => {
-      if (active && settings && typeof settings === "object") setScannerSettings(settings);
+    Promise.resolve(window.api?.pos?.getHardwareSettings?.()).then((settings) => {
+      if (active && settings && typeof settings === "object") {
+        setScannerSettings(settings);
+        setTerminalHardware(settings);
+      }
     }).catch(() => {});
     return () => { active = false; };
   }, []);
+
+  const terminalBridgeReady = String(terminalHardware.payment_terminal_mode || 'manual').toLowerCase() !== 'manual'
+    && Boolean(terminalHardware.payment_terminal_provider)
+    && Boolean(terminalHardware.payment_terminal_bridge_url);
+
+  // One steady bridge reference per card payment: a retry after an ambiguous
+  // timeout reuses it instead of minting a fresh one, so the machine cannot
+  // read the retry as a second charge. Thrown away when the payment ends or
+  // the amount/method changes.
+  const terminalRequestRef = useRef({ key: null, fingerprint: '' });
+  useEffect(() => {
+    if (!showPayment) terminalRequestRef.current = { key: null, fingerprint: '' };
+  }, [showPayment]);
+
+  const sendTotalToCardMachine = async (amount) => {
+    const due = Number(amount);
+    if (!Number.isFinite(due) || due <= 0) {
+      setTerminalMessage('No amount due to send to the card machine.');
+      return;
+    }
+    setTerminalSending(true);
+    setTerminalMessage('');
+    try {
+      const fingerprint = [paymentMethod, due.toFixed(2), splitCashAmount || '', splitRemainderMethod || ''].join('|');
+      let requestId = terminalRequestRef.current.fingerprint === fingerprint ? terminalRequestRef.current.key : null;
+      if (!requestId) {
+        requestId = window.crypto?.randomUUID
+          ? window.crypto.randomUUID()
+          : `pos-terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        terminalRequestRef.current = { key: requestId, fingerprint };
+      }
+      const result = await window.api?.pos?.sendPaymentTerminalTotal?.({ amount: due, request_id: requestId });
+      if (result?.success) {
+        const approval = result.approval_code || result.reference || '';
+        if (approval) {
+          setPaymentReferences((previous) => {
+            const target = paymentMethod === 'split' ? splitRemainderMethod : paymentMethod;
+            if (target !== 'card') return previous;
+            return { ...previous, card: approval };
+          });
+        }
+        setTerminalMessage(result.message || `Total sent to the card machine${approval ? ` — approval ${approval}` : ''}.`);
+      } else {
+        setTerminalMessage(result?.error || 'The card machine did not approve the amount.');
+      }
+    } catch (terminalError) {
+      setTerminalMessage(terminalError?.message || 'Could not reach the card machine bridge.');
+    } finally {
+      setTerminalSending(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1279,6 +1474,8 @@ export default function HposTerminal() {
   useEffect(() => {
     let active = true;
     const load = async () => {
+      setLoading(true);
+      setMenuLoadFailed(false);
       try {
         const [
           data,
@@ -1317,9 +1514,79 @@ export default function HposTerminal() {
             rows: Array.isArray(readinessResult.rows) ? readinessResult.rows : [],
           });
         }
-        setStockReadiness(resolved.status === "ready" || resolved.status === "stale"
-          ? { status: resolved.status, map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt || null }
-          : { status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
+        if (resolved.status === "ready" || resolved.status === "stale") {
+          // Same unsent-sales adjustment as refreshReadiness: the other
+          // till's mesh-imported sales count from the first paint.
+          // Promise.resolve: if this IPC binding is ever missing, resolve
+          // empty instead of throwing and trapping the Till in "loading".
+          const base = { status: resolved.status, map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt || null };
+          Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).then((usageResult) => {
+            if (!active) return;
+            const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
+            const orderCount = Number(usageResult?.orderCount || 0);
+            const meshOrderCount = Number(usageResult?.meshOrderCount || 0);
+            const meshDeliveryCount = Number(usageResult?.meshDeliveryCount || 0);
+            if (!(orderCount > 0)) {
+              setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
+              return;
+            }
+            const counts = new Map();
+            for (const [id, entry] of base.counts || []) {
+              const used = Number(usage[id] || 0);
+              counts.set(id, used ? { ...entry, qty: Number(entry?.qty || 0) - used } : entry);
+            }
+            setStockReadiness({ ...base, counts, pendingOrders: orderCount, meshOrders: meshOrderCount, meshDeliveries: meshDeliveryCount });
+          }).catch(() => {
+            if (active) setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
+          });
+        } else {
+          // First paint with no verified data: same local fallback so the
+          // bar can sell immediately instead of pausing on an empty check.
+          const fallbackRows = Array.isArray(data) ? data : [];
+          const fallbackRecipes = new Set(
+            (Array.isArray(recipeRows) ? recipeRows : [])
+              .filter((recipe) => recipe.menu_item_id && (recipe.ingredients || []).some((ingredient) => Number(ingredient.quantity || 0) > 0))
+              .map((recipe) => recipe.menu_item_id),
+          );
+          const invResult = await Promise.resolve(window.api?.inventory?.getItems?.()).catch(() => []);
+          const invRows = Array.isArray(invResult) ? invResult : (Array.isArray(invResult?.rows) ? invResult.rows : (Array.isArray(invResult?.items) ? invResult.items : []));
+          const stockById = new Map();
+          for (const row of invRows) {
+            const qty = Number(row?.current_stock);
+            if (row?.id && Number.isFinite(qty)) stockById.set(String(row.id), qty);
+          }
+          const fallbackMap = new Map();
+          const fallbackCounts = new Map();
+          for (const item of fallbackRows) {
+            if (!item?.id) continue;
+            if (String(item.stock_method || '').toLowerCase() === 'non_stock') { fallbackMap.set(item.id, 'non_stock'); continue; }
+            if (fallbackRecipes.has(item.id)) { fallbackMap.set(item.id, 'recipe'); continue; }
+            const stockId = String(item.inventory_item_id || '').trim();
+            if (!stockId || !stockById.has(stockId)) continue;
+            fallbackMap.set(item.id, 'direct');
+            fallbackCounts.set(item.id, { qty: stockById.get(stockId) });
+          }
+          if (fallbackCounts.size > 0) {
+            const base = { status: "local", map: fallbackMap, counts: fallbackCounts, cachedAt: null };
+            const usageResult = await Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
+            if (!active) return;
+            const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
+            const adjusted = new Map();
+            for (const [id, entry] of base.counts) {
+              const used = Number(usage[id] || 0);
+              adjusted.set(id, used ? { ...entry, qty: Number(entry?.qty || 0) - used } : entry);
+            }
+            setStockReadiness({
+              ...base, counts: adjusted,
+              pendingOrders: Number(usageResult?.orderCount || 0),
+              meshOrders: Number(usageResult?.meshOrderCount || 0),
+              meshDeliveries: Number(usageResult?.meshDeliveryCount || 0),
+            });
+          } else {
+            if (!active) return;
+            setStockReadiness({ status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
+          }
+        }
         setRecipeMenuItemIds(
           new Set(
             (Array.isArray(recipeRows) ? recipeRows : [])
@@ -1484,6 +1751,7 @@ export default function HposTerminal() {
         }
       } catch (error) {
         if (active) {
+          setMenuLoadFailed(true);
           setModifiersReady("failed");
           setStockReadiness({ status: "failed", map: new Map() });
           setSubmitError(
@@ -1497,7 +1765,14 @@ export default function HposTerminal() {
     return () => {
       active = false;
     };
-  }, [location.state?.tabId, outletIsAllowed, barOnly, canUseRecipes, tillEntitlements]);
+  }, [location.state?.tabId, outletIsAllowed, barOnly, canUseRecipes, tillEntitlements, coreLoadNonce]);
+
+  const retryCoreLoad = useCallback(() => {
+    setMenuLoadFailed(false);
+    setSubmitError("");
+    setLoading(true);
+    setCoreLoadNonce((nonce) => nonce + 1);
+  }, []);
 
   useEffect(() => {
     // The Till pill ("Open tabs · N") must never drift from Open Tabs: that
@@ -1821,7 +2096,7 @@ export default function HposTerminal() {
       if (isProvisionalMenuItem(item)) return "provisional";
       if (String(item?.stock_method || "").toLowerCase() === "non_stock") return "ok";
       if (!barOnly) return hasStockSetupIssue(item) ? "issue" : "ok";
-      if (stockReadiness.status !== "ready" && stockReadiness.status !== "stale") return "unknown";
+      if (stockReadiness.status !== "ready" && stockReadiness.status !== "stale" && stockReadiness.status !== "local") return "unknown";
       const readiness = stockReadiness.map.get(item?.id);
       if (readiness === "direct" || readiness === "recipe" || readiness === "non_stock") return "ok";
       if (readiness === "missing" || readiness === "conflict") return "issue";
@@ -1868,6 +2143,82 @@ export default function HposTerminal() {
     return null;
   }, [getStockIssue, stockReadiness]);
 
+  // Unsent sales on this computer — own queued sales plus sales imported
+  // from the other till over mesh — are subtracted from the counts so two
+  // tills selling the last bottles fail closed early ("Finished") instead of
+  // over-selling. Server-confirmed sales are never double-counted: success
+  // removes queue rows, and the Pay-time server check remains the backstop.
+  const applyPendingUsage = useCallback(async (base) => {
+    try {
+      const usageResult = await Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
+      const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
+      const orderCount = Number(usageResult?.orderCount || 0);
+      const meshOrderCount = Number(usageResult?.meshOrderCount || 0);
+      const meshDeliveryCount = Number(usageResult?.meshDeliveryCount || 0);
+      if (!(orderCount > 0)) {
+        setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
+        return;
+      }
+      const counts = new Map();
+      for (const [id, entry] of base.counts || []) {
+        const used = Number(usage[id] || 0);
+        counts.set(id, used ? { ...entry, qty: Number(entry?.qty || 0) - used } : entry);
+      }
+      setStockReadiness({ ...base, counts, pendingOrders: orderCount, meshOrders: meshOrderCount, meshDeliveries: meshDeliveryCount });
+    } catch {
+      setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
+    }
+  }, []);
+
+  // Last-known stock from this computer when the server check fails: the
+  // inventory cache is server-seeded and locally adjusted by own + mesh
+  // sales, deliveries, and counts. Labeled "local", never verified — but the
+  // bar keeps selling on it instead of pausing. Unknown items stay out of the
+  // map so their cards ask for Refresh rather than guessing.
+  const buildLocalFallback = useCallback(async (menuList, recipeIds) => {
+    try {
+      const invResult = await Promise.resolve(window.api?.inventory?.getItems?.()).catch(() => []);
+      const invRows = Array.isArray(invResult)
+        ? invResult
+        : (Array.isArray(invResult?.rows) ? invResult.rows : (Array.isArray(invResult?.items) ? invResult.items : []));
+      if (invRows.length === 0) return null;
+      const stockById = new Map();
+      for (const row of invRows) {
+        const qty = Number(row?.current_stock);
+        if (row?.id && Number.isFinite(qty)) stockById.set(String(row.id), qty);
+      }
+      if (stockById.size === 0) return null;
+      const map = new Map();
+      const counts = new Map();
+      for (const item of menuList || []) {
+        if (!item?.id) continue;
+        if (String(item.stock_method || '').toLowerCase() === 'non_stock') { map.set(item.id, 'non_stock'); continue; }
+        if (recipeIds && recipeIds.has && recipeIds.has(item.id)) { map.set(item.id, 'recipe'); continue; }
+        const stockId = String(item.inventory_item_id || '').trim();
+        if (!stockId || !stockById.has(stockId)) continue;
+        map.set(item.id, 'direct');
+        counts.set(item.id, { qty: stockById.get(stockId) });
+      }
+      if (counts.size === 0) return null;
+      return { map, counts };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Safety net: the Till must never sit in "loading" forever with no
+  // recourse. If the first check hasn't resolved in 20s, fail loudly so the
+  // Refresh button appears instead of a frozen screen.
+  useEffect(() => {
+    if (stockReadiness.status !== "loading") return undefined;
+    const timer = window.setTimeout(() => {
+      setStockReadiness((current) => current.status === "loading"
+        ? { status: "failed", map: new Map(), counts: new Map(), pendingOrders: 0, meshOrders: 0, meshDeliveries: 0, error: "Stock check timed out. Press Refresh.", code: "timeout" }
+        : current);
+    }, 20000);
+    return () => window.clearTimeout(timer);
+  }, [stockReadiness.status]);
+
   const refreshReadiness = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setStockReadiness((current) => ({ status: "loading", map: new Map(), counts: new Map(), cachedAt: null }));
     if (!silent) setSubmitError("");
@@ -1879,23 +2230,48 @@ export default function HposTerminal() {
           at: Date.now(),
           rows: Array.isArray(result.rows) ? result.rows : [],
         });
-        setStockReadiness({ status: "ready", map: resolved.map, counts: resolved.counts, cachedAt: null });
+        await applyPendingUsage({ status: "ready", map: resolved.map, counts: resolved.counts, cachedAt: null });
       } else if (resolved.status === "stale") {
-        setStockReadiness({ status: "stale", map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt });
-      } else if (!silent) {
-        setStockReadiness({ status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
-        setSubmitError(
-          resolved.code === "backend-update-required" && resolved.error
-            ? resolved.error
-            : result?.error || "Stock status could not be verified. Refresh before selling.",
-        );
+        await applyPendingUsage({ status: "stale", map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt });
+      } else {
+        // Server check failed: fall back to this till's last-known stock so
+        // the bar keeps selling, clearly labeled. Only a truly empty
+        // computer (no stock data at all) still pauses selling.
+        const fallback = await buildLocalFallback(menuItems, recipeMenuItemIds);
+        if (fallback) {
+          await applyPendingUsage({ status: "local", map: fallback.map, counts: fallback.counts, cachedAt: null });
+        } else if (!silent) {
+          setStockReadiness({ status: "failed", map: new Map(), counts: new Map(), error: resolved.error || null, code: resolved.code || null });
+          setSubmitError(
+            resolved.code === "backend-update-required" && resolved.error
+              ? resolved.error
+              : result?.error || "Stock status could not be verified. Refresh before selling.",
+          );
+        }
       }
     } catch (error) {
       if (silent) return;
       setStockReadiness({ status: "failed", map: new Map(), counts: new Map() });
       setSubmitError(error?.message || "Stock status could not be verified. Refresh before selling.");
     }
-  }, [lodgeId]);
+  }, [applyPendingUsage, buildLocalFallback, lodgeId, menuItems, recipeMenuItemIds]);
+
+  // The other till's sales arrive over mesh between sync polls. When a merge
+  // lands, re-read readiness quietly so the counts include it — gated strictly
+  // on the merge marker so ordinary status traffic never triggers server reads.
+  const lastMeshMergeRef = useRef(null);
+  useEffect(() => {
+    const off = window.api?.sync?.onStatusChanged?.((next) => {
+      const marker = next?.mesh?.lastQueueMergeAt || null;
+      if (!marker || marker === lastMeshMergeRef.current) return;
+      lastMeshMergeRef.current = marker;
+      refreshReadiness({ silent: true }).catch(() => {});
+    });
+    Promise.resolve(window.api?.sync?.getStatus?.()).then((status) => {
+      if (status?.mesh?.lastQueueMergeAt) lastMeshMergeRef.current = status.mesh.lastQueueMergeAt;
+    }).catch(() => {});
+    return () => off?.();
+  }, [refreshReadiness]);
   // Category order is operator-driven (pins + measured sellers first), never
   // hardcoded per drink type: every business gets its own fast picks.
   const favouriteIdSet = useMemo(() => new Set(favourites), [favourites]);
@@ -1914,6 +2290,33 @@ export default function HposTerminal() {
       ...rest,
     ];
   }, [tillMenuItems, favourites.length, hasTopSellers]);
+  // Live product counts per chip so the operator can judge a category
+  // before scrolling into it (All always shows the full sellable set).
+  const categoryCounts = useMemo(() => {
+    const counts = { All: tillMenuItems.length };
+    for (const item of tillMenuItems) {
+      const key = item.category;
+      if (key) counts[key] = (counts[key] || 0) + 1;
+    }
+    if (favourites.length) counts[FAVOURITES_CATEGORY] = favourites.length;
+    if (hasTopSellers) {
+      counts[TOP_SELLERS_CATEGORY] = tillMenuItems.filter(
+        (item) => Number(item.popularity || 0) > TOP_SELLER_POPULARITY,
+      ).length;
+    }
+    return counts;
+  }, [favourites.length, hasTopSellers, tillMenuItems]);
+  // Basket qty per product id for in-card badges (no need to open the panel).
+  const cartQtyByItem = useMemo(() => {
+    const map = new Map();
+    for (const line of cart) {
+      map.set(
+        line.menu_item_id,
+        (map.get(line.menu_item_id) || 0) + Number(line.quantity || 0),
+      );
+    }
+    return map;
+  }, [cart]);
   // A special filter with nothing left in it (e.g. last pin removed) falls
   // back to All instead of rendering an empty grid.
   useEffect(() => {
@@ -1977,17 +2380,20 @@ export default function HposTerminal() {
       // Automatic sold-out: never let the basket exceed the counted stock.
       // The server re-checks at Pay regardless; this stops the extra taps
       // before they reach the error stage.
-      const existingQty = cart
-        .filter((c) => c.menu_item_id === item.id)
-        .reduce((sum, c) => sum + Number(c.quantity || 0), 0);
+      const existing = cart.find((c) => c.menu_item_id === item.id);
+      const existingQty = existing
+        ? Number(existing.quantity || 0)
+        : 0;
       const onHandBlock = onHandRefusal(item.id, item.depletion_qty || 1, item.name, existingQty + 1, item.category);
       if (onHandBlock) {
         setSubmitError(onHandBlock);
         return;
       }
+      const lineId = existing ? existing.id : Date.now();
+      setUndoAdd({ menuItemId: item.id, lineId, name: item.name, at: Date.now() });
       setCart((prev) => {
-        const existing = prev.find((c) => c.menu_item_id === item.id);
-        if (existing) {
+        const current = prev.find((c) => c.menu_item_id === item.id);
+        if (current) {
           return prev.map((c) =>
             c.menu_item_id === item.id ? { ...c, quantity: c.quantity + 1 } : c,
           );
@@ -1995,7 +2401,7 @@ export default function HposTerminal() {
         return [
           ...prev,
           {
-            id: Date.now(),
+            id: lineId,
             menu_item_id: item.id,
             item_name: item.name,
             unit_price: Number(item.price || 0),
@@ -2012,6 +2418,7 @@ export default function HposTerminal() {
           },
         ];
       });
+      playTillBeep();
     },
     [cart, location.state?.tabId, onHandRefusal, provisionalBlock, registerTillActivity, getStockIssue],
   );
@@ -2327,12 +2734,77 @@ export default function HposTerminal() {
 
   const clearCart = useCallback(() => {
     registerTillActivity();
-    if (!window.confirm("Clear this sale? All unpaid lines will be removed.")) return;
+    setPendingConfirm("clear");
+  }, [registerTillActivity]);
+
+  const applyClearCart = useCallback(() => {
+    setPendingConfirm(null);
     setSubmitError("");
     if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
     setLastRemoved(null);
+    setUndoAdd(null);
     setCart([]);
-  }, [registerTillActivity]);
+    // Next customer: put the caret back in search so they can scan or type.
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }, []);
+
+  // Payment open with a tender still untaken → soft role=status nudge after
+  // 90s. Any tender/method change restarts the clock; closing payment clears it.
+  useEffect(() => {
+    if (!showPayment) {
+      setPaymentIdleNudge(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setPaymentIdleNudge(true), 90000);
+    return () => window.clearTimeout(timer);
+  }, [showPayment, paymentMethod, cashReceived, tipAmount, splitCashAmount, voucherAmount]);
+
+  // Successful payment: record recent sold chips + local shift-pace items
+  // (device-local estimate only — never a financial report).
+  const noteSaleForShift = useCallback((lines) => {
+    const ids = [];
+    for (const line of lines || []) {
+      const id = String(line?.menu_item_id || line?.id || "");
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    setRecentSold((prev) => {
+      const next = ids.filter((id) => !prev.includes(id)).concat(prev);
+      return next.slice(0, 12);
+    });
+    setShiftPaceItems((n) => n + (lines || []).reduce((sum, l) => sum + (Number(l?.quantity) || 0), 0));
+  }, []);
+
+  // Multi-add sheet: rounds of 2/3/4/6 without leaving the grid.
+  const applyMultiAdd = useCallback(() => {
+    if (!multiAddItem) return;
+    const qty = Math.max(1, Math.min(99, Number(multiAddQty) || 1));
+    for (let i = 0; i < qty; i += 1) addToCart(multiAddItem);
+    setMultiAddItem(null);
+    setMultiAddQty("2");
+  }, [addToCart, multiAddItem, multiAddQty]);
+
+  // One-level local undo for the most recent basket add (mis-taps only —
+  // never touches a paid order). Reverses exactly that +1 or new line.
+  const undoLastAdd = useCallback(() => {
+    if (!undoAdd) return;
+    registerTillActivity();
+    setSubmitError("");
+    setCart((prev) => {
+      const next = [];
+      for (const line of prev) {
+        if (line.menu_item_id === undoAdd.menuItemId && line.id === undoAdd.lineId) {
+          if (Number(line.quantity || 0) > 1) {
+            next.push({ ...line, quantity: Number(line.quantity || 0) - 1 });
+          }
+          continue;
+        }
+        next.push(line);
+      }
+      return next;
+    });
+    setUndoAdd(null);
+    setLastAdded(null);
+  }, [registerTillActivity, undoAdd]);
 
   // Same again: one tap rebuilds the previous sale from the live catalog
   // (fresh prices). Missing, unavailable or stock-blocked lines are skipped
@@ -2415,6 +2887,13 @@ export default function HposTerminal() {
         : "Same again added.",
     );
   }, [getStockIssue, lastReceipt, onHandRefusal, provisionalBlock, registerTillActivity, tillMenuItems]);
+
+  // Reprint the last receipt (lost slip): reopens the recorded sale in the
+  // receipt modal, where Print / Save as PDF run again without re-charging.
+  const reprintLastReceipt = useCallback(() => {
+    if (!lastReceipt) return;
+    setCompletedReceipt({ order: lastReceipt, autoPrint: false });
+  }, [lastReceipt]);
 
   // Pool night: one tap adds every table product (quantity 1). The cashier
   // then types each table-box cash as its quantity and pays once.
@@ -2563,6 +3042,32 @@ export default function HposTerminal() {
   const tax = (subtotal - promotionDiscount) * taxRate;
   const tipTotal = Math.max(0, Number(tipAmount || 0));
   const total = subtotal - promotionDiscount + tax + tipTotal;
+
+  // Feed the guest-facing screen live: the Bar Till previously never pushed
+  // its basket, so the customer display sat on Welcome all sale. Same local
+  // snapshot contract the lodge terminal already uses. Placed here (not near
+  // the other effects) because the totals below must exist first.
+  useEffect(() => {
+    if (!selectedOutlet?.id) return;
+    window.api?.pos?.updateCustomerDisplay?.({
+      outlet_id: selectedOutlet.id,
+      table_name: tabName?.trim() || tableName?.trim() || null,
+      staff_name: (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || null,
+      items: cart.map((line) => ({
+        item_name: line.item_name,
+        quantity: Number(line.quantity || 0),
+        unit_price: Number(line.unit_price || 0) + Number(line.modifier_total || 0),
+        modifiers: line.modifiers || [],
+        item_notes: line.item_notes?.trim() || null,
+      })),
+      subtotal,
+      discount_total: promotionDiscount,
+      tax_total: tax,
+      tip_total: tipTotal,
+      total,
+    }).catch(() => {});
+  }, [cart, promotionDiscount, selectedOutlet?.id, subtotal, tabName, tableName, tax, tipTotal, total, user, verifiedOperator]);
+
   const tenderBreakdownResult = useMemo(
     () =>
       buildBarTenderBreakdown({
@@ -2613,19 +3118,11 @@ export default function HposTerminal() {
       maximumFractionDigits: 2,
     });
 
-  const selectTable = (nextTableName) => {
+  const applyTableSwitch = (nextTableName) => {
     const table = tables.find(
       (row) => String(row.name || row.table_number || "") === nextTableName,
     );
     const openTab = table?.tab || null;
-    if (
-      cart.length > 0 &&
-      nextTableName !== tableName &&
-      !window.confirm(
-        "Switch tables and replace the order currently on screen?",
-      )
-    )
-      return;
     setTableName(nextTableName);
     setShowPayment(false);
     setSubmitError("");
@@ -2649,6 +3146,16 @@ export default function HposTerminal() {
       setCart([]);
       setSuccessMessage("");
     }
+  };
+
+  const selectTable = (nextTableName) => {
+    if (cart.length > 0 && nextTableName !== tableName) {
+      // The <select> stays controlled by tableName, so it snaps back until
+      // the operator confirms the replacement in the in-app dialog.
+      setPendingConfirm({ type: "table", name: nextTableName });
+      return;
+    }
+    applyTableSwitch(nextTableName);
   };
 
   const openShift = async () => {
@@ -2824,14 +3331,58 @@ export default function HposTerminal() {
     }
   };
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — guarded by focus target and open overlays so a
+  // keystroke aimed at an input or modal never hijacks the till (item 12).
   useEffect(() => {
     const handler = (e) => {
+      const target = e.target;
+      const tag = target?.tagName;
+      const isEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable === true;
       if (e.key === "Escape") {
-        setShowPayment(false);
-        setSearch("");
+        // ConfirmDialog owns its own Escape while open.
+        if (pendingConfirm != null) return;
+        if (showShiftStart) {
+          if (!shiftBusy) setShowShiftStart(false);
+          return;
+        }
+        if (modifierLineId != null) {
+          setModifierLineId(null);
+          return;
+        }
+        // The operator-unlock dialog stays in charge of its own dismissal.
+        if (showOperatorUnlock) return;
+        if (showPayment) {
+          setShowPayment(false);
+          return;
+        }
+        // Close the on-screen search keyboard before touching the field value.
+        if (showSearchKeyboard) {
+          setShowSearchKeyboard(false);
+          return;
+        }
+        // Escape inside a non-search field must never clear the search or
+        // fight the field's own editing; inside the search box it clears it.
+        if (target === searchRef.current) {
+          setSearch("");
+          return;
+        }
+        if (!isEditable) setSearch("");
+        return;
       }
       if (e.key === "F2" && cart.length > 0) {
+        if (isEditable) return;
+        if (
+          pendingConfirm != null ||
+          showShiftStart ||
+          showOperatorUnlock ||
+          modifierLineId != null
+        ) {
+          return;
+        }
         e.preventDefault();
         setShowPayment(true);
       }
@@ -2847,7 +3398,110 @@ export default function HposTerminal() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [cart.length]);
+  }, [
+    cart.length,
+    modifierLineId,
+    pendingConfirm,
+    showOperatorUnlock,
+    showPayment,
+    showSearchKeyboard,
+    showShiftStart,
+    shiftBusy,
+  ]);
+
+  // The on-screen keyboard never outlives a blocking overlay (payment,
+  // shift start, operator unlock, modifier, confirm) — those own focus.
+  useEffect(() => {
+    if (
+      showPayment ||
+      showShiftStart ||
+      showOperatorUnlock ||
+      modifierLineId != null ||
+      pendingConfirm != null ||
+      multiAddItem != null
+    ) {
+      setShowSearchKeyboard(false);
+    }
+  }, [
+    modifierLineId,
+    multiAddItem,
+    pendingConfirm,
+    showOperatorUnlock,
+    showPayment,
+    showShiftStart,
+  ]);
+
+  // Tapping outside the floating keyboard (product grid, basket, chrome)
+  // dismisses it. The search field, its clear/toggle buttons, and the
+  // keyboard itself stay live so typing and barcode focus keep working.
+  useEffect(() => {
+    if (!showSearchKeyboard) return undefined;
+    const onPointerDown = (event) => {
+      const target = event.target;
+      if (searchKeyboardRef.current?.contains(target)) return;
+      if (target === searchRef.current) return;
+      if (searchKeyboardToggleRef.current?.contains(target)) return;
+      if (searchClearRef.current?.contains(target)) return;
+      setShowSearchKeyboard(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [showSearchKeyboard]);
+
+  // Focus trap for the shift-start and modifier overlays — same contract as
+  // HposLayout's PIN dialog and HposTillOperatorDialog.
+  useEffect(() => {
+    const dialogRef = showShiftStart
+      ? shiftDialogRef
+      : modifierLineId != null
+        ? modifierDialogRef
+        : null;
+    if (!dialogRef) return undefined;
+    const returnFocusTo =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const raf = requestAnimationFrame(() => {
+      const node = dialogRef.current;
+      const focusTarget = node?.querySelector(
+        'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      focusTarget?.focus?.();
+    });
+    const trapTab = (event) => {
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((node) => node.offsetParent !== null || node === document.activeElement);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", trapTab, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("keydown", trapTab, true);
+      if (returnFocusTo && typeof returnFocusTo.focus === "function") {
+        requestAnimationFrame(() => {
+          try {
+            returnFocusTo.focus();
+          } catch {
+            /* opener may have unmounted */
+          }
+        });
+      }
+    };
+  }, [showShiftStart, modifierLineId]);
 
   const completeOrder = useCallback(async () => {
     const pendingEnvelope = submitEnvelopeRef.current;
@@ -2871,6 +3525,15 @@ export default function HposTerminal() {
           "Start your shift before taking payment so this sale is included in cash-up.",
         );
         setShowShiftStart(true);
+        return;
+      }
+      // Same fail-closed gate as the disabled Pay button: a shared outlet
+      // with no open drawer period must never reach the domain refusal
+      // without a plain-language reason first.
+      if (drawerGateNeeded) {
+        setSubmitError(
+          "Open the cash drawer in Staff shift close before taking payment.",
+        );
         return;
       }
     }
@@ -2970,6 +3633,24 @@ export default function HposTerminal() {
           : "Select a table before taking payment.",
       );
       return;
+    }
+
+    // Two tills, one tab: hold an advisory mesh lock while settling so the
+    // other till waits instead of charging twice. The server still refuses
+    // genuine double settlements; this only stops the confusing attempt.
+    // Released below when Pay finishes, and expires on its own regardless.
+    let tabLockId = null;
+    const settlingTabId = servicePayload.openSession
+      ? (resumedTabInfo?.id || location.state?.tabId || null)
+      : null;
+    if (!retryingSubmit && settlingTabId) {
+      const operatorLabel = (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || 'Till';
+      const lock = await Promise.resolve(window.api?.mesh?.lockTab?.(settlingTabId, operatorLabel)).catch(() => null);
+      if (lock?.held) {
+        setSubmitError(`This tab is being settled on the other till${lock.heldBy ? ` by ${lock.heldBy}` : ''} — wait a moment, then check Open tabs.`);
+        return;
+      }
+      if (lock?.acquired && lock?.lockId) tabLockId = lock.lockId;
     }
 
     setSubmitting(true);
@@ -3230,6 +3911,31 @@ export default function HposTerminal() {
         },
         autoPrint: hardware?.auto_print_receipts === true,
       });
+      // Leave the guest screen on the finished sale with the change due, so
+      // the customer sees it without crowding the till. The next basket
+      // replaces it automatically via the live feed above.
+      if (cashTenderMeta && cashTenderMeta.change_due != null && selectedOutlet?.id) {
+        window.api?.pos?.updateCustomerDisplay?.({
+          outlet_id: selectedOutlet.id,
+          table_name: tabName?.trim() || tableName?.trim() || null,
+          staff_name: (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || null,
+          items: orderItems.map((item) => ({
+            item_name: item.item_name,
+            quantity: Number(item.quantity || 0),
+            unit_price: Number(item.unit_price || 0),
+            modifiers: item.modifiers || [],
+            item_notes: item.item_notes || null,
+          })),
+          subtotal: Number(result.total ?? total),
+          discount_total: 0,
+          tax_total: 0,
+          tip_total: 0,
+          total: Number(result.total ?? total),
+          cash_received: cashTenderMeta.cash_received,
+          change_due: cashTenderMeta.change_due,
+          message: 'Thank you — please take your change.',
+        }).catch(() => {});
+      }
       if (!retryingSubmit && selectedCustomerId && !result.offline && tillEntitlements.canAccounts) {
         // Loyalty is a post-sale repair path, so it may only use the
         // server-confirmed sale total. Never derive points from the client cart.
@@ -3263,6 +3969,8 @@ export default function HposTerminal() {
       if (result?.tab_close_warning) {
         postOrderNotice += ` Payment recorded, but the tab did not close and is still open: ${result.tab_close_warning}`;
       }
+      playTillBeep();
+      noteSaleForShift(cart);
       setCart([]);
       setSelectedCustomerId("");
       setDeliveryAddress("");
@@ -3307,6 +4015,10 @@ export default function HposTerminal() {
         error?.message || "Could not complete this order. Nothing was cleared.",
       );
     } finally {
+      if (tabLockId) {
+        Promise.resolve(window.api?.mesh?.unlockTab?.(tabLockId)).catch(() => {});
+        tabLockId = null;
+      }
       setSubmitting(false);
     }
   }, [
@@ -3319,8 +4031,10 @@ export default function HposTerminal() {
     currentShift?.id,
     deliveryAddress,
     deliveryNotes,
+    drawerGateNeeded,
     modifierGroups,
     modifiersReady,
+    noteSaleForShift,
     paymentMethod,
     paymentReferences,
     refreshReadiness,
@@ -3351,6 +4065,8 @@ export default function HposTerminal() {
     voucherAmount,
     voucherCode,
     cashReceived,
+    resumedTabInfo?.id,
+    location.state?.tabId,
   ]);
 
   return (
@@ -3392,7 +4108,7 @@ export default function HposTerminal() {
               >
                 {barOnly ? "Bar sales" : "Till"}
               </div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: "#24362c" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "var(--bb-text)" }}>
                 {barOnly ? "Sell" : "New check"}
               </div>
             </div>
@@ -3404,7 +4120,7 @@ export default function HposTerminal() {
                   left: "10px",
                   top: "50%",
                   transform: "translateY(-50%)",
-                  color: "#7b7a70",
+                  color: "var(--bb-text-muted)",
                 }}
               />
               <input
@@ -3420,17 +4136,84 @@ export default function HposTerminal() {
                   }
                 }}
                 placeholder={barProfile.searchPlaceholder}
+                aria-label={barProfile.searchPlaceholder}
                 style={{
                   width: "100%",
-                  padding: "7px 10px 7px 32px",
+                  minHeight: "44px",
+                  padding: search ? "10px 92px 10px 32px" : "10px 48px 10px 32px",
                   borderRadius: "8px",
                   border: "1px solid rgba(55,70,57,.16)",
-                  background: "#fffaf4",
-                  color: "#24362c",
-                  fontSize: "12px",
+                  background: "var(--bb-surface)",
+                  color: "var(--bb-text)",
+                  fontSize: "13px",
                   outline: "none",
                 }}
               />
+              <div
+                style={{
+                  position: "absolute",
+                  right: "2px",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "2px",
+                }}
+              >
+                {search ? (
+                  <button
+                    type="button"
+                    ref={searchClearRef}
+                    onClick={() => {
+                      setSearch("");
+                      searchRef.current?.focus();
+                    }}
+                    aria-label="Clear search"
+                    title="Clear search"
+                    style={{
+                      width: "44px",
+                      height: "44px",
+                      display: "grid",
+                      placeItems: "center",
+                      border: "none",
+                      borderRadius: "8px",
+                      background: "transparent",
+                      color: "var(--bb-text-muted)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  ref={searchKeyboardToggleRef}
+                  onClick={() => setShowSearchKeyboard((open) => !open)}
+                  aria-label={
+                    showSearchKeyboard
+                      ? "Hide on-screen search keyboard"
+                      : "Show on-screen search keyboard"
+                  }
+                  aria-expanded={showSearchKeyboard}
+                  aria-controls="hpos-search-keyboard"
+                  title="On-screen keyboard"
+                  style={{
+                    width: "44px",
+                    height: "44px",
+                    display: "grid",
+                    placeItems: "center",
+                    border: "none",
+                    borderRadius: "8px",
+                    background: showSearchKeyboard
+                      ? "var(--bb-accent)"
+                      : "transparent",
+                    color: showSearchKeyboard ? "#fff" : "var(--bb-text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Keyboard size={18} />
+                </button>
+              </div>
               <div
                 aria-live="polite"
                 style={{
@@ -3466,7 +4249,7 @@ export default function HposTerminal() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: "8px" }}>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               {serviceModeOptions.map((mode) => (
                 <button
                   key={mode.id}
@@ -3482,10 +4265,10 @@ export default function HposTerminal() {
                     cursor: "pointer",
                     borderColor:
                       serviceMode === mode.id
-                        ? "#c95635"
+                        ? "var(--bb-accent)"
                         : "rgba(55,70,57,.14)",
-                    background: serviceMode === mode.id ? "#c95635" : "#fffdf8",
-                    color: serviceMode === mode.id ? "#fff" : "#24362c",
+                    background: serviceMode === mode.id ? "var(--bb-accent)" : "#fffdf8",
+                    color: serviceMode === mode.id ? "#fff" : "var(--bb-text)",
                   }}
                 >
                   {mode.emoji ? `${mode.emoji} ${mode.label}` : mode.label}
@@ -3610,7 +4393,7 @@ export default function HposTerminal() {
                 borderRadius: "9px",
                 border: "1px solid rgba(55,70,57,.16)",
                 background: "#fffdf8",
-                color: "#24362c",
+                color: "var(--bb-text)",
                 fontSize: "12px",
               }}
             >
@@ -3637,7 +4420,7 @@ export default function HposTerminal() {
                   borderRadius: "9px",
                   border: "1px solid rgba(55,70,57,.16)",
                   background: "#fffdf8",
-                  color: "#24362c",
+                  color: "var(--bb-text)",
                   fontSize: "12px",
                 }}
               >
@@ -3664,7 +4447,7 @@ export default function HposTerminal() {
                   borderRadius: "9px",
                   border: "1px solid rgba(55,70,57,.16)",
                   background: "#fffdf8",
-                  color: "#24362c",
+                  color: "var(--bb-text)",
                   fontSize: "12px",
                 }}
               />
@@ -3701,7 +4484,7 @@ export default function HposTerminal() {
                   borderRadius: "8px",
                   border: "1px solid rgba(55,70,57,.14)",
                   background: "#fffdf8",
-                  color: "#24362c",
+                  color: "var(--bb-text)",
                   fontSize: "12px",
                 }}
               >
@@ -3736,10 +4519,10 @@ export default function HposTerminal() {
                     // Fresh attendance for the unlock list; failures fail open.
                     setUnlockActiveStaffIds(null);
                     setUnlockIsOnline(null);
-                    window.api?.pos?.getActiveShifts?.().then((rows) => {
+                    Promise.resolve(window.api?.pos?.getActiveShifts?.()).then((rows) => {
                       setUnlockActiveStaffIds((Array.isArray(rows) ? rows : []).map((row) => row.staff_user_id));
                     }).catch(() => setUnlockActiveStaffIds(null));
-                    window.api?.sync?.getStatus?.().then((status) => {
+                    Promise.resolve(window.api?.sync?.getStatus?.()).then((status) => {
                       setUnlockIsOnline(status?.isOnline !== false);
                     }).catch(() => setUnlockIsOnline(null));
                   }
@@ -3763,7 +4546,7 @@ export default function HposTerminal() {
               <span
                 style={{
                   alignSelf: "center",
-                  color: "#487d57",
+                  color: "var(--bb-success)",
                   background: "rgba(72,125,87,.09)",
                   border: "1px solid rgba(72,125,87,.18)",
                   borderRadius: 999,
@@ -3773,6 +4556,7 @@ export default function HposTerminal() {
                 }}
               >
                 Shift open
+                {shiftPaceItems > 0 ? ` · ${shiftPaceItems} sold` : ""}
               </span>
             ) : (
               <button
@@ -3862,7 +4646,7 @@ export default function HposTerminal() {
                   display: "flex",
                   gap: 8,
                   padding: "9px 16px",
-                  background: "#fffaf4",
+                  background: "var(--bb-surface)",
                   borderBottom: "1px solid rgba(55,70,57,.08)",
                 }}
               >
@@ -3907,7 +4691,7 @@ export default function HposTerminal() {
               overflowX: "auto",
               padding: "12px 16px",
               borderBottom: "1px solid rgba(55,70,57,.08)",
-              background: "#fffaf4",
+              background: "var(--bb-surface)",
               flexShrink: 0,
             }}
           >
@@ -3921,19 +4705,116 @@ export default function HposTerminal() {
                   minHeight: "44px",
                   padding: "12px 18px",
                   borderRadius: 999,
-                  border: `1px solid ${activeCategory === category ? "#c95635" : "rgba(55,70,57,.14)"}`,
+                  border: `1px solid ${activeCategory === category ? "var(--bb-accent)" : "rgba(55,70,57,.14)"}`,
                   background:
-                    activeCategory === category ? "#c95635" : "#fffdf8",
-                  color: activeCategory === category ? "#fff" : "#24362c",
+                    activeCategory === category ? "var(--bb-accent)" : "#fffdf8",
+                  color: activeCategory === category ? "#fff" : "var(--bb-text)",
                   fontSize: 14,
                   fontWeight: 700,
                   cursor: "pointer",
                 }}
-              >
-                {category}
-              </button>
+                >
+                  {category}
+                  {typeof categoryCounts[category] === "number" && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        display: "inline-block",
+                        marginLeft: 8,
+                        minWidth: 22,
+                        padding: "2px 6px",
+                        borderRadius: 999,
+                        fontSize: "11px",
+                        fontWeight: 800,
+                        lineHeight: 1.3,
+                        color:
+                          activeCategory === category
+                            ? "rgba(255,255,255,.92)"
+                            : "var(--bb-text-muted)",
+                        background:
+                          activeCategory === category
+                            ? "rgba(255,255,255,.22)"
+                            : "rgba(55,70,57,.08)",
+                      }}
+                    >
+                      {categoryCounts[category]}
+                    </span>
+                  )}
+                </button>
             ))}
           </div>
+
+          {/* Recently sold this shift — device-local chips for one-tap repeat. */}
+          {recentSold.length > 0 && (
+            <div
+              role="list"
+              aria-label="Recently sold this shift"
+              style={{
+                display: "flex",
+                gap: 8,
+                overflowX: "auto",
+                padding: "8px 16px",
+                borderBottom: "1px solid rgba(55,70,57,.08)",
+                background: "var(--bb-surface)",
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  alignSelf: "center",
+                  whiteSpace: "nowrap",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: "var(--bb-text-muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".06em",
+                }}
+              >
+                Just sold
+              </span>
+              {recentSold.map((id) => {
+                const menu = (tillMenuItems || []).find((row) => String(row.id) === id);
+                if (!menu) return null;
+                const issue = getStockIssue(menu);
+                const blocked =
+                  issue === "unknown" ||
+                  issue === "issue" ||
+                  menu.is_available === false ||
+                  menu.available === false ||
+                  menu.sold_out ||
+                  isFinishedStock(menu);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    role="listitem"
+                    disabled={blocked}
+                    aria-label={`Add ${menu.name} again`}
+                    onClick={() => {
+                      if (blocked) return;
+                      addToCart(menu);
+                      playTillBeep();
+                    }}
+                    style={{
+                      whiteSpace: "nowrap",
+                      minHeight: 44,
+                      padding: "8px 14px",
+                      borderRadius: 999,
+                      border: "1px solid rgba(55,70,57,.14)",
+                      background: blocked ? "#f7f1e8" : "#fffdf8",
+                      color: blocked ? "var(--bb-text-muted)" : "var(--bb-text)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: blocked ? "not-allowed" : "pointer",
+                      opacity: blocked ? 0.7 : 1,
+                    }}
+                  >
+                    {menu.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Product Grid */}
           <div
@@ -3948,28 +4829,146 @@ export default function HposTerminal() {
             }}
           >
             {loading ? (
-              <div
-                style={{
-                  gridColumn: "1 / -1",
-                  padding: "60px",
-                  textAlign: "center",
-                  color: "#7b7a70",
-                  fontSize: "13px",
-                }}
-              >
-                {barOnly ? "Loading drinks…" : "Loading menu..."}
-              </div>
+              <>
+                <div
+                  role="status"
+                  style={{
+                    position: "absolute",
+                    width: 1,
+                    height: 1,
+                    padding: 0,
+                    margin: -1,
+                    overflow: "hidden",
+                    clip: "rect(0, 0, 0, 0)",
+                    whiteSpace: "nowrap",
+                    border: 0,
+                  }}
+                >
+                  {barOnly ? "Loading drinks…" : "Loading menu..."}
+                </div>
+                {Array.from({ length: 10 }, (_, index) => (
+                  <div key={index} className="hpos-skeleton" aria-hidden="true" />
+                ))}
+              </>
             ) : filtered.length === 0 ? (
               <div
                 style={{
                   gridColumn: "1 / -1",
-                  padding: "60px",
+                  padding: "48px 24px",
                   textAlign: "center",
-                  color: "#7b7a70",
+                  color: "var(--bb-text-muted)",
                   fontSize: "13px",
                 }}
               >
-                No items found
+                <p style={{ margin: 0, fontSize: "14px", fontWeight: 800, color: "var(--bb-text)" }}>
+                  {menuLoadFailed ? "Products could not load" : "No items found"}
+                </p>
+                <p style={{ margin: "6px 0 0", lineHeight: 1.5 }}>
+                  {menuLoadFailed
+                    ? "The catalogue read failed — do not assume the menu is empty. Retry when the connection is back."
+                    : search || activeCategory !== "All"
+                      ? "Nothing matches the current search and category."
+                      : "No products are linked for this outlet yet."}
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    justifyContent: "center",
+                    flexWrap: "wrap",
+                    marginTop: 14,
+                  }}
+                >
+                  {menuLoadFailed && (
+                    <button
+                      type="button"
+                      onClick={retryCoreLoad}
+                      style={{
+                        minHeight: 44,
+                        padding: "10px 16px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(201,86,53,.35)",
+                        background: "var(--bb-accent)",
+                        color: "#fff",
+                        fontSize: 13,
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Retry loading products
+                    </button>
+                  )}
+                  {!menuLoadFailed && (search || activeCategory !== "All") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearch("");
+                        setActiveCategory("All");
+                      }}
+                      style={{
+                        minHeight: 44,
+                        padding: "10px 16px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(55,70,57,.16)",
+                        background: "#fffdf8",
+                        color: "var(--bb-text)",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Clear search and show all
+                    </button>
+                  )}
+                  {!menuLoadFailed && (search || activeCategory !== "All") && (
+                    <>
+                      {hasTopSellers && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSearch("");
+                            setActiveCategory(TOP_SELLERS_CATEGORY);
+                          }}
+                          style={{
+                            minHeight: 44,
+                            padding: "10px 16px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(55,70,57,.16)",
+                            background: "#fffdf8",
+                            color: "var(--bb-text)",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Show top sellers
+                        </button>
+                      )}
+                      {favourites.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSearch("");
+                            setActiveCategory(FAVOURITES_CATEGORY);
+                          }}
+                          style={{
+                            minHeight: 44,
+                            padding: "10px 16px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(55,70,57,.16)",
+                            background: "#fffdf8",
+                            color: "var(--bb-text)",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Show favourites
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             ) : (
               filtered.map((item) => {
@@ -3980,6 +4979,10 @@ export default function HposTerminal() {
                     key={item.id}
                     item={item}
                     onAdd={addToCart}
+                    onAddQty={(item) => {
+                      setMultiAddItem(item);
+                      setMultiAddQty("2");
+                    }}
                     onToggleFavourite={toggleFavourite}
                     isFavourite={favouriteIdSet.has(item.id)}
                     stockSetupRequired={issue === "issue"}
@@ -3988,6 +4991,7 @@ export default function HposTerminal() {
                     finishedStock={isFinishedStock(item)}
                     syncBlocked={provisionalSyncing}
                     pendingSync={issue === "provisional" && !provisionalSyncing}
+                    inBasketQty={cartQtyByItem.get(item.id) || 0}
                   />
                 );
               })
@@ -4007,7 +5011,7 @@ export default function HposTerminal() {
               padding: "12px 16px",
               minHeight: "56px",
               borderTop: "1px solid rgba(55,70,57,.14)",
-              background: "#24362c",
+              background: "var(--bb-text)",
               color: "#fffdf8",
               fontSize: "15px",
               fontWeight: 800,
@@ -4078,7 +5082,7 @@ export default function HposTerminal() {
                   borderRadius: "10px",
                   border: "1px solid rgba(55,70,57,.2)",
                   background: "#fffdf8",
-                  color: "#24362c",
+                  color: "var(--bb-text)",
                   fontSize: "16px",
                   cursor: "pointer",
                 }}
@@ -4105,7 +5109,41 @@ export default function HposTerminal() {
               pay for this sale promptly — it will not survive a restart.
             </ErrorNotice>
           )}
-          {barOnly && stockReadiness.status === "stale" && (
+          {barOnly && (Number(stockReadiness.meshOrders || 0) > 0 || Number(stockReadiness.meshDeliveries || 0) > 0) && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "#edfbf3",
+                border: "1px solid #b5e4c9",
+                color: "#176447",
+                fontSize: "13px",
+                fontWeight: 700,
+              }}
+            >
+              Includes unsent work from the other till{Number(stockReadiness.meshOrders || 0) > 0 ? ` (${stockReadiness.meshOrders} sale${stockReadiness.meshOrders === 1 ? "" : "s"})` : ""}{Number(stockReadiness.meshDeliveries || 0) > 0 ? " plus stock it received" : ""} — counts play it safe until they send.
+            </div>
+          )}
+          {barOnly && !(Number(stockReadiness.meshOrders || 0) > 0) && Number(stockReadiness.pendingOrders || 0) > 0 && (
+            <div
+              role="status"
+              style={{
+                margin: "12px 16px 0",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                background: "#edfbf3",
+                border: "1px solid #b5e4c9",
+                color: "#176447",
+                fontSize: "13px",
+                fontWeight: 700,
+              }}
+            >
+              Includes your unsent sales — counts play it safe until they send.
+            </div>
+          )}
+          {barOnly && (stockReadiness.status === "stale" || stockReadiness.status === "local") && (
             <div
               role="status"
               style={{
@@ -4124,11 +5162,13 @@ export default function HposTerminal() {
               }}
             >
               <span>
-                Stock status from{" "}
+                {stockReadiness.status === "local"
+                  ? "Selling on this till's last known stock — counts may be behind. Refresh when online."
+                  : <>Stock status from{" "}
                 {stockReadiness.cachedAt
                   ? new Date(stockReadiness.cachedAt).toLocaleString()
                   : "an earlier check"}{" "}
-                — refresh when online.
+                — refresh when online.</>}
               </span>
               <button
                 type="button"
@@ -4203,7 +5243,7 @@ export default function HposTerminal() {
                     : "1px solid rgba(191, 72, 45, 0.32)",
                 color:
                   resumedTabInfo.found && resumedTabInfo.versionOk
-                    ? "#2f6b42"
+                    ? "var(--bb-success)"
                     : "#8d2f24",
                 fontSize: "13px",
                 fontWeight: 700,
@@ -4239,11 +5279,11 @@ export default function HposTerminal() {
               }}
             >
               <span>
-                An unsent basket from{" "}
+                The power may have gone off — your unfinished sale from{" "}
                 {pendingRestore.draft?.savedAt
                   ? new Date(pendingRestore.draft.savedAt).toLocaleString()
                   : "earlier"}{" "}
-                is still on this terminal. Restore it or discard it.
+                is still here on this terminal. Restore it or discard it.
               </span>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button
@@ -4290,7 +5330,7 @@ export default function HposTerminal() {
                 borderRadius: "10px",
                 background: "rgba(55,70,57,.07)",
                 border: "1px solid rgba(55,70,57,.16)",
-                color: "#24362c",
+                color: "var(--bb-text)",
                 fontSize: "13px",
                 fontWeight: 600,
                 display: "flex",
@@ -4309,7 +5349,7 @@ export default function HposTerminal() {
                   borderRadius: "9px",
                   border: "1px solid rgba(55,70,57,.25)",
                   background: "#fffdf8",
-                  color: "#24362c",
+                  color: "var(--bb-text)",
                   fontSize: "13px",
                   fontWeight: 800,
                   cursor: "pointer",
@@ -4331,7 +5371,7 @@ export default function HposTerminal() {
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <ShoppingCart size={16} color="#c95635" />
               <span
-                style={{ fontSize: "14px", fontWeight: 700, color: "#24362c" }}
+                style={{ fontSize: "14px", fontWeight: 700, color: "var(--bb-text)" }}
               >
                 {serviceMode === "tab" ? "Tab" : barOnly ? "Sale" : "Order"}
               </span>
@@ -4343,7 +5383,7 @@ export default function HposTerminal() {
                     padding: "2px 7px",
                     borderRadius: "999px",
                     background: "rgba(245, 158, 11, 0.12)",
-                    color: "#c95635",
+                    color: "var(--bb-accent)",
                   }}
                 >
                   {itemCount}
@@ -4362,7 +5402,7 @@ export default function HposTerminal() {
                     borderRadius: "999px",
                     border: "1px solid rgba(53,110,216,.3)",
                     background: "rgba(53,110,216,.08)",
-                    color: "#356ed8",
+                    color: "var(--bb-info)",
                     cursor: "pointer",
                     whiteSpace: "nowrap",
                   }}
@@ -4383,7 +5423,7 @@ export default function HposTerminal() {
                     borderRadius: "999px",
                     border: "1px solid rgba(184,74,56,.4)",
                     background: "rgba(184,74,56,.1)",
-                    color: "#b84a38",
+                    color: "var(--bb-danger)",
                     cursor: "pointer",
                     whiteSpace: "nowrap",
                   }}
@@ -4404,7 +5444,7 @@ export default function HposTerminal() {
                       fontSize: "12px",
                       minHeight: "44px",
                       padding: "0 12px",
-                      color: "#2f6b42",
+                      color: "var(--bb-success)",
                       background: "rgba(47, 107, 66, 0.08)",
                       border: "1px solid rgba(47, 107, 66, 0.25)",
                       borderRadius: "10px",
@@ -4422,7 +5462,7 @@ export default function HposTerminal() {
                     fontSize: "13px",
                     minHeight: "44px",
                     padding: "0 12px",
-                    color: "#b84a38",
+                    color: "var(--bb-danger)",
                     background: "none",
                     border: "none",
                     cursor: "pointer",
@@ -4435,6 +5475,34 @@ export default function HposTerminal() {
             )}
           </div>
 
+          {/* Persistent reprint: the empty-basket placeholder below also has
+              a big reprint button, but it vanishes the moment an item is
+              added. This slim row stays visible whenever a sale is recorded
+              (and payment is closed) so a lost slip can be reprinted mid-sale. */}
+          {lastReceipt && !showPayment && cart.length > 0 && (
+            <div style={{ padding: "8px 12px 0" }}>
+              <button
+                type="button"
+                onClick={reprintLastReceipt}
+                aria-label="Reprint the last receipt, for example when a customer lost their slip"
+                style={{
+                  width: "100%",
+                  minHeight: "44px",
+                  padding: "0 12px",
+                  borderRadius: "10px",
+                  border: "1px solid rgba(47, 107, 66, 0.3)",
+                  background: "rgba(47, 107, 66, 0.07)",
+                  color: "var(--bb-success)",
+                  fontSize: "13px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                🧾 Reprint last receipt
+              </button>
+            </div>
+          )}
+
           {/* Cart Lines: minHeight 0 lets the list shrink so the payment
               footer (Take payment) always stays on screen instead of being
               pushed out of the basket column. */}
@@ -4444,7 +5512,7 @@ export default function HposTerminal() {
                 style={{
                   padding: "54px 22px",
                   textAlign: "center",
-                  color: "#7b7a70",
+                  color: "var(--bb-text-muted)",
                   fontSize: "12px",
                 }}
               >
@@ -4457,7 +5525,7 @@ export default function HposTerminal() {
                     display: "grid",
                     placeItems: "center",
                     background: "#f2e5d8",
-                    color: "#c95635",
+                    color: "var(--bb-accent)",
                     boxShadow: "0 10px 22px rgba(47,58,47,.08)",
                   }}
                 >
@@ -4466,7 +5534,7 @@ export default function HposTerminal() {
                 <p
                   style={{
                     margin: 0,
-                    color: "#24362c",
+                    color: "var(--bb-text)",
                     fontSize: 14,
                     fontWeight: 800,
                   }}
@@ -4495,7 +5563,7 @@ export default function HposTerminal() {
                         padding: "0 18px",
                         borderRadius: "10px",
                         border: "none",
-                        background: "#c95635",
+                        background: "var(--bb-accent)",
                         color: "#fffdf8",
                         fontSize: "14px",
                         fontWeight: 800,
@@ -4515,7 +5583,7 @@ export default function HposTerminal() {
                           borderRadius: "10px",
                           border: "1px solid rgba(47, 107, 66, 0.3)",
                           background: "rgba(47, 107, 66, 0.08)",
-                          color: "#2f6b42",
+                          color: "var(--bb-success)",
                           fontSize: "14px",
                           fontWeight: 800,
                           cursor: "pointer",
@@ -4526,22 +5594,25 @@ export default function HposTerminal() {
                     )}
                     <button
                       type="button"
-                      onClick={() =>
-                        setCompletedReceipt({ order: lastReceipt, autoPrint: false })
-                      }
+                      onClick={reprintLastReceipt}
+                      aria-label="Reprint the last receipt, for example when a customer lost their slip"
                       style={{
-                        minHeight: "48px",
+                        minHeight: "56px",
                         padding: "0 18px",
-                        borderRadius: "10px",
-                        border: "1px solid rgba(55,70,57,.2)",
-                        background: "#fffdf8",
-                        color: "#24362c",
-                        fontSize: "14px",
+                        borderRadius: "12px",
+                        border: "none",
+                        // NB: the gradient accent token does not exist in the Bar
+                        // theme, so it rendered transparent with white text
+                        // (invisible button). Use the solid accent that the
+                        // neighbouring Same-again button already proves visible.
+                        background: "var(--bb-accent)",
+                        color: "#fffdf8",
+                        fontSize: "15px",
                         fontWeight: 800,
                         cursor: "pointer",
                       }}
                     >
-                      Reprint last receipt
+                      🧾 Reprint last receipt (lost slip?)
                     </button>
                   </div>
                 )}
@@ -4684,7 +5755,7 @@ export default function HposTerminal() {
             </div>
           )}
 
-          {(submitError || successMessage) && (
+          {(submitError || successMessage || undoAdd) && (
             <div
               role={submitError ? "alert" : "status"}
               aria-live={submitError ? "assertive" : "polite"}
@@ -4698,11 +5769,15 @@ export default function HposTerminal() {
                 borderRadius: "12px",
                 background: submitError
                   ? "rgba(191, 72, 45, 0.14)"
-                  : "linear-gradient(135deg, #e5f6e9, #f3fbf4)",
+                  : undoAdd && !submitError
+                    ? "linear-gradient(135deg, #fff7ef, #fffaf4)"
+                    : "linear-gradient(135deg, #e5f6e9, #f3fbf4)",
                 border: submitError
                   ? "1px solid rgba(191, 72, 45, 0.32)"
-                  : "1px solid rgba(47, 107, 66, 0.30)",
-                color: submitError ? "#8d2f24" : "#2f6b42",
+                  : undoAdd && !submitError
+                    ? "1px solid rgba(201, 86, 53, 0.28)"
+                    : "1px solid rgba(47, 107, 66, 0.30)",
+                color: submitError ? "#8d2f24" : undoAdd && !submitError ? "var(--bb-text)" : "var(--bb-success)",
                 fontSize: "14px",
                 fontWeight: 800,
                 lineHeight: 1.35,
@@ -4713,10 +5788,36 @@ export default function HposTerminal() {
             >
               {submitError ? (
                 <AlertCircle size={21} aria-hidden="true" />
+              ) : undoAdd && !submitError ? (
+                <ShoppingCart size={20} aria-hidden="true" />
               ) : (
                 <CheckCircle size={22} aria-hidden="true" />
               )}
-              <span>{submitError || successMessage}</span>
+              <span style={{ flex: 1 }}>
+                {submitError ||
+                  successMessage ||
+                  (undoAdd ? `${undoAdd.name} added` : "")}
+              </span>
+              {!submitError && undoAdd && (
+                <button
+                  type="button"
+                  onClick={undoLastAdd}
+                  style={{
+                    minHeight: 40,
+                    padding: "0 14px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(201,86,53,.35)",
+                    background: "#fff",
+                    color: "var(--bb-accent, #c95635)",
+                    fontSize: 13,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Undo
+                </button>
+              )}
             </div>
           )}
 
@@ -4763,7 +5864,7 @@ export default function HposTerminal() {
                     display: "flex",
                     justifyContent: "space-between",
                     fontSize: "12px",
-                    color: "#647066",
+                    color: "var(--bb-text-soft)",
                     marginBottom: "4px",
                   }}
                 >
@@ -4778,7 +5879,7 @@ export default function HposTerminal() {
                       display: "flex",
                       justifyContent: "space-between",
                       fontSize: "12px",
-                      color: "#647066",
+                      color: "var(--bb-text-soft)",
                       marginBottom: "4px",
                     }}
                   >
@@ -4810,7 +5911,7 @@ export default function HposTerminal() {
                     justifyContent: "space-between",
                     fontSize: "18px",
                     fontWeight: 850,
-                    color: "#24362c",
+                    color: "var(--bb-text)",
                     paddingTop: "10px",
                     borderTop: "1px solid rgba(55,70,57,.11)",
                   }}
@@ -4851,7 +5952,7 @@ export default function HposTerminal() {
                   }}
                 >
                   {hasPoolLines && (
-                    <div role="status" style={{ gridColumn: "1 / -1", padding: "10px 12px", borderRadius: "10px", background: "#eef6f3", border: "1px solid rgba(55,70,57,.14)", color: "#24362c", fontSize: "13px", fontWeight: 700 }}>
+                    <div role="status" style={{ gridColumn: "1 / -1", padding: "10px 12px", borderRadius: "10px", background: "#eef6f3", border: "1px solid rgba(55,70,57,.14)", color: "var(--bb-text)", fontSize: "13px", fontWeight: 700 }}>
                       Pool tables pay Cash only. Card, mobile money, split and account are disabled for this sale.
                     </div>
                   )}
@@ -4866,11 +5967,12 @@ export default function HposTerminal() {
                         }}
                         style={{
                           gridColumn: "1 / -1",
-                          padding: "9px 11px",
+                          minHeight: "44px",
+                          padding: "10px 11px",
                           borderRadius: 9,
                           border: "1px solid rgba(53,110,216,.22)",
                           background: "rgba(53,110,216,.08)",
-                          color: "#356ed8",
+                          color: "var(--bb-info)",
                           fontSize: 12,
                           fontWeight: 700,
                           cursor: "pointer",
@@ -4895,7 +5997,7 @@ export default function HposTerminal() {
                       id: "card",
                       label: "Card",
                       icon: CreditCard,
-                      color: "#356ed8",
+                      color: "var(--bb-info)",
                     },
                     {
                       id: "mobile_money",
@@ -4947,6 +6049,23 @@ export default function HposTerminal() {
                 </div>
               ) : (
                 <div style={{ padding: "0 16px 14px" }}>
+                  {paymentIdleNudge && (
+                    <div
+                      role="status"
+                      style={{
+                        marginBottom: "10px",
+                        padding: "10px 12px",
+                        borderRadius: "10px",
+                        background: "#fff6df",
+                        border: "1px solid rgba(139,90,17,.22)",
+                        color: "#8b5a11",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Payment still open — take tender or press Esc to close.
+                    </div>
+                  )}
                   {/* Quick cash only tenders the sale: the cash allocation
                       stays exactly the amount due; received/change are
                       operator tendering aids recorded on the receipt, never
@@ -4966,7 +6085,10 @@ export default function HposTerminal() {
                       <div
                         style={{
                           display: "grid",
-                          gridTemplateColumns: "repeat(4, 1fr)",
+                          // auto-fit keeps Exact + every QUICK_CASH_AMOUNT on
+                          // one row as the shared list grows (a fixed 4-col
+                          // grid orphaned P20 onto a second row).
+                          gridTemplateColumns: "repeat(auto-fit, minmax(60px, 1fr))",
                           gap: "8px",
                           marginBottom: "8px",
                         }}
@@ -4987,7 +6109,7 @@ export default function HposTerminal() {
                               borderRadius: "9px",
                               border: "1px solid rgba(55,70,57,.18)",
                               background: "#fff",
-                              color: "#24362c",
+                              color: "var(--bb-text)",
                               fontSize: "14px",
                               fontWeight: 800,
                               cursor: "pointer",
@@ -5029,7 +6151,7 @@ export default function HposTerminal() {
                               color:
                                 roundCash(Number(cashReceived) - total) < 0
                                   ? "#8d2f24"
-                                  : "#2f6b42",
+                                  : "var(--bb-success)",
                             }}
                           >
                             {roundCash(Number(cashReceived) - total) < 0
@@ -5105,22 +6227,62 @@ export default function HposTerminal() {
                     </div>
                   )}
                   {!chargeToAccount && paymentMethod !== "cash" && paymentMethod !== "split" && (
-                    <label style={{ display: "block", marginBottom: "10px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
-                      {paymentMethod === "mobile_money" ? "Mobile money reference (optional)" : "Card approval/reference (optional)"}
-                      <input
-                        type="text"
-                        maxLength={120}
-                        value={paymentReferences[paymentMethod] || ""}
-                        onChange={(event) =>
-                          setPaymentReferences((previous) => ({
-                            ...previous,
-                            [paymentMethod]: event.target.value,
-                          }))
-                        }
-                        placeholder={paymentMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
-                        style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
-                      />
-                    </label>
+                    <>
+                      <label style={{ display: "block", marginBottom: "10px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
+                        {paymentMethod === "mobile_money" ? "Mobile money reference (optional)" : "Card approval/reference (optional)"}
+                        <input
+                          type="text"
+                          maxLength={120}
+                          value={paymentReferences[paymentMethod] || ""}
+                          onChange={(event) =>
+                            setPaymentReferences((previous) => ({
+                              ...previous,
+                              [paymentMethod]: event.target.value,
+                            }))
+                          }
+                          placeholder={paymentMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
+                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
+                        />
+                      </label>
+                      {paymentMethod === "card" && (
+                        <div style={{ marginBottom: "10px" }}>
+                          {terminalBridgeReady ? (
+                            <button
+                              type="button"
+                              onClick={() => sendTotalToCardMachine(total)}
+                              disabled={terminalSending}
+                              style={{ width: "100%", minHeight: "48px", borderRadius: "9px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "14px", fontWeight: 800, cursor: "pointer" }}
+                            >
+                              {terminalSending ? "Sending to card machine…" : `Send ${currency} ${fmt(total)} to card machine`}
+                            </button>
+                          ) : (
+                            <p style={{ margin: 0, fontSize: "12px", color: "#5d4b52" }}>
+                              Manual card machine: charge {currency} {fmt(total)} on the machine, then enter the approval code above (optional). Set up a bridge in System Health › Devices to send the total automatically.
+                            </p>
+                          )}
+                          {terminalMessage && (
+                            <p role="status" style={{ margin: "6px 0 0", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>{terminalMessage}</p>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {!chargeToAccount && paymentMethod === "split" && splitRemainderMethod === "card" && (
+                    <div style={{ marginBottom: "10px" }}>
+                      {terminalBridgeReady ? (
+                        <button
+                          type="button"
+                          onClick={() => sendTotalToCardMachine(total - Number(splitCashAmount || 0))}
+                          disabled={terminalSending}
+                          style={{ width: "100%", minHeight: "48px", borderRadius: "9px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "14px", fontWeight: 800, cursor: "pointer" }}
+                        >
+                          {terminalSending ? "Sending to card machine…" : "Send card balance to card machine"}
+                        </button>
+                      ) : null}
+                      {terminalMessage && (
+                        <p role="status" style={{ margin: "6px 0 0", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>{terminalMessage}</p>
+                      )}
+                    </div>
                   )}
                   <div
                     style={{
@@ -5134,7 +6296,7 @@ export default function HposTerminal() {
                       border: "1px solid rgba(245, 158, 11, 0.12)",
                     }}
                   >
-                    <span style={{ fontSize: "12px", fontWeight: 800, color: "#7b7a70" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 800, color: "var(--bb-text-muted)" }}>
                       {chargeToAccount
                         ? `Charge ${selectedCustomer?.name || "customer"} account`
                         : paymentMethod === "split"
@@ -5149,7 +6311,7 @@ export default function HposTerminal() {
                       style={{
                         fontSize: "16px",
                         fontWeight: 800,
-                        color: "#c95635",
+                        color: "var(--bb-accent)",
                         fontVariantNumeric: "tabular-nums",
                         whiteSpace: "nowrap",
                       }}
@@ -5187,7 +6349,7 @@ export default function HposTerminal() {
                             display: "flex",
                             justifyContent: "space-between",
                             gap: 10,
-                            color: "#24362c",
+                            color: "var(--bb-text)",
                             padding: "2px 0",
                           }}
                         >
@@ -5206,9 +6368,35 @@ export default function HposTerminal() {
                     )}
                   </div>
                   )}
+                  {/* Drawer gate: fails closed in the UI the same way the
+                      domain fails closed at Pay — the button is disabled with
+                      a visible reason instead of letting the operator tap into
+                      a server refusal. Uncertain-attempt retries keep their own
+                      banner action and are never gated here. */}
+                  {drawerGateNeeded && !recoveredAttempt && (
+                    <p
+                      role="status"
+                      style={{
+                        margin: "8px 0 0",
+                        fontSize: "12px",
+                        fontWeight: 700,
+                        color: "#7a5710",
+                        background: "#fdf3e3",
+                        border: "1px solid rgba(166, 118, 42, 0.35)",
+                        borderRadius: "9px",
+                        padding: "8px 10px",
+                      }}
+                    >
+                      Drawer not open — open it in Staff shift close before taking payment.
+                    </p>
+                  )}
                   <button
                     onClick={completeOrder}
-                    disabled={submitting || !tenderBreakdownResult.ok}
+                    disabled={
+                      submitting ||
+                      !tenderBreakdownResult.ok ||
+                      (drawerGateNeeded && !recoveredAttempt)
+                    }
                     style={{
                       width: "100%",
                       minHeight: "60px",
@@ -5216,12 +6404,12 @@ export default function HposTerminal() {
                       marginTop: "8px",
                       borderRadius: "12px",
                       border: "none",
-                      background: "linear-gradient(135deg, #497a8b, #315866)",
+                      background: "var(--hpos-accent-gradient, linear-gradient(135deg, #c95635, #a83c26))",
                       color: "#fffdf8",
                       fontSize: "16px",
                       fontWeight: 800,
                       cursor: "pointer",
-                      boxShadow: "0 8px 22px rgba(49, 88, 102, 0.24)",
+                      boxShadow: "0 8px 22px rgba(201, 86, 53, 0.28)",
                     }}
                   >
                     {submitting
@@ -5241,7 +6429,7 @@ export default function HposTerminal() {
                       borderRadius: "8px",
                       border: "1px solid rgba(55,70,57,.16)",
                       background: "#fffdf8",
-                      color: "#7b7a70",
+                      color: "var(--bb-text-muted)",
                       fontSize: "12px",
                       fontWeight: 600,
                       cursor: "pointer",
@@ -5256,6 +6444,7 @@ export default function HposTerminal() {
         </div>
         {showShiftStart && (
           <div
+            role="presentation"
             style={{
               position: "fixed",
               inset: 0,
@@ -5267,6 +6456,10 @@ export default function HposTerminal() {
             }}
           >
             <div
+              ref={shiftDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="hpos-shift-start-title"
               style={{
                 width: "min(390px,100%)",
                 padding: 24,
@@ -5287,13 +6480,13 @@ export default function HposTerminal() {
               >
                 Before the first sale
               </p>
-              <h3 style={{ margin: "5px 0 4px", color: "#24362c" }}>
+              <h3 id="hpos-shift-start-title" style={{ margin: "5px 0 4px", color: "var(--bb-text)" }}>
                 Start your shift
               </h3>
               <p
                 style={{
                   margin: "0 0 16px",
-                  color: "#7b7a70",
+                  color: "var(--bb-text-muted)",
                   fontSize: 12,
                   lineHeight: 1.5,
                 }}
@@ -5367,7 +6560,7 @@ export default function HposTerminal() {
                     padding: "9px 14px",
                     border: 0,
                     borderRadius: 9,
-                    background: "#c95635",
+                    background: "var(--bb-accent)",
                     color: "#fff",
                     fontWeight: 800,
                     opacity: shiftBusy || !selectedOutlet?.id ? 0.55 : 1,
@@ -5402,6 +6595,7 @@ export default function HposTerminal() {
             });
             return (
               <div
+                role="presentation"
                 style={{
                   position: "fixed",
                   inset: 0,
@@ -5413,6 +6607,10 @@ export default function HposTerminal() {
                 }}
               >
                 <div
+                  ref={modifierDialogRef}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="hpos-modifier-dialog-title"
                   style={{
                     width: "min(500px,100%)",
                     maxHeight: "80vh",
@@ -5422,7 +6620,7 @@ export default function HposTerminal() {
                     padding: 24,
                   }}
                 >
-                  <h3 style={{ margin: 0, color: "#24362c" }}>
+                  <h3 id="hpos-modifier-dialog-title" style={{ margin: 0, color: "var(--bb-text)" }}>
                     Customise {line?.item_name}
                   </h3>
                   {relevant.map((group) => (
@@ -5462,7 +6660,7 @@ export default function HposTerminal() {
                               style={{
                                 padding: "8px 10px",
                                 borderRadius: 9,
-                                border: `1px solid ${selected ? "#c95635" : "rgba(55,70,57,.16)"}`,
+                                border: `1px solid ${selected ? "var(--bb-accent)" : "rgba(55,70,57,.16)"}`,
                                 background: selected ? "#fff0eb" : "#fff",
                                 color: selected ? "#a83c26" : "#526157",
                                 fontWeight: 700,
@@ -5480,7 +6678,7 @@ export default function HposTerminal() {
                     </section>
                   ))}
                   {relevant.length === 0 && (
-                    <p style={{ color: "#7b7a70" }}>
+                    <p style={{ color: "var(--bb-text-muted)" }}>
                       No modifier groups apply to this item.
                     </p>
                   )}
@@ -5517,7 +6715,7 @@ export default function HposTerminal() {
                         padding: "10px 14px",
                         border: 0,
                         borderRadius: 9,
-                        background: "#c95635",
+                        background: "var(--bb-accent)",
                         color: "#fff",
                         fontWeight: 800,
                         opacity: unmetGroups.length > 0 ? 0.5 : 1,
@@ -5554,12 +6752,371 @@ export default function HposTerminal() {
             onClose={() => setShowOperatorUnlock(false)}
           />
         )}{" "}
+        {showSearchKeyboard && (
+          <div
+            id="hpos-search-keyboard"
+            ref={searchKeyboardRef}
+            role="dialog"
+            aria-label="On-screen search keyboard"
+            style={{
+              position: "fixed",
+              left: "auto",
+              right: "16px",
+              bottom: "16px",
+              width: "min(460px, calc(100vw - 32px))",
+              maxHeight: "min(72vh, 640px)",
+              overflow: "auto",
+              zIndex: 1600,
+              padding: "12px 12px calc(12px + env(safe-area-inset-bottom, 0px))",
+              background: "#fffdf8",
+              border: "1px solid rgba(55,70,57,.14)",
+              borderRadius: "18px",
+              boxShadow: "0 18px 60px rgba(47,58,47,.28)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                marginBottom: 8,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: "var(--bb-text-muted)",
+                  letterSpacing: ".06em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Search keyboard
+              </span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!tryAddBySearch(search)) {
+                      // keep filtered list when no exact match
+                    }
+                  }}
+                  style={{
+                    minHeight: "44px",
+                    padding: "0 16px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: "var(--bb-accent, #c95635)",
+                    color: "#fff",
+                    fontSize: 14,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSearchKeyboard(false)}
+                  aria-label="Close on-screen search keyboard"
+                  style={{
+                    minHeight: "44px",
+                    minWidth: "44px",
+                    padding: "0 12px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(55,70,57,.16)",
+                    background: "#fff",
+                    color: "var(--bb-text)",
+                    fontSize: 13,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gap: 6,
+                justifyItems: "center",
+              }}
+            >
+              {SEARCH_KEYBOARD_ROWS.map((row) => (
+                <div
+                  key={row.join("-")}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))`,
+                    gap: 6,
+                    width: "100%",
+                  }}
+                >
+                  {row.map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      // Keep focus in the search input so barcode-wedge
+                      // scans and physical Enter keep working unchanged.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setSearch((prev) => `${prev}${key}`)}
+                      style={{
+                        minHeight: "44px",
+                        minWidth: 0,
+                        borderRadius: 8,
+                        border: "1px solid rgba(55,70,57,.14)",
+                        background: "#fff",
+                        color: "var(--bb-text)",
+                        fontSize: 16,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1.4fr 1fr",
+                  gap: 6,
+                  width: "100%",
+                }}
+              >
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSearch((prev) => `${prev} `)}
+                  style={{
+                    minHeight: "44px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(55,70,57,.14)",
+                    background: "#fff",
+                    color: "var(--bb-text)",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Space
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => searchRef.current?.focus()}
+                  style={{
+                    minHeight: "44px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(55,70,57,.14)",
+                    background: "#f4efe8",
+                    color: "var(--bb-text)",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Type / scan here
+                </button>
+                <button
+                  type="button"
+                  aria-label="Backspace"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    setSearch((prev) => prev.slice(0, Math.max(0, prev.length - 1)))
+                  }
+                  style={{
+                    minHeight: "44px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(55,70,57,.14)",
+                    background: "#fff1e9",
+                    color: "var(--bb-danger, #b84a38)",
+                    display: "grid",
+                    placeItems: "center",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Delete size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        <ConfirmDialog
+          open={pendingConfirm != null}
+          title={pendingConfirm === "clear" ? "Clear this sale?" : "Switch tables?"}
+          message={
+            pendingConfirm === "clear"
+              ? "All unpaid lines will be removed."
+              : "Switch tables and replace the order currently on screen?"
+          }
+          confirmLabel={pendingConfirm === "clear" ? "Clear sale" : "Switch table"}
+          cancelLabel={pendingConfirm === "clear" ? "Keep sale" : "Stay here"}
+          tone="danger"
+          onConfirm={() => {
+            if (pendingConfirm === "clear") {
+              applyClearCart();
+              return;
+            }
+            if (pendingConfirm && pendingConfirm.type === "table") {
+              const nextTableName = pendingConfirm.name;
+              setPendingConfirm(null);
+              applyTableSwitch(nextTableName);
+            }
+          }}
+          onCancel={() => setPendingConfirm(null)}
+        />
+        {multiAddItem && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Add multiple ${multiAddItem.name}`}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 50,
+              background: "rgba(47,38,30,.45)",
+              display: "grid",
+              placeItems: "center",
+              padding: 16,
+            }}
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setMultiAddItem(null);
+              }
+            }}
+          >
+            <div
+              style={{
+                width: "min(360px, calc(100vw - 32px))",
+                background: "var(--bb-surface)",
+                borderRadius: 16,
+                border: "1px solid rgba(55,70,57,.14)",
+                padding: 18,
+                boxShadow: "0 18px 40px rgba(47,38,30,.22)",
+              }}
+            >
+              <p style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: "var(--bb-text)" }}>
+                Add multiple · {multiAddItem.name}
+              </p>
+              <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--bb-text-muted)" }}>
+                Hold a product card to open this. Tap a round size or enter a quantity.
+              </p>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  gap: 8,
+                  marginBottom: 10,
+                }}
+              >
+                {["2", "3", "4", "6"].map((qty) => (
+                  <button
+                    key={qty}
+                    type="button"
+                    onClick={() => setMultiAddQty(qty)}
+                    aria-pressed={multiAddQty === qty}
+                    style={{
+                      minHeight: 48,
+                      borderRadius: 10,
+                      border: `1px solid ${multiAddQty === qty ? "var(--bb-accent)" : "rgba(55,70,57,.16)"}`,
+                      background: multiAddQty === qty ? "var(--bb-accent)" : "#fff",
+                      color: multiAddQty === qty ? "#fff" : "var(--bb-text)",
+                      fontSize: 15,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {qty}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="99"
+                inputMode="numeric"
+                value={multiAddQty}
+                onChange={(event) => setMultiAddQty(event.target.value)}
+                aria-label="Quantity to add"
+                style={{
+                  display: "block",
+                  boxSizing: "border-box",
+                  width: "100%",
+                  minHeight: 44,
+                  borderRadius: 10,
+                  border: "1px solid rgba(55,70,57,.16)",
+                  padding: "8px 10px",
+                  fontSize: 14,
+                  background: "#fff",
+                  marginBottom: 12,
+                }}
+              />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMultiAddItem(null);
+                    setMultiAddQty("2");
+                  }}
+                  style={{
+                    minHeight: 44,
+                    padding: "0 14px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(55,70,57,.16)",
+                    background: "#fff",
+                    color: "var(--bb-text)",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={applyMultiAdd}
+                  style={{
+                    minHeight: 44,
+                    padding: "0 16px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: "var(--bb-accent)",
+                    color: "#fff",
+                    fontSize: 13,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Add {multiAddQty || "1"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       {completedReceipt && (
         <POSReceipt
           order={completedReceipt.order}
           autoPrint={completedReceipt.autoPrint}
-          onClose={() => setCompletedReceipt(null)}
+          onClose={() => {
+            setCompletedReceipt(null);
+            requestAnimationFrame(() => searchRef.current?.focus());
+          }}
+          onNewSale={() => {
+            setCompletedReceipt(null);
+            setSuccessMessage("");
+            requestAnimationFrame(() => searchRef.current?.focus());
+          }}
+          onRepeatSale={() => {
+            setCompletedReceipt(null);
+            setSuccessMessage("");
+            reorderLastSale();
+            requestAnimationFrame(() => searchRef.current?.focus());
+          }}
         />
       )}
     </>

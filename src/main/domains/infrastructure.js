@@ -87,7 +87,7 @@ import {
   buildSyncStatusSnapshot,
   isQueuedDependencyResolved
 } from './syncStatus.js';
-import { broadcastSyncStatus, checkOnline } from './connectivity.js';
+import { broadcastSyncStatus, checkOnline, STARTUP_CONNECTIVITY_PROBE_TIMEOUT_MS } from './connectivity.js';
 import {
   DEFAULT_OFFLINE_LEASE_DAYS,
   DEFAULT_SUBSCRIPTION_GRACE_DAYS,
@@ -153,7 +153,7 @@ export {
   getUserById,
   getUsers
 } from './users.js';
-export { broadcastSyncStatus, checkOnline } from './connectivity.js';
+export { broadcastSyncStatus, checkOnline, STARTUP_CONNECTIVITY_PROBE_TIMEOUT_MS } from './connectivity.js';
 export { refreshCache, refreshAllCaches } from './cacheRefresh.js';
 export {
   buildSyncStatusSnapshot
@@ -370,9 +370,14 @@ function isBookingUpdateConflictError(message = '') {
   return /modified on another device|booking conflict|refresh and try again/i.test(String(message || ''));
 }
 
-function shouldManualReviewSyncItem(item, errorMessage = '') {
+function shouldManualReviewSyncItem(item, errorMessage = '', errorObj = null) {
   if (['update_booking', 'update_campsite_booking', 'reschedule_accommodation_booking'].includes(item?.table)
     && isBookingUpdateConflictError(errorMessage)) return true;
+  // Server-flagged firm refusals (e.g. offline trading window too old) can
+  // never converge by retrying identical bytes. Park them for manager review
+  // instead of burning 5 retries + 30-minute auto-requeue forever.
+  if (errorObj?.manual_review_required === true) return true;
+  if (/catalog_refresh_required|manual_review_required|permitted offline trading window|outside the permitted/i.test(String(errorMessage || ''))) return true;
   // Tab version/ownership conflicts can never converge by retrying the same
   // bytes: two terminals changed the same tab, or it already settled. They
   // go straight to manager review with the server's message intact.
@@ -810,6 +815,16 @@ async function _runSyncQueue() {
   let shouldRefreshRateOverrides = false;
 
   while (pending.length > 0) {
+    // Circuit-breaker: if the link died mid-drain, stop instead of burning
+    // one retry on every remaining item. The in-flight item already spent its
+    // attempt; the rest stay pending untouched for the next reconnect.
+    if (state.isOnline === false) {
+      appendOperationJournalEntry('replay_paused_offline', pending[0] || {}, {
+        message: `Catch-up paused offline with ${pending.length} item(s) still queued. Nothing was retried.`
+      });
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
+      break;
+    }
     const nextIndex = pickNextReadySyncItemIndex(
       pending,
       completedQueueIds,
@@ -1047,7 +1062,12 @@ async function _runSyncQueue() {
             supabaseError = null;
           } else {
             console.error(`❌ RPC ${replayRpc} LOGIC FAILED:`, data.error);
-            supabaseError = { message: data.error };
+            supabaseError = {
+              message: typeof data.error === 'string' ? data.error : (data.error?.message || JSON.stringify(data.error)),
+              code: data.code || data.error_code || null,
+              manual_review_required: data.manual_review_required === true,
+              serverData: data
+            };
           }
         } else {
           console.log(`✅ RPC ${replayRpc} SUCCESS:`, data);
@@ -1060,7 +1080,9 @@ async function _runSyncQueue() {
     if (supabaseError) {
       // Track failed queue IDs so dependents are skipped
       if (item._queue_id) failedQueueIds.add(item._queue_id);
-      const errorMessage = getErrorMessage(supabaseError);
+      const errorMessage = supabaseError?.code
+        ? `${getErrorMessage(supabaseError)} (${supabaseError.code})`
+        : getErrorMessage(supabaseError);
       if (isPosCreateOrderQueueItem(item)) {
         const orderId = getQueuedPosOrderId(item);
         if (orderId) {
@@ -1233,7 +1255,7 @@ async function _runSyncQueue() {
         }
       }
       const retryCount = (item.retryCount || 0) + 1;
-      const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage) ||
+      const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage, supabaseError) ||
       (isCreateBookingQueueItem(item) || isConvertQuotationQueueItem(item)) && isRoomConflictError(errorMessage) ||
       item.manualRetryOnly === true;
       const updatedItem = {
@@ -1991,12 +2013,12 @@ export async function initDatabase() {
   // P0-5: replayAuthReady stays false until a real user logs in.
   // Startup sync is intentionally skipped — we must not replay queued financial
   // operations before the correct Supabase client is authenticated.
-  let online = false;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    online = await checkOnline();
-    if (online) break;
-    if (attempt < 1) await new Promise((r) => setTimeout(r, 2000));
-  }
+  //
+  // Startup runs before the main window is created, so this is a SINGLE short
+  // probe (STARTUP_CONNECTIVITY_PROBE_TIMEOUT_MS), never the old retry loop.
+  // A dead/slow network must fail fast into offline mode; the reconnect timer
+  // below keeps re-probing with the full budget once the app is running.
+  const online = await checkOnline({ timeoutMs: STARTUP_CONNECTIVITY_PROBE_TIMEOUT_MS });
   if (online && state.lodgeId) {
     // Fire-and-forget cache refresh — don't block startup on exhausted IO
     const bootRefreshAt = Date.now();
@@ -2013,10 +2035,18 @@ export async function initDatabase() {
   if (!state.backupIntervalStarted) {
     state.backupIntervalStarted = true;
 
-    const bootBackupAt = Date.now();
-    bootMark('backup start');
-    createBackup();
-    bootMark(`backup done (took ${Date.now() - bootBackupAt}ms)`);
+    // The startup backup parses multi-MB local caches synchronously, so it
+    // runs after the window is up instead of blocking first paint. The hourly
+    // interval below is unchanged.
+    setTimeout(() => {
+      const bootBackupAt = Date.now();
+      try {
+        createBackup();
+      } catch (error) {
+        console.error('Auto-backup failed:', error);
+      }
+      bootMark(`startup backup done (took ${Date.now() - bootBackupAt}ms)`);
+    }, 5000);
     setInterval(() => createBackup(), 60 * 60 * 1000);
 
     // Reconnect detection: fires sync on network return
@@ -2080,6 +2110,7 @@ export async function initDatabase() {
       }
     }, PERIODIC_SYNC_INTERVAL_MS);
   }
+  state._initialized = true;
   bootMark('initDatabase done');
 }
 

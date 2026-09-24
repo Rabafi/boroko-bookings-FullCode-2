@@ -106,6 +106,18 @@ test('approve-cutover is IPC-mapped behind management access', () => {
   assert.match(main, /getActivationState: \['accounting\.read', db\.getRestaurantAccountingActivationStateV2\]/)
 })
 
+test('activation setup resolves readiness prerequisites in place', () => {
+  const page = read('src/renderer/src/components/restaurant-accounting/RestaurantAccountingActivation.jsx')
+  // The workspace pages stay gated until readiness passes, so seeding and
+  // mapping must live on the setup page itself — never a dead-end link.
+  assert.match(page, /Seed default accounts/)
+  assert.match(page, /accountingInvoke\('seedAccounts'\)/)
+  assert.match(page, /accountingInvoke\('setPosMapping'/)
+  assert.match(page, /cash.*tender mapping to an asset account/s)
+  assert.match(page, /resolve in the Prerequisites panel above/)
+  assert.doesNotMatch(page, /to="\/restaurant\/chart-of-accounts"/)
+})
+
 test('activation route, entry link, and uncertain-response recovery are wired', () => {
   const app = read('src/renderer/src/App.jsx')
   assert.match(app, /path="restaurant\/accounting-setup"/)

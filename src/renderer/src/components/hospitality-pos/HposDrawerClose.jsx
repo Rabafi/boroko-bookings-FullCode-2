@@ -166,7 +166,7 @@ export default function HposDrawerClose({ outletId }) {
             </div>
             {(period.status === 'open' || period.status === 'rejected') && (
               <>
-                <label className="hpos-my-cashup-notes"><span>Physical cash counted (blind — expected stays hidden)</span><input type="number" min="0" step="0.01" value={counted} onChange={(event) => setCounted(event.target.value)} disabled={saving} placeholder="0.00" /></label>
+                <label className="hpos-my-cashup-count"><span>Physical cash counted (blind — expected stays hidden)</span><input type="number" min="0" step="0.01" value={counted} onChange={(event) => setCounted(event.target.value)} disabled={saving} placeholder="0.00" /><small>Type the counted cash here — the note box below adds words only and never counts.</small></label>
                 <label className="hpos-my-cashup-notes"><span>Count note (optional)</span><textarea rows="2" value={notes} onChange={(event) => setNotes(event.target.value)} disabled={saving} /></label>
                 <label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Staff PIN (when counting for an operator)</span><input type="password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={saving} placeholder="Optional" /></label>
                 <footer className="hpos-cashup-review-actions"><HposButton icon={RefreshCw} onClick={refresh} disabled={loading || saving}>Refresh</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={submit} disabled={saving}>{saving ? 'Submitting…' : 'Submit count for review'}</HposButton></footer>

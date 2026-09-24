@@ -13,6 +13,7 @@ import { createBarcodeScannerDecoder } from '../../../../shared/barcodeScanner'
 import { formatStockMutationNotice, validateSingleStockQuantity } from './hposStockState'
 import { WASTE_MOVEMENT_PREFIX } from '../../../../shared/wasteSummary'
 import { transportErrorMessage } from '../../../../shared/transportErrors'
+import { isArchivedOnlyStockItem } from '../../../../shared/archivedStock'
 
 const stockNumber = (item) => Number(item.current_stock || 0)
 const reorderNumber = (item) => Number(item.reorder_level || 0)
@@ -75,6 +76,8 @@ export default function HposStock() {
   const outletScoped = Array.isArray(allowedOutletIds)
   const [items, setItems] = useState([])
   const [itemsRead, setItemsRead] = useState({ source: 'unknown', complete: false })
+  const [menuItems, setMenuItems] = useState([])
+  const [showArchived, setShowArchived] = useState(false)
   const [aging, setAging] = useState([])
   const [outlets, setOutlets] = useState([])
   const [outletId, setOutletId] = useState('')
@@ -183,10 +186,15 @@ export default function HposStock() {
     const stockReadPromise = window.api?.inventory?.getItemsWithReadStatus
       ? window.api.inventory.getItemsWithReadStatus()
       : Promise.reject(new Error('This app version cannot verify the stock source. Restart the app and refresh.'))
-    const [itemsResult, agingResult] = await Promise.allSettled([
+    // Menu catalogue is fail-soft: it only drives the archived-only clutter
+    // filter below. A menu-read failure must never hide stock or block counts.
+    const menuPromise = window.api?.pos?.getMenuItems?.() ?? Promise.resolve([])
+    const [itemsResult, agingResult, menuResult] = await Promise.allSettled([
       stockReadPromise,
-      agingPromise
+      agingPromise,
+      menuPromise
     ])
+    setMenuItems(menuResult?.status === 'fulfilled' && Array.isArray(menuResult.value) ? menuResult.value : [])
     if (itemsResult.status === 'fulfilled') {
       const inventoryRead = itemsResult.value || {}
       const rows = unpackTransport(inventoryRead.items)
@@ -239,22 +247,32 @@ export default function HposStock() {
 
   // Delisted stock (its product was deleted and nothing else sells or
   // consumes it) is hidden from the operational list; history stays in the
-  // movement ledger for audit.
+  // movement ledger for audit. Archived-only stock (every linked product is
+  // archived) is hidden by default with an opt-in toggle — the rows and
+  // history stay server-side so an archived product can be restored.
   const isActive = (item) => item?.is_active !== false
+  const isHiddenArchived = (item) => !showArchived && isArchivedOnlyStockItem(item, menuItems)
+  const archivedCount = useMemo(() => items.filter((item) => isActive(item) && isArchivedOnlyStockItem(item, menuItems)).length, [items, menuItems])
   const filtered = useMemo(() => items.filter((item) =>
     isActive(item) &&
+    !isHiddenArchived(item) &&
     (!outletId ? !outletScoped || !item.outlet_id || allowedOutletIds.includes(String(item.outlet_id)) : String(item.outlet_id || '') === String(outletId)) &&
     (!lowOnly || isLow(item)) &&
-    [String(item.name || ''), String(item.barcode || '')].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [items, search, outletId, outletScoped, lowOnly])
+    [String(item.name || ''), String(item.barcode || '')].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [items, menuItems, search, outletId, outletScoped, lowOnly, showArchived])
   const lowStock = filtered.filter(isLow)
   const healthyStock = filtered.filter((item) => !isLow(item))
   const scopedItems = useMemo(() => items.filter((item) => (
     isActive(item) &&
-    !outletId
+    !isHiddenArchived(item) &&
+    (!outletId
       ? (!outletScoped || !item.outlet_id || allowedOutletIds.includes(String(item.outlet_id)))
-      : String(item.outlet_id || '') === String(outletId)
-  )), [items, outletId, outletScoped, allowedOutletIds])
+      : String(item.outlet_id || '') === String(outletId))
+  )), [items, menuItems, outletId, outletScoped, allowedOutletIds, showArchived])
   const stockCountsReady = itemsRead.complete && scopedItems.length > 0 && scopedItems.every((item) => Boolean(item?.updated_at))
+  // Offline counts queue against last-known expected quantities (same contract
+  // as deliveries/waste). Certified reads stay required for certified labels;
+  // this gate only allows queueing when every line carries a known baseline.
+  const stockCountsQueueable = scopedItems.length > 0 && scopedItems.every((item) => Boolean(item?.updated_at))
   const agingByItem = useMemo(() => new Map(aging.map((row) => [row.item_id, row])), [aging])
 
   const loadMovementHistory = async (item) => {
@@ -383,9 +401,12 @@ export default function HposStock() {
 
   const recordStockAction = async () => {
     if (!stockAction?.item) return
-    if (stockAction.mode === 'count' && !stockCountsReady) {
-      setError('Reconnect and refresh the server stock list before recording a physical count. A cached quantity cannot be used to calculate an audited adjustment.')
+    if (stockAction.mode === 'count' && !stockCountsQueueable) {
+      setError('Reconnect and refresh the stock list before recording a physical count. Nothing is saved without a known item baseline.')
       return
+    }
+    if (stockAction.mode === 'count' && !stockCountsReady) {
+      setNotice('Offline count: queued with last-known expected quantities. It will post as an audited adjustment when the device reconnects.')
     }
     const quantity = validateSingleStockQuantity(actionForm.quantity, stockAction.mode)
     if (!quantity.ok) { setError(quantity.message); return }
@@ -436,9 +457,12 @@ export default function HposStock() {
   }
 
   const openCountAll = () => {
-    if (!stockCountsReady) {
-      setError('Reconnect and refresh the server stock list before opening Count All. Cached quantities cannot authorize a batch count.')
+    if (!stockCountsQueueable) {
+      setError('Reconnect and refresh the stock list before opening Count All. Nothing opens without a known item baseline.')
       return
+    }
+    if (!stockCountsReady) {
+      setNotice('Offline Count All: lines carry last-known expected quantities and queue for audited posting on reconnect.')
     }
     if (!scopedItems.length) { setError('Select an outlet or add stock items before opening Count All.'); return }
     setCountOperationId(crypto.randomUUID())
@@ -458,7 +482,7 @@ export default function HposStock() {
   }
 
   const postCountAll = async () => {
-    if (!stockCountsReady || !countLines.length) return
+    if (!stockCountsQueueable || !countLines.length) return
     const invalid = countLines.find((line) => String(line.actual_qty ?? '').trim() === '' || !Number.isFinite(Number(line.actual_qty)) || Number(line.actual_qty) < 0 || ((line.reason_code === 'other' || Number(line.actual_qty) !== Number(line.expected_qty)) && !String(line.reason || '').trim()))
     if (invalid) { setError('Enter a non-negative quantity for every line; add a detail for an exceptional reason or variance.'); return }
     setSaving(true); setError(''); setNotice('')
@@ -562,10 +586,15 @@ export default function HposStock() {
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minHeight: 38, padding: '0 10px', border: '1px solid #d7c4ba', borderRadius: 10, color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}>
           <input type="checkbox" checked={lowOnly} onChange={(event) => setLowOnly(event.target.checked)} /> Low stock only
         </label>
+        {archivedCount > 0 && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minHeight: 38, padding: '0 10px', border: '1px solid #d7c4ba', borderRadius: 10, color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}>
+            <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived ({archivedCount})
+          </label>
+        )}
         <button type="button" onClick={printBlankCountSheet} disabled={loading || !filtered.length} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: '1px solid #d7c4ba', color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}><Printer size={14} /> Print blank count sheet</button>
         <button type="button" onClick={loadAllHistory} disabled={loading} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: '1px solid #d7c4ba', color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}><History size={14} /> View full history</button>
-        {canManage && <><button type="button" onClick={openCountAll} disabled={loading || !stockCountsReady || !scopedItems.length} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: 0, color: '#fff', background: stockCountsReady ? '#3d2b34' : '#b6a8ac', fontSize: 12, fontWeight: 800 }}><ClipboardCheck size={14} /> Count All</button><button type="button" onClick={openDelivery} disabled={loading || !scopedItems.length} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: '1px solid #d7c4ba', color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}><PackageCheck size={14} /> Receive delivery</button></>}
-        <small style={{ flex: '1 1 100%', color: '#806f76', fontSize: 11 }}>History is read-only and source-labelled. Count All requires a complete server read and posts every line through one audited RPC; deliveries never ask for supplier, PO, lot, expiry or valuation data.</small>
+        {canManage && <><button type="button" onClick={openCountAll} disabled={loading || !stockCountsQueueable || !scopedItems.length} title={stockCountsReady ? 'Count All' : 'Count All (queues offline)'} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: 0, color: '#fff', background: stockCountsReady ? '#3d2b34' : '#b6a8ac', fontSize: 12, fontWeight: 800 }}><ClipboardCheck size={14} /> Count All</button><button type="button" onClick={openDelivery} disabled={loading || !scopedItems.length} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 11px', borderRadius: 10, border: '1px solid #d7c4ba', color: '#54434f', background: '#fff', fontSize: 12, fontWeight: 800 }}><PackageCheck size={14} /> Receive delivery</button></>}
+        <small style={{ flex: '1 1 100%', color: '#806f76', fontSize: 11 }}>History is read-only and source-labelled. Stock linked only to archived products is hidden by default; tick Show archived to count or receive it. Count All requires a complete server read and posts every line through one audited RPC; deliveries never ask for supplier, PO, lot, expiry or valuation data.</small>
       </section>
       {showCreate && barOnly && <div className="no-print" aria-label="Bar category suggestions" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 10, color: '#806f76', fontSize: 11 }}><span style={{ fontWeight: 800 }}>Suggested categories:</span>{BAR_CATEGORY_SUGGESTIONS.map((category) => <button key={category} type="button" onClick={() => setNewItem((current) => ({ ...current, category }))} style={{ border: '1px solid #d7c4ba', borderRadius: 999, padding: '5px 9px', background: '#fff', color: '#54434f', fontSize: 11, fontWeight: 750 }}>{category}</button>)}</div>}
       <section style={{
@@ -648,7 +677,7 @@ export default function HposStock() {
               </table>
             </div>
             <label style={{ display: 'block', marginTop: 10 }}>Batch note (optional)<input value={countNotes} onChange={(event) => setCountNotes(event.target.value)} maxLength={300} placeholder="Weekly bar count" /></label>
-            <footer><button type="button" onClick={() => { setCountAllOpen(false); setCountOperationId(null) }} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={postCountAll} disabled={saving || !stockCountsReady}>{saving ? 'Posting…' : 'Post Count All'}</button></footer>
+            <footer><button type="button" onClick={() => { setCountAllOpen(false); setCountOperationId(null) }} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={postCountAll} disabled={saving || !stockCountsQueueable}>{saving ? 'Posting…' : 'Post Count All'}</button></footer>
           </section>
         </div>
       )}

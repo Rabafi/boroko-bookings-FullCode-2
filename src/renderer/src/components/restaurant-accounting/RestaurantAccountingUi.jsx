@@ -5,6 +5,7 @@ import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { ErrorNotice } from '../shared/ErrorNotice'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
+import { BarAddonBadge, HposPageHero } from '../hospitality-pos/HposUi'
 
 export async function accountingInvoke(operation, ...args) {
   const bridge = window.api?.restaurantAccountingV2?.invoke
@@ -98,18 +99,21 @@ export function AccountingPage({ eyebrow, title, description, actions, children 
   const [readiness, setReadiness] = useState(null)
   useEffect(() => { let cancelled = false; accountingInvoke('getReadiness').then((result) => { if (!cancelled) setReadiness(unwrap(result, null)) }).catch((error) => { if (!cancelled) setReadiness({ error: error.message }) }); return () => { cancelled = true } }, [])
   const releaseReady = readiness?.active === true && readiness?.ready === true && !readiness?.error
+  const resolvedEyebrow = eyebrow || (barOnly ? 'Bar Accounting & Workforce' : 'Restaurant Accounting')
   const readinessNotice = readiness?.error
     ? <AccountingNotice type="warning">Accounting readiness could not be verified. This surface is not cleared for financial reliance: {readiness.error}</AccountingNotice>
     : readiness && readiness.ready === false
       ? <AccountingNotice type="warning">Accounting is not enabled for posting. Resolve the server readiness gate before relying on statements, exports, or subledger totals{readiness.missing_requirements?.length ? `: ${readiness.missing_requirements.join(', ')}` : '.'} <NavLink className="underline font-bold" to="/restaurant/accounting-setup">Open Accounting setup</NavLink> to work through readiness, cutover approval, and activation.</AccountingNotice>
       : null
-  return <div className="hpos-page-frame min-h-full bg-slate-50 p-4 md:p-6">
-    <header className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">{eyebrow || (barOnly ? 'Bar Accounting & Workforce' : 'Restaurant Accounting')}</p><h1 className="mt-1 text-2xl font-black text-slate-900">{title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p></div>
-        {releaseReady && actions && <div className="flex flex-wrap gap-2">{actions}</div>}
-      </div>
-    </header>
+  return <div className={barOnly ? 'hpos-page-frame hpos-accounting-page' : 'hpos-page-frame min-h-full bg-slate-50 p-4 md:p-6'}>
+    {barOnly
+      ? <HposPageHero eyebrow={resolvedEyebrow} title={title} description={description} actions={releaseReady && actions && <div className="hpos-hero-actions">{actions}</div>}><BarAddonBadge addonName="Accounting & Workforce" featureKey="restaurant_accounting" /></HposPageHero>
+      : <header className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">{resolvedEyebrow}</p><h1 className="mt-1 text-2xl font-black text-slate-900">{title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p></div>
+          {releaseReady && actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+        </div>
+      </header>}
     {readinessNotice}
     {readiness === null
       ? <AccountingLoading label="Verifying Accounting activation and release readiness…" />
@@ -121,6 +125,15 @@ export function AccountingPage({ eyebrow, title, description, actions, children 
 
 export function AccountingButton({ children, tone = 'primary', busy = false, disabled = false, ...props }) {
   const tones = { primary: 'bg-emerald-700 text-white hover:bg-emerald-800', secondary: 'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50', danger: 'bg-rose-700 text-white hover:bg-rose-800', amber: 'bg-amber-600 text-white hover:bg-amber-700' }
+  const { settings } = useSettings()
+  const barOnly = isBarOnlyMode(settings)
+  // Bar workspaces use the product-native hpos actions (coral primary on the
+  // dark hero) so Accounting matches Sell/Stock/Cash & close. Danger/amber
+  // keep their explicit Tailwind tones so destructive intent stays obvious.
+  if (barOnly && (tone === 'primary' || tone === 'secondary')) {
+    const barClass = tone === 'primary' ? 'hpos-primary-action' : 'hpos-secondary-action'
+    return <button type="button" disabled={disabled || busy} className={`${barClass} inline-flex items-center justify-center gap-2`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
+  }
   return <button type="button" disabled={disabled || busy} className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${tones[tone] || tones.primary}`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
 }
 

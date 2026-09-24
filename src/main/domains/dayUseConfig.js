@@ -78,7 +78,7 @@ export async function getDayUseConfig() {
   return local;
 }
 
-export async function saveDayUseConfig(data = {}) {
+export async function saveDayUseConfig(data = {}, options = {}) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving Day Use setup.');
 
   const config = normalizeConfig({
@@ -90,7 +90,22 @@ export async function saveDayUseConfig(data = {}) {
 
   writeCache(CACHE_KEY, [config]);
 
-  if (!state.isOnline) return config;
+  // Offline (or missing-table) saves previously looked like success while the
+  // server never learned. Report device-only persistence so callers warn.
+  const deviceOnly = (reason) => options?.includeMeta === true
+    ? {
+      data: config,
+      meta: {
+        persistence: 'device_only',
+        online: false,
+        pending: true,
+        retryRequired: true,
+        warnings: [reason || 'This computer is offline. Day Use setup was saved here only and was not sent to the server.']
+      }
+    }
+    : config;
+
+  if (!state.isOnline) return deviceOnly();
 
   const result = await state.supabase
     .from('day_use_config')
@@ -106,12 +121,14 @@ export async function saveDayUseConfig(data = {}) {
   if (!result.error) {
     const saved = normalizeConfig(result.data || config);
     writeCache(CACHE_KEY, [saved]);
-    return saved;
+    return options?.includeMeta === true
+      ? { data: saved, meta: { persistence: 'remote', online: true, pending: false } }
+      : saved;
   }
 
   const message = result.error.message || '';
   if (/relation .*day_use_config|could not find .*day_use_config|schema cache/i.test(message)) {
-    return config;
+    return deviceOnly('Day Use setup was saved here only; the server table is unavailable.');
   }
   throw new Error(message);
 }

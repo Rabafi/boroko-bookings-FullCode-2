@@ -6,15 +6,32 @@ import { AccountingButton, AccountingExportButton, AccountingLoading, Accounting
 
 const emptyJournal = () => ({ entryDate: today(), description: '', referenceNumber: '', lines: [{ accountId:'',debit:'',credit:'',memo:'' },{ accountId:'',debit:'',credit:'',memo:'' }] })
 
+// Malformed server responses (null data, missing arrays) must render as empty
+// ledger state, never crash the page into the recovery screen.
+const normalizeWorkspace = (value) => {
+  const source = value && typeof value === 'object' ? value : {}
+  return {
+    ...source,
+    entries: Array.isArray(source.entries)
+      ? source.entries.map((entry) => ({
+        ...(entry && typeof entry === 'object' ? entry : {}),
+        lines: Array.isArray(entry?.lines) ? entry.lines : [],
+      }))
+      : [],
+    trial_balance: Array.isArray(source.trial_balance) ? source.trial_balance : [],
+  }
+}
+const normalizeRows = (value) => (Array.isArray(value) ? value : [])
+
 export default function RestaurantGeneralLedger() {
   const access=useAccess(), canManage=canAccessCapability(access,'accounting.manage')
-  const [accounts,setAccounts]=useState([]),[workspace,setWorkspace]=useState({entries:[],trial_balance:[]}),[mappings,setMappings]=useState([])
+  const [accounts,setAccounts]=useState([]),[workspace,setWorkspace]=useState(normalizeWorkspace()),[mappings,setMappings]=useState([])
   const [filters,setFilters]=useState({startDate:firstOfMonth(),endDate:today(),accountId:''}),[journal,setJournal]=useState(emptyJournal())
   const [mapping,setMapping]=useState({mappingType:'category',sourceKey:'',accountId:''}),[orderId,setOrderId]=useState(''),[draftId,setDraftId]=useState('')
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('')
 
-  const load=useCallback(async()=>{setLoading(true);setError('');try{const [a,w,m]=await Promise.all([accountingInvoke('getAccounts'),accountingInvoke('getLedgerPage',{...filters,cursor:null,pageSize:100}),accountingInvoke('getPosMappings')]);setAccounts(unwrap(a,[]));setWorkspace(unwrap(w,{entries:[],trial_balance:[]}));setMappings(unwrap(m,[]))}catch(e){setError(e.message)}finally{setLoading(false)}},[filters])
-  const loadMore=async()=>{if(!workspace.next_cursor)return;setBusy('page');setError('');try{const next=unwrap(await accountingInvoke('getLedgerPage',{...filters,cursor:workspace.next_cursor,pageSize:100}),{});setWorkspace({...next,entries:[...(workspace.entries||[]),...(next.entries||[])]})}catch(e){setError(e.message)}finally{setBusy('')}}
+  const load=useCallback(async()=>{setLoading(true);setError('');try{const [a,w,m]=await Promise.all([accountingInvoke('getAccounts'),accountingInvoke('getLedgerPage',{...filters,cursor:null,pageSize:100}),accountingInvoke('getPosMappings')]);setAccounts(normalizeRows(unwrap(a,[])));setWorkspace(normalizeWorkspace(unwrap(w,{})));setMappings(normalizeRows(unwrap(m,[])))}catch(e){setError(e.message)}finally{setLoading(false)}},[filters])
+  const loadMore=async()=>{if(!workspace.next_cursor)return;setBusy('page');setError('');try{const next=normalizeWorkspace(unwrap(await accountingInvoke('getLedgerPage',{...filters,cursor:workspace.next_cursor,pageSize:100}),{}));setWorkspace({...next,entries:[...workspace.entries,...next.entries]})}catch(e){setError(e.message)}finally{setBusy('')}}
   useEffect(()=>{load()},[load])
   const totals=useMemo(()=>workspace.trial_balance.reduce((v,row)=>({debit:v.debit+Number(row.debit||0),credit:v.credit+Number(row.credit||0)}),{debit:0,credit:0}),[workspace])
   const journalTotals=journal.lines.reduce((v,row)=>({debit:v.debit+Number(row.debit||0),credit:v.credit+Number(row.credit||0)}),{debit:0,credit:0})

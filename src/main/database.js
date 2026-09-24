@@ -306,6 +306,7 @@ export {
   recoverPendingProductRequests,
   processPendingPublicationJobs,
   getMenuStockReadiness,
+  getUnconfirmedPosUsage,
   getPosOrders,
   getSharedTillOperatorOrders,
   getPosVoidHistory,

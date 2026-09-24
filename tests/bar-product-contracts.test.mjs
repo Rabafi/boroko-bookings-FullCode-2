@@ -10,6 +10,11 @@ import {
   selectionsInModifierGroup,
   validateSaleModifierRequirements,
 } from '../src/shared/modifierRequirements.js'
+import {
+  isArchivedOnlyStockItem,
+  linkedMenuItemsForStock,
+  partitionStockByArchive,
+} from '../src/shared/archivedStock.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -437,4 +442,41 @@ test('Discarding a rejected product save retires its provisional shelf rows', ()
   assert.match(menu, /Rejected \(\$?\{rejectedRequestCount\}\)/)
   const preload = read('src/preload/index.js')
   assert.match(preload, /discardProductRequest: \(operationKey\) => invoke\('pos:discardProductRequest', operationKey\)/)
+})
+
+test('archived-only stock is hidden by default but recoverable', () => {
+  // Display filter only: archived products keep their stock listed
+  // server-side (restorable), but Stock hides clutter where every linked
+  // product is archived. Standalone stock and stock with any live link
+  // (including packs) must stay visible.
+  const stockA = { id: 'stock-a', name: 'Archived Lager' }
+  const stockB = { id: 'stock-b', name: 'Live Lager' }
+  const stockC = { id: 'stock-c', name: 'Standalone' }
+  const stockD = { id: 'stock-d', name: 'Pack still live' }
+  const menu = [
+    { id: 'm1', inventory_item_id: 'stock-a', archived_at: '2026-09-01T00:00:00Z' },
+    { id: 'm2', inventory_item_id: 'stock-b', archived_at: null },
+    { id: 'm3', inventory_item_id: 'stock-b', archived_at: '2026-09-01T00:00:00Z' },
+    { id: 'm4', inventory_item_id: 'stock-d', archived_at: '2026-09-01T00:00:00Z', template_kind: 'bar_single' },
+    { id: 'm5', inventory_item_id: 'stock-d', archived_at: null, template_kind: 'bar_pack' },
+  ]
+  assert.equal(isArchivedOnlyStockItem(stockA, menu), true)
+  assert.equal(isArchivedOnlyStockItem(stockB, menu), false)
+  assert.equal(isArchivedOnlyStockItem(stockC, menu), false)
+  assert.equal(isArchivedOnlyStockItem(stockD, menu), false)
+  assert.equal(linkedMenuItemsForStock('stock-a', menu).length, 1)
+  const parts = partitionStockByArchive([stockA, stockB, stockC, stockD], menu)
+  assert.deepEqual(parts.archived.map((row) => row.id), ['stock-a'])
+  assert.deepEqual(parts.live.map((row) => row.id), ['stock-b', 'stock-c', 'stock-d'])
+  // Both Stock surfaces wire the same helper with a fail-soft menu read and
+  // an opt-in toggle; the menu read must never block or hide stock on error.
+  const stockView = read('src/renderer/src/components/hospitality-pos/HposStock.jsx')
+  assert.match(stockView, /isArchivedOnlyStockItem/)
+  assert.match(stockView, /showArchived/)
+  assert.match(stockView, /Show archived/)
+  assert.match(stockView, /window\.api\?\.pos\?\.getMenuItems/)
+  const inventoryView = read('src/renderer/src/components/Inventory.jsx')
+  assert.match(inventoryView, /isArchivedOnlyStockItem/)
+  assert.match(inventoryView, /showArchived/)
+  assert.match(inventoryView, /Show archived/)
 })

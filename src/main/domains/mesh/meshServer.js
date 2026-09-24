@@ -5,6 +5,7 @@ import { meshState } from './meshState.js';
 import { readSyncQueue } from '../syncStore.js';
 import { registerRemoteLock, releaseRemoteLock } from './meshLocks.js';
 import { getQueueItemBodyHash, isMeshShareableQueueItem } from './meshQueueMerge.js';
+import { buildTeamStateSnapshot } from './meshStateSync.js';
 
 export const MESH_HTTP_PORT_START = 53536;
 export const MESH_HTTP_PORT_END = 53545;
@@ -25,6 +26,7 @@ export function startMeshServer(lodgeMeshSecret) {
     const allowlistedRoutes = new Set([
       '/mesh/hello',
       '/mesh/state',
+      '/mesh/state/team',
       '/mesh/queue/summary',
       '/mesh/queue/items',
       '/mesh/locks',
@@ -127,6 +129,15 @@ export function startMeshServer(lodgeMeshSecret) {
           const registered = registerRemoteLock(lockPayload);
           res.writeHead(registered ? 201 : 400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: registered }));
+          return;
+        }
+
+        // Visible-only team state (attendance, cash movements/counts,
+        // drawer periods, cash-up submissions), sanitized at build time.
+        // Never replayed: the origin till remains the sole executor.
+        if (req.method === 'GET' && pathname === '/mesh/state/team') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(buildTeamStateSnapshot()));
           return;
         }
 

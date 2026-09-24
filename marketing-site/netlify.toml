@@ -73,6 +73,11 @@
   status = 200
 
 [[redirects]]
+  from = "/bar-pos"
+  to = "/bar-pos.html"
+  status = 200
+
+[[redirects]]
   from = "/lodge-app"
   to = "/lodge-app.html"
   status = 200

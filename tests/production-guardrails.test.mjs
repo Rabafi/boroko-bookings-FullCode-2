@@ -189,7 +189,9 @@ async function run() {
   assert.match(database, /function applyQueuedPosInventoryReservations\(/)
   assert.match(database, /function mergeRemotePosOrdersWithLocalState\(/)
   assert.match(database, /POS voids require supervisor, manager, or admin PIN approval/)
-  assert.match(database, /refreshCache\('pos-orders', 'inventory-items', 'inventory-purchases'\)\.catch\(\(\) => \{\}\)/)
+  // Post-void refresh must never fail silently: best-effort helper logs + health fault.
+  assert.match(database, /refreshPosCachesBestEffort\(\['pos-orders', 'inventory-items', 'inventory-purchases'\], 'void'\)/)
+  assert.doesNotMatch(database, /refreshCache\('pos-orders', 'inventory-items', 'inventory-purchases'\)\.catch\(\(\) => \{\}\)/)
   assert.match(database, /const inventoryReservations = getOfflinePosInventoryReservation\(items\)/)
   assert.match(database, /applyOfflinePosInventoryReservation\(inventoryReservations\)/)
   assert.match(database, /shouldRefreshInventory = true/)
@@ -458,7 +460,7 @@ async function run() {
   assert.match(licensingWorkbench, /duration: dur,[\s\S]{0,80}next_due_date: nextVal \|\| f\.next_due_date/)
   assert.doesNotMatch(licensingWorkbench, /duration: dur,[\s\S]{0,80}expires_at: nextVal/)
   assert.match(licensingWorkbench, /Clear expiry/)
-  assert.match(licensingWorkbench, /activeLicenses\.get\(assignmentKey\(company\.lodge_id, getCompanyProductId\(company\)\)\)/)
+  assert.match(licensingWorkbench, /activeLicenses\.get\(assignmentKey\(company\.lodge_id, (productId|getCompanyProductId\(company\))\)\)/)
   assert.match(licensingWorkbench, /result\?\.license\?\.license_key \|\| result\?\.license_key/)
   assert.match(licensingWorkbench, /This lodge already has an active assignment/)
 

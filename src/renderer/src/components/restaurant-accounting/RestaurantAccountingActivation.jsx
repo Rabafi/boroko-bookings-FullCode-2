@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, useSearchParams } from 'react-router'
+import { useSearchParams } from 'react-router'
 import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
@@ -288,6 +288,33 @@ export default function RestaurantAccountingActivation() {
   ]
   const actionDisabled = (key) => busy !== '' && busy !== key
   const selfPrepared = Boolean(batchDetail?.prepared_by && userId && String(batchDetail.prepared_by) === String(userId))
+  // Readiness prerequisites (asset/revenue/expense accounts, cash + category
+  // mappings) are resolved here because the workspace pages stay gated until
+  // readiness passes — linking out alone would be a dead end.
+  const [mapping, setMapping] = useState({ mappingType: 'tender', sourceKey: 'cash', accountId: '' })
+
+  async function seedDefaults() {
+    if (!canManage) return fail('Seeding the chart requires Restaurant Accounting management access.')
+    setBusy('seed'); setError(''); setNotice('')
+    try {
+      await accountingInvoke('seedAccounts')
+      setNotice('Default accounts are available. Existing codes were not duplicated.')
+      await loadAccounts(); await loadReadiness()
+    } catch (seedError) { fail(seedError?.message || 'Seeding the chart failed.') } finally { setBusy('') }
+  }
+
+  async function saveMapping(event) {
+    event.preventDefault()
+    if (!canManage) return fail('Saving a POS mapping requires Restaurant Accounting management access.')
+    if (!mapping.accountId) return fail('Choose the ledger account for this mapping.')
+    setBusy('mapping'); setError(''); setNotice('')
+    try {
+      await accountingInvoke('setPosMapping', mapping)
+      setMapping({ ...mapping, sourceKey: '', accountId: '' })
+      setNotice('POS mapping saved. Readiness re-checks it below.')
+      await loadReadiness()
+    } catch (mappingError) { fail(mappingError?.message || 'Saving the POS mapping failed.') } finally { setBusy('') }
+  }
 
   const fail = (message) => {
     setError(message)
@@ -630,6 +657,21 @@ export default function RestaurantAccountingActivation() {
       {error && <AccountingNotice type="error">{error}</AccountingNotice>}
       {notice && <AccountingNotice type="success">{notice}</AccountingNotice>}
 
+      <AccountingPanel title="Prerequisites · Chart & POS mappings" description="Seed the account structure and map tenders and POS categories to ledger accounts. Readiness re-checks automatically after each save.">
+        {!canManage && <AccountingNotice type="warning">Seeding the chart and saving mappings require Restaurant Accounting management access.</AccountingNotice>}
+        <div className="flex flex-wrap items-center gap-2">
+          <AccountingButton tone="secondary" busy={busy === 'seed'} disabled={!canManage || actionDisabled('seed')} onClick={seedDefaults}>Seed default accounts</AccountingButton>
+          <span className="text-xs text-slate-500">Creates asset, revenue, and expense accounts. Existing codes are never duplicated.</span>
+        </div>
+        <form onSubmit={saveMapping} className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_1.4fr_auto] md:items-end">
+          <label className={labelClass}>Mapping type<select value={mapping.mappingType} onChange={(event) => setMapping({ ...mapping, mappingType: event.target.value })} className={inputClass}>{['tender', 'category', 'discount', 'tax', 'tips'].map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+          <label className={labelClass}>Source key<input required value={mapping.sourceKey} onChange={(event) => setMapping({ ...mapping, sourceKey: event.target.value })} className={inputClass} placeholder="e.g. cash, Beer" /></label>
+          <label className={labelClass}>Ledger account<select required value={mapping.accountId} onChange={(event) => setMapping({ ...mapping, accountId: event.target.value })} className={inputClass}><option value="">Select</option>{accounts.filter((row) => row.is_active !== false).map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}</select></label>
+          <AccountingButton busy={busy === 'mapping'} disabled={!canManage || actionDisabled('mapping')}>Save mapping</AccountingButton>
+        </form>
+        <p className="mt-2 text-xs text-slate-500">Readiness needs at minimum: a <strong>cash</strong> tender mapping to an asset account, and one category mapping to a revenue account.</p>
+      </AccountingPanel>
+
       <AccountingPanel title="1 · Readiness" description="Server-computed prerequisites. Posting stays blocked until every item passes.">
         {!readiness ? <AccountingLoading label="Loading readiness…" /> : readiness.error ? (
           <AccountingNotice type="error">Readiness could not be verified: {readiness.error}</AccountingNotice>
@@ -641,7 +683,7 @@ export default function RestaurantAccountingActivation() {
               <div>
                 <p>Blocking items — every one must clear before activation:</p>
                 <ul className="list-disc pl-5">
-                  {blockers.map((item) => <li key={item}>{item} — resolve in <NavLink className="underline" to="/restaurant/chart-of-accounts">Chart of accounts</NavLink> or POS mappings.</li>)}
+                  {blockers.map((item) => <li key={item}>{item} — resolve in the Prerequisites panel above (seed the chart, save the mappings).</li>)}
                   {blockers.length === 0 && <li>Readiness state is incomplete or unverifiable; reload before relying on it.</li>}
                 </ul>
               </div>

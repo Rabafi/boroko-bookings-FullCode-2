@@ -655,6 +655,10 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
     }
     return { retained, count };
   };
+  // The 'payments' cache is never written by any sync path, so an empty
+  // array means "no source", not "no money". Reporting 0 here made offline
+  // revenue look confirmed at zero. Withhold the revenue fields instead.
+  const paymentsAvailable = Array.isArray(payments) && payments.length > 0;
   const monthRetained = retainedForRange(monthStart, monthEnd);
   const lastMonthRetained = retainedForRange(lastMonthStart, lastMonthEnd);
   const overlapNights = (start, end) => bookings.
@@ -671,16 +675,18 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const maintenanceCosts = (maintenanceRows || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
 
   return {
-    todayRev: revenueInRange(today, today),
-    weekRev: revenueInRange(weekStart, today),
-    monthRev: revenueInRange(monthStart, monthEnd),
-    lastMonthRev: revenueInRange(lastMonthStart, lastMonthEnd),
-    monthRefunds: refundsInRange(monthStart, monthEnd),
-    lastMonthRefunds: refundsInRange(lastMonthStart, lastMonthEnd),
-    monthRetainedRevenue: monthRetained.retained,
-    lastMonthRetainedRevenue: lastMonthRetained.retained,
-    monthRetainedCount: monthRetained.count,
-    lastMonthRetainedCount: lastMonthRetained.count,
+    todayRev: paymentsAvailable ? revenueInRange(today, today) : null,
+    weekRev: paymentsAvailable ? revenueInRange(weekStart, today) : null,
+    monthRev: paymentsAvailable ? revenueInRange(monthStart, monthEnd) : null,
+    lastMonthRev: paymentsAvailable ? revenueInRange(lastMonthStart, lastMonthEnd) : null,
+    monthRefunds: paymentsAvailable ? refundsInRange(monthStart, monthEnd) : null,
+    lastMonthRefunds: paymentsAvailable ? refundsInRange(lastMonthStart, lastMonthEnd) : null,
+    monthRetainedRevenue: paymentsAvailable ? monthRetained.retained : null,
+    lastMonthRetainedRevenue: paymentsAvailable ? lastMonthRetained.retained : null,
+    monthRetainedCount: paymentsAvailable ? monthRetained.count : null,
+    lastMonthRetainedCount: paymentsAvailable ? lastMonthRetained.count : null,
+    revenueUnavailable: !paymentsAvailable,
+    _complete: false,
     monthOcc: totalRooms > 0 && monthDays > 0 ? Math.round(overlapNights(monthStart, getLocalDateKey(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 1), LOCAL_TIME_ZONE)) / (totalRooms * monthDays) * 100) : 0,
     lastMonthOcc: totalRooms > 0 && lastMonthDays > 0 ? Math.round(overlapNights(lastMonthStart, monthStart) / (totalRooms * lastMonthDays) * 100) : 0,
     currentOcc: bookings.filter((booking) => booking?.status === 'checked_in').length,

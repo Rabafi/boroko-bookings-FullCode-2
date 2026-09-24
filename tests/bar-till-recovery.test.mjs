@@ -125,9 +125,22 @@ test('Till wires draft precedence, hold intents, and receipt aids', () => {
 
 test('receipt renders tendering aids only when recorded', () => {
   const source = receipt()
-  assert.match(source, /order\?\.cash_received != null/)
-  assert.match(source, /order\?\.change_due != null/)
+  assert.match(source, /(order|safeOrder)\?\.cash_received != null/)
+  assert.match(source, /(order|safeOrder)\?\.change_due != null/)
   assert.match(source, /are never[\s\S]{0,30}back-filled/)
+})
+
+test('receipt keeps hooks unconditional so save cannot land on the recovery screen', () => {
+  const source = receipt()
+  const earlyReturn = source.indexOf('if (!order)')
+  const firstEffect = source.indexOf('useEffect(')
+  assert.ok(firstEffect !== -1, 'receipt must keep its auto-print effect')
+  assert.ok(earlyReturn === -1 || firstEffect < earlyReturn, 'no early return may sit above the first hook effect')
+  assert.match(source, /const safeOrder = order \|\| null/, 'receipt must derive null-safely before hooks run')
+  assert.match(source, /if \(!safeOrder\)/, 'cleared sales must render the empty state after hooks')
+  assert.match(source, /Array\.isArray\(rawItems\)/, 'non-array item payloads must not throw during render')
+  assert.match(source, /if \(saving\) return/, 'double-tap save must not re-enter the PDF flow')
+  assert.match(source, /result\?\.success === false && result\?\.error/, 'cancelled save dialog must not surface as a failure')
 })
 
 test('definitive replay refusals never block the Till; ambiguous ones still recover', () => {

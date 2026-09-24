@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useAccess, useSettings } from "../../app-context";
+import { canAccessCapability } from "../../../../shared/accessControl";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
 import {
   BAR_PACK_SIZES,
@@ -61,6 +62,7 @@ function MenuItemCard({
   barOnly,
   stockMethod,
   stockQty,
+  canEdit = true,
 }) {
   const packLabel =
     item.template_kind === "bar_pack" && item.template_pack_size
@@ -169,6 +171,8 @@ function MenuItemCard({
             type="button"
             aria-label={`Edit ${item.name}`}
             onClick={() => onEdit(item)}
+            disabled={!canEdit}
+            title={canEdit ? undefined : "Needs manager PIN"}
           >
             <Edit2 size={14} /> Edit
           </button>
@@ -273,6 +277,10 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
   const { settings } = useSettings();
   const access = useAccess();
   const barOnly = isBarOnlyMode(settings);
+  // Server enforces pos.menu_manage on every menu mutation (src/main/index.js).
+  // Gate Edit up front so staff without the capability see why instead of a
+  // late save error.
+  const canManageMenu = canAccessCapability(access, 'pos.menu_manage');
   const profile = useMemo(() => getBarModeProfile(settings), [settings]);
   const commercialFeatures = useMemo(
     () =>
@@ -641,7 +649,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
       return;
     }
     if (draft.stock_method === "recipe" && !recipesEnabled) {
-      setSaveError("Recipes are part of Stock & Purchasing Pro. Enable that add-on before using the recipe stock method.");
+      setSaveError("Recipes are Included with Stock add-on (Stock & Purchasing Pro). Enable that add-on before using the recipe stock method.");
       return;
     }
     if (draft.stock_method === "direct" && !draft.inventory_item_id) {
@@ -1091,6 +1099,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
               barOnly={barOnly}
               stockMethod={stockMethodFor(item)}
               stockQty={stockQtyFor(item)}
+              canEdit={canManageMenu}
             />
           ))}
         </section>
@@ -1274,8 +1283,8 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
                   {(recipesEnabled || draft.stock_method === "recipe") && (
                     <option value="recipe">
                       {recipesEnabled
-                        ? "Prepared food or cocktail — recipe required"
-                        : "Recipe method — Stock & Purchasing Pro required"}
+                        ? "Prepared food or cocktail — recipe required (Included with Stock add-on)"
+                        : "Recipe method — Included with Stock add-on (Stock & Purchasing Pro required)"}
                     </option>
                   )}
                   <option value="non_stock">Non-stock service — no inventory</option>

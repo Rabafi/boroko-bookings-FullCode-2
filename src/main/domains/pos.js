@@ -37,6 +37,7 @@ import {
 } from './posSubmitJournal.js'
 import { classifyAuthoritativeShiftClose } from './posShiftClose.js'
 import { getTrialStatus } from './entitlements.js'
+import { subscriptionAllowsAccess } from './subscriptionState.js'
 import { isCommercialFeatureIncluded } from '../../shared/commercialAccess.js'
 import { isBarOnlyMode } from '../../shared/propertyTypes.js'
 import { validateSaleModifierRequirements } from '../../shared/modifierRequirements.js'
@@ -157,6 +158,65 @@ async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [],
   }
 }
 
+// Fail-closed subscription gate for new sales. Expired, suspended,
+// cancelled, inactive, or offline-lease-expired licences must not sell:
+// the Till blocks the sale with a clear recovery message while read-only
+// reporting stays available. Trial/active/grace-period licences pass.
+export async function assertPosSubscriptionAllowsSale() {
+  const entitlement = await getTrialStatus(state.lodgeId).catch(() => null);
+  const subscriptionState = String(entitlement?.subscription_state || '').trim().toLowerCase();
+  const status = String(entitlement?.status || '').trim().toLowerCase();
+  const expiredFlag = entitlement?.expired === true;
+  if (!entitlement) {
+    const blocked = new Error('POS sales are blocked: subscription could not be verified (code subscription_unverified). Reconnect and retry; read-only reports remain available.');
+    blocked.code = 'subscription_unverified';
+    throw blocked;
+  }
+  let allows = false;
+  try {
+    allows = subscriptionAllowsAccess(subscriptionState);
+  } catch {
+    allows = ['active', 'grace_period', 'trial'].includes(subscriptionState);
+  }
+  // Trial licences without a subscription_state (status trial) still sell.
+  if (!subscriptionState && (status === 'trial' || status === 'licensed') && !expiredFlag) {
+    allows = true;
+  }
+  if (!allows || expiredFlag || status === 'expired') {
+    const label = subscriptionState || status || 'expired';
+    const blocked = new Error(`POS sales are blocked: subscription is ${label} (code subscription_expired). Renew the licence to resume selling. Read-only reports remain available.`);
+    blocked.code = 'subscription_expired';
+    throw blocked;
+  }
+}
+
+// Best-effort cache refresh after a committed financial write. A failed
+// refresh must never silently pass: log it, raise a health fault so the
+// operator health badge/toast surfaces it, and return a warning the caller
+// attaches to its result.
+export async function refreshPosCachesBestEffort(cacheKeys = [], context = 'pos-refresh') {
+  try {
+    await refreshCache(...cacheKeys);
+    return null;
+  } catch (refreshError) {
+    const message = refreshError?.message || String(refreshError || 'refresh failed');
+    try {
+      recordCriticalError(`pos.cache-refresh.${context}`, refreshError, { cache_keys: cacheKeys });
+    } catch { /* logging must never break the sale */ }
+    try {
+      appendHealthFault({
+        type: 'pos_cache_refresh_failed',
+        scope: Array.isArray(cacheKeys) ? cacheKeys.join(',') : String(cacheKeys),
+        message: `Showing last saved data — ${context} refresh failed: ${message}. Reopen the view to retry.`,
+        at: new Date().toISOString()
+      });
+    } catch { /* health fault must never break the sale */ }
+    try { broadcastSyncStatus(); } catch { /* ignore */ }
+    try { console.warn(`[POS] ${context} cache refresh failed:`, message); } catch { /* ignore */ }
+    return `Showing last saved data — ${context} refresh failed. Reopen the view to retry.`;
+  }
+}
+
 const POS_ATTENDANCE_CACHE = 'restaurant-shifts'
 const POS_CASHUP_SUBMISSION_CACHE = 'pos-cashup-submissions'
 
@@ -206,11 +266,52 @@ const MANAGER_MANAGE_UNLOCK_ROLES = Object.freeze(['manager', 'admin', 'super_ad
 // the trusted offline PIN cache so Manage/Till unlock keeps working offline.
 // Anything else (permission denied, RLS, validation, server PIN rejection in
 // result.success === false) is an authoritative answer and must fail closed.
-function isPosPinTransportFailure(error) {
+//
+// Tightened classifier: only true transport signals fall back. Server denials
+// (wrong PIN, permission denied, statement timeout wording, RLS/JWT, PIN
+// throttling) never trigger fallback, even when their wording contains
+// "timeout" or "connection".
+export function isPosPinTransportFailure(error) {
   if (!error) return false;
   if (error?.code === 'network_read_timeout') return true;
-  const message = String(error?.message || error || '');
-  return /fetch failed|failed to fetch|network|timeout|timed out|abort|aborted|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|connection|offline|load failed|temporarily unavailable/i.test(message);
+  const rawMessage = String(error?.message || error || '');
+  // Fail closed first: authoritative server answers must never look like
+  // transport failures, even when they mention timeout/connection words.
+  if (/permission denied|invalid pin|incorrect|unauthorized|row-level security|\brls\b|jwt|too many failed|statement timeout|canceling statement|cancelled statement|query.*timeout|57014|42501|PGRST|permission denied for function|invalid pin or unauthorized/i.test(rawMessage)) {
+    return false;
+  }
+  // Explicit HTTP status check: 0/408/502/503/504 are transport; any other
+  // 4xx/5xx is an authoritative server answer.
+  const statusCandidate = error?.status ?? error?.statusCode ?? error?.cause?.status;
+  const status = Number(statusCandidate);
+  if (Number.isFinite(status) && statusCandidate !== null && statusCandidate !== undefined && String(statusCandidate).trim() !== '') {
+    if (status === 0 || status === 408 || status === 502 || status === 503 || status === 504) return true;
+    if (status >= 400 && status < 600) return false;
+  }
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+  if (['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_CLOSED', 'ERR_INTERNET_DISCONNECTED', 'ERR_TIMED_OUT', 'ERR_ABORTED', 'FETCH_FAILED'].includes(code)) {
+    return true;
+  }
+  if (String(error?.name || '').toLowerCase() === 'aborterror') return true;
+  const causeMessage = String(error?.cause?.message || '');
+  if (causeMessage && /fetch failed|failed to fetch|enotfound|econnreset|econnrefused|etimedout/i.test(causeMessage)) {
+    return true;
+  }
+  const message = rawMessage.toLowerCase();
+  if (/fetch failed|failed to fetch|network request failed|networkerror|err_network|err_connection|err_internet_disconnected|\benotfound\b|\beconnreset\b|\beconnrefused\b|\betimedout\b|\beai_again\b|\benetunreach\b|\behostunreach\b/.test(message)) {
+    return true;
+  }
+  // Our own withNetworkTimeout waiter ("... timed out after 12000ms") and
+  // Node fetch timeouts are transport. Bare "timeout" alone is not enough
+  // because Postgres statement timeouts contain that word.
+  if (/timed out after \d+ms|timeout of \d+ms exceeded|network.*timed? ?out|fetch.*timed? ?out/i.test(rawMessage)) {
+    return true;
+  }
+  // Offline signals from the platform/probe path.
+  if (/\bnavi?gator\b.*\boffline\b|\boffline\b.*\bfetch\b|fetch.*\boffline\b|^offline$|\bnetwork is offline\b|\bno internet\b/i.test(rawMessage)) {
+    return true;
+  }
+  return false;
 }
 
 function resolveOfflineManageUnlock(staff, pin) {
@@ -573,6 +674,7 @@ function readPosHardwareSettings() {
     auto_print_receipts: current.auto_print_receipts === true,
     receipt_cut_enabled: current.receipt_cut_enabled !== false,
     cash_drawer_enabled: current.cash_drawer_enabled === true,
+    cash_drawer_manual: current.cash_drawer_manual === true,
     cash_drawer_command: current.cash_drawer_command || 'ESC/POS kick',
     cash_drawer_open_on_cash: current.cash_drawer_open_on_cash === true,
     cash_drawer_open_timing: current.cash_drawer_open_timing || 'after_payment',
@@ -609,6 +711,11 @@ function readPosHardwareSettings() {
     hardware_last_test_kind: String(current.hardware_last_test_kind || '').replace(/[\u0000-\u001f\u007f]/g, ''),
     hardware_last_test_success: current.hardware_last_test_success === true,
     customer_display_enabled: current.customer_display_enabled === true,
+    display_welcome_message: String(current.display_welcome_message || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 140),
+    display_customer_display_id: String(current.display_customer_display_id || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64),
+    display_bar_display_id: String(current.display_bar_display_id || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64),
+    display_kitchen_display_id: String(current.display_kitchen_display_id || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64),
+    display_customer_auto_open: current.display_customer_auto_open === true,
     updated_at: current.updated_at || null
   };
 }
@@ -1500,6 +1607,93 @@ export async function getMenuStockReadiness() {
   }
 }
 
+/**
+ * Unsent sales sitting in this computer's sync queue: own queued sales plus
+ * sales imported from the other till over mesh. Server-confirmed sales are
+ * never here — success removes queue rows — so every row below is still
+ * unconfirmed and the server counts may not include it yet. Deliveries
+ * received on either till but not yet confirmed add stock back the same way.
+ * Physical counts are point-in-time truths that reconcile at replay and stay
+ * out of this ledger.
+ *
+ * The Till subtracts this usage from its stock counts so two tills selling
+ * the last bottles fail closed early ("Finished") instead of
+ * over-selling. Voids/returns add stock back best-effort via the cached
+ * original order; when the order is not cached they reconcile at replay and
+ * the Pay-time server check remains the backstop.
+ */
+export function getUnconfirmedPosUsage() {
+  const usage = {};
+  let orderCount = 0;
+  let meshOrderCount = 0;
+  let meshDeliveryCount = 0;
+  const seenIntents = new Set();
+  const ordersById = new Map((readCache('pos-orders') || []).map((row) => [String(row?.id || ''), row]));
+  const menuByInventory = new Map();
+  for (const menu of readCache('pos-menu-items') || []) {
+    const inventoryId = String(menu?.inventory_item_id || '').trim();
+    if (!inventoryId) continue;
+    if (!menuByInventory.has(inventoryId)) menuByInventory.set(inventoryId, []);
+    menuByInventory.get(inventoryId).push(menu);
+  }
+  for (const item of readSyncQueue()) {
+    if (item?.type !== 'rpc') continue;
+    const table = String(item.table || '');
+    if (!['create_pos_order', 'create_pos_order_v3', 'create_pos_return_v3', 'approve_pos_void_with_pin', 'post_bar_simple_delivery'].includes(table)) continue;
+    const payload = item.data?.payload || item.data || {};
+    const payloadLodge = payload.lodge_id || payload.p_lodge_id || null;
+    if (payloadLodge && payloadLodge !== state.lodgeId) continue;
+    const intent = String(item.intentId || payload.operation_id || payload.p_operation_id || payload.id || payload.return_idempotency_key || item._queue_id || '').trim();
+    if (intent && seenIntents.has(intent)) continue;
+    if (intent) seenIntents.add(intent);
+    const addUsage = (menuItemId, units) => {
+      const id = String(menuItemId || '').trim();
+      if (!id || !Number.isFinite(units) || units === 0) return false;
+      usage[id] = (usage[id] || 0) + units;
+      return true;
+    };
+    let counted = false;
+    if (table === 'post_bar_simple_delivery') {
+      // Incoming stock in inventory units; every linked menu counts in the
+      // same units (the Till divides by depletion at sale time).
+      for (const line of Array.isArray(payload.p_lines) ? payload.p_lines : []) {
+        const incoming = Number(line?.quantity || 0);
+        if (!Number.isFinite(incoming) || incoming <= 0) continue;
+        for (const menu of menuByInventory.get(String(line?.item_id || '')) || []) {
+          if (addUsage(menu?.id, -incoming)) counted = true;
+        }
+      }
+    } else if (table === 'create_pos_order' || table === 'create_pos_order_v3') {
+      for (const line of Array.isArray(payload.items) ? payload.items : []) {
+        const perSale = Number(line?.depletion_qty);
+        if (addUsage(line?.menu_item_id, Number(line?.quantity || 0) * (Number.isFinite(perSale) && perSale > 0 ? perSale : 1))) counted = true;
+      }
+    } else {
+      // Returns and voids hand stock back: resolve their lines through the
+      // cached original order. Unknown orders reconcile at replay instead.
+      const order = ordersById.get(String(payload.order_id || ''));
+      const orderLines = Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : [];
+      const linesById = new Map(orderLines.map((line) => [String(line?.id || ''), line]));
+      const returned = table === 'create_pos_return_v3' && Array.isArray(payload.lines) ? payload.lines : orderLines.map((line) => ({ line_id: line?.id }));
+      for (const entry of returned) {
+        const original = linesById.get(String(entry?.line_id || ''));
+        if (!original) continue;
+        const qty = table === 'create_pos_return_v3' ? Math.abs(Number(entry?.quantity ?? original.quantity ?? 0)) : Number(original.quantity || 0);
+        const perSale = Number(original?.depletion_qty);
+        if (addUsage(original?.menu_item_id, -(qty * (Number.isFinite(perSale) && perSale > 0 ? perSale : 1)))) counted = true;
+      }
+    }
+    if (counted) {
+      orderCount += 1;
+      if (item._mesh_imported === true) {
+        meshOrderCount += 1;
+        if (table === 'post_bar_simple_delivery') meshDeliveryCount += 1;
+      }
+    }
+  }
+  return { usage, orderCount, meshOrderCount, meshDeliveryCount };
+}
+
 // outletFilter: null = all, [] = no access, [uuid1,...] = restrict to these outlet IDs
 async function fetchAllPosRows(buildQuery, pageSize = 1000) {
   const rows = [];
@@ -1987,6 +2181,9 @@ export async function createPosOrder(data) {
     const paymentBreakdown = normalizePaymentBreakdown(data.payment_breakdown || data.payments, data.payment_method || 'cash', total);
     const paymentMethod = data.payment_method || (paymentBreakdown.length > 1 ? 'split' : paymentBreakdown[0]?.method || 'cash');
     await enforceBarBaseTenderBoundary(data, paymentBreakdown, paymentMethod);
+    // Expired/trial-ended licences must not sell (fail closed with a clear
+    // code). Read-only reporting stays available; only new sales block.
+    await assertPosSubscriptionAllowsSale();
     validateProviderPaymentReferences(paymentBreakdown, paymentMethod);
     // Shared drawers reconcile every sale inside one open period: without it
     // the sale belongs to no review window. Fail closed here (before any
@@ -2611,7 +2808,8 @@ export async function approvePosVoidWithPin(payload) {
       _pending_sync: false,
       _sync_state: 'synced'
     });
-    await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {});
+    const voidRefreshWarning = await refreshPosCachesBestEffort(['pos-orders', 'inventory-items', 'inventory-purchases'], 'void');
+    if (voidRefreshWarning) return { ...result, refresh_warning: voidRefreshWarning };
     return result;
   } catch (error) {
     if (isNetworkError(error) && cachedOrder) {
@@ -2790,7 +2988,8 @@ export async function createPosPartialReturnWithPin(payload = {}) {
       _pending_sync: false,
       _sync_state: 'synced'
     });
-    await refreshCache('pos-orders', 'inventory-items', 'inventory-purchases').catch(() => {});
+    const returnRefreshWarning = await refreshPosCachesBestEffort(['pos-orders', 'inventory-items', 'inventory-purchases'], 'partial-return');
+    if (returnRefreshWarning) return { ...result, refresh_warning: returnRefreshWarning };
     return result;
   } catch (error) {
     if (isNetworkError(error)) return queuePendingReturn();
@@ -3072,7 +3271,8 @@ export async function createPosCashupSession(payload = {}) {
       _pending_sync: false,
       _sync_state: 'synced'
     });
-    await refreshCache('pos-orders').catch(() => {});
+    const cashupRefreshWarning = await refreshPosCachesBestEffort(['pos-orders'], 'cashup');
+    if (cashupRefreshWarning) return { success: true, id: saved.id, row: saved, refresh_warning: cashupRefreshWarning };
     return { success: true, id: saved.id, row: saved };
   }
 
@@ -5197,7 +5397,8 @@ export async function closePosShift(data = {}) {
       const closed = { ...(reconciled.shift || shift), status: 'closed', _server_closed: true };
       writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
       writeCache(closeAttemptCacheKey, (Array.isArray(closeAttempts) ? closeAttempts : []).filter((attempt) => attempt?.shift_id !== shift.id));
-      await refreshCache('pos-shifts').catch(() => {});
+      const reconciledRefreshWarning = await refreshPosCachesBestEffort(['pos-shifts'], 'shift-close-reconciled');
+      if (reconciledRefreshWarning) return { ...reconciled, shift: closed, resolved_authoritatively: true, refresh_warning: reconciledRefreshWarning };
       return { ...reconciled, shift: closed, resolved_authoritatively: true };
     }
 
@@ -5226,14 +5427,15 @@ export async function closePosShift(data = {}) {
         }
       });
     }
-    await refreshCache('pos-orders').catch(() => {});
+    const shiftCloseRefreshWarning = await refreshPosCachesBestEffort(['pos-orders'], 'shift-close');
     return {
       success: true,
       shift: closed,
       cashup_id: result.cashup_id || closeAttempt.cashup_id,
       expected_cash_drawer: result.expected_cash_drawer,
       variance_by_method: result.variance_by_method,
-      replayed: replayingExistingAttempt
+      replayed: replayingExistingAttempt,
+      ...(shiftCloseRefreshWarning ? { refresh_warning: shiftCloseRefreshWarning } : {})
     };
   } catch (e) {
     if (closeAttempt?.shift_id && state.supabase) {

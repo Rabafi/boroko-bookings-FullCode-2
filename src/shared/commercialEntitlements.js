@@ -230,7 +230,11 @@ export const COMMERCIAL_PACKAGE_CATALOG = Object.freeze({
       priceBwp: 4500,
       includedFeatures: BAR_POS_FEATURES,
       excludedFeatures: ['kitchen', 'tables', 'recipes', 'restaurant_production'],
-      upgradeTarget: 'restaurant_service',
+      // No higher Bar package exists: growth is via Bar add-ons (Stock &
+      // Purchasing Pro, Accounting & Workforce, Growth & Multi-Outlet). Pointing
+      // at restaurant_service would nudge to a package the bar_only filter
+      // hides and the quote RPC refuses.
+      upgradeTarget: null,
       eligibleOperatingProfiles: ['bar_only'],
       salesCopy: 'Counter sales with modifiers, open tabs and receipts; drink products, pack stock, low-stock alerts, cash-up, staff shifts, reports, Manager mobile oversight, customer display, and bar board.',
       compatibility: { hasUsageLimits: false }
@@ -316,6 +320,18 @@ export function getCommercialAddon(productId, addonKey) {
     return BAR_POS_ADDON_CATALOG.find((entry) => entry.addonKey === addonKey) || null
   }
   return null
+}
+
+/**
+ * Reverse lookup: which Bar POS add-on owns a commercial feature key?
+ * Returns the first catalog add-on whose includedFeatures contains the key,
+ * or null for base-package features. Used for small in-app "belongs to"
+ * signs so operators can tell at a glance which add-on unlocks a page.
+ */
+export function getBarAddonForFeature(featureKey) {
+  const key = String(featureKey || '').trim()
+  if (!key) return null
+  return BAR_POS_ADDON_CATALOG.find((addon) => Array.isArray(addon.includedFeatures) && addon.includedFeatures.includes(key)) || null
 }
 
 export function getCommercialAddonOffers(productId, propertyType = null) {

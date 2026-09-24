@@ -382,11 +382,12 @@ test('Manager bar operations withhold incomplete snapshot money', async () => {
   assert.match(operations, /snapshotReady \? money\(transaction\.total\) : 'Unavailable'/)
 })
 
-test('Bar stock counts refuse to derive audited adjustments from cached quantities', async () => {
+test('Bar stock counts queue offline from versioned baselines without inventing adjustments', async () => {
   const stock = await read('src/renderer/src/components/hospitality-pos/HposStock.jsx')
   assert.match(stock, /itemsRead.*complete: false/)
-  assert.match(stock, /stockAction\.mode === 'count' && !stockCountsReady/)
-  assert.match(stock, /cached quantity cannot be used to calculate an audited adjustment/)
+  assert.match(stock, /stockAction\.mode === 'count' && !stockCountsQueueable/)
+  assert.match(stock, /Nothing is saved without a known item baseline/)
+  assert.match(stock, /expected_updated_at/)
 })
 
 test('rejected menu availability changes do not mutate the local sold-out state', async () => {

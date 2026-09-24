@@ -22,9 +22,12 @@ test('shared shift-close combines clock in/out and staff cash-up with one name a
 })
 
 test('shared shift-close allows clock-out without cash-up only when no Till sales exist', () => {
-  assert.match(combined, /Clock out without cash-up/)
+  // Single-page simplification: no-Till clock-out is one plain Clock out
+  // button (no weird without-cash-up label on shared drawers).
+  assert.doesNotMatch(combined, /Clock out without cash-up/)
+  assert.match(combined, /No Till sales for/)
   assert.match(combined, /No open Till sales found/)
-  assert.match(combined, /clock out without a cash-up/)
+  assert.match(combined, /Just clock out/)
   // Till-shift cash-up stays mandatory while sales exist: clock-out is gated
   // on the submitted state, matching the server cash-up guard.
   assert.match(combined, /Submit cash-up first/)
@@ -86,15 +89,16 @@ test('the drawer card scrolls into view when it appears', () => {
   assert.match(combined, /clearTimeout/)
 })
 
-test('drawer lives on its own tab with its own operator PIN', () => {
-  // The drawer is a separate tab sharing the picked person: the header PIN
-  // serves clock-out + cash-up, while each drawer move is proven by an
-  // operator PIN entered on the drawer card itself — exactly two PIN fields,
-  // each labelled with what it proves.
-  assert.match(combined, /Shift & cash-up/)
-  assert.match(combined, /role="tablist"/)
-  assert.match(combined, /drawerTabAvailable/)
-  assert.match(combined, /setActiveTab\('drawer'\)/)
+test('drawer lives below on one page with its own operator PIN', () => {
+  // Single-page simplification: no tabs. The header PIN serves clock-out +
+  // cash-up, while each drawer move is proven by an operator PIN entered on
+  // the drawer card itself — exactly two PIN fields, each labelled.
+  assert.doesNotMatch(combined, /role="tablist"/)
+  assert.doesNotMatch(combined, /setActiveTab/)
+  assert.doesNotMatch(combined, /Shift & cash-up/)
+  assert.match(combined, /Single scrolling page/)
+  assert.match(combined, /No tabs/)
+  assert.match(combined, /drawerVisible/)
   // Exactly one PIN field per surface, each labelled with what it proves:
   // the header PIN serves clock-out + cash-up, the drawer card PIN serves
   // each money move.
@@ -102,4 +106,53 @@ test('drawer lives on its own tab with its own operator PIN', () => {
   assert.equal((drawerCard.match(/type="password"/g) || []).length, 1)
   assert.match(drawerCard, /Operator Staff PIN/)
   assert.match(combined, /drawer moves ask for the operator PIN on the drawer card itself/)
+})
+
+test('clock-out never hides behind supplementary content', () => {
+  // Regression for the offline report: submitting a cash-up hid the clock-out
+  // button behind the cash-movement / open-drawer card a few seconds later.
+  // Single page now: one clock-out action above, drawer card below, no tabs.
+  assert.match(combined, /Single action below/)
+  assert.match(combined, /can never hide the way/)
+  const clockOutBlock = combined.indexOf('Clock out')
+  assert.ok(clockOutBlock >= 0, 'clock-out buttons exist')
+  const drawerBlock = combined.indexOf('shared-shift-close-drawer-anchor')
+  assert.ok(drawerBlock >= 0, 'drawer anchor exists')
+  assert.ok(clockOutBlock < drawerBlock, 'clock-out renders above the drawer card')
+})
+
+test('cash model fails closed while the outlet is still loading', () => {
+  // Regression for the shared-outlet confusion: while outletCashModel is null
+  // the screen briefly offered a personal "Physical cash counted" form, so a
+  // shared-drawer bar entered till cash, submitted, and watched the screen
+  // flip to the drawer flow seconds later. Unknown models now show a loading
+  // notice with both actions disabled instead of guessing personal.
+  assert.match(combined, /Loading outlet cash model/)
+  assert.match(combined, /outletCashModel == null/)
+  assert.match(combined, /Loading outlet…/)
+  // Personal form renders only on a proven personal model, never on null.
+  assert.match(combined, /outletCashModel === 'personal_bank'/)
+})
+
+test('drawer card needs a proven shared model in both Till and no-Till states', () => {
+  // One flow per outlet: personal outlets must not grow a drawer card next to
+  // their cash-up, and multi-outlet bars pick the drawer outlet once above
+  // the clock-out.
+  assert.match(combined, /drawerOutletCashModel/)
+  assert.match(combined, /!\s*posShift && drawerOutletCashModel === 'shared_drawer'/)
+  assert.match(combined, /pick the drawer outlet once/)
+})
+
+test('clock-in scrolls to the drawer only when the drawer still needs opening', () => {
+  // Regression for the Brian report: clock-in yanked to Record movement even
+  // though the drawer period was already open. The scroll now needs a confirmed
+  // null period (no open/submitted/rejected period). An existing period or an
+  // unknown drawer read stays at clock-out; the drawer card stays visible
+  // below with no tabs to hunt.
+  assert.match(combined, /getDrawerPeriodState/)
+  assert.match(combined, /drawerPeriod === null/)
+  assert.match(combined, /showDrawerWithoutTill && drawerPeriod === null/)
+  assert.match(combined, /Unknown drawer state fails closed to clock-out/)
+  assert.match(combined, /drawerVisible/)
+  assert.match(combined, /no tabs to hunt/)
 })

@@ -20,6 +20,7 @@ const myShift = readFileSync('src/renderer/src/components/hospitality-pos/HposMy
 const myCashup = readFileSync('src/renderer/src/components/hospitality-pos/HposMyCashup.jsx', 'utf8')
 const multiOutlet = readFileSync('src/renderer/src/components/MultiOutletPos.jsx', 'utf8')
 const drawerRounds = readFileSync('src/renderer/src/utils/drawerPeriodSubmission.js', 'utf8')
+const settingsPage = readFileSync('src/renderer/src/components/Settings.jsx', 'utf8')
 
 test('drawer domain functions exist with offline-first branches', () => {
   for (const fn of [
@@ -220,16 +221,102 @@ test('cash-up review works offline from the device queue with provisional labell
   assert.match(posDomain, /queueOperation\('rpc', 'review_pos_cashup_submission_offline'/)
 })
 
-test('cash counting switch is reachable from cash and close without the multi-outlet add-on', () => {
+test('cash counting switch lives in Settings Outlets without the multi-outlet add-on', () => {
   // The outlet editor answers the same question, but it is feature-gated and
   // hides single outlets — unreachable for the single-outlet base bars that
-  // need it most. Cash & close is base and manager-gated, so it asks it here.
-  assert.match(cashClose, /setOutletCashModel/)
-  assert.match(cashClose, /How this outlet counts cash/)
-  assert.match(cashClose, /One shared drawer/)
-  assert.match(cashClose, /Separate pouches/)
-  assert.match(cashClose, /zero open Till shifts/)
-  assert.match(cashClose, /canSwitchCashModel/)
-  assert.match(cashClose, /Only an admin can switch it/)
-  assert.ok((cashClose.match(/await loadOutletCashModels\(\)/g) || []).length >= 2, 'a refused switch resyncs the dropdown to server truth')
+  // need it most. Settings → Outlets is base, so it asks it there; Cash &
+  // close links out instead of duplicating the switch.
+  assert.match(settingsPage, /setOutletCashModel/)
+  assert.match(settingsPage, /How this outlet counts cash/)
+  assert.match(settingsPage, /One shared drawer/)
+  assert.match(settingsPage, /Separate pouches/)
+  assert.match(settingsPage, /zero open Till shifts/)
+  assert.match(settingsPage, /canSwitchOutletCashModel/)
+  assert.match(settingsPage, /Only an admin can switch it/)
+  assert.ok((settingsPage.match(/await loadOutletSetup\(\)/g) || []).length >= 2, 'a refused switch resyncs the dropdown to server truth')
+  assert.match(cashClose, /Outlet setup now lives in Settings/)
+  assert.match(cashClose, /settings\?tab=outlets/)
+  assert.doesNotMatch(cashClose, /Switch cash counting/)
+  assert.ok(cashClose.indexOf('Shared drawer close') < cashClose.indexOf('Outlet setup moved'), 'Outlet setup sits below Drawer close')
+})
+
+test('cash and close keeps the page calm and decisions on the card', () => {
+  // No always-on storage jargon: proof failures speak loudly inside the proof
+  // box itself at failure time instead of warning on every visit.
+  assert.doesNotMatch(cashClose, /Private proof storage/)
+  // The date only drives the certified report, never the review list: it is
+  // labelled Report date and grouped with the report buttons.
+  assert.match(cashClose, /Report date/)
+  assert.match(cashClose, /aria-label="Daily report"/)
+  assert.doesNotMatch(cashClose, /Business date/)
+  // One proof box per card (no second copy in a separate decision section),
+  // and the decision form opens inside the same card that carries the numbers.
+  assert.match(cashClose, /const deciding = reviewDraft\?\.submission\?\.id === submission\.id/)
+  assert.equal((cashClose.match(/<HposCashupProofs/g) || []).length, 1)
+  assert.doesNotMatch(cashClose, /Manager decision/)
+  // Operator note reads first (above the figures), variance speaks Short/Over
+  // once on the badge (no second signed figure in the decision form), and a
+  // blocked Approve names its reason beside the button.
+  assert.ok(cashClose.indexOf('Operator note: {submission.notes}') < cashClose.indexOf('hpos-cashup-review-values'), 'operator note sits above the figures')
+  assert.match(cashClose, /Approval needs expected and counted cash/)
+})
+
+test('cash and close shows only the queues that match the venue', () => {
+  // Venue-aware queues: an all-drawer bar sees only Drawer close, an
+  // all-pouches bar sees only personal reviews. A queue hides only when no
+  // outlet uses its model AND nothing still waits in it.
+  assert.match(cashClose, /showPersonal/)
+  assert.match(cashClose, /showDrawer/)
+  assert.match(cashClose, /hasPersonalOutlets/)
+  assert.match(cashClose, /hasSharedOutlets/)
+  assert.match(cashClose, /olderPersonal/)
+  assert.match(cashClose, /olderDrawers/)
+  // Switch safety net, both directions: older items from before a model
+  // switch stay surfaced with an explicit label instead of hiding forever.
+  assert.match(cashClose, /Older personal cash-ups from before this venue switched/)
+  assert.match(cashClose, /still needs a decision/)
+  assert.match(cashClose, /Older drawer review/)
+  assert.match(cashClose, /but a drawer count from before the switch still needs a decision/)
+  // Adaptive copy: shared venues read drawer-first, personal venues read
+  // seller-first, and the summary names only visible queues.
+  assert.match(cashClose, /This venue counts one shared drawer/)
+  assert.match(cashClose, /Review the shared drawer count/)
+  assert.match(cashClose, /Review each seller's cash-up/)
+  assert.match(cashClose, /Drawer: \${drawers} waiting/)
+  assert.match(cashClose, /Personal: \${personal} waiting/)
+})
+
+test('drawer blind count is unmissable next to the words-only note', () => {
+  // Operator report: the 213 went into the note box because the count input
+  // wore the same styling. The count now uses the big-count treatment while
+  // the note box keeps plain styling, with a helper that says notes never count.
+  assert.match(drawerClose, /hpos-my-cashup-count/)
+  assert.match(drawerClose, /Physical cash counted/)
+  assert.match(drawerClose, /the note box below adds words only and never counts/)
+})
+
+test('cash and close explains empty reviews on shared outlets', () => {
+  // Lefika report: clock-out without Till sales creates no cash-up, so the
+  // pending list is correctly empty. The empty state must point shared bars
+  // to Drawer close below instead of looking like missing money.
+  assert.match(cashClose, /Clock-outs without Till sales create no cash-up/)
+  assert.match(cashClose, /Shared drawer reviews live below in Drawer close/)
+})
+
+test('cash and close has one money-reviews summary with jump links', () => {
+  // Simplify the page without merging money: one header counts personal
+  // awaiting + drawer awaiting (never a mixed total), with anchors to the
+  // two untouched sections below. Same RPCs, same review handlers.
+  assert.match(cashClose, /Money reviews/)
+  assert.match(cashClose, /personal · .*drawer/)
+  assert.match(cashClose, /counts never mix money/)
+  assert.match(cashClose, /money-reviews-personal/)
+  assert.match(cashClose, /money-reviews-drawer/)
+  assert.match(cashClose, /Go to personal/)
+  assert.match(cashClose, /Go to drawer/)
+  assert.match(cashClose, /drawerReviewCounts/)
+  assert.match(cashClose, /getDrawerPeriodState/)
+  // Single shared outlet skips the picker: one less control, same drawer.
+  assert.match(cashClose, /drawerOutlets\.length === 1/)
+  assert.match(cashClose, /Shared outlet:/)
 })

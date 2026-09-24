@@ -26,8 +26,15 @@ test('fresh basket input retires a stale sale error', () => {
       `stale error not cleared in ${marker}`,
     )
   }
-  assert.match(source, /if \(!window\.confirm\("Clear this sale\? All unpaid lines will be removed\."\)\) return;/)
-  const clearAt = source.indexOf('const clearCart = useCallback')
+  // Destructive confirms are in-app dialogs (styled, Escape-dismissible,
+  // SR-announced) — never window.confirm browser chrome. Title and message
+  // are separate ConfirmDialog props rather than one concatenated sentence.
+  assert.match(source, /setPendingConfirm\("clear"\)/)
+  assert.match(source, /title=\{pendingConfirm === "clear" \? "Clear this sale\?" :/)
+  assert.match(source, /"All unpaid lines will be removed\."/)
+  assert.doesNotMatch(source, /window\.confirm\("Clear this sale/)
+  const clearAt = source.indexOf('const applyClearCart = useCallback')
+  assert.ok(clearAt >= 0, 'applyClearCart must own the actual clear')
   assert.ok(source.slice(clearAt, clearAt + 320).includes('setSubmitError("")'))
   // addToCart clears first, then still reports a fresh stock block.
   const addAt = source.indexOf('const addToCart = useCallback')

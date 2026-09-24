@@ -6,6 +6,7 @@ import HorizontalScrollArea from './shared/HorizontalScrollArea'
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 import { ErrorNotice } from './shared/ErrorNotice'
+import { isArchivedOnlyStockItem } from '../../../shared/archivedStock'
 
 const CATEGORIES = ['Bar', 'Kitchen', 'Other']
 const UNITS = ['bottle', 'can', 'piece', 'roll', 'packet', 'pack', 'box', 'crate', 'tray', 'carton', 'case', 'kg', 'g', 'L', 'ml']
@@ -51,6 +52,8 @@ export default function Inventory() {
   const [tab, setTab] = useState('stock') // stock | purchases | movements | stocktake
 
   const [items, setItems] = useState([])
+  const [menuItems, setMenuItems] = useState([])
+  const [showArchived, setShowArchived] = useState(false)
   const [outlets, setOutlets] = useState([])
   const [catFilter, setCatFilter] = useState('all')
   const [stockFilter, setStockFilter] = useState('all')
@@ -173,8 +176,13 @@ export default function Inventory() {
     if (!silent) setLoading(true)
     setPageError('')
     try {
-      const data = await window.api.inventory.getItems()
+      const [data, menuData] = await Promise.all([
+        window.api.inventory.getItems(),
+        (window.api?.pos?.getMenuItems?.() ?? Promise.resolve([])).catch(() => []),
+      ])
       setItems(data || [])
+      // Fail-soft: the menu list only drives the archived-only clutter filter.
+      setMenuItems(Array.isArray(menuData) ? menuData : [])
     } catch (err) {
       setPageError(err?.message || 'Could not load inventory items right now.')
     } finally {
@@ -636,11 +644,15 @@ export default function Inventory() {
     }
   }
 
+  const archivedCount = useMemo(() => items.filter((i) => i.is_active !== false && isArchivedOnlyStockItem(i, menuItems)).length, [items, menuItems])
   const filtered = useMemo(() => {
     return [...items.filter((i) => {
       // Delisted stock (product deleted with no remaining references) stays
       // out of the operational list; movement history is preserved for audit.
+      // Archived-only stock (every linked product archived) is hidden by
+      // default with an opt-in toggle; rows and history stay for restore.
       if (i.is_active === false) return false
+      if (!showArchived && isArchivedOnlyStockItem(i, menuItems)) return false
       if (catFilter !== 'all' && i.category !== catFilter) return false
       if (fnbOutlet && String(i.outlet_id || '') !== String(fnbOutlet)) return false
       if (stockFilter === 'low') {
@@ -668,7 +680,7 @@ export default function Inventory() {
           return String(a.name || '').localeCompare(String(b.name || ''))
       }
     })
-  }, [catFilter, fnbOutlet, items, outletMap, sortBy])
+  }, [catFilter, fnbOutlet, items, menuItems, outletMap, showArchived, sortBy, stockFilter])
   const lowStockCount = items.filter((i) => i.current_stock <= i.reorder_level).length
   const fnbBackTo = fnbOutlet ? `/food-beverage/stock?outlet=${encodeURIComponent(fnbOutlet)}` : '/food-beverage/stock'
 
@@ -990,6 +1002,11 @@ export default function Inventory() {
                 <option value="all">All stock levels</option>
                 <option value="low">Low stock only</option>
               </select>
+              {archivedCount > 0 && (
+                <label className="ml-2 inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+                  <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived ({archivedCount})
+                </label>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <button onClick={() => openOpeningStock()} className="btn-secondary flex items-center gap-2 whitespace-nowrap">
@@ -1000,7 +1017,7 @@ export default function Inventory() {
               </button>
             </div>
           </div>
-          <div className="mb-4 text-xs text-slate-500">Category filters help isolate low-stock items faster during stock checks.</div>
+          <div className="mb-4 text-xs text-slate-500">Category filters help isolate low-stock items faster during stock checks. Stock linked only to archived products is hidden by default; tick Show archived to audit it.</div>
 
           <div className="bb-table-shell">
             {loading ? (

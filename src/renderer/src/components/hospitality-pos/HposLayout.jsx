@@ -24,14 +24,17 @@ import { canAccessCapability } from '../../../../shared/accessControl';
 import { getCommercialFeatureSet } from '../../../../shared/commercialAccess';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 import {
+  getBarAddonFeatureForPath,
   getHposDockItems,
   isBarOnlyBlockedPath,
   isManagerGatedPath,
   requiresManagePinForSearch,
   HPOS_MANAGER_PIN_UNLOCK_TIMEOUT_MS,
 } from '../../../../shared/barModeProfile';
+import { getBarAddonForFeature } from '../../../../shared/commercialEntitlements';
 import HposNav from './HposNav';
 import HposCommandPalette from './HposCommandPalette';
+import { BarAddonBadge } from './HposUi';
 
 const MANAGE_UNLOCK_STORAGE_KEY = 'hpos-manage-unlock-at';
 // Forgot-PIN help requests reuse the lodge support-ticket contract so they
@@ -73,6 +76,8 @@ const HPOS_SEARCH_ACTIONS = [
   { route: '/restaurant/control-workspace?tab=alerts', label: 'Operational alerts', group: 'Controls', keywords: 'exception low medium high severity resolve', capability: 'reports.view' },
   { route: '/restaurant/control-workspace?tab=feedback', label: 'Customer feedback', group: 'Controls', keywords: 'guest complaint rating follow up review', capability: 'pos.manage' },
   { route: '/restaurant/control-workspace?tab=policies', label: 'Guest policies', group: 'Controls', keywords: 'cancellation no show reservation policy', capability: 'pos.manage' },
+  { route: '/hpos/control', label: 'Bar checklists & incident log', group: 'Controls', keywords: 'opening closing safety checklist incident log compliance injury', capability: 'pos.manage' },
+  { route: '/hpos/control', label: 'Incident log', group: 'Controls', keywords: 'incident safety log compliance injury security follow up', capability: 'incident_log.view' },
   { route: '/restaurant/floor-workspace?tab=reservations', label: 'Reservation management', group: 'Service management', keywords: 'book table guest party future cancellation policy', capability: 'pos.manage', restaurantOnly: true },
   { route: '/hpos/floor', label: 'Floor plan', group: 'Service management', keywords: 'tables seating occupied available', capability: 'pos.view', restaurantOnly: true },
   { route: '/hpos/kitchen', label: 'Kitchen tickets', group: 'Service management', keywords: 'kitchen order prep ready station', capability: 'pos.view', restaurantOnly: true },
@@ -161,6 +166,11 @@ export default function HposLayout() {
   const [managePinError, setManagePinError] = useState('');
   const [managePinBusy, setManagePinBusy] = useState(false);
   const [pendingManageRoute, setPendingManageRoute] = useState(null);
+  // PIN dialog a11y: trap focus while open, close on Escape, and return
+  // focus to the opener on close. Refs are wired to the dialog/input below.
+  const managePinDialogRef = useRef(null);
+  const managePinInputRef = useRef(null);
+  const managePinReturnFocusRef = useRef(null);
   // Forgot-PIN help: files a support ticket Command Central already shows,
   // then polls the lodge inbox for the reply. The ticket — never the PIN —
   // is the recovery trail, so a manager locked out of Manage can still ask
@@ -317,6 +327,9 @@ export default function HposLayout() {
     [access, barOnly, role],
   );
   const currentPath = location.pathname;
+  const fullPathForAddon = currentPath + (location.search || '');
+  const currentAddonFeature = barOnly ? getBarAddonFeatureForPath(fullPathForAddon) : null;
+  const currentAddon = currentAddonFeature ? getBarAddonForFeature(currentAddonFeature) : null;
   const isPosRoute = POS_ROUTE_PREFIXES.some((prefix) =>
     currentPath.startsWith(prefix),
   );
@@ -389,6 +402,54 @@ export default function HposLayout() {
       setManagePinBusy(false);
     }
   }, [managePin, user, pendingManageRoute, closeManagePin, navigate]);
+
+  // PIN dialog a11y: Escape-to-close, focus trap, and return focus to the
+  // opener. Error/help status regions keep their alert/status live roles.
+  useEffect(() => {
+    if (!managePinOpen) return undefined;
+    managePinReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusTarget = managePinInputRef.current || managePinDialogRef.current;
+    const raf = requestAnimationFrame(() => { focusTarget?.focus?.(); });
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        if (!managePinBusy) {
+          event.preventDefault();
+          closeManagePin();
+        }
+        return;
+      }
+      if (event.key !== 'Tab' || !managePinDialogRef.current) return;
+      const focusable = Array.from(
+        managePinDialogRef.current.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((node) => node.offsetParent !== null || node === document.activeElement);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', handleKeyDown, true);
+      const returnTo = managePinReturnFocusRef.current;
+      managePinReturnFocusRef.current = null;
+      if (returnTo && typeof returnTo.focus === 'function') {
+        requestAnimationFrame(() => { try { returnTo.focus(); } catch {} });
+      }
+    };
+  }, [managePinOpen, managePinBusy, closeManagePin]);
 
   // Expire the Manage unlock on its timeout so the next visit re-prompts.
   useEffect(() => {
@@ -546,10 +607,10 @@ export default function HposLayout() {
     });
   }, [location.key, navigationType]);
 
-  useEffect(() => {
-    if (barOnly && isBarOnlyBlockedPath(currentPath, barFeatures))
-      navigate('/hpos/pos', { replace: true });
-  }, [barFeatures, barOnly, currentPath, navigate]);
+  // Bar-only blocked-path redirects have a single source: the
+  // BarOnlyBlockedRedirect guard in App.jsx (declarative <Navigate/> on the
+  // router location). An imperative navigate() here fought the guard with
+  // double redirects on the same navigation, so it was removed.
 
   const startOrder = useCallback(() => navigate('/hpos/pos'), [navigate]);
   const searchActions = useMemo(
@@ -699,26 +760,36 @@ export default function HposLayout() {
           className={`hpos-app-main ${isTillRoute ? 'is-pos' : ''}`}
         >
           {!isTillRoute && (
-            <nav className="hpos-history-nav" aria-label="Page history">
-              <button
-                type="button"
-                aria-label="Go to the previous page"
-                disabled={!historyAvailability.canGoBack}
-                onClick={() => window.history.back()}
-                title="Back"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <button
-                type="button"
-                aria-label="Go to the next page"
-                disabled={!historyAvailability.canGoForward}
-                onClick={() => window.history.forward()}
-                title="Forward"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </nav>
+            <div className="hpos-top-strip">
+              <nav className="hpos-history-nav" aria-label="Page history">
+                <button
+                  type="button"
+                  aria-label="Go to the previous page"
+                  disabled={!historyAvailability.canGoBack}
+                  onClick={() => window.history.back()}
+                  title="Back"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Go to the next page"
+                  disabled={!historyAvailability.canGoForward}
+                  onClick={() => window.history.forward()}
+                  title="Forward"
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </nav>
+              {currentAddon && (
+                <BarAddonBadge addonName={currentAddon.displayName} featureKey={currentAddonFeature} />
+              )}
+            </div>
+          )}
+          {isTillRoute && currentAddon && (
+            <div className="hpos-top-strip is-till">
+              <BarAddonBadge addonName={currentAddon.displayName} featureKey={currentAddonFeature} />
+            </div>
           )}
           {isRoot ? <Navigate to="/hpos/pos" replace /> : (isGatedManageRoute && !isManageUnlocked ? (
             <section className="hpos-manage-locked" aria-label="Manage locked" style={{ display: 'grid', placeItems: 'center', gap: '10px', maxWidth: '520px', margin: '48px auto', padding: '32px', textAlign: 'center', border: '1px solid rgba(55,70,57,.14)', borderRadius: '22px', background: '#fffdf8' }}>
@@ -761,9 +832,11 @@ export default function HposLayout() {
           }}
         >
           <section
+            ref={managePinDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="hpos-manage-pin-title"
+            tabIndex={-1}
             onMouseDown={(event) => event.stopPropagation()}
             style={{
               width: 'min(420px, 100%)',
@@ -793,10 +866,10 @@ export default function HposLayout() {
               <label style={{ display: 'grid', gap: '6px', color: '#4b4047', fontSize: '12px', fontWeight: 700 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}><ShieldCheck size={15} /> Manager PIN</span>
                 <input
+                  ref={managePinInputRef}
                   type="password"
                   inputMode="numeric"
                   autoComplete="off"
-                  autoFocus
                   value={managePin}
                   onChange={(event) => setManagePin(event.target.value.replace(/\D/g, '').slice(0, 6))}
                   disabled={managePinBusy}

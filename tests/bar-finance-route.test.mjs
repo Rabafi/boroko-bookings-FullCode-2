@@ -67,8 +67,11 @@ test('Bar expenses resolves to its own entitled page, not the broader Finance wo
   assert.match(layout, /route: barOnly \? ['"]\/hpos\/expenses['"] : ['"]\/restaurant\/finance-close\?tab=expenses['"]/)
   const expensesRoute = app.split('\n').find((line) => line.includes('path="hpos/expenses"'))
   assert.ok(expensesRoute)
+  // Single gate: the bar-only conditional wrapper is the only per-route gate.
+  // It renders the UpgradeWall internally for bar-only; a second nested
+  // UpgradeWall on the same line double-gated the same feature.
   assert.match(expensesRoute, /BarAddonFeatureRoute feature="expenses"/)
-  assert.match(expensesRoute, /UpgradeWall feature="expenses"/)
+  assert.doesNotMatch(expensesRoute, /UpgradeWall feature="expenses"/)
   // /hpos/expenses is itself add-on gated at the path level.
   assert.equal(getBarAddonFeatureForPath('/hpos/expenses'), 'expenses')
   assert.equal(isBarOnlyBlockedPath('/hpos/expenses', [...setOf('hospitality-pos', 'bar_pos', [], null)]), true)
@@ -119,9 +122,13 @@ test('Finance route and palette enforce capability separately from commercial in
   assert.equal(manager.capabilities['accounting.read'], true)
   assert.equal(cashier.capabilities['accounting.read'], false)
   // Blocked Finance redirects to an always-reachable Till home (no loop).
-  assert.match(layout, /if \(barOnly && isBarOnlyBlockedPath\(currentPath, barFeatures\)\)/)
-  assert.match(layout, /navigate\('\/hpos\/pos'/)
-  assert.equal(isBarOnlyBlockedPath('/hpos/pos', [...setOf('hospitality-pos', 'bar_pos', [], null)]), false)
+  // Single source is the App.jsx guard (declarative <Navigate/> on the router
+  // location); the HposLayout imperative navigate() double-redirect was
+  // removed so the two never fight on the same navigation.
+  assert.match(app, /function BarOnlyBlockedRedirect/)
+  assert.match(app, /useLocation\(\)/)
+  assert.doesNotMatch(app, /window\.location\.hash\.replace/)
+  assert.doesNotMatch(layout, /if \(barOnly && isBarOnlyBlockedPath\(currentPath, barFeatures\)\)/)
 })
 
 test('restaurant floor, kitchen, and production stay excluded from Bar mode', () => {

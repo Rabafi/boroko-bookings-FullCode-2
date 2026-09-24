@@ -95,7 +95,9 @@ const ALLOWED_RPC_TABLES = new Set([
   'open_pos_shift_with_id',
   'close_pos_shift_with_id',
   'create_pos_menu_item',
+  'create_pos_menu_item_offline',
   'update_pos_menu_item',
+  'update_pos_menu_item_offline',
   'delete_pos_menu_item',
   'set_bar_pos_pack_template',
   'update_pos_prep_ticket_status',
@@ -104,7 +106,17 @@ const ALLOWED_RPC_TABLES = new Set([
   'upsert_pos_floor_layout',
   'create_maintenance_ticket',
   'update_maintenance_ticket',
-  'resolve_maintenance_ticket'
+  'resolve_maintenance_ticket',
+  // Second wave (bar multi-till): every payload below was verified PIN-free.
+  // Anything carrying a staff, operator, or manager PIN stays off the mesh
+  // permanently: clock in/out, cash movements/counts/submits, cash-up and
+  // drawer reviews, and till-operator activation all carry raw PINs.
+  'open_pos_drawer_period',
+  'set_bar_pos_pack_template_offline',
+  'save_bar_pos_product_with_packs_offline',
+  'create_daily_checklist',
+  'create_bar_checklist_from_template',
+  'complete_checklist_item'
 ]);
 
 const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([
@@ -648,8 +660,74 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  // Offline menu writes carry the full item/update inline so a second till
+  // can sell the new price (or the new product) before the server confirms.
+  // Clock/attendance operations are deliberately never allowlisted: their
+  // payloads carry raw staff PINs, which must never travel between devices.
+  if (item.table === 'create_pos_menu_item_offline') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.name)) {
+      return { isValid: false, reason: 'create_pos_menu_item_offline missing lodge-scoped item' };
+    }
+  }
+
+  if (item.table === 'update_pos_menu_item_offline') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.menu_item_id)) {
+      return { isValid: false, reason: 'update_pos_menu_item_offline missing lodge or menu item' };
+    }
+  }
+
   if (item.table === 'update_pos_prep_ticket_status' && (!hasString(item.data.p_ticket_id) || !hasString(item.data.p_operation_id))) {
     return { isValid: false, reason: 'update_pos_prep_ticket_status missing ticket or operation id' };
+  }
+
+  if (item.table === 'open_pos_drawer_period') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.outlet_id)) {
+      return { isValid: false, reason: 'open_pos_drawer_period missing lodge or outlet' };
+    }
+    if ('pin' in payload || 'manager_pin' in payload) {
+      return { isValid: false, reason: 'open_pos_drawer_period must not carry PIN material' };
+    }
+  }
+
+  if (item.table === 'set_bar_pos_pack_template_offline') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.inventory_item_id)) {
+      return { isValid: false, reason: 'set_bar_pos_pack_template_offline missing lodge or stock item' };
+    }
+  }
+
+  if (item.table === 'save_bar_pos_product_with_packs_offline') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.name)) {
+      return { isValid: false, reason: 'save_bar_pos_product_with_packs_offline missing lodge-scoped product' };
+    }
+  }
+
+  if (item.table === 'create_daily_checklist') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.checklist_type)) {
+      return { isValid: false, reason: 'create_daily_checklist missing lodge or checklist type' };
+    }
+  }
+
+  if (item.table === 'create_bar_checklist_from_template') {
+    const payload = item.data.p_payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.template_key) || !hasString(payload.operation_id)) {
+      return { isValid: false, reason: 'create_bar_checklist_from_template missing lodge, template, or operation' };
+    }
+  }
+
+  if (item.table === 'complete_checklist_item') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.item_id)) {
+      return { isValid: false, reason: 'complete_checklist_item missing lodge or item' };
+    }
+    if (payload.notes != null && (typeof payload.notes !== 'string' || payload.notes.length > 1000)) {
+      return { isValid: false, reason: 'complete_checklist_item notes are limited to 1000 characters' };
+    }
   }
 
   if (item.table === 'update_pool_day_use') {
@@ -699,6 +777,374 @@ export function validateSyncQueueItem(item) {
   }
 
   return { isValid: true };
+}
+
+function stampMeshImported(row, item) {
+  return {
+    ...row,
+    _pending_sync: true,
+    _sync_state: 'pending',
+    _mesh_imported: true,
+    _mesh_source_node_id: item._mesh_source_node_id,
+    updated_at: row.updated_at || new Date().toISOString()
+  };
+}
+
+/**
+ * Tabs opened, settled, or handed to another waiter on the other till appear
+ * on this till's Open Tabs before the server confirms. Status changes reuse
+ * the offline trust root: uncertified totals, server prices at replay.
+ */
+function applyImportedTabCacheEffects(items = []) {
+  const tabs = readCache('pos-tabs');
+  if (!Array.isArray(tabs)) return;
+  let next = tabs;
+  let changed = false;
+  for (const item of items) {
+    if (item.table === 'upsert_pos_tab') {
+      const row = item.data?.payload;
+      if (!row || typeof row !== 'object' || !row.id) continue;
+      next = [stampMeshImported({ ...row }, item), ...next.filter((entry) => entry?.id !== row.id)];
+      changed = true;
+    } else if (item.table === 'update_pos_tab_status') {
+      const id = String(item.data?.p_tab_id || '');
+      const status = String(item.data?.p_status || '');
+      if (!id || !status) continue;
+      const index = next.findIndex((entry) => String(entry?.id) === id);
+      if (index < 0) continue;
+      const updated = [...next];
+      updated[index] = stampMeshImported({
+        ...updated[index], status, financial_complete: false, _financial_complete: false,
+        updated_at: new Date().toISOString()
+      }, item);
+      next = updated;
+      changed = true;
+    } else if (item.table === 'transfer_pos_tab_waiter') {
+      const id = String(item.data?.p_tab_id || '');
+      if (!id) continue;
+      const index = next.findIndex((entry) => String(entry?.id) === id);
+      if (index < 0) continue;
+      const updated = [...next];
+      updated[index] = stampMeshImported({
+        ...updated[index],
+        waiter_id: item.data.p_target_waiter_id || updated[index].waiter_id,
+        shift_id: item.data.p_target_shift_id || updated[index].shift_id,
+        updated_at: new Date().toISOString()
+      }, item);
+      next = updated;
+      changed = true;
+    }
+  }
+  if (changed) writeCache('pos-tabs', next);
+}
+
+/**
+ * Shift opens on the other till land in this till's shift cache, so
+ * in-shift staff and handover views stay complete through a long outage.
+ * Closes reconcile at replay; the server remains shift truth.
+ */
+function applyImportedShiftCacheEffects(items = []) {
+  const shifts = readCache('pos-shifts');
+  if (!Array.isArray(shifts)) return;
+  let next = shifts;
+  let changed = false;
+  for (const item of items) {
+    if (item.table === 'open_pos_shift_with_id') {
+      const payload = item.data?.payload || {};
+      const id = String(payload.shift_id || payload.id || '').trim();
+      if (!id) continue;
+      const row = stampMeshImported({
+        id,
+        lodge_id: payload.lodge_id || meshState.lodgeId,
+        outlet_id: payload.outlet_id || null,
+        cashier_id: payload.cashier_id || null,
+        cashier_name: payload.cashier_name || null,
+        opening_float: payload.opening_float ?? null,
+        notes: payload.notes || null,
+        attendance_shift_id: payload.attendance_shift_id || null,
+        status: 'open',
+        opened_at: new Date().toISOString()
+      }, item);
+      next = [row, ...next.filter((entry) => String(entry?.id) !== id)];
+      changed = true;
+    } else if (item.table === 'close_pos_shift_with_id') {
+      const payload = item.data?.payload || {};
+      const id = String(payload.shift_id || payload.id || '').trim();
+      if (!id) continue;
+      const index = next.findIndex((entry) => String(entry?.id) === id);
+      if (index < 0) continue;
+      const updated = [...next];
+      updated[index] = stampMeshImported({ ...updated[index], status: 'closed', closed_at: new Date().toISOString() }, item);
+      next = updated;
+      changed = true;
+    }
+  }
+  if (changed) writeCache('pos-shifts', next.slice(0, 500));
+}
+
+/**
+ * Menu writes from the other till update this till's selling list: price and
+ * availability changes merge by id, and brand-new offline products arrive as
+ * provisional rows (same trust root as own offline products: sellable
+ * offline at the entered price, replayed by name, blocked once fresh).
+ */
+function applyImportedMenuCacheEffects(items = []) {
+  const menu = readCache('pos-menu-items');
+  if (!Array.isArray(menu)) return;
+  let next = menu;
+  let changed = false;
+  for (const item of items) {
+    if (item.table === 'create_pos_menu_item' || item.table === 'create_pos_menu_item_offline') {
+      const row = item.data?.payload;
+      if (!row || typeof row !== 'object' || (!row.id && !row.name)) continue;
+      const id = row.id || `pending:${item._queue_id || Date.now()}`;
+      next = [stampMeshImported({ ...row, id }, item), ...next.filter((entry) => String(entry?.id) !== String(id))];
+      changed = true;
+    } else if (item.table === 'update_pos_menu_item' || item.table === 'update_pos_menu_item_offline') {
+      const data = item.data || {};
+      const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      const id = String(data.p_id || payload.menu_item_id || '').trim();
+      if (!id) continue;
+      const index = next.findIndex((entry) => String(entry?.id) === id);
+      if (index < 0) continue;
+      const patch = { ...(data.payload && typeof data.payload === 'object' ? data.payload : payload) };
+      delete patch.lodge_id;
+      delete patch.menu_item_id;
+      const updated = [...next];
+      updated[index] = stampMeshImported({ ...updated[index], ...patch }, item);
+      next = updated;
+      changed = true;
+    }
+  }
+  if (changed) writeCache('pos-menu-items', next);
+}
+
+/**
+ * Modifier groups and promotions arrive as full-list replaces (the queue
+ * payload already carries the whole list), mirroring the local save path.
+ */
+function applyImportedModifierPromotionEffects(items = []) {
+  for (const item of items) {
+    if (item.table === 'upsert_pos_modifier_groups' && Array.isArray(item.data?.payload?.groups)) {
+      writeCache('pos-modifier-groups', item.data.payload.groups.map((row) => stampMeshImported(row, item)).slice(0, 500));
+    } else if (item.table === 'upsert_pos_promotions' && Array.isArray(item.data?.payload?.promotions)) {
+      writeCache('pos-promotions', item.data.payload.promotions.map((row) => stampMeshImported(row, item)).slice(0, 500));
+    }
+  }
+}
+
+/**
+ * Deliveries received and counts taken on the other till adjust this till's
+ * stock cache the same way a local offline post would (minus the movement
+ * ledger rows, which stay device-local evidence and reconcile at replay).
+ */
+function applyImportedStockReceiptEffects(items = []) {
+  const inventory = readCache('inventory-items');
+  if (!Array.isArray(inventory) || inventory.length === 0) return;
+  let next = inventory;
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const item of items) {
+    const lines = Array.isArray(item.data?.p_lines) ? item.data.p_lines : [];
+    if (item.table === 'post_bar_simple_delivery') {
+      const byId = new Map(lines.map((line) => [String(line?.item_id || ''), Number(line?.quantity || 0)]));
+      next = next.map((row) => {
+        const incoming = byId.get(String(row?.id || ''));
+        if (!Number.isFinite(incoming) || incoming <= 0) return row;
+        changed = true;
+        return stampMeshImported({ ...row, current_stock: Number(row.current_stock || 0) + incoming, updated_at: now }, item);
+      });
+    } else if (item.table === 'post_bar_physical_count') {
+      const byId = new Map(lines.map((line) => [String(line?.item_id || ''), Number(line?.actual_qty)]));
+      next = next.map((row) => {
+        const counted = byId.get(String(row?.id || ''));
+        if (!Number.isFinite(counted) || counted < 0) return row;
+        changed = true;
+        return stampMeshImported({ ...row, current_stock: counted, updated_at: now }, item);
+      });
+    }
+  }
+  if (changed) writeCache('inventory-items', next);
+}
+
+/**
+ * A drawer opened on the other till appears here, so this till knows the
+ * drawer is open (no double-open) and its Till gate passes. Only the
+ * PIN-free open travels; drops, counts, submits, and reviews stay on their
+ * own till and reconcile at replay.
+ */
+function applyImportedDrawerOpenEffects(items = []) {
+  const periods = readCache('pos-drawer-periods');
+  if (!Array.isArray(periods)) return;
+  let next = periods;
+  let changed = false;
+  for (const item of items) {
+    if (item.table !== 'open_pos_drawer_period') continue;
+    const payload = item.data?.payload || {};
+    if (!payload.outlet_id) continue;
+    const id = String(item._queue_id || '').trim() || `mesh-drawer-${Date.now()}`;
+    if (next.some((entry) => String(entry?.id || '') === id || String(entry?._queue_id || '') === String(item._queue_id || ''))) continue;
+    next = [stampMeshImported({
+      id,
+      lodge_id: payload.lodge_id || meshState.lodgeId,
+      outlet_id: payload.outlet_id,
+      status: 'open',
+      opening_float: payload.opening_float ?? null,
+      notes: payload.notes || null,
+      opened_at: new Date().toISOString(),
+      _queue_id: item._queue_id || null
+    }, item), ...next];
+    changed = true;
+  }
+  if (changed) writeCache('pos-drawer-periods', next);
+}
+
+/**
+ * Pack templates and full products created on the other till land in the
+ * selling list using the same guarded builders as a local offline save:
+ * unknown linked stock means skip (never invent a price), otherwise the rows
+ * match the local shape exactly, including provisional marking.
+ */
+function applyImportedProductPackEffects(items = []) {
+  const menu = readCache('pos-menu-items');
+  const inventory = readCache('inventory-items') || [];
+  if (!Array.isArray(menu)) return;
+  let next = menu;
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const item of items) {
+    if (item.table === 'set_bar_pos_pack_template_offline') {
+      const payload = item.data?.payload || {};
+      const stock = inventory.find((row) => String(row?.id || '') === String(payload.inventory_item_id || ''));
+      if (!stock) continue;
+      const packSize = Number(payload.pack_size || 0);
+      if (![6, 12, 24].includes(packSize)) continue;
+      const menuItemId = String(payload.menu_item_id || `pending:${item._queue_id || 'pack'}`).trim();
+      const row = stampMeshImported({
+        id: menuItemId,
+        lodge_id: payload.lodge_id || meshState.lodgeId,
+        name: packSize === 24 ? `${stock.name} Case (24)` : `${stock.name} ${packSize} Pack`,
+        category: 'Drinks',
+        price: Number(stock.selling_price || 0) * packSize,
+        is_available: payload.enabled !== false,
+        barcode: payload.barcode || null,
+        inventory_item_id: stock.id,
+        depletion_qty: packSize,
+        outlet_id: stock.outlet_id || null,
+        template_kind: 'bar_pack',
+        template_pack_size: packSize,
+        updated_at: now
+      }, item);
+      next = [row, ...next.filter((entry) => String(entry?.id) !== menuItemId)];
+      changed = true;
+    } else if (item.table === 'save_bar_pos_product_with_packs_offline') {
+      const payload = item.data?.payload || {};
+      if (!payload.name) continue;
+      const stock = payload.inventory_item_id
+        ? inventory.find((row) => String(row?.id || '') === String(payload.inventory_item_id))
+        : null;
+      if (payload.inventory_item_id && !stock) continue;
+      const localId = String(payload.id || payload.menu_item_id || `pending:${item._queue_id || 'product'}`).trim();
+      const baseRow = stampMeshImported({
+        id: localId,
+        lodge_id: payload.lodge_id || meshState.lodgeId,
+        name: payload.name,
+        category: payload.category || 'Drinks',
+        price: Number(payload.price || 0),
+        is_available: payload.is_available !== false,
+        barcode: payload.barcode || null,
+        stock_method: payload.stock_method || 'direct',
+        inventory_item_id: payload.inventory_item_id || null,
+        depletion_qty: payload.depletion_qty || null,
+        outlet_id: payload.outlet_id || stock?.outlet_id || null,
+        updated_at: now
+      }, item);
+      const packRows = (Array.isArray(payload.packs) ? payload.packs : []).filter((pack) => pack?.enabled).map((pack) => {
+        const packSize = Number(pack.pack_size || 0);
+        return stampMeshImported({
+          id: String(pack.menu_item_id || `pending:${item._queue_id || 'pack'}-${packSize}`).trim(),
+          lodge_id: payload.lodge_id || meshState.lodgeId,
+          name: packSize === 24 ? `${payload.name} Case (24)` : `${payload.name} ${packSize} Pack`,
+          category: 'Drinks',
+          price: Number(stock?.selling_price || payload.price || 0) * packSize,
+          is_available: true,
+          barcode: pack.barcode || null,
+          inventory_item_id: payload.inventory_item_id || null,
+          depletion_qty: packSize,
+          outlet_id: payload.outlet_id || stock?.outlet_id || null,
+          template_kind: 'bar_pack',
+          template_pack_size: packSize,
+          updated_at: now
+        }, item);
+      });
+      const replaced = new Set([localId, ...packRows.map((row) => row.id)]);
+      next = [baseRow, ...packRows, ...next.filter((entry) => !replaced.has(String(entry?.id)))];
+      changed = true;
+    }
+  }
+  if (changed) writeCache('pos-menu-items', next);
+}
+
+/**
+ * Opening/closing routines stay visible across tills: created lists appear,
+ * and check-offs tick by item id (unknown ids are skipped, never invented).
+ */
+function applyImportedChecklistEffects(items = []) {
+  const lists = readCache('pos-checklists');
+  if (!Array.isArray(lists)) return;
+  let next = lists;
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const item of items) {
+    if (item.table === 'create_daily_checklist') {
+      const payload = item.data?.payload || {};
+      if (!payload.checklist_type) continue;
+      const id = `mesh-checklist-${String(item._queue_id || payload.checklist_type).trim()}`;
+      if (next.some((entry) => String(entry?.id || '') === id)) continue;
+      next = [stampMeshImported({
+        id,
+        lodge_id: payload.lodge_id || meshState.lodgeId,
+        checklist_type: payload.checklist_type,
+        items: (Array.isArray(payload.items) ? payload.items : []).map((label) => ({
+          id: `${id}:${String(label?.label || label || '').trim()}`,
+          item_label: String(label?.label || label || ''),
+          is_completed: false
+        })),
+        created_at: now
+      }, item), ...next];
+      changed = true;
+    } else if (item.table === 'create_bar_checklist_from_template') {
+      const payload = item.data?.p_payload || {};
+      if (!payload.template_key || !payload.operation_id) continue;
+      const id = `mesh-bar-checklist-${String(payload.operation_id).trim()}`;
+      if (next.some((entry) => String(entry?.id || '') === id)) continue;
+      next = [stampMeshImported({
+        id,
+        lodge_id: payload.lodge_id || meshState.lodgeId,
+        template_key: payload.template_key,
+        outlet_id: payload.outlet_id || null,
+        items: [],
+        created_at: now
+      }, item), ...next];
+      changed = true;
+    } else if (item.table === 'complete_checklist_item') {
+      const payload = item.data?.payload || {};
+      const target = String(payload.item_id || '');
+      if (!target) continue;
+      next = next.map((entry) => {
+        const lines = Array.isArray(entry?.items) ? entry.items : [];
+        if (!lines.some((line) => String(line?.id || '') === target)) return entry;
+        changed = true;
+        return stampMeshImported({
+          ...entry,
+          items: lines.map((line) => String(line?.id || '') === target
+            ? { ...line, is_completed: true, notes: payload.notes || line?.notes || null, _pending_sync: true }
+            : line)
+        }, item);
+      });
+    }
+  }
+  if (changed) writeCache('pos-checklists', next);
 }
 
 function applyImportedBookingCacheEffects(items = []) {
@@ -987,6 +1433,14 @@ export async function syncMeshQueues() {
           const mergedQueue = [...latestLocalQueue, ...deduplicatedNewItems];
           writeSyncQueue(mergedQueue);
           applyImportedPosInventoryEffects(deduplicatedNewItems);
+          applyImportedTabCacheEffects(deduplicatedNewItems);
+          applyImportedShiftCacheEffects(deduplicatedNewItems);
+          applyImportedMenuCacheEffects(deduplicatedNewItems);
+          applyImportedModifierPromotionEffects(deduplicatedNewItems);
+          applyImportedStockReceiptEffects(deduplicatedNewItems);
+          applyImportedDrawerOpenEffects(deduplicatedNewItems);
+          applyImportedProductPackEffects(deduplicatedNewItems);
+          applyImportedChecklistEffects(deduplicatedNewItems);
           applyImportedBookingCacheEffects(deduplicatedNewItems);
           applyImportedOperationalCacheEffects(deduplicatedNewItems);
           for (const importedItem of deduplicatedNewItems) {
@@ -1023,6 +1477,31 @@ export async function syncMeshQueues() {
       console.warn(`[MeshMerge] Queue sync iteration failed for Peer ${peerId}:`, err.message);
     }
   }
+
+  // Visible-only team state per peer (who is in shift, drawer cash
+  // movements/counts/periods, cash-up submissions). Sanitized at the source,
+  // validated again here, additive-only, and never replayed.
+  const teamPeers = [];
+  for (const [peerId, peer] of meshState.peers.entries()) {
+    try {
+      const snapshot = await sendSignedMeshRequest(peer.address, peer.httpPort, 'GET', '/mesh/state/team');
+      const { applyTeamStateSnapshot } = await import('./meshStateSync.js');
+      const outcome = applyTeamStateSnapshot(peer.nodeId || peerId, snapshot);
+      teamPeers.push({
+        nodeId: peer.nodeId || peerId,
+        address: peer.address,
+        added: outcome.added || {},
+        error: outcome.applied === false ? (outcome.reason || 'refused') : ''
+      });
+    } catch (err) {
+      teamPeers.push({ nodeId: peer.nodeId || peerId, address: peer.address, added: {}, error: err.message });
+    }
+  }
+  meshState.lastTeamSync = {
+    at: new Date().toISOString(),
+    peerCount: meshState.peers.size,
+    perPeer: teamPeers.slice(-12)
+  };
 
   meshState.lastQueueRepair = {
     at: new Date().toISOString(),

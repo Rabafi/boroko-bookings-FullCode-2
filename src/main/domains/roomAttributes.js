@@ -1,7 +1,6 @@
 import { state } from '../state.js';
 import {
   logActivity,
-  queueOperation,
   readCache,
   writeCache,
   dedupePromise
@@ -33,7 +32,10 @@ async function _getAll() {
 
 async function _create(payload) {
   if (!state.isOnline) {
-    return queueOperation('roomAttributes:create', payload);
+    // Fail closed: the legacy 'roomAttributes:create' queue type matched no
+    // replay branch, so offline edits were deleted while reporting success.
+    // Config RPCs carry no idempotency key, so queueing them risks duplicates.
+    throw new Error('Room attributes need an internet connection. Reconnect and save again.');
   }
   const { data, error } = await state.supabase.rpc('create_room_attribute', {
     p_lodge_id: state.lodgeId,
@@ -52,7 +54,7 @@ async function _create(payload) {
 
 async function _update(id, payload) {
   if (!state.isOnline) {
-    return queueOperation('roomAttributes:update', { id, ...payload });
+    throw new Error('Room attributes need an internet connection. Reconnect and save again.');
   }
   const { data, error } = await state.supabase.rpc('update_room_attribute', {
     p_id: id,
@@ -73,7 +75,7 @@ async function _update(id, payload) {
 
 async function _remove(id) {
   if (!state.isOnline) {
-    return queueOperation('roomAttributes:delete', { id });
+    throw new Error('Room attributes need an internet connection. Reconnect and delete again.');
   }
   const { data, error } = await state.supabase.rpc('delete_room_attribute', { p_id: id, p_lodge_id: state.lodgeId });
   if (error) throw error;

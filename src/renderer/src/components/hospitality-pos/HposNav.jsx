@@ -4,10 +4,11 @@ import { createPortal } from 'react-dom'
 import {
   Bell, Wifi, WifiOff, Clock, User, ChevronDown,
   RefreshCw, Plus, LogOut, Settings, ShieldCheck, Database, Search, Rows3,
-  BookOpen, ExternalLink, Download, Loader2, X, KeyRound
+  BookOpen, ExternalLink, Download, Loader2, X, KeyRound, Volume2, VolumeX
 } from 'lucide-react'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../../shared/uiVocabulary'
+import { isTillSoundEnabled, subscribeTillSound, toggleTillSound } from '../../../../shared/tillSound'
 import { productLogoColor } from '../../assets/productLogos'
 
 function SyncIndicator({ syncStatus, onOpenHealth }) {
@@ -60,11 +61,14 @@ function SyncIndicator({ syncStatus, onOpenHealth }) {
 
 function LiveClock() {
   const [time, setTime] = useState(new Date())
+  const [soundOn, setSoundOn] = useState(() => isTillSoundEnabled())
 
   useEffect(() => {
     const interval = setInterval(() => setTime(new Date()), 1000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => subscribeTillSound(setSoundOn), [])
 
   return (
     <div style={{
@@ -78,6 +82,29 @@ function LiveClock() {
     }}>
       <Clock size={13} />
       <span>{time.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · {time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
+      <button
+        type="button"
+        onClick={() => { toggleTillSound() }}
+        aria-pressed={soundOn}
+        aria-label={soundOn ? 'Turn till sound off' : 'Turn till sound on'}
+        title={soundOn ? 'Till sound on' : 'Till sound off (optional)'}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '32px',
+          height: '32px',
+          marginLeft: '2px',
+          borderRadius: '8px',
+          border: `1px solid ${soundOn ? 'rgba(201, 86, 53, 0.35)' : 'rgba(55,70,57,.14)'}`,
+          background: soundOn ? 'rgba(201, 86, 53, 0.12)' : 'transparent',
+          color: soundOn ? '#c95635' : '#7b7a70',
+          cursor: 'pointer',
+          transition: 'all 120ms ease'
+        }}
+      >
+        {soundOn ? <Volume2 size={15} /> : <VolumeX size={15} />}
+      </button>
     </div>
   )
 }

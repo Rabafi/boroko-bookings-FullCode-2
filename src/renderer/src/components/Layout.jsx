@@ -35,7 +35,7 @@ import {
   normalizeSubscriptionPlan,
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
-import { isBarOnlyMode, isHotelPropertyType } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isHotelPropertyType, isRestaurantOnly } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getCommercialPackageLabel, getCommercialPackagePlanNames } from '../../../shared/commercialPackages'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
@@ -669,7 +669,9 @@ export default function Layout() {
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   // Lodge product shell never switches into hotel bizType (motel is hotel-class
   // by property type but must stay lodge navigation without locked hotel rails).
-  const bizType = propertyType === 'restaurant'
+  // 'bar' reuses the restaurant rail: isRestaurantOnly covers restaurant+bar so
+  // a bar property never collapses to lodge navigation.
+  const bizType = isRestaurantOnly(propertyType)
     ? 'restaurant'
     : (IS_LODGE_PRODUCT ? 'lodge' : (isHotelPropertyType(propertyType) ? 'hotel' : 'lodge'))
   const vocab = getUiVocabulary({ settings, propertyType, productId: BUILD_PRODUCT.id })

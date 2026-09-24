@@ -171,3 +171,46 @@ for (const call of CORPORATE_MUTATOR_CALLS) {
     assert.ok(before.includes('crypto.randomUUID()'), `${call} must be preceded by crypto.randomUUID()`)
   })
 }
+
+// ── Lodge offline honesty: silent loss / silent zeros must fail visibly ────
+
+const roomAttributesSrc = readFileSync(resolve(ROOT, 'src/main/domains/roomAttributes.js'), 'utf8')
+const dayUseConfigSrc = readFileSync(resolve(ROOT, 'src/main/domains/dayUseConfig.js'), 'utf8')
+const reportsSrc = readFileSync(resolve(ROOT, 'src/main/domains/reports.js'), 'utf8')
+const reportsUi = readFileSync(resolve(ROOT, 'src/renderer/src/components/Reports.jsx'), 'utf8')
+
+test('roomAttributes never queues fake types that no replay branch handles', () => {
+  assert.ok(!roomAttributesSrc.includes("queueOperation('roomAttributes:"), 'fake queue types silently deleted as success')
+  assert.ok(!roomAttributesSrc.includes('queueOperation('), 'config RPCs carry no idempotency key; fail closed instead')
+})
+
+// Main-process domains import electron transitively, so plain-node runtime
+// imports fail here; pin the fail-closed contracts statically instead.
+test('roomAttributes fail closed offline with reconnect guidance', () => {
+  for (const fn of ['_create', '_update', '_remove']) {
+    const start = roomAttributesSrc.indexOf(`async function ${fn}(`)
+    assert.ok(start >= 0, `${fn} must exist`)
+    const body = roomAttributesSrc.slice(start, roomAttributesSrc.indexOf('\n}\n', start))
+    assert.ok(body.includes('!state.isOnline'), `${fn} must gate on offline`)
+    assert.ok(/throw new Error\('Room attributes need an internet connection/i.test(body), `${fn} must throw reconnect guidance`)
+  }
+})
+
+test('dayUseConfig offline save reports device-only persistence', () => {
+  assert.ok(dayUseConfigSrc.includes("persistence: 'device_only'"), 'offline save must report device-only persistence')
+  assert.ok(dayUseConfigSrc.includes('retryRequired'), 'operator must get a recovery step')
+  assert.ok(dayUseConfigSrc.includes('includeMeta'), 'meta envelope must be opt-in so cache rows stay clean')
+  const mainIndex = readFileSync(resolve(ROOT, 'src/main/index.js'), 'utf8')
+  assert.ok(mainIndex.includes("db.saveDayUseConfig(data, { includeMeta: true })"), 'IPC must request the meta envelope')
+})
+
+test('reports snapshot withholds revenue when the payments source is missing', () => {
+  assert.ok(reportsSrc.includes('paymentsAvailable'), 'snapshot must gate revenue on source presence')
+  assert.ok(reportsSrc.includes('monthRev: paymentsAvailable ?'), 'missing source must not report confirmed zero')
+  assert.ok(reportsSrc.includes('revenueUnavailable: !paymentsAvailable'), 'missing source must be flagged')
+})
+
+test('Reports.jsx renders withheld revenue as Unavailable, never 0', () => {
+  assert.ok(reportsUi.includes("value={summaryNetCash == null ? 'Unavailable'"), 'cash card must show Unavailable')
+  assert.ok(reportsUi.includes('snapshotRevenueMissing'), 'null snapshot revenue must stay unavailable')
+})

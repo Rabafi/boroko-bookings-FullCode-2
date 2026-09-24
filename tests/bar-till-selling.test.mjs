@@ -46,7 +46,9 @@ test('basket lines distinguish packs, highlight the last add, and offer Undo', (
   assert.match(source, /template_pack_size/)
   assert.match(source, /scrollIntoView\?\.?\(\{ block: "nearest" \}\)/)
   assert.match(source, /Removed \{lastRemoved\.line\.item_name\}/)
-  assert.match(source, /Clear this sale\? All unpaid lines will be removed\./)
+  // Confirm copy is split across the ConfirmDialog title and message props.
+  assert.match(source, /"Clear this sale\?"/)
+  assert.match(source, /"All unpaid lines will be removed\."/)
   assert.match(source, /prev\.some\(\(c\) => c\.id === line\.id\)/)
 })
 
@@ -65,15 +67,18 @@ test('Open Tabs keeps Resume distinct from Settle', () => {
   assert.match(source, /resumeIntent: true,\s*\n\s*settle: true,/)
   assert.match(source, /Resume tab →/)
   // Settle accepts an uncertified offline estimate (marked); the Till
-  // rebuilds the basket and the server prices at replay.
-  assert.match(source, /disabled=\{!canControl\(tab\) \|\| tabSettleValue\(tab\) === null\}/)
+  // rebuilds the basket and the server prices at replay. Settle also waits
+  // when the other till holds the tab (mesh tab hold).
+  assert.match(source, /disabled=\{!canControl\(tab\) \|\| tabSettleValue\(tab\) === null \|\| settlingTabIds\.has\(String\(tab\.id\)\)\}/)
+  assert.match(source, /Settling on the other till/)
   assert.match(source, /tabSettleEstimated/)
 })
 
 test('Till warns when the shared drawer has no open period', () => {
   const source = terminal()
-  // Guidance only, on the open-tabs pill cadence: the domain refuses at Pay,
-  // the pill never blocks. Personal outlets never show it.
+  // Guidance on the open-tabs pill cadence plus a fail-closed Pay button
+  // (with a visible reason); the domain still refuses at Pay regardless.
+  // Personal outlets never show it. Uncertain-attempt retries are exempt.
   assert.match(source, /drawerGateNeeded/)
   assert.match(source, /Drawer not open/)
   assert.match(source, /getDrawerPeriodState/)

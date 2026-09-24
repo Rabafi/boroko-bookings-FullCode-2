@@ -5,7 +5,7 @@ import { useFeatures } from '../contexts/FeaturesContext'
 import { useInbox } from '../contexts/InboxContext'
 import { addSupportTicketMessage, createSupportTicket, flushOfflineQueue, markSupportRequestRead } from '../lib/api'
 import { supabase } from '../lib/supabase'
-import { getPwaQueueHealth, getOfflineQueue, markPwaNotificationReadBySourceKey, publishPwaHealth, subscribeRuntimeEvent } from '../lib/runtime'
+import { clearPwaBlockedOperations, exportPwaOfflineQueue, getPwaQueueHealth, getPwaStorageHealth, getOfflineQueue, markPwaNotificationReadBySourceKey, publishPwaHealth, subscribeRuntimeEvent } from '../lib/runtime'
 import { shortDateTime, titleCase } from '../lib/format'
 import { buildSupportAuthorFromUser, normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 import { getFrontDeskNotificationSourceKey } from '../lib/frontDeskNotifications'
@@ -156,6 +156,7 @@ export default function Control() {
   const [sending, setSending] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [queueHealth, setQueueHealth] = useState(() => null)
+  const [storageHealth, setStorageHealth] = useState(() => null)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const acknowledgedMessagesRef = useRef(new Set())
@@ -202,6 +203,7 @@ export default function Control() {
       setLoadError('')
       const health = getPwaQueueHealth(user.lodge_id)
       setQueueHealth(health)
+      setStorageHealth(getPwaStorageHealth(user.lodge_id))
       const isOnline = typeof navigator !== 'undefined' && navigator.onLine !== false
       if (isOnline) {
         publishPwaHealth(user.lodge_id, supabase, health)
@@ -367,6 +369,51 @@ export default function Control() {
       showToast({
         title: 'Sync could not finish',
         message: error?.message || 'Please try again when the connection is stable.',
+        tone: 'error'
+      })
+    }
+  }
+
+  function exportQueue() {
+    try {
+      const exported = exportPwaOfflineQueue(user.lodge_id)
+      const blob = new Blob([exported.json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = exported.filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      showToast({
+        title: 'Queue exported',
+        message: `Saved ${exported.count} waiting item${exported.count === 1 ? '' : 's'} to a file. Send it to support before clearing.`,
+        tone: 'success'
+      })
+    } catch (error) {
+      showToast({
+        title: 'Export failed',
+        message: error?.message || 'Could not export the waiting queue.',
+        tone: 'error'
+      })
+    }
+  }
+
+  async function clearBlocked() {
+    if (!window.confirm('Remove blocked items that can never send? Export first if support needs them.')) return
+    try {
+      const result = clearPwaBlockedOperations(user.lodge_id)
+      load()
+      showToast({
+        title: 'Blocked items cleared',
+        message: result.removed > 0 ? `Removed ${result.removed} item${result.removed === 1 ? '' : 's'}.` : 'Nothing blocked to clear.',
+        tone: 'success'
+      })
+    } catch (error) {
+      showToast({
+        title: 'Clear failed',
+        message: error?.message || 'Could not clear blocked items.',
         tone: 'error'
       })
     }
@@ -590,6 +637,11 @@ export default function Control() {
                       : 'No saved messages waiting to send'}
                   </p>
                   <p className="mt-0.5 text-[10px] text-gray-600">this device only</p>
+                  {storageHealth?.warn && (
+                    <p className="mt-1 text-[11px] text-amber-300">
+                      Waiting list is getting large ({storageHealth.queueLength} items). Sync soon or export a copy.
+                    </p>
+                  )}
                 </div>
                 {queueHealth?.queueLength > 0 && (
                   <button
@@ -601,6 +653,26 @@ export default function Control() {
                   </button>
                 )}
               </div>
+              {queueHealth?.queueLength > 0 && (
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={exportQueue}
+                    className="rounded-xl border border-white/10 bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-200"
+                  >
+                    Export queue
+                  </button>
+                  {(queueHealth?.blockedCount || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearBlocked}
+                      className="rounded-xl border border-white/10 bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-200"
+                    >
+                      Clear blocked ({queueHealth.blockedCount})
+                    </button>
+                  )}
+                </div>
+              )}
             </section>
           </div>
         </>

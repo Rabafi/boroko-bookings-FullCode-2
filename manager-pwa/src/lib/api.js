@@ -6,6 +6,7 @@ import {
   appendIssueLog,
   createQueuedOperation,
   enqueueOfflineOperationVerified,
+  friendlyPwaQueueError,
   getOfflineQueue,
   readIssueLog,
   getRuntimeMeta,
@@ -881,7 +882,11 @@ async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }
     queueItem.payload = executionPayload
     // Write-ahead persistence is part of the support mutation contract. A
     // storage failure throws before the RPC is even attempted.
-    enqueueOfflineOperationVerified(lodgeId, queueItem)
+    try {
+      enqueueOfflineOperationVerified(lodgeId, queueItem)
+    } catch (error) {
+      throw friendlyPwaQueueError(error, label)
+    }
   }
   if (isOfflineMode()) {
     if (BLOCKED_PWA_MUTATION_TYPES.has(type)) {
@@ -895,7 +900,13 @@ async function queueOrRun({ lodgeId, type, label, payload, execute, optimistic }
       throw new Error(`${label} requires an internet connection and cannot be saved offline. Use Front Desk when back online.`)
     }
     if (optimistic) optimistic()
-    if (!supportOperation) enqueueOfflineOperationVerified(lodgeId, queueItem)
+    if (!supportOperation) {
+      try {
+        enqueueOfflineOperationVerified(lodgeId, queueItem)
+      } catch (error) {
+        throw friendlyPwaQueueError(error, label)
+      }
+    }
     return { success: true, queued: true, operation_id: operationId }
   }
   try {

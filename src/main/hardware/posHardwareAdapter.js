@@ -1,5 +1,6 @@
 import fs from 'fs'
 import net from 'net'
+import os from 'os'
 import { ECOSYSTEM_BRAND } from '../../shared/brandIdentity.js'
 
 const ESC = 0x1b
@@ -172,6 +173,7 @@ export function normalizePosHardwareSettings(settings = {}) {
     auto_print_receipts: toBool(settings.auto_print_receipts, false),
     receipt_cut_enabled: toBool(settings.receipt_cut_enabled, true),
     cash_drawer_enabled: toBool(settings.cash_drawer_enabled, false),
+    cash_drawer_manual: toBool(settings.cash_drawer_manual, false),
     cash_drawer_command: settings.cash_drawer_command || 'ESC/POS kick',
     cash_drawer_open_on_cash: toBool(settings.cash_drawer_open_on_cash, false),
     cash_drawer_open_timing: settings.cash_drawer_open_timing === 'before_receipt' ? 'before_receipt' : 'after_payment',
@@ -205,6 +207,11 @@ export function normalizePosHardwareSettings(settings = {}) {
     scanner_last_character_count: Number.isFinite(Number(settings.scanner_last_character_count)) ? Number(settings.scanner_last_character_count) : null,
     scanner_last_average_inter_key_ms: Number.isFinite(Number(settings.scanner_last_average_inter_key_ms)) ? Number(settings.scanner_last_average_inter_key_ms) : null,
     customer_display_enabled: toBool(settings.customer_display_enabled, false),
+    display_welcome_message: stripControl(settings.display_welcome_message).slice(0, 140),
+    display_customer_display_id: stripControl(settings.display_customer_display_id).slice(0, 64),
+    display_bar_display_id: stripControl(settings.display_bar_display_id).slice(0, 64),
+    display_kitchen_display_id: stripControl(settings.display_kitchen_display_id).slice(0, 64),
+    display_customer_auto_open: toBool(settings.display_customer_auto_open, false),
     updated_at: settings.updated_at || null
   }
 }
@@ -439,7 +446,7 @@ export async function printEscPosReceipt({ order = {}, business = {}, settings =
     return { success: false, error: 'Printing is blocked until the server-issued receipt number is available.' }
   }
   const normalized = normalizePosHardwareSettings(settings)
-  const drawerTiming = openDrawer && normalized.cash_drawer_enabled && isCashOrder(order)
+  const drawerTiming = openDrawer && normalized.cash_drawer_enabled && !normalized.cash_drawer_manual && isCashOrder(order)
     ? normalized.cash_drawer_open_timing
     : null
   const receipt = buildEscPosReceipt(order, business, normalized, {
@@ -497,6 +504,9 @@ export async function openCashDrawer(settings = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   if (!normalized.cash_drawer_enabled) {
     return { success: false, error: 'Cash drawer is not enabled in POS hardware settings.' }
+  }
+  if (normalized.cash_drawer_manual) {
+    return { success: false, error: 'This drawer is set to manual (key open) — no electronic kick is attempted.' }
   }
   const result = await sendRawEscPos(normalized, buildCashDrawerPulse(normalized))
   return result.success
@@ -612,4 +622,70 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
 
 function cryptoRandomId() {
   return `pos-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function localPrinterSubnet() {
+  const interfaces = os.networkInterfaces() || {};
+  for (const addresses of Object.values(interfaces)) {
+    for (const address of addresses || []) {
+      if (address?.family === 'IPv4' && address?.internal !== true && address?.address && address?.netmask === '255.255.255.0') {
+        const parts = String(address.address).split('.');
+        if (parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part))) {
+          return { base: parts.slice(0, 3).join('.'), self: address.address };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function probePrinterPort(host, port = DEFAULT_NETWORK_PORT, timeoutMs = 600) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (open) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch { /* best-effort close */ }
+      resolve(open);
+    };
+    const socket = net.createConnection({ host, port });
+    const guard = setTimeout(() => finish(false), timeoutMs + 250);
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => { clearTimeout(guard); finish(true); });
+    socket.once('error', () => { clearTimeout(guard); finish(false); });
+    socket.once('timeout', () => { clearTimeout(guard); finish(false); });
+  });
+}
+
+export async function scanNetworkPrinters({ port = DEFAULT_NETWORK_PORT, timeoutMs = 600, concurrency = 48 } = {}) {
+  // Connect-only probe: no bytes are ever sent, so tills, routers, and PCs
+  // answer (or refuse) without printing anything.
+  const targetPort = clampNumber(port, DEFAULT_NETWORK_PORT, 1, 65535);
+  const subnet = localPrinterSubnet();
+  if (!subnet) {
+    return { success: false, error: 'No bar network found on this computer. Connect to the bar WiFi or LAN first.' };
+  }
+  const hosts = [];
+  for (let last = 1; last <= 254; last += 1) {
+    const host = `${subnet.base}.${last}`;
+    if (host !== subnet.self) hosts.push(host);
+  }
+  const found = [];
+  const batchSize = Math.max(8, Math.min(64, Math.round(Number(concurrency) || 48)));
+  for (let index = 0; index < hosts.length; index += batchSize) {
+    const batch = hosts.slice(index, index + batchSize);
+    const results = await Promise.all(batch.map(async (host) => ({ host, open: await probePrinterPort(host, targetPort, timeoutMs) })));
+    for (const result of results) {
+      if (result.open) found.push({ host: result.host, port: targetPort });
+    }
+  }
+  return {
+    success: true,
+    subnet: `${subnet.base}.0/24`,
+    port: targetPort,
+    found,
+    message: found.length
+      ? `Found ${found.length} device${found.length === 1 ? '' : 's'} answering on printer port ${targetPort}. Print a test page before saving — only your till printer belongs here.`
+      : `No printers answered on ${subnet.base}.0/24 port ${targetPort}. Check the printer is on and on the same WiFi, then try again.`
+  };
 }

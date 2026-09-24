@@ -7,12 +7,14 @@ import {
   Download,
   FileSpreadsheet,
   LockKeyhole,
+  Printer,
   ReceiptText,
   RefreshCw,
   Search,
   TrendingUp,
   X,
 } from 'lucide-react';
+import { POSReceipt } from '../shared/POSReceipt';
 import { useAccess, useAuth, useSettings } from '../../app-context';
 import { unpackTransport } from '../../transportUnpack';
 import { canAccessCapability } from '../../../../shared/accessControl';
@@ -76,8 +78,10 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sortOrder, setSortOrder] = useState('newest');
   const [voidHistory, setVoidHistory] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [printOrder, setPrintOrder] = useState(null);
   const [voidPin, setVoidPin] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const [directStockDisposition, setDirectStockDisposition] = useState('return_to_stock');
@@ -213,16 +217,32 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       ),
     [orders, start, end],
   );
+  // Display-only ordering: the newest transaction leads by default. Sorting
+  // never touches money or classifications — metrics keep reading `rows`.
+  const orderRecency = (order) => {
+    const parsed = new Date(order.created_at || order.business_date || 0).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const orderSortTotal = (order) => {
+    const parsed = Number(order.total ?? order.total_amount ?? 0);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
   const visibleRows = useMemo(() => {
     const term = query.trim().toLowerCase();
-    return rows.filter((order) => {
+    const filtered = rows.filter((order) => {
       const classification = classifyPosTransaction(order);
       const status = classification === 'void' ? 'voided' : classification === 'failed/manual review' ? 'failed' : classification;
       const statusMatches = statusFilter === 'all' || status === statusFilter || (statusFilter === 'attention' && ['pending', 'failed', 'voided', 'cancelled'].includes(status));
       const textMatches = !term || `${order.receipt_number || ''} ${order.order_number || ''} ${transactionLabel(order)} ${order.table_name || ''} ${order.service_mode || ''} ${order.payment_method || ''}`.toLowerCase().includes(term);
       return statusMatches && textMatches;
     });
-  }, [query, rows, statusFilter]);
+    return [...filtered].sort((left, right) => {
+      if (sortOrder === 'highest') return orderSortTotal(right) - orderSortTotal(left);
+      if (sortOrder === 'lowest') return orderSortTotal(left) - orderSortTotal(right);
+      if (sortOrder === 'oldest') return orderRecency(left) - orderRecency(right);
+      return orderRecency(right) - orderRecency(left);
+    });
+  }, [query, rows, sortOrder, statusFilter]);
   const metrics = useMemo(() => {
     const truth = calculatePosFinancialTruth(rows, { dataset_complete: readCompleteness.complete });
     const completed = truth.rows.filter((o) => o.classification === 'sale');
@@ -378,6 +398,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const closeDetail = (force = false) => {
     if (voiding && !force) return;
     setSelectedOrder(null);
+    setPrintOrder(null);
     setVoidPin('');
     setVoidReason('');
     setDirectStockDisposition('return_to_stock');
@@ -575,22 +596,26 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         <div className="hpos-report-ledger-tools">
           <label><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={barOnly ? 'Search receipt, tab, operator or tender' : 'Search receipt, table, service or tender'} /></label>
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Transaction status"><option value="all">All statuses</option><option value="completed">Completed</option><option value="attention">Needs attention</option><option value="voided">Voided</option><option value="cancelled">Cancelled</option></select>
+          <select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)} aria-label="Receipt order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="highest">Highest total</option><option value="lowest">Lowest total</option></select>
         </div>
-        <div className="hpos-report-ledger-head" aria-hidden="true"><span>Receipt</span><span>Date</span><span>Type</span><span>Service</span><span>Tender</span><span>Status</span><span>Total</span></div>
+        <div className="hpos-report-ledger-head hpos-report-ledger-head--with-action" aria-hidden="true"><span>Receipt</span><span>Date</span><span>Type</span><span>Service</span><span>Tender</span><span>Status</span><span>Total</span><span></span></div>
         {visibleRows.map((order) => (
-          <button key={order.id} type="button" className="hpos-report-ledger-row hpos-report-ledger-row--typed" onClick={() => { setSelectedOrder(order); setVoidError(''); }} aria-label={`Open receipt ${receiptLabel(order)}`}>
-            <strong>
-              {receiptLabel(order)}
-            </strong>
-            <span>{orderDate(order) || '—'}</span>
-            <span>{transactionLabel(order)}</span>
-            <span>{order.table_name || order.service_mode || 'Counter'}</span>
-            <span>{tenderReady ? (posTenderRows(order).map((tender) => `${tender.method}: ${money(tender.amount, currency)}`).join(' · ') || 'Tender unavailable') : 'Unavailable'}</span>
-            <span className={`hpos-transaction-status is-${statusTone(order)}`}>
-              {statusLabel(order)}
-            </span>
-            <strong>{financialReady && hasRecordedMoney(order.total ?? order.total_amount) ? money(order.total ?? order.total_amount, currency) : 'Unavailable'}</strong>
-          </button>
+          <div key={order.id} className="hpos-report-ledger-row hpos-report-ledger-row--typed hpos-report-ledger-row--with-action">
+            <button type="button" className="hpos-report-ledger-row-open" onClick={() => { setSelectedOrder(order); setPrintOrder(null); setVoidError(''); }} aria-label={`Open receipt ${receiptLabel(order)}`}>
+              <strong>
+                {receiptLabel(order)}
+              </strong>
+              <span>{orderDate(order) || '—'}</span>
+              <span>{transactionLabel(order)}</span>
+              <span>{order.table_name || order.service_mode || 'Counter'}</span>
+              <span>{tenderReady ? (posTenderRows(order).map((tender) => `${tender.method}: ${money(tender.amount, currency)}`).join(' · ') || 'Tender unavailable') : 'Unavailable'}</span>
+              <span className={`hpos-transaction-status is-${statusTone(order)}`}>
+                {statusLabel(order)}
+              </span>
+              <strong>{financialReady && hasRecordedMoney(order.total ?? order.total_amount) ? money(order.total ?? order.total_amount, currency) : 'Unavailable'}</strong>
+            </button>
+            <button type="button" className="hpos-report-ledger-row-print" onClick={() => setPrintOrder(order)} aria-label={`Print receipt ${receiptLabel(order)}`}><Printer size={16} /></button>
+          </div>
         ))}
         {!loading && visibleRows.length === 0 && (
           <p className="hpos-ledger-empty">No orders match this period and filter.</p>
@@ -602,7 +627,10 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
           <div>
             <header>
               <div><p className="hpos-eyebrow">Receipt & audit trail</p><h2>{receiptLabel(selectedOrder)}</h2><p>{orderLabel(selectedOrder)} · {transactionLabel(selectedOrder)}</p></div>
-              <button type="button" onClick={closeDetail} disabled={voiding} aria-label="Close receipt details"><X size={20} /></button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="button" onClick={() => setPrintOrder(selectedOrder)} disabled={voiding} aria-label="Print receipt"><Printer size={20} /></button>
+                <button type="button" onClick={closeDetail} disabled={voiding} aria-label="Close receipt details"><X size={20} /></button>
+              </div>
             </header>
             <div className="hpos-money-kpis">
               <div className="hpos-money-kpi"><small>Tender</small><strong>{tenderLabel(selectedOrder)}</strong></div>
@@ -632,6 +660,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
           </section>
         </div>
       )}
+      {printOrder && <POSReceipt order={printOrder} onClose={() => setPrintOrder(null)} />}
     </div>
   );
 }

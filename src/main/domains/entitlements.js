@@ -488,45 +488,19 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
       };
     }
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) {
-      console.warn('[ENTITLEMENT] activation RPC failed, trying legacy fallback:', error.message);
+    if (isMissingEntitlementRpcError(error)) {
+      throw new Error('License activation requires the latest database migration. Apply pending Supabase migrations, then retry activation through the commercial quote path.');
     }
+    // Authoritative RPC denials (unknown key, deactivated, ineligible,
+    // wrong tenant) are final: never fall through to a direct table write.
+    throw error instanceof Error ? error : new Error(String(error?.message || 'Activation failed'));
   }
 
-  const { data: license, error } = await state.supabase.
-  from('licenses').
-  select('*').
-  eq('license_key', key).
-  maybeSingle();
-
-  if (error) throw new Error(error.message);
-  if (!license) throw new Error('License key not found. Please check and try again.');
-  if (!license.is_active) throw new Error('This license key has been deactivated.');
-  if (String(license.payment_status || '').toLowerCase() === 'cancelled') {
-    throw new Error('This license key has been cancelled.');
-  }
-  if (license.lodge_id && license.lodge_id !== 'unassigned' && license.lodge_id !== lodgeId) {
-    throw new Error('This license key is already registered to another installation.');
-  }
-  if (license.expires_at && new Date(license.expires_at) < new Date()) {
-    throw new Error('This license key has expired.');
-  }
-
-  const { error: updateError } = await state.supabase.
-  from('licenses').
-  update({ lodge_id: lodgeId }).
-  eq('id', license.id);
-
-  if (updateError) throw new Error(updateError.message);
-
-  const overrides = await getLegacyFeatureOverrides(lodgeId).catch(() => []);
-  const entitlement = buildLicensedEntitlement({ ...license, lodge_id: lodgeId }, overrides);
-  _entitlementCache.delete(lodgeId);
-  cacheEntitlement(lodgeId, entitlement);
-  return {
-    success: true,
-    plan: entitlement.plan || 'Starter',
-    expires_at: entitlement.expires_at,
-    lodge_name: entitlement.lodge_name
-  };
+  // Closed null-package shortcut: direct licenses-table activation bypassed
+  // the commercial quote boundary (package/AddOn eligibility, catalogue
+  // snapshot, audit). All activations must route through the authoritative
+  // activate_license_key RPC / commercial quote path above. Reaching here
+  // means the RPC returned no usable entitlement, so fail closed instead of
+  // writing the licence row directly.
+  throw new Error('License activation requires a commercial quote. Apply the latest database migrations and retry via Command Central activation (quote path).');
 }

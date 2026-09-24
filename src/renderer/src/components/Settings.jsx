@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router'
-import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor } from 'lucide-react'
+import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor, Store } from 'lucide-react'
 import { useAccess, useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { ErrorNotice } from './shared/ErrorNotice'
@@ -996,9 +996,64 @@ export default function Settings() {
 
   const tabs = [
     { id: 'general', label: 'General', icon: <SettingsIcon size={14} /> },
+    { id: 'outlets', label: 'Outlets', icon: <Store size={14} /> },
     { id: 'license', label: 'Subscription & Access', icon: <CreditCard size={14} /> },
     { id: 'system', label: 'System Health', icon: <ShieldCheck size={14} /> },
   ]
+  // Outlet setup (moved from Cash & close): outlet picker + cash counting
+  // switch. Base feature, no multi-outlet add-on needed. The server still
+  // enforces admin-only + zero open activity; this surface only asks the
+  // question and reports the authoritative answer.
+  const [outletSetupOutlets, setOutletSetupOutlets] = useState([])
+  const [outletSetupOutletId, setOutletSetupOutletId] = useState('')
+  const [outletSetupChoice, setOutletSetupChoice] = useState('shared_drawer')
+  const [outletSetupBusy, setOutletSetupBusy] = useState(false)
+  const [outletSetupError, setOutletSetupError] = useState('')
+  const [outletSetupNotice, setOutletSetupNotice] = useState('')
+  const outletSetupRole = String(access?.role || '').toLowerCase()
+  const canSwitchOutletCashModel = ['admin', 'super_admin'].includes(outletSetupRole)
+  const loadOutletSetup = async () => {
+    try {
+      const rows = await window.api?.outlets?.getAll?.()
+      const all = Array.isArray(rows) ? rows : []
+      setOutletSetupOutlets(all)
+      setOutletSetupOutletId((current) => (current && all.some((row) => row.id === current) ? current : all[0]?.id || ''))
+    } catch {
+      setOutletSetupOutlets([])
+    }
+  }
+  useEffect(() => { if (activeTab === 'outlets') loadOutletSetup() }, [activeTab])
+  useEffect(() => {
+    const found = outletSetupOutlets.find((row) => row.id === outletSetupOutletId)
+    setOutletSetupChoice(found?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank')
+  }, [outletSetupOutlets, outletSetupOutletId])
+  const switchOutletCashModel = async () => {
+    const outlet = outletSetupOutlets.find((row) => row.id === outletSetupOutletId)
+    if (!outlet || outletSetupBusy) return
+    const current = outlet.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
+    const wanted = outletSetupChoice === 'shared_drawer' ? 'one shared drawer' : 'separate pouches'
+    if (current === outletSetupChoice) {
+      setOutletSetupNotice(`${outlet.name || 'This outlet'} already counts ${wanted}.`)
+      return
+    }
+    if (!window.confirm(`Switch ${outlet.name || 'this outlet'} to ${wanted}? Switching needs zero open Till shifts, drawer periods and reviews in the outlet — close or review them first.`)) return
+    setOutletSetupBusy(true)
+    setOutletSetupError('')
+    setOutletSetupNotice('')
+    try {
+      const result = await window.api?.pos?.setOutletCashModel?.(outlet.id, outletSetupChoice)
+      if (!result?.success) throw new Error(result?.error || 'The cash counting model could not be changed.')
+      setOutletSetupNotice(`${outlet.name || 'Outlet'} now counts ${wanted}. Open the drawer in Staff shift close before trading.`)
+      await loadOutletSetup()
+    } catch (switchError) {
+      setOutletSetupError(switchError?.message || 'The cash counting model could not be changed.')
+      // Resync the dropdown to the authoritative model: a refused switch must
+      // never leave the control displaying the unapplied choice as truth.
+      await loadOutletSetup()
+    } finally {
+      setOutletSetupBusy(false)
+    }
+  }
 
   const tabLoader = (
     <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500 shadow-sm">
@@ -2147,6 +2202,35 @@ export default function Settings() {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════
+          OUTLETS TAB (moved from Cash & close)
+          ════════════════════════════════════════════════════════════════ */}
+      {activeTab === 'outlets' && (
+        <div className="bg-white rounded-xl shadow-sm p-5 mb-6">
+          <div className="mb-4"><p className="hpos-eyebrow">Outlet setup</p><h2 className="text-xl font-bold text-gray-800">How this outlet counts cash</h2><p className="text-sm text-gray-500">One shared drawer counts once per period; separate pouches keep a personal cash-up per seller. Switching needs an admin and zero open Till shifts, drawer periods or reviews.</p></div>
+          {outletSetupError && <ErrorNotice>{outletSetupError}</ErrorNotice>}
+          {outletSetupNotice && <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700">{outletSetupNotice}</div>}
+          {outletSetupOutlets.length === 0 ? (
+            <p className="text-sm text-gray-500">No outlets found. Create one in Outlet control first.</p>
+          ) : (
+            <>
+              <label className="hpos-outlet-editor__field">Outlet<select value={outletSetupOutletId} onChange={(event) => setOutletSetupOutletId(event.target.value)} disabled={outletSetupBusy}>{outletSetupOutlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}</select></label>
+              {canSwitchOutletCashModel ? (
+                <>
+                  <label className="hpos-outlet-editor__field">Cash counting<select value={outletSetupChoice} onChange={(event) => setOutletSetupChoice(event.target.value)} disabled={outletSetupBusy}><option value="shared_drawer">One shared drawer</option><option value="personal_bank">Separate pouches</option></select></label>
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={switchOutletCashModel} disabled={outletSetupBusy} className="hpos-primary-action">{outletSetupBusy ? 'Switching…' : 'Switch cash counting'}</button>
+                    <button type="button" onClick={() => { window.location.hash = '/restaurant/outlet-control' }} className="bb-btn-outline">Open full Outlet control</button>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">Currently counting {(() => { const found = outletSetupOutlets.find((row) => row.id === outletSetupOutletId); return found?.cash_model === 'shared_drawer' ? 'one shared drawer' : 'separate pouches'; })()}. Only an admin can switch it — ask an admin to open this page.</div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {/* ════════════════════════════════════════════════════════════════════

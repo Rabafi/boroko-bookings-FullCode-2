@@ -693,10 +693,15 @@ export default function Reports() {
   ), [end, reportBookings, start])
   const summaryOutstanding = Number(summarySnapshot?.unpaidTotal ?? revenue?.outstanding_amount ?? collectionQueue.reduce((sum, booking) => sum + Number(booking.outstanding_balance || 0), 0))
   const summaryOutstandingCount = Number(summarySnapshot?.unpaidCount ?? (Number(revenue?.unpaid_count || 0) + Number(revenue?.partial_count || 0) || collectionQueue.length))
-  const summaryNetCash = Number(summarySnapshot?.monthRev ?? revenue?.paid_revenue ?? 0)
-  const summaryRefunds = Number(summarySnapshot?.monthRefunds ?? revenue?.refunds_issued ?? 0)
-  const summaryRetained = Number(summarySnapshot?.monthRetainedRevenue ?? revenue?.retained_revenue ?? 0)
-  const summaryGrossCash = summaryNetCash + summaryRefunds
+  // The local snapshot withholds revenue as null when its payments source is
+  // missing (never a cache). Null must stay "Unavailable", never become 0.
+  const snapshotRevenueMissing = summarySnapshot?.revenueUnavailable === true
+    || (summarySnapshot && summarySnapshot.source !== 'server'
+      && (summarySnapshot.monthRev == null || summarySnapshot.monthRefunds == null))
+  const summaryNetCash = snapshotRevenueMissing ? null : Number(summarySnapshot?.monthRev ?? revenue?.paid_revenue ?? 0)
+  const summaryRefunds = snapshotRevenueMissing ? null : Number(summarySnapshot?.monthRefunds ?? revenue?.refunds_issued ?? 0)
+  const summaryRetained = snapshotRevenueMissing ? null : Number(summarySnapshot?.monthRetainedRevenue ?? revenue?.retained_revenue ?? 0)
+  const summaryGrossCash = summaryNetCash == null || summaryRefunds == null ? null : summaryNetCash + summaryRefunds
   const summaryRooms = Number(summarySnapshot?.totalRooms ?? occupancy.length)
   const summaryCheckedIn = Number(summarySnapshot?.currentOcc ?? revenue?.checked_in_count ?? 0)
   const revenueSource = revenue?.source === 'server' ? 'server-authoritative' : revenue?.source === 'local' ? 'local fallback' : ''
@@ -1546,8 +1551,10 @@ export default function Reports() {
           sub={`${summaryOutstandingCount} booking${summaryOutstandingCount === 1 ? '' : 's'} still open`}
           color={summaryOutstanding > 0 ? 'bg-rose-50 text-rose-600' : 'bg-slate-50 text-slate-600'} />
         <SummaryCard icon={PiggyBank} label="Shared Net Cash"
-          value={`${currency} ${summaryNetCash.toFixed(2)}`}
-          sub={`Gross ${currency} ${summaryGrossCash.toFixed(2)} · refunds ${currency} ${summaryRefunds.toFixed(2)} · kept ${currency} ${summaryRetained.toFixed(2)}`}
+          value={summaryNetCash == null ? 'Unavailable' : `${currency} ${summaryNetCash.toFixed(2)}`}
+          sub={summaryGrossCash == null || summaryRefunds == null || summaryRetained == null
+            ? 'Cash data unavailable offline — reconnect for confirmed figures'
+            : `Gross ${currency} ${summaryGrossCash.toFixed(2)} · refunds ${currency} ${summaryRefunds.toFixed(2)} · kept ${currency} ${summaryRetained.toFixed(2)}`}
           color="bg-emerald-50 text-emerald-600" />
       </div>
 

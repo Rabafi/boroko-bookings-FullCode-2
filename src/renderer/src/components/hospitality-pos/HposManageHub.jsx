@@ -35,9 +35,10 @@ import {
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isCommercialFeatureIncluded } from '../../../../shared/commercialAccess';
-import { BAR_POS_ADDON_CATALOG } from '../../../../shared/commercialEntitlements';
+import { BAR_POS_ADDON_CATALOG, getBarAddonForFeature } from '../../../../shared/commercialEntitlements';
 import { formatCommercialMoney } from '../../../../shared/commercialPackages';
 import { BAR_BASE_SETUP_STAGE_KEYS, getHposMoreItems } from '../../../../shared/barModeProfile';
+import { BarAddonBadge } from './HposUi';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 
 const GROUPS = [
@@ -49,7 +50,6 @@ const GROUPS = [
       '/restaurant/kitchen-workspace',
       '/restaurant/menu-production',
       '/restaurant/inventory',
-      '/restaurant/menu-production',
       '/restaurant/team-workspace',
       '/hpos/menu',
       '/hpos/stock',
@@ -126,7 +126,7 @@ const META = {
   '/restaurant/finance-close': [ReceiptText, 'Cash-ups, sales, settlements, customer funds, expenses, tips and day close.'],
   '/restaurant/control-workspace': [ClipboardCheck, 'Checklists, alerts, guest feedback and service policies.'],
   '/staff': [Users, 'Add, reactivate and set access for the staff accounts available to shifts.'],
-  '/restaurant/chart-of-accounts': [FileSpreadsheet, 'Configure lodge-scoped accounts and post dated opening journals.'],
+  '/restaurant/chart-of-accounts': [FileSpreadsheet, 'Configure business-scoped accounts and post dated opening journals.'],
   '/restaurant/general-ledger': [BookOpen, 'Review immutable journals, reversals and event-level POS posting.'],
   '/restaurant/accounts-payable': [Wallet, 'Capture, approve, accrue and pay supplier bills safely.'],
   '/restaurant/bank-reconciliation': [Scale, 'Import statement evidence, approve matches and lock reconciled periods.'],
@@ -205,7 +205,7 @@ const BAR_META = {
   ],
   '/hpos/control': [
     ClipboardCheck,
-    'Run opening, closing, safety and cash-control checklists.',
+    'Run opening, closing, safety and cash-control checklists, and open the base incident log.',
   ],
   '/multi-outlet-pos': [
     Building2,
@@ -252,6 +252,10 @@ export default function HposManageHub() {
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
   const canManagePos = canAccessCapability(access, 'pos.manage');
+  // No commercial package key means isCommercialFeatureIncluded() fails
+  // closed (commercialAccess.js) and the filtered workspace list is empty
+  // for reasons unrelated to role. Distinguish that below.
+  const hasCommercialPackageKey = Boolean(String(access?.entitlement?.commercial_package_key || '').trim());
   const refreshEntitlement = access?.refreshEntitlement;
   const [accessRefreshing, setAccessRefreshing] = useState(false);
   const [accessRefreshError, setAccessRefreshError] = useState('');
@@ -307,7 +311,9 @@ export default function HposManageHub() {
 
   const groups = GROUPS.map((group) => ({
     ...group,
-    items: group.routes
+    // Dedupe routes defensively so a repeated route can never emit a
+    // duplicate React key within one group.
+    items: [...new Set(group.routes)]
       .map((route) => items.find((item) => item.route === route))
       .filter(Boolean),
   })).filter((group) => group.items.length);
@@ -418,6 +424,7 @@ export default function HposManageHub() {
                 (barOnly ? BAR_META[item.route] : null) ||
                 META[item.route] ||
                 [];
+              const owningAddon = barOnly && item.feature ? getBarAddonForFeature(item.feature) : null;
               return (
                 <button
                   key={item.route}
@@ -429,6 +436,9 @@ export default function HposManageHub() {
                   </span>
                   <span>
                     <strong>{item.label}</strong>
+                    {owningAddon && (
+                      <BarAddonBadge addonName={owningAddon.displayName} featureKey={item.feature} />
+                    )}
                     <small>{description}</small>
                   </span>
                   <ArrowUpRight className="hpos-manage-arrow" size={17} />
@@ -481,8 +491,15 @@ export default function HposManageHub() {
       )}
 
       {items.length === 0 && (
-        <div className="hpos-manage-empty">
-          Your role does not include manager workspaces.
+        <div className="hpos-manage-empty" role="status">
+          {barOnly && !hasCommercialPackageKey ? (
+            <>
+              <strong>Activating your Bar package…</strong>
+              <span>Your workspaces are empty because no Bar package is attached to this device yet. If Command Central just activated it, press “Refresh package access” above, reconnect, and refresh again.</span>
+            </>
+          ) : (
+            'Your role does not include manager workspaces.'
+          )}
         </div>
       )}
     </div>

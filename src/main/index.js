@@ -105,7 +105,7 @@ import {
   buildUpgradeRequestEmail
 } from './emailNotifications.js'
 import { assertCommandCentralTarget, assertMasterAdmin, createActorBoundElevationGate } from './commandCentralAuthorization.js'
-import { createLocalLock, releaseLocalLock } from './domains/mesh/meshLocks.js'
+import { createLocalLock, releaseLocalLock, createTabLock, releaseTabLock } from './domains/mesh/meshLocks.js'
 import {
   connectManualMeshPeer,
   refreshMeshDiscovery
@@ -116,6 +116,7 @@ import {
   openCashDrawer,
   printEscPosReceipt,
   printBarcodeLabels,
+  scanNetworkPrinters,
   sendPaymentTerminalTotal as sendPaymentTerminalToDevice,
   testPosHardwareDevice
 } from './hardware/posHardwareAdapter.js'
@@ -291,6 +292,24 @@ if (process.env.BOROKO_TEST_USER_DATA_DIR) {
   ensureDevDeskMeshSecret(appDataDir, devUserDataDir)
   app.setName(devDeskName)
   app.setPath('userData', devUserDataDir)
+}
+// Single copy per product only: two copies of the SAME product share the same
+// queue files and can erase each other's sales. The lock must be requested
+// AFTER the per-product identity above (setName/setPath), otherwise lodge-camp
+// and hospitality-pos dev instances share the default identity and the second
+// product quits while focusing the first product's window. Packaged builds keep
+// distinct appId/userData per product via their installer configs, so Lodge,
+// Hotel and Bar can run side by side while same-product doubles still quit.
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const existing = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+    if (!existing) return
+    if (existing.isMinimized()) existing.restore()
+    existing.focus()
+  })
 }
 
 // -- URL safety guard (used by shell:openExternal and setWindowOpenHandler) ----
@@ -4038,6 +4057,7 @@ async function runManagedBackupPolicy(force = false) {
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return
   electronApp.setAppUserModelId(BUILD_PRODUCT.appId)
 
   ipcMain.handle('app:getProduct', () => ({
@@ -9084,6 +9104,14 @@ app.whenReady().then(async () => {
       return await db.getMenuStockReadiness()
     } catch (e) { return { success: false, error: e.message } }
   })
+  ipcMain.handle('pos:getUnconfirmedPosUsage', async () => {
+    // Unsent sales on this computer (own queue + other-till mesh imports).
+    // Counts only, no prices or identities: safe for base Till users.
+    try {
+      await requireCapability('pos.view')
+      return { success: true, ...(await db.getUnconfirmedPosUsage()) }
+    } catch (e) { return { success: false, error: e.message } }
+  })
   ipcMain.handle('catalog:processPendingPublications', async (_, outletIds) => {
     try {
       await requireCapability('pos.manage')
@@ -10173,6 +10201,14 @@ app.whenReady().then(async () => {
       return []
     }
   })
+  ipcMain.handle('pos:scanNetworkPrinters', async () => {
+    try {
+      await requireCapability('settings.manage_general')
+      return await scanNetworkPrinters()
+    } catch (e) {
+      return { success: false, error: e?.message || 'Network printer scan failed.' }
+    }
+  })
   ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {
     try {
       await requireCapability('pos.view')
@@ -11138,7 +11174,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('dayuse:saveConfig', async (_, data) => {
     await requireCapability('pool.manage')
-    return await db.saveDayUseConfig(data)
+    return await db.saveDayUseConfig(data, { includeMeta: true })
   })
 
   // -- Analytics & Cost Reports -----------------------------------------------
@@ -11355,6 +11391,14 @@ app.whenReady().then(async () => {
     try {
       const requestedProfile = profile && typeof profile === 'object' ? { ...profile } : {}
       await requireCapability('settings.manage_general')
+      const offline = state.isOnline === false
+      const deviceOnlyMeta = {
+        persistence: 'device_only',
+        online: false,
+        pending: true,
+        retryRequired: true,
+        warnings: ['This computer is offline. The operating profile was saved here only and was not sent to the server. Save again when back online.']
+      }
       if (Object.prototype.hasOwnProperty.call(requestedProfile, 'till_operator_policy')) {
         const previousPolicy = getTillOperatorPolicy(await db.getSettings().catch(() => ({})))
         const savedProfile = await db.updateOperatingProfile(requestedProfile)
@@ -11367,9 +11411,14 @@ app.whenReady().then(async () => {
             details: { before: previousPolicy, after: nextPolicy, source: 'operating_profile' }
           })
         }
-        return { success: true, data: savedProfile }
+        return offline
+          ? { success: true, data: savedProfile, meta: deviceOnlyMeta }
+          : { success: true, data: savedProfile }
       }
-      return { success: true, data: await db.updateOperatingProfile(requestedProfile) }
+      const saved = await db.updateOperatingProfile(requestedProfile)
+      return offline
+        ? { success: true, data: saved, meta: deviceOnlyMeta }
+        : { success: true, data: saved }
     }
     catch (e) { return { success: false, error: e.message } }
   })
@@ -11709,6 +11758,35 @@ app.whenReady().then(async () => {
     })
   }, 20_000)
 
+  // Pinned customer displays reopen on their saved monitor after restart.
+  // Opt-in per POS computer: System Health > Devices > "Open customer display
+  // automatically when the app starts". No saved layout means no window, so a
+  // fresh till never surprises the operator with a second screen.
+  setTimeout(() => {
+    (async () => {
+      try {
+        const hardware = await db.getPosHardwareSettings().catch(() => null)
+        if (!hardware || hardware.display_customer_auto_open !== true) return
+        if (hardware.customer_display_enabled === false) return
+        const saved = readPosDisplayLayouts()?.customer
+        const pinnedId = String(hardware.display_customer_display_id || '').trim()
+        if (!pinnedId && (!saved || (!saved.bounds && !saved.displayId))) return
+        // Prefer the pinned monitor; an unplugged pin falls back to the saved
+        // layout inside getSavedDisplayWindowState.
+        const opened = openPosDisplayWindow('customer', pinnedId ? { displayId: pinnedId } : {})
+        if (opened?.success === true) {
+          await db.recordPosHardwareEvent?.('display_auto_open', {
+            kind: 'customer',
+            display_id: opened.displayId || saved.displayId || null,
+            restored: opened.restored === true
+          }).catch(() => {})
+        }
+      } catch (error) {
+        console.warn('Pinned customer display did not auto-open:', error?.message || error)
+      }
+    })()
+  }, 15_000)
+
   setInterval(() => {
     runManagedBackupPolicy(false).catch((error) => {
       console.error('Managed weekly backup check failed:', error?.message || error)
@@ -11859,6 +11937,24 @@ app.whenReady().then(async () => {
   ipcMain.handle('mesh:unlockRoom', async (_, lockId) => {
     try {
       const released = await releaseLocalLock(lockId);
+      return { success: released };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  })
+  ipcMain.handle('mesh:lockTab', async (_, tabId, operatorLabel) => {
+    // Till operators hold this while settling so the other till waits.
+    try {
+      await requireCapability('pos.view')
+      return { success: true, ...(await createTabLock(tabId, operatorLabel)) }
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  })
+  ipcMain.handle('mesh:unlockTab', async (_, lockId) => {
+    try {
+      await requireCapability('pos.view')
+      const released = await releaseTabLock(lockId);
       return { success: released };
     } catch (e) {
       return { success: false, error: e.message };

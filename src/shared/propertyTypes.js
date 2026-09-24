@@ -9,6 +9,7 @@ export const PROPERTY_TYPES = {
   hotel: 'hotel',
   resort: 'resort',
   restaurant: 'restaurant',
+  bar: 'bar',
   apartment_hotel: 'apartment_hotel',
   hostel: 'hostel',
   serviced_apartments: 'serviced_apartments'
@@ -22,7 +23,8 @@ export const PROPERTY_TYPE_ORDER = [
   'motel',
   'hotel',
   'resort',
-  'restaurant'
+  'restaurant',
+  'bar'
 ]
 
 export const PROPERTY_TYPE_LABELS = {
@@ -34,6 +36,7 @@ export const PROPERTY_TYPE_LABELS = {
   hotel: 'Hotel',
   resort: 'Resort',
   restaurant: 'Restaurant / POS Only',
+  bar: 'Bar / Bar POS',
   apartment_hotel: 'Apartment Hotel',
   hostel: 'Hostel',
   serviced_apartments: 'Serviced Apartments'
@@ -47,7 +50,8 @@ export const PROPERTY_TYPE_DESCRIPTIONS = {
   motel: 'Drive-up room accommodation',
   hotel: 'Full-service hotel operations',
   resort: 'Multi-outlet resort operations',
-  restaurant: 'Food and beverage focused operation'
+  restaurant: 'Food and beverage focused operation',
+  bar: 'Bar-focused drinks operation'
 }
 
 export const PROPERTY_TYPE_DEFAULTS = {
@@ -82,6 +86,10 @@ export const PROPERTY_TYPE_DEFAULTS = {
   restaurant: {
     modules: ['pos', 'inventory', 'outlets', 'cash_up', 'staff', 'expenses', 'reports'],
     operation_style: 'commercial'
+  },
+  bar: {
+    modules: ['pos', 'inventory', 'outlets', 'cash_up', 'staff', 'expenses', 'reports'],
+    operation_style: 'commercial'
   }
 }
 
@@ -103,7 +111,9 @@ export const OPERATION_STYLE_LABELS = {
 
 export function normalizePropertyType(propertyType) {
   const raw = String(propertyType || '').trim().toLowerCase()
-  // Keep camp as a first-class property type so campsite inventory and terminology work.
+  // Keep camp and bar as first-class property types so campsite inventory and
+  // bar terminology keep working. 'bar' must never collapse to 'lodge' or the
+  // Bar add-on eligibility (restaurant/bar) breaks.
   if (PROPERTY_TYPES[raw]) return raw
   if (raw === 'lodge') return 'lodge'
   if (raw === 'camp' || raw === 'campsite' || raw === 'camping') return 'camp'
@@ -113,6 +123,7 @@ export function normalizePropertyType(propertyType) {
   if (raw === 'hotel') return 'hotel'
   if (raw === 'resort') return 'resort'
   if (raw === 'restaurant' || raw === 'pos_only') return 'restaurant'
+  if (raw === 'bar' || raw === 'bar_only' || raw === 'bar_pos') return 'bar'
   return 'lodge'
 }
 
@@ -135,7 +146,12 @@ export function isResortPropertyType(propertyType) {
 }
 
 export function isRestaurantOnly(propertyType) {
-  return normalizePropertyType(propertyType) === 'restaurant'
+  const normalized = normalizePropertyType(propertyType)
+  return normalized === 'restaurant' || normalized === 'bar'
+}
+
+export function isBarPropertyType(propertyType) {
+  return normalizePropertyType(propertyType) === 'bar'
 }
 
 export function isCampPropertyType(propertyType) {
@@ -268,6 +284,7 @@ export function getHiddenModules(propertyType, subscriptionPlan) {
 export function propertyTypeToBusinessType(propertyType) {
   const normalized = normalizePropertyType(propertyType)
   if (normalized === 'restaurant') return 'restaurant'
+  if (normalized === 'bar') return 'bar'
   return 'lodge'
 }
 
@@ -280,6 +297,7 @@ const CAPACITY_LIMITS_DEFAULTS = {
   bnb:        { rooms: 6,   users: 10, monthlyBookings: 40,  posOutlets: 0,  properties: 1 },
   guest_house: { rooms: 10, users: 10, monthlyBookings: 80,  posOutlets: 1,  properties: 1 },
   restaurant:  { rooms: 0,  users: 10, monthlyBookings: 0,   posOutlets: 3,  properties: 1 },
+  bar:  { rooms: 0,  users: 10, monthlyBookings: 0,   posOutlets: 3,  properties: 1 },
 }
 
 export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter', enterpriseAddons = [], options = {}) {

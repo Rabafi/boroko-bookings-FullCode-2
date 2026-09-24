@@ -43,6 +43,58 @@ export async function createLocalLock(roomId, startDate, endDate) {
   return lockId;
 }
 
+const TAB_LOCK_TTL_MS = 120000; // 2 minutes: covers one settle, never a shift.
+
+/**
+ * Advisory tab-settlement lock: one till settling a tab holds it while the
+ * other till sees "settling on the other till" instead of charging twice.
+ * The server still refuses genuine double settlements; this lock only stops
+ * the confusing second attempt. Expires on its own; release on settle done.
+ */
+export async function createTabLock(tabId, operatorLabel = '') {
+  const resourceId = String(tabId || '').trim();
+  if (!resourceId) return { acquired: false, error: 'A tab reference is required.' };
+  const held = meshState.activeLocks.find((lock) =>
+    lock.resourceKind === 'pos-tab'
+    && String(lock.resourceId || '') === resourceId
+    && new Date(lock.expiresAt).getTime() > Date.now()
+    && lock.sourceNodeId !== meshState.nodeId,
+  );
+  if (held) {
+    return { acquired: false, held: true, heldBy: held.operator || 'the other till', lockId: held.lockId };
+  }
+  const now = Date.now();
+  const lock = {
+    lockId: crypto.randomUUID(),
+    resourceKind: 'pos-tab',
+    resourceId,
+    operator: String(operatorLabel || '').slice(0, 80),
+    sourceNodeId: meshState.nodeId,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + TAB_LOCK_TTL_MS).toISOString(),
+  };
+  meshState.activeLocks.push(lock);
+  broadcastSyncStatus();
+  broadcastToMesh('POST', '/mesh/locks', null, lock).catch((err) => {
+    console.warn('[MeshLocks] Failed to broadcast tab lock to mesh:', err.message);
+  });
+  return { acquired: true, lockId: lock.lockId };
+}
+
+export async function releaseTabLock(lockId) {
+  const id = String(lockId || '').trim();
+  if (!id) return false;
+  const index = meshState.activeLocks.findIndex((l) =>
+    l.lockId === id && l.resourceKind === 'pos-tab' && l.sourceNodeId === meshState.nodeId);
+  if (index === -1) return false;
+  meshState.activeLocks.splice(index, 1);
+  broadcastSyncStatus();
+  broadcastToMesh('DELETE', `/mesh/locks/${id}`).catch((err) => {
+    console.warn(`[MeshLocks] Failed to broadcast release of tab lock ${id}:`, err.message);
+  });
+  return true;
+}
+
 /**
  * Releases a locally held lock and broadcasts the release to all peers.
  */
@@ -63,9 +115,15 @@ export async function releaseLocalLock(lockId) {
 
 /**
  * Registers an advisory lock received from a remote mesh peer.
+ * Room locks keep their shape; tab-settlement locks carry
+ * resourceKind/resourceId instead of a room.
  */
 export function registerRemoteLock(lock) {
-  if (!lock || !lock.lockId || !lock.roomId || !lock.sourceNodeId) {
+  const isTabLock = lock?.resourceKind === 'pos-tab' && String(lock?.resourceId || '').trim() !== '';
+  if (!lock || !lock.lockId || !lock.sourceNodeId) {
+    return false;
+  }
+  if (!isTabLock && !lock.roomId) {
     return false;
   }
 
@@ -78,7 +136,15 @@ export function registerRemoteLock(lock) {
     return false; // Already expired or invalid date format
   }
 
-  meshState.activeLocks.push({
+  meshState.activeLocks.push(isTabLock ? {
+    lockId: lock.lockId,
+    resourceKind: 'pos-tab',
+    resourceId: String(lock.resourceId),
+    operator: String(lock.operator || '').slice(0, 80),
+    sourceNodeId: lock.sourceNodeId,
+    createdAt: lock.createdAt,
+    expiresAt: lock.expiresAt
+  } : {
     lockId: lock.lockId,
     roomId: lock.roomId,
     startDate: lock.startDate,

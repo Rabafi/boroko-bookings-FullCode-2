@@ -102,7 +102,9 @@ export function normalizePlanName(plan) {
 }
 
 function cloneFeatureMap(map = {}) {
-  return Object.fromEntries(ENTITLEMENT_FEATURES.map((feature) => [feature, map[feature] !== false]));
+  // Fail-closed: unknown/missing features default to false so a new
+  // entitlement key never unlocks on old plans until explicitly granted.
+  return Object.fromEntries(ENTITLEMENT_FEATURES.map((feature) => [feature, map[feature] === true]));
 }
 
 export function toPositiveInt(value, fallback) {

@@ -531,7 +531,7 @@ export default function HposProductWizard({
 
         {hasRecipe && (
           <div className="hpos-inline-notice">
-            <strong>Recipe product.</strong> This item is consumed through a
+            <strong>Recipe product (Included with Stock add-on).</strong> This item is consumed through a
             recipe, so stock linking is read-only here. Manage ingredients in
             Stock &amp; Purchasing Pro (Recipes &amp; margin). Price, barcode
             and availability below remain editable.

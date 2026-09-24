@@ -1,0 +1,19 @@
+# Marketing-site pretty-URL rewrites (mirrors marketing-site/netlify.toml).
+/features /features.html 200
+/packages /packages.html 200
+/why-switch /why-switch.html 200
+/contact /contact.html 200
+/download /download.html 200
+/blog /blog.html 200
+/brochure /brochure.html 200
+/privacy /privacy.html 200
+/terms /terms.html 200
+/manager-app /manager-app.html 200
+/booking-site /booking-site.html 200
+/restaurant-pos /restaurant-pos.html 200
+/bar-pos /bar-pos.html 200
+/lodge-app /lodge-app.html 200
+/hotel /hotel.html 200
+/admin /admin.html 200
+/control-center /control-center.html 200
+/enterprise /enterprise.html 200

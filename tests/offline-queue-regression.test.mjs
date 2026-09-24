@@ -515,7 +515,7 @@ async function run() {
   assert.match(database, /rowsByCache/)
   assert.match(database, /const resolver = createDependencyCacheResolver\(\)/)
   assert.match(database, /resolver\.isResolved\(dependencyId\)/)
-  assert.match(database, /classifySyncDependencyCategory\(item = \{\}, pending = \[\], failed = \[\], resolveDep = null\)/)
+  assert.match(database, /function classifySyncDependencyCategory\(item = \{\}, pendingIds = null, failedIds = null, resolveDep = null\)/)
   assert.match(database, /const depResolver = createDependencyCacheResolver\(\)\.isResolved/)
   assert.match(database, /buildSyncGroupedCounts\(pending, failed, depResolver\)/)
   assert.match(database, /pendingIdSet/)

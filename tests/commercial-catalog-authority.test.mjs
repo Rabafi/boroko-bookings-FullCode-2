@@ -104,7 +104,8 @@ test('Bar POS explicitly includes Manager PWA without including Growth Owner Vie
 test('desktop main capability snapshot preserves add-ons and user overrides', () => {
   assert.match(mainIndex, /commercialAddonKeys:\s*entitlement\?\.enterprise_addons\s*\|\|\s*\[\]/)
   assert.match(mainIndex, /capabilityOverrides:\s*user\?\.capability_overrides\s*\|\|\s*\{\}/)
-  assert.match(mainIndex, /isCommercialFeatureIncluded\(productId, commercialPackageKey, featureKey, commercialAddonKeys\)/)
+  // Tenant-bound commercial check: addons + entitlement + lodge id (fail-closed on mismatch).
+  assert.match(mainIndex, /isCommercialFeatureIncluded\(productId, commercialPackageKey, featureKey, commercialAddonKeys/)
 })
 
 test('POS operating profiles and invalid package/add-on combinations are enforced locally', () => {
@@ -159,12 +160,46 @@ test('server activation resets non-included POS features before granting the sel
   ]) {
     assert.ok(entitlementBoundaryMigration.includes(required), `${required} must be present in the POS entitlement boundary migration`)
   }
-  assert.ok(accessPanel.includes('POS packages are feature bundles. They do not use the Lodge &amp; Camp room, user, or monthly booking caps.'))
+  assert.ok(accessPanel.includes('Bar packages are feature bundles. You pay per year with no limits on sales.'))
+  assert.ok(accessPanel.includes('Restaurant packages are feature bundles. You pay per year with no limits on sales.'))
+  assert.ok(!accessPanel.includes('monthly booking caps'))
   assert.ok(upgradePrompt.includes('Feature bundle access with no Lodge & Camp capacity limits') || upgradePrompt.includes('feature-bundle based'))
   assert.ok(!upgradePrompt.includes('Next package limits:') || upgradePrompt.includes('IS_CAPACITYLESS_PRODUCT'))
   for (const required of ["'product_id', v_license.product_id", "'commercial_package_key', v_license.commercial_package_key"]) {
     assert.ok(entitlementIdentityMigration.includes(required), `${required} must be returned by the online entitlement RPC`)
   }
+})
+
+test('subscription panel offers only the current operating profile packages', () => {
+  // A bar_only bar must not see Restaurant Service/Control/Growth cards: the
+  // quote RPC refuses cross-profile packages, so offering them only produces
+  // refused requests. The current package stays visible on a mismatch.
+  assert.ok(accessPanel.includes('visibleCommercialPackages'))
+  assert.ok(accessPanel.includes('eligibleOperatingProfiles'))
+  assert.ok(accessPanel.includes('getHospitalityMode'))
+  assert.ok(accessPanel.includes('visibleCommercialPackages.map((plan)'))
+  assert.ok(accessPanel.includes('Showing'))
+  assert.ok(accessPanel.includes('packages for this'))
+  // Shared-Pro plans must resolve profile-first: all four POS offers share
+  // internalPlan 'Pro', so a naive internalPlan lookup previews Bar POS for a
+  // restaurant trial and vice versa.
+  assert.ok(accessPanel.includes('eligibleFirst'))
+  // Bar copy must not leak lodge/restaurant wording into the POS panel.
+  assert.ok(accessPanel.includes('Till sales receipts are not shown here.'))
+  // POS add-on cards: the Manage hub deep-links ?feature=<addonKey> here, so
+  // the panel must render the Bar add-on catalogue scoped to the current
+  // package/profile with an explicit request path into the upgrade form.
+  assert.ok(accessPanel.includes('posAddons'))
+  assert.ok(accessPanel.includes('getCommercialAddonOffers'))
+  assert.ok(accessPanel.includes('addons-heading'))
+  assert.ok(accessPanel.includes('requestPosAddon'))
+  assert.ok(accessPanel.includes('Add-on request:'))
+  // No-op package requests are hidden: the request entry point disappears when
+  // the preview matches the current licensed package, while add-on-only
+  // requests on the current package still send.
+  assert.ok(accessPanel.includes('isSelectedCurrentPackage'))
+  assert.ok(accessPanel.includes('is your current package'))
+  assert.ok(accessPanel.includes('add-on request:'))
 })
 
 test('public quote PDF endpoint is token-scoped and does not use service credentials', () => {

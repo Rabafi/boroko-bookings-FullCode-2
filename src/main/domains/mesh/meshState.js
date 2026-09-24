@@ -155,6 +155,7 @@ export function getMeshHealthSnapshot() {
     activeLocks: meshState.activeLocks,
     lastQueueMergeAt: meshState.lastQueueMergeAt ? meshState.lastQueueMergeAt.toISOString() : null,
     lastQueueRepair: meshState.lastQueueRepair || null,
+    lastTeamSync: meshState.lastTeamSync || null,
     lastError: meshState.lastError,
     lastDiscoveryError: meshState.lastDiscoveryError,
     lastBeaconAt: meshState.lastBeaconAt,

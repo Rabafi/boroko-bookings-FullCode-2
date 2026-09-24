@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Download, Send, CheckCircle, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { useSettings } from '../app-context'
 import { computeEffectiveFeatures } from '../../../shared/entitlementMerge'
@@ -32,7 +32,38 @@ export default function SubscriptionPackageBuilder() {
   const [error, setError] = useState('')
 
   const commercialPackages = getCommercialPackageCatalog(BUILD_PRODUCT.id)
-  const selectedPackage = commercialPackages.find((entry) => entry.commercialPackageKey === selectedPackageKey) || commercialPackages[0]
+  // Never show a package the quote server would refuse: Bar sees Bar POS,
+  // Restaurant sees restaurant packages. Lodge/Hotel keep the full list.
+  const hospitalityProfile = BUILD_PRODUCT.id === 'hospitality-pos' ? getHospitalityMode(settings) : null
+  const visibleCommercialPackages = useMemo(() => {
+    if (BUILD_PRODUCT.id !== 'hospitality-pos' || !hospitalityProfile) return commercialPackages
+    const eligible = commercialPackages.filter((entry) => {
+      const profiles = entry?.eligibleOperatingProfiles
+      if (!profiles?.length) return true
+      return profiles.includes(hospitalityProfile)
+    })
+    return eligible.length ? eligible : commercialPackages
+  }, [commercialPackages, hospitalityProfile])
+  const selectedPackage = visibleCommercialPackages.find((entry) => entry.commercialPackageKey === selectedPackageKey) || visibleCommercialPackages[0]
+  // Quote preview never throws during render: a mismatch shows a friendly
+  // message and blocks submit instead of crashing the page.
+  const previewPricing = useMemo(() => {
+    try {
+      return {
+        ok: true,
+        snapshot: buildCommercialPricingSnapshot({
+          commercialPackageKey: selectedPackage?.commercialPackageKey,
+          addons: selectedAddons,
+          productId: BUILD_PRODUCT.id,
+          operatingProfile: hospitalityProfile,
+          propertyType: settings?.property_type || settings?.business_type || null,
+          trialAlreadyUsed
+        })
+      }
+    } catch (err) {
+      return { ok: false, error: err?.message || 'This package is not available for your business type.', snapshot: null }
+    }
+  }, [selectedPackage, selectedAddons, hospitalityProfile, settings, trialAlreadyUsed])
   const selectedPlan = selectedPackage?.internalPlan || 'Starter'
   const eligibleAddons = IS_HOTEL_PRODUCT
     ? getAdvertisedEnterpriseAddons(settings?.property_type || settings?.business_type || 'hotel', BUILD_PRODUCT.id)
@@ -55,7 +86,8 @@ export default function SubscriptionPackageBuilder() {
       addons: selectedAddons,
       productId: BUILD_PRODUCT.id,
       operatingProfile: BUILD_PRODUCT.id === 'hospitality-pos' ? getHospitalityMode(settings) : null,
-      propertyType: settings?.property_type || settings?.business_type || null
+      propertyType: settings?.property_type || settings?.business_type || null,
+      trialAlreadyUsed
     })
     const request = buildSubscriptionRequest({
       source: 'desktop_app',
@@ -67,7 +99,7 @@ export default function SubscriptionPackageBuilder() {
       contact_email: settings?.contact_email || '',
       contact_phone: settings?.contact_phone || '',
       country: settings?.country || '',
-      property_type: settings?.property_type || settings?.business_type || 'lodge',
+      property_type: settings?.property_type || settings?.business_type || (barOnly ? 'bar' : 'lodge'),
       operating_profile: BUILD_PRODUCT.id === 'hospitality-pos' ? getHospitalityMode(settings) : null,
       product_id: BUILD_PRODUCT.id,
       commercial_package_key: selectedPackageKey,
@@ -89,7 +121,13 @@ export default function SubscriptionPackageBuilder() {
   }, [selectedPackageKey, selectedAddons, roomCount, userCount, expectedBookings, notes, settings, trialAlreadyUsed, selectedPlan])
 
   const generateQuote = useCallback(async () => {
-    const request = buildRequest(SUBSCRIPTION_REQUEST_STATUS.draft)
+    let request
+    try {
+      request = buildRequest(SUBSCRIPTION_REQUEST_STATUS.draft)
+    } catch (err) {
+      setError(err?.message || 'This package is not available for your business type.')
+      return
+    }
     const documentPayload = buildSubscriptionCommercialDocument(request, 'quote', {
       document_number: request.quote_number
     })
@@ -204,8 +242,13 @@ export default function SubscriptionPackageBuilder() {
         <div className="space-y-5">
           <section className="bb-card p-5">
             <h2 className="mb-3 text-sm font-bold text-slate-800">{IS_HOTEL_PRODUCT ? 'Product package' : 'Target package'}</h2>
+            {visibleCommercialPackages.length === 0 && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800" role="status">
+                No package is available for your business type yet. Contact Tsa Bonno and we will set the right package for you.
+              </p>
+            )}
             <div className={`grid grid-cols-2 gap-2 ${IS_HOTEL_PRODUCT ? 'sm:grid-cols-1' : 'sm:grid-cols-3'}`}>
-              {commercialPackages.map((plan) => (
+              {visibleCommercialPackages.map((plan) => (
                 <button
                   key={plan.commercialPackageKey}
                   onClick={() => setSelectedPackageKey(plan.commercialPackageKey)}
@@ -301,15 +344,24 @@ export default function SubscriptionPackageBuilder() {
                 </div>
               )}
               <div className="border-t border-slate-100 pt-2">
-                <p className="text-xs text-slate-500">Due now: {formatCommercialMoney(buildRequest().pricing_snapshot?.totals?.total_due_now ?? buildRequest().pricing_snapshot?.total_due_now)}</p>
-                <p className="text-xs text-slate-400">Recurring add-ons: {formatCommercialMoney(buildRequest().pricing_snapshot?.totals?.recurring_annual, 'None')}</p>
+                {!previewPricing.ok ? (
+                  <p className="text-xs text-amber-700" role="status">{previewPricing.error} Choose the Bar package for this bar.</p>
+                ) : (
+                  <>
+                    <p className="text-xs text-slate-500">Due now: {formatCommercialMoney(previewPricing.snapshot?.totals?.total_due_now)}</p>
+                    <p className="text-xs text-slate-400">Recurring add-ons: {formatCommercialMoney(previewPricing.snapshot?.totals?.recurring_annual, 'None')}</p>
+                    {previewPricing.snapshot?.trial?.eligible && (
+                      <p className="mt-1 text-xs font-semibold text-emerald-700">One-month free trial included — P0 due now, then {formatCommercialMoney(previewPricing.snapshot?.totals?.recurring_annual)} per year.</p>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           </section>
 
           <div className="flex flex-col gap-2">
-            <button onClick={generateQuote} className="btn-secondary w-full justify-center"><Download size={14} /> Download Quote</button>
-            <button onClick={submitRequest} disabled={submitting} className="btn-primary w-full justify-center"><Send size={14} /> {submitting ? 'Submitting...' : 'Generate & Submit Quote'}</button>
+            <button onClick={generateQuote} disabled={!previewPricing.ok} title={!previewPricing.ok ? previewPricing.error : undefined} className="btn-secondary w-full justify-center"><Download size={14} /> Download Quote</button>
+            <button onClick={submitRequest} disabled={submitting || !previewPricing.ok} title={!previewPricing.ok ? previewPricing.error : undefined} className="btn-primary w-full justify-center"><Send size={14} /> {submitting ? 'Submitting...' : 'Generate & Submit Quote'}</button>
           </div>
 
           {error && <ErrorNotice className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700"><AlertTriangle size={12} className="shrink-0" />{error}</ErrorNotice>}

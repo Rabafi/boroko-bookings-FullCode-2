@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, RefreshCw, ShieldCheck, WalletCards, XCircle } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
@@ -36,21 +36,12 @@ export default function HposCashClose() {
   // a separate flow and stay untouched.
   const [drawerOutlets, setDrawerOutlets] = useState([])
   const [drawerOutletId, setDrawerOutletId] = useState('')
-  // Cash counting switch. The outlet editor answers the same question, but it
-  // sits behind the multi-outlet add-on and hides single outlets entirely —
-  // unreachable for exactly the single-outlet base bars that need it most.
-  // This section asks it here instead: base feature, manager-gated page. The
-  // server still enforces admin-only + zero open activity; this surface only
-  // asks the question and reports the authoritative answer.
-  const [cashModelOutlets, setCashModelOutlets] = useState([])
-  const [cashModelOutletId, setCashModelOutletId] = useState('')
-  const [cashModelChoice, setCashModelChoice] = useState('shared_drawer')
-  const [cashModelBusy, setCashModelBusy] = useState(false)
-  const cashModelRole = String(access?.role || '').toLowerCase()
-  const canSwitchCashModel = ['admin', 'super_admin'].includes(cashModelRole)
+  // Outlet setup (outlet + cash counting) now lives in Settings → Outlets.
+  // This page links there; the server still enforces admin-only + zero open
+  // activity for switches.
 
   const revealReviewActions = (event) => {
-    const actionBar = event.currentTarget?.closest('.hpos-cashup-review-card--decision')?.querySelector('.hpos-cashup-review-actions')
+    const actionBar = event.currentTarget?.closest('article')?.querySelector('.hpos-cashup-review-actions')
     if (!actionBar) return
     window.requestAnimationFrame(() => actionBar.scrollIntoView({ block: 'end', behavior: 'smooth' }))
   }
@@ -98,60 +89,83 @@ export default function HposCashClose() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // Venue cash models drive which queues show: an all-drawer bar sees only
+  // Drawer close, an all-pouches bar sees only personal reviews. A queue is
+  // hidden only when no outlet uses its model AND nothing is still waiting in
+  // it — an older cash-up from before a model switch always stays surfaced.
+  const [allOutlets, setAllOutlets] = useState([])
+  const [outletsLoaded, setOutletsLoaded] = useState(false)
   useEffect(() => {
     let active = true
     window.api?.outlets?.getAll?.().then((rows) => {
       if (!active) return
-      const shared = (Array.isArray(rows) ? rows : []).filter((row) => row?.cash_model === 'shared_drawer')
+      const all = Array.isArray(rows) ? rows : []
+      const shared = all.filter((row) => row?.cash_model === 'shared_drawer')
+      setAllOutlets(all)
       setDrawerOutlets(shared)
       setDrawerOutletId((current) => current && shared.some((row) => row.id === current) ? current : shared[0]?.id || '')
-    }).catch(() => { if (active) { setDrawerOutlets([]); setDrawerOutletId('') } })
+      setOutletsLoaded(true)
+    }).catch(() => { if (active) { setAllOutlets([]); setDrawerOutlets([]); setDrawerOutletId('') } })
     return () => { active = false }
   }, [])
-
-  const loadOutletCashModels = useCallback(async () => {
-    try {
-      const rows = await window.api?.outlets?.getAll?.()
-      const all = Array.isArray(rows) ? rows : []
-      setCashModelOutlets(all)
-      setCashModelOutletId((current) => (current && all.some((row) => row.id === current) ? current : all[0]?.id || ''))
-    } catch {
-      setCashModelOutlets([])
-    }
-  }, [])
-
-  useEffect(() => { loadOutletCashModels() }, [loadOutletCashModels])
-
+  const hasPersonalOutlets = allOutlets.some((row) => row?.cash_model !== 'shared_drawer')
+  const hasSharedOutlets = drawerOutlets.length > 0
+  // Money-reviews summary: personal awaiting comes from the pending list;
+  // drawer awaiting comes from one lightweight state read per shared outlet
+  // (same getDrawerPeriodState contract the drawer card uses, offline-first).
+  // Counts never merge money — they only tell the manager where to scroll.
+  const [drawerReviewCounts, setDrawerReviewCounts] = useState({ awaiting: 0, open: 0, loaded: false })
+  // Older drawer counts from before a model switch: a non-shared outlet can
+  // still hold an open or submitted period, and hiding it would bury money.
+  const [olderDrawers, setOlderDrawers] = useState([])
   useEffect(() => {
-    const found = cashModelOutlets.find((row) => row.id === cashModelOutletId)
-    setCashModelChoice(found?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank')
-  }, [cashModelOutlets, cashModelOutletId])
-
-  const switchCashModel = async () => {
-    const outlet = cashModelOutlets.find((row) => row.id === cashModelOutletId)
-    if (!outlet || cashModelBusy) return
-    const current = outlet.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
-    const wanted = cashModelChoice === 'shared_drawer' ? 'one shared drawer' : 'separate pouches'
-    if (current === cashModelChoice) {
-      setNotice(`${outlet.name || 'This outlet'} already counts ${wanted}.`)
-      return
+    let active = true
+    if (!outletsLoaded) return () => { active = false }
+    if (allOutlets.length === 0) {
+      setDrawerReviewCounts({ awaiting: 0, open: 0, loaded: true })
+      setOlderDrawers([])
+      return () => { active = false }
     }
-    if (!window.confirm(`Switch ${outlet.name || 'this outlet'} to ${wanted}? Switching needs zero open Till shifts, drawer periods and reviews in the outlet — close or review them first.`)) return
-    setCashModelBusy(true)
-    setError('')
-    setNotice('')
+    setDrawerReviewCounts({ awaiting: 0, open: 0, loaded: false })
+    setOlderDrawers([])
+    Promise.all(allOutlets.map((outlet) =>
+      window.api?.pos?.getDrawerPeriodState?.(outlet.id)?.then((result) => ({ outlet, period: result?.success ? result?.period || null : 'unknown' })).catch(() => ({ outlet, period: 'unknown' })),
+    )).then((states) => {
+      if (!active) return
+      let awaiting = 0
+      let open = 0
+      const older = []
+      for (const { outlet, period } of states) {
+        if (period === 'unknown' || !period) continue
+        const shared = outlet?.cash_model === 'shared_drawer'
+        if (period.status === 'submitted') {
+          if (shared) awaiting += 1
+          else older.push({ outletId: outlet.id, outletName: outlet.name || 'Service outlet', status: period.status })
+        } else if (period.status === 'open' || period.status === 'rejected') {
+          if (shared) open += 1
+          else older.push({ outletId: outlet.id, outletName: outlet.name || 'Service outlet', status: period.status })
+        }
+      }
+      setDrawerReviewCounts({ awaiting, open, loaded: true })
+      setOlderDrawers(older)
+    })
+    return () => { active = false }
+  }, [allOutlets, outletsLoaded])
+  // Visibility: a queue shows when its model is in use, or when older items
+  // from before a switch still wait. Loading and unknown outlets fail open to
+  // today's layout so nothing flickers away before the truth arrives.
+  const showPersonal = loading || !outletsLoaded || hasPersonalOutlets || pendingCashups.length > 0
+  const showDrawer = hasSharedOutlets || olderDrawers.length > 0
+  const olderPersonal = outletsLoaded && !hasPersonalOutlets && pendingCashups.length > 0
+  const allSharedVenue = outletsLoaded && allOutlets.length > 0 && !hasPersonalOutlets
+  const allPersonalVenue = outletsLoaded && allOutlets.length > 0 && !hasSharedOutlets && olderDrawers.length === 0
+  const personalSectionRef = useRef(null)
+  const drawerSectionRef = useRef(null)
+  const scrollToSection = (ref) => {
     try {
-      const result = await window.api?.pos?.setOutletCashModel?.(outlet.id, cashModelChoice)
-      if (!result?.success) throw new Error(result?.error || 'The cash counting model could not be changed.')
-      setNotice(`${outlet.name || 'Outlet'} now counts ${wanted}. Open the drawer in Staff shift close before trading.`)
-      await loadOutletCashModels()
-    } catch (switchError) {
-      setError(switchError?.message || 'The cash counting model could not be changed.')
-      // Resync the dropdown to the authoritative model: a refused switch must
-      // never leave the control displaying the unapplied choice as truth.
-      await loadOutletCashModels()
-    } finally {
-      setCashModelBusy(false)
+      ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } catch {
+      /* scroll is best-effort */
     }
   }
 
@@ -235,12 +249,9 @@ export default function HposCashClose() {
     <HposPageHero
       eyebrow="Money control"
       title="Cash & close"
-      description="Review submitted physical cash counts against the server-confirmed Till totals. This page does not create a second drawer ledger."
-      actions={<div className="hpos-service-hero-actions"><label>Business date<input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} disabled={summaryBusy} /></label><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(false)} disabled={summaryBusy}>{summaryBusy ? 'Building…' : 'Certified PDF'}</HposButton><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(true)} disabled={summaryBusy}>Print summary</HposButton><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}
+      description={allSharedVenue ? 'Review the shared drawer count against the server total.' : allPersonalVenue ? "Review each seller's cash-up against server-confirmed Till totals." : 'Review submitted physical cash counts against the server-confirmed Till totals. This page does not create a second drawer ledger.'}
+      actions={<div className="hpos-service-hero-actions"><span className="hpos-report-group" aria-label="Daily report"><label>Report date<input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} disabled={summaryBusy} /></label><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(false)} disabled={summaryBusy}>{summaryBusy ? 'Building…' : 'Save report PDF'}</HposButton><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(true)} disabled={summaryBusy}>Print report</HposButton></span><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}
     />
-    <HposNotice tone="warning">
-      Private proof storage uses the same session-bound client as cash-up review. If the deployed Storage policy is unavailable, upload and read actions fail closed without storing a local file or changing the cash-up.
-    </HposNotice>
     {error && <HposNotice tone="error">{error}</HposNotice>}
     {notice && <HposNotice><CheckCircle2 size={17} />{notice}</HposNotice>}
     {openTabsCount != null && openTabsCount > 0 && (
@@ -250,39 +261,49 @@ export default function HposCashClose() {
         <HposButton onClick={() => { window.location.hash = '/hpos/checks' }}>Review open tabs</HposButton>
       </HposNotice>
     )}
-    {reviewDraft && <section className="hpos-cashup-review">
-      <div><p className="hpos-eyebrow">Manager decision</p><h2>{reviewDraft.decision === 'reject' ? 'Return cash-up for correction' : 'Approve and close shift'}</h2><p>{reviewDraft.submission.cashier_name || 'Till operator'} · {reviewDraft.submission.outlet_name || 'Service outlet'}</p></div>
-      <div className="hpos-cashup-review-list"><article className="hpos-cashup-review-card--decision">
-        <div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(reviewDraft.submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(reviewDraft.submission.counted_by_method?.cash, currency)}</strong></span><span>Variance<strong>{submissionVariance(reviewDraft.submission) === null ? 'Unavailable' : amount(submissionVariance(reviewDraft.submission), currency)}</strong></span></div>
-        <HposCashupProofs submissionId={reviewDraft.submission.id} canUpload={reviewDraft.submission.status === 'submitted'} />
-        <label className="hpos-my-cashup-notes"><span>{reviewDraft.decision === 'reject' ? 'Correction note (required)' : 'Approval note (optional)'}</span><textarea rows="3" value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} disabled={busy} /></label>
-        <label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onFocus={revealReviewActions} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} /></label>
-        {!reviewEvidence?.complete && !provisionalReview && <p className="hpos-cashup-review-note">Approval is blocked because expected and counted cash are unavailable. Return this cash-up for correction after the authoritative values are restored.</p>}
-        {!reviewEvidence?.complete && provisionalReview && <p className="hpos-cashup-review-note">Server totals are unavailable offline. Approving accepts the counted cash of {amount(reviewDraft.submission.counted_by_method?.cash, currency)} without them — the decision is queued and becomes final at sync.</p>}
-        <footer className="hpos-cashup-review-actions"><HposButton onClick={() => setReviewDraft(null)} disabled={busy}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy || (reviewDraft.decision === 'approve' && !reviewEvidence?.complete && !provisionalReview)}>{busy ? 'Saving…' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer>
-      </article></div>
-    </section>}
-    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : reviewUnavailable ? <section data-testid="cashup-review-unavailable" className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">Review unavailable</p><h2>Cash-up review is not verified</h2><p>{reviewUnavailable} No empty-queue conclusion is being shown. Refresh after the server connection is restored.</p><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh review</HposButton></section> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p></section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{pendingCashups.length} cash-up{pendingCashups.length === 1 ? '' : 's'} awaiting a decision</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div>{provisionalReview && <HposNotice tone="warning">You are offline. These are this device's submitted cash-ups only — the server may hold more. Reviews here are saved on this device and queued, and become final when sync confirms them.</HposNotice>}<div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header><div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div><HposCashupProofs submissionId={submission.id} canUpload={submission.status === 'submitted'} />{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy || !cashupApprovalAllowed(submission)}>Approve & close shift</HposButton></footer></article> })}</div></section>}
-    {cashModelOutlets.length > 0 && (
-      <section className="hpos-cashup-review" aria-label="Outlet cash counting">
-        <div><p className="hpos-eyebrow">Outlet setup</p><h2>How this outlet counts cash</h2><p>One shared drawer counts once per period; separate pouches keep a personal cash-up per seller. Switching needs an admin and zero open Till shifts, drawer periods or reviews.</p></div>
-        <label className="hpos-my-shift-outlet"><span>Outlet</span><select value={cashModelOutletId} onChange={(event) => setCashModelOutletId(event.target.value)} disabled={cashModelBusy}>{cashModelOutlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}</select></label>
-        {canSwitchCashModel ? (
-          <>
-            <label className="hpos-my-shift-outlet"><span>Cash counting</span><select value={cashModelChoice} onChange={(event) => setCashModelChoice(event.target.value)} disabled={cashModelBusy}><option value="shared_drawer">One shared drawer</option><option value="personal_bank">Separate pouches</option></select></label>
-            <HposButton tone="primary" onClick={switchCashModel} disabled={cashModelBusy}>{cashModelBusy ? 'Switching…' : 'Switch cash counting'}</HposButton>
-          </>
-        ) : (
-          <HposNotice>Currently counting {(() => { const found = cashModelOutlets.find((row) => row.id === cashModelOutletId); return found?.cash_model === 'shared_drawer' ? 'one shared drawer' : 'separate pouches'; })()}. Only an admin can switch it — ask an admin to open this page.</HposNotice>
-        )}
+    {!loading && !reviewUnavailable && (
+      <section className="hpos-cashup-review" aria-label="Money reviews summary">
+        <div><p className="hpos-eyebrow">Money reviews</p><h2>{(() => {
+          const personal = showPersonal ? pendingCashups.length : 0
+          const olderSubmitted = olderDrawers.filter((row) => row.status === 'submitted').length
+          const drawers = (drawerReviewCounts.loaded ? drawerReviewCounts.awaiting : 0) + olderSubmitted
+          if (!drawerReviewCounts.loaded) return 'Checking reviews…'
+          if (!showPersonal && showDrawer) return drawers > 0 ? `Drawer: ${drawers} waiting` : 'All clear — nothing waiting'
+          if (!showDrawer && showPersonal) return personal > 0 ? `Personal: ${personal} waiting` : 'All clear — nothing waiting'
+          const total = personal + drawers
+          if (total === 0) return 'All clear — nothing waiting'
+          return `${total} waiting (${personal} personal · ${drawers} drawer)`
+        })()}</h2><p>{allSharedVenue ? 'This venue counts one shared drawer — reviews live under Drawer close.' : 'Personal cash-ups and shared drawers stay separate below — counts never mix money, they only say where to look.'}</p></div>
+        <div className="hpos-cashup-review-actions">
+          {showPersonal && <HposButton onClick={() => scrollToSection(personalSectionRef)}>Go to personal</HposButton>}
+          {showDrawer && <HposButton onClick={() => scrollToSection(drawerSectionRef)}>Go to drawer</HposButton>}
+        </div>
       </section>
     )}
+    {showPersonal && (<><div ref={personalSectionRef} id="money-reviews-personal" />
+    {olderPersonal && !loading && !reviewUnavailable && <HposNotice>Older personal cash-ups from before this venue switched still need a decision below.</HposNotice>}
+    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : reviewUnavailable ? <section data-testid="cashup-review-unavailable" className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">Review unavailable</p><h2>Cash-up review is not verified</h2><p>{reviewUnavailable} No empty-queue conclusion is being shown. Refresh after the server connection is restored.</p><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh review</HposButton></section> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p>{drawerOutlets.length > 0 && <p className="hpos-cashup-review-note">Clock-outs without Till sales create no cash-up — nothing to review here. Shared drawer reviews live below in Drawer close.</p>}</section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{olderPersonal ? `${pendingCashups.length} older personal cash-up${pendingCashups.length === 1 ? '' : 's'} still needs a decision` : `${pendingCashups.length} cash-up${pendingCashups.length === 1 ? '' : 's'} awaiting a decision`}</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div>{provisionalReview && <HposNotice tone="warning">You are offline. These are this device's submitted cash-ups only — the server may hold more. Reviews here are saved on this device and queued, and become final when sync confirms them.</HposNotice>}<div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); const deciding = reviewDraft?.submission?.id === submission.id; return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header>{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div><HposCashupProofs submissionId={submission.id} canUpload={submission.status === 'submitted'} />{!deciding ? (<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy || !cashupApprovalAllowed(submission)}>Approve & close shift</HposButton>{!busy && !cashupApprovalAllowed(submission) && <span className="hpos-cashup-review-note">Approval needs expected and counted cash — return for correction.</span>}</footer>) : (<><label className="hpos-my-cashup-notes"><span>{reviewDraft.decision === 'reject' ? 'Correction note (required)' : 'Approval note (optional)'}</span><textarea rows="3" value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} disabled={busy} /></label><label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onFocus={revealReviewActions} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} /></label>{!reviewEvidence?.complete && !provisionalReview && <p className="hpos-cashup-review-note">Approval is blocked because expected and counted cash are unavailable. Return this cash-up for correction after the authoritative values are restored.</p>}{!reviewEvidence?.complete && provisionalReview && <p className="hpos-cashup-review-note">Server totals are unavailable offline. Approving accepts the counted cash of {amount(reviewDraft.submission.counted_by_method?.cash, currency)} without them — the decision is queued and becomes final at sync.</p>}<footer className="hpos-cashup-review-actions"><HposButton onClick={() => setReviewDraft(null)} disabled={busy}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy || (reviewDraft.decision === 'approve' && !reviewEvidence?.complete && !provisionalReview)}>{busy ? 'Saving…' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer></>)}</article> })}</div></section>}</>)}
+    {showDrawer && (<><div ref={drawerSectionRef} id="money-reviews-drawer" />
     {drawerOutlets.length > 0 && (
       <section className="hpos-cashup-review" aria-label="Shared drawer close">
         <div><p className="hpos-eyebrow">Shared drawer</p><h2>Drawer close</h2><p>One blind count per shared drawer. This is separate from personal Till cash-ups.</p></div>
-        <label className="hpos-my-shift-outlet"><span>Shared outlet</span><select value={drawerOutletId} onChange={(event) => setDrawerOutletId(event.target.value)}>{drawerOutlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}</select></label>
+        {drawerOutlets.length === 1 ? (
+          <p className="hpos-cashup-review-note">Shared outlet: {drawerOutlets[0]?.name || 'Service outlet'}</p>
+        ) : (
+          <label className="hpos-my-shift-outlet"><span>Shared outlet</span><select value={drawerOutletId} onChange={(event) => setDrawerOutletId(event.target.value)}>{drawerOutlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}</select></label>
+        )}
         {drawerOutletId && <HposDrawerClose outletId={drawerOutletId} />}
       </section>
     )}
+    {olderDrawers.map((row) => (
+      <section key={row.outletId} className="hpos-cashup-review" aria-label="Older drawer review">
+        <div><p className="hpos-eyebrow">Older drawer review</p><h2>{row.outletName}</h2><p>This outlet now counts separate pouches, but a drawer count from before the switch still needs a decision.</p></div>
+        <HposDrawerClose outletId={row.outletId} />
+      </section>
+    ))}</>)}
+    <section className="hpos-cashup-review" aria-label="Outlet setup moved">
+      <div><p className="hpos-eyebrow">Outlet setup</p><h2>How this outlet counts cash</h2><p>Outlet setup now lives in Settings → Outlets. Switching still needs an admin and zero open Till shifts, drawer periods or reviews.</p></div>
+      <HposButton onClick={() => { window.location.hash = '/settings?tab=outlets' }}>Open Outlet setup in Settings</HposButton>
+    </section>
   </div>
 }

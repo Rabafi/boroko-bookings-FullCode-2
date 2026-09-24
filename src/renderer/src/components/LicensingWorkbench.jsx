@@ -19,7 +19,7 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { formatLocalDate } from '../utils/localDate'
-import { getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
+import { getCommercialAddon, getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
 import { formatCommercialMoney } from '../../../shared/commercialPackages'
 import { getProductFamilyLabel, resolveProductFamily } from '../../../shared/productIdentity'
 import { ErrorNotice } from './shared/ErrorNotice'
@@ -154,11 +154,34 @@ function assignmentKey(lodgeId, productId) {
   return `${lodgeKey(lodgeId)}::${String(productId || '').trim().toLowerCase()}`
 }
 
+function normalizeAddonKeyEntry(value) {
+  if (typeof value === 'string') return value.trim()
+  if (value && typeof value === 'object') {
+    return String(value.addon_key || value.addonKey || value.key || '').trim()
+  }
+  return String(value || '').trim()
+}
+
 function selectedAddonKeys(license) {
-  const snapshot = license?.commercial_pricing_snapshot?.selection?.selected_addon_keys
-  if (Array.isArray(snapshot)) return [...new Set(snapshot.map((key) => String(key).trim()).filter(Boolean))]
-  if (Array.isArray(license?.selected_addon_keys)) return [...new Set(license.selected_addon_keys.map((key) => String(key).trim()).filter(Boolean))]
-  return []
+  const collected = []
+  const pushAll = (maybeArray) => {
+    if (Array.isArray(maybeArray)) {
+      for (const entry of maybeArray) {
+        const key = normalizeAddonKeyEntry(entry)
+        if (key) collected.push(key)
+      }
+    }
+  }
+  const selection = license?.commercial_pricing_snapshot?.selection
+  pushAll(selection?.selected_addon_keys)
+  // Older quote/selection payloads used requested_addons as the alias.
+  pushAll(selection?.requested_addons)
+  // Defensive: some snapshots/tests stash the array one level higher.
+  pushAll(license?.commercial_pricing_snapshot?.selected_addon_keys)
+  pushAll(license?.selected_addon_keys)
+  // Entitlement-derived rows expose enterprise_addons instead of a snapshot.
+  pushAll(license?.enterprise_addons)
+  return [...new Set(collected)]
 }
 
 const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
@@ -331,10 +354,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   const currentAssignments = useMemo(() => {
     const activeLicenses = buildAssignedLicenseMap(licenses)
 
-    return (companies || []).map((company) => ({
-      company,
-      license: activeLicenses.get(assignmentKey(company.lodge_id, getCompanyProductId(company))) || null
-    })).filter(({ company, license }) => {
+    return (companies || []).map((company) => {
+      const productId = getCompanyProductId(company)
+      const license = activeLicenses.get(assignmentKey(company.lodge_id, productId)) || null
+      // Union across every active row for this lodge+product: duplicate active
+      // rows can otherwise make the picked row look unticked while a sibling
+      // row carries the saved bundle keys.
+      const siblingLicenses = (licenses || []).filter((row) => (
+        lodgeKey(row?.lodge_id) === lodgeKey(company?.lodge_id)
+        && isAssignedLicense(row)
+        && String(row?.product_id || resolveProductFamily(row?.business_type) || '').toLowerCase() === String(productId || '').toLowerCase()
+      ))
+      return { company, license, siblingLicenses, productId }
+    }).filter(({ company, license }) => {
       const needle = filter.trim().toLowerCase()
       if (!needle) return true
       return String(company.lodge_name || '').toLowerCase().includes(needle)
@@ -345,9 +377,13 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   const startCreate = (company) => {
     const productId = getCompanyProductId(company)
     const offer = getCompanyOffer(company)
+    // Preselect the currently active add-ons for this lodge+product so a
+    // fresh assignment form never looks unticked when the client already
+    // has enabled bundles.
+    const existingLicense = buildAssignedLicenseMap(licenses).get(assignmentKey(company?.lodge_id, productId)) || null
     setEditingLicense(null)
     setError('')
-    setNotice('')
+    setNotice(existingLicense ? 'This client already has an active assignment — its enabled add-ons are preselected below.' : '')
     setAssignmentOperationId(crypto.randomUUID())
     setForm({
       lodge_id: company?.lodge_id || '',
@@ -360,7 +396,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
       payment_status: 'active',
       monthly_fee: '',
       currency: 'BWP',
-      selected_addon_keys: [],
+      selected_addon_keys: existingLicense ? selectedAddonKeys(existingLicense) : [],
       expires_at: '',
       next_due_date: '',
       notes: '',
@@ -403,6 +439,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     setSaving(true)
     const operationId = assignmentOperationId || crypto.randomUUID()
     if (!assignmentOperationId) setAssignmentOperationId(operationId)
+    let doneMessage = ''
     try {
       if (editingLicense) {
         if (String(editingLicense.id || '').startsWith('entitlement:')) {
@@ -439,7 +476,8 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           setAssignmentOperationId(crypto.randomUUID())
           return
         }
-        setNotice('License assignment updated.')
+        doneMessage = 'License assignment updated.'
+        setNotice(doneMessage)
       } else {
         const existing = buildAssignedLicenseMap(licenses).get(assignmentKey(form.lodge_id, form.product_id))
         if (existing && !existing._product_inferred) {
@@ -478,10 +516,14 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           return
         }
         const issuedKey = result?.license?.license_key || result?.license_key
-        setNotice(`Generated ${form.subscription_plan} license${issuedKey ? `: ${issuedKey}` : '.'}`)
+        doneMessage = `Generated ${form.subscription_plan} license${issuedKey ? `: ${issuedKey}` : '.'}`
+        setNotice(doneMessage)
       }
       setEditingLicense(null)
       startCreate(null)
+      // startCreate(null) clears notices as a side effect, which previously
+      // made successful saves look silent and led operators to save twice.
+      if (doneMessage) setNotice(doneMessage)
       await onRefresh()
     } catch (err) {
       setError(err?.message || 'Could not save license assignment')
@@ -531,7 +573,28 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         </div>
 
         <div className="divide-y divide-gray-700">
-          {currentAssignments.map(({ company, license }) => (
+          {currentAssignments.map(({ company, license, siblingLicenses, productId }) => {
+            const assignmentProductId = getCompanyProductId(company, license) || productId
+            const unionedAddonKeys = [...new Set((siblingLicenses?.length ? siblingLicenses : (license ? [license] : [])).flatMap((row) => selectedAddonKeys(row)))]
+            const enabledAddonKeys = unionedAddonKeys.length ? unionedAddonKeys : (license ? selectedAddonKeys(license) : [])
+            const eligibleAddons = getCommercialAddonOffers(
+              assignmentProductId,
+              company?.property_type || company?.business_type
+            )
+            // Always render active keys even when the current eligibility filter
+            // would hide them (e.g. package/profile mismatch), so a saved
+            // add-on can never look unticked in the list.
+            const displayAddons = [
+              ...eligibleAddons,
+              ...enabledAddonKeys
+                .filter((key) => !eligibleAddons.some((addon) => addon.addonKey === key))
+                .map((key) => getCommercialAddon(assignmentProductId, key) || { addonKey: key, displayName: key })
+            ]
+            const showAddonState = Boolean(license) && displayAddons.length > 0
+            const richestSibling = (siblingLicenses || []).slice().sort((a, b) => selectedAddonKeys(b).length - selectedAddonKeys(a).length)[0] || null
+            const editTarget = richestSibling && selectedAddonKeys(richestSibling).length > selectedAddonKeys(license || {}).length ? richestSibling : license
+            const snapshotHasSelection = Boolean(license?.commercial_pricing_snapshot?.selection)
+            return (
             <div key={company.lodge_id} className="p-5 flex items-start justify-between gap-4">
               <div>
                 <p className="font-semibold text-white">{company.lodge_name}</p>
@@ -539,7 +602,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                 <div className="flex flex-wrap gap-2 mt-3">
                   {license ? (
                     <>
-                      <span className="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded-full">{getProductFamilyLabel(getCompanyProductId(company, license))} · {getAssignmentLabel(company, license)}</span>
+                      <span className="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded-full">{getProductFamilyLabel(assignmentProductId)} · {getAssignmentLabel(company, license)}</span>
                       <span className={`text-xs px-2 py-1 rounded-full ${statusTone(license.subscription_state || license.payment_status)}`}>{getLicenseStatusLabel(license)}</span>
                       <span className="text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded-full">Due {fmtDate(license.next_due_date)}</span>
                     </>
@@ -547,15 +610,39 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
                     <span className="text-xs bg-red-500/15 text-red-300 px-2 py-1 rounded-full">No active assignment</span>
                   )}
                 </div>
+                {showAddonState && (
+                  <div className="flex flex-wrap gap-1.5 mt-2" aria-label="Enabled add-ons">
+                    {displayAddons.map((addon) => {
+                      const enabled = enabledAddonKeys.includes(addon.addonKey)
+                      const label = getCommercialAddon(assignmentProductId, addon.addonKey)?.displayName || addon.displayName || addon.addonKey
+                      const ineligible = !eligibleAddons.some((entry) => entry.addonKey === addon.addonKey)
+                      return (
+                        <span
+                          key={addon.addonKey}
+                          title={enabled ? `${label} is enabled for this client${ineligible ? ' (not in the current package/profile)' : ''}` : `${label} is not enabled`}
+                          className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${enabled ? 'bg-green-500/15 text-green-300' : 'bg-gray-700/60 text-gray-400'}`}
+                        >
+                          {enabled ? '● ' : '○ '}{label}{enabled && ineligible ? ' (kept)' : ''}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+                {license && enabledAddonKeys.length === 0 && (
+                  <p className="mt-2 text-[11px] text-gray-500" title={`license ${String(license?.id || '').slice(0, 8)} · snapshot ${snapshotHasSelection ? 'present' : 'missing'} · siblings ${siblingLicenses?.length || 0}`}>
+                    No saved add-on keys found on this assignment row{(siblingLicenses?.length || 0) > 1 ? ` (${siblingLicenses.length} active rows checked)` : ''} · {snapshotHasSelection ? 'snapshot present but empty' : 'no pricing snapshot'}.
+                  </p>
+                )}
               </div>
               <button
-                onClick={() => (license?._product_inferred ? startCreate(company) : license ? startEdit(license) : startCreate(company))}
+                onClick={() => (license?._product_inferred ? startCreate(company) : editTarget ? startEdit(editTarget) : startCreate(company))}
                 className="text-sm bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-xl"
               >
                 {license?._product_inferred ? 'Migrate assignment' : license ? 'Edit assignment' : 'Assign license'}
               </button>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 
@@ -563,6 +650,11 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         <div>
           <h3 className="text-lg font-semibold text-white">{editingLicense ? 'Edit assignment' : 'Create assignment'}</h3>
           <p className="text-sm text-gray-400 mt-1">Generate a fresh key or update an existing subscription record for a client.</p>
+          {editingLicense && !editingLicense.commercial_pricing_snapshot?.selection && (
+            <p className="mt-2 rounded-xl border border-amber-700 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+              This assignment has no pricing snapshot yet (legacy row). Tick the add-ons below and Save — saving rewrites the snapshot so the list can show green.
+            </p>
+          )}
         </div>
 
         {error && (
@@ -597,17 +689,21 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
             onChange={(event) => {
               const company = companyById.get(lodgeKey(event.target.value))
               setAssignmentOperationId((current) => current || crypto.randomUUID())
-              setForm((current) => ({
-                ...current,
-                lodge_id: company?.lodge_id || '',
-                lodge_name: company?.lodge_name || '',
-                business_type: company?.business_type || 'lodge',
-                operating_profile: getCompanyOperatingProfile(company),
-                product_id: getCompanyProductId(company),
-                commercial_package_key: getCompanyOffer(company)?.commercialPackageKey || '',
-                subscription_plan: getCompanyOffer(company)?.internalPlan || 'Starter',
-                selected_addon_keys: []
-              }))
+              setForm((current) => {
+                const nextProductId = getCompanyProductId(company)
+                const existingLicense = buildAssignedLicenseMap(licenses).get(assignmentKey(company?.lodge_id, nextProductId)) || null
+                return {
+                  ...current,
+                  lodge_id: company?.lodge_id || '',
+                  lodge_name: company?.lodge_name || '',
+                  business_type: company?.business_type || 'lodge',
+                  operating_profile: getCompanyOperatingProfile(company),
+                  product_id: nextProductId,
+                  commercial_package_key: getCompanyOffer(company)?.commercialPackageKey || '',
+                  subscription_plan: getCompanyOffer(company)?.internalPlan || 'Starter',
+                  selected_addon_keys: existingLicense ? selectedAddonKeys(existingLicense) : []
+                }
+              })
             }}
             required
           >

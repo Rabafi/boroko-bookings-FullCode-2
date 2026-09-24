@@ -27,10 +27,10 @@ export default function HposSharedShiftClose() {
   const [shifts, setShifts] = useState([])
   const [outlets, setOutlets] = useState([])
   const [drawerOutletPick, setDrawerOutletPick] = useState('')
-  // Shift tab holds clock in/out + personal cash-up; Drawer tab holds the
-  // shared drawer. Both share the person + PIN header above, so one PIN
-  // proves everything on this screen and there is nothing to pick twice.
-  const [activeTab, setActiveTab] = useState('shift')
+  // Single scrolling page: clock in/out + personal cash-up on top, shared
+  // drawer below when the outlet counts one drawer. No tabs — one PIN in the
+  // header proves clock-out and cash-up; drawer moves ask for the operator
+  // PIN on the drawer card itself.
   const [staffId, setStaffId] = useState('')
   const [pin, setPin] = useState('')
   const [role, setRole] = useState(barOnly ? 'bar' : 'waiter')
@@ -108,33 +108,49 @@ export default function HposSharedShiftClose() {
   const drawerOutletId = (!posShift && outlets.length === 1 ? outlets[0]?.id || '' : (!posShift ? drawerOutletPick : '')) || ''
   const drawerOutlet = useMemo(() => outlets.find((row) => String(row?.id || '') === String(drawerOutletId || '')) || null, [outlets, drawerOutletId])
   const showDrawerWithoutTill = Boolean(activeShift && !resolvingShift && !posShift && drawerOutletId && drawerOutlet?.cash_model === 'shared_drawer')
+  // Single flow per outlet: the drawer exists only for shared outlets. The
+  // no-Till branch must also prove the shared model — otherwise a personal
+  // outlet grows a second "Shared drawer" flow next to its cash-up.
+  const drawerOutletCashModel = drawerOutlet?.cash_model === 'shared_drawer' ? 'shared_drawer' : (drawerOutlet ? 'personal_bank' : null)
   // The clock-in notice renders at the top while the drawer card sits below
   // the fold on small terminals: bring the card to the operator exactly once
   // when it appears, the same pattern as the error anchor above.
   const drawerAnchorRef = useRef(null)
   const drawerWasVisibleRef = useRef(false)
   const drawerPromptedRef = useRef(false)
-  const drawerTabAvailable = Boolean(member && activeShift && !resolvingShift && ((posShift && outletCashModel === 'shared_drawer') || (!posShift && outlets.length > 0)))
-  const drawerPanelVisible = Boolean(activeTab === 'drawer' && drawerTabAvailable && ((posShift && outletCashModel === 'shared_drawer') || showDrawerWithoutTill))
+  // Drawer period for the scroll gate: undefined = not checked / unknown
+  // (stay at clock-out), null = confirmed no open period (needs opening,
+  // scroll once to the open prompt), object = period exists (already opened
+  // or in review, stay at clock-out). The drawer card itself is always shown
+  // below when the outlet counts one drawer — no tabs to hunt.
+  const [drawerPeriod, setDrawerPeriod] = useState(undefined)
+  const drawerVisible = Boolean(member && activeShift && !resolvingShift && ((posShift && outletCashModel === 'shared_drawer') || showDrawerWithoutTill))
   useEffect(() => {
-    // First person on shift lands on the drawer prompt without a second pick
-    // or a tab hunt. Manual tab choices afterwards are never overridden.
-    if (showDrawerWithoutTill && !drawerPromptedRef.current) {
-      drawerPromptedRef.current = true
-      setActiveTab('drawer')
+    let active = true
+    if (!showDrawerWithoutTill) {
+      if (active) setDrawerPeriod(undefined)
+      return () => { active = false }
     }
-  }, [showDrawerWithoutTill])
+    window.api?.pos?.getDrawerPeriodState?.(drawerOutletId)?.then((result) => {
+      if (!active) return
+      if (!result?.success) { setDrawerPeriod(undefined); return }
+      setDrawerPeriod(result?.period || null)
+    }).catch(() => { if (active) setDrawerPeriod(undefined) })
+    return () => { active = false }
+  }, [showDrawerWithoutTill, drawerOutletId, staffId])
   useEffect(() => {
-    // Wait for the view to settle: shift resolution flickers the card
-    // (mount, unmount, remount), and scrolling mid-flicker aborts
-    // mid-animation, which reads as down-then-back-up. Scroll once, late.
-    if (!drawerPanelVisible) {
-      drawerWasVisibleRef.current = false
+    // First opener scrolls once to the drawer open prompt — but only when the
+    // drawer still needs opening. When the drawer is already open (or in
+    // review) the clock-in stays at the top so a seller is never yanked to
+    // Record movement. Unknown drawer state fails closed to clock-out.
+    if (!(showDrawerWithoutTill && drawerPeriod === null)) {
+      if (!showDrawerWithoutTill) drawerWasVisibleRef.current = false
       return undefined
     }
-    if (drawerWasVisibleRef.current) return undefined
+    if (drawerWasVisibleRef.current || drawerPromptedRef.current) return undefined
     const timer = setTimeout(() => {
       drawerWasVisibleRef.current = true
+      drawerPromptedRef.current = true
       if (!drawerAnchorRef.current) return
       try {
         drawerAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -148,7 +164,7 @@ export default function HposSharedShiftClose() {
       }
     }, 500)
     return () => clearTimeout(timer)
-  }, [drawerPanelVisible])
+  }, [showDrawerWithoutTill, drawerPeriod])
 
   // Resolve the open Till shift + existing cash-up whenever the person changes.
   useEffect(() => {
@@ -195,7 +211,8 @@ export default function HposSharedShiftClose() {
     setPin('')
     setError('')
     setNotice('')
-    setActiveTab('shift')
+    setDrawerPeriod(undefined)
+    drawerWasVisibleRef.current = false
     drawerPromptedRef.current = false
   }
 
@@ -375,26 +392,35 @@ export default function HposSharedShiftClose() {
 
           {activeShift && resolvingShift && <HposNotice>Loading this person’s Till shift…</HposNotice>}
 
-          {member && activeShift && !resolvingShift && drawerTabAvailable && (
-            <div className="hpos-attendance-row" role="tablist" aria-label="Shift close sections">
-              <HposButton tone={activeTab === 'shift' ? 'primary' : 'secondary'} role="tab" aria-selected={activeTab === 'shift'} onClick={() => setActiveTab('shift')}>Shift & cash-up</HposButton>
-              <HposButton tone={activeTab === 'drawer' ? 'primary' : 'secondary'} role="tab" aria-selected={activeTab === 'drawer'} onClick={() => setActiveTab('drawer')}>Shared drawer</HposButton>
-            </div>
+          {/* Multi-outlet bars pick the drawer outlet once, above the clock-out. */}
+          {activeShift && !resolvingShift && !posShift && outlets.length > 1 && (
+            <label className="hpos-my-shift-outlet"><span>Shared drawer outlet</span><select value={drawerOutletPick} onChange={(event) => setDrawerOutletPick(event.target.value)} disabled={saving}><option value="">Choose outlet</option>{outlets.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
           )}
 
-          {(!drawerTabAvailable || activeTab === 'shift') && (<>
-
-          {activeShift && !resolvingShift && !posShift && (
+          {activeShift && !resolvingShift && !posShift && drawerOutletCashModel === 'shared_drawer' && (
             <HposNotice>
-              No open Till sales found for {member?.name || member?.email || 'this person'} — they can clock out without a cash-up.
+              No Till sales for {member?.name || member?.email || 'this person'} — the shared drawer stays open. Just clock out.
             </HposNotice>
           )}
 
-          {activeShift && !resolvingShift && posShift && (outletCashModel === 'shared_drawer' ? (
+          {activeShift && !resolvingShift && !posShift && drawerOutletCashModel !== 'shared_drawer' && (
             <HposNotice>
-              Till sales go to one shared drawer. Record drops and handovers in the Drawer tab — no personal cash-up is needed here.
+              No open Till sales found for {member?.name || member?.email || 'this person'} — just clock out.
             </HposNotice>
-          ) : (
+          )}
+
+          {activeShift && !resolvingShift && posShift && outletCashModel == null && (
+            <HposNotice>
+              Loading outlet cash model… cash-up and clock-out stay disabled until the outlet confirms shared drawer or separate pouches.
+            </HposNotice>
+          )}
+
+          {activeShift && !resolvingShift && posShift && outletCashModel === 'shared_drawer' && (
+            <HposNotice>
+              Till sales go to one shared drawer below — no personal cash-up is needed here.
+            </HposNotice>
+          )}
+          {activeShift && !resolvingShift && posShift && outletCashModel === 'personal_bank' && (
             <>
               <div className="hpos-my-cashup-figures">
                 <article><small>Cash to count</small><strong>Enter from the drawer</strong></article>
@@ -416,48 +442,38 @@ export default function HposSharedShiftClose() {
                 Till sales exist for this shift, so clock-out stays blocked until the cash-up is submitted.
               </p>
             </>
-          ))}
+          )}
 
+          {/* Single action below: clock-out never hides behind supplementary
+            content, so submitting a cash-up offline (or opening the drawer)
+            can never hide the way home. */}
           {!activeShift ? (
             <HposButton tone="primary" icon={LogIn} type="submit" disabled={!member || !pin || saving}>
               {saving ? 'Recording…' : 'Clock in'}
             </HposButton>
           ) : !resolvingShift && !posShift ? (
             <HposButton tone="primary" icon={LogOut} onClick={clockOut} disabled={!pin || saving}>
-              {saving ? 'Clocking out…' : 'Clock out without cash-up'}
+              {saving ? 'Clocking out…' : 'Clock out'}
             </HposButton>
           ) : !resolvingShift && posShift ? (
-            <HposButton tone="primary" icon={LogOut} onClick={clockOut} disabled={!pin || saving || (outletCashModel !== 'shared_drawer' && !submitted)}>
-              {saving ? 'Clocking out…' : (submitted || outletCashModel === 'shared_drawer') ? 'Clock out staff' : 'Submit cash-up first'}
+            <HposButton tone="primary" icon={LogOut} onClick={clockOut} disabled={!pin || saving || outletCashModel == null || (outletCashModel !== 'shared_drawer' && !submitted)}>
+              {saving ? 'Clocking out…' : outletCashModel == null ? 'Loading outlet…' : (submitted || outletCashModel === 'shared_drawer') ? 'Clock out' : 'Submit cash-up first'}
             </HposButton>
           ) : null}
-          </>)}
         </form>
       </section>
-      {activeTab === 'drawer' && drawerTabAvailable && (
-        <>
-          {!posShift && outlets.length > 1 && (
-            <section className="hpos-attendance-card" aria-label="Shared drawer outlet">
-              <div style={{ display: 'grid', gap: '12px', padding: '24px' }}>
-                <label className="hpos-my-shift-outlet"><span>Shared drawer outlet</span><select value={drawerOutletPick} onChange={(event) => setDrawerOutletPick(event.target.value)} disabled={saving}><option value="">Choose outlet</option>{outlets.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-              </div>
-            </section>
-          )}
+      {drawerVisible && (
+        <div ref={drawerAnchorRef} tabIndex={-1} data-testid="shared-shift-close-drawer-anchor">
           {posShift && outletCashModel === 'shared_drawer' && (
             <HposDrawerMovements outletId={posShift.outlet_id} staffId={staffId} />
           )}
           {showDrawerWithoutTill && (
-            <div ref={drawerAnchorRef} tabIndex={-1} data-testid="shared-shift-close-drawer-anchor">
-              <HposDrawerMovements outletId={drawerOutletId} staffId={staffId} />
-            </div>
-          )}
-          {!posShift && !showDrawerWithoutTill && drawerOutletId && (
-            <HposNotice>This outlet counts separate pouches — the personal cash-up lives in the Shift tab.</HposNotice>
+            <HposDrawerMovements outletId={drawerOutletId} staffId={staffId} />
           )}
           {!posShift && !showDrawerWithoutTill && !drawerOutletId && (
             <HposNotice>Choose an outlet above to see its shared drawer.</HposNotice>
           )}
-        </>
+        </div>
       )}
       <section className="hpos-attendance-active">
         <div><Clock3 size={18} /><strong>On shift now</strong><span>{shifts.length} active</span></div>

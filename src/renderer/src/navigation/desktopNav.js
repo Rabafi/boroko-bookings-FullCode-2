@@ -876,9 +876,13 @@ export function getDesktopNavItems(bizType, access, propertyType = null, subscri
   const normalizedPlan = normalizeSubscriptionPlan(subscriptionPlan)
   // Lodge product never enters hotel nav mode — hotel-class types stay lodge ops.
   const hotelMode = !lodgeProductScoped && isHotelPropertyType(normalizedPropertyType)
-  const barOnlyMode = normalizedPropertyType === 'restaurant' && isBarOnlyMode(operatingProfile)
+  // 'bar' is a first-class property type that reuses the restaurant rail: a bar
+  // with bar_only hospitality mode is barOnlyMode, and a bar bizType matches
+  // restaurant rail entries. Lodge nav is untouched (bizType 'lodge' unchanged).
+  const barOnlyMode = (normalizedPropertyType === 'restaurant' || normalizedPropertyType === 'bar') && isBarOnlyMode(operatingProfile)
   // On lodge product, never inherit pure hotel-type entries via bizType=hotel.
-  const effectiveBizType = lodgeProductScoped && bizType === 'hotel' ? 'lodge' : bizType
+  // A 'bar' business uses the restaurant rail.
+  const effectiveBizType = lodgeProductScoped && bizType === 'hotel' ? 'lodge' : (bizType === 'bar' ? 'restaurant' : bizType)
 
   return ALL_NAV.reduce((acc, item) => {
     // Hotel properties inherit lodge navigation plus hotel-only entries.

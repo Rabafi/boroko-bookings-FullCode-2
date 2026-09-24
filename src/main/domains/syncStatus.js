@@ -83,25 +83,27 @@ export function createDependencyCacheResolver() {
 
 function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
   const resolver = createDependencyCacheResolver();
-  const classify = (item = {}, queuePending = [], queueFailed = []) => {
+  // Build id sets once per status computation. Rebuilding them per item is
+  // O(n^2) and froze the app for minutes on 3k+ backlogs every 30s poll.
+  const pendingIds = new Set((pending || []).map((entry) => entry?._queue_id).filter(Boolean));
+  const failedIds = new Set((failed || []).map((entry) => entry?._queue_id).filter(Boolean));
+  const classify = (item = {}) => {
     const dependencyIds = [...new Set([
       item?._depends_on,
       ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
     ].map((value) => String(value || '').trim()).filter(Boolean))];
     if (dependencyIds.length === 0) return 'none';
 
-    const pendingIds = new Set((queuePending || []).map((entry) => entry?._queue_id).filter(Boolean));
-    const failedIds = new Set((queueFailed || []).map((entry) => entry?._queue_id).filter(Boolean));
     if (dependencyIds.some((dependencyId) => failedIds.has(dependencyId))) return 'blocked_dependencies';
     if (dependencyIds.some((dependencyId) => pendingIds.has(dependencyId))) return 'blocked_dependencies';
     if (dependencyIds.every((dependencyId) => resolver.isResolved(dependencyId))) return 'resolved';
     return 'resolved';
   };
 
-  const pendingMissingParent = pending.filter((item) => classify(item, pending, failed) === 'missing_parent').length;
-  const failedMissingParent = failed.filter((item) => classify(item, pending, failed) === 'missing_parent').length;
-  const pendingBlockedDependencies = pending.filter((item) => classify(item, pending, failed) === 'blocked_dependencies').length;
-  const failedBlockedDependencies = failed.filter((item) => classify(item, pending, failed) === 'blocked_dependencies').length;
+  const pendingMissingParent = pending.filter((item) => classify(item) === 'missing_parent').length;
+  const failedMissingParent = failed.filter((item) => classify(item) === 'missing_parent').length;
+  const pendingBlockedDependencies = pending.filter((item) => classify(item) === 'blocked_dependencies').length;
+  const failedBlockedDependencies = failed.filter((item) => classify(item) === 'blocked_dependencies').length;
   const financialRiskItems = pending.filter(isFinancialSyncItem).length + failed.filter(isFinancialSyncItem).length;
 
   return {

@@ -225,7 +225,7 @@ test('property type constants are defined', () => {
 
 test('property type order is correct', () => {
   assert.deepEqual(PROPERTY_TYPE_ORDER, [
-    'guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'
+    'guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant', 'bar'
   ])
 })
 
@@ -242,6 +242,7 @@ test('normalizePropertyType handles various inputs', () => {
   assert.equal(normalizePropertyType('resort'), 'resort')
   assert.equal(normalizePropertyType('restaurant'), 'restaurant')
   assert.equal(normalizePropertyType('pos_only'), 'restaurant')
+  assert.equal(normalizePropertyType('bar'), 'bar')
   assert.equal(normalizePropertyType(''), 'lodge')
   assert.equal(normalizePropertyType(null), 'lodge')
 })
@@ -255,6 +256,7 @@ test('getPropertyTypeLabel returns correct labels', () => {
   assert.equal(getPropertyTypeLabel('hotel'), 'Hotel')
   assert.equal(getPropertyTypeLabel('resort'), 'Resort')
   assert.equal(getPropertyTypeLabel('restaurant'), 'Restaurant / POS Only')
+  assert.equal(getPropertyTypeLabel('bar'), 'Bar / Bar POS')
 })
 
 test('isHotelPropertyType identifies hotel types correctly', () => {
@@ -274,6 +276,7 @@ test('isResortPropertyType identifies resort correctly', () => {
 
 test('isRestaurantOnly identifies restaurant correctly', () => {
   assert.equal(isRestaurantOnly('restaurant'), true)
+  assert.equal(isRestaurantOnly('bar'), true)
   assert.equal(isRestaurantOnly('hotel'), false)
   assert.equal(isRestaurantOnly('lodge'), false)
 })

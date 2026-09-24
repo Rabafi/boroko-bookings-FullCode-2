@@ -91,10 +91,12 @@ export default function RoomAttributes({ embedded = false }) {
         sort_order: Number(form.sort_order) || 0
       }
       if (editingId) {
-        await window.api.roomAttributes.update(editingId, payload)
+        const updated = await window.api.roomAttributes.update(editingId, payload)
+        if (updated?.success === false) throw new Error(updated?.error || 'Could not update this attribute.')
         setSuccess('Attribute updated')
       } else {
-        await window.api.roomAttributes.create(payload)
+        const created = await window.api.roomAttributes.create(payload)
+        if (created?.success === false) throw new Error(created?.error || 'Could not create this attribute.')
         setSuccess('Attribute created')
       }
       setShowModal(false)
@@ -111,7 +113,8 @@ export default function RoomAttributes({ embedded = false }) {
       message: 'Delete this room attribute?',
       onConfirm: async () => {
         try {
-          await window.api.roomAttributes.delete(attrId)
+          const deleted = await window.api.roomAttributes.delete(attrId)
+          if (deleted?.success === false) throw new Error(deleted?.error || 'Could not delete this attribute.')
           setSuccess('Attribute deleted')
           load()
         } catch (err) {

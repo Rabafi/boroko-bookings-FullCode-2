@@ -2386,6 +2386,23 @@ export default function POS() {
     }
   }
 
+  // Display pins survive restarts: seed the per-screen selectors from the
+  // saved hardware settings the first time they load on this computer.
+  const displayPinsSeededRef = useRef(false)
+  useEffect(() => {
+    if (displayPinsSeededRef.current) return
+    if (!hardwareSettings) return
+    const pins = {
+      customer: hardwareSettings.display_customer_display_id || '',
+      kitchen: hardwareSettings.display_kitchen_display_id || '',
+      bar: hardwareSettings.display_bar_display_id || ''
+    }
+    if (pins.customer || pins.kitchen || pins.bar) {
+      setDisplayTargets((prev) => ({ ...prev, ...pins }))
+      displayPinsSeededRef.current = true
+    }
+  }, [hardwareSettings])
+
   const testHardware = async (kind) => {
     const res = await window.api.pos.testHardware?.(kind)
     setHardwareMsg(res?.message || res?.error || 'Hardware test finished.')
@@ -2408,21 +2425,46 @@ export default function POS() {
     setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened${res.fullScreen ? ' in full screen' : ' in a separate window'}${placement}.`)
   }
 
-  const renderDisplayTargetSelect = (kind) => (
-    <select
-      className="input mt-3"
-      value={displayTargets[kind] || ''}
-      onChange={(e) => setDisplayTargets((prev) => ({ ...prev, [kind]: e.target.value }))}
-      aria-label={`Monitor for ${kind} POS display`}
-    >
-      <option value="">Remembered screen / system default</option>
-      {systemDisplays.map((display) => (
-        <option key={`${kind}-${display.id}`} value={display.id}>
-          {display.label}{display.isPrimary ? ' (Primary)' : ''}
-        </option>
-      ))}
-    </select>
-  )
+  const displayPinField = (kind) => kind === 'bar'
+    ? 'display_bar_display_id'
+    : kind === 'kitchen'
+      ? 'display_kitchen_display_id'
+      : 'display_customer_display_id'
+
+  const renderDisplayTargetSelect = (kind) => {
+    const pinnedId = hardwareSettings?.[displayPinField(kind)] || ''
+    const pinnedMissing = Boolean(pinnedId) && systemDisplays.length > 0
+      && !systemDisplays.some((display) => String(display.id) === String(pinnedId))
+    return (
+      <>
+        <select
+          className="input mt-3"
+          value={displayTargets[kind] || ''}
+          onChange={(e) => {
+            const next = e.target.value
+            setDisplayTargets((prev) => ({ ...prev, [kind]: next }))
+            // Pin the choice so this screen reopens on the same monitor after
+            // restart. Saved with the next Save Settings.
+            setHardwareSettings((prev) => ({ ...(prev || {}), [displayPinField(kind)]: next }))
+          }}
+          aria-label={`Monitor for ${kind} POS display (pinned across restarts)`}
+        >
+          <option value="">Remembered screen / system default</option>
+          {systemDisplays.map((display) => (
+            <option key={`${kind}-${display.id}`} value={display.id}>
+              {display.label}{display.isPrimary ? ' (Primary)' : ''}
+            </option>
+          ))}
+        </select>
+        {pinnedId && !pinnedMissing && (
+          <p className="mt-1 text-xs text-emerald-700">Pinned — reopens here after restart. Save Settings to keep.</p>
+        )}
+        {pinnedMissing && (
+          <p className="mt-1 text-xs text-amber-700">Pinned screen not detected. Reconnect it or pick another monitor, then save.</p>
+        )}
+      </>
+    )
+  }
 
   const escposTargetConfigured = Boolean(
     hardwareSettings?.escpos_connection_type === 'network'
@@ -2438,9 +2480,11 @@ export default function POS() {
     },
     {
       label: 'Cash Drawer',
-      value: hardwareSettings?.cash_drawer_enabled
-        ? escposTargetConfigured ? 'Drawer pulse ready' : 'Needs ESC/POS target'
-        : 'Disabled'
+      value: hardwareSettings?.cash_drawer_manual === true
+        ? 'Manual drawer — key open'
+        : hardwareSettings?.cash_drawer_enabled
+          ? escposTargetConfigured ? 'Drawer pulse ready' : 'Needs ESC/POS target'
+          : 'Disabled'
     },
     {
       label: 'Card Terminal',
@@ -4541,10 +4585,16 @@ export default function POS() {
                     <input type="checkbox" checked={hardwareSettings?.cash_drawer_enabled === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_enabled: e.target.checked }))} />
                     Drawer connected
                   </label>
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700" title="Drawer but no printer: open with the key. No kicks, no warnings; money routines keep working.">
+                    <input type="checkbox" checked={hardwareSettings?.cash_drawer_manual === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_manual: e.target.checked }))} />
+                    Manual drawer (no printer)
+                  </label>
+                  {hardwareSettings?.cash_drawer_manual !== true && (
                   <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
                     <input type="checkbox" checked={hardwareSettings?.cash_drawer_open_on_cash === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), cash_drawer_open_on_cash: e.target.checked }))} />
                     Open on cash sale
                   </label>
+                  )}
                   <select
                     className="input"
                     value={hardwareSettings?.cash_drawer_open_timing || 'after_payment'}
@@ -4623,7 +4673,66 @@ export default function POS() {
                     placeholder="Timeout ms"
                   />
                 </div>
+                {(hardwareSettings?.payment_terminal_mode || 'manual') === 'manual' && (
+                  <p className="mt-2 text-xs text-slate-500">Manual mode works with any bank machine (FNB, Stanbic, Absa…): type the amount into the machine, take the card, then enter the approval code at the terminal. If the bank installed till-integration software on this PC, use a bridge mode with the address from the bank technician — the exact message the Till sends is documented in the Bar app under System Health › Devices.</p>
+                )}
               </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Barcode scanner</p>
+                <p className="mt-1 text-xs text-slate-500">USB/Bluetooth keyboard-wedge scanners cannot report “connected” — confirm with a real scan at the terminal. Detailed verification lives in the Bar app under System Health › Devices.</p>
+                <div className="mt-2 grid gap-2 md:grid-cols-3">
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" checked={hardwareSettings?.barcode_scanner_enabled !== false} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), barcode_scanner_enabled: e.target.checked }))} />
+                    Scanner enabled
+                  </label>
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    max="128"
+                    value={hardwareSettings?.barcode_scanner_min_length ?? 4}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), barcode_scanner_min_length: Number(e.target.value) }))}
+                    placeholder="Min chars"
+                  />
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    max="128"
+                    value={hardwareSettings?.barcode_scanner_max_length ?? 128}
+                    onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), barcode_scanner_max_length: Number(e.target.value) }))}
+                    placeholder="Max chars"
+                  />
+                </div>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  <select
+                    className="input"
+                    value={hardwareSettings?.barcode_scanner_accept_enter !== false ? hardwareSettings?.barcode_scanner_accept_tab !== false ? 'enter+tab' : 'enter' : 'tab'}
+                    onChange={(e) => { const value = e.target.value; setHardwareSettings((prev) => ({ ...(prev || {}), barcode_scanner_accept_enter: value.includes('enter'), barcode_scanner_accept_tab: value.includes('tab') })) }}
+                  >
+                    <option value="enter+tab">Enter or Tab terminator</option>
+                    <option value="enter">Enter only</option>
+                    <option value="tab">Tab only</option>
+                  </select>
+                  <p className="text-xs text-slate-500">Last verification: {hardwareSettings?.scanner_last_verified_at ? new Date(hardwareSettings.scanner_last_verified_at).toLocaleString('en-GB') : 'not yet verified on this computer'}.</p>
+                </div>
+              </div>
+              {hardwareSettings?.receipt_print_mode === 'escpos' && !escposTargetConfigured && (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">Direct ESC/POS is selected but no printer target is set above — receipts and drawer kicks will fail until the IP or device path is saved.</p>
+              )}
+              {hardwareSettings?.cash_drawer_manual === true && (
+                <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">Manual drawer: opened with the key. No electronic kicks are attempted and receipts print cleanly; float, drops, and cash-ups work as usual.</p>
+              )}
+              {hardwareSettings?.cash_drawer_manual !== true && hardwareSettings?.cash_drawer_enabled === true && hardwareSettings?.receipt_print_mode === 'escpos' && !escposTargetConfigured && (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">The cash drawer kicks through the receipt printer — it needs the same ESC/POS target.</p>
+              )}
+              {hardwareSettings?.receipt_printer_name && receiptPrinters.length > 0 && !receiptPrinters.some((printer) => printer.name === hardwareSettings.receipt_printer_name) && (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">The saved printer “{hardwareSettings.receipt_printer_name}” was not found among this PC’s {receiptPrinters.length} detected printer{receiptPrinters.length === 1 ? '' : 's'} — pick a detected printer, then save.</p>
+              )}
+              {systemDisplays.length <= 1 && (
+                <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">Only {systemDisplays.length === 0 ? 'no' : 'one'} monitor detected — displays open as a window you can drag. Connect a second monitor for a dedicated guest screen.</p>
+              )}
               {hardwareMsg && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">{hardwareMsg}</p>}
               <div className="flex flex-wrap gap-2">
                 <button className="btn-primary" onClick={() => saveHardware()}>Save Settings</button>
@@ -4634,6 +4743,21 @@ export default function POS() {
                 }}>Open Drawer</button>
                 <button className="btn-secondary" onClick={() => testHardware('escpos')}>Test ESC/POS</button>
                 <button className="btn-secondary" onClick={() => testHardware('payment-terminal')}>Test Card Terminal</button>
+                <button className="btn-secondary" onClick={async () => {
+                  const steps = []
+                  const receipt = await window.api.pos.testHardware?.('receipt')
+                  steps.push(`Receipt: ${receipt?.message || receipt?.error || 'done'}`)
+                  if (hardwareSettings?.cash_drawer_enabled && hardwareSettings?.cash_drawer_manual !== true) {
+                    const drawer = await window.api.pos.testHardware?.('drawer')
+                    steps.push(`Drawer: ${drawer?.message || drawer?.error || 'done'}`)
+                  } else {
+                    steps.push(hardwareSettings?.cash_drawer_manual === true ? 'Drawer: manual drawer — no kick test' : 'Drawer: skipped (not enabled)')
+                  }
+                  const terminal = await window.api.pos.testHardware?.('payment-terminal')
+                  steps.push(`Card terminal: ${terminal?.message || terminal?.error || 'done'}`)
+                  steps.push(systemDisplays.length ? `Displays: ${systemDisplays.length} detected` : 'Displays: none detected')
+                  setHardwareMsg(`Test all devices — ${steps.join(' · ')}`)
+                }}>Test all devices</button>
               </div>
             </div>
           </div>
@@ -4703,7 +4827,21 @@ export default function POS() {
               </div>
 
               <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                Keep the main POS on the cashier terminal. Put the customer display on the guest-facing monitor, and put the kitchen or bar display on a tablet, TV, or second workstation. This device remembers each display placement after restart.
+                Keep the main POS on the cashier terminal. Put the customer display on the guest-facing monitor, and put the kitchen or bar display on a tablet, TV, or second workstation. Each monitor choice above is pinned and survives restart once saved.
+              </div>
+              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={hardwareSettings?.display_customer_auto_open === true} onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), display_customer_auto_open: e.target.checked }))} />
+                Open customer display automatically when the app starts (on its pinned screen)
+              </label>
+              <div>
+                <p className="mb-1 text-xs font-bold uppercase tracking-widest text-slate-400">Welcome message on the guest screen</p>
+                <input
+                  className="input"
+                  value={hardwareSettings?.display_welcome_message || ''}
+                  onChange={(e) => setHardwareSettings((prev) => ({ ...(prev || {}), display_welcome_message: e.target.value }))}
+                  placeholder="e.g. Welcome — tonight: live music from 8pm"
+                  maxLength={140}
+                />
               </div>
             </div>
           </div>

@@ -425,7 +425,7 @@ test('kitchen-display route is wired with BarOnlyBlockedRedirect (not only helpe
   const app = fs.readFileSync(path.join(root, 'src/renderer/src/App.jsx'), 'utf8')
   // Guard component must exist and call the shared blocker.
   assert.match(app, /function BarOnlyBlockedRedirect/)
-  assert.match(app, /barOnlyMode && isBarOnlyBlockedPath\(location, enabledFeatures\)/)
+  assert.match(app, /barOnlyMode && isBarOnlyBlockedPath\(appPath, enabledFeatures\)/)
   // RestaurantGuard must compose the shared redirect (not a divergent path list).
   assert.match(app, /return <BarOnlyBlockedRedirect>\{children\}<\/BarOnlyBlockedRedirect>/)
 

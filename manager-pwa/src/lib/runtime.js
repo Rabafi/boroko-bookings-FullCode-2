@@ -600,6 +600,97 @@ export function markPwaNotificationReadBySourceKey(lodgeId, sourceKey) {
 
 // Maximum retries before a saved change is considered stuck.
 const PWA_MAX_RETRIES = 3
+// Warn early so a busy device never hits the browser ~5MB localStorage cliff
+// without guidance. The queue stays uncapped; this is guidance, not a block.
+export const PWA_QUEUE_WARN_COUNT = 200
+
+export function isPwaStorageFullError(error) {
+  const message = String(error?.message || error || '').toLowerCase()
+  return (
+    error?.name === 'QuotaExceededError' ||
+    message.includes('quota') ||
+    message.includes('storage is full') ||
+    message.includes('did not retain the queue envelope') ||
+    message.includes('could not be durably persisted') ||
+    message.includes('was not durably persisted')
+  )
+}
+
+export function friendlyPwaQueueError(error, actionLabel = 'This change') {
+  if (isPwaStorageFullError(error)) {
+    return new Error(
+      `${actionLabel} could not be saved — this device's browser storage is full. Export the waiting queue below, then sync or clear blocked items and try again. No sent work was lost.`
+    )
+  }
+  return error
+}
+
+export function getPwaStorageHealth(lodgeId) {
+  const queue = getOfflineQueue(lodgeId)
+  let queueBytes = null
+  try {
+    queueBytes = JSON.stringify(queue).length
+  } catch {
+    queueBytes = null
+  }
+  const warn = queue.length >= PWA_QUEUE_WARN_COUNT
+  return {
+    queueLength: queue.length,
+    queueBytes,
+    warn,
+    warnCount: PWA_QUEUE_WARN_COUNT,
+    deviceOnly: true,
+    checkedAt: new Date().toISOString()
+  }
+}
+
+export async function getPwaStorageEstimate() {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+      const estimate = await navigator.storage.estimate()
+      return {
+        quota: typeof estimate.quota === 'number' ? estimate.quota : null,
+        usage: typeof estimate.usage === 'number' ? estimate.usage : null
+      }
+    }
+  } catch {
+    // Best effort only.
+  }
+  return { quota: null, usage: null }
+}
+
+export function exportPwaOfflineQueue(lodgeId) {
+  const queue = getOfflineQueue(lodgeId)
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    lodgeId,
+    deviceOnly: true,
+    count: queue.length,
+    items: queue
+  }
+  const datePart = new Date().toISOString().slice(0, 10)
+  return {
+    filename: `pwa-offline-queue-${String(lodgeId || 'global').slice(0, 8)}-${datePart}.json`,
+    json: JSON.stringify(payload, null, 2),
+    count: queue.length
+  }
+}
+
+export function clearPwaBlockedOperations(lodgeId) {
+  const queue = getOfflineQueue(lodgeId)
+  const blocked = queue.filter((item) => item?.blocked === true)
+  if (blocked.length === 0) return { removed: 0 }
+  const remaining = queue.filter((item) => item?.blocked !== true)
+  setOfflineQueue(lodgeId, remaining)
+  appendIssueLog(lodgeId, {
+    scope: 'pwa-queue',
+    severity: 'warn',
+    message: `Cleared ${blocked.length} blocked offline item(s) after export`,
+    detail: 'Blocked items can never send (e.g. online-only actions attempted offline).',
+    context: { removed: blocked.map((item) => ({ id: item?.id || null, type: item?.type || null })) }
+  })
+  return { removed: blocked.length }
+}
 
 /**
  * Scan the offline queue for this device and return items that are unresolved:

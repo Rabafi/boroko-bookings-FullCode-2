@@ -56,7 +56,7 @@ test('wizard keeps a stock-only path and read-only recipe recovery', () => {
   const source = wizard()
   assert.match(source, /Stock only \(not sold directly\)/)
   assert.match(source, /Stock-only: counted but not sold directly/)
-  assert.match(source, /Recipe product\./)
+  assert.match(source, /Recipe product \(Included with Stock add-on\)\./)
   assert.match(source, /no casual conversion contract exists/i)
   // Recipe edits touch price/barcode/availability only.
   assert.match(source, /updateMenuItem\?\.\(initialProduct\.id/)

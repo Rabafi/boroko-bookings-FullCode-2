@@ -7,6 +7,11 @@ const SYNC_META_FILE = 'sync-meta.json';
 const HEALTH_FAULTS_FILE = 'health-faults.json';
 const OFFLINE_OPERATION_LOG_FILE = 'offline-operation-log.jsonl';
 const OFFLINE_MODE_FILE = 'lodge-offline-mode.json';
+// Status checks run every ~30s, so the hot summary path only parses the tail.
+// Full reads stay explicit (limit: 0) for support exports.
+export const OPERATION_JOURNAL_SUMMARY_LIMIT = 500;
+const OPERATION_JOURNAL_MAX_BYTES = 5 * 1024 * 1024;
+const OPERATION_JOURNAL_RETAIN_LINES = 2000;
 export const SYNC_DRIFT_FAULT_TYPES = ['customer_drift', 'room_drift', 'quotation_drift', 'pos_drift'];
 const HEALTH_FAULT_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
 const HEALTH_FAULT_MAX_MESSAGE_LENGTH = 1200;
@@ -195,6 +200,46 @@ function normalizeQueueRows(parsed, scope = 'sync-queue') {
   return validRows;
 }
 
+export function pruneOperationJournalIfNeeded() {
+  if (!state.cacheDir) return null;
+  const filePath = path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE);
+  let sizeBytes = null;
+  try {
+    sizeBytes = fs.statSync(filePath).size;
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= OPERATION_JOURNAL_MAX_BYTES) return null;
+  let lines = [];
+  try {
+    lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/).filter(Boolean);
+  } catch {
+    return null;
+  }
+  if (lines.length <= OPERATION_JOURNAL_RETAIN_LINES) return null;
+  const kept = lines.slice(-OPERATION_JOURNAL_RETAIN_LINES);
+  const tmpPath = `${filePath}.trim.tmp`;
+  try {
+    const tmpFd = fs.openSync(tmpPath, 'w');
+    try {
+      fs.writeFileSync(tmpFd, `${kept.join('\n')}\n`, 'utf-8');
+      fs.fsyncSync(tmpFd);
+    } finally {
+      fs.closeSync(tmpFd);
+    }
+    replaceFileSync(tmpPath, filePath, 'operation journal trim');
+  } catch {
+    return null;
+  }
+  appendHealthFault({
+    type: 'operation_journal_rotated',
+    scope: 'offline-operation-log',
+    message: `History log passed ${Math.round(sizeBytes / 1024 / 1024)}MB and was trimmed to the newest ${OPERATION_JOURNAL_RETAIN_LINES} entries. Queued sales are untouched.`,
+    at: new Date().toISOString()
+  });
+  return { trimmed: lines.length - kept.length, sizeBytes };
+}
+
 export function appendOperationJournalEntry(event, item = {}, extra = {}) {
   if (!state.cacheDir) return null;
   const now = new Date().toISOString();
@@ -225,6 +270,11 @@ export function appendOperationJournalEntry(event, item = {}, extra = {}) {
   };
   try {
     appendJsonLineDurable(path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE), entry);
+    try {
+      pruneOperationJournalIfNeeded();
+    } catch {
+      // Best effort only; the new entry is already safe on disk.
+    }
     return entry;
   } catch (error) {
     appendHealthFault({
@@ -259,24 +309,95 @@ export function readOperationJournal({ limit = 500 } = {}) {
   }
 }
 
-export function getOperationJournalSummary() {
-  const entries = readOperationJournal({ limit: 0 });
+function summarizeJournalEntries(entries = []) {
   const byEvent = {};
   const byOperation = {};
   let oldestAt = null;
   let newestAt = null;
   for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
     byEvent[entry.event] = (byEvent[entry.event] || 0) + 1;
     if (entry.operation) byOperation[entry.operation] = (byOperation[entry.operation] || 0) + 1;
     if (entry.at && (!oldestAt || Date.parse(entry.at) < Date.parse(oldestAt))) oldestAt = entry.at;
     if (entry.at && (!newestAt || Date.parse(entry.at) > Date.parse(newestAt))) newestAt = entry.at;
   }
+  return { byEvent, byOperation, oldestAt, newestAt };
+}
+
+export function getOperationJournalSummary({ limit = OPERATION_JOURNAL_SUMMARY_LIMIT } = {}) {
+  if (!state.cacheDir) {
+    return {
+      total: 0,
+      truncated: false,
+      limit: Number(limit) || 0,
+      fileSizeBytes: null,
+      oldestAt: null,
+      newestAt: null,
+      byEvent: {},
+      byOperation: {},
+      file: null
+    };
+  }
+  const filePath = path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE);
+  let fileSizeBytes = null;
+  try {
+    fileSizeBytes = fs.statSync(filePath).size;
+  } catch {
+    fileSizeBytes = null;
+  }
+  let lines = [];
+  try {
+    lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/).filter(Boolean);
+  } catch {
+    return {
+      total: 0,
+      truncated: false,
+      limit: Number(limit) || 0,
+      fileSizeBytes,
+      oldestAt: null,
+      newestAt: null,
+      byEvent: {},
+      byOperation: {},
+      file: filePath
+    };
+  }
+  const total = lines.length;
+  const useLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 0;
+  const selected = useLimit > 0 ? lines.slice(-useLimit) : lines;
+  const entries = [];
+  for (const line of selected) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object') entries.push(parsed);
+    } catch {
+      // Skip one bad line; the queue files stay the source of truth.
+    }
+  }
+  const summary = summarizeJournalEntries(entries);
+  return {
+    total,
+    truncated: useLimit > 0 && total > selected.length,
+    limit: useLimit,
+    fileSizeBytes,
+    oldestAt: summary.oldestAt,
+    newestAt: summary.newestAt,
+    byEvent: summary.byEvent,
+    byOperation: summary.byOperation,
+    file: filePath
+  };
+}
+
+export function summarizeFullJournalEntries(entries = []) {
+  const summary = summarizeJournalEntries(entries);
   return {
     total: entries.length,
-    oldestAt,
-    newestAt,
-    byEvent,
-    byOperation,
+    truncated: false,
+    limit: 0,
+    fileSizeBytes: null,
+    oldestAt: summary.oldestAt,
+    newestAt: summary.newestAt,
+    byEvent: summary.byEvent,
+    byOperation: summary.byOperation,
     file: state.cacheDir ? path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE) : null
   };
 }
@@ -351,6 +472,7 @@ export function buildLocalOperationsBundle(extra = {}) {
   const queue = readSyncQueue();
   const failed = readFailedSyncQueue();
   const journal = readOperationJournal({ limit: 0 });
+  const journalSummary = summarizeFullJournalEntries(journal);
   const syncMeta = readSyncMeta();
   const healthFaults = readHealthFaults();
   let cacheFreshness = {};
@@ -366,7 +488,7 @@ export function buildLocalOperationsBundle(extra = {}) {
     syncMeta,
     cacheFreshness,
     healthFaults,
-    operationJournalSummary: getOperationJournalSummary(),
+    operationJournalSummary: journalSummary,
     pendingQueue: queue.map(redactSecureQueueSecrets),
     failedQueue: failed.map(redactSecureQueueSecrets),
     operationJournal: journal,
