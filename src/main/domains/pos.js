@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
 import { resolveCurrentOpenShiftId } from './syncShared.js'
-import { checkOnline, withNetworkTimeout, broadcastSyncStatus } from './connectivity.js'
+import { withNetworkTimeout, broadcastSyncStatus } from './connectivity.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
 import { mergeRemotePosOrdersWithLocalState } from './posMerge.js'
@@ -85,6 +85,34 @@ async function readPosRemoteCached(key, fetcher) {
 function getDesktopPosDeviceId() {
   const source = state.cacheDir || state.lodgeId || 'boroko-desktop-pos';
   return `desktop-${createHash('sha256').update(String(source)).digest('hex').slice(0, 24)}`;
+}
+
+// Provisional receipt numbers for offline sales. Display-only: the server
+// issues the authoritative receipt_number on replay and it replaces this
+// value. The provisional number lets the customer receipt, My Sales and
+// Sales history show a real receipt reference and full prices while offline
+// instead of "UNAVAILABLE". Format TILL-YYYYMMDD-NNNN, sequenced per outlet
+// per business day on this device.
+function nextOfflineReceiptNumber(outletId = null) {
+  const businessDate = getLocalDateKey();
+  const compactDate = String(businessDate || '').replaceAll('-', '') || '00000000';
+  const cacheKey = 'pos-offline-receipt-counters';
+  let counters = {};
+  try {
+    const raw = readCache(cacheKey);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) counters = raw;
+  } catch {
+    counters = {};
+  }
+  const key = `${businessDate || 'nodate'}:${outletId || 'nooutlet'}`;
+  const next = Number(counters[key] || 0) + 1;
+  counters[key] = next;
+  try {
+    writeCache(cacheKey, counters);
+  } catch {
+    /* receipt sequencing is best-effort; uniqueness still holds via the order id */
+  }
+  return `TILL-${compactDate}-${String(next).padStart(4, '0')}`;
 }
 
 function isReadOnlySessionTouchError(error) {
@@ -854,7 +882,7 @@ async function _getPosMenuItems(outletFilter = null) {
       order('category').
       order('name').
       limit(500);
-      const { data, error } = await withNetworkTimeout(query, undefined, 'Menu list');
+      const { data, error } = await withNetworkTimeout(query, 5000, 'Menu list');
       if (error) throw new Error(error.message);
       writeCache('pos-menu-items', data || []);
       return applyPosMenuOutletFilter(data || [], outletFilter);
@@ -1583,10 +1611,11 @@ export async function processPendingPublicationJobs(outletIds = []) {
  * Offline or failed reads are explicit, never an empty/ready catalogue.
  */
 export async function getMenuStockReadiness() {
-  // A freshness read is an explicit operator recovery action. Probe again
-  // instead of trusting a stale offline flag left by an earlier outage.
-  const online = await checkOnline().catch(() => false);
-  if (!online || !state.supabase) {
+  // Offline-first: only the background connectivity probe checks the
+  // connection. A direct probe here would hold the Till for the full probe
+  // timeout on every load; the cached readiness fallback in the renderer
+  // covers stale-flag windows after reconnect.
+  if (!state.isOnline || !state.supabase) {
     return { success: false, code: "offline", error: 'Stock status needs a live connection. Refresh when online.' };
   }
   try {
@@ -1713,15 +1742,22 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
     const cachedOrders = readCache('pos-orders');
     let data = null;
     let error = null;
-    ({ data, error } = await fetchAllPosRows(() => {
-      let query = state.supabase.
-      from('pos_orders').
-      select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
-      eq('lodge_id', state.lodgeId);
-      if (startDate) query = query.gte('business_date', startDate);
-      if (endDate) query = query.lte('business_date', endDate);
-      return query.order('created_at', { ascending: false }).order('id', { ascending: false });
-    }));
+    try {
+      ({ data, error } = await withNetworkTimeout(fetchAllPosRows(() => {
+        let query = state.supabase.
+        from('pos_orders').
+        select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, receipt_number, order_number, daily_order_number, business_date, transaction_type, original_order_id, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
+        eq('lodge_id', state.lodgeId);
+        if (startDate) query = query.gte('business_date', startDate);
+        if (endDate) query = query.lte('business_date', endDate);
+        return query.order('created_at', { ascending: false }).order('id', { ascending: false });
+      }), 8000, 'Sales history'));
+    } catch (timeoutError) {
+      // A stalled network must not trap Sales/Reports: serve this device's
+      // saved sales instantly and let the next refresh repair them.
+      console.warn('getPosOrders falling back to cache:', timeoutError?.message || timeoutError);
+      return withPosReadMetadata(applyPosOrderFilters(cachedOrders, startDate, endDate, outletFilter), 'cache', false);
+    }
 
     if (error) {
       if (isReadOnlySessionTouchError(error)) {
@@ -1786,7 +1822,12 @@ export function getPosOrders(startDate, endDate, outletFilter = null) {
 // scoped to the PIN-verified operator.  The local POS cache gives the screen an
 // immediate result; the caller can then request the server refresh.
 export async function getSharedTillOperatorOrders(startDate, endDate, outletFilter, operatorId, { refresh = false } = {}) {
-  const belongsToOperator = (order) => order?.cashier_id === operatorId;
+  // Match the PIN-verified operator across cashier, waiter and operator
+  // attribution. The server persists the Till operator as cashier_id; local
+  // pending rows additionally carry waiter_id/operator_id, and tab
+  // settlements can attribute waiter and cashier differently. Without this,
+  // a waiter's own offline sales disappeared from My Sales.
+  const belongsToOperator = (order) => !operatorId || order?.cashier_id === operatorId || order?.waiter_id === operatorId || order?.operator_id === operatorId;
   const cached = applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter).filter(belongsToOperator);
   if (!refresh || !state.isOnline) return { orders: cached, source: 'local_cache', refreshed: false, complete: false };
   const live = await getPosOrders(startDate, endDate, outletFilter);
@@ -2008,6 +2049,14 @@ async function _getOutlets() {
   { id: null, name: 'Bar', type: 'beverage', sort_order: 2, _virtual: true },
   { id: null, name: 'Others', type: 'accommodation', sort_order: 3, _virtual: true }];
 
+  // Offline-first: when the background connectivity probe has already marked
+  // the app offline, serve the trusted cache instantly. Only the background
+  // probe checks the connection; reads never probe here.
+  if (!state.isOnline || !state.supabase || !state.lodgeId) {
+    const cachedOffline = readCache('outlets');
+    if (Array.isArray(cachedOffline) && cachedOffline.length > 0) return normalizeOutletRows(cachedOffline);
+    return buildVirtualOutlets();
+  }
 
   try {
     let { data, error } = await withNetworkTimeout(state.supabase.
@@ -2015,7 +2064,7 @@ async function _getOutlets() {
     select('id, name, type, sort_order, cash_model').
     eq('lodge_id', state.lodgeId).
     eq('is_active', true).
-    order('sort_order'), undefined, 'Outlet list');
+    order('sort_order'), 5000, 'Outlet list');
     if (error) {
       const fallback = await withNetworkTimeout(state.supabase.
       from('outlets').
@@ -2427,6 +2476,14 @@ export async function createPosOrder(data) {
       // queued depletion operations remain compatible through the rewritten
       // record_recipe_stock_depletion replay RPC.
 
+      // Offline attribution must follow the PIN-verified Till operator, not the
+      // device login: My Sales / Sales history filter by cashier, so stamping
+      // the manager account here hid offline sales from the waiter who took
+      // them. business_date is mandatory for the same reason — date-filtered
+      // history excluded every offline row without one.
+      const offlineCashierId = data.cashier_id || data.operator_id || state.currentUser?.id || null;
+      const offlineCashierName = data.cashier_name || data.operator_name || state.currentUser?.name || state.currentUser?.email || null;
+      const offlineReceiptNumber = nextOfflineReceiptNumber(data.outlet_id || null);
       const orderRow = {
         id,
         lodge_id: state.lodgeId,
@@ -2445,37 +2502,52 @@ export async function createPosOrder(data) {
         tax_total: totals.tax_total,
         tip_total: totals.tip_total,
         status: 'pending',
+        receipt_number: offlineReceiptNumber,
+        business_date: getLocalDateKey(),
         service_mode: data.service_mode || (data.table_name ? 'table' : data.room_id ? 'room' : 'takeaway'),
         table_name: data.table_name || null,
         tab_name: data.tab_name || null,
+        waiter_id: data.waiter_id || null,
         waiter_name: data.waiter_name || null,
-        cashier_id: state.currentUser?.id || null,
-        cashier_name: state.currentUser?.name || state.currentUser?.email || null,
+        cashier_id: offlineCashierId,
+        cashier_name: offlineCashierName,
+        operator_id: offlineCashierId,
         shift_id: data.shift_id || null,
         ticket_status: data.ticket_status || 'new',
         catalog_snapshot_id: effectiveOfflinePayload.catalog_snapshot_id || offlineCatalogSnapshotId,
         created_at: effectiveOfflinePayload.client_created_at || createdAt,
         _pending_sync: true,
+        _provisional_receipt: true,
         _sync_state: 'pending',
         _sync_error: null,
         _idempotency_key: idempotencyKey,
         _sync_created_offline: true,
-        pos_order_items: items.map((item) => ({
-          id: randomUUID(),
-          order_id: id,
-          lodge_id: state.lodgeId,
-          menu_item_id: item.menu_item_id || null,
-          inventory_item_id: item.inventory_item_id || null,
-          depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
-          item_name: item.item_name,
-          category: item.category || null,
-          modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
-          item_notes: item.item_notes || null,
-          quantity: normalizePositiveQty(item.quantity, 1),
-          unit_price: Number(item.unit_price || 0),
-          subtotal: normalizePositiveQty(item.quantity, 1) * Number(item.unit_price || 0),
-          kitchen_station_id: item.kitchen_station_id || null
-        }))
+        pos_order_items: items.map((item) => {
+          const lineQty = normalizePositiveQty(item.quantity, 1);
+          const lineUnit = Number(item.unit_price || 0);
+          const lineSubtotal = lineQty * lineUnit;
+          return {
+            id: randomUUID(),
+            order_id: id,
+            lodge_id: state.lodgeId,
+            menu_item_id: item.menu_item_id || null,
+            inventory_item_id: item.inventory_item_id || null,
+            depletion_qty: normalizePositiveQty(item.depletion_qty, 1),
+            item_name: item.item_name,
+            category: item.category || null,
+            modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
+            item_notes: item.item_notes || null,
+            quantity: lineQty,
+            unit_price: lineUnit,
+            // The receipt renders net_subtotal ?? subtotal ?? gross_subtotal
+            // and never estimates; persist all three so offline receipts,
+            // My Sales and history always show real line prices.
+            subtotal: lineSubtotal,
+            net_subtotal: lineSubtotal,
+            gross_subtotal: lineSubtotal,
+            kitchen_station_id: item.kitchen_station_id || null
+          };
+        })
       };
 
       const cachedOrders = readCache('pos-orders');
@@ -2499,7 +2571,7 @@ export async function createPosOrder(data) {
         }
       }
 
-      return { success: true, id, offline: true, provisional: true, ...(tabCloseWarning ? { tab_close_warning: tabCloseWarning } : {}) };
+      return { success: true, id, offline: true, provisional: true, receipt_number: offlineReceiptNumber, order: orderRow, ...(tabCloseWarning ? { tab_close_warning: tabCloseWarning } : {}) };
     }
 
     // Resolve booking ID before entering the transaction (read-only, safe outside)
@@ -3307,8 +3379,15 @@ const ACTIVE_TABLE_TAB_STATUSES = new Set(['open', 'running', 'ready', 'delivere
 // table. Keep this operational status predicate separate from the table-only
 // helper below: table occupancy must still require table_name, while Open
 // Tabs must include both table checks and named tabs.
+// A missing or unknown status is NOT active: normalizeTabStatus falls back to
+// 'open', which previously resurrected settled rows with no status as ~10
+// phantom open tabs on every offline read. Genuine pending-sync estimates
+// without a server status still show.
 function isActivePosTab(row = {}) {
-  return ACTIVE_TABLE_TAB_STATUSES.has(normalizeTabStatus(row.status));
+  const raw = String(row?.status || '').trim().toLowerCase();
+  if (ACTIVE_TABLE_TAB_STATUSES.has(raw)) return true;
+  if (row?._pending_sync === true && (raw === '' || raw === 'open')) return true;
+  return false;
 }
 
 function normalizeTableName(value) {
@@ -3339,7 +3418,11 @@ function normalizeTabStatus(value, fallback = 'open') {
 }
 
 function isActiveTableTab(row = {}) {
-  return !!normalizeTableName(row.table_name) && ACTIVE_TABLE_TAB_STATUSES.has(normalizeTabStatus(row.status));
+  if (!normalizeTableName(row.table_name)) return false;
+  const raw = String(row?.status || '').trim().toLowerCase();
+  if (ACTIVE_TABLE_TAB_STATUSES.has(raw)) return true;
+  if (row?._pending_sync === true && (raw === '' || raw === 'open')) return true;
+  return false;
 }
 
 function sameOutlet(a, b) {
@@ -3419,7 +3502,13 @@ export async function getPosTabs(filters = {}) {
           ...remote,
           ...markCachedPosTabsUncertified(pendingLocal.filter((row) => !remoteIds.has(row.id)))
         ].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-        const retainedHistory = readPosTabs().filter((row) => !isActiveTableTab(row) && !remoteIds.has(row.id));
+        // Self-heal stale cache (2026-09-24): any cached ACTIVE tab (named bar
+        // tab or table check) that is neither on the server nor a genuine
+        // pending-sync estimate is dropped here, not retained. The old
+        // table-only predicate kept active rows without table_name as
+        // "history", so offline reads (which use the wider active predicate)
+        // resurrected ~10 settled tabs whenever the link flapped.
+        const retainedHistory = readPosTabs().filter((row) => !isActivePosTab(row) && !remoteIds.has(row.id));
         writePosTabs([...activeRows, ...retainedHistory], { invalidate: false });
         return activeRows;
       }
@@ -4029,10 +4118,22 @@ export async function getMyPosCashupSubmission(shiftId) {
   if (!state.isOnline || !state.supabase) {
     return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
   }
-  const { data, error } = await state.supabase.rpc('get_my_pos_cashup_submission', {
-    p_lodge_id: state.lodgeId, p_shift_id: shiftId
-  });
-  if (error) throw new Error(error.message);
+  let data = null;
+  try {
+    const response = await withNetworkTimeout(
+      state.supabase.rpc('get_my_pos_cashup_submission', {
+        p_lodge_id: state.lodgeId, p_shift_id: shiftId
+      }),
+      5000,
+      'My cash-up'
+    );
+    data = response?.data ?? null;
+    const error = response?.error ?? null;
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    console.warn('[POS CASHUP] My submission lookup failed; using local cache:', error?.message || error);
+    return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
+  }
   // Keep the renderer blind even when it is connected to an older linked
   // database that still returns legacy expected/variance fields. Manager
   // review uses the separate pending-submissions contract.
@@ -4057,11 +4158,22 @@ export async function getPendingPosCashupSubmissions() {
   if (!state.isOnline || !state.supabase) {
     return { success: true, submissions: readPosCashupSubmissions().filter((row) => row.status === 'submitted'), offline: true, complete: false };
   }
-  const { data, error } = await state.supabase.rpc('get_pending_pos_cashup_submissions', { p_lodge_id: state.lodgeId });
-  if (error) throw new Error(error.message);
-  const result = data || { success: true, submissions: [] };
-  if (Array.isArray(result.submissions)) writePosCashupSubmissions(result.submissions);
-  return result;
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_pending_pos_cashup_submissions', { p_lodge_id: state.lodgeId }),
+      5000,
+      'Cash-up review'
+    );
+    if (error) throw new Error(error.message);
+    const result = data || { success: true, submissions: [] };
+    if (Array.isArray(result.submissions)) writePosCashupSubmissions(result.submissions);
+    return result;
+  } catch (error) {
+    // A stalled network must not block manager review: fall back to this
+    // device's submitted cash-ups as provisional review, same as offline.
+    console.warn('[POS CASHUP] Pending review lookup failed; using local cache:', error?.message || error);
+    return { success: true, submissions: readPosCashupSubmissions().filter((row) => row.status === 'submitted'), offline: true, complete: false };
+  }
 }
 
 // ---- Village drawer periods (shared-drawer cash model) ----
@@ -4382,7 +4494,7 @@ export async function getDrawerPeriodState(outlet_id, outletId) {
   try {
     const { data, error } = await withNetworkTimeout(state.supabase.rpc('get_pos_drawer_period_state', {
       payload: { lodge_id: state.lodgeId, outlet_id: resolvedOutlet }
-    }), undefined, 'Drawer period');
+    }), 5000, 'Drawer period');
     if (error) throw new Error(error.message);
     return data || { success: false, error: 'Could not load the drawer period.' };
   } catch (error) {
@@ -4887,7 +4999,7 @@ export async function getCurrentPosShift(outletId = null, cashierId = null) {
         .limit(10);
       if (outletId) query = query.eq('outlet_id', outletId);
       if (operatorId) query = query.eq('cashier_id', operatorId);
-      const { data, error } = await query;
+      const { data, error } = await withNetworkTimeout(query, 5000, 'Current shift');
       if (error) throw error;
       const active = Array.isArray(data) ? data[0] : null;
       if (active) {
@@ -5103,10 +5215,19 @@ export async function getStaffOpenPosShift(staffId) {
   if (!state.isOnline || !state.supabase) {
     return readPosShifts().find((row) => row.cashier_id === staffId && row.status === 'open') || null;
   }
-  const { data, error } = await state.supabase.rpc('get_staff_open_pos_shift', { p_lodge_id: state.lodgeId, p_staff_id: staffId });
-  if (error) throw new Error(error.message);
-  if (data?.success === false) throw new Error(data.error || 'Could not load the staff Till shift.');
-  return data?.shift || null;
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_staff_open_pos_shift', { p_lodge_id: state.lodgeId, p_staff_id: staffId }),
+      5000,
+      'Staff shift'
+    );
+    if (error) throw new Error(error.message);
+    if (data?.success === false) throw new Error(data.error || 'Could not load the staff Till shift.');
+    return data?.shift || null;
+  } catch (error) {
+    console.warn('[POS SHIFT] Staff shift lookup failed; using local shift cache:', error?.message || error);
+    return readPosShifts().find((row) => row.cashier_id === staffId && row.status === 'open') || null;
+  }
 }
 
 export async function getStaffPosCashupSubmission(shiftId) {
@@ -5114,9 +5235,18 @@ export async function getStaffPosCashupSubmission(shiftId) {
   if (!state.isOnline || !state.supabase) {
     return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
   }
-  const { data, error } = await state.supabase.rpc('get_staff_pos_cashup_submission', { p_lodge_id: state.lodgeId, p_shift_id: shiftId });
-  if (error) throw new Error(error.message);
-  return data || { success: true, submission: null };
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_staff_pos_cashup_submission', { p_lodge_id: state.lodgeId, p_shift_id: shiftId }),
+      5000,
+      'Cash-up status'
+    );
+    if (error) throw new Error(error.message);
+    return data || { success: true, submission: null };
+  } catch (error) {
+    console.warn('[POS CASHUP] Staff submission lookup failed; using local cache:', error?.message || error);
+    return { success: true, submission: readPosCashupSubmissions().find((row) => row.shift_id === shiftId) || null, offline: true };
+  }
 }
 
 export async function activateSharedTillOperator({ staff_id, staffId, outlet_id, outletId, pin, idempotency_key, idempotencyKey } = {}) {
@@ -5575,7 +5705,7 @@ export async function getPosStaff() {
     try {
       const { data, error } = await withNetworkTimeout(
         state.supabase.rpc('pos_get_safe_staff', { p_lodge_id: state.lodgeId }),
-        undefined,
+        5000,
         'Staff list'
       );
       if (error) throw new Error(error.message);
@@ -5738,14 +5868,21 @@ export async function verifyManagerPinForManage(data = {}) {
 
 export async function getPosModifierGroups() {
   if (state.isOnline && state.supabase) {
-    const { data, error } = await state.supabase
-      .from('pos_modifier_groups')
-      .select('id, lodge_id, name, applies_to_categories, min_selections, max_selections, options, active, updated_at')
-      .eq('lodge_id', state.lodgeId)
-      .order('name');
-    if (error) throw new Error(error.message);
-    writePosModifierGroups(data || []);
-    return data || [];
+    try {
+      const { data, error } = await withNetworkTimeout(state.supabase
+        .from('pos_modifier_groups')
+        .select('id, lodge_id, name, applies_to_categories, min_selections, max_selections, options, active, updated_at')
+        .eq('lodge_id', state.lodgeId)
+        .order('name'), 5000, 'Modifier options');
+      if (error) throw new Error(error.message);
+      writePosModifierGroups(data || []);
+      return data || [];
+    } catch (error) {
+      // The Till loads these right after menu/stock/team; a stalled network
+      // must fall back to the saved options instead of hanging the Till.
+      console.warn('[POS] Modifier groups falling back to cache:', error?.message || error);
+      return readPosModifierGroups();
+    }
   }
   return readPosModifierGroups();
 }
@@ -6657,24 +6794,40 @@ export async function getActiveShifts() {
   if (!state.isOnline || !state.supabase) return readAttendanceShifts().filter((row) => row.status === 'active');
 
   try {
-    const { data, error } = await state.supabase.rpc('get_active_shifts', {
-      p_lodge_id: state.lodgeId
-    });
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_active_shifts', {
+        p_lodge_id: state.lodgeId
+      }),
+      5000,
+      'Active shifts'
+    );
     if (error) throw new Error(error.message);
     const rows = Array.isArray(data) ? data : [];
     writeAttendanceShifts(rows);
     return rows;
   } catch (error) {
-    console.error('[POS STAFF] Load shifts failed:', error?.message || error);
-    return [];
+    // Offline or stalled network: the unlock list and cash-up dropdowns must
+    // fall back to the last saved attendance, never to an empty list that
+    // reads as "no one is clocked in".
+    console.error('[POS STAFF] Load shifts failed; using cached attendance:', error?.message || error);
+    return readAttendanceShifts().filter((row) => row.status === 'active');
   }
 }
 
 export async function getPosBarActiveShifts() {
   if (!state.isOnline || !state.supabase || !state.lodgeId) return readAttendanceShifts().filter((row) => row.status === 'active');
-  const { data, error } = await state.supabase.rpc('get_pos_bar_active_shifts', { p_lodge_id: state.lodgeId });
-  if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc('get_pos_bar_active_shifts', { p_lodge_id: state.lodgeId }),
+      5000,
+      'Bar active shifts'
+    );
+    if (error) throw new Error(error.message);
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('[POS STAFF] Load bar shifts failed; using cached attendance:', error?.message || error);
+    return readAttendanceShifts().filter((row) => row.status === 'active');
+  }
 }
 
 export async function openCashDrawerSession({ openingFloat }) {

@@ -341,7 +341,7 @@ test('domain and IPC wire the new contracts with dual capabilities', () => {
   // backend-update-required fallback.
   assert.match(domain, /import\s*\{\s*(?:isDefinitiveProductRejection,\s*)?isMissingRpcError(?:,\s*isDefinitiveProductRejection)?\s*\}\s*from\s*['"]\.\.\/\.\.\/shared\/productRequest\.js['"]/)
   assert.match(domain, /backend-update-required/)
-  assert.match(domain, /const online = await checkOnline\(\)\.catch\(\(\) => false\)/)
+  assert.match(domain, /if \(!state\.isOnline \|\| !state\.supabase\)/)
   assert.match(domain, /export function assertSaleModifierRequirements/)
   assert.match(domain, /createProductSaveFlow/)
   assert.match(domain, /runPublicationSweep/)

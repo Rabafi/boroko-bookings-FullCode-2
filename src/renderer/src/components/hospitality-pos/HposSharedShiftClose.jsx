@@ -329,7 +329,7 @@ export default function HposSharedShiftClose() {
         eyebrow="Shared terminal"
         title="Staff shift close"
         description="Clock in, count the drawer once, then clock out — one name, one PIN. People who did not touch the till can clock out without a cash-up."
-        actions={<HposButton icon={RefreshCw} onClick={refresh} disabled={loading || saving}>Refresh</HposButton>}
+        actions={<HposButton icon={RefreshCw} onClick={refresh} disabled={loading || saving}>{loading ? 'Loading team…' : 'Refresh'}</HposButton>}
       />
       {error && <div ref={errorAnchorRef} tabIndex={-1} data-testid="shared-shift-close-error-anchor"><HposNotice tone="error">{error}</HposNotice></div>}
       {notice && <HposNotice>{notice}</HposNotice>}
@@ -345,8 +345,8 @@ export default function HposSharedShiftClose() {
         <form onSubmit={activeShift ? (event) => event.preventDefault() : clockIn}>
           <label>
             <span>Staff member</span>
-            <select value={staffId} onChange={(event) => pickStaff(event.target.value)} disabled={loading || saving}>
-              <option value="">Choose staff member</option>
+            <select value={staffId} onChange={(event) => pickStaff(event.target.value)} disabled={loading || saving} aria-busy={loading}>
+              <option value="">{loading ? 'Loading team…' : 'Choose staff member'}</option>
               {staff.map((row) => (
                 <option key={row.id} value={row.id}>
                   {row.name || row.email}{row.has_pin ? '' : ' · PIN setup required'}

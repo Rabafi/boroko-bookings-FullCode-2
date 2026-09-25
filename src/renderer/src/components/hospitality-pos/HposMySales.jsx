@@ -61,10 +61,16 @@ export default function HposMySales() {
       setReadCompleteness({ source: cached?.source || 'local_cache', complete: cached?.complete === true })
       setMessage('Showing this terminal’s saved sales. Checking for updates…')
       setLoading(false)
-      const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true })
-      setOrders(refreshed?.orders || [])
-      setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true })
-      setMessage(refreshed?.refreshed ? 'Up to date with the server.' : 'Offline: showing this terminal’s saved sales.')
+      try {
+        const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true })
+        setOrders(refreshed?.orders || cached?.orders || [])
+        setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true })
+        setMessage(refreshed?.refreshed ? 'Up to date with the server.' : 'Offline: showing this terminal’s saved sales.')
+      } catch (refreshError) {
+        // A failed server refresh must never wipe the saved sales already on
+        // screen: stay on this device's data with an offline note.
+        setMessage('Offline: showing this terminal’s saved sales.')
+      }
     } catch (loadError) {
       setOrders([])
       setReadCompleteness({ source: 'error', complete: false })

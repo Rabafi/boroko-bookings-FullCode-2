@@ -562,22 +562,28 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "6px",
+        gap: "4px",
         padding: "6px 8px",
         borderBottom: "1px solid rgba(55,70,57,.09)",
         background: highlight ? "rgba(201,86,53,.08)" : "transparent",
       }}
     >
+      {/* Name block gets every spare pixel: the line total moved underneath
+          (was its own column) and the name wraps to 2 lines instead of
+          cutting off with an ellipsis on the wider 440px panel. */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           title={line.item_name}
           style={{
-            fontSize: "12px",
+            fontSize: "13px",
             fontWeight: 700,
             color: "var(--bb-text)",
-            whiteSpace: "nowrap",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
             overflow: "hidden",
-            textOverflow: "ellipsis",
+            wordBreak: "break-word",
+            lineHeight: 1.25,
           }}
         >
           {line.item_name}
@@ -592,6 +598,7 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
             P-per-single against the line total without mental arithmetic
             (restores the approved Sell-screen contract). */}
         <div
+          title={`Line total ${currency} ${fmt(unit * line.quantity)}`}
           style={{
             fontSize: "11px",
             color: "var(--bb-text-soft)",
@@ -601,22 +608,9 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
             textOverflow: "ellipsis",
           }}
         >
-          {currency} {fmt(unit)} each
+          {currency} {fmt(unit)} each · Total {currency} {fmt(unit * line.quantity)}
         </div>
       </div>
-
-      <span
-        title={`Line total ${currency} ${fmt(unit * line.quantity)}`}
-        style={{
-          fontSize: "12px",
-          fontWeight: 800,
-          color: "var(--bb-text)",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-        }}
-      >
-        {currency} {fmt(unit * line.quantity)}
-      </span>
 
       {/* Qty Controls: 44px minimum targets for touch tills. One compact row so several items fit without scrolling. */}
       <button
@@ -856,9 +850,11 @@ export default function HposTerminal() {
   }, [lastAdded]);
 
   // Undo affordance expires so a stale snackbar never clears a later basket.
+  // 2.5s: long enough to catch a mis-tap, short enough to never crowd the
+  // payment footer during a fast round.
   useEffect(() => {
     if (!undoAdd) return undefined;
-    const timer = window.setTimeout(() => setUndoAdd(null), 6000);
+    const timer = window.setTimeout(() => setUndoAdd(null), 2500);
     return () => window.clearTimeout(timer);
   }, [undoAdd]);
 
@@ -928,6 +924,10 @@ export default function HposTerminal() {
   // Payment open too long with an untaken tender: soft nudge after 90s.
   const [paymentIdleNudge, setPaymentIdleNudge] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Staged core-load progress: menu/stock/team reads resolve together, then
+  // options finish. The text below keeps the Till visibly working instead of
+  // a silent skeleton while the shift roster arrives.
+  const [loadingStage, setLoadingStage] = useState("menu, stock and team");
   const [outlets, setOutlets] = useState([]);
   const [tables, setTables] = useState([]);
   // Open-tab names for the Bar tab-name suggestions. Bar-only service has no
@@ -948,6 +948,35 @@ export default function HposTerminal() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  // Offline clutter guard (2026-09-24): the stale/local amber strip, the
+  // unsent-sales green strips and the unlock green strip all auto-collapse to
+  // a slim one-line chip after a few seconds so the basket and the payment
+  // footer stay visible. Tapping the chip re-expands; a status change resets.
+  const [stockNoticeMin, setStockNoticeMin] = useState(false);
+  const [unsentNoticeMin, setUnsentNoticeMin] = useState(false);
+  useEffect(() => {
+    setStockNoticeMin(false);
+  }, [stockReadiness.status, stockReadiness.cachedAt]);
+  useEffect(() => {
+    if (stockReadiness.status !== "stale" && stockReadiness.status !== "local") return undefined;
+    const timer = window.setTimeout(() => setStockNoticeMin(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [stockReadiness.status, stockReadiness.cachedAt]);
+  useEffect(() => {
+    setUnsentNoticeMin(false);
+  }, [stockReadiness.pendingOrders, stockReadiness.meshOrders, stockReadiness.meshDeliveries]);
+  useEffect(() => {
+    if (!(Number(stockReadiness.pendingOrders || 0) > 0 || Number(stockReadiness.meshOrders || 0) > 0 || Number(stockReadiness.meshDeliveries || 0) > 0)) return undefined;
+    const timer = window.setTimeout(() => setUnsentNoticeMin(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [stockReadiness.pendingOrders, stockReadiness.meshOrders, stockReadiness.meshDeliveries]);
+  // Green success (till unlock, shift open, basket restore) auto-dismisses so
+  // it never parks above the payment footer. Errors never auto-dismiss.
+  useEffect(() => {
+    if (!successMessage) return undefined;
+    const timer = window.setTimeout(() => setSuccessMessage(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [successMessage]);
   const [scannerFeedback, setScannerFeedback] = useState(null);
   const [lastNotFoundBarcode, setLastNotFoundBarcode] = useState(null);
   // Unknown-barcode creation is permission-gated: both catalog sides.
@@ -1475,6 +1504,7 @@ export default function HposTerminal() {
     let active = true;
     const load = async () => {
       setLoading(true);
+      setLoadingStage("menu, stock and team");
       setMenuLoadFailed(false);
       try {
         const [
@@ -1621,7 +1651,10 @@ export default function HposTerminal() {
         setOpenTabCount(
           (Array.isArray(tabRows) ? tabRows : []).filter(
             (tab) =>
-              !["closed", "paid", "cancelled", "voided"].includes(
+              // Same explicit active set as the domain (open/running/ready/
+              // delivered): rows with a missing/unknown status must not count
+              // as open and resurrect the stale "10 tabs" pill.
+              ["open", "running", "ready", "delivered"].includes(
                 String(tab.status || "").toLowerCase(),
               ),
           ).length,
@@ -1632,7 +1665,7 @@ export default function HposTerminal() {
           (Array.isArray(tabRows) ? tabRows : [])
             .filter(
               (tab) =>
-                !["closed", "paid", "cancelled", "voided"].includes(
+                ["open", "running", "ready", "delivered"].includes(
                   String(tab.status || "").toLowerCase(),
                 ),
             )
@@ -1744,6 +1777,7 @@ export default function HposTerminal() {
             versionOk: false,
           });
         }
+        if (active) setLoadingStage("sale options");
         const groups = (await window.api?.pos?.getModifierGroups?.()) ?? [];
         if (active) {
           setModifierGroups(Array.isArray(groups) ? groups : []);
@@ -1782,7 +1816,7 @@ export default function HposTerminal() {
     // Count/brief/names use the exact predicates as the initial load above.
     let active = true;
     const isOpenTabRow = (tab) =>
-      !["closed", "paid", "cancelled", "voided"].includes(
+      ["open", "running", "ready", "delivered"].includes(
         String(tab.status || "").toLowerCase(),
       );
     const refreshOpenTabs = async () => {
@@ -3670,20 +3704,26 @@ export default function HposTerminal() {
         "Retrying uses the original operation key. If it was never recorded, this action may complete that older sale now.",
       );
     } else {
-      orderItems = cart.map((line) => ({
-        menu_item_id: line.menu_item_id,
-        item_name: line.item_name,
-        category: line.category,
-        unit_price:
-          Number(line.unit_price || 0) + Number(line.modifier_total || 0),
-        base_unit_price: Number(line.unit_price || 0),
-        quantity: Number(line.quantity || 0),
-        modifiers: line.modifiers || [],
-        item_notes: line.item_notes?.trim() || null,
-        inventory_item_id: line.inventory_item_id,
-        depletion_qty: line.depletion_qty,
-        kitchen_station_id: line.kitchen_station_id,
-      }));
+      orderItems = cart.map((line) => {
+        const qty = Number(line.quantity || 0);
+        const unit = Number(line.unit_price || 0) + Number(line.modifier_total || 0);
+        return {
+          menu_item_id: line.menu_item_id,
+          item_name: line.item_name,
+          category: line.category,
+          unit_price: unit,
+          base_unit_price: Number(line.unit_price || 0),
+          quantity: qty,
+          subtotal: qty * unit,
+          net_subtotal: qty * unit,
+          gross_subtotal: qty * unit,
+          modifiers: line.modifiers || [],
+          item_notes: line.item_notes?.trim() || null,
+          inventory_item_id: line.inventory_item_id,
+          depletion_qty: line.depletion_qty,
+          kitchen_station_id: line.kitchen_station_id,
+        };
+      });
     }
 
     try {
@@ -3870,12 +3910,30 @@ export default function HposTerminal() {
         ?.getHardwareSettings?.()
         .catch(() => null);
       const provisional = result.offline === true || result.provisional === true;
+      // Offline receipts must still carry a receipt number and real line
+      // prices: the main process returns a provisional TILL- number, and each
+      // line gets authoritative-looking subtotals from qty × unit price so the
+      // customer copy never shows "UNAVAILABLE".
+      const receiptLines = (Array.isArray(orderItems) ? orderItems : []).map((item) => {
+        const qty = Number(item?.quantity || 0);
+        const unit = Number(item?.unit_price || 0);
+        const lineTotal = qty * unit;
+        return {
+          ...item,
+          quantity: qty,
+          unit_price: unit,
+          subtotal: item?.subtotal ?? lineTotal,
+          net_subtotal: item?.net_subtotal ?? item?.subtotal ?? lineTotal,
+          gross_subtotal: item?.gross_subtotal ?? item?.subtotal ?? lineTotal,
+        };
+      });
       const receiptOrder = provisional
         ? {
             ...orderPayload,
             _pending_sync: true,
             provisional: true,
-            pos_order_items: orderItems,
+            receipt_number: result?.receipt_number || result?.order?.receipt_number || orderPayload?.receipt_number || null,
+            pos_order_items: receiptLines,
           }
         : {
             ...result,
@@ -4084,13 +4142,13 @@ export default function HposTerminal() {
             overflow: "hidden",
           }}
         >
-          {/* Top Bar */}
+          {/* Top Bar: compact so the grid + basket own the pixels. */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "10px",
-              padding: "13px 18px",
+              gap: "8px",
+              padding: "8px 12px",
               borderBottom: "1px solid rgba(55,70,57,.10)",
               background: "#fffdf8",
               flexShrink: 0,
@@ -4277,7 +4335,21 @@ export default function HposTerminal() {
             </div>
             <div
               role="status"
-              title="USB/Bluetooth keyboard-wedge scanners are verified by successful input, not by a permanent connection signal."
+              title={
+                scannerSettings.barcode_scanner_enabled === false
+                  ? "Barcode scanner is turned off in System Health › Devices."
+                  : showPayment
+                    ? "Scanner paused because the payment panel is open — scans would type into the cash/approval fields. Close or finish payment to scan again."
+                    : showShiftStart
+                      ? "Scanner paused because the Start shift dialog is open. Start or cancel the shift to scan again."
+                      : showOperatorUnlock
+                        ? "Scanner paused because Till is locked — unlock with the operator PIN first so scans land in the right shift."
+                        : modifierLineId != null
+                          ? "Scanner paused while customizing an item. Close the modifier sheet to scan again."
+                          : Boolean(completedReceipt)
+                            ? "Scanner paused while the receipt is open. Close or start a new sale to scan again."
+                            : "USB/Bluetooth keyboard-wedge scanners are verified by successful input, not by a permanent connection signal."
+              }
               style={{
                 marginLeft: "auto",
                 padding: "5px 8px",
@@ -4288,20 +4360,20 @@ export default function HposTerminal() {
                   color:
                     scannerSettings.barcode_scanner_enabled === false
                       ? "#7b6d72"
-                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null || Boolean(completedReceipt)
                       ? "#8b5a11"
                       : "#176447",
                   background:
                     scannerSettings.barcode_scanner_enabled === false
                       ? "#f1ece8"
-                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                      : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null || Boolean(completedReceipt)
                       ? "#fff6df"
                       : "#edfbf3",
                 }}
               >
               {scannerSettings.barcode_scanner_enabled === false
                 ? "Scanner disabled"
-                : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null
+                : showPayment || showShiftStart || showOperatorUnlock || modifierLineId != null || Boolean(completedReceipt)
                 ? "Scanner paused"
                 : "Scanner ready"}
             </div>
@@ -4311,10 +4383,11 @@ export default function HposTerminal() {
             style={{
               display: "flex",
               flexWrap: "wrap",
-              gap: "8px",
-              padding: "10px 16px",
+              gap: "6px",
+              padding: "6px 12px",
               borderBottom: "1px solid rgba(55,70,57,.08)",
               background: "#f6efe5",
+              flexShrink: 0,
             }}
           >
             {lastNotFoundBarcode && (
@@ -4844,7 +4917,7 @@ export default function HposTerminal() {
                     border: 0,
                   }}
                 >
-                  {barOnly ? "Loading drinks…" : "Loading menu..."}
+                  {barOnly ? `Loading drinks (${loadingStage})…` : `Loading menu (${loadingStage})…`}
                 </div>
                 {Array.from({ length: 10 }, (_, index) => (
                   <div key={index} className="hpos-skeleton" aria-hidden="true" />
@@ -5030,7 +5103,10 @@ export default function HposTerminal() {
           </button>
           )}
         </div>
-        {/* Right: Order Panel */}
+        {/* Right: Order Panel. minHeight 0 + hidden overflow keeps the flex
+            column constrained so ONLY the cart list scrolls (flex 1,
+            minHeight 0) — the payment footer never scrolls and Record payment
+            stays on screen. Panel widened 372->440 so item names read fully. */}
         <div
           style={
             narrowViewport
@@ -5039,7 +5115,7 @@ export default function HposTerminal() {
                   top: 0,
                   right: 0,
                   bottom: 0,
-                  width: "min(430px, 94vw)",
+                  width: "min(460px, 94vw)",
                   zIndex: 1500,
                   transform: basketVisible ? "none" : "translateX(105%)",
                   transition: "transform 180ms ease",
@@ -5048,15 +5124,19 @@ export default function HposTerminal() {
                   boxShadow: "-16px 0 48px rgba(47,58,47,.22)",
                   display: "flex",
                   flexDirection: "column",
+                  minHeight: 0,
+                  overflow: "hidden",
                 }
               : {
-                  width: "372px",
+                  width: "440px",
                   flexShrink: 0,
                   background: "rgba(255,250,242,.96)",
                   borderLeft: "1px solid rgba(55,70,57,.14)",
                   boxShadow: "-12px 0 32px rgba(47,58,47,.08)",
                   display: "flex",
                   flexDirection: "column",
+                  minHeight: 0,
+                  overflow: "hidden",
                 }
           }
         >
@@ -5109,84 +5189,99 @@ export default function HposTerminal() {
               pay for this sale promptly — it will not survive a restart.
             </ErrorNotice>
           )}
-          {barOnly && (Number(stockReadiness.meshOrders || 0) > 0 || Number(stockReadiness.meshDeliveries || 0) > 0) && (
+          {barOnly && (Number(stockReadiness.meshOrders || 0) > 0 || Number(stockReadiness.meshDeliveries || 0) > 0 || (!(Number(stockReadiness.meshOrders || 0) > 0) && Number(stockReadiness.pendingOrders || 0) > 0)) && (
             <div
               role="status"
               style={{
-                margin: "12px 16px 0",
-                padding: "10px 12px",
-                borderRadius: "10px",
+                margin: "8px 16px 0",
+                padding: unsentNoticeMin ? "4px 10px" : "6px 10px",
+                borderRadius: "999px",
                 background: "#edfbf3",
                 border: "1px solid #b5e4c9",
                 color: "#176447",
-                fontSize: "13px",
+                fontSize: "12px",
                 fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
               }}
             >
-              Includes unsent work from the other till{Number(stockReadiness.meshOrders || 0) > 0 ? ` (${stockReadiness.meshOrders} sale${stockReadiness.meshOrders === 1 ? "" : "s"})` : ""}{Number(stockReadiness.meshDeliveries || 0) > 0 ? " plus stock it received" : ""} — counts play it safe until they send.
-            </div>
-          )}
-          {barOnly && !(Number(stockReadiness.meshOrders || 0) > 0) && Number(stockReadiness.pendingOrders || 0) > 0 && (
-            <div
-              role="status"
-              style={{
-                margin: "12px 16px 0",
-                padding: "10px 12px",
-                borderRadius: "10px",
-                background: "#edfbf3",
-                border: "1px solid #b5e4c9",
-                color: "#176447",
-                fontSize: "13px",
-                fontWeight: 700,
-              }}
-            >
-              Includes your unsent sales — counts play it safe until they send.
+              <span>
+                {unsentNoticeMin
+                  ? `Unsent sales included (${Number(stockReadiness.meshOrders || 0) + Number(stockReadiness.pendingOrders || 0)})`
+                  : (Number(stockReadiness.meshOrders || 0) > 0 || Number(stockReadiness.meshDeliveries || 0) > 0
+                    ? `Includes unsent work from the other till${Number(stockReadiness.meshOrders || 0) > 0 ? ` (${stockReadiness.meshOrders} sale${stockReadiness.meshOrders === 1 ? "" : "s"})` : ""}${Number(stockReadiness.meshDeliveries || 0) > 0 ? " plus stock it received" : ""} — counts play it safe until they send.`
+                    : "Includes your unsent sales — counts play it safe until they send.")}
+              </span>
+              <button
+                type="button"
+                onClick={() => setUnsentNoticeMin((min) => !min)}
+                aria-label={unsentNoticeMin ? "Show unsent sales details" : "Collapse unsent sales notice"}
+                style={{ minWidth: "32px", minHeight: "32px", borderRadius: "999px", border: "1px solid #b5e4c9", background: "#fff", color: "#176447", fontWeight: 800, cursor: "pointer" }}
+              >
+                {unsentNoticeMin ? "+" : "–"}
+              </button>
             </div>
           )}
           {barOnly && (stockReadiness.status === "stale" || stockReadiness.status === "local") && (
             <div
               role="status"
               style={{
-                margin: "12px 16px 0",
-                padding: "10px 12px",
-                borderRadius: "10px",
-                background: "linear-gradient(135deg, #fdf3e3, #fffaf0)",
+                margin: "8px 16px 0",
+                padding: stockNoticeMin ? "4px 10px" : "6px 10px",
+                borderRadius: "999px",
+                background: "#fff8ea",
                 border: "1px solid rgba(166, 118, 42, 0.35)",
                 color: "#7a5710",
-                fontSize: "13px",
+                fontSize: "12px",
                 fontWeight: 700,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 10,
+                gap: 8,
               }}
             >
               <span>
-                {stockReadiness.status === "local"
-                  ? "Selling on this till's last known stock — counts may be behind. Refresh when online."
-                  : <>Stock status from{" "}
-                {stockReadiness.cachedAt
-                  ? new Date(stockReadiness.cachedAt).toLocaleString()
-                  : "an earlier check"}{" "}
-                — refresh when online.</>}
+                {stockNoticeMin
+                  ? "Offline stock — tap + for details"
+                  : (stockReadiness.status === "local"
+                    ? "Selling on this till's last known stock — counts may be behind. Refresh when online."
+                    : <>Stock status from{" "}
+                  {stockReadiness.cachedAt
+                    ? new Date(stockReadiness.cachedAt).toLocaleString()
+                    : "an earlier check"}{" "}
+                  — refresh when online.</>)}
               </span>
-              <button
-                type="button"
-                onClick={refreshReadiness}
-                style={{
-                  minHeight: "44px",
-                  padding: "0 14px",
-                  borderRadius: "9px",
-                  border: "1px solid rgba(166, 118, 42, 0.45)",
-                  background: "#fff",
-                  color: "#6b4a0b",
-                  fontSize: "13px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                }}
-              >
-                Refresh
-              </button>
+              <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                {!stockNoticeMin && (
+                  <button
+                    type="button"
+                    onClick={refreshReadiness}
+                    style={{
+                      minHeight: "32px",
+                      padding: "0 12px",
+                      borderRadius: "999px",
+                      border: "1px solid rgba(166, 118, 42, 0.45)",
+                      background: "#fff",
+                      color: "#6b4a0b",
+                      fontSize: "12px",
+                      fontWeight: 800,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Refresh
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setStockNoticeMin((min) => !min)}
+                  aria-label={stockNoticeMin ? "Show offline stock details" : "Collapse offline stock notice"}
+                  style={{ minWidth: "32px", minHeight: "32px", borderRadius: "999px", border: "1px solid rgba(166, 118, 42, 0.45)", background: "#fff", color: "#6b4a0b", fontWeight: 800, cursor: "pointer" }}
+                >
+                  {stockNoticeMin ? "+" : "–"}
+                </button>
+              </span>
             </div>
           )}
           {barOnly && stockReadiness.status === "failed" && (
@@ -5361,11 +5456,12 @@ export default function HposTerminal() {
           )}
           <div
             style={{
-              padding: "16px 18px",
+              padding: "10px 12px",
               borderBottom: "1px solid rgba(55,70,57,.11)",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
+              flexShrink: 0,
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -5475,33 +5571,8 @@ export default function HposTerminal() {
             )}
           </div>
 
-          {/* Persistent reprint: the empty-basket placeholder below also has
-              a big reprint button, but it vanishes the moment an item is
-              added. This slim row stays visible whenever a sale is recorded
-              (and payment is closed) so a lost slip can be reprinted mid-sale. */}
-          {lastReceipt && !showPayment && cart.length > 0 && (
-            <div style={{ padding: "8px 12px 0" }}>
-              <button
-                type="button"
-                onClick={reprintLastReceipt}
-                aria-label="Reprint the last receipt, for example when a customer lost their slip"
-                style={{
-                  width: "100%",
-                  minHeight: "44px",
-                  padding: "0 12px",
-                  borderRadius: "10px",
-                  border: "1px solid rgba(47, 107, 66, 0.3)",
-                  background: "rgba(47, 107, 66, 0.07)",
-                  color: "var(--bb-success)",
-                  fontSize: "13px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                }}
-              >
-                🧾 Reprint last receipt
-              </button>
-            </div>
-          )}
+          {/* Reprint lives only in the empty-basket placeholder below: showing
+              it mid-sale crowds the basket and hides the payment footer. */}
 
           {/* Cart Lines: minHeight 0 lets the list shrink so the payment
               footer (Take payment) always stays on screen instead of being
@@ -5755,7 +5826,7 @@ export default function HposTerminal() {
             </div>
           )}
 
-          {(submitError || successMessage || undoAdd) && (
+          {(submitError || successMessage) && (
             <div
               role={submitError ? "alert" : "status"}
               aria-live={submitError ? "assertive" : "polite"}
@@ -5769,15 +5840,11 @@ export default function HposTerminal() {
                 borderRadius: "12px",
                 background: submitError
                   ? "rgba(191, 72, 45, 0.14)"
-                  : undoAdd && !submitError
-                    ? "linear-gradient(135deg, #fff7ef, #fffaf4)"
-                    : "linear-gradient(135deg, #e5f6e9, #f3fbf4)",
+                  : "linear-gradient(135deg, #e5f6e9, #f3fbf4)",
                 border: submitError
                   ? "1px solid rgba(191, 72, 45, 0.32)"
-                  : undoAdd && !submitError
-                    ? "1px solid rgba(201, 86, 53, 0.28)"
-                    : "1px solid rgba(47, 107, 66, 0.30)",
-                color: submitError ? "#8d2f24" : undoAdd && !submitError ? "var(--bb-text)" : "var(--bb-success)",
+                  : "1px solid rgba(47, 107, 66, 0.30)",
+                color: submitError ? "#8d2f24" : "var(--bb-success)",
                 fontSize: "14px",
                 fontWeight: 800,
                 lineHeight: 1.35,
@@ -5788,43 +5855,69 @@ export default function HposTerminal() {
             >
               {submitError ? (
                 <AlertCircle size={21} aria-hidden="true" />
-              ) : undoAdd && !submitError ? (
-                <ShoppingCart size={20} aria-hidden="true" />
               ) : (
                 <CheckCircle size={22} aria-hidden="true" />
               )}
               <span style={{ flex: 1 }}>
-                {submitError ||
-                  successMessage ||
-                  (undoAdd ? `${undoAdd.name} added` : "")}
+                {submitError || successMessage}
               </span>
-              {!submitError && undoAdd && (
-                <button
-                  type="button"
-                  onClick={undoLastAdd}
-                  style={{
-                    minHeight: 40,
-                    padding: "0 14px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(201,86,53,.35)",
-                    background: "#fff",
-                    color: "var(--bb-accent, #c95635)",
-                    fontSize: 13,
-                    fontWeight: 900,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Undo
-                </button>
-              )}
+            </div>
+          )}
+
+          {/* Undo-add is a slim one-line pill (never the tall success card) so
+              it never hides the cart or the payment footer. */}
+          {!submitError && !successMessage && undoAdd && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                margin: "8px 16px 0",
+                minHeight: 32,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "4px 6px 4px 10px",
+                borderRadius: "999px",
+                background: "#fff7ef",
+                border: "1px solid rgba(201, 86, 53, 0.28)",
+                color: "var(--bb-text)",
+                fontSize: "12px",
+                fontWeight: 700,
+                lineHeight: 1.3,
+              }}
+            >
+              <ShoppingCart size={14} aria-hidden="true" />
+              <span style={{ flex: 1 }}>
+                {`${undoAdd.name} added`}
+              </span>
+              <button
+                type="button"
+                onClick={undoLastAdd}
+                style={{
+                  minHeight: 32,
+                  padding: "0 12px",
+                  borderRadius: "999px",
+                  border: "1px solid rgba(201,86,53,.35)",
+                  background: "#fff",
+                  color: "var(--bb-accent, #c95635)",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Undo
+              </button>
             </div>
           )}
 
           {/* Totals + Payment */}
+          {/* Compact, never scrolling: ONLY the cart list above scrolls. The
+              footer is flexShrink 0 with tight paddings so Record payment
+              stays on screen as the basket grows. */}
           {cart.length > 0 && (
-            <div style={{ borderTop: "1px solid rgba(55,70,57,.11)" }}>
-              <div style={{ padding: "12px 16px" }}>
+            <div style={{ borderTop: "1px solid rgba(55,70,57,.11)", flexShrink: 0 }}>
+              <div style={{ padding: "8px 12px 4px" }}>
                 {eligiblePromotions.length > 0 && tillEntitlements.canPromos && (
                   <label
                     style={{
@@ -5909,10 +6002,10 @@ export default function HposTerminal() {
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    fontSize: "18px",
+                    fontSize: "16px",
                     fontWeight: 850,
                     color: "var(--bb-text)",
-                    paddingTop: "10px",
+                    paddingTop: "6px",
                     borderTop: "1px solid rgba(55,70,57,.11)",
                   }}
                 >
@@ -5941,27 +6034,31 @@ export default function HposTerminal() {
                 </div>
               )}
 
-              {/* Payment Methods */}
+              {/* Payment Methods: 56px targets kept (touch contract); tighter
+                  padding/gap so the chooser costs one row, never a scroll. */}
               {!showPayment ? (
                 <div
                   style={{
-                    padding: "0 16px 14px",
+                    padding: "6px 12px 10px",
                     display: "grid",
                     gridTemplateColumns: "repeat(3, 1fr)",
                     gap: "6px",
                   }}
                 >
                   {hasPoolLines && (
-                    <div role="status" style={{ gridColumn: "1 / -1", padding: "10px 12px", borderRadius: "10px", background: "#eef6f3", border: "1px solid rgba(55,70,57,.14)", color: "var(--bb-text)", fontSize: "13px", fontWeight: 700 }}>
+                    <div role="status" style={{ gridColumn: "1 / -1", padding: "6px 10px", borderRadius: "8px", background: "#eef6f3", border: "1px solid rgba(55,70,57,.14)", color: "var(--bb-text)", fontSize: "12px", fontWeight: 700 }}>
                       Pool tables pay Cash only. Card, mobile money, split and account are disabled for this sale.
                     </div>
                   )}
                   {selectedCustomer &&
                     selectedCustomer.account_status === "active" &&
-                    Number(selectedCustomer.available_credit || 0) >= Number(total || 0) &&
-                    !hasPoolLines && (
+                    Number(selectedCustomer.available_credit || 0) >= Number(total || 0) && (
                       <button
+                        disabled={hasPoolLines}
+                        aria-disabled={hasPoolLines}
+                        title={hasPoolLines ? "Pool tables pay Cash only for this sale." : undefined}
                         onClick={() => {
+                          if (hasPoolLines) return;
                           setChargeToAccount(true);
                           setShowPayment(true);
                         }}
@@ -5975,7 +6072,8 @@ export default function HposTerminal() {
                           color: "var(--bb-info)",
                           fontSize: 12,
                           fontWeight: 700,
-                          cursor: "pointer",
+                          cursor: hasPoolLines ? "not-allowed" : "pointer",
+                          opacity: hasPoolLines ? 0.55 : 1,
                           textAlign: "left",
                         }}
                       >
@@ -5997,7 +6095,12 @@ export default function HposTerminal() {
                       id: "card",
                       label: "Card",
                       icon: CreditCard,
-                      color: "var(--bb-info)",
+                      // NB: keep a hex color here, not var(--bb-info): the tile
+                      // builds its border/background as `${color}20` / `${color}08`
+                      // (hex + alpha). A var() value makes both declarations
+                      // invalid, so the Card square loses its box and looks gone.
+                      // #356ed8 matches --bb-info.
+                      color: "#356ed8",
                     },
                     {
                       id: "mobile_money",
@@ -6005,10 +6108,16 @@ export default function HposTerminal() {
                       icon: Smartphone,
                       color: "#8a5d3b",
                     },
-                  ].filter((pm) => !hasPoolLines || pm.id === "cash").map((pm) => (
+                  ].map((pm) => {
+                    const poolBlocked = hasPoolLines && pm.id !== "cash";
+                    return (
                     <button
                       key={pm.id}
+                      disabled={poolBlocked}
+                      aria-disabled={poolBlocked}
+                      title={poolBlocked ? "Pool tables pay Cash only for this sale." : undefined}
                       onClick={() => {
+                        if (poolBlocked) return;
                         setChargeToAccount(false);
                         setPaymentMethod(pm.id);
                         setShowPayment(true);
@@ -6017,49 +6126,53 @@ export default function HposTerminal() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        gap: "8px",
+                        gap: "6px",
                         minHeight: "56px",
-                        padding: "14px 12px",
-                        borderRadius: "12px",
+                        padding: "10px 8px",
+                        borderRadius: "10px",
                         border: `1px solid ${pm.color}20`,
                         background: `${pm.color}08`,
                         color: pm.color,
-                        fontSize: "15px",
+                        fontSize: "14px",
                         fontWeight: 700,
-                        cursor: "pointer",
+                        cursor: poolBlocked ? "not-allowed" : "pointer",
+                        opacity: poolBlocked ? 0.55 : 1,
                       }}
                     >
-                      <pm.icon size={20} />
+                      <pm.icon size={18} />
                       {pm.label}
                     </button>
-                  ))}
-                  {!hasPoolLines && (
+                    );
+                  })}
                   <button
+                    disabled={hasPoolLines}
+                    aria-disabled={hasPoolLines}
+                    title={hasPoolLines ? "Pool tables pay Cash only for this sale." : undefined}
                     onClick={() => {
+                      if (hasPoolLines) return;
                       setChargeToAccount(false);
                       setPaymentMethod("split");
                       setSplitCashAmount("");
                       setShowPayment(true);
                     }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", minHeight: "56px", padding: "14px 12px", borderRadius: "12px", border: "1px solid rgba(109,76,130,.18)", background: "rgba(109,76,130,.06)", color: "#6d4c82", fontSize: "15px", fontWeight: 700, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", minHeight: "56px", padding: "10px 8px", borderRadius: "10px", border: "1px solid rgba(109,76,130,.18)", background: "rgba(109,76,130,.06)", color: "#6d4c82", fontSize: "14px", fontWeight: 700, cursor: hasPoolLines ? "not-allowed" : "pointer", opacity: hasPoolLines ? 0.55 : 1 }}
                   >
-                    <WalletCards size={20} /> Split payment
+                    <WalletCards size={18} /> Split payment
                   </button>
-                  )}
                 </div>
               ) : (
-                <div style={{ padding: "0 16px 14px" }}>
+                <div style={{ padding: "6px 12px 10px" }}>
                   {paymentIdleNudge && (
                     <div
                       role="status"
                       style={{
-                        marginBottom: "10px",
-                        padding: "10px 12px",
-                        borderRadius: "10px",
+                        marginBottom: "6px",
+                        padding: "6px 10px",
+                        borderRadius: "8px",
                         background: "#fff6df",
                         border: "1px solid rgba(139,90,17,.22)",
                         color: "#8b5a11",
-                        fontSize: "13px",
+                        fontSize: "12px",
                         fontWeight: 700,
                       }}
                     >
@@ -6071,13 +6184,13 @@ export default function HposTerminal() {
                       operator tendering aids recorded on the receipt, never
                       revenue or tips. */}
                   {!chargeToAccount && paymentMethod === "cash" && (
-                    <div style={{ marginBottom: "10px" }}>
+                    <div style={{ marginBottom: "6px" }}>
                       <div
                         style={{
                           fontSize: "12px",
                           fontWeight: 700,
                           color: "#5d4b52",
-                          marginBottom: "6px",
+                          marginBottom: "4px",
                         }}
                       >
                         Cash received{barOnly ? " (required)" : ""}
@@ -6089,8 +6202,8 @@ export default function HposTerminal() {
                           // one row as the shared list grows (a fixed 4-col
                           // grid orphaned P20 onto a second row).
                           gridTemplateColumns: "repeat(auto-fit, minmax(60px, 1fr))",
-                          gap: "8px",
-                          marginBottom: "8px",
+                          gap: "6px",
+                          marginBottom: "6px",
                         }}
                       >
                         {[
@@ -6105,12 +6218,12 @@ export default function HposTerminal() {
                             type="button"
                             onClick={() => setCashReceived(String(roundCash(option.value)))}
                             style={{
-                              minHeight: "48px",
-                              borderRadius: "9px",
+                              minHeight: "44px",
+                              borderRadius: "8px",
                               border: "1px solid rgba(55,70,57,.18)",
                               background: "#fff",
                               color: "var(--bb-text)",
-                              fontSize: "14px",
+                              fontSize: "13px",
                               fontWeight: 800,
                               cursor: "pointer",
                             }}
@@ -6164,7 +6277,7 @@ export default function HposTerminal() {
                   {canUseTips && <label
                     style={{
                       display: "block",
-                      marginBottom: "10px",
+                      marginBottom: "6px",
                       fontSize: "12px",
                       fontWeight: 700,
                       color: "#5d4b52",
@@ -6187,23 +6300,23 @@ export default function HposTerminal() {
                         display: "block",
                         boxSizing: "border-box",
                         width: "100%",
-                        marginTop: "5px",
+                        marginTop: "4px",
                         border: "1px solid rgba(55,70,57,.18)",
                         borderRadius: "8px",
-                        padding: "9px 10px",
-                        fontSize: "14px",
+                        padding: "8px 10px",
+                        fontSize: "13px",
                       }}
                     />
                   </label>}
                   {paymentMethod === "split" && !chargeToAccount && (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "10px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px", marginBottom: "6px" }}>
                       <label style={{ fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
                         Cash amount
-                        <input type="number" min="0.01" max={Math.max(0, total - 0.01)} step="0.01" value={splitCashAmount} onChange={(event) => setSplitCashAmount(event.target.value)} placeholder="0.00" style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }} />
+                        <input type="number" min="0.01" max={Math.max(0, total - 0.01)} step="0.01" value={splitCashAmount} onChange={(event) => setSplitCashAmount(event.target.value)} placeholder="0.00" style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "4px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "8px 10px", fontSize: "13px" }} />
                       </label>
                       <label style={{ fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
                         Balance method
-                        <select value={splitRemainderMethod} onChange={(event) => setSplitRemainderMethod(event.target.value)} style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px", background: "white" }}>
+                        <select value={splitRemainderMethod} onChange={(event) => setSplitRemainderMethod(event.target.value)} style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "4px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "8px 10px", fontSize: "13px", background: "white" }}>
                           <option value="card">Card</option>
                           <option value="mobile_money">Mobile money</option>
                         </select>
@@ -6221,14 +6334,14 @@ export default function HposTerminal() {
                             }))
                           }
                           placeholder={splitRemainderMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
-                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
+                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "4px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "8px 10px", fontSize: "13px" }}
                         />
                       </label>
                     </div>
                   )}
                   {!chargeToAccount && paymentMethod !== "cash" && paymentMethod !== "split" && (
                     <>
-                      <label style={{ display: "block", marginBottom: "10px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
+                      <label style={{ display: "block", marginBottom: "6px", fontSize: "12px", fontWeight: 700, color: "#5d4b52" }}>
                         {paymentMethod === "mobile_money" ? "Mobile money reference (optional)" : "Card approval/reference (optional)"}
                         <input
                           type="text"
@@ -6241,17 +6354,17 @@ export default function HposTerminal() {
                             }))
                           }
                           placeholder={paymentMethod === "mobile_money" ? "Transaction ID" : "Terminal approval code"}
-                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "5px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "9px 10px", fontSize: "14px" }}
+                          style={{ display: "block", boxSizing: "border-box", width: "100%", marginTop: "4px", border: "1px solid rgba(55,70,57,.18)", borderRadius: "8px", padding: "8px 10px", fontSize: "13px" }}
                         />
                       </label>
                       {paymentMethod === "card" && (
-                        <div style={{ marginBottom: "10px" }}>
+                        <div style={{ marginBottom: "6px" }}>
                           {terminalBridgeReady ? (
                             <button
                               type="button"
                               onClick={() => sendTotalToCardMachine(total)}
                               disabled={terminalSending}
-                              style={{ width: "100%", minHeight: "48px", borderRadius: "9px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "14px", fontWeight: 800, cursor: "pointer" }}
+                              style={{ width: "100%", minHeight: "44px", borderRadius: "8px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "13px", fontWeight: 800, cursor: "pointer" }}
                             >
                               {terminalSending ? "Sending to card machine…" : `Send ${currency} ${fmt(total)} to card machine`}
                             </button>
@@ -6268,13 +6381,13 @@ export default function HposTerminal() {
                     </>
                   )}
                   {!chargeToAccount && paymentMethod === "split" && splitRemainderMethod === "card" && (
-                    <div style={{ marginBottom: "10px" }}>
+                    <div style={{ marginBottom: "6px" }}>
                       {terminalBridgeReady ? (
                         <button
                           type="button"
                           onClick={() => sendTotalToCardMachine(total - Number(splitCashAmount || 0))}
                           disabled={terminalSending}
-                          style={{ width: "100%", minHeight: "48px", borderRadius: "9px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "14px", fontWeight: 800, cursor: "pointer" }}
+                          style={{ width: "100%", minHeight: "44px", borderRadius: "8px", border: "1px solid rgba(55,70,57,.18)", background: "#fff", color: "var(--bb-text)", fontSize: "13px", fontWeight: 800, cursor: "pointer" }}
                         >
                           {terminalSending ? "Sending to card machine…" : "Send card balance to card machine"}
                         </button>
@@ -6289,9 +6402,9 @@ export default function HposTerminal() {
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      gap: "10px",
-                      padding: "8px 12px",
-                      borderRadius: "10px",
+                      gap: "8px",
+                      padding: "6px 10px",
+                      borderRadius: "8px",
                       background: "rgba(245, 158, 11, 0.06)",
                       border: "1px solid rgba(245, 158, 11, 0.12)",
                     }}
@@ -6323,9 +6436,9 @@ export default function HposTerminal() {
                   <div
                     aria-label="Tender breakdown"
                     style={{
-                      marginTop: 8,
-                      padding: "10px 12px",
-                      borderRadius: 10,
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      borderRadius: 8,
                       background: "rgba(255,255,255,.76)",
                       border: "1px solid rgba(55,70,57,.12)",
                       fontSize: 12,
@@ -6377,14 +6490,14 @@ export default function HposTerminal() {
                     <p
                       role="status"
                       style={{
-                        margin: "8px 0 0",
+                        margin: "6px 0 0",
                         fontSize: "12px",
                         fontWeight: 700,
                         color: "#7a5710",
                         background: "#fdf3e3",
                         border: "1px solid rgba(166, 118, 42, 0.35)",
-                        borderRadius: "9px",
-                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        padding: "6px 10px",
                       }}
                     >
                       Drawer not open — open it in Staff shift close before taking payment.
@@ -6400,8 +6513,8 @@ export default function HposTerminal() {
                     style={{
                       width: "100%",
                       minHeight: "60px",
-                      padding: "16px 12px",
-                      marginTop: "8px",
+                      padding: "12px 12px",
+                      marginTop: "6px",
                       borderRadius: "12px",
                       border: "none",
                       background: "var(--hpos-accent-gradient, linear-gradient(135deg, #c95635, #a83c26))",
@@ -6424,8 +6537,8 @@ export default function HposTerminal() {
                     onClick={() => setShowPayment(false)}
                     style={{
                       width: "100%",
-                      padding: "8px",
-                      marginTop: "6px",
+                      padding: "6px",
+                      marginTop: "4px",
                       borderRadius: "8px",
                       border: "1px solid rgba(55,70,57,.16)",
                       background: "#fffdf8",

@@ -110,10 +110,16 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         setVoidHistory([]);
         setHistorySource(cached?.source === 'local_cache' ? 'Showing this terminal’s saved history. Checking for updates…' : 'Loading PIN-verified sales…');
         setLoading(false);
-        const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true });
-        setOrders(refreshed?.orders || []);
-        setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true, tenderComplete: refreshed?.tender_complete === true, itemDetailComplete: refreshed?.item_detail_complete === true });
-        setHistorySource(refreshed?.refreshed ? 'Updated from the server.' : 'Showing this terminal’s saved history while offline.');
+        try {
+          const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true });
+          setOrders(refreshed?.orders || cached?.orders || []);
+          setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true, tenderComplete: refreshed?.tender_complete === true, itemDetailComplete: refreshed?.item_detail_complete === true });
+          setHistorySource(refreshed?.refreshed ? 'Updated from the server.' : 'Showing this terminal’s saved history while offline.');
+        } catch (refreshError) {
+          // A failed server refresh must never wipe the saved history already
+          // on screen: stay on this device's data with an offline note.
+          setHistorySource('Showing this terminal’s saved history while offline.');
+        }
       } catch (loadError) {
         setOrders([]);
         setVoidHistory([]);
