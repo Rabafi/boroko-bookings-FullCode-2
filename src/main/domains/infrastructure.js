@@ -36,7 +36,18 @@ import {
   mergeDeadLetterQueues,
   normalizeQueuedSyncItemForReplay,
   rewritePendingProductReferences,
-  resolveCurrentOpenShiftId
+  resolveCurrentOpenShiftId,
+  POS_HISTORICAL_REPLAY_RPC,
+  REPLAY_OUTCOME,
+  REPLAY_OUTCOME_SOURCE,
+  buildHistoricalReplayRequest,
+  buildReplayFailureMetadata,
+  classifyReplayOutcomeDetailed,
+  classifySaleReplayRoute,
+  isHistoricalReplayContractMissing,
+  isRetryableReplayOutcome,
+  isShiftClosureSaleRefusal,
+  shouldRetainPosSubmitJournal
 } from './syncShared.js';
 import {
   DEBUG_CACHE_FALLBACKS,
@@ -329,11 +340,17 @@ export {
 
 // ─── CACHE HELPERS ────────────────────────────────────────────────────────────
 
+/** @param {string} label @param {unknown} [payload] */
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
   console.log(`[AUTH TRACE] ${label}`, payload);
 }
 
+/**
+ * @param {string} message
+ * @param {unknown} [details]
+ * @returns {{user: null, code: 'backend_auth_schema_outdated', error: string, details: unknown}}
+ */
 function makeBackendAuthSchemaError(message, details = {}) {
   console.warn('[AUTH TRACE] schema error wrapper hit', { message, details });
   return {
@@ -351,14 +368,19 @@ const SYNC_RETRY_BASE_DELAY_MS = 1000;
 const SYNC_RETRY_MAX_DELAY_MS = 30_000;
 const SYNC_ALREADY_APPLIED_CODES = new Set(['23505']);
 
+/** @param {number} ms */
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** @typedef {{message?: unknown}} InfrastructureErrorMessageReadView */
+/** @param {unknown} err @returns {unknown} */
 function getErrorMessage(err) {
   if (!err) return 'Unknown error';
   if (typeof err === 'string') return err;
-  if (err.message) return err.message;
+  // These type-only views preserve both existing property reads and do not
+  // imply that arbitrary thrown or RPC values have been validated.
+  if (/** @type {InfrastructureErrorMessageReadView} */ (err).message) return /** @type {InfrastructureErrorMessageReadView} */ (err).message;
   try {
     return JSON.stringify(err);
   } catch {
@@ -366,16 +388,26 @@ function getErrorMessage(err) {
   }
 }
 
+/** @param {unknown} [message] */
 function isBookingUpdateConflictError(message = '') {
   return /modified on another device|booking conflict|refresh and try again/i.test(String(message || ''));
 }
 
 function shouldManualReviewSyncItem(item, errorMessage = '', errorObj = null) {
+  // Product save validation and uniqueness failures are definitive, but they
+  // cannot prove that a queued product matches an existing row. Park the item
+  // for manager review and keep its dependent sales blocked; never acknowledge
+  // a different product intent by name alone.
+  if (item?.type === 'rpc' && item?.table === 'save_bar_product_with_stock'
+    && ['22023', '23505'].includes(String(errorObj?.code || '').toUpperCase())) return true;
   if (['update_booking', 'update_campsite_booking', 'reschedule_accommodation_booking'].includes(item?.table)
     && isBookingUpdateConflictError(errorMessage)) return true;
   // Server-flagged firm refusals (e.g. offline trading window too old) can
   // never converge by retrying identical bytes. Park them for manager review
   // instead of burning 5 retries + 30-minute auto-requeue forever.
+  if (item?.table === 'approve_pos_void_with_pin' && [
+    'idempotency_conflict', 'idempotency_receipt_unavailable', 'operation_key_required', 'actor_required', 'outlet_scope_conflict'
+  ].includes(String(errorObj?.code || ''))) return true;
   if (errorObj?.manual_review_required === true) return true;
   if (/catalog_refresh_required|manual_review_required|permitted offline trading window|outside the permitted/i.test(String(errorMessage || ''))) return true;
   // Tab version/ownership conflicts can never converge by retrying the same
@@ -389,15 +421,10 @@ function shouldManualReviewSyncItem(item, errorMessage = '', errorObj = null) {
   return false;
 }
 
-// POS void terminal outcomes: the server checks the order row BEFORE any PIN
-// or state validation, so `Order not found` (and the settled refusal below)
-// is deterministic and PIN-independent — replaying identical bytes can never
-// succeed, no matter how often the queue or the 30-minute auto-requeue
-// retries it. These dead-letter as manual-review-only (never auto-retried,
-// never silently dropped) with the server message intact, staying visible in
-// the System Health failed queue until a manager retries or clears them.
-// `Order is already voided` is NOT terminal here: it is the desired end state
-// and is consumed as synced by isAlreadyAppliedRpcError instead.
+// POS void refusals with a fixed order/key state cannot converge by retrying
+// identical bytes. They remain visible for manager review. `Order is already
+// voided` and receipt conflicts are never acknowledgements: only the RPC's
+// successful exact-receipt result can consume a committed replay.
 // POS replay ambiguity gate: only a truly uncertain replay outcome may reopen
 // the submit journal to pending (Till banner + new-sale block). A definitive
 // server refusal proves the attempt did NOT commit (same rule as the online
@@ -406,13 +433,14 @@ function shouldManualReviewSyncItem(item, errorMessage = '', errorObj = null) {
 // review. Retrying identical definitive bytes can never succeed until the
 // cause is fixed (stock added, catalog refreshed), so parking them as
 // uncertain stacked 38 blocking banners from one bar night.
+/** @param {unknown} [message] */
 export function isAmbiguousPosOrderReplayError(message = '') {
   return /fetch failed|network|timeout|timed out|ambiguous|uncertain|till_operator_|till_shift_closed|shift_not_open|pos_submit_recovery_required|idempotency_conflict|idempotency_expired|statement timeout|canceling statement|connection|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(String(message || ''));
 }
 
 function isTerminalPosVoidFailure(item, errorMessage = '') {
   if (item?.type !== 'rpc' || item?.table !== 'approve_pos_void_with_pin') return false;
-  return /Order not found|Cannot void a settled order/i.test(String(errorMessage || ''));
+  return /Order not found|Cannot void a settled order|Order is already voided|idempotency_conflict|idempotency_receipt_unavailable|operation_key_required|outlet_scope_conflict/i.test(String(errorMessage || ''));
 }
 
 function isCreateBookingQueueItem(item) {
@@ -505,10 +533,12 @@ function rewriteQueuedEntityReference(pending = [], localId, serverId, { fieldNa
   });
 }
 
+/** @param {unknown} [message] */
 function isRoomConflictError(message = '') {
   return /no_overlapping_bookings|room is already booked|room is not available|room.*conflict/i.test(String(message || ''));
 }
 
+/** @param {unknown} [message] */
 function isQuotationNumberConflict(message = '') {
   return /quotations_lodge_id_quotation_number_key|duplicate key value/i.test(String(message || ''));
 }
@@ -618,52 +648,17 @@ function queueItemNeedsRateOverrideRefresh(item) {
   ].includes(item.table);
 }
 
-function isAlreadyAppliedInsertError(item, error) {
-  if (item?.type !== 'insert') return false;
-  if (!item?.data?.id) return false;
-  const code = String(error?.code || '').trim();
-  return SYNC_ALREADY_APPLIED_CODES.has(code);
+function isAlreadyAppliedInsertError(_item, _error) {
+  // A uniqueness violation proves only that a conflicting row exists. Inserts
+  // have no immutable operation receipt, so preserve the queue failure.
+  return false;
 }
 
-function isAlreadyAppliedRpcError(item, errorOrMessage) {
-  if (item?.type !== 'rpc') return false;
-  const message = getErrorMessage(errorOrMessage);
-  if (isConvertQuotationQueueItem(item) && /quotation is already converted|quotation is already .*converted|already converted/i.test(message)) {
-    return true;
-  }
-  // save_bar_product_with_stock: a duplicate-name refusal means a DIFFERENT
-  // operation key already created this product/stock server-side, so the work
-  // this queued item represents is resolved elsewhere — consume it as synced
-  // instead of dead-lettering an unfailing retry loop. Barcode and
-  // operation-key conflicts use different message shapes and stay reviewable.
-  if (item?.table === 'save_bar_product_with_stock' &&
-      /^A (?:product|stock item) named /i.test(String(message || ''))) {
-    return true;
-  }
-  // approve_pos_void_with_pin: the order is already voided server-side, which
-  // is exactly the end state this item wanted (e.g. voided from another
-  // terminal, or an ambiguous-timeout retry after the void landed). Consume
-  // as synced instead of retrying a refusal that can never clear. Placed
-  // before the payload-id gate on purpose: void items carry order_id inside
-  // the payload, not a top-level id.
-  if (item?.table === 'approve_pos_void_with_pin' && /Order is already voided/i.test(String(message || ''))) {
-    return true;
-  }
-  // For create_quotation, a 23505 on the quotation_number unique constraint means
-  // a DIFFERENT quotation with the same number exists — not that THIS quotation
-  // was already applied. Only treat it as already-applied if the error references
-  // the quotation's own ID (UUID), not the number constraint.
-  if (isCreateQuotationQueueItem(item)) {
-    if (/quotations_lodge_id_quotation_number_key/i.test(message)) return false;
-  }
-  const payloadId = item?.data?.payload?.id || item?.data?.p_booking_id || item?.data?.p_quotation_id || null;
-  if (!payloadId) return false;
-
-  const code = String(errorOrMessage?.code || '').trim();
-  return SYNC_ALREADY_APPLIED_CODES.has(code) ||
-  /duplicate key|unique constraint|already exists|already applied|23505/i.test(message);
+function isAlreadyAppliedRpcError(_item, _errorOrMessage) {
+  // Error prose, SQLSTATE 23505 and entity IDs are not authoritative receipts.
+  // Only a successful RPC response for the exact operation may acknowledge it.
+  return false;
 }
-
 // ─── Replay write fence (P0-1) + incremental dead-letter persistence (P0-2) ───
 // _runSyncQueue holds `pending` in memory while awaiting RPCs. A sale rung
 // mid-replay runs queueOperation synchronously during that await: it reads the
@@ -719,6 +714,28 @@ export function persistDeadLetterIncrementally(deadItem) {
   }
 }
 
+// R7-B: a parent that failed earlier in the pass scheduled its waiting
+// children on the parent-pending wait cadence. Once the parent commits those
+// waits are obsolete: clear the child's wait deadline so the next pick runs it
+// without waiting out a delay that no longer means anything.
+function releaseChildrenWaitingOnCompletedParent(pending = [], parentQueueId = '') {
+  const parentId = String(parentQueueId || '').trim();
+  if (!parentId) return 0;
+  let released = 0;
+  for (const row of pending) {
+    const dependencyIds = [...new Set([
+      row?._depends_on,
+      ...(Array.isArray(row?._depends_on_all) ? row._depends_on_all : [])
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    if (!dependencyIds.includes(parentId)) continue;
+    if (row?._next_retry_at || row?._outcome_class === REPLAY_OUTCOME.PARENT_PENDING) {
+      delete row._next_retry_at;
+      released += 1;
+    }
+  }
+  return released;
+}
+
 export async function processSyncQueue() {
   if (state.syncQueuePromise) return state.syncQueuePromise;
   // P0-5: Never replay queued operations before a real user session is confirmed.
@@ -761,6 +778,9 @@ export async function processSyncQueue() {
 
 async function _runSyncQueue() {
   await requeueEligibleFailedSyncItems();
+  await requeueContractParkedHistoricalReplayItems().catch((contractError) => {
+    console.warn('[Sync] Contract-parked requeue skipped:', getErrorMessage(contractError));
+  });
   let queue = readSyncQueue().
   map((item) => ensureQueuedItem(item, item?.type || 'op')).
   map(normalizeQueuedSyncItemForReplay);
@@ -795,6 +815,12 @@ async function _runSyncQueue() {
   const completedQueueIds = new Set();
   console.log('[SYNC PRELOAD FAILED IDS]', [...failedQueueIds]);
   const pending = [...queue];
+  // Persisted replay scheduling (R7): every attempt must be due according to
+  // the row's own `_next_retry_at`. The pass-start timestamp is the reference
+  // so a failure inside this pass schedules forward and cannot be re-attempted
+  // by the same pass, while rows from earlier passes retry as soon as due.
+  const passStartedAtMs = Date.now();
+  let deferredAttemptCount = 0;
   // P1-8: widen post-sync refresh tracking
   let shouldRefreshBookings = false;
   let shouldRefreshBookingsAfterFailure = false;
@@ -855,6 +881,26 @@ async function _runSyncQueue() {
     }
 
     const [item] = pending.splice(nextIndex, 1);
+    // R7: the persisted retry schedule is authoritative. A row whose last
+    // failure scheduled `_next_retry_at` in the future is not attempted, not
+    // charged a retry and not touched at all; it keeps its place for a later
+    // pass. Because the reference is the pass start, a row that fails in this
+    // pass schedules forward and cannot burn its whole retry budget in one
+    // drain. When every remaining row is waiting on its schedule the pass
+    // parks and nothing is dead-lettered.
+    const nextRetryAtMs = item?._next_retry_at ? Date.parse(item._next_retry_at) : NaN;
+    if (Number.isFinite(nextRetryAtMs) && nextRetryAtMs > passStartedAtMs) {
+      console.log(`[Sync] ${item.type} ${item.table} is waiting on its scheduled retry (${item._next_retry_at}); leaving it untouched`);
+      pending.push({ ...item, _state: 'pending' });
+      deferredAttemptCount += 1;
+      if (deferredAttemptCount >= pending.length) {
+        console.log(`[Sync] All ${pending.length} remaining item(s) are waiting on their persisted retry schedule; pausing this pass`);
+        writeReplayQueue(pending, { completedQueueIds, deadLetter });
+        break;
+      }
+      continue;
+    }
+    deferredAttemptCount = 0;
     // Skip items whose parent operation failed this run. A parent that failed
     // but later succeeded in the same run must not keep blocking its
     // children: the failed id lingers in failedQueueIds, so only treat it as
@@ -881,8 +927,36 @@ async function _runSyncQueue() {
         && (parentDeadThisRun?.manualRetryOnly === true
           || parentPrior?.manualRetryOnly === true
           || (!parentDeadThisRun && !parentPrior));
-      const retryCount = parentUnresolvable ? MAX_SYNC_RETRIES : (item.retryCount || 0) + 1;
-      const skipped = { ...item, _state: 'pending', retryCount, lastError: parentUnresolvable ? `Skipped: parent operation ${failedDependencyId} can no longer succeed; manager review required` : 'Skipped: parent operation failed', lastAttemptedAt: new Date().toISOString(), ...(parentUnresolvable ? { manualRetryOnly: true } : {}) };
+      // R7-B: waiting behind a prerequisite is not an execution attempt. A
+      // retryable skip preserves the child's own dispatch budget and records
+      // the wait separately (`_parent_wait_count`) with its own bounded
+      // schedule, so a child can never dead-letter without a dispatched
+      // attempt and a long wait never masquerades as spent retries.
+      const retryCount = parentUnresolvable ? MAX_SYNC_RETRIES : Math.max(0, Number(item.retryCount || 0));
+      const parentWaitCount = Math.max(1, Number(item?._parent_wait_count || 0) + 1);
+      const skipped = {
+        ...item,
+        _state: 'pending',
+        retryCount,
+        _parent_wait_count: parentUnresolvable ? 0 : parentWaitCount,
+        manualRetryOnly: parentUnresolvable,
+        lastError: parentUnresolvable ? `Skipped: parent operation ${failedDependencyId} can no longer succeed; manager review required` : 'Skipped: parent operation failed',
+        lastAttemptedAt: new Date().toISOString(),
+        ...(parentUnresolvable ? {} : {
+          // The wait is scheduled from its own bounded counter so a child of a
+          // still-pending parent cannot hot-loop through its retry budget in
+          // one pass. Dispatching a real attempt resets the counter.
+          ...buildReplayFailureMetadata(
+            { ...item, retryCount: parentWaitCount },
+            {
+              outcomeClass: REPLAY_OUTCOME.PARENT_PENDING,
+              message: 'Skipped: parent operation failed',
+              baseDelayMs: SYNC_RETRY_BASE_DELAY_MS,
+              maxDelayMs: SYNC_RETRY_MAX_DELAY_MS
+            }
+          )
+        })
+      };
       appendOperationJournalEntry('blocked', skipped, {
         financial: isFinancialSyncItem(skipped),
         message: skipped.lastError
@@ -922,20 +996,19 @@ async function _runSyncQueue() {
       continue;
     }
 
-    const priorRetries = Math.max(0, Number(item.retryCount || 0));
-    if (priorRetries > 0) {
-      const backoffMs = Math.min(
-        SYNC_RETRY_MAX_DELAY_MS,
-        SYNC_RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, priorRetries - 1))
-      );
-      console.warn(`[Sync] Backing off ${backoffMs}ms before retrying ${item.type} ${item.table}`);
-      await delay(backoffMs);
-    }
+    // Retry pacing is enforced by the persisted `_next_retry_at` check above
+    // (backoff base/max mirror SYNC_RETRY_BASE_DELAY_MS/SYNC_RETRY_MAX_DELAY_MS
+    // and are written by buildReplayFailureMetadata on failure). No in-pass
+    // sleep: the old blocking delay burned the whole retry budget in one drain
+    // and could never survive a restart.
 
     // Persist in_flight before issuing remote call.
     // Crash here → restart normalizes to pending and retries safely.
     // Merge-with-disk first: a sale queued during the previous RPC await must
     // survive this write (P0-1 replay write fence).
+    // R7-B: this is a real dispatched attempt, so the parent-wait cadence is
+    // reset; the child's own retryCount is the only budget that matters now.
+    if (item._parent_wait_count) delete item._parent_wait_count;
     writeReplayQueue(pending, { inFlightItem: item, completedQueueIds, deadLetter });
 
     let supabaseError = null;
@@ -987,12 +1060,14 @@ async function _runSyncQueue() {
         ({ error: supabaseError } = await state.supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
       } else if (item.type === 'rpc') {
         const replayData = resolveQueuedRpcData(item.data);
-        // Weeks-old offline work replays under today's open shift, never the
-        // long-closed originating shift: the server requires an OPEN shift
-        // for tab saves and order settlement (tab opening shift stays history,
-        // settlement attributes to the paying shift by server design). The
-        // waiter, outlet, amounts and timestamps are never rewritten.
-        if (item.table === 'upsert_pos_tab' || item.table === 'create_pos_order_v3') {
+        // Tab saves still need an OPEN shift on the server; the waiter, outlet,
+        // amounts and timestamps are never rewritten. Sale settlement
+        // (create_pos_order_v3) is deliberately NOT reattributed here: moving a
+        // historical sale onto today's shift either conflicts with its
+        // committed receipt hash or silently moves revenue into the wrong
+        // cash-up. Closed-shift sales route through the reviewed historical
+        // contract below under their original shift and business date.
+        if (item.table === 'upsert_pos_tab') {
           try {
             const replayPayload = replayData?.payload || {};
             const waiterId = String(replayPayload.waiter_id || replayPayload.cashier_id || '').trim() || null;
@@ -1011,6 +1086,8 @@ async function _runSyncQueue() {
         // A weeks-old operator proof cannot be revalidated: the replay
         // authenticates as the current desktop session instead. Fresh
         // interactive sales always mint their own proof and are untouched.
+        // This proof is excluded from the server's canonical payload hash, so
+        // removing it does not change operation identity.
         if (item.table === 'create_pos_order_v3' && replayData?.payload) {
           delete replayData.payload._operator_proof;
         }
@@ -1020,6 +1097,23 @@ async function _runSyncQueue() {
         // persisted queue identity; never mint a fresh key on retry/timeout.
         let replayRpc = item.table;
         let authoritativeReplayData = replayData;
+        // Historical sale replay: when the originating shift is not cached
+        // open, keep the original bytes (shift, operator, business date, key)
+        // and route through the reviewed server contract. It reconciles an
+        // already committed exact receipt first and otherwise validates the
+        // closed-shift/offline-window provenance server-side. Absence of the
+        // contract parks the item until deployment; it is never rewritten to
+        // today's shift or given a replacement key.
+        if (item.table === 'create_pos_order_v3' && replayData?.payload) {
+          if (classifySaleReplayRoute(readCache('pos-shifts'), replayData.payload) === 'historical') {
+            replayRpc = POS_HISTORICAL_REPLAY_RPC;
+            authoritativeReplayData = buildHistoricalReplayRequest(item, replayData.payload);
+            appendOperationJournalEntry('historical_replay_routed', item, {
+              financial: true,
+              message: 'Historical sale replay routed to the reviewed original-shift contract; original shift, operator, business date and key preserved.'
+            });
+          }
+        }
         if (item.table === 'update_pos_menu_item') {
           const legacyPayload = replayData?.payload || {};
           const operationKey = legacyPayload.operation_key ||
@@ -1071,6 +1165,52 @@ async function _runSyncQueue() {
           }
         } else {
           console.log(`✅ RPC ${replayRpc} SUCCESS:`, data);
+        }
+
+        // R5 bounded same-key fallback: the cached shift said "open" but the
+        // server refused the sale because the shift is no longer open (a sale
+        // queued offline after its shift closed, with a stale shift cache).
+        // The reviewed historical contract is the designed recovery path: it
+        // reconciles an already committed exact receipt first and otherwise
+        // validates original shift/operator/business-date provenance. Exactly
+        // one fallback attempt, identical original bytes, the original
+        // operation key; a missing contract parks the sale for automatic
+        // resume, and a genuine refusal classifies on its own evidence. The
+        // item is never rewritten to today's shift and never re-keyed.
+        if (
+          supabaseError &&
+          item.table === 'create_pos_order_v3' &&
+          replayRpc !== POS_HISTORICAL_REPLAY_RPC &&
+          replayData?.payload &&
+          isShiftClosureSaleRefusal(supabaseError)
+        ) {
+          appendOperationJournalEntry('historical_replay_fallback', item, {
+            financial: true,
+            message: 'The server refused this replay because the sale\'s shift is no longer open; retrying once through the reviewed original-shift contract with the same operation key and bytes.'
+          });
+          const fallbackRequest = buildHistoricalReplayRequest(item, replayData.payload);
+          const { data: fallbackData, error: fallbackError } = await state.supabase.rpc(POS_HISTORICAL_REPLAY_RPC, fallbackRequest);
+          rpcResultData = fallbackData || null;
+          if (fallbackError) {
+            console.error(`❌ RPC ${POS_HISTORICAL_REPLAY_RPC} FAILED:`, fallbackError);
+            supabaseError = fallbackError;
+          } else if (fallbackData && fallbackData.success === false) {
+            if (isAlreadyAppliedRpcError({ ...item, table: POS_HISTORICAL_REPLAY_RPC }, fallbackData.error)) {
+              console.warn(`↻ RPC ${POS_HISTORICAL_REPLAY_RPC} reported duplicate for queued id; treating as synced`, item._queue_id);
+              supabaseError = null;
+            } else {
+              console.error(`❌ RPC ${POS_HISTORICAL_REPLAY_RPC} LOGIC FAILED:`, fallbackData.error);
+              supabaseError = {
+                message: typeof fallbackData.error === 'string' ? fallbackData.error : (fallbackData.error?.message || JSON.stringify(fallbackData.error)),
+                code: fallbackData.code || fallbackData.error_code || null,
+                manual_review_required: fallbackData.manual_review_required === true,
+                serverData: fallbackData
+              };
+            }
+          } else {
+            console.log(`✅ RPC ${POS_HISTORICAL_REPLAY_RPC} SUCCESS:`, fallbackData);
+            supabaseError = null;
+          }
         }
       }
     } catch (e) {
@@ -1255,8 +1395,32 @@ async function _runSyncQueue() {
         }
       }
       const retryCount = (item.retryCount || 0) + 1;
-      const manualReviewOnly = shouldManualReviewSyncItem(item, errorMessage, supabaseError) ||
-      (isCreateBookingQueueItem(item) || isConvertQuotationQueueItem(item)) && isRoomConflictError(errorMessage) ||
+      // Structured outcome classification (Work package D): the persisted
+      // reason distinguishes an uncertain transport outcome (safe same-key
+      // replay) from a definitive business/authorization rejection (parked
+      // for authorized review) and from a missing server contract (waiting on
+      // deployment, auto-requeued when the probe succeeds). Existing rows keep
+      // working; these fields are additive scheduling metadata.
+      // R7-A: the classifier also reports where the verdict came from. When
+      // the server supplied structured evidence (a review flag or a known
+      // contract code) that verdict controls the whole scheduling decision;
+      // the legacy prose classifiers only fill in for rows whose only evidence
+      // is wording, so free text can never override a structured outcome and
+      // dead-letter a resumable sale.
+      const classification = classifyReplayOutcomeDetailed({
+        message: errorMessage,
+        code: supabaseError?.code || null,
+        manualReviewRequired: supabaseError?.manual_review_required === true
+      });
+      const outcomeClass = classification.outcomeClass;
+      const structuredOutcomeControls = classification.source === REPLAY_OUTCOME_SOURCE.MANUAL_FLAG ||
+      classification.source === REPLAY_OUTCOME_SOURCE.STRUCTURED_CODE;
+      const outcomeParksForReview = !isRetryableReplayOutcome(outcomeClass);
+      const legacyProseParksForReview = !structuredOutcomeControls &&
+      (shouldManualReviewSyncItem(item, errorMessage, supabaseError) ||
+      (isCreateBookingQueueItem(item) || isConvertQuotationQueueItem(item)) && isRoomConflictError(errorMessage));
+      const manualReviewOnly = outcomeParksForReview ||
+      legacyProseParksForReview ||
       item.manualRetryOnly === true;
       const updatedItem = {
         ...item,
@@ -1264,7 +1428,17 @@ async function _runSyncQueue() {
         retryCount: manualReviewOnly ? MAX_SYNC_RETRIES : retryCount,
         lastError: errorMessage,
         lastAttemptedAt: new Date().toISOString(),
-        manualRetryOnly: manualReviewOnly
+        manualRetryOnly: manualReviewOnly,
+        ...buildReplayFailureMetadata(
+          { ...item, retryCount: manualReviewOnly ? MAX_SYNC_RETRIES : retryCount },
+          {
+            outcomeClass,
+            code: supabaseError?.code || null,
+            message: errorMessage,
+            baseDelayMs: SYNC_RETRY_BASE_DELAY_MS,
+            maxDelayMs: SYNC_RETRY_MAX_DELAY_MS
+          }
+        )
       };
       if (updatedItem.retryCount >= MAX_SYNC_RETRIES) {
         console.error(`[Sync] Dead-lettered after ${MAX_SYNC_RETRIES} attempts — ${item.type} ${item.table}:`, errorMessage);
@@ -1275,15 +1449,23 @@ async function _runSyncQueue() {
         deadLetter.push(updatedItem);
         persistDeadLetterIncrementally(updatedItem);
         // A dead provisional order replay reached a dead end. Ambiguous
-        // outcomes (timeout/network/till/shift/idempotency) reopen the journal
-        // so manager recovery surfaces them; definitive refusals (insufficient
+        // outcomes (timeout/network/till/shift/receipt identity) reopen the
+        // journal so manager recovery surfaces them; definitive refusals the
+        // server issued after receipt-first reconciliation (insufficient
         // stock, catalog snapshot, validation) clear it so the Till is not
         // blocked by a sale the server proved was never recorded. Either way
         // the local failed row + dead-letter stay visible for review.
         if (isPosCreateOrderQueueItem(updatedItem)) {
           const deadIntentId = String(updatedItem?.data?.payload?.submit_intent_id || '').trim();
           if (deadIntentId) {
-            if (isAmbiguousPosOrderReplayError(errorMessage)) reopenPosSubmitAttempt(deadIntentId, errorMessage);
+            // R7-A: one policy decides retention — the structured outcome
+            // class, the receipt-identity code and the legacy wording each
+            // contribute, and only a proven non-commit frees the Till.
+            if (shouldRetainPosSubmitJournal({
+              outcomeClass,
+              code: supabaseError?.code || null,
+              legacyWordingUncertain: isAmbiguousPosOrderReplayError(errorMessage)
+            })) reopenPosSubmitAttempt(deadIntentId, errorMessage);
             else clearPosSubmitAttempt(deadIntentId);
           }
           // A dead tab settlement must not leave the local tab marked closed:
@@ -1346,7 +1528,7 @@ async function _runSyncQueue() {
         // The server minted real ids but queued dependents (offline sales,
         // snapshots reference catalog state, not rows) still carry the
         // provisional `pending:<operation_key>` menu identity: rewrite them
-        // before they replay. Duplicate-name replays consumed as synced have
+        // before they replay. Exact idempotent success replays have
         // no ids in the result, so resolve the surviving row by exact name.
         const productKey = String(item?.data?.payload?.operation_key || '').trim();
         if (productKey) {
@@ -1459,6 +1641,24 @@ async function _runSyncQueue() {
             _synced_at: new Date().toISOString()
           });
         }
+      }
+      if (item?.type === 'rpc' && item.table === 'create_multi_room_booking' &&
+        rpcResultData?.quotation_recovery_required === true && rpcResultData?.quotation_id) {
+        const recoveryMessage = String(rpcResultData.quotation_error ||
+          'The booking group is server-confirmed, but its quotation link needs manual review. Preserve the original group and quotation.');
+        patchCachedQuotationSyncState(rpcResultData.quotation_id, {
+          _pending_sync: true,
+          _pending_conversion: true,
+          _sync_state: 'failed',
+          _sync_error: recoveryMessage,
+          _manual_review_required: true
+        });
+        appendOperationJournalEntry('quotation_conversion_manual_review', item, {
+          financial: true,
+          message: recoveryMessage,
+          group_server_confirmed: true,
+          quotation_id: rpcResultData.quotation_id
+        });
       }
       if (isCreateQuotationQueueItem(item)) {
         const quotationId = getQueuedQuotationId(item);
@@ -1583,7 +1783,7 @@ async function _runSyncQueue() {
       if (item.type === 'rpc' && ['create_customer', 'update_customer'].includes(item.table)) shouldRefreshCustomers = true;
       if (item.table === 'rooms' || item.type === 'rpc' && item.table?.startsWith?.('update_room')) shouldRefreshRooms = true;
       if (item.type === 'rpc' && ['create_user', 'update_user_profile', 'set_user_pwa_access'].includes(item.table)) shouldRefreshUsers = true;
-      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'mark_quotation_sent', 'convert_quotation_to_booking'].includes(item.table)) shouldRefreshQuotations = true;
+      if (item.type === 'rpc' && ['create_quotation', 'update_quotation', 'mark_quotation_sent', 'convert_quotation_to_booking', 'create_multi_room_booking'].includes(item.table)) shouldRefreshQuotations = true;
       if (item.type === 'rpc' && ['create_expense', 'update_expense', 'delete_expense'].includes(item.table)) shouldRefreshExpenses = true;
       if (item.type === 'rpc' && ['create_maintenance_ticket', 'update_maintenance_ticket', 'resolve_maintenance_ticket'].includes(item.table)) shouldRefreshMaintenance = true;
       if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) shouldRefreshPosOrders = true;
@@ -1666,6 +1866,10 @@ async function _runSyncQueue() {
       // id is excluded from the arrival merge (P0-1); concurrent sales still
       // merge in instead of being erased by the committed snapshot.
       if (item._queue_id) completedQueueIds.add(item._queue_id);
+      // R7-B: children that were skipped earlier in this pass are waiting on
+      // the parent-pending cadence. The parent just committed, so their
+      // scheduled waits are released for the next pick.
+      releaseChildrenWaitingOnCompletedParent(pending, item._queue_id);
       absorbNewDiskQueueArrivals(pending, { completedQueueIds, deadLetter, inFlightItem: null });
       writeSyncQueue([{ ...item, _state: 'committed' }, ...pending]);
       appendOperationJournalEntry('replayed', { ...item, _state: 'committed' }, {
@@ -1850,13 +2054,149 @@ export async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO
 
   if (retryItems.length === 0) return { retried: 0, remaining: failed.length };
 
-  writeFailedSyncQueue(keepFailed);
+  // Persist the destination before removing the recovery copy. A crash or
+  // disk failure between writes may leave both copies; the stable queue ID
+  // deduplicates them on the next sweep. The reverse order can lose a sale.
   writeSyncQueue(queue);
+  writeFailedSyncQueue(keepFailed);
   console.warn(`[Sync] Auto-requeued ${retryItems.length} dead-lettered item(s) for another attempt.`);
   broadcastSyncStatus();
   return { retried: retryItems.length, remaining: keepFailed.length };
 }
 
+const REPLAY_CONTRACT_PROBE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Deterministic capability probe for the reviewed historical-sale replay
+ * contract. A structured response — including a clean validation refusal —
+ * proves the function exists; a PostgREST undefined-function answer proves it
+ * is not deployed. Transient transport failures leave the capability unknown
+ * so a flaky link can never "downgrade" a deployed contract. Re-probed on a
+ * bounded interval so a mid-session deployment resumes parked sales.
+ */
+async function probeHistoricalReplayContractAvailability() {
+  if (typeof state.historicalReplayContractAvailable === 'boolean'
+    && Date.now() - Number(state.historicalReplayContractCheckedAt || 0) < REPLAY_CONTRACT_PROBE_TTL_MS) {
+    return state.historicalReplayContractAvailable;
+  }
+  if (!state.isOnline || !state.supabase) return null;
+  try {
+    const { error } = await state.supabase.rpc(POS_HISTORICAL_REPLAY_RPC, { payload: null, p_replay_key: null });
+    if (error) {
+      // Only a definitive undefined-function answer is a verdict. An auth,
+      // throttling or transport failure proves nothing about the deployment,
+      // so the capability stays unknown and uncached until a clean probe.
+      if (isHistoricalReplayContractMissing(error)) {
+        state.historicalReplayContractCheckedAt = Date.now();
+        state.historicalReplayContractAvailable = false;
+        return false;
+      }
+      return null;
+    }
+    state.historicalReplayContractCheckedAt = Date.now();
+    state.historicalReplayContractAvailable = true;
+    return true;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Moves sales that were parked because the historical replay contract was not
+ * deployed back to pending once the probe confirms the contract exists. The
+ * original operation identity, payload, actor and dependencies are untouched.
+ * Uses destination-before-source durability like every other requeue path.
+ */
+export async function requeueContractParkedHistoricalReplayItems() {
+  const failed = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  // Probe only when this deployment actually parked sales for the contract:
+  // an ordinary sync run must not add network calls or perturb replay order.
+  const parked = failed.filter((item) =>
+    item?._outcome_class === REPLAY_OUTCOME.CONTRACT_MISSING && isPosCreateOrderQueueItem(item));
+  if (parked.length === 0) return { retried: 0, remaining: failed.length };
+  const available = await probeHistoricalReplayContractAvailability();
+  if (available !== true) return { retried: 0, remaining: failed.length };
+
+  // R1: the probe above awaits network I/O. Manager actions, mesh conflict
+  // handling and other sync passes can add, change, clear or manually retry
+  // failed entries in that window while this function still holds its earlier
+  // snapshot. Re-read after the await and reconcile per fresh item so nothing
+  // written during the probe is dropped, manual retries stay manual, and a
+  // same-ID collision with different content fails closed instead of being
+  // auto-requeued or overwritten.
+  const failedNow = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const staleById = new Map(parked.map((item) => [item._queue_id, item]));
+  const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const existingById = new Map(queue.map((item) => [item._queue_id, item]));
+  const requeuedIds = new Set();
+
+  for (const fresh of failedNow) {
+    const stale = staleById.get(fresh._queue_id);
+    if (!stale) continue;
+    if (fresh._outcome_class !== REPLAY_OUTCOME.CONTRACT_MISSING || !isPosCreateOrderQueueItem(fresh)) continue;
+    // `manualRetryOnly` is always true on contract-parked sales (the deployment
+    // wait is why they are parked), so it cannot mean "a manager intervened".
+    // Manager action is still fail-closed verified below: a changed payload or
+    // a conflicting pending copy with the same identity leaves the recovery
+    // copy untouched for review.
+
+    const stalePayload = JSON.stringify(stale?.data ?? null);
+    const freshPayload = JSON.stringify(fresh?.data ?? null);
+    if (stalePayload !== freshPayload) {
+      console.warn('[Sync] A parked sale changed while the replay contract was probed; leaving the recovery copy for review', {
+        _queue_id: fresh._queue_id
+      });
+      continue;
+    }
+
+    const cleanItem = normalizeQueuedSyncItemForReplay({
+      ...fresh,
+      _state: 'pending',
+      retryCount: 0,
+      lastError: '',
+      lastAttemptedAt: null,
+      manualRetryOnly: false,
+      _outcome_class: null,
+      _next_retry_at: null,
+      _review_reason: null
+    });
+
+    const existing = existingById.get(cleanItem._queue_id);
+    if (existing) {
+      if (JSON.stringify(existing.data ?? null) !== JSON.stringify(cleanItem.data ?? null)) {
+        console.warn('[Sync] A pending queue entry with the same identity but different content exists; leaving the recovery copy for review', {
+          _queue_id: cleanItem._queue_id
+        });
+        continue;
+      }
+    } else {
+      queue.push(cleanItem);
+      existingById.set(cleanItem._queue_id, cleanItem);
+      appendOperationJournalEntry('auto_requeued', cleanItem, {
+        financial: isFinancialSyncItem(cleanItem),
+        message: 'Historical sale replay contract is now available; parked sale requeued with its original identity.'
+      });
+    }
+
+    const orderId = getQueuedPosOrderId(cleanItem);
+    if (orderId) patchCachedPosOrderSyncState(orderId, { _sync_state: 'pending', _sync_error: null });
+    requeuedIds.add(cleanItem._queue_id);
+  }
+
+  if (requeuedIds.size === 0) return { retried: 0, remaining: failedNow.length };
+  const keepFailed = failedNow.filter((item) => !requeuedIds.has(item._queue_id));
+  // Destination-before-source: a crash between writes leaves both copies and
+  // the stable queue id converges them on the next sweep.
+  writeSyncQueue(queue);
+  writeFailedSyncQueue(keepFailed);
+  console.warn(`[Sync] Requeued ${requeuedIds.size} sale(s) parked for the historical replay contract.`);
+  broadcastSyncStatus();
+  return { retried: requeuedIds.size, remaining: keepFailed.length };
+}
+
+/**
+ * @param {string | null} [id=null] Existing row/operation identity when a caller provides one.
+ */
 export function queueOperation(type, table, data, id = null, meta = {}) {
   const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
   const derivedMeta = {

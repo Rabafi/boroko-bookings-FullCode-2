@@ -1,3 +1,4 @@
+// @ts-check
 import { Lock, Mail, MessageCircle, Sparkles, TrendingUp } from 'lucide-react'
 import { Modal } from './Modal'
 import {
@@ -15,6 +16,15 @@ import { getProductDefinition, getRuntimeProductId } from '../../../../shared/pr
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_CAPACITYLESS_PRODUCT = BUILD_PRODUCT.id === 'hotel' || BUILD_PRODUCT.id === 'hospitality-pos'
 
+/** Fields read from the existing usage-limit producer; status is not runtime-validated here. */
+/** @typedef {{isBlocked: boolean, isInGrace: boolean, remainingGrace: number | null}} UsageUpgradeStatus */
+/** Return shapes of the existing package helpers, used only inside branches proving the values are present. */
+/** @typedef {ReturnType<typeof formatPlanLimits>} FormattedPlanLimits */
+/** @typedef {ReturnType<typeof getPlanUpsell>} PlanUpsell */
+/** The modal reads selected fields from usage and recommendation records and passes them to shared formatters. */
+/** @typedef {Record<string, unknown>} UsageUpgradeInputRecord */
+/** @typedef {{open?: boolean, onClose?: () => void, onUpgrade?: () => unknown, resourceLabel?: string, currentPlan?: string, used?: number, limit?: number | null, grace?: number, status?: UsageUpgradeStatus | null, message?: string, lodgeName?: string, lodgeId?: string, usage?: UsageUpgradeInputRecord | null, recommendation?: UsageUpgradeInputRecord | null, onRequestUpgrade?: () => unknown, trigger?: string}} UsageUpgradePromptProps */
+/** @param {UsageUpgradePromptProps} props */
 export default function UsageUpgradePrompt({
   open = false,
   onClose,
@@ -32,7 +42,7 @@ export default function UsageUpgradePrompt({
   recommendation = null,
   onRequestUpgrade,
   trigger = 'modal'
-} = {}) {
+} = /** @type {UsageUpgradePromptProps} */ ({})) {
   if (!open) return null
 
   const internalNextPlan = getNextSubscriptionPlan(currentPlan)
@@ -129,7 +139,7 @@ export default function UsageUpgradePrompt({
               </p>
               {statusNote && <p className="mt-2 text-xs font-semibold text-amber-900">{statusNote}</p>}
               <p className="mt-1 text-xs text-amber-700">
-                {currentLimits.bookings} · {currentLimits.rooms} · {currentLimits.users}
+                {/** @type {FormattedPlanLimits} */ (currentLimits).bookings} · {/** @type {FormattedPlanLimits} */ (currentLimits).rooms} · {/** @type {FormattedPlanLimits} */ (currentLimits).users}
               </p>
             </>
           )}
@@ -143,21 +153,21 @@ export default function UsageUpgradePrompt({
               </p>
               <p className="mt-1 text-sm text-slate-600">{nextPlanMeta.headline}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {upsell.capacities.map((item) => (
+                {/** @type {PlanUpsell} */ (upsell).capacities.map((item) => (
                   <span key={item} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
                     {item}
                   </span>
                 ))}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                {upsell.features.map((item) => (
+                {/** @type {PlanUpsell} */ (upsell).features.map((item) => (
                   <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
                     {item}
                   </span>
                 ))}
               </div>
               <p className="mt-3 text-xs text-slate-600">
-                Next package limits: {nextLimits.bookings} · {nextLimits.rooms} · {nextLimits.users}
+                Next package limits: {/** @type {FormattedPlanLimits} */ (nextLimits).bookings} · {/** @type {FormattedPlanLimits} */ (nextLimits).rooms} · {/** @type {FormattedPlanLimits} */ (nextLimits).users}
               </p>
               <p className="mt-3 text-xs text-slate-500">
                 {status?.isInGrace

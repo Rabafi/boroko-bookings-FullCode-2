@@ -1,3 +1,4 @@
+// @ts-check
 import { useMemo, useEffect, useState } from 'react'
 import { AlertTriangle, Package, RefreshCw, ShoppingCart, Truck } from 'lucide-react'
 import { useSettings } from '../../app-context'

@@ -1,3 +1,4 @@
+// @ts-check
 import { app } from 'electron';
 import path from 'path';
 import { readJsonFile } from './fileStore.js';
@@ -20,26 +21,31 @@ export function getManagedBackupPolicyPath() {
   return path.join(app.getPath('userData'), 'managed-backup-policy.json');
 }
 
+/** @param {unknown} [raw] */
 export function normalizeManagedBackupPolicy(raw = {}) {
+  // This type-only view preserves optional property reads for objects and primitives; it is not validation.
+  const source = /** @type {Record<string, unknown> | null | undefined} */ (raw)
   return {
-    enabled: raw?.enabled === true,
-    target_dir: typeof raw?.target_dir === 'string' ? raw.target_dir.trim() : '',
-    export_json: raw?.export_json !== false,
-    export_excel: raw?.export_excel !== false,
-    frequency_days: Number(raw?.frequency_days) > 0 ? Number(raw.frequency_days) : 7,
-    last_run_at: raw?.last_run_at || null,
-    last_success_at: raw?.last_success_at || null,
-    last_error: typeof raw?.last_error === 'string' ? raw.last_error : '',
-    last_json_path: typeof raw?.last_json_path === 'string' ? raw.last_json_path : '',
-    last_excel_path: typeof raw?.last_excel_path === 'string' ? raw.last_excel_path : '',
-    enforcement_level: ['reminder', 'warning', 'strict'].includes(raw?.enforcement_level) ? raw.enforcement_level : 'reminder'
+    enabled: source?.enabled === true,
+    target_dir: typeof source?.target_dir === 'string' ? source.target_dir.trim() : '',
+    export_json: source?.export_json !== false,
+    export_excel: source?.export_excel !== false,
+    frequency_days: Number(source?.frequency_days) > 0 ? Number(source?.frequency_days) : 7,
+    last_run_at: source?.last_run_at || null,
+    last_success_at: source?.last_success_at || null,
+    last_error: typeof source?.last_error === 'string' ? source.last_error : '',
+    last_json_path: typeof source?.last_json_path === 'string' ? source.last_json_path : '',
+    last_excel_path: typeof source?.last_excel_path === 'string' ? source.last_excel_path : '',
+    // The assertion only adapts Array.includes' TypeScript signature; runtime still compares the original value.
+    enforcement_level: ['reminder', 'warning', 'strict'].includes(/** @type {string} */ (source?.enforcement_level)) ? source?.enforcement_level : 'reminder'
   };
 }
 
+/** @param {unknown} policy */
 export function buildManagedBackupStatus(policy) {
   const normalized = normalizeManagedBackupPolicy(policy);
   const now = new Date();
-  const lastSuccessAt = normalized.last_success_at ? new Date(normalized.last_success_at) : null;
+  const lastSuccessAt = normalized.last_success_at ? new Date(/** @type {string | number} */ (normalized.last_success_at)) : null;
   const nextDueAt = lastSuccessAt ?
   new Date(lastSuccessAt.getTime() + normalized.frequency_days * 24 * 60 * 60 * 1000) :
   null;

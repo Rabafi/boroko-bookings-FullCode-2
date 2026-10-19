@@ -1,3 +1,4 @@
+// @ts-check
 import { PRODUCT_FAMILY_IDS, resolveProductFamily } from '@shared/productIdentity'
 import lodgingColor from '../assets/tsa-bonno-lodgingos-logo-color.png'
 import lodgingLight from '../assets/tsa-bonno-lodgingos-logo-light.png'
@@ -12,6 +13,7 @@ const LOGOS = Object.freeze({
   [PRODUCT_FAMILY_IDS.HOSPITALITY_POS]: Object.freeze({ color: restaurantColor, light: restaurantLight })
 })
 
+/** @param {string|null|undefined} productFamily @param {{light?:boolean}} [options] */
 export function getPwaProductLogo(productFamily, { light = false } = {}) {
   const family = resolveProductFamily(productFamily || PRODUCT_FAMILY_IDS.LODGE_CAMP)
   const logo = LOGOS[family] || LOGOS[PRODUCT_FAMILY_IDS.LODGE_CAMP]

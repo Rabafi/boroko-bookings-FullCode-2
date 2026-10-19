@@ -1,5 +1,10 @@
+// @ts-check
 import { Component } from 'react'
 
+/** @typedef {{at: string, route: string, message: string, stack: string, componentStack: string, copied: boolean, hasError: boolean}} ErrorBoundaryState */
+/** @typedef {{children?: import('react').ReactNode}} ErrorBoundaryProps */
+
+/** @param {ErrorBoundaryState} state */
 function buildErrorReport(state) {
   return JSON.stringify({
     at: state.at || new Date().toISOString(),
@@ -10,12 +15,15 @@ function buildErrorReport(state) {
   }, null, 2)
 }
 
+/** @extends {Component<ErrorBoundaryProps, ErrorBoundaryState>} */
 export default class AppErrorBoundary extends Component {
+  /** @param {Readonly<ErrorBoundaryProps>} props */
   constructor(props) {
     super(props)
     this.state = { hasError: false, message: '', stack: '', componentStack: '', route: '', at: '', copied: false }
   }
 
+  /** @param {Error} error */
   static getDerivedStateFromError(error) {
     return {
       hasError: true,
@@ -26,6 +34,7 @@ export default class AppErrorBoundary extends Component {
     }
   }
 
+  /** @param {Error} error @param {import('react').ErrorInfo} info */
   componentDidCatch(error, info) {
     console.error('[Renderer] Unhandled app error:', error, info)
     this.setState({ componentStack: info?.componentStack || '' })

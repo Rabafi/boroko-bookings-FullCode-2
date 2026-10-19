@@ -1,3 +1,4 @@
+// @ts-check
 import { app } from 'electron';
 import crypto, { randomUUID } from 'crypto';
 import { state } from '../state.js';
@@ -8,7 +9,6 @@ import {
   getFinancialValidationRuns,
   getFinancialValidationAlerts
 } from './finance.js';
-import { createBookingIdempotencyKey } from './bookings.js';
 import {
   CRITICAL_ERROR_LOG_FILE,
   getLocalDateKey,
@@ -49,41 +49,6 @@ import { scrubSupportBundleValue } from '../../shared/supportBundleScrub.js';
 const DEVICE_HEALTH_MAX_HEARTBEAT_MS = 20 * 60_000;
 let lastDeviceHealthLocalFingerprint = '';
 let lastDeviceHealthPublishedAt = 0;
-
-function normalizeRpcProbeEnvelope(data) {
-  if (Array.isArray(data)) return data[0] || null;
-  return data && typeof data === 'object' ? data : null;
-}
-
-function isReplayContractProbeFailure(message = '') {
-  return /PGRST202|42883|could not find the function|function.*does not exist|function.*not.*found|schema cache|structure of query does not match|returned record type does not match expected record type|unexpected parameter|missing required|has no parameter named|column .* does not exist/i.test(String(message || ''));
-}
-
-async function probeRpc(name, args = {}, options = {}) {
-  const { expectSuccessEnvelope = true } = options;
-  try {
-    const { data, error } = await state.supabase.rpc(name, args);
-    if (error) {
-      const message = error.message || 'Unknown error';
-      if (isReplayContractProbeFailure(message) || error.code === 'PGRST202') {
-        return { ok: false, message: `${name} contract mismatch — ${message}` };
-      }
-      return { ok: false, indeterminate: true, message: `${name} reached runtime validation, but its successful response was not verified.`, responseShapeVerified: false };
-    }
-
-    if (!expectSuccessEnvelope) {
-      return { ok: false, indeterminate: true, message: `${name} responded, but its result was not verified.`, responseShapeVerified: false };
-    }
-
-    const envelope = normalizeRpcProbeEnvelope(data);
-    if (!envelope || typeof envelope !== 'object' || !Object.prototype.hasOwnProperty.call(envelope, 'success')) {
-      return { ok: false, message: `${name} returned an unexpected response shape.` };
-    }
-    return { ok: true, message: `${name} returned the expected response shape.`, responseShapeVerified: true };
-  } catch (e) {
-    return { ok: false, message: `${name} probe threw: ${e.message}` };
-  }
-}
 
 // ─── HEALTH DIAGNOSTICS & OFFLINE SAFETY ───────────────────────────────────────
 
@@ -140,172 +105,33 @@ export async function getSystemHealth(options = {}) {
       };
     }
 
-    // P0-7: opt-in probe of replay-critical RPCs.
-    const probeBookingId = randomUUID();
-    const probeCustomerId = randomUUID();
-    const probeRoomId = randomUUID();
-    const probeChargeId = randomUUID();
-    const probePosOrderId = randomUUID();
-    const probeNow = new Date().toISOString();
-    const probeInvoiceNumber = `PROBE-${Date.now()}`;
-    const probeBookingPayload = {
-      id: probeBookingId,
-      customer_id: probeCustomerId,
-      room_id: probeRoomId,
-      check_in: '2099-12-01',
-      check_out: '2099-12-02',
-      adults: 1,
-      children: 0,
-      total_amount: 1,
-      status: 'confirmed',
-      payment_status: 'unpaid',
-      amount_paid: 0,
-      deposit_amount: 0,
-      payment_method: null,
-      invoice_number: probeInvoiceNumber,
-      notes: 'contract probe',
-      created_by: state.currentUser?.id || null,
-      lodge_id: state.lodgeId,
-      deposit_method: null,
-      create_idempotency_key: createBookingIdempotencyKey(probeBookingId)
-    };
-    const rpcProbes = await Promise.all([
-    probeRpc('create_booking', {
-      p_lodge_id: state.lodgeId,
-      p_customer_id: probeCustomerId,
-      p_room_id: probeRoomId,
-      p_check_in: probeBookingPayload.check_in,
-      p_check_out: probeBookingPayload.check_out,
-      p_adults: probeBookingPayload.adults,
-      p_children: probeBookingPayload.children,
-      p_total_amount: probeBookingPayload.total_amount,
-      p_invoice_number: probeInvoiceNumber,
-      p_notes: probeBookingPayload.notes,
-      p_created_by: state.currentUser?.id || null,
-      p_deposit_amount: 0,
-      p_booking_id: probeBookingId,
-      p_idempotency_key: createBookingIdempotencyKey(probeBookingId),
-      p_deposit_method: null,
-      p_allow_total_override: false
-    }).then((r) => ['create_booking', r]),
-    probeRpc('create_booking_record', {
-      payload: probeBookingPayload
-    }).then((r) => ['create_booking_record', r]),
-    probeRpc('update_booking', {
-      p_id: probeBookingId,
-      p_lodge_id: state.lodgeId,
-      payload: {
-        notes: 'contract probe',
-        expected_updated_at: probeNow
-      },
-      p_expected_updated_at: probeNow
-    }).then((r) => ['update_booking', r]),
-    probeRpc('update_booking_status', {
-      p_id: probeBookingId,
-      p_lodge_id: state.lodgeId,
-      p_status: 'confirmed',
-      p_expected_updated_at: probeNow
-    }).then((r) => ['update_booking_status', r]),
-    probeRpc('update_booking_payment', {
-      p_booking_id: probeBookingId,
-      p_lodge_id: state.lodgeId,
-      p_amount: 1,
-      p_method: 'cash',
-      p_type: 'payment',
-      p_idempotency_key: `probe:payment:${probeBookingId}`,
-      p_recorded_by: state.currentUser?.id || null,
-      p_expected_updated_at: probeNow
-    }).then((r) => ['update_booking_payment', r]),
-    probeRpc('create_pos_order', {
-      payload: {
-        lodge_id: state.lodgeId,
-        id: probePosOrderId,
-        room_id: probeRoomId,
-        booking_id: null,
-        walk_in_name: 'Contract Probe',
-        total: 1,
-        notes: 'contract probe',
-        payment_method: 'folio',
-        outlet_id: null,
-        create_idempotency_key: `probe:pos:${probePosOrderId}`,
-        created_at_client: probeNow,
-        items: [
-        { menu_item_id: null, item_name: 'Contract Probe', quantity: 1, unit_price: 1 }]
-
-      }
-    }).then((r) => ['create_pos_order', r]),
-    probeRpc('approve_pos_void_with_pin', {
-      payload: {
-        order_id: probePosOrderId,
-        lodge_id: state.lodgeId,
-        requested_by: state.currentUser?.id || null,
-        approved_by: state.currentUser?.id || null,
-        reason: 'contract probe',
-        override_log_id: randomUUID(),
-        created_at: probeNow
-      }
-    }).then((r) => ['approve_pos_void_with_pin', r]),
-    probeRpc('get_pos_sales_summary', {
-      p_lodge_id: state.lodgeId,
-      p_start_date: '2099-12-01',
-      p_end_date: '2099-12-02',
-      p_outlet_selector: 'all'
-    }, { expectSuccessEnvelope: false }).then((r) => ['get_pos_sales_summary', r]),
-    probeRpc('get_inventory_spend_summary', {
-      p_lodge_id: state.lodgeId,
-      p_start_date: '2099-12-01',
-      p_end_date: '2099-12-02',
-      p_outlet_selector: 'all'
-    }, { expectSuccessEnvelope: false }).then((r) => ['get_inventory_spend_summary', r]),
-    probeRpc('adjust_inventory_stock', {
-      p_item_id: randomUUID(),
-      p_lodge_id: state.lodgeId,
-      p_delta: 1,
-      p_notes: 'contract probe',
-      p_adjustment_id: randomUUID()
-    }).then((r) => ['adjust_inventory_stock', r]),
-    probeRpc('upsert_pos_cashup', {
-      payload: {
-        id: randomUUID(),
-        lodge_id: randomUUID(),
-        date: '2099-12-01',
-        opening_float: 0,
-        expected_cash_drawer: 0,
-        expected_by_method: {},
-        counted_by_method: {},
-        variance_by_method: {},
-        net_sales: 0,
-        notes: 'contract probe',
-        created_at: probeNow
-      }
-    }).then((r) => ['upsert_pos_cashup', r]),
-    probeRpc('add_booking_charge', {
-      p_booking_id: probeBookingId,
-      p_lodge_id: state.lodgeId,
-      p_description: 'Contract probe',
-      p_category: 'other',
-      p_quantity: 1,
-      p_unit_price: 1,
-      p_outlet_id: null,
-      p_expected_updated_at: probeNow
-    }).then((r) => ['add_booking_charge', r]),
-    probeRpc('delete_booking_charge', {
-      p_charge_id: probeChargeId,
-      p_lodge_id: state.lodgeId,
-      p_reason: 'contract probe',
-      p_expected_booking_updated_at: probeNow
-    }).then((r) => ['delete_booking_charge', r])]
-    );
-    const probesObj = Object.fromEntries(rpcProbes);
-    const allOk = Object.values(probesObj).every((p) => p.ok);
-    const missing = Object.entries(probesObj).filter(([, p]) => !p.ok).map(([name]) => name);
+    // Mutative probes cannot safely use an installed operator database. A
+    // returned business rejection may itself create an immutable intent row.
+    // Exercise these contracts only in the guarded disposable database suite.
+    const mutationProbeNames = [
+      'create_booking',
+      'create_booking_record',
+      'update_booking',
+      'update_booking_status',
+      'update_booking_payment',
+      'create_pos_order',
+      'approve_pos_void_with_pin',
+      'adjust_inventory_stock',
+      'upsert_pos_cashup',
+      'add_booking_charge',
+      'delete_booking_charge'
+    ];
+    const probesObj = Object.fromEntries(mutationProbeNames.map((name) => [name, {
+      ok: false,
+      skipped: true,
+      message: 'Not invoked against an installed operator database; use the verified disposable contract suite.'
+    }]));
     finance.contract = {
-      ok: allOk,
+      ok: false,
       probes: probesObj,
-      allOk,
-      message: allOk ?
-      'All replay-critical RPCs are available.' :
-      `Missing RPCs: ${missing.join(', ')} — run the latest migrations before trusting replay.`
+      allOk: false,
+      skipped: true,
+      message: 'Mutation contracts were not executed from this installed application. Run the verified disposable database suite before treating replay as ready.'
     };
   }
 

@@ -1,3 +1,4 @@
+// @ts-check
 import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { assertCreationWithinUsageLimit } from './usage.js';
@@ -10,6 +11,9 @@ import {
   dedupePromise
 } from './infrastructure.js';
 
+/** @typedef {Record<string, unknown>} RoomPropertyView */
+
+/** @param {unknown} rows @param {string} source @param {boolean} complete @returns {RoomPropertyView[]} */
 function withReadMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : [];
   Object.defineProperties(result, {
@@ -19,20 +23,21 @@ function withReadMetadata(rows, source, complete) {
   return result;
 }
 
+/** @returns {Promise<RoomPropertyView[]>} */
 async function _getAllRooms() {
   if (!state.isOnline) {
     return withReadMetadata(readCache('rooms'), 'offline-cache', false);
   }
 
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
     from('rooms').
     select('id, room_number, room_type, room_type_id, floor_section_id, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes, accommodation_kind, capacity_adults, capacity_children, max_tents, max_vehicles, is_powered, site_surface, shared_facilities, rate_mode, rate_per_person, rate_per_tent, rate_per_vehicle').
     eq('lodge_id', state.lodgeId).
     order('room_number').
     limit(200);
     if (error) throw error;
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     if ((data || []).length === 0 && cached.length > 0) {
       console.warn('getAllRooms received empty live result; using cached rooms instead');
       return withReadMetadata(cached, 'cache', false);
@@ -40,23 +45,28 @@ async function _getAllRooms() {
     writeCache('rooms', data || []);
     return withReadMetadata(data || [], 'server', true);
   } catch (error) {
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     if (cached.length > 0) {
-      console.warn('getAllRooms falling back to cache:', error?.message || error);
+      const errorView = /** @type {Record<string, unknown> | null | undefined} */ (error)
+      console.warn('getAllRooms falling back to cache:', errorView?.message || error);
       return withReadMetadata(cached, 'cache', false);
     }
     if (!state.isOnline) return withReadMetadata([], 'offline-cache', false);
-    throw new Error(error?.message || 'Failed to load rooms');
+    const errorView = /** @type {Record<string, unknown> | null | undefined} */ (error)
+    // Error() applies ToString at runtime; preserve that coercion for arbitrary caught messages.
+    throw new Error(/** @type {string} */ (errorView?.message || 'Failed to load rooms'));
   }
 }
 
+/** @returns {Promise<RoomPropertyView[]>} */
 export function getAllRooms() {
-  return dedupePromise('getAllRooms', _getAllRooms);
+  return /** @type {Promise<RoomPropertyView[]>} */ (dedupePromise('getAllRooms', _getAllRooms));
 }
 
+/** @param {unknown} id @returns {Promise<unknown>} */
 export async function getRoomById(id) {
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
     from('rooms').
     select('*').
     eq('id', id).
@@ -65,11 +75,14 @@ export async function getRoomById(id) {
     if (error) throw error;
     return data || null;
   } catch {
-    return readCache('rooms').find((r) => r.id === id) || null;
+    return /** @type {RoomPropertyView[]} */ (readCache('rooms')).find((r) => r.id === id) || null;
   }
 }
 
-export async function createRoom(data) {
+/** @param {unknown} input @returns {Promise<unknown>} */
+export async function createRoom(input) {
+  // This property view preserves existing reads of untrusted IPC values; it adds no validation.
+  const data = /** @type {RoomPropertyView} */ (input)
   await assertCreationWithinUsageLimit('room', { forceRemoteRefresh: state.isOnline });
   const id = randomUUID();
   const maintenanceTicketId = data.status === 'maintenance' ? randomUUID() : null;
@@ -105,13 +118,13 @@ export async function createRoom(data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_room', { payload: room });
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_room', { payload: room });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create room');
     await Promise.all([refreshCache('rooms'), refreshCache('maintenance')]);
     return result?.id;
   } else {
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     const newRoom = { ...room, _pending_sync: true, created_at: new Date().toISOString() };
     cached.push(newRoom);
     writeCache('rooms', cached);
@@ -130,7 +143,7 @@ export async function createRoom(data) {
         reported_date: new Date().toISOString().slice(0, 10),
         created_at: new Date().toISOString(),
         _pending_sync: true
-      }, ...readCache('maintenance')]);
+      }, .../** @type {RoomPropertyView[]} */ (readCache('maintenance'))]);
     }
     // P2-15: assign _queue_id so any offline update to this room can declare _depends_on
     queueOperation('rpc', 'create_room', { payload: room }, null, { _queue_id: `room-${id}` });
@@ -138,7 +151,10 @@ export async function createRoom(data) {
   }
 }
 
-export async function updateRoom(id, data) {
+/** @param {unknown} id @param {unknown} input */
+export async function updateRoom(id, input) {
+  // This property view preserves existing reads of untrusted IPC values; it adds no validation.
+  const data = /** @type {RoomPropertyView} */ (input)
   const update = {
     room_number: data.room_number,
     room_type: data.room_type,
@@ -169,7 +185,7 @@ export async function updateRoom(id, data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_room', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_room', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       payload: update,
@@ -179,9 +195,9 @@ export async function updateRoom(id, data) {
     if (!result?.success) throw new Error(result?.error || 'Could not update room');
     await refreshCache('rooms');
   } else {
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     const idx = cached.findIndex((r) => r.id === id);
-    const openMaintenance = readCache('maintenance').filter((ticket) =>
+    const openMaintenance = /** @type {RoomPropertyView[]} */ (readCache('maintenance')).filter((ticket) =>
       String(ticket.room_id) === String(id) && ticket.status !== 'resolved'
     );
     if (data.status !== 'maintenance' && openMaintenance.length > 0) {
@@ -206,7 +222,7 @@ export async function updateRoom(id, data) {
         reported_date: new Date().toISOString().slice(0, 10),
         created_at: new Date().toISOString(),
         _pending_sync: true
-      }, ...readCache('maintenance')]);
+      }, .../** @type {RoomPropertyView[]} */ (readCache('maintenance'))]);
     }
     queueOperation('rpc', 'update_room', {
       p_id: id,
@@ -217,13 +233,14 @@ export async function updateRoom(id, data) {
   }
 }
 
+/** @param {unknown} id @param {unknown} status @param {unknown} notes */
 export async function updateRoomHousekeeping(id, status, notes) {
   const update = {
     housekeeping_status: status || 'clean',
     housekeeping_notes: notes || ''
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_room_housekeeping', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_room_housekeeping', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_status: status || 'clean',
@@ -232,10 +249,10 @@ export async function updateRoomHousekeeping(id, status, notes) {
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update housekeeping');
     await refreshCache('rooms');
-    const room = readCache('rooms').find((r) => r.id === id);
+    const room = /** @type {RoomPropertyView[]} */ (readCache('rooms')).find((r) => r.id === id);
     logActivity('housekeeping_updated', `Room ${room?.room_number || id} marked ${status}${notes ? ' · note saved' : ''}`);
   } else {
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     const idx = cached.findIndex((r) => r.id === id);
     const room = cached[idx];
     const roomPendingSync = idx >= 0 && cached[idx]?._pending_sync;
@@ -251,9 +268,10 @@ export async function updateRoomHousekeeping(id, status, notes) {
   }
 }
 
+/** @param {unknown} id */
 export async function deleteRoom(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_room', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('delete_room', {
       p_id: id,
       p_lodge_id: state.lodgeId
     });
@@ -261,7 +279,7 @@ export async function deleteRoom(id) {
     if (!result?.success) throw new Error(result?.error || 'Could not delete room');
     await refreshCache('rooms');
   } else {
-    const cached = readCache('rooms');
+    const cached = /** @type {RoomPropertyView[]} */ (readCache('rooms'));
     const roomPendingSync = cached.some((r) => r.id === id && r?._pending_sync);
     writeCache('rooms', cached.filter((r) => r.id !== id));
     queueOperation('rpc', 'delete_room', {

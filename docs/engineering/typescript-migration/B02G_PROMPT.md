@@ -1,0 +1,21 @@
+# B02-G implementing prompt — desktop preload transport only
+
+Copy everything below into the other model's existing migration chat.
+
+---
+
+B02-F has been independently ACCEPTED; R1/follow-up are closed. Proceed with B02-G only, as defined in docs/engineering/typescript-migration/B02G_ASSIGNMENT.md. Read that entire assignment, PLAN.md, PROJECT_STATE.md, docs/ARCHITECTURE.md, evidence/B02F-acceptance.md and evidence/B02G-reviewer-preflight.json before editing. Follow the current human/session instructions. Preserve all unrelated work and previous migration evidence. Do not self-approve, delegate, message other chats or begin another batch.
+
+This batch extracts ONLY the two existing invoke/onIpc helpers from src/preload/index.js into a checked src/preload/transport.js factory, wired back into the actual preload. The remaining API/exposure code stays unchanged. This is a small runtime extraction with mandatory transparency tests, not a comment-only batch. Real installed Electron IpcRenderer must satisfy the helper's structural port in compile-only fixtures; IPC payloads/results/cleanup return stay unknown, not invented financial or window.api types.
+
+Work in order:
+
+1. Capture authentic baseline/status/snapshots/hashes before edits. Inspect the exact source/tests/package scripts and absence of planned new files. Save baseline existing source-guard tests and three product builds serially. Preserve concurrent Accounting manifest additions; no HEAD restoration, installs or lock changes.
+2. Implement the exact helper recipe/config/scripts/fixtures from the assignment and reviewer preflight. Preserve non-async invoke and its exact promise identity; method receivers; callback second-value/return/throws; SAME listener in cleanup; cleanup returns off's actual value. No cleanup void block, retry/catch/unpack/clone/validation or privilege changes.
+3. Change only the preload import/helper binding and the two assigned source-location assertions. Keep the entire API/exposure suffix and unrelated assertions intact. Add actual-helper runtime tests plus live-preload synthetic VM wiring tests for both isolation branches. Do not substitute a copied API object or launch Electron/customer state.
+4. Build the checker using shared REAL throwing assertions for options, dependencies, active directive, provenance, ACTUAL program inventories and the SIX exact negative diagnostics. Use the static 174-file preflight closure (61 libs/66 Node/43 undici/1 buffer/1 Electron/helper/fixture); no live-derived allowlist or blanket node_modules exception. Guards must call the same assertions. Record dynamically executed guard count.
+5. Prove failures intentionally: missing/excluded/benign fixtures restored from saved ORIGINAL bytes; forbidden-reference inventory; exact wrapper-disabled + forbidden input; inventory assertion no-op; negative assertion no-op; six->five disappeared misuse; runtime variants caught by the actual new tests. Use isolated stdin/load-hook variants and intended messages, preserve real anchors, never sabotage live helper/index or run negative fixtures.
+6. Run all required final checks/tests and three product builds serially; save durable logs with exits/counts/failures/warnings. Do not rerun unrelated brand audit or perform DB/hardware/queue/mesh/release/activation actions. Preserve earlier source/config/fixture/lock/review hashes and identify any exact concurrent changes without unsupported normalization guesses.
+7. Complete B02G baseline/report/self-review, exact targeted rollback instructions and current STATUS/PROJECT_STATE notes. State eight checked JS modules plus the Manager declaration only after the new helper is genuinely checked; full preload API/Deno/financial/React/offline/hardware coverage is not claimed. Explain manual impact as unchanged internal transport behaviour, not comments only. Builds/mock tests do not prove installed contextBridge/hardware journeys.
+
+Do not stop at a proposed implementation; complete the assigned scope and meaningful verification. If an existing baseline failure or prerequisite limits a check, document it precisely without unrelated repairs or fake green claims. Return the PLAN completion packet and STOP PENDING REVIEW. No self-acceptance, B02-H/B03/Deno work, wider API typing or cross-chat messages.

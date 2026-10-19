@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Optional tab-identity fields for create_pos_order_v3 envelopes.
  *
@@ -8,11 +9,13 @@
  * mutable cache state: an enriched retry hashes differently and dies with
  * a local idempotency conflict instead of replaying the stored receipt.
  */
+/** @param {unknown} value @returns {boolean} */
 export function isPositiveTabVersion(value) {
   const numeric = Number(value);
   return Number.isInteger(numeric) && numeric > 0;
 }
 
+/** @param {Record<string, unknown> | null | undefined} payload @param {Record<string, unknown> | null | undefined} data */
 export function applyOptionalV3TabFields(payload, data) {
   const source = data && typeof data === 'object' ? data : {};
   const target = payload && typeof payload === 'object' ? payload : {};

@@ -1,6 +1,8 @@
+// @ts-check
 import { createSupportTicket } from './api'
 import { buildSupportAuthorFromUser } from '@shared/supportThreads'
 
+/** @param {{user: Record<string, unknown> & {lodge_id: string}, title?: unknown, description?: unknown, category?: unknown, priority?: unknown, source?: unknown, context?: unknown}} request @returns {Promise<Record<string, unknown>>} */
 export async function sendFrontDeskRequest({
   user,
   title,
@@ -17,7 +19,7 @@ export async function sendFrontDeskRequest({
   if (!cleanDescription) throw new Error('Add a note for front desk first.')
 
   const author = buildSupportAuthorFromUser(user, 'manager_pwa')
-  const result = await createSupportTicket(user.lodge_id, {
+  const rawResult = await createSupportTicket(user.lodge_id, {
     lodge_name: user.lodge_display_name,
     title: cleanTitle,
     description: cleanDescription,
@@ -31,5 +33,10 @@ export async function sendFrontDeskRequest({
     requester_surface: author.sender_surface
   })
 
-  return { ...result, queued: Boolean(result?.queued) }
+  // Object spread boxes the original API result; its fields remain unknown.
+  const result = Object(rawResult)
+  const queued = rawResult === null || rawResult === undefined
+    ? undefined
+    : Reflect.get(result, 'queued', rawResult)
+  return { ...result, queued: Boolean(queued) }
 }

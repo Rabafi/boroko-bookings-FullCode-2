@@ -1,11 +1,15 @@
+// @ts-check
 import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { logActivity, queueOperation, readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js';
 
+/** @typedef {Record<string, unknown>} RatePlanInputView */
+/** @typedef {Record<string, unknown>} RatePlanCacheView */
+
 async function _getAllRatePlans() {
   if (!state.isOnline) return readCache('rate-plans');
   try {
-    const { data, error } = await state.supabase
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
       .from('rate_plans')
       .select('*')
       .eq('lodge_id', state.lodgeId)
@@ -14,9 +18,11 @@ async function _getAllRatePlans() {
     writeCache('rate-plans', data || []);
     return data || [];
   } catch (err) {
-    const cached = readCache('rate-plans');
+    // Cache values remain unvalidated; this view only types the existing array operations.
+    const cached = /** @type {RatePlanCacheView[]} */ (readCache('rate-plans'));
     if (cached.length > 0) return cached;
-    throw new Error(err?.message || 'Failed to load rate plans');
+    const errorView = /** @type {Record<string, unknown> | null | undefined} */ (err)
+    throw new Error(/** @type {string} */ (errorView?.message || 'Failed to load rate plans'));
   }
 }
 
@@ -24,7 +30,10 @@ export function getAllRatePlans() {
   return dedupePromise('ratePlans', _getAllRatePlans);
 }
 
-export async function createRatePlan(data) {
+/** @param {unknown} input */
+export async function createRatePlan(input) {
+  // This view preserves the existing direct reads of untrusted IPC input; it adds no validation.
+  const data = /** @type {RatePlanInputView} */ (input)
   const id = randomUUID();
   const plan = {
     id,
@@ -46,13 +55,13 @@ export async function createRatePlan(data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_rate_plan', { payload: plan });
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_rate_plan', { payload: plan });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create rate plan');
     await refreshCache('rate-plans');
     return result?.id || id;
   } else {
-    const cached = readCache('rate-plans');
+    const cached = /** @type {RatePlanCacheView[]} */ (readCache('rate-plans'));
     cached.push({ ...plan, _pending_sync: true });
     writeCache('rate-plans', cached);
     queueOperation('rpc', 'create_rate_plan', { payload: plan }, null, { _queue_id: `rate-${id}` });
@@ -60,7 +69,10 @@ export async function createRatePlan(data) {
   }
 }
 
-export async function updateRatePlan(id, data) {
+/** @param {string} id @param {unknown} input */
+export async function updateRatePlan(id, input) {
+  // This view preserves the existing direct reads of untrusted IPC input; it adds no validation.
+  const data = /** @type {RatePlanInputView} */ (input)
   const update = {
     name: data.name,
     description: data.description,
@@ -77,14 +89,14 @@ export async function updateRatePlan(id, data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_rate_plan', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_rate_plan', {
       p_id: id, p_lodge_id: state.lodgeId, payload: update
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update rate plan');
     await refreshCache('rate-plans');
   } else {
-    const cached = readCache('rate-plans');
+    const cached = /** @type {RatePlanCacheView[]} */ (readCache('rate-plans'));
     const idx = cached.findIndex((p) => p.id === id);
     const pending = idx >= 0 && cached[idx]?._pending_sync;
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
@@ -95,16 +107,17 @@ export async function updateRatePlan(id, data) {
   }
 }
 
+/** @param {string} id */
 export async function deleteRatePlan(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_rate_plan', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('delete_rate_plan', {
       p_id: id, p_lodge_id: state.lodgeId
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not delete rate plan');
     await refreshCache('rate-plans');
   } else {
-    const cached = readCache('rate-plans');
+    const cached = /** @type {RatePlanCacheView[]} */ (readCache('rate-plans'));
     const pending = cached.some((p) => p.id === id && p?._pending_sync);
     writeCache('rate-plans', cached.filter((p) => p.id !== id));
     queueOperation('rpc', 'delete_rate_plan', {
@@ -117,12 +130,13 @@ export async function deleteRatePlan(id) {
  * Authoritative stay quote via server `quote_room_stay`.
  * Client-side plan math must be labelled as estimates only.
  */
+/** @param {unknown} roomId @param {unknown} checkIn @param {unknown} checkOut @param {unknown} [corporateAccountId] */
 export async function quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporateAccountId = null) {
   if (!state.lodgeId) throw new Error('No lodge selected');
   if (!roomId || !checkIn || !checkOut) throw new Error('roomId, checkIn, and checkOut are required');
 
   if (state.isOnline && typeof state.supabase?.rpc === 'function') {
-    const { data, error } = await state.supabase.rpc('quote_room_stay', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('quote_room_stay', {
       p_lodge_id: state.lodgeId,
       p_room_id: roomId,
       p_check_in: checkIn,
@@ -140,10 +154,11 @@ export async function quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporat
   }
 
   // Offline: best-effort local estimate from cached rate plans — not financial truth.
-  const plans = readCache('rate-plans') || [];
+  const plans = /** @type {RatePlanCacheView[]} */ (readCache('rate-plans') || []);
   const active = plans.filter((p) => (p.status || 'active') === 'active');
   const amount = Number(active[0]?.rate_amount || 0);
-  const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
+  // The existing Date coercion accepts any JS date input at runtime; this view does not validate it.
+  const nights = Math.max(1, Math.round((Number(new Date(/** @type {string | number | Date} */ (checkOut))) - Number(new Date(/** @type {string | number | Date} */ (checkIn)))) / 86400000));
   return {
     success: true,
     total: amount * nights,
@@ -161,9 +176,11 @@ export async function quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporat
  * Client-side estimate of a plan amount for display only.
  * Prefer quoteRoomStayFromPlans / server RPCs for booking totals.
  */
+/** @param {unknown} plan @param {unknown} nights */
 export function estimatePlanTotal(plan, nights) {
+  const planView = /** @type {RatePlanInputView | null | undefined} */ (plan)
   const n = Math.max(1, Number(nights) || 1);
-  const rate = Number(plan?.rate_amount || 0);
+  const rate = Number(planView?.rate_amount || 0);
   return {
     total: rate * n,
     nights: n,

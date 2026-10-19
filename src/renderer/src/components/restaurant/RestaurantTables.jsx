@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Edit3, LayoutGrid, MapPinned, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { useAccess } from '../../app-context'

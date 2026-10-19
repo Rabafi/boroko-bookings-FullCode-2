@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import { state } from '../state.js'
-import { resolveCurrentOpenShiftId } from './syncShared.js'
+import {
+  POS_HISTORICAL_REPLAY_RPC,
+  buildHistoricalReplayRequest,
+  classifySaleReplayRoute,
+  isHistoricalReplayContractMissing
+} from './syncShared.js'
 import { withNetworkTimeout, broadcastSyncStatus } from './connectivity.js'
 import { getActiveBookingForRoom } from './bookings.js'
 import { getLocalDateKey, recordCriticalError } from './operationalLog.js'
@@ -51,18 +56,131 @@ const POS_REMOTE_READ_TTL_MS = 2_500;
 const POS_TICKET_SELECT = 'id, lodge_id, order_id, outlet_id, station, status, service_mode, table_name, tab_name, waiter_name, room_id, notes, items, created_at, updated_at';
 const POS_TAB_SELECT = 'id, lodge_id, outlet_id, table_name, tab_name, customer_name, waiter_name, waiter_id, shift_id, room_id, booking_id, items, notes, status, opened_by, opened_by_name, created_at, updated_at, closed_at, tab_version, financial_snapshot';
 const ACTIVE_PREP_TICKET_STATUSES = Object.freeze(['new', 'pending', 'preparing', 'ready']);
+/** @typedef {{value: unknown, expiresAt: number, request: Promise<unknown> | null}} PosRemoteReadCacheEntry */
+/**
+ * Expected row fields used by POS history readers and local cache merges. The
+ * SELECT and queue/cache producers provide these fields; this view does not
+ * validate persisted or RPC data.
+ * @typedef {Record<string, unknown> & {business_date?: unknown, outlet_id?: string | null, created_at?: unknown}} PosOrderExpectedData
+ */
+/** @typedef {PosOrderExpectedData[] & {_source: unknown, _complete: boolean, _tender_complete: boolean, _item_detail_complete: boolean}} PosOrderReadRows */
+/** @typedef {{orders: PosOrderExpectedData[], source: 'local_cache', refreshed: false, complete: false} | {orders: PosOrderExpectedData[], source: 'server', refreshed: true, complete: boolean, tender_complete: boolean, item_detail_complete: boolean}} SharedTillPosOrdersResult */
+/** Partial-return request fields produced by the POS history dialog; the IPC payload is not runtime-validated here.
+ * @typedef {{order_id?: string | null, pin?: string | null, reason?: string | null, lines?: Array<{line_id?: string | null, id?: string | null, quantity?: number | string | null}> | null, cashier_user_id?: string | null, outlet_id?: string | null, payment_method?: string | null, shift_id?: string | null, return_order_id?: string, created_at?: string, approver_id?: string | null, override_log_id?: string}} PosPartialReturnRequest
+ */
+/** Expected source line fields selected with pos_orders.pos_order_items(*) or retained in the local POS order cache; the view does not validate either source.
+ * @typedef {{id: string, quantity: number | string, unit_price: number | string, item_name?: string | null, menu_item_id?: string | null, inventory_item_id?: string | null, depletion_qty?: number | string | null}} PosPartialReturnSourceLine
+ */
+/** Expected order row read by the partial-return flow from POS order cache or its explicit order/items query; this is not runtime validation.
+ * @typedef {{id: string, status?: string | null, outlet_id?: string | null, walk_in_name?: string | null, _pending_sync?: boolean, pos_order_items?: unknown, items?: unknown}} PosPartialReturnSourceOrder
+ */
+/** Locally calculated return line sent to create_pos_return_v3 and written as a provisional cached return row.
+ * @typedef {{original_order_item_id: string, menu_item_id: string | null, inventory_item_id: string | null, depletion_qty: number, item_name: string, quantity: number, unit_price: number}} PosPartialReturnLine
+ */
+/** @typedef {Record<string, unknown>} PosSettingsExpectedData */
+/** @typedef {Error & {code?: unknown}} PosCodedError */
+/** @typedef {{message?: unknown} | null | undefined} PosThrownMessageReadView */
+/** @typedef {{success?: unknown, error?: unknown}} PosOperationResultExpectedData */
+/** Expected POS shift fields produced by pos_shifts queries and the local shift writer; cache/RPC rows are not runtime-validated.
+ * @typedef {Record<string, unknown> & {id: string, lodge_id?: string|null, outlet_id?: string|null, cashier_id?: string|null, cashier_name?: string|null, status?: string|null, opened_at?: string|null, closed_at?: string|null, opening_float?: unknown, notes?: string|null, attendance_shift_id?: string|null, _pending_sync?: unknown, _queue_id?: unknown}} PosStaffShiftExpectedData
+ */
+/** Expected attendance fields written by the attendance RPC/cache paths; persisted JSON is not runtime-validated.
+ * @typedef {Record<string, unknown> & {id: string, lodge_id?: string|null, staff_user_id?: string|null, staff_name?: string|null, role?: string|null, expected_hours?: unknown, clock_in?: string|null, status?: string|null, clock_out?: string|null, idempotency_key?: string|null, _pending_sync?: unknown, _queue_id?: unknown}} PosAttendanceShiftExpectedData
+ */
+/** Cached users rows are populated by the existing team refresh; this expected-data view does not validate cache contents.
+ * @typedef {Record<string, unknown> & {id: string, lodge_id?: string|null, status?: string|null, pin_hash?: string|null, name?: string|null, email?: string|null, role?: string|null, allowed_outlet_ids?: string[]|null}} PosCachedStaffExpectedData
+ */
+/** @typedef {{success: false, error: string}|{success: true, staff: {id: string, name: string|null, email: string|null, role: string|null, allowed_outlet_ids: string[]}}} PosCachedStaffPinResult */
+/** POS shift-open fields sent by the main IPC caller; IPC data is not runtime-validated here.
+ * @typedef {{id?: string|null, outlet_id?: string|null, cashier_id?: string|null, cashier_name?: string|null, opening_float?: number|string|null, notes?: string|null, create_idempotency_key?: string|null, idempotency_key?: string|null} | Record<string, undefined>} PosOpenShiftRequest
+ */
+/** Shared Till unlock fields provided by the main IPC caller; aliases and fallback semantics are preserved.
+ * @typedef {{staff_id?: string|null, staffId?: string|null, outlet_id?: string|null, outletId?: string|null, pin?: string|null, idempotency_key?: string|null, idempotencyKey?: string|null} | Record<string, undefined>} PosSharedTillOperatorRequest
+ */
+/** Attendance PIN clock-in fields provided by the manager renderer through IPC; the request is not runtime-validated here.
+ * @typedef {{staff_user_id?: string|null, staffUserId?: string|null, pin?: string|null, role?: string|null, expected_hours?: number|string|null, expectedHours?: number|string|null, idempotency_key?: string|null, idempotencyKey?: string|null} | Record<string, undefined>} PosAttendancePinClockInRequest
+ */
+/** Queue fields read by offline duplicate guards; persisted queue JSON is not runtime-validated.
+ * @typedef {Record<string, unknown> & {table?: unknown, data?: {payload?: {lodge_id?: unknown, staff_user_id?: unknown, shift_id?: unknown, pos_shift_id?: unknown, outlet_id?: unknown}}}} PosStaffShiftQueueExpectedData
+ */
+/** Request fields provided by POS.jsx; the empty variant preserves the existing default argument path.
+ * @typedef {{shift_id: string|null, outlet_id: string|null, cashier_id: string|null, cashier_name: string|null, closing_cash: number, cashup_id?: string, idempotency_key?: string, notes?: string|null} | Record<string, undefined>} PosCloseShiftRequest
+ */
+/** @typedef {{shift_id: string, cashup_id: string, idempotency_key: string, fingerprint: string, created_at: string}} PosShiftCloseAttemptExpectedData */
+/** @typedef {Record<string, unknown> & {_queue_id?: unknown, table?: unknown, data?: {payload?: {shift_id?: unknown}}}} PosShiftCloseQueueReadView */
+/** SQL envelope for finalize_pos_shift_cashup_v2. Financial JSON values remain unknown.
+ * @typedef {{success: true, cashup_id: string, counted_by_method: {cash?: unknown}, expected_cash_drawer?: unknown, variance_by_method?: unknown, error?: undefined} | {success: false, error: unknown, code?: unknown, cashup_id?: unknown, counted_by_method?: unknown, expected_cash_drawer?: unknown, variance_by_method?: unknown}} PosShiftCloseRpcResultExpectedData
+ */
+/** Expected JSONB branches returned by get_pos_shift_close_resolution; this is not validation.
+ * @typedef {{success: true, exists: false, status: string, shift_id: string} | {success: true, exists: true, status: string, finalized: boolean, close_idempotency_key: string|null, shift: Record<string, unknown>, cashup_session: Record<string, unknown>|null} | {success: false, exists?: false, status?: string, code: string, error: string}} PosShiftCloseResolutionExpectedData
+ */
+/**
+ * Expected input for the Bar pack product IPC save. HposMenu supplies the
+ * product and pack fields; the optional menu metadata fields are also read by
+ * the offline row writer and use the same defaults as create/update menu item.
+ * IPC data is not runtime-validated by this expected-data view.
+ * @typedef {{
+ *   name: string,
+ *   category: string,
+ *   price: number,
+ *   barcode: string | null,
+ *   stock_method: 'direct' | 'recipe' | 'non_stock',
+ *   is_available: boolean,
+ *   inventory_item_id: string | null,
+ *   depletion_qty: number | null,
+ *   menu_item_id: string | null,
+ *   operation_key: string,
+ *   pack6: boolean,
+ *   pack12: boolean,
+ *   pack24: boolean,
+ *   pack6Barcode: string | null,
+ *   pack12Barcode: string | null,
+ *   pack24Barcode: string | null,
+ *   outlet_id?: string | null,
+ *   dietary_flags?: string[],
+ *   prep_time_minutes?: number,
+ *   is_popular?: boolean,
+ *   kitchen_station_id?: string | null
+ * }} HposBarPosProductWithPacksRequest
+ * @typedef {HposBarPosProductWithPacksRequest | Record<string, undefined>} BarPosProductWithPacksRequest
+ */
+/** @typedef {6 | 12 | 24} BarPackSize */
+/**
+ * Expected cache rows written by POS catalog reads/writes; persisted JSON is
+ * not parsed or validated by these views.
+ * @typedef {Record<string, unknown> & {id: string, inventory_item_id?: string | null, template_kind?: string | null, template_pack_size?: number | string | null, outlet_id?: string | null}} PosCachedMenuItem
+ */
+/**
+ * Expected inventory cache row fields produced by inventory refresh and used
+ * by the existing offline POS catalog projection; not runtime validation.
+ * @typedef {Record<string, unknown> & {id: string, name: string, selling_price?: number | null, outlet_id?: string | null, _pending_sync?: boolean}} PosCachedInventoryItem
+ */
+/** @typedef {{inventory_item_id: string, pack_size: BarPackSize, enabled: boolean, menu_item_id?: string, barcode?: string | null}} BarPackTemplateRequest */
+/** @type {Map<string, PosRemoteReadCacheEntry>} */
 const posRemoteReadCache = new Map();
 
+/**
+ * Settings writers persist a one-row cache array. This expected-data view
+ * preserves the prior indexed read and does not validate cached JSON.
+ * @returns {PosSettingsExpectedData | null}
+ */
+function getCachedPosSettings() {
+  const rows = /** @type {unknown[] | null | undefined} */ (readCache('settings'));
+  return /** @type {PosSettingsExpectedData | null} */ (rows?.[0] || null);
+}
+
+/** @param {string} [scope] */
 function invalidatePosRemoteReads(scope = '') {
   for (const key of posRemoteReadCache.keys()) {
     if (!scope || key.startsWith(`${scope}:`)) posRemoteReadCache.delete(key);
   }
 }
 
+/** @param {string} key @param {() => Promise<unknown>} fetcher @returns {Promise<unknown>} */
 async function readPosRemoteCached(key, fetcher) {
   const cached = posRemoteReadCache.get(key);
   if (cached?.request) return cached.request;
-  if (cached?.expiresAt > Date.now()) return cached.value;
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const request = Promise.resolve()
     .then(fetcher)
@@ -93,14 +211,20 @@ function getDesktopPosDeviceId() {
 // Sales history show a real receipt reference and full prices while offline
 // instead of "UNAVAILABLE". Format TILL-YYYYMMDD-NNNN, sequenced per outlet
 // per business day on this device.
+/** @param {string | null} [outletId] */
 function nextOfflineReceiptNumber(outletId = null) {
   const businessDate = getLocalDateKey();
   const compactDate = String(businessDate || '').replaceAll('-', '') || '00000000';
   const cacheKey = 'pos-offline-receipt-counters';
+  /** @type {Record<string, unknown>} */
   let counters = {};
   try {
     const raw = readCache(cacheKey);
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) counters = raw;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      // Existing cache guard establishes the record container. Values remain
+      // unknown because the persisted counter JSON is not schema-validated.
+      counters = /** @type {Record<string, unknown>} */ (raw);
+    }
   } catch {
     counters = {};
   }
@@ -115,13 +239,28 @@ function nextOfflineReceiptNumber(outletId = null) {
   return `TILL-${compactDate}-${String(next).padStart(4, '0')}`;
 }
 
+/**
+ * Reads the same `.message` property that optional property access did before
+ * this helper was typed. `Object(value)` preserves JavaScript ToObject lookup
+ * for every non-null thrown value; the view does not validate the thrown data.
+ * @param {unknown} error
+ */
+function getThrownMessageOrValue(error) {
+  const message = error == null
+    ? undefined
+    : /** @type {{message?: unknown}} */ (Object(error)).message;
+  return String(message || error || '').toLowerCase();
+}
+
+/** @param {unknown} error */
 function isReadOnlySessionTouchError(error) {
-  const message = String(error?.message || error || '').toLowerCase();
+  const message = getThrownMessageOrValue(error);
   return message.includes('read-only transaction') && message.includes('update');
 }
 
+/** @param {unknown} error */
 function isNetworkError(error) {
-  const message = String(error?.message || error || '').toLowerCase();
+  const message = getThrownMessageOrValue(error);
   return message.includes('fetch') || message.includes('network') || message.includes('failed to fetch') ||
     message.includes('ERR_CONNECTION') || message.includes('ECONNREFUSED') || message.includes('ETIMEDOUT');
 }
@@ -130,16 +269,34 @@ function buildReadOnlySessionTouchMessage(featureLabel = 'This screen') {
   return `${featureLabel} is hitting an older database read path that still tries to write during a SELECT. Apply the latest session and entitlement read-only SQL fixes in Supabase, then reload the app.`;
 }
 
+/** @typedef {Record<string, unknown> & {outlet_id?: string}} PosMenuCatalogExpectedRow */
+
+/**
+ * `rows` is the existing expected catalogue shape from the POS RPC/cache. The
+ * assertion only describes that input view; it intentionally adds no runtime
+ * validation and preserves the existing `.filter` failure for malformed data.
+ * @param {unknown} rows
+ * @param {string[] | null} [outletFilter]
+ * @returns {PosMenuCatalogExpectedRow[]}
+ */
 function applyPosMenuOutletFilter(rows = [], outletFilter = null) {
   if (outletFilter !== null && outletFilter.length === 0) return [];
+  const menuRows = /** @type {PosMenuCatalogExpectedRow[]} */ (rows || []);
   if (outletFilter !== null) {
-    return (rows || []).filter((item) => !item.outlet_id || outletFilter.includes(item.outlet_id));
+    return menuRows.filter((item) => !item.outlet_id || outletFilter.includes(item.outlet_id));
   }
-  return rows || [];
+  return menuRows;
 }
 
+/**
+ * @param {unknown} rows Expected POS SELECT/cache rows; no runtime validation is performed.
+ * @param {string | null | undefined} startDate
+ * @param {string | null | undefined} endDate
+ * @param {string[] | string | null} [outletFilter]
+ * @returns {PosOrderExpectedData[]}
+ */
 function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null) {
-  let filtered = rows || [];
+  let filtered = /** @type {PosOrderExpectedData[]} */ (rows || []);
   if (startDate) {
     filtered = filtered.filter((order) => String(order.business_date || '').slice(0, 10) >= startDate);
   }
@@ -153,12 +310,13 @@ function applyPosOrderFilters(rows = [], startDate, endDate, outletFilter = null
   return filtered.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
 }
 
+/** @param {Record<string, unknown>} payload @param {unknown[]} paymentBreakdown @param {unknown} paymentMethod */
 async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [], paymentMethod = 'cash') {
-  const items = Array.isArray(payload?.items) ? payload.items : []
+  const items = /** @type {Record<string, unknown>[]} */ (Array.isArray(payload?.items) ? payload.items : []);
   const hasPoolLines = items.some((item) => String(item?.category || item?.menu_category || '').trim().toLowerCase() === 'pool')
   if (hasPoolLines) {
     const method = String(paymentMethod || '').trim().toLowerCase()
-    const tenders = (Array.isArray(paymentBreakdown) ? paymentBreakdown : []).map((tender) => String(tender?.method || '').trim().toLowerCase()).filter(Boolean)
+    const tenders = (Array.isArray(paymentBreakdown) ? /** @type {Record<string, unknown>[]} */ (paymentBreakdown) : []).map((tender) => String(tender?.method || '').trim().toLowerCase()).filter(Boolean)
     const singleCash = method === 'cash' && tenders.length === 1 && tenders[0] === 'cash'
     const hasAccountCharge = payload?.customer_account_charge !== null && payload?.customer_account_charge !== undefined && payload?.customer_account_charge !== '' && payload?.customer_account_charge !== false
     const tip = payload?.tip_total === null || payload?.tip_total === undefined || payload?.tip_total === '' ? 0 : Number(payload.tip_total)
@@ -167,9 +325,9 @@ async function enforceBarBaseTenderBoundary(payload = {}, paymentBreakdown = [],
     }
     return
   }
-  const settings = readCache('settings')?.[0] || null
+  const settings = getCachedPosSettings()
   if (!isBarOnlyMode(settings)) return
-  const hasVoucher = String(paymentMethod || '').toLowerCase() === 'voucher' || paymentBreakdown.some((tender) => String(tender?.method || '').toLowerCase() === 'voucher')
+  const hasVoucher = String(paymentMethod || '').toLowerCase() === 'voucher' || /** @type {Record<string, unknown>[]} */ (paymentBreakdown).some((tender) => String(tender?.method || '').toLowerCase() === 'voucher')
   const tip = payload?.tip_total === null || payload?.tip_total === undefined || payload?.tip_total === '' ? 0 : Number(payload.tip_total)
   if (!Number.isFinite(tip)) throw new Error('Tip tender is invalid and has been blocked.')
   if (!hasVoucher && tip === 0) return
@@ -196,7 +354,7 @@ export async function assertPosSubscriptionAllowsSale() {
   const status = String(entitlement?.status || '').trim().toLowerCase();
   const expiredFlag = entitlement?.expired === true;
   if (!entitlement) {
-    const blocked = new Error('POS sales are blocked: subscription could not be verified (code subscription_unverified). Reconnect and retry; read-only reports remain available.');
+    const blocked = /** @type {PosCodedError} */ (new Error('POS sales are blocked: subscription could not be verified (code subscription_unverified). Reconnect and retry; read-only reports remain available.'));
     blocked.code = 'subscription_unverified';
     throw blocked;
   }
@@ -212,7 +370,7 @@ export async function assertPosSubscriptionAllowsSale() {
   }
   if (!allows || expiredFlag || status === 'expired') {
     const label = subscriptionState || status || 'expired';
-    const blocked = new Error(`POS sales are blocked: subscription is ${label} (code subscription_expired). Renew the licence to resume selling. Read-only reports remain available.`);
+    const blocked = /** @type {PosCodedError} */ (new Error(`POS sales are blocked: subscription is ${label} (code subscription_expired). Renew the licence to resume selling. Read-only reports remain available.`));
     blocked.code = 'subscription_expired';
     throw blocked;
   }
@@ -222,12 +380,19 @@ export async function assertPosSubscriptionAllowsSale() {
 // refresh must never silently pass: log it, raise a health fault so the
 // operator health badge/toast surfaces it, and return a warning the caller
 // attaches to its result.
+/**
+ * @param {string[]} [cacheKeys]
+ * @param {string} [context]
+ * @returns {Promise<string | null>}
+ */
 export async function refreshPosCachesBestEffort(cacheKeys = [], context = 'pos-refresh') {
   try {
     await refreshCache(...cacheKeys);
     return null;
   } catch (refreshError) {
-    const message = refreshError?.message || String(refreshError || 'refresh failed');
+    // Catch values remain unvalidated; this view preserves the existing
+    // optional `.message` read for errors, primitives, and nullish values.
+    const message = /** @type {PosThrownMessageReadView} */ (refreshError)?.message || String(refreshError || 'refresh failed');
     try {
       recordCriticalError(`pos.cache-refresh.${context}`, refreshError, { cache_keys: cacheKeys });
     } catch { /* logging must never break the sale */ }
@@ -254,6 +419,7 @@ const POS_CASHUP_SUBMISSION_CACHE = 'pos-cashup-submissions'
 // flow, so this hint is for operator PINs only.
 const OPERATOR_PIN_RESET_HINT = ' If you forgot it, ask an admin to reset it in Staff Management.';
 
+/** @param {unknown} message @returns {string} */
 function withOperatorPinResetHint(message) {
   const text = String(message || '');
   if (!text) return text;
@@ -264,24 +430,35 @@ function withOperatorPinResetHint(message) {
   return text;
 }
 
+/**
+ * @param {unknown} result
+ * @returns {unknown}
+ */
 function withOperatorPinResult(result) {
-  if (!result || result.success !== false) return result;
-  if (!result.error) return result;
-  return { ...result, error: withOperatorPinResetHint(result.error) };
+  // PIN RPC results use this expected property view; malformed values retain
+  // the old property-read and spread behavior and are not validated here.
+  if (!result) return result;
+  const resultData = /** @type {PosOperationResultExpectedData} */ (result);
+  if (resultData.success !== false) return result;
+  if (!resultData.error) return result;
+  return { ...resultData, error: withOperatorPinResetHint(resultData.error) };
 }
 
 // PostgREST surfaces a missing EXECUTE grant as a bare "permission denied
 // for function ..." which tells the operator nothing to do. Map it to the
 // recovery path: the shift stays open, cash-up is kept, no repeat tapping.
 // The raw detail stays in the main-process log for support.
+/** @param {unknown} rawMessage @param {'in' | 'out'} action @returns {string} */
 function withAttendancePermissionGuidance(rawMessage, action) {
   const message = String(rawMessage || '');
   if (!/permission denied for function/i.test(message)) return message;
   return `Clock ${action} was refused by the database permission check. Your shift stays open and any cash-up is kept — do not tap repeatedly. Ask a manager to update the database permissions, then relaunch and try again.`;
 }
 
+/** @param {string|null} userId @returns {PosCachedStaffExpectedData|null} */
 function getCachedPosUser(userId) {
-  return (readCache('users') || []).find((row) =>
+  // The team refresh writes these fields; this is an expected-data assertion, not cache validation.
+  return /** @type {PosCachedStaffExpectedData[]} */ (readCache('users') || []).find((row) =>
     row?.id === userId &&
     (!row?.lodge_id || row.lodge_id === state.lodgeId)
   ) || null
@@ -353,6 +530,7 @@ function resolveOfflineManageUnlock(staff, pin) {
   return { success: true, staff: { ...staff, ...verified.staff }, offline: true, provisional: true };
 }
 
+/** @param {string|null} userId @param {string|null|undefined} pin @param {{manager?: boolean}} [options] @returns {PosCachedStaffPinResult} */
 function validateCachedPosPin(userId, pin, { manager = false } = {}) {
   const user = getCachedPosUser(userId)
   if (!user || String(user.status || 'active').toLowerCase() !== 'active') {
@@ -379,15 +557,19 @@ function validateCachedPosPin(userId, pin, { manager = false } = {}) {
   }
 }
 
+/** @returns {PosAttendanceShiftExpectedData[]} */
 function readAttendanceShifts() {
   const rows = readCache(POS_ATTENDANCE_CACHE)
-  return Array.isArray(rows) ? rows : []
+  // These fields are written by the attendance queue/cache paths; persisted JSON is not validated here.
+  return Array.isArray(rows) ? /** @type {PosAttendanceShiftExpectedData[]} */ (rows) : []
 }
 
+/** @param {PosAttendanceShiftExpectedData[]} [rows] */
 function writeAttendanceShifts(rows = []) {
   writeCache(POS_ATTENDANCE_CACHE, rows.slice(0, 500))
 }
 
+/** @param {PosAttendanceShiftExpectedData} [row] */
 function upsertAttendanceShift(row = {}) {
   writeAttendanceShifts([row, ...readAttendanceShifts().filter((entry) => entry.id !== row.id)])
   return row
@@ -407,8 +589,9 @@ function upsertPosCashupSubmission(row = {}) {
   return row
 }
 
+/** @param {unknown} outletId @param {string} [snapshotId] */
 function buildLocalPosCatalogSnapshot(outletId = null, snapshotId = randomUUID()) {
-  const settings = readCache('settings')?.[0] || {}
+  const settings = getCachedPosSettings() || {}
   const items = (readCache('pos-menu-items') || [])
     .filter((item) => !item?.archived_at && (
       (outletId == null && item?.outlet_id == null) ||
@@ -448,6 +631,7 @@ function buildLocalPosCatalogSnapshot(outletId = null, snapshotId = randomUUID()
   }
 }
 
+/** @param {unknown} outletId @param {unknown} [dependsOn] */
 function queueLocalPosCatalogSnapshot(outletId = null, dependsOn = null) {
   const snapshot = buildLocalPosCatalogSnapshot(outletId)
   const queueId = `pos-catalog-snapshot-${snapshot.snapshot_id}`
@@ -471,24 +655,33 @@ function queueLocalPosCatalogSnapshot(outletId = null, dependsOn = null) {
   return snapshot
 }
 
+/** @param {unknown} value */
 function hasFiniteRecordedMoney(value) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 }
 
+/** @typedef {{method?: unknown, type?: unknown, amount?: unknown}} PosTenderExpectedData */
+/** @typedef {Record<string, unknown> & {gross_subtotal?: unknown, gross?: unknown, subtotal?: unknown, net_subtotal?: unknown, net?: unknown}} PosOrderItemExpectedData */
+
+/** @param {PosOrderExpectedData} [order] */
 function hasRecordedPosTenderEnvelope(order = {}) {
   const breakdown = parseJsonField(order.payment_breakdown, null);
   if (!Array.isArray(breakdown) || breakdown.length === 0) return false;
-  if (breakdown.some((row) => !row || !String(row.method || row.type || '').trim() || !hasFiniteRecordedMoney(row.amount))) return false;
+  // Persisted tender JSON is only viewed as the existing row shape here; it is
+  // not validated or rewritten by this read-certification check.
+  const tenderRows = /** @type {PosTenderExpectedData[]} */ (breakdown);
+  if (tenderRows.some((row) => !row || !String(row.method || row.type || '').trim() || !hasFiniteRecordedMoney(row.amount))) return false;
   const expected = Math.round(Number(order.total) * 100) / 100;
-  const actual = Math.round(breakdown.reduce((sum, row) => sum + Number(row.amount), 0) * 100) / 100;
+  const actual = Math.round(tenderRows.reduce((sum, row) => sum + Number(row.amount), 0) * 100) / 100;
   return Number.isFinite(expected) && Math.abs(expected - actual) <= 0.005;
 }
 
+/** @param {PosOrderExpectedData} [order] */
 function hasIncompletePosItemDetail(order = {}) {
   const items = Array.isArray(order.pos_order_items)
-    ? order.pos_order_items
+    ? /** @type {PosOrderItemExpectedData[]} */ (order.pos_order_items)
     : Array.isArray(order.items)
-      ? order.items
+      ? /** @type {PosOrderItemExpectedData[]} */ (order.items)
       : [];
   if (items.length === 0) return true;
   return items.some((item) => {
@@ -498,17 +691,27 @@ function hasIncompletePosItemDetail(order = {}) {
   });
 }
 
+/**
+ * @param {unknown} rows Expected history array produced by the query/merge or cache.
+ * @param {unknown} source
+ * @param {unknown} complete
+ * @param {{tenderComplete?: unknown, itemDetailComplete?: unknown}} [metadata]
+ * @returns {PosOrderReadRows}
+ */
 function withPosReadMetadata(rows, source, complete, metadata = {}) {
-  const result = rows || [];
+  // This expected-data view keeps the old trust boundary: malformed truthy
+  // inputs are not normalized and native Object.defineProperties behavior stays.
+  const result = /** @type {PosOrderExpectedData[]} */ (rows || []);
   Object.defineProperties(result, {
     _source: { value: source, enumerable: true, configurable: true },
     _complete: { value: complete === true, enumerable: true, configurable: true },
     _tender_complete: { value: metadata.tenderComplete === true, enumerable: true, configurable: true },
     _item_detail_complete: { value: metadata.itemDetailComplete === true, enumerable: true, configurable: true }
   });
-  return result;
+  return /** @type {PosOrderReadRows} */ (result);
 }
 
+/** @param {PosOrderExpectedData[]} [rows] */
 function hasUnresolvedPosRows(rows = []) {
   return rows.some((order) => order?._pending_sync === true
     || ['pending', 'failed', 'manual_review_required'].includes(String(order?._sync_state || '').toLowerCase())
@@ -517,14 +720,17 @@ function hasUnresolvedPosRows(rows = []) {
       && (!hasFiniteRecordedMoney(order?.total) || !hasRecordedPosTenderEnvelope(order))));
 }
 
+/** @param {PosOrderExpectedData[]} [rows] */
 function hasUnresolvedPosTenderRows(rows = []) {
   return rows.some((order) => ['completed', 'settled'].includes(String(order?.status || '').toLowerCase()) && !hasRecordedPosTenderEnvelope(order));
 }
 
+/** @param {PosOrderExpectedData[]} [rows] */
 function hasIncompletePosItemRows(rows = []) {
   return rows.some((order) => ['completed', 'settled'].includes(String(order?.status || '').toLowerCase()) && hasIncompletePosItemDetail(order));
 }
 
+/** @param {unknown} value @returns {string | null} */
 function normalizeInclusiveDateEnd(value) {
   if (!value) return null;
   const raw = String(value);
@@ -532,21 +738,25 @@ function normalizeInclusiveDateEnd(value) {
   return raw;
 }
 
+/** @param {unknown} value @param {number} [fallback] @returns {number} */
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+/** @param {unknown} value @returns {number} */
 function normalizeMoney(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.round(numeric * 100) / 100 : 0;
 }
 
+/** @param {unknown} value @returns {number} */
 function normalizePercent(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
 }
 
+/** @param {unknown} value @param {unknown} fallback @returns {unknown} */
 function parseJsonField(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === 'string') {
@@ -555,8 +765,15 @@ function parseJsonField(value, fallback) {
   return value;
 }
 
+/** @typedef {{order_id: unknown, menu_item_id: unknown, inventory_item_id: unknown, depletion_qty: unknown, item_name: unknown, quantity: unknown, unit_price: unknown, subtotal: unknown}} PosOrderItemProjection */
+/** @typedef {{method: unknown, amount: number, reference: string | null, customer_id?: unknown, voucher_id?: unknown, code?: string}} PosPaymentRow */
+/** @typedef {{method: unknown, reference: unknown}} PosPaymentReferenceView */
+
+/** @param {unknown} payments @param {unknown} fallbackMethod @param {unknown} total @returns {PosPaymentRow[]} */
 function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash', total = 0) {
-  const rows = Array.isArray(payments) ? payments : [];
+  // The caller supplies the existing payment breakdown view; individual raw
+  // fields remain unknown until the normalization expressions below handle them.
+  const rows = /** @type {Record<string, unknown>[]} */ (Array.isArray(payments) ? payments : []);
   const normalized = rows.
   map((row) => ({
     method: String(row?.method || fallbackMethod || 'cash').trim().toLowerCase() || 'cash',
@@ -573,9 +790,12 @@ function normalizePaymentBreakdown(payments = [], fallbackMethod = 'cash', total
   return normalized;
 }
 
+/** @param {unknown} paymentBreakdown @param {unknown} fallbackMethod @returns {unknown} */
 function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod = 'cash') {
+  // This private helper receives rows produced by normalizePaymentBreakdown;
+  // it relies only on method/reference and makes no amount claim.
   const rows = Array.isArray(paymentBreakdown) && paymentBreakdown.length > 0
-    ? paymentBreakdown
+    ? /** @type {PosPaymentReferenceView[]} */ (paymentBreakdown)
     : [{ method: fallbackMethod, amount: 0, reference: null }];
   // Card and mobile-money references are optional on the restaurant bar
   // POS: a provider tender without a reference remains valid. A supplied
@@ -592,12 +812,13 @@ function validateProviderPaymentReferences(paymentBreakdown = [], fallbackMethod
   return paymentBreakdown;
 }
 
+/** @param {Record<string, unknown>} order @returns {PosPaymentRow[]} */
 function getOrderPaymentRows(order = {}) {
   const breakdown = parseJsonField(order.payment_breakdown, null);
   // An order-level payment_method is only a label. It cannot certify a
   // tender allocation for cash-up or financial reporting.
   if (Array.isArray(breakdown) && breakdown.length > 0) {
-    return breakdown
+    return /** @type {Record<string, unknown>[]} */ (breakdown)
       .map((row) => ({
         method: String(row?.method || row?.type || '').trim().toLowerCase(),
         amount: Number(row?.amount),
@@ -608,13 +829,30 @@ function getOrderPaymentRows(order = {}) {
   return [];
 }
 
+/** @typedef {{name: unknown, qty: number, revenue: number, cost?: number, margin?: number}} PosRevenueItemAggregate */
+
+/** Expected item projection from the SQL report's `items` JSON array; values are not validated here. @typedef {{item_name: string, name?: string|null, quantity: unknown, net?: unknown, subtotal?: unknown, gross?: unknown}} PosCertifiedRevenueItemExpectedData */
+/** Expected row projection from get_pos_financial_report_export_v2; RPC JSON is not runtime-validated. @typedef {Record<string, unknown> & {classification: string, total: unknown, payment_method: string|null, cashier_name: string|null, cashier_id: string|null, business_date: string|null, items: unknown}} PosCertifiedRevenueRowExpectedData */
+/** @typedef {{completed_sale_count: unknown, return_count: unknown, net_recorded_sales: unknown, gross_sales: unknown, discounts: unknown, returns: unknown, tax: unknown, tips: unknown, tender_totals: unknown}} PosCertifiedRevenueControlTotals */
+/** Expected SQL JSON envelope; rows and controls remain unvalidated RPC data. @typedef {Record<string, unknown> & {rows: unknown, control_totals: unknown, report_run_id?: unknown, dataset_hash?: unknown, dataset_status?: unknown, source_coverage_complete?: unknown, row_count?: unknown, source_manifest?: Record<string, unknown>|null}} PosCertifiedRevenueExportEnvelope */
+/**
+ * @param {PosCertifiedRevenueExportEnvelope | Record<string, undefined>} [envelope]
+ * @param {string} startDate
+ * @param {string} endDate
+ * @param {string} [outletId]
+ */
 function buildCertifiedPosRevenueSummary(envelope = {}, startDate, endDate, outletId = 'all') {
-  const rows = Array.isArray(envelope.rows) ? envelope.rows : [];
-  const controls = envelope.control_totals || {};
+  const rows = Array.isArray(envelope.rows) ? /** @type {PosCertifiedRevenueRowExpectedData[]} */ (envelope.rows) : [];
+  const controls = /** @type {PosCertifiedRevenueControlTotals} */ (envelope.control_totals || {});
+  /** @param {unknown} value @param {number} [fallback] @returns {number} */
   const numeric = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  /** @param {unknown} value @returns {number} */
   const round = (value) => Math.round(numeric(value) * 100) / 100;
+  /** @type {Record<string, number>} */
   const byCashier = {};
+  /** @type {Record<string, number>} */
   const daily = {};
+  /** @type {Record<string, PosRevenueItemAggregate>} */
   const items = {};
   let folioRevenue = 0;
   for (const row of rows) {
@@ -628,7 +866,7 @@ function buildCertifiedPosRevenueSummary(envelope = {}, startDate, endDate, outl
     byCashier[cashier] = round((byCashier[cashier] || 0) + signedTotal);
     const day = String(row.business_date || '').slice(0, 10);
     if (day) daily[day] = round((daily[day] || 0) + signedTotal);
-    for (const item of Array.isArray(row.items) ? row.items : []) {
+    for (const item of Array.isArray(row.items) ? /** @type {PosCertifiedRevenueItemExpectedData[]} */ (row.items) : []) {
       const name = item.item_name || item.name || 'Unknown item';
       const entry = items[name] || { name, qty: 0, revenue: 0 };
       entry.qty += numeric(item.quantity);
@@ -666,6 +904,12 @@ function buildCertifiedPosRevenueSummary(envelope = {}, startDate, endDate, outl
   };
 }
 
+/**
+ * Expected request projection passed from createPosOrder. IPC item values
+ * remain unvalidated; the existing numeric normalization below is unchanged.
+ * @param {PosCreateOrderItemRequest[]} [items]
+ * @param {Pick<PosCreateOrderRequest, 'gross_total' | 'discount_total' | 'tax_rate' | 'tax_total' | 'tip_total' | 'total'>} [data]
+ */
 function buildPosTotals(items = [], data = {}) {
   const itemSubtotal = (items || []).reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0);
   const grossFromItems = (items || []).reduce((sum, item) => {
@@ -690,6 +934,7 @@ function buildPosTotals(items = [], data = {}) {
   };
 }
 
+/** @returns {import('../../shared/desktopIpcContracts.js').PosHardwareSettings} */
 function readPosHardwareSettings() {
   const rows = readCache('pos-hardware-settings');
   const current = Array.isArray(rows) && rows[0] ? rows[0] : {};
@@ -871,25 +1116,130 @@ function writeCustomerDisplaySnapshot(snapshot = {}) {
   return row;
 }
 
+const POS_MENU_VERIFICATION_CACHE_KEY = 'pos-menu-verification';
+const POS_MENU_READ_TIMEOUT_MS = 12000;
+const POS_MENU_FINGERPRINT_RPC = 'get_pos_menu_catalog_fingerprint_v1';
+// WP D measured request deadlines: reads fail fast to cache, while a financial
+// submit gets a longer but still bounded window before the waiter abandons the
+// unanswered request. Abandoning never clears the submit journal, so recovery
+// reuses the exact same operation key. Tests may shrink the deadline through
+// state.posSubmitDeadlineMs so fault behavior is exercised without waiting.
+const POS_SUBMIT_TIMEOUT_MS = 20000;
+
+function posSubmitDeadlineMs() {
+  const override = Number(state.posSubmitDeadlineMs);
+  return Number.isFinite(override) && override > 0 ? override : POS_SUBMIT_TIMEOUT_MS;
+}
+
+function readPosMenuVerification() {
+  const value = readCache(POS_MENU_VERIFICATION_CACHE_KEY);
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function isMissingMenuFingerprintRpc(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || error || '');
+  if (!/get_pos_menu_catalog_fingerprint_v1/i.test(message)) return false;
+  if (code === 'PGRST202' || code === 'PGRST203' || code === '42883' || code === '404') return true;
+  return /could not find the function|does not exist|schema cache|not found/i.test(message);
+}
+
+// R8 completeness contract: the staff read must prove it returned the caller's
+// whole catalogue before it may replace a catalogue that was already verified
+// complete. The fingerprint RPC is absent on older servers, so an unverified
+// read is only persisted when there is no verified catalogue to protect.
+async function readPosMenuFingerprint(rows) {
+  const checkedAt = new Date().toISOString();
+  const base = { schema: 1, lodge_id: state.lodgeId, returned_count: rows.length, checked_at: checkedAt };
+  try {
+    const { data, error } = await withNetworkTimeout(
+      state.supabase.rpc(POS_MENU_FINGERPRINT_RPC, { p_lodge_id: state.lodgeId }),
+      POS_MENU_READ_TIMEOUT_MS,
+      'Menu completeness'
+    );
+    if (error) throw error;
+    const fingerprint = data && typeof data === 'object' ? data : null;
+    if (!fingerprint) throw new Error('The catalogue fingerprint response was empty.');
+    if (fingerprint.success !== true || !Number.isInteger(fingerprint.item_count)) {
+      throw new Error('The catalogue fingerprint response was not usable.');
+    }
+    return {
+      ...base,
+      outcome: fingerprint.item_count === rows.length ? 'verified' : 'incomplete',
+      source: 'fingerprint',
+      item_count: fingerprint.item_count,
+      outlet_scoped: fingerprint.outlet_scoped === true
+    };
+  } catch (error) {
+    if (isMissingMenuFingerprintRpc(error)) {
+      return { ...base, outcome: 'unverifiable', source: 'legacy_server', message: 'The completeness fingerprint RPC is not deployed yet.' };
+    }
+    return {
+      ...base,
+      outcome: 'unverifiable',
+      source: 'fingerprint_error',
+      message: String(error?.message || error || 'Completeness could not be verified.')
+    };
+  }
+}
+
 // outletFilter: null = all outlets, [] = no access, [uuid1,...] = restrict to these outlet IDs
 async function _getPosMenuItems(outletFilter = null) {
   if (state.isOnline) {
     try {
-      let query = state.supabase.
-      from('pos_menu_items').
-      select('id, name, category, price, is_available, archived_at, barcode, stock_method, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, dietary_flags, prep_time_minutes, is_popular, kitchen_station_id').
-      eq('lodge_id', state.lodgeId).
-      order('category').
-      order('name').
-      limit(500);
-      const { data, error } = await withNetworkTimeout(query, 5000, 'Menu list');
+      const { data, error } = await withNetworkTimeout(
+        state.supabase.rpc('get_pos_menu_items_for_staff_v1', { p_lodge_id: state.lodgeId }),
+        POS_MENU_READ_TIMEOUT_MS,
+        'Menu list'
+      );
       if (error) throw new Error(error.message);
-      writeCache('pos-menu-items', data || []);
-      return applyPosMenuOutletFilter(data || [], outletFilter);
-    } catch {
-      // A hung or failed network must not hang the Till: serve the trusted
-      // offline cache and let the next refresh repair it.
-      return applyPosMenuOutletFilter(readCache('pos-menu-items'), outletFilter);
+      const rows = Array.isArray(data) ? data : [];
+      const verification = await readPosMenuFingerprint(rows);
+      if (verification.outcome === 'verified') {
+        writeCache('pos-menu-items', rows);
+        writeCache(POS_MENU_VERIFICATION_CACHE_KEY, verification);
+        return applyPosMenuOutletFilter(rows, outletFilter);
+      }
+      // This read cannot prove completeness or scope. Serve the previously
+      // verified catalogue when one exists; never overwrite it with a partial,
+      // wrong-scope or unverifiable read.
+      const cached = readCache('pos-menu-items');
+      const cachedRows = Array.isArray(cached) ? cached : null;
+      const verifiedCatalogue = Boolean(cachedRows) && readPosMenuVerification()?.outcome === 'verified';
+      if (verification.outcome === 'incomplete' || verifiedCatalogue) {
+        if (cachedRows && (cachedRows.length || verifiedCatalogue)) {
+          return applyPosMenuOutletFilter(cachedRows, outletFilter);
+        }
+        const detail = verification.outcome === 'incomplete'
+          ? `the server reported ${verification.item_count} products but returned ${rows.length}`
+          : 'its completeness could not be verified';
+        const incomplete = /** @type {PosCodedError} */ (new Error(`The sellable product list could not be verified as complete (${detail}). Reconnect and refresh before selling.`));
+        incomplete.code = 'pos_menu_read_incomplete';
+        throw incomplete;
+      }
+      // No verified catalogue exists yet (fresh install or an earlier
+      // unverified read): persist this read so the till can open, and record
+      // that completeness is unproven so later reads can upgrade it.
+      writeCache('pos-menu-items', rows);
+      writeCache(POS_MENU_VERIFICATION_CACHE_KEY, verification);
+      return applyPosMenuOutletFilter(rows, outletFilter);
+    } catch (error) {
+      // Keep a previously verified catalogue usable during a transient outage
+      // (a verified empty catalogue is a legitimate empty menu). With no
+      // verified catalogue, report the failed read instead of presenting an
+      // empty response that operators could mistake for a valid empty menu.
+      const cached = readCache('pos-menu-items');
+      const verifiedCatalogue = Array.isArray(cached) && readPosMenuVerification()?.outcome === 'verified';
+      if (Array.isArray(cached) && (cached.length || verifiedCatalogue)) {
+        return applyPosMenuOutletFilter(cached, outletFilter);
+      }
+      if (error?.code === 'pos_menu_read_incomplete') throw error;
+      const detail = String(error?.message || '').trim();
+      const unavailable = /** @type {PosCodedError} */ (new Error(detail
+        ? 'The sellable product list could not be verified. ' + detail
+        : 'The sellable product list could not be verified. Reconnect and refresh before selling.'));
+      unavailable.code = error?.code || 'pos_menu_read_unavailable';
+      throw unavailable;
     }
   }
   return applyPosMenuOutletFilter(readCache('pos-menu-items'), outletFilter);
@@ -932,6 +1282,7 @@ async function _getActivePosCatalogSnapshot(outletId = null) {
   throw new Error('No catalog snapshot available. Connect to the internet and publish a catalog.');
 }
 
+/** @param {string | null} [outletId] */
 export function getActivePosCatalogSnapshot(outletId = null) {
   return dedupePromise(`getActivePosCatalogSnapshot:${outletId || 'all'}`, () => _getActivePosCatalogSnapshot(outletId));
 }
@@ -967,14 +1318,8 @@ async function publishPosCatalogSnapshotsForChange(outletIds = []) {
 export async function getPosMenuItemById(id) {
   if (!id) return null;
   try {
-    const { data, error } = await state.supabase.
-    from('pos_menu_items').
-    select('*').
-    eq('id', id).
-    eq('lodge_id', state.lodgeId).
-    single();
-    if (error) throw error;
-    return data || null;
+    const rows = await getPosMenuItems(null);
+    return Array.isArray(rows) ? rows.find((item) => String(item?.id) === String(id)) || null : null;
   } catch {
     return readCache('pos-menu-items').find((item) => item.id === id) || null;
   }
@@ -1104,6 +1449,7 @@ export async function deletePosMenuItem(id) {
   return { ...result, success: true };
 }
 
+/** @param {BarPackTemplateRequest} data */
 export async function setBarPosPackTemplate(data) {
   const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
   if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) {
@@ -1118,9 +1464,9 @@ export async function setBarPosPackTemplate(data) {
     ...(Object.prototype.hasOwnProperty.call(data || {}, 'barcode') ? { barcode: rawBarcode || null } : {})
   };
   if (!state.isOnline) {
-    const inventory = (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
+    const inventory = /** @type {PosCachedInventoryItem[]} */ (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
     if (!inventory) throw new Error('Bar inventory product not found in the offline cache.');
-    const existing = (readCache('pos-menu-items') || []).find((row) =>
+    const existing = /** @type {PosCachedMenuItem[]} */ (readCache('pos-menu-items') || []).find((row) =>
       row.inventory_item_id === payload.inventory_item_id &&
       row.template_kind === 'bar_pack' &&
       Number(row.template_pack_size) === payload.pack_size
@@ -1136,7 +1482,7 @@ export async function setBarPosPackTemplate(data) {
       outlet_id: inventory.outlet_id || null, template_kind: 'bar_pack', template_pack_size: payload.pack_size,
       _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString()
     };
-    writeCache('pos-menu-items', [row, ...(readCache('pos-menu-items') || []).filter((entry) => entry.id !== menuItemId)]);
+    writeCache('pos-menu-items', [row, .../** @type {PosCachedMenuItem[]} */ (readCache('pos-menu-items') || []).filter((entry) => entry.id !== menuItemId)]);
     const queueId = `bar-pack-${payload.inventory_item_id}-${payload.pack_size}-${Date.now()}`;
     queueOperation('rpc', 'set_bar_pos_pack_template_offline', { payload }, null, {
       _queue_id: queueId,
@@ -1154,14 +1500,15 @@ export async function setBarPosPackTemplate(data) {
   return { ...result, success: true };
 }
 
+/** @param {BarPosProductWithPacksRequest} [data] */
 export async function saveBarPosProductWithPacks(data = {}) {
   const rawBarcode = data?.barcode == null ? '' : String(data.barcode).trim();
   if (rawBarcode.length > 128 || /[\u0000-\u001f\u007f]/.test(rawBarcode)) throw new Error('Product barcode must be 128 characters or fewer and contain no control characters.');
-  const cachedMenu = readCache('pos-menu-items') || [];
-  const packs = [6, 12, 24].map((packSize) => ({
+  const cachedMenu = /** @type {PosCachedMenuItem[]} */ (readCache('pos-menu-items') || []);
+  const packs = /** @type {BarPackSize[]} */ ([6, 12, 24]).map((packSize) => ({
     pack_size: packSize,
-    enabled: data[`pack${packSize}`] === true,
-    barcode: data[`pack${packSize}Barcode`] || null,
+    enabled: data[/** @type {'pack6' | 'pack12' | 'pack24'} */ (`pack${packSize}`)] === true,
+    barcode: data[/** @type {'pack6Barcode' | 'pack12Barcode' | 'pack24Barcode'} */ (`pack${packSize}Barcode`)] || null,
     menu_item_id: cachedMenu.find((row) => row.inventory_item_id === data.inventory_item_id && row.template_kind === 'bar_pack' && Number(row.template_pack_size) === packSize)?.id || randomUUID()
   }));
   const localMenuItemId = data.menu_item_id || randomUUID();
@@ -1186,7 +1533,7 @@ export async function saveBarPosProductWithPacks(data = {}) {
     packs
   };
   if (!state.isOnline) {
-    const inventory = (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
+    const inventory = /** @type {PosCachedInventoryItem[]} */ (readCache('inventory-items') || []).find((row) => row.id === payload.inventory_item_id);
     if (payload.inventory_item_id && !inventory) throw new Error('The linked stock item is not available in the offline cache.');
     const baseRow = {
       ...(cachedMenu.find((row) => row.id === localMenuItemId) || {}),
@@ -1224,15 +1571,36 @@ export async function saveBarPosProductWithPacks(data = {}) {
   return { ...result, success: true };
 }
 
+/**
+ * Expected row shape written by createProductSaveFlow. Cache JSON remains
+ * unvalidated; callers keep their existing guards before consuming fields.
+ * @typedef {Record<string, unknown> & {operation_key: string, payload: unknown, state: 'unsent'|'queued'|'unknown'|'pending-upgrade'|'committed'|'rejected', created_at: string, result?: unknown, error?: unknown, entity_ids?: unknown, publication?: unknown}} ProductSaveRequestCacheRow
+ * @typedef {Record<string, unknown> & {
+ *   operation_key: string,
+ *   menu_item_id: string|null,
+ *   inventory_item_id: string,
+ *   product: Record<string, unknown> & {name: string, category: string, price: number, barcode: string|null, depletion_qty: number, is_available: boolean},
+ *   stock: Record<string, unknown> & {mode: 'link'|'create', name: string, category: string, unit: string, barcode: string|null, outlet_id: unknown, opening_stock: number, reorder_level: number, unit_cost: number, selling_price: number},
+ *   packs: Array<{pack_size: number, enabled: boolean, barcode: unknown}>
+ * }} ProductSaveRequestPayloadReadView
+ * @typedef {Partial<Pick<ProductSaveRequestPayloadReadView['product'], 'name'|'category'|'price'|'is_available'|'barcode'|'depletion_qty'>>} ProductSaveOfflineProductReadView
+ * @typedef {Partial<Pick<ProductSaveRequestPayloadReadView['stock'], 'mode'|'name'|'category'|'unit'|'outlet_id'|'opening_stock'|'reorder_level'>>} ProductSaveOfflineStockReadView
+ * @typedef {Record<string, unknown> & {menu_item_id?: unknown, inventory_item_id?: unknown, outlet_ids?: unknown}} ProductSaveRpcResultReadView
+ * @typedef {{menu_item_id?: unknown, inventory_item_id?: unknown}} ProductSaveEntityIdsReadView
+ * @typedef {Record<string, unknown> & {id?: unknown, _operation_key?: unknown}} ProductSaveCachedRowReadView
+ */
+/** @returns {ProductSaveRequestCacheRow[]} */
 function readProductRequests() {
   const rows = readCache('product-requests');
-  return Array.isArray(rows) ? rows : [];
+  return Array.isArray(rows) ? /** @type {ProductSaveRequestCacheRow[]} */ (rows) : [];
 }
 
+/** @param {unknown} rows */
 function writeProductRequests(rows) {
   writeCache('product-requests', Array.isArray(rows) ? rows : []);
 }
 
+/** @param {unknown} operationKey @param {Record<string, unknown>} patch */
 function markProductRequest(operationKey, patch) {
   writeProductRequests(
     readProductRequests().map((entry) =>
@@ -1269,12 +1637,18 @@ const productSaveFlow = createProductSaveFlow({
     // server ids and purges them by operation key on success. Edits update
     // the cached row in place and keep selling.
     try {
-      const product = entry.payload?.product || {};
-      const stock = entry.payload?.stock || {};
+      // This journal/cache-derived payload is not runtime-validated. These
+      // expected-data views retain the existing property reads and fallbacks.
+      const product = /** @type {ProductSaveOfflineProductReadView} */ (
+        /** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.product || {}
+      );
+      const stock = /** @type {ProductSaveOfflineStockReadView} */ (
+        /** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.stock || {}
+      );
       const nowIso = new Date().toISOString();
-      const isCreate = !entry.payload?.menu_item_id;
-      const menuId = entry.payload?.menu_item_id || `pending:${entry.operation_key}`;
-      const cachedMenu = readCache('pos-menu-items') || [];
+      const isCreate = !/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.menu_item_id;
+      const menuId = /** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.menu_item_id || `pending:${entry.operation_key}`;
+      const cachedMenu = /** @type {ProductSaveCachedRowReadView[]} */ (readCache('pos-menu-items') || []);
       const menuRow = {
         ...(cachedMenu.find((row) => row?.id === menuId) || {}),
         id: menuId,
@@ -1286,7 +1660,7 @@ const productSaveFlow = createProductSaveFlow({
         barcode: product.barcode || null,
         stock_method: 'direct',
         inventory_item_id: stock.mode === 'link'
-          ? (entry.payload?.inventory_item_id || null)
+          ? (/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.inventory_item_id || null)
           : (`pending:${entry.operation_key}:stock`),
         depletion_qty: Number(product.depletion_qty) || 1,
         outlet_id: stock.outlet_id || null,
@@ -1298,8 +1672,8 @@ const productSaveFlow = createProductSaveFlow({
       };
       writeCache('pos-menu-items', [menuRow, ...cachedMenu.filter((row) => row?.id !== menuId)]);
       if (stock.mode !== 'link') {
-        const stockId = entry.payload?.inventory_item_id || `pending:${entry.operation_key}:stock`;
-        const cachedStock = readCache('inventory-items') || [];
+        const stockId = /** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.inventory_item_id || `pending:${entry.operation_key}:stock`;
+        const cachedStock = /** @type {ProductSaveCachedRowReadView[]} */ (readCache('inventory-items') || []);
         const stockRow = {
           ...(cachedStock.find((row) => row?.id === stockId) || {}),
           id: stockId,
@@ -1323,7 +1697,7 @@ const productSaveFlow = createProductSaveFlow({
       /* Provisional display must never fail the queued save. */
     }
     try {
-      queueLocalPosCatalogSnapshot(entry.payload?.stock?.outlet_id || null, `bar-product-stock-${entry.operation_key}`);
+      queueLocalPosCatalogSnapshot((/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload))?.stock?.outlet_id || null, `bar-product-stock-${entry.operation_key}`);
     } catch {
       /* Snapshot queueing must never fail the queued save. */
     }
@@ -1346,15 +1720,15 @@ const productSaveFlow = createProductSaveFlow({
     // Entry is already committed by the flow before this runs; this handles
     // idempotent side effects only (movement once, publication sweep).
     const entityIds = {
-      menu_item_id: result?.menu_item_id || entry.entity_ids?.menu_item_id || null,
-      inventory_item_id: result?.inventory_item_id || entry.entity_ids?.inventory_item_id || null,
+      menu_item_id: (/** @type {ProductSaveRpcResultReadView|null|undefined} */ (result))?.menu_item_id || (/** @type {ProductSaveEntityIdsReadView|null|undefined} */ (entry.entity_ids))?.menu_item_id || null,
+      inventory_item_id: (/** @type {ProductSaveRpcResultReadView|null|undefined} */ (result))?.inventory_item_id || (/** @type {ProductSaveEntityIdsReadView|null|undefined} */ (entry.entity_ids))?.inventory_item_id || null,
     };
-    if (entry.payload?.stock?.mode === "create" && Number(entry.payload.stock.opening_stock || 0) > 0) {
+    if ((/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload))?.stock?.mode === "create" && Number((/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)).stock.opening_stock || 0) > 0) {
       try {
         upsertLocalInventoryMovement({
           item_id: entityIds.inventory_item_id,
           movement_type: "opening_stock",
-          quantity: Number(entry.payload.stock.opening_stock || 0),
+          quantity: Number((/** @type {ProductSaveRequestPayloadReadView} */ (entry.payload)).stock.opening_stock || 0),
           notes: "Opening stock recorded when the product was created",
           reference_type: "inventory_item",
           reference_id: entityIds.inventory_item_id,
@@ -1364,7 +1738,9 @@ const productSaveFlow = createProductSaveFlow({
         /* Local movement aid must never fail a committed save. */
       }
     }
-    const expectedOutlets = Array.isArray(result?.outlet_ids) ? result.outlet_ids.filter(Boolean) : [];
+    const expectedOutlets = Array.isArray((/** @type {ProductSaveRpcResultReadView|null|undefined} */ (result))?.outlet_ids)
+      ? /** @type {string[]} */ ((/** @type {ProductSaveRpcResultReadView|null|undefined} */ (result))?.outlet_ids).filter(Boolean)
+      : [];
     let publication = expectedOutlets.length ? "pending" : "published";
     if (expectedOutlets.length) {
       try {
@@ -1406,9 +1782,9 @@ export async function retryProductRequest(operationKey) {
   // publication — so without this sweep the Products banner's retry could
   // never clear a stuck pending-publication notice.
   try {
-    const entry = productSaveFlow.list().find((row) => row?.operation_key === String(operationKey || ""));
+    const entry = /** @type {ProductSaveRequestCacheRow[]} */ (productSaveFlow.list()).find((row) => row?.operation_key === String(operationKey || ""));
     if (entry?.state === "committed" && entry?.publication && entry.publication !== "published") {
-      const outletIds = [...new Set([entry.payload?.stock?.outlet_id].filter(Boolean))];
+      const outletIds = [...new Set([/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload)?.stock?.outlet_id].filter(Boolean))];
       if (outletIds.length && state.isOnline) {
         const sweep = await processPendingPublicationJobs(outletIds);
         const summary = summarizePublication(outletIds, sweep.outlets);
@@ -1416,7 +1792,7 @@ export async function retryProductRequest(operationKey) {
           ? "published"
           : summary.some((row) => row.status === "failed") ? "failed" : "pending";
         markProductRequest(entry.operation_key, { publication });
-        return { ...outcome, publication };
+        return { .../** @type {Record<string, unknown>} */ (outcome), publication };
       }
     }
   } catch {
@@ -1427,8 +1803,7 @@ export async function retryProductRequest(operationKey) {
 
 /** Actionable stored requests for the Products recovery banner. */
 export function getProductRequestStatus() {
-  return productSaveFlow
-    .list()
+  return /** @type {ProductSaveRequestCacheRow[]} */ (productSaveFlow.list())
     .filter((entry) => {
       if (!entry?.operation_key) return false;
       if (productSaveFlow.ACTIONABLE.has(entry.state)) return true;
@@ -1443,11 +1818,11 @@ export function getProductRequestStatus() {
     })
     .map((entry) => ({
       operation_key: entry.operation_key,
-      name: entry.payload?.product?.name || "Product",
+      name: (/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload))?.product?.name || "Product",
       state: entry.state,
       publication: entry.publication || null,
       error: entry.error || null,
-      outlet_id: entry.payload?.stock?.outlet_id || null,
+      outlet_id: (/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload))?.stock?.outlet_id || null,
       saved_at: entry.created_at || null,
     }));
 }
@@ -1456,7 +1831,7 @@ export function getProductRequestStatus() {
 export function discardProductRequest(operationKey) {
   const key = String(operationKey || "");
   if (!key) throw new Error("A product request is required.");
-  const entry = productSaveFlow.status(key);
+  const entry = /** @type {ProductSaveRequestCacheRow|null|undefined} */ (productSaveFlow.status(key));
   if (entry && entry.state !== "rejected") {
     throw new Error("Only definitively rejected saves can be discarded. Retry this save instead.");
   }
@@ -1486,13 +1861,13 @@ export function purgeProvisionalProductRows(operationKey) {
   let menu = 0;
   let stock = 0;
   try {
-    const menuRows = readCache("pos-menu-items") || [];
+    const menuRows = /** @type {ProductSaveCachedRowReadView[]} */ (readCache("pos-menu-items") || []);
     const keptMenu = menuRows.filter((row) => row?._operation_key !== key);
     menu = menuRows.length - keptMenu.length;
     if (menu > 0) writeCache("pos-menu-items", keptMenu);
   } catch { /* purge is best-effort; caches reconverge on refresh */ }
   try {
-    const stockRows = readCache("inventory-items") || [];
+    const stockRows = /** @type {ProductSaveCachedRowReadView[]} */ (readCache("inventory-items") || []);
     const keptStock = stockRows.filter((row) => row?._operation_key !== key);
     stock = stockRows.length - keptStock.length;
     if (stock > 0) writeCache("inventory-items", keptStock);
@@ -1505,13 +1880,13 @@ export async function recoverPendingProductRequests() {
   const acted = await productSaveFlow.recover();
   const outletIds = [
     ...new Set(
-      productSaveFlow
-        .list()
+      /** @type {ProductSaveRequestCacheRow[]} */ (productSaveFlow.list())
         .filter((entry) => entry?.state === "committed" && entry?.publication && entry.publication !== "published")
-        .map((entry) => entry.payload?.stock?.outlet_id)
+        .map((entry) => (/** @type {ProductSaveRequestPayloadReadView|null|undefined} */ (entry.payload))?.stock?.outlet_id)
         .filter(Boolean),
     ),
   ];
+  /** @type {{outlets: Array<{outlet_id?: unknown, status: string, job_id?: unknown, attempts?: number, error?: unknown, note?: string}>}} */
   let sweep = { outlets: [] };
   if (outletIds.length && state.isOnline) {
     try {
@@ -1526,7 +1901,7 @@ export async function recoverPendingProductRequests() {
   // listed until a manager explicitly discards them.
   let purged = { menu: 0, stock: 0 };
   try {
-    for (const entry of productSaveFlow.list()) {
+    for (const entry of /** @type {ProductSaveRequestCacheRow[]} */ (productSaveFlow.list())) {
       if (entry?.state !== "rejected" || !entry?.operation_key) continue;
       const counts = purgeProvisionalProductRows(entry.operation_key);
       purged.menu += counts.menu;
@@ -1545,6 +1920,7 @@ export async function recoverPendingProductRequests() {
  * Pauses when all desktops are closed (stated limitation); pending jobs
  * survive restarts and are reclaimed by the next run.
  */
+/** @param {string[]} [outletIds] */
 export async function processPendingPublicationJobs(outletIds = []) {
   const targets = [...new Set((Array.isArray(outletIds) ? outletIds : []).filter(Boolean))].slice(0, 20);
   if (!state.isOnline || !state.supabase) {
@@ -1737,6 +2113,12 @@ async function fetchAllPosRows(buildQuery, pageSize = 1000) {
   return { data: rows, error: null };
 }
 
+/**
+ * @param {string | null | undefined} startDate
+ * @param {string | null | undefined} endDate
+ * @param {string[] | string | null} [outletFilter]
+ * @returns {Promise<PosOrderReadRows>}
+ */
 async function _getPosOrders(startDate, endDate, outletFilter = null) {
   if (state.isOnline) {
     const cachedOrders = readCache('pos-orders');
@@ -1814,13 +2196,29 @@ async function _getPosOrders(startDate, endDate, outletFilter = null) {
   return withPosReadMetadata(applyPosOrderFilters(readCache('pos-orders'), startDate, endDate, outletFilter), 'offline-cache', false);
 }
 
+/**
+ * @param {string | null | undefined} startDate
+ * @param {string | null | undefined} endDate
+ * @param {string[] | string | null} [outletFilter]
+ * @returns {Promise<PosOrderReadRows>}
+ * The shared promise is the exact result from this reader; this assertion only
+ * carries its declared query/cache result through the generic dedupe helper.
+ */
 export function getPosOrders(startDate, endDate, outletFilter = null) {
-  return dedupePromise(`getPosOrders:${startDate}:${endDate}:${JSON.stringify(outletFilter)}`, () => _getPosOrders(startDate, endDate, outletFilter));
+  return /** @type {Promise<PosOrderReadRows>} */ (dedupePromise(`getPosOrders:${startDate}:${endDate}:${JSON.stringify(outletFilter)}`, () => _getPosOrders(startDate, endDate, outletFilter)));
 }
 
 // A shared Till keeps a device session open for speed, but history must remain
 // scoped to the PIN-verified operator.  The local POS cache gives the screen an
 // immediate result; the caller can then request the server refresh.
+/**
+ * @param {string | null | undefined} startDate
+ * @param {string | null | undefined} endDate
+ * @param {string[] | string | null} outletFilter
+ * @param {unknown} operatorId
+ * @param {{refresh?: boolean}} [options]
+ * @returns {Promise<SharedTillPosOrdersResult>}
+ */
 export async function getSharedTillOperatorOrders(startDate, endDate, outletFilter, operatorId, { refresh = false } = {}) {
   // Match the PIN-verified operator across cashier, waiter and operator
   // attribution. The server persists the Till operator as cashier_id; local
@@ -1843,6 +2241,7 @@ export async function getSharedTillOperatorOrders(startDate, endDate, outletFilt
   };
 }
 
+/** @param {string} startDate @param {string} endDate @param {string[] | null} [outletFilter=null] */
 export async function getPosVoidHistory(startDate, endDate, outletFilter = null) {
   const applyVoidFilters = (rows = []) => {
     let filtered = rows || [];
@@ -2125,14 +2524,16 @@ export async function getPosOrderById(id) {
 // lodge/user so the Till can offer to retry the original sale. If the order was
 // already recorded (for example by an earlier offline replay), the attempt is
 // settled and cleared instead of surfacing a stale interruption.
+/** @typedef {Record<string, unknown> & {_pending_sync?: unknown}} PosSubmitRecoveryOrderReadView */
+/** @param {{lodgeId?: unknown, userId?: unknown}} [scope] */
 export async function getPendingPosSubmitAttempt({ lodgeId, userId } = {}) {
-  const attempt = getPendingSubmitAttemptRecord({ lodgeId, userId });
+  const attempt = /** @type {PosCreateOrderAttemptExpectedData | null} */ (getPendingSubmitAttemptRecord({ lodgeId, userId }));
   if (!attempt?.orderId) return null;
   if (state.isOnline) {
     // Recovery must distinguish a confirmed absence from a failed/unauthorized
     // lookup. Treating either error as "not found" would let an operator retry
     // an order whose original server outcome was never actually checked.
-    const { data: existing, error } = await state.supabase.
+    const { data: existing, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('pos_orders').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -2145,7 +2546,8 @@ export async function getPendingPosSubmitAttempt({ lodgeId, userId } = {}) {
         error: `The server could not verify whether sale attempt ${attempt.submitIntentId} was recorded. Do not retry or enter a replacement sale until this check succeeds.`
       };
     }
-    if (existing && !existing._pending_sync) {
+    // RPC data is unvalidated; only the existing pending-sync property read is typed.
+    if (existing && !/** @type {PosSubmitRecoveryOrderReadView} */ (existing)._pending_sync) {
       clearPosSubmitAttemptRecord(attempt.submitIntentId);
       return {
         success: true,
@@ -2216,6 +2618,98 @@ async function findSaleDrawerPeriod(outletId) {
   return period;
 }
 
+/**
+ * Expected Till submission fields from POS.jsx / HposTerminal and the
+ * main-process shared-Till payload projection. The request is not validated
+ * here; SQL remains authoritative for prices and the journal preserves the
+ * exact submitted envelope for retries.
+ * @typedef {Object} PosCreateOrderItemRequest
+ * @property {unknown} quantity
+ * @property {unknown} [menu_item_id]
+ * @property {unknown} [inventory_item_id]
+ * @property {unknown} [item_name]
+ * @property {unknown} [category]
+ * @property {unknown} [unit_price]
+ * @property {unknown} [base_unit_price]
+ * @property {unknown} [depletion_qty]
+ * @property {unknown} [modifiers]
+ * @property {unknown} [modifier_option_ids]
+ * @property {unknown} [item_notes]
+ * @property {unknown} [id]
+ * @property {unknown} [kitchen_station_id]
+ */
+/**
+ * @typedef {Object} PosCreateOrderRequest
+ * @property {PosCreateOrderItemRequest[]} items
+ * @property {string} [id]
+ * @property {string} [submit_intent_id]
+ * @property {string} [created_at_client]
+ * @property {string|null} [client_created_at]
+ * @property {string|null} [room_id]
+ * @property {string|null} [booking_id]
+ * @property {string|null} [event_booking_id]
+ * @property {string|null} [outlet_id]
+ * @property {string|null} [outletId]
+ * @property {string|null} [shift_id]
+ * @property {string|null} [catalog_snapshot_id]
+ * @property {string|null} [tab_id]
+ * @property {string|null} [tab_name]
+ * @property {number|null} [expected_tab_version]
+ * @property {string|null} [service_mode]
+ * @property {string|null} [table_name]
+ * @property {string|null} [walk_in_name]
+ * @property {string|null} [customer_id]
+ * @property {string|null} [notes]
+ * @property {string|null} [payment_method]
+ * @property {unknown} [payment_breakdown]
+ * @property {unknown} [payments]
+ * @property {unknown} [gross_total]
+ * @property {unknown} [discount_total]
+ * @property {unknown} [tax_rate]
+ * @property {unknown} [tax_total]
+ * @property {unknown} [tip_total]
+ * @property {unknown} [total]
+ * @property {unknown} [promotion_id]
+ * @property {unknown} [manual_discount]
+ * @property {string|null} [delivery_address]
+ * @property {string|null} [delivery_notes]
+ * @property {string|null} [waiter_id]
+ * @property {string|null} [waiter_name]
+ * @property {string|null} [cashier_id]
+ * @property {string|null} [cashier_name]
+ * @property {string|null} [operator_id]
+ * @property {string|null} [operator_name]
+ * @property {unknown} [customer_account_charge]
+ * @property {unknown} [customer_segment]
+ * @property {string|null} [ticket_status]
+ * @property {boolean} [resolve_tab]
+ * @property {string|null} [_operator_proof]
+ */
+/**
+ * Expected booking row fields from cacheRefresh's BOOKING_LIST_SELECT and the
+ * offline create-booking writer. The live list projection omits lodge_id,
+ * while offline rows include it. The cache is persisted JSON and is not
+ * validated by this view; the original `.find` calls retain malformed-row
+ * behavior.
+ * @typedef {{id: string, lodge_id?: string|null, room_id: string|null, status: string|null, check_in: string, check_out: string, _pending_sync?: boolean}} PosCreateOrderBookingExpectedData
+ */
+/**
+ * Expected catalog snapshot row written by buildLocalPosCatalogSnapshot or
+ * cached after the guarded get_active_pos_catalog_snapshot read. Persisted
+ * cache JSON is not validated here; queue metadata is present only for local
+ * pending snapshots.
+ * @typedef {{success: true, snapshot_id: string, outlet_id: string|null, _pending_sync?: true, _queue_id?: string}} PosCreateOrderCatalogSnapshotExpectedData
+ */
+/**
+ * JSON-backed persisted journal payload; its actual parsed value is untrusted
+ * and can be malformed, so it remains unknown until a guarded consumer reads it.
+ * @typedef {{submitIntentId: string, orderId: string|null, lodgeId: string|null, userId: string|null, createdAtClient: unknown, digest: string, payload: unknown, status: string, firstAttemptAt: string, lastAttemptAt: string}} PosCreateOrderAttemptExpectedData
+ */
+/** Expected fields consumed from the original RPC envelope. The journal does not validate JSON shape. @typedef {Record<string, unknown> & {items?: unknown, client_created_at?: unknown}} PosCreateOrderRpcEnvelopeExpectedData */
+/** @typedef {{conflict: true, error: string, code?: string, reused?: false}|{conflict: false, attempt: PosCreateOrderAttemptExpectedData, reused: boolean, error: null}} PosCreateOrderAttemptResolution */
+/** @typedef {{success: false, code: string, error: string}} PosCreateOrderAttemptError */
+/** @typedef {{conflict: true, resolution: Extract<PosCreateOrderAttemptResolution, {conflict: true}>, attempt: null, error: PosCreateOrderAttemptError}|{conflict: false, resolution: Extract<PosCreateOrderAttemptResolution, {conflict: false}>, attempt: PosCreateOrderAttemptExpectedData, error: null}} PosCreateOrderRecordAttemptResult */
+/** @param {PosCreateOrderRequest} data */
 export async function createPosOrder(data) {
   try {
     const operatorProof = String(data?._operator_proof || '').trim() || null;
@@ -2264,31 +2758,41 @@ export async function createPosOrder(data) {
     // resolved (catalog snapshot, booking linkage, payment breakdown, item
     // selections and stable client timestamp included). This keeps the main
     // process journal digest byte-equivalent to the server request hash.
-    let attemptResolution = null;
-    let attemptRecord = null;
+    let replayHistoricalSale = false;
+    /**
+     * Journal the already-built RPC envelope. The journal stores its payload
+     * as JSON and does not validate it when reading it back.
+     * @param {PosCreateOrderRpcEnvelopeExpectedData} rpcPayload
+     * @returns {PosCreateOrderRecordAttemptResult}
+     */
     const recordAttempt = (rpcPayload) => {
-      const resolution = resolvePosSubmitAttempt({
+      const resolution = /** @type {PosCreateOrderAttemptResolution} */ (resolvePosSubmitAttempt({
         submitIntentId,
         orderId,
         lodgeId: state.lodgeId,
         userId: state.currentUser?.id || null,
         payload: rpcPayload
-      });
-      if (resolution.conflict) return { success: false, code: resolution.code || 'idempotency_conflict', error: resolution.error };
-      attemptResolution = resolution;
-      attemptRecord = resolution.attempt;
-      return null;
+      }));
+      if (resolution.conflict) return {
+        conflict: true,
+        resolution,
+        attempt: null,
+        error: { success: false, code: resolution.code || 'idempotency_conflict', error: resolution.error }
+      };
+      return { conflict: false, resolution, attempt: resolution.attempt, error: null };
     };
 
     // Restaurant mode guard: reject room/event/folio charges
-    const cachedSettings = readCache('settings')?.[0] || {};
+    const cachedSettings = getCachedPosSettings() || {};
     const propertyType = cachedSettings.property_type || cachedSettings.business_type || 'lodge';
     const isRestaurantMode = propertyType === 'restaurant' || propertyType === 'pos_only';
     if (isRestaurantMode && (data.room_id || data.booking_id || data.event_booking_id || paymentMethod === 'folio')) {
       throw new Error('Room charges, booking charges, and folio payments are not available in restaurant mode.');
     }
     const today = getLocalDateKey();
-    const cachedBookings = readCache('bookings');
+    // This cache is populated by the bookings read producer; existing lookup
+    // behavior intentionally keeps native failures for malformed truthy rows.
+    const cachedBookings = /** @type {PosCreateOrderBookingExpectedData[]} */ (readCache('bookings'));
     const cachedBooking = data.booking_id ?
     cachedBookings.find((entry) => entry?.id === data.booking_id && entry?.lodge_id === state.lodgeId) :
     cachedBookings.find((entry) =>
@@ -2327,14 +2831,14 @@ export async function createPosOrder(data) {
       let offlineCatalogSnapshotId = data.catalog_snapshot_id || null;
       let offlineCatalogSnapshot = null;
       if (!offlineCatalogSnapshotId) {
-        const cachedSnapshots = readCache('pos-catalog-snapshots');
+        const cachedSnapshots = /** @type {PosCreateOrderCatalogSnapshotExpectedData[]} */ (readCache('pos-catalog-snapshots'));
         offlineCatalogSnapshot = (Array.isArray(cachedSnapshots) ? cachedSnapshots : []).find((entry) =>
           entry?.success === true &&
           (entry?.outlet_id || null) === (data.outlet_id || null)
         );
         offlineCatalogSnapshotId = offlineCatalogSnapshot?.snapshot_id || null;
       } else {
-        offlineCatalogSnapshot = (readCache('pos-catalog-snapshots') || []).find((entry) => entry?.snapshot_id === offlineCatalogSnapshotId) || null;
+        offlineCatalogSnapshot = /** @type {PosCreateOrderCatalogSnapshotExpectedData[]} */ (readCache('pos-catalog-snapshots') || []).find((entry) => entry?.snapshot_id === offlineCatalogSnapshotId) || null;
       }
       if (!offlineCatalogSnapshotId) {
         throw new Error('No catalog snapshot available offline. Connect to the internet, publish a catalog, then retry.');
@@ -2356,8 +2860,8 @@ export async function createPosOrder(data) {
         modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
         modifier_option_ids: Array.isArray(item.modifier_option_ids)
           ? item.modifier_option_ids
-          : (Array.isArray(item.modifiers) ? item.modifiers : [])
-            .map((modifier) => typeof modifier === 'string' ? modifier : modifier?.id)
+        : (Array.isArray(item.modifiers) ? /** @type {unknown[]} */ (item.modifiers) : [])
+            .map((modifier) => typeof modifier === 'string' ? modifier : /** @type {{id?: unknown} | null | undefined} */ (modifier)?.id)
             .filter(Boolean),
         item_notes: item.item_notes || null
       }));
@@ -2418,16 +2922,16 @@ export async function createPosOrder(data) {
       // Record the exact offline RPC envelope, not the renderer's richer
       // pre-resolution cart object. Queue replay and renderer recovery then
       // use the same order ID, key, timestamp, snapshot and item payload.
-      const offlineAttemptError = recordAttempt(v3OfflinePayload);
-      if (offlineAttemptError) return offlineAttemptError;
-      const effectiveOfflinePayload = attemptResolution.reused && attemptRecord?.payload
-        ? attemptRecord.payload
+      const offlineAttempt = recordAttempt(v3OfflinePayload);
+      if (offlineAttempt.conflict) return offlineAttempt.error;
+      const effectiveOfflinePayload = offlineAttempt.resolution.reused && offlineAttempt.attempt.payload
+        ? /** @type {PosCreateOrderRpcEnvelopeExpectedData} */ (offlineAttempt.attempt.payload)
         : v3OfflinePayload;
       // Required choices are checked for fresh attempts only: a journalled
       // replay reuses its original bytes, and a committed attempt must never
       // be blocked by changed modifier configuration (the server replays
       // committed work first).
-      if (!attemptResolution.reused) assertSaleModifierRequirements(effectiveOfflinePayload.items);
+      if (!offlineAttempt.resolution.reused) assertSaleModifierRequirements(effectiveOfflinePayload.items);
 
       const cachedShift = readPosShifts().find((shift) => shift.id === data.shift_id) || null;
       // Provisional products (created offline) must replay before this sale:
@@ -2436,9 +2940,9 @@ export async function createPosOrder(data) {
       // payload to the real server ids on product success. Atomic-path rows
       // use `pending:<operation_key>` ids; legacy-path rows use their local
       // UUID while still marked pending in cache.
-      const menuCacheById = new Map(((readCache('pos-menu-items') || []).map((row) => [String(row?.id || ''), row])));
+      const menuCacheById = new Map((/** @type {Array<{id?: unknown, _pending_sync?: boolean}>} */ (readCache('pos-menu-items') || [])).map((row) => [String(row?.id || ''), row]));
       const provisionalProductDeps = [...new Set(
-        (effectiveOfflinePayload.items || []).flatMap((line) => {
+        (/** @type {PosCreateOrderItemRequest[]} */ (effectiveOfflinePayload.items || [])).flatMap((line) => {
           const menuId = String(line?.menu_item_id || '');
           if (menuId.startsWith('pending:')) return [`bar-product-stock-${menuId.slice('pending:'.length)}`];
           if (menuId && menuCacheById.get(menuId)?._pending_sync === true) return [`pos-menu-item-${menuId}`];
@@ -2550,11 +3054,11 @@ export async function createPosOrder(data) {
         })
       };
 
-      const cachedOrders = readCache('pos-orders');
+      const cachedOrders = /** @type {Record<string, unknown>[]} */ (readCache('pos-orders'));
       cachedOrders.unshift(orderRow);
       writeCache('pos-orders', cachedOrders);
 
-      const cachedLineItems = readCache('pos-order-items');
+      const cachedLineItems = /** @type {unknown[]} */ (readCache('pos-order-items'));
       writeCache('pos-order-items', [...orderRow.pos_order_items, ...cachedLineItems]);
       applyOfflinePosInventoryReservation(inventoryReservations);
       appendPrepTickets(orderRow, orderRow.pos_order_items);
@@ -2565,7 +3069,7 @@ export async function createPosOrder(data) {
         // separate close is queued here (it would race the settlement into a
         // spurious already-settled dead-letter). The local row is marked
         // closed-pending for display; a dead-lettered replay reopens it.
-        const localTab = readPosTabs().find((row) => row.id === data.tab_id) || null;
+      const localTab = /** @type {(PosTabExpectedData & {_pending_settlement?: boolean})[]} */ (readPosTabs()).find((row) => row.id === data.tab_id) || null;
         if (localTab && localTab.status !== 'closed') {
           upsertLocalPosTab({ ...localTab, status: 'closed', updated_at: new Date().toISOString(), _pending_sync: true, _sync_state: 'pending', _pending_settlement: true });
         }
@@ -2585,10 +3089,10 @@ export async function createPosOrder(data) {
     let catalogSnapshotId = data.catalog_snapshot_id || null;
     if (!catalogSnapshotId) {
       try {
-        const snapshot = await getActivePosCatalogSnapshot(data.outlet_id || null);
+        const snapshot = /** @type {PosCreateOrderCatalogSnapshotExpectedData} */ (await getActivePosCatalogSnapshot(data.outlet_id || null));
         catalogSnapshotId = snapshot?.snapshot_id || null;
       } catch (snapErr) {
-        throw new Error(`Catalog snapshot required: ${snapErr.message}`);
+        throw new Error(`Catalog snapshot required: ${/** @type {{message: unknown}} */ (snapErr).message}`);
       }
     }
     if (!catalogSnapshotId) {
@@ -2651,8 +3155,8 @@ export async function createPosOrder(data) {
         modifiers: Array.isArray(i.modifiers) ? i.modifiers : [],
         modifier_option_ids: Array.isArray(i.modifier_option_ids)
           ? i.modifier_option_ids
-          : (Array.isArray(i.modifiers) ? i.modifiers : [])
-            .map((modifier) => typeof modifier === 'string' ? modifier : modifier?.id)
+        : (Array.isArray(i.modifiers) ? /** @type {unknown[]} */ (i.modifiers) : [])
+            .map((modifier) => typeof modifier === 'string' ? modifier : /** @type {{id?: unknown} | null | undefined} */ (modifier)?.id)
             .filter(Boolean),
         item_notes: i.item_notes || null
       }))
@@ -2680,39 +3184,80 @@ export async function createPosOrder(data) {
       // conflicting with itself. Genuinely new intents are unaffected, and a
       // changed sale still gets a fresh intent id upstream.
       if (hasPosSubmitAttempt(submitIntentId)) {
-        const storedRetry = getPosSubmitAttempt(submitIntentId)
-        if (storedRetry?.payload) v3Payload = { ...storedRetry.payload }
+        const storedRetry = /** @type {PosCreateOrderAttemptExpectedData|null} */ (getPosSubmitAttempt(submitIntentId));
+        if (storedRetry?.payload) {
+          // The persisted journal payload stays unknown; this view only types
+          // the existing retry spread and does not validate its JSON shape.
+          // The journal payload remains unvalidated; this expected-data view
+          // matches the envelope already built above and preserves the spread.
+          v3Payload = { .../** @type {typeof v3Payload} */ (storedRetry.payload) };
+        }
       }
-      const onlineAttemptError = recordAttempt(v3Payload);
-    if (onlineAttemptError) return onlineAttemptError;
-    if (attemptResolution.reused && attemptRecord?.payload) {
-      v3Payload = { ...attemptRecord.payload };
-      // Loop breaker: a retry replays the original bytes, but a shift closed
-      // since the first attempt would fail every retry identically (unlock
-      // prompt, unlock, same failure). Reattribute to the current open shift
-      // exactly like queue replays do; amounts, waiter, outlet and timestamps
-      // are untouched, the journal keeps the original bytes, and the server
-      // still decides (claim-first returns the stored result when recorded).
-      const retryShiftId = resolveCurrentOpenShiftId(readCache('pos-shifts'), {
-        outletId: v3Payload.outlet_id || null,
-        cashierId: v3Payload.waiter_id || v3Payload.cashier_id || null,
-      });
-      if (retryShiftId && String(v3Payload.shift_id || '') !== String(retryShiftId)) {
-        v3Payload = { ...v3Payload, shift_id: retryShiftId };
-        appendPosAudit('retry_shift_rewritten', { entity_type: 'pos_order', entity_id: orderId, details: { shift_id: retryShiftId } });
+      const onlineAttempt = recordAttempt(v3Payload);
+      if (onlineAttempt.conflict) return onlineAttempt.error;
+      if (onlineAttempt.resolution.reused && onlineAttempt.attempt.payload) {
+        // Reused journal payload is unvalidated; keep the original spread and
+        // type only the expected shape of the exact envelope produced here.
+        v3Payload = { .../** @type {typeof v3Payload} */ (onlineAttempt.attempt.payload) };
+      // A retry replays the original journalled bytes under the original
+      // operation key. The server claims the financial operation before it
+      // checks the shift, so an already committed sale reconciles from its
+      // stored receipt even after that shift closed. An uncommitted sale whose
+      // originating shift has since closed is routed through the reviewed
+      // historical-sale contract with its ORIGINAL shift, operator and
+      // business date. It is never reattributed to today's open shift: that
+      // either conflicts with the committed receipt hash or silently moves
+      // revenue into the wrong cash-up. When the contract is not deployed the
+      // retry fails closed with an actionable message and the journal stays
+      // pending so the same operation key is retried unchanged later.
+        replayHistoricalSale = classifySaleReplayRoute(readCache('pos-shifts'), v3Payload) === 'historical';
       }
-    }
     // Fresh attempts only (see offline path): replays reuse journalled bytes
     // so configuration changes can never block committed work.
-    if (!attemptResolution.reused) assertSaleModifierRequirements(v3Payload.items);
+    if (!onlineAttempt.resolution.reused) assertSaleModifierRequirements(v3Payload.items);
 
     // All DB writes are delegated to a single Postgres transaction via RPC.
     // If any step fails, Postgres rolls back the entire operation automatically.
-    const { data: result, error } = await state.supabase.rpc('create_pos_order_v3', {
-      payload: operatorProof ? { ...v3Payload, _operator_proof: operatorProof } : v3Payload
-    });
+    // The historical route forwards the identical payload bytes through the
+    // reviewed wrapper, which reconciles the exact committed receipt first.
+    const replayEnvelope = replayHistoricalSale
+      ? buildHistoricalReplayRequest({ _queue_id: submitIntentId }, v3Payload)
+      : (operatorProof ? { ...v3Payload, _operator_proof: operatorProof } : v3Payload);
+    // Measured request deadline (WP D): a submit that never answers must not
+    // hold the Till hostage, and a late completion must never run the success
+    // path after the winner was chosen. The waiter abandons the unanswered
+    // request; the journal stays pending, so any retry or recovery reuses the
+    // exact same operation key and receipt. A timed-out submit is never
+    // re-keyed and is never treated as proof that nothing committed.
+    const submitRequest = replayHistoricalSale
+      ? /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(POS_HISTORICAL_REPLAY_RPC, replayEnvelope)
+      : /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_pos_order_v3', replayEnvelope);
+    const submitDeadlineMs = posSubmitDeadlineMs();
+    let submitOutcome;
+    try {
+      submitOutcome = await withNetworkTimeout(submitRequest, submitDeadlineMs, 'Sale submit');
+    } catch (deadlineError) {
+      // Only the measured deadline itself is rewritten. Any other rejection
+      // (definite client-side or transport failure) keeps its own error so a
+      // failure that provably never reached the server is never mislabelled
+      // as "may already be recorded".
+      if (/** @type {{code?: unknown}} */ (deadlineError)?.code !== 'network_read_timeout') throw deadlineError;
+      const timedOut = /** @type {Error & {code?: string, timeout_ms?: number}} */ (new Error('The sale submit did not answer in time. The sale is saved on this till and may already be recorded; it will be reconciled with the same receipt before anything is rung again. Do not start a new sale for it.'));
+      timedOut.code = 'pos_submit_timeout';
+      timedOut.timeout_ms = submitDeadlineMs;
+      timedOut.cause = deadlineError;
+      throw timedOut;
+    }
+    const { data: result, error } = /** @type {{data: {success?: boolean, id?: string, total?: unknown, tickets?: unknown[], tab_close_warning?: unknown, code?: string, error?: unknown} | null, error: {message: string, code?: string} | null}} */ (submitOutcome);
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (replayHistoricalSale && isHistoricalReplayContractMissing(error)) {
+      const contractError = /** @type {Error & {code?: string}} */ (new Error('This sale is waiting for the historical replay contract, which is not deployed on the server yet. It stays saved and will resume automatically after deployment; do not ring it again.'));
+        contractError.code = 'historical_replay_contract_missing';
+        throw contractError;
+      }
+      throw new Error(error.message);
+    }
     if (result?.success) {
       const serverTotal = result.total === null || result.total === undefined || result.total === ''
         ? null
@@ -2724,7 +3269,7 @@ export async function createPosOrder(data) {
       } else {
         // Fallback: fetch tickets if RPC didn't return them
         try {
-          const { data: fetchedTickets } = await state.supabase
+        const { data: fetchedTickets } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
             .from('pos_prep_tickets')
             .select('*')
             .eq('lodge_id', state.lodgeId)
@@ -2733,7 +3278,7 @@ export async function createPosOrder(data) {
             writePosTickets([...fetchedTickets, ...readPosTickets()]);
           }
         } catch (ticketErr) {
-          console.warn('[POS] Could not fetch server tickets:', ticketErr?.message || ticketErr);
+          console.warn('[POS] Could not fetch server tickets:', /** @type {{message?: unknown} | null | undefined} */ (ticketErr)?.message || ticketErr);
         }
       }
       appendPosAudit('order_completed', { entity_type: 'pos_order', entity_id: result.id || orderId, details: { total: serverTotal, outlet_id: data.outlet_id || null, table_name: data.table_name || null, catalog_snapshot_id: catalogSnapshotId, v3: true, ticket_count: serverTickets.length } });
@@ -2751,6 +3296,10 @@ export async function createPosOrder(data) {
         resultCode.startsWith('till_operator_') ||
         resultCode === 'till_shift_closed' ||
         resultCode === 'shift_not_open' ||
+        resultCode === 'tab_already_settled' ||
+        resultCode === 'tab_not_owned' ||
+        resultCode === 'tab_version_conflict' ||
+        resultCode === 'tab_version_required' ||
         resultCode === 'pos_submit_recovery_required' ||
         resultCode === 'idempotency_conflict' ||
         resultCode === 'idempotency_expired';
@@ -2891,6 +3440,7 @@ export async function approvePosVoidWithPin(payload) {
   }
 }
 
+/** @param {PosPartialReturnRequest} [payload] */
 export async function createPosPartialReturnWithPin(payload = {}) {
   const {
     order_id,
@@ -2913,18 +3463,21 @@ export async function createPosPartialReturnWithPin(payload = {}) {
     return { success: false, error: 'Open shift is required for returns' };
   }
 
-  const originalOrder = await getPosOrderWithItemsById(order_id);
+  // This expected-data view is backed by the cache row and `pos_orders` plus
+  // `pos_order_items(*)` reader; it does not validate either returned value.
+  const originalOrder = /** @type {PosPartialReturnSourceOrder | null} */ (await getPosOrderWithItemsById(order_id));
   if (!originalOrder) return { success: false, error: 'Original order not found' };
   if (originalOrder.status === 'voided') return { success: false, error: 'Cannot return items from a voided order' };
 
   const originalLines = Array.isArray(originalOrder.pos_order_items) ?
-  originalOrder.pos_order_items :
+  /** @type {PosPartialReturnSourceLine[]} */ (originalOrder.pos_order_items) :
   Array.isArray(originalOrder.items) ?
-  originalOrder.items :
+  /** @type {PosPartialReturnSourceLine[]} */ (originalOrder.items) :
   [];
   const requestedByLine = new Map((lines || []).
-  map((line) => [String(line.line_id || line.id || '').trim(), Number(line.quantity || 0)]).
+  map((line) => /** @type {[string, number]} */ ([String(line.line_id || line.id || '').trim(), Number(line.quantity || 0)])).
   filter(([lineId, quantity]) => lineId && Number.isFinite(quantity) && quantity > 0));
+  /** @type {PosPartialReturnLine[]} */
   const returnLines = [];
 
   for (const line of originalLines) {
@@ -3018,7 +3571,9 @@ export async function createPosPartialReturnWithPin(payload = {}) {
         subtotal: Number(line.quantity || 0) * Number(line.unit_price || 0)
       }))
     };
-    const cachedOrders = readCache('pos-orders');
+    // The cache writer stores POS order rows in this list; keep the native
+    // unshift failure behavior for malformed persisted cache values.
+    const cachedOrders = /** @type {PosPartialReturnSourceOrder[]} */ (readCache('pos-orders'));
     cachedOrders.unshift(orderRow);
     writeCache('pos-orders', cachedOrders);
     upsertLocalPosVoidHistory({
@@ -3141,9 +3696,11 @@ export async function approvePosDiscountWithPin(payload = {}) {
   }
 }
 
+/** @param {PosOrderExpectedData[]} [orders] @param {{openingFloat?: number}} [options] */
 function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   const completed = (orders || []).filter((order) => order?.status === 'completed');
   const voided = (orders || []).filter((order) => order?.status === 'voided');
+  /** @type {Record<string, number>} */
   const byMethod = {};
   let grossSales = 0;
   let returnTotal = 0;
@@ -3158,7 +3715,8 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
     for (const payment of (hasRecordedPosTenderEnvelope(order) ? getOrderPaymentRows(order) : [])) {
       const amount = Number(payment.amount || 0);
       const signedAmount = orderSign < 0 ? -Math.abs(amount) : Math.abs(amount);
-      byMethod[payment.method] = normalizeMoney((byMethod[payment.method] || 0) + signedAmount);
+      // getOrderPaymentRows normalizes and filters method to a non-empty string.
+      byMethod[/** @type {string} */ (payment.method)] = normalizeMoney((byMethod[/** @type {string} */ (payment.method)] || 0) + signedAmount);
     }
     if (total >= 0) grossSales = normalizeMoney(grossSales + total);
     else returnTotal = normalizeMoney(returnTotal + Math.abs(total));
@@ -3180,6 +3738,25 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   };
 }
 
+/**
+ * The POS cash-up view and create-session summary call pass this filter shape;
+ * the empty default is retained. IPC values are not runtime-validated here.
+ * @typedef {{shift_id: string|null, date: string|null|undefined, outlet_id: string|null, outlet_filter: string[]|null, opening_float: unknown, cashier_id: string|null, cashier_name: string|null} | Record<string, undefined>} PosCashupSummaryFilters
+ */
+/** @typedef {{cashier_id: string|null} | Record<string, undefined>} PosCashupHistoryFilters */
+/**
+ * Expected row shape from `pos_cashup_sessions` (`select('*, outlets(name)')`)
+ * and the local `pos-cashups` cache. Money and JSON columns remain unknown;
+ * this view does not validate database or cache rows.
+ * @typedef {Record<string, unknown> & {id: string, lodge_id: string, date: string, outlet_id: string|null, shift_id: string|null, created_by: string|null, cashier_id: string|null, created_at: string, outlets?: {name: string|null}|null}} PosCashupHistoryRow
+ */
+/**
+ * Request produced by the POS cash-up form, with the existing empty-default
+ * path and legacy counted-value aliases retained. Raw counts stay unknown
+ * until the existing normalizeMoney calls consume them.
+ * @typedef {{shift_id: string|null, date: string, outlet_id: string|null, opening_float: unknown, counted: Record<string, unknown>, notes: string|null, cashier_id: string|null, cashier_name: string|null, created_by?: string|null, created_by_name?: string|null, outlet_filter?: string[]|null, id?: string, idempotency_key?: string, counted_cash?: unknown, counted_card?: unknown, counted_bank_transfer?: unknown, counted_orange_money?: unknown, counted_myzaka?: unknown, counted_smega?: unknown, counted_other?: unknown} | Record<string, undefined>} PosCashupCreateRequest
+ */
+/** @param {PosCashupSummaryFilters} [filters] */
 export async function getPosCashupSummary(filters = {}) {
   if (state.isOnline && state.supabase && filters.shift_id) {
     const { data, error } = await state.supabase.rpc('get_pos_shift_cashup_preview_v2', {
@@ -3227,9 +3804,15 @@ export async function getPosCashupSummary(filters = {}) {
   };
 }
 
+/**
+ * @param {number} [limit]
+ * @param {string[]|null} [outletFilter]
+ * @param {PosCashupHistoryFilters} [filters]
+ */
 export async function getPosCashups(limit = 30, outletFilter = null, filters = {}) {
   const max = Math.max(1, Math.min(200, Number(limit || 30)));
   const operatorId = filters?.cashier_id || null;
+  /** @param {PosCashupHistoryRow[]} [rows] @returns {PosCashupHistoryRow[]} */
   const applyCashupOutletFilter = (rows = []) => {
     if (outletFilter !== null && outletFilter.length === 0) return [];
     const outletRows = outletFilter !== null ? rows.filter((row) => !row.outlet_id || outletFilter.includes(row.outlet_id)) : rows;
@@ -3245,10 +3828,10 @@ export async function getPosCashups(limit = 30, outletFilter = null, filters = {
       order('created_at', { ascending: false }).
       limit(max);
       if (error) throw error;
-      const rows = (data || []).map((row) => ({
+      const rows = /** @type {PosCashupHistoryRow[]} */ ((data || []).map((/** @type {PosCashupHistoryRow} */ row) => ({
         ...row,
         outlet_name: row.outlets?.name || null
-      }));
+      })));
       if (rows.length > 0) writePosCashups(rows);
       return applyCashupOutletFilter(rows.length > 0 ? rows : readPosCashups()).slice(0, max);
     } catch {
@@ -3258,6 +3841,7 @@ export async function getPosCashups(limit = 30, outletFilter = null, filters = {
   return applyCashupOutletFilter(readPosCashups()).slice(0, max);
 }
 
+/** @param {PosCashupCreateRequest} [payload] */
 export async function createPosCashupSession(payload = {}) {
   const id = payload.id || randomUUID();
   if (!payload.shift_id) {
@@ -3360,11 +3944,67 @@ export async function createPosCashupSession(payload = {}) {
   return { success: true, id: saved.id, row: saved, offline: true, provisional: true };
 }
 
+/**
+ * Expected local cache / `pos_tabs` row view. JSON cache rows and PostgREST
+ * JSON payloads are not runtime-validated by these annotations.
+ * @typedef {Object} PosTabExpectedData
+ * @property {string} id
+ * @property {string | null} lodge_id
+ * @property {string | null} outlet_id
+ * @property {string | null} [table_name]
+ * @property {string | null} [tab_name]
+ * @property {string | null} [customer_name]
+ * @property {string | null} [waiter_name]
+ * @property {string | null} [waiter_id]
+ * @property {string | null} [shift_id]
+ * @property {string | null} [room_id]
+ * @property {string | null} [booking_id]
+ * @property {unknown} items
+ * @property {string | null} [notes]
+ * @property {string} [status]
+ * @property {string | null} [opened_by]
+ * @property {string | null} [opened_by_name]
+ * @property {string} created_at
+ * @property {string} updated_at
+ * @property {number | null} [expected_version]
+ * @property {number | null} [tab_version]
+ * @property {number | null} [version]
+ * @property {string | null} [closed_at]
+ * @property {boolean} [_pending_sync]
+ * @property {boolean} [_pending_settlement]
+ * @property {string} [_sync_state]
+ * @property {string} [_queue_id]
+ * @property {unknown} [financial_snapshot]
+ * @property {boolean} [financial_complete]
+ * @property {boolean} [_financial_complete]
+ */
+
+/** @typedef {{status?: string, outletId?: string|null, outlet_id?: string|null} | Record<string, undefined>} PosTabFilters */
+/** @typedef {{items: unknown[], status: string, outlet_id?: string|null, table_name?: string|null, tab_name?: string|null, customer_name?: string|null, customer_id?: string|null, waiter_name?: string|null, waiter_id?: string|null, shift_id?: string|null, room_id?: string|null, booking_id?: string|null, notes?: string|null, id?: string, expected_version?: number|null, tab_version?: number|null, service_mode?: string, delivery_address?: string|null, delivery_notes?: string|null, created_at?: string, _operator_proof?: string|null} | Record<string, undefined>} PosTabSaveRequest */
+/** @typedef {{notes?: string|null, _operator_proof?: string|null} | Record<string, undefined>} PosTabStatusExtras */
+/** @typedef {{tab_id?: string, id?: string, target_waiter_id: string, target_shift_id: string, operation_id?: string, expected_tab_version?: number|null, tab_version?: number|null, notes?: string|null, _operator_proof?: string|null, is_replay?: boolean} | Record<string, undefined>} PosTabWaiterTransferRequest */
+/** @typedef {{action: 'close'|'deliver'|'transfer'|'merge', source_tab_id?: string, id?: string, target_table_name?: string|null, reason?: string|null, waiter_name?: string|null, _operator_proof?: string|null} | Record<string, undefined>} PosTabOverrideRequest */
+/** @typedef {{source_tab_id: string, item_indices: number[], target_table_name?: string|null} | Record<string, undefined>} PosTabItemSplitRequest */
+/** @typedef {{source_tab_id: string, split_count: number, target_table_names?: string[], source_tab_version?: number|null, idempotency_key?: string, _operator_proof?: string|null} | Record<string, undefined>} PosTabEvenSplitRequest */
+/** @typedef {{message?: string|null}} PosTabErrorMessageView */
+/** @typedef {{code?: string|null, sqlState?: string|null, message?: string|null}} PosTabRpcErrorExpectedData */
+/**
+ * Expected SQL JSONB result from split_pos_tab_evenly; RPC row values are not
+ * runtime-validated. Its success flag distinguishes the documented result shapes.
+ * @typedef {Record<string, unknown> & (
+ *   {success: false, error: string, code?: 'tab_version_conflict'|'operator_proof_invalid'|'tab_not_owned'|'waiter_shift_required', tab?: PosTabExpectedData} |
+ *   {success: true, source_tab: PosTabExpectedData, new_tabs: PosTabExpectedData[], source: 'server-authoritative-tab-split', replayed?: true}
+ * )} PosTabSplitRpcExpectedData
+ */
+
+/** @returns {PosTabExpectedData[]} */
 function readPosTabs() {
   const rows = readCache('pos-tabs');
-  return Array.isArray(rows) ? rows : [];
+  // The shape is expected from the POS cache and `pos_tabs` producer; this is not row validation.
+  return Array.isArray(rows) ? /** @type {PosTabExpectedData[]} */ (rows) : [];
 }
 
+/** @param {PosTabExpectedData[]} [rows] @param {{invalidate?: boolean}} [options] */
 function writePosTabs(rows = [], { invalidate = true } = {}) {
   if (invalidate) {
     invalidatePosRemoteReads('tabs');
@@ -3383,6 +4023,7 @@ const ACTIVE_TABLE_TAB_STATUSES = new Set(['open', 'running', 'ready', 'delivere
 // 'open', which previously resurrected settled rows with no status as ~10
 // phantom open tabs on every offline read. Genuine pending-sync estimates
 // without a server status still show.
+/** @param {PosTabExpectedData | Record<string, undefined>} [row] */
 function isActivePosTab(row = {}) {
   const raw = String(row?.status || '').trim().toLowerCase();
   if (ACTIVE_TABLE_TAB_STATUSES.has(raw)) return true;
@@ -3390,6 +4031,7 @@ function isActivePosTab(row = {}) {
   return false;
 }
 
+/** @param {unknown} value */
 function normalizeTableName(value) {
   return String(value || '').trim();
 }
@@ -3412,11 +4054,13 @@ function isTabScopeUnknown() {
   return !getCachedTabScope().known;
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function normalizeTabStatus(value, fallback = 'open') {
   const status = String(value || '').trim().toLowerCase();
   return ['open', 'running', 'ready', 'delivered', 'closed', 'cancelled'].includes(status) ? status : fallback;
 }
 
+/** @param {PosTabExpectedData | Record<string, undefined>} [row] */
 function isActiveTableTab(row = {}) {
   if (!normalizeTableName(row.table_name)) return false;
   const raw = String(row?.status || '').trim().toLowerCase();
@@ -3425,10 +4069,12 @@ function isActiveTableTab(row = {}) {
   return false;
 }
 
+/** @param {unknown} a @param {unknown} b */
 function sameOutlet(a, b) {
   return String(a || '') === String(b || '');
 }
 
+/** @param {PosTabExpectedData[]} [rows] @param {string|null|undefined} tableName @param {string|null} [outletId] @param {string|null} [excludeId] @returns {PosTabExpectedData|null} */
 function findActiveTableTab(rows = [], tableName, outletId = null, excludeId = null) {
   const targetName = normalizeTableName(tableName).toLowerCase();
   if (!targetName) return null;
@@ -3440,6 +4086,7 @@ function findActiveTableTab(rows = [], tableName, outletId = null, excludeId = n
   ) || null;
 }
 
+/** @param {PosTabExpectedData} row @returns {PosTabExpectedData} */
 function upsertLocalPosTab(row = {}) {
   const next = [
     row,
@@ -3449,6 +4096,7 @@ function upsertLocalPosTab(row = {}) {
   return row;
 }
 
+/** @param {PosTabExpectedData[]} [rows] @returns {Array<PosTabExpectedData & {_source: string, financial_complete: false, _financial_complete: false}>} */
 function markCachedPosTabsUncertified(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((row) => ({
     ...row,
@@ -3461,6 +4109,7 @@ function markCachedPosTabsUncertified(rows = []) {
   }));
 }
 
+/** @param {PosTabExpectedData[]} [rows] @param {PosTabFilters} [filters] */
 function applyPosTabFilters(rows = [], filters = {}) {
   const outletId = filters.outletId || filters.outlet_id || null;
   const status = String(filters.status || '').trim().toLowerCase();
@@ -3472,6 +4121,7 @@ function applyPosTabFilters(rows = [], filters = {}) {
   });
 }
 
+/** @param {PosTabFilters} [filters] @returns {Promise<PosTabExpectedData[]|null>} */
 async function fetchRemotePosTabs(filters = {}) {
   if (!state.isOnline || !state.supabase || !state.lodgeId) return null;
   const status = String(filters.status || '').trim().toLowerCase();
@@ -3485,12 +4135,13 @@ async function fetchRemotePosTabs(filters = {}) {
     });
     if (error) throw new Error(error.message);
     if (rpcResult?.success === false) throw new Error(rpcResult.error || 'The server could not read open tabs.');
-    const rows = Array.isArray(rpcResult?.data) ? rpcResult.data : Array.isArray(rpcResult) ? rpcResult : [];
+    const rows = Array.isArray(rpcResult?.data) ? /** @type {PosTabExpectedData[]} */ (rpcResult.data) : Array.isArray(rpcResult) ? /** @type {PosTabExpectedData[]} */ (rpcResult) : [];
     if (rpcResult?.complete !== true) throw new Error('The server returned an incomplete tab snapshot.');
     return rows;
   });
 }
 
+/** @param {PosTabFilters} [filters] @returns {Promise<PosTabExpectedData[]>} */
 export async function getPosTabs(filters = {}) {
   try {
     const remote = await fetchRemotePosTabs(filters);
@@ -3520,11 +4171,12 @@ export async function getPosTabs(filters = {}) {
       return merged;
     }
   } catch (error) {
-    console.warn('[POS TABS] Remote tab refresh unavailable:', error?.message || error);
+      console.warn('[POS TABS] Remote tab refresh unavailable:', (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || error);
   }
   return markCachedPosTabsUncertified(applyPosTabFilters(readPosTabs(), filters)).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
 }
 
+/** @param {PosTabSaveRequest} [data] */
 export async function savePosTab(data = {}) {
   const operatorProof = String(data?._operator_proof || '').trim() || null;
   data = { ...data };
@@ -3587,7 +4239,7 @@ export async function savePosTab(data = {}) {
   try {
     assertSaleModifierRequirements(row.items);
   } catch (error) {
-    return { success: false, error: error?.message || 'Complete the required choices before holding this check.' };
+    return { success: false, error: (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || 'Complete the required choices before holding this check.' };
   }
   upsertLocalPosTab(row);
   const restoreLocalTabAfterRejectedSave = () => {
@@ -3625,7 +4277,7 @@ export async function savePosTab(data = {}) {
       // While the terminal reports online, never present an unconfirmed tab as
       // valid. The server owns staff/shift attribution and has the audit trail.
       restoreLocalTabAfterRejectedSave();
-      return { success: false, error: error?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
+      return { success: false, error: (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || 'Could not confirm the open check. Check the Till unlock and shift, then try again.' };
     }
   } else {
     // Offline tabs for Bar: the unlocked Till (PIN-verified session) is the
@@ -3656,6 +4308,7 @@ export async function savePosTab(data = {}) {
   return { success: true, tab: row, offline: true };
 }
 
+/** @param {string} id @param {string} [status] @param {PosTabStatusExtras} [extra] */
 export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
   const nextStatus = normalizeTabStatus(status, 'closed');
   const now = new Date().toISOString();
@@ -3680,7 +4333,7 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
       // An online failure is not a local success. Do not close or otherwise
       // mutate the cached tab because doing so could make an unposted state
       // look server-confirmed. The operator can retry the same action.
-      return { success: false, error: error?.message || 'Could not confirm the tab status change with the server.' };
+      return { success: false, error: (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || 'Could not confirm the tab status change with the server.' };
     }
   } else {
     // Offline status changes queue behind the tab create so the replay order
@@ -3700,6 +4353,7 @@ export async function updatePosTabStatus(id, status = 'closed', extra = {}) {
   }
 }
 
+/** @param {PosTabWaiterTransferRequest} [data] */
 export async function transferPosTabWaiter(data = {}) {
   const tabId = String(data.tab_id || data.id || '').trim();
   const targetWaiterId = String(data.target_waiter_id || '').trim();
@@ -3743,14 +4397,14 @@ export async function transferPosTabWaiter(data = {}) {
     try {
       const { data: rpcData, error } = await state.supabase.rpc('transfer_pos_tab_waiter', rpcArgs);
       if (error) {
-        const sqlState = error.code || error.sqlState || null;
-        const conflict = /already used for different|different payload/i.test(error.message || '');
+        const sqlState = (/** @type {PosTabRpcErrorExpectedData} */ (error)).code || (/** @type {PosTabRpcErrorExpectedData} */ (error)).sqlState || null;
+        const conflict = /already used for different|different payload/i.test((/** @type {PosTabRpcErrorExpectedData} */ (error)).message || '');
         return {
           success: false,
           code: conflict ? 'idempotency_conflict' : (sqlState || 'unknown_transfer_error'),
           sqlState,
           provenance: 'transport-error',
-          error: error.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.',
+          error: (/** @type {PosTabRpcErrorExpectedData} */ (error)).message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.',
           operation_id: operationId,
           outcome: 'unknown'
         };
@@ -3764,22 +4418,24 @@ export async function transferPosTabWaiter(data = {}) {
         try {
           upsertLocalPosTab({ ...remoteRow, _pending_sync: false, _sync_state: 'synced' });
         } catch (cacheError) {
-          cacheSyncWarning = cacheError?.message || 'Local tab cache could not be refreshed after a committed transfer.';
+          cacheSyncWarning = (/** @type {PosTabErrorMessageView|null|undefined} */ (cacheError))?.message || 'Local tab cache could not be refreshed after a committed transfer.';
         }
       }
       return { ...(rpcData || {}), success: true, tab: remoteRow || current, operation_id: operationId, outcome: 'committed', provenance: 'server-rpc-response', ...(cacheSyncWarning ? { cacheSyncWarning } : {}) };
     } catch (error) {
-      return { success: false, code: 'unknown_transfer_error', provenance: 'transport-error', error: error?.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.', operation_id: operationId, outcome: 'unknown' };
+      return { success: false, code: 'unknown_transfer_error', provenance: 'transport-error', error: (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || 'Could not confirm the waiter transfer with the server. Retry with the same transfer key.', operation_id: operationId, outcome: 'unknown' };
     }
   }
 
   return { success: false, code: 'offline_transfer_blocked', provenance: 'local-validation', error: 'Bar waiter transfers require a live connection so ownership, target attendance, and the active Till shift can be confirmed.' };
 }
 
+/** @param {string} id @param {string} [status] @param {PosTabStatusExtras} [extra] */
 export async function closePosTab(id, status = 'closed', extra = {}) {
   return updatePosTabStatus(id, status, extra);
 }
 
+/** @param {PosTabOverrideRequest} [data] */
 export async function overridePosTableTab(data = {}) {
   const action = String(data.action || '').trim().toLowerCase();
   const sourceId = data.source_tab_id || data.id || null;
@@ -3818,7 +4474,7 @@ export async function overridePosTableTab(data = {}) {
     };
     upsertLocalPosTab(updated);
     if (state.isOnline && state.supabase) {
-      try { await state.supabase.rpc('upsert_pos_tab', { payload: updated }); } catch (error) { console.warn('[POS TABS] Transfer sync unavailable:', error?.message || error); }
+      try { await state.supabase.rpc('upsert_pos_tab', { payload: updated }); } catch (error) { console.warn('[POS TABS] Transfer sync unavailable:', (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || error); }
     }
     return { success: true, tab: updated };
   }
@@ -3847,7 +4503,7 @@ export async function overridePosTableTab(data = {}) {
         await state.supabase.rpc('upsert_pos_tab', { payload: merged });
         await state.supabase.rpc('update_pos_tab_status', { p_tab_id: closedSource.id, p_status: 'closed', p_notes: closedSource.notes || null });
       } catch (error) {
-        console.warn('[POS TABS] Merge sync unavailable:', error?.message || error);
+        console.warn('[POS TABS] Merge sync unavailable:', (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || error);
       }
     }
     return { success: true, tab: merged, closed_tab: closedSource };
@@ -3856,6 +4512,7 @@ export async function overridePosTableTab(data = {}) {
   return { success: false, error: 'Choose a valid manager override action.' };
 }
 
+/** @param {PosTabItemSplitRequest} [data] */
 export async function splitBillByItems(data = {}) {
   if (isBarTabScopeCached() || isTabScopeUnknown()) return { success: false, error: 'Item splits require the server-authoritative split contract; client-side tab composition is disabled until package scope is confirmed.' };
   const { source_tab_id, item_indices, target_table_name } = data || {};
@@ -3926,7 +4583,7 @@ export async function splitBillByItems(data = {}) {
       await state.supabase.rpc('upsert_pos_tab', { payload: targetTab });
       await state.supabase.rpc('upsert_pos_tab', { payload: updatedSource });
     } catch (error) {
-      console.warn('[POS TABS] Split bill sync unavailable:', error?.message || error);
+      console.warn('[POS TABS] Split bill sync unavailable:', (/** @type {PosTabErrorMessageView|null|undefined} */ (error))?.message || error);
     }
   }
 
@@ -3948,6 +4605,7 @@ export async function splitBillByItems(data = {}) {
   };
 }
 
+/** @param {PosTabEvenSplitRequest} [data] */
 export async function splitBillEvenly(data = {}) {
   const { source_tab_id, split_count, target_table_names, source_tab_version } = data || {};
   if (!source_tab_id) return { success: false, code: 'invalid_split', provenance: 'local-validation', error: 'Source tab is required.' };
@@ -3961,6 +4619,8 @@ export async function splitBillEvenly(data = {}) {
   if (!state.isOnline || !state.supabase || !state.lodgeId) {
     return { success: false, code: 'offline_split_blocked', provenance: 'local-validation', error: 'Bill splits require a live connection so every tab is updated together.', idempotency_key: idempotencyKey, outcome: 'rejected' };
   }
+  // Expected SQL JSONB response shape; this does not validate the RPC response at runtime.
+  /** @type {PosTabSplitRpcExpectedData|null} */
   let rpcData = null;
   let rpcError = null;
   try {
@@ -3989,21 +4649,22 @@ export async function splitBillEvenly(data = {}) {
     };
   }
   if (rpcError) {
-    const sqlState = rpcError.code || rpcError.sqlState || null;
+    const sqlState = (/** @type {PosTabRpcErrorExpectedData} */ (rpcError)).code || (/** @type {PosTabRpcErrorExpectedData} */ (rpcError)).sqlState || null;
     // Only explicit conflict evidence counts: SQLSTATE 22000 is the broad
     // data_exception class, so it decides nothing without the conflict text
     // from the split key-mismatch raise.
-    const conflict = /different payload|already used/i.test(rpcError.message || '');
+    const conflict = /different payload|already used/i.test((/** @type {PosTabRpcErrorExpectedData} */ (rpcError)).message || '');
     return {
       success: false,
       code: conflict ? 'idempotency_conflict' : (sqlState || 'unknown_split_error'),
       sqlState,
       provenance: 'transport-error',
-      error: rpcError.message || 'Could not split the bill.',
+      error: (/** @type {PosTabRpcErrorExpectedData} */ (rpcError)).message || 'Could not split the bill.',
       idempotency_key: idempotencyKey,
       outcome: conflict ? 'needs_review' : 'unknown'
     };
   }
+  // Expected JSONB response follows split_pos_tab_evenly; this assertion does not validate the RPC payload.
   if (rpcData?.success === false) return { ...rpcData, provenance: 'server-rpc-response', idempotency_key: idempotencyKey, outcome: rpcData.code === 'idempotency_conflict' ? 'needs_review' : 'rejected' };
   if (rpcData?.success) {
     // Post-commit cache reconciliation must never convert a commit into a
@@ -4017,7 +4678,7 @@ export async function splitBillEvenly(data = {}) {
       ];
       writePosTabs(updated);
     } catch (cacheError) {
-      cacheSyncWarning = cacheError?.message || 'Local tab cache could not be refreshed after a committed split.';
+      cacheSyncWarning = (/** @type {PosTabErrorMessageView|null|undefined} */ (cacheError))?.message || 'Local tab cache could not be refreshed after a committed split.';
     }
     return { ...rpcData, provenance: 'server-rpc-response', idempotency_key: idempotencyKey, outcome: 'committed', ...(cacheSyncWarning ? { cacheSyncWarning } : {}) };
   }
@@ -4182,14 +4843,31 @@ export async function getPendingPosCashupSubmissions() {
 // in pos-drawer-periods / pos-cash-movements / pos-cash-counts caches and
 // replay through the same RPC names. Expected cash is never computed here.
 
+/** @typedef {Record<string, undefined>} DrawerEmptyRequest */
+/** @typedef {Record<string, unknown> & {id: string, lodge_id?: string | null, outlet_id?: string | null, status?: string, _pending_sync?: boolean, _queue_id?: string | null}} DrawerPeriodExpectedData */
+/** @typedef {Record<string, unknown> & {id: string, lodge_id?: string | null, outlet_id?: string | null, period_id?: string | null, _pending_sync?: boolean, _queue_id?: string}} DrawerMovementExpectedData */
+/** @typedef {Record<string, unknown> & {id: string, lodge_id?: string | null, period_id?: string | null, _pending_sync?: boolean, _queue_id?: string}} DrawerCountExpectedData */
+/** @typedef {'drop_to_safe' | 'paid_out' | 'float_topup' | 'pouch_to_drawer' | 'drawer_to_pouch'} DrawerMovementType */
+/** Expected request shapes for current renderer callers plus accepted camel-case aliases; not IPC validation. */
+/** @typedef {({outlet_id?: string | null, outletId?: string | null, opening_float?: number | string | null, openingFloat?: number | string | null, notes?: string | null, idempotency_key?: string, idempotencyKey?: string, device_id?: string} & ({outlet_id: string, opening_float: number | string} | {outletId: string, openingFloat: number | string})) | DrawerEmptyRequest} OpenDrawerPeriodRequest */
+/** @typedef {({outlet_id?: string | null, outletId?: string | null, movement_type?: DrawerMovementType, movementType?: DrawerMovementType, amount?: number | string, operator_id?: string | null, operatorId?: string | null, notes?: string | null, pin?: string | null, idempotency_key?: string, idempotencyKey?: string, device_id?: string} & ({outlet_id: string, movement_type: DrawerMovementType, amount: number | string} | {outletId: string, movementType: DrawerMovementType, amount: number | string})) | DrawerEmptyRequest} RecordCashMovementRequest */
+/** @typedef {({period_id?: string, periodId?: string, count_type?: 'handover', countType?: 'handover', counted_cash?: number | string | null, countedCash?: number | string | null, operator_id?: string | null, operatorId?: string | null, notes?: string | null, pin?: string | null, idempotency_key?: string, idempotencyKey?: string, device_id?: string} & ({period_id: string, count_type: 'handover', counted_cash: number | string} | {periodId: string, countType: 'handover', countedCash: number | string})) | DrawerEmptyRequest} RecordCashCountRequest */
+/** @typedef {({period_id?: string, periodId?: string, counted_cash?: number | string | null, countedCash?: number | string | null, actor_id?: string | null, operator_id?: string | null, operatorId?: string | null, notes?: string | null, pin?: string | null, idempotency_key?: string, idempotencyKey?: string, device_id?: string} & ({period_id: string, counted_cash: number | string} | {periodId: string, countedCash: number | string})) | DrawerEmptyRequest} SubmitDrawerPeriodCashupRequest */
+/** Expected JSON results from the four drawer RPC definitions in village_cash_containers.sql; assertions at these calls do not validate server data. */
+/** @typedef {{success: true, error?: string, period_id?: string, movement_id?: string, count_id?: string, business_date?: string | null, opening_float?: number | null} | {success: false, error: string, period_id?: string, movement_id?: string, count_id?: string, business_date?: string | null, opening_float?: number | null}} DrawerRpcExpectedResult */
+/** @typedef {{data: DrawerRpcExpectedResult | null, error: {message: string} | null}} DrawerRpcExpectedResponse */
+
+/** @returns {DrawerPeriodExpectedData[]} */
 function readDrawerPeriods() {
-  return readCache('pos-drawer-periods') || [];
+  return /** @type {DrawerPeriodExpectedData[]} */ (readCache('pos-drawer-periods') || []);
 }
 
+/** @param {DrawerPeriodExpectedData[]} rows */
 function writeDrawerPeriods(rows) {
   writeCache('pos-drawer-periods', Array.isArray(rows) ? rows : []);
 }
 
+/** @param {DrawerPeriodExpectedData} row @returns {DrawerPeriodExpectedData} */
 function upsertDrawerPeriod(row) {
   const rows = readDrawerPeriods();
   const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
@@ -4200,14 +4878,17 @@ function upsertDrawerPeriod(row) {
   return rows[index >= 0 ? index : 0];
 }
 
+/** @returns {DrawerMovementExpectedData[]} */
 function readCashMovements() {
-  return readCache('pos-cash-movements') || [];
+  return /** @type {DrawerMovementExpectedData[]} */ (readCache('pos-cash-movements') || []);
 }
 
+/** @param {DrawerMovementExpectedData[]} rows */
 function writeCashMovements(rows) {
   writeCache('pos-cash-movements', Array.isArray(rows) ? rows : []);
 }
 
+/** @param {DrawerMovementExpectedData} row @returns {DrawerMovementExpectedData} */
 function upsertCashMovement(row) {
   const rows = readCashMovements();
   const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
@@ -4218,14 +4899,17 @@ function upsertCashMovement(row) {
   return rows[index >= 0 ? index : 0];
 }
 
+/** @returns {DrawerCountExpectedData[]} */
 function readCashCounts() {
-  return readCache('pos-cash-counts') || [];
+  return /** @type {DrawerCountExpectedData[]} */ (readCache('pos-cash-counts') || []);
 }
 
+/** @param {DrawerCountExpectedData[]} rows */
 function writeCashCounts(rows) {
   writeCache('pos-cash-counts', Array.isArray(rows) ? rows : []);
 }
 
+/** @param {DrawerCountExpectedData} row @returns {DrawerCountExpectedData} */
 function upsertCashCount(row) {
   const rows = readCashCounts();
   const next = { ...row, lodge_id: row.lodge_id || state.lodgeId };
@@ -4237,11 +4921,15 @@ function upsertCashCount(row) {
 }
 
 // Unknown or missing model fails closed to the long-standing personal rules.
+/** @param {string | null | undefined} outletId */
 function getOutletCashModel(outletId) {
-  const row = (readCache('outlets') || []).find((item) => String(item?.id || '') === String(outletId || ''));
+  // Expected outlet cache projection only; readCache JSON remains unvalidated.
+  const outlets = /** @type {Array<Record<string, unknown> & {id: string, cash_model?: string | null}>} */ (readCache('outlets') || []);
+  const row = outlets.find((item) => String(item?.id || '') === String(outletId || ''));
   return row?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank';
 }
 
+/** @param {string | null | undefined} outletId @returns {DrawerPeriodExpectedData | null} */
 function findLocalOpenDrawerPeriod(outletId) {
   return readDrawerPeriods().find((row) =>
     String(row?.outlet_id || '') === String(outletId || '') &&
@@ -4252,6 +4940,7 @@ function findLocalOpenDrawerPeriod(outletId) {
 // connection rejects after the standard read timeout with an explicitly
 // ambiguous message. Retrying is safe — every drawer write carries a stable
 // per-attempt key, so a retry replays instead of recording twice.
+/** @param {string} label @returns {(timeoutError: {code?: unknown} | null | undefined) => never} */
 function drawerWriteTimeout(label) {
   return (timeoutError) => {
     if (timeoutError?.code === 'network_read_timeout') {
@@ -4261,6 +4950,7 @@ function drawerWriteTimeout(label) {
   };
 }
 
+/** @param {OpenDrawerPeriodRequest} [request] */
 export async function openDrawerPeriod({ outlet_id, outletId, opening_float, openingFloat, notes, idempotency_key, idempotencyKey, device_id } = {}) {
   const resolvedOutlet = outlet_id || outletId || null;
   const key = idempotency_key || idempotencyKey || `pos-drawer-open:${resolvedOutlet || 'unknown'}:${randomUUID()}`;
@@ -4284,11 +4974,11 @@ export async function openDrawerPeriod({ outlet_id, outletId, opening_float, ope
     queueOperation('rpc', 'open_pos_drawer_period', { payload }, null, { _queue_id: queueId });
     return { success: true, period_id: period.id, offline: true, queued: true, provisional: true };
   }
-  const { data: result, error } = await withNetworkTimeout(
+  const { data: result, error } = /** @type {DrawerRpcExpectedResponse} */ (await withNetworkTimeout(
     state.supabase.rpc('open_pos_drawer_period', { payload }),
     undefined,
     'Drawer open'
-  ).catch(drawerWriteTimeout('Drawer open'));
+  ).catch(drawerWriteTimeout('Drawer open')));
   if (error) throw new Error(error.message);
   if (result?.success && result?.period_id) {
     upsertDrawerPeriod({ id: result.period_id, outlet_id: resolvedOutlet, business_date: result.business_date || null, status: 'open', opening_float: result.opening_float ?? null, _sync_state: 'synced' });
@@ -4296,6 +4986,7 @@ export async function openDrawerPeriod({ outlet_id, outletId, opening_float, ope
   return result || { success: false, error: 'Could not open the drawer period.' };
 }
 
+/** @param {RecordCashMovementRequest} [request] */
 export async function recordCashMovement({ outlet_id, outletId, movement_type, movementType, amount, operator_id, operatorId, notes, pin, idempotency_key, idempotencyKey, device_id } = {}) {
   const resolvedOutlet = outlet_id || outletId || null;
   const resolvedType = movement_type || movementType || null;
@@ -4328,15 +5019,16 @@ export async function recordCashMovement({ outlet_id, outletId, movement_type, m
     });
     return { success: true, movement_id: row.id, offline: true, queued: true, provisional: true };
   }
-  const { data: result, error } = await withNetworkTimeout(
+  const { data: result, error } = /** @type {DrawerRpcExpectedResponse} */ (await withNetworkTimeout(
     state.supabase.rpc('record_pos_cash_movement', { payload }),
     undefined,
     'Cash movement'
-  ).catch(drawerWriteTimeout('Cash movement'));
+  ).catch(drawerWriteTimeout('Cash movement')));
   if (error) throw new Error(error.message);
   return result || { success: false, error: 'Could not record the cash movement.' };
 }
 
+/** @param {RecordCashCountRequest} [request] */
 export async function recordCashCount({ period_id, periodId, count_type, countType, counted_cash, countedCash, operator_id, operatorId, notes, pin, idempotency_key, idempotencyKey, device_id } = {}) {
   const resolvedPeriod = period_id || periodId || null;
   const resolvedType = count_type || countType || null;
@@ -4374,15 +5066,16 @@ export async function recordCashCount({ period_id, periodId, count_type, countTy
     });
     return { success: true, count_id: row.id, offline: true, queued: true, provisional: true };
   }
-  const { data: result, error } = await withNetworkTimeout(
+  const { data: result, error } = /** @type {DrawerRpcExpectedResponse} */ (await withNetworkTimeout(
     state.supabase.rpc('record_pos_cash_count', { payload }),
     undefined,
     'Handover count'
-  ).catch(drawerWriteTimeout('Handover count'));
+  ).catch(drawerWriteTimeout('Handover count')));
   if (error) throw new Error(error.message);
   return result || { success: false, error: 'Could not record the count.' };
 }
 
+/** @param {SubmitDrawerPeriodCashupRequest} [request] */
 export async function submitDrawerPeriodCashup({ period_id, periodId, counted_cash, countedCash, notes, operator_id, operatorId, pin, idempotency_key, idempotencyKey, device_id } = {}) {
   const resolvedPeriod = period_id || periodId || null;
   const key = idempotency_key || idempotencyKey || `pos-drawer-submit:${resolvedPeriod || 'unknown'}:${randomUUID()}`;
@@ -4422,11 +5115,11 @@ export async function submitDrawerPeriodCashup({ period_id, periodId, counted_ca
     });
     return { success: true, period_id: updated.id, status: 'submitted', offline: true, queued: true, provisional: true };
   }
-  const { data: result, error } = await withNetworkTimeout(
+  const { data: result, error } = /** @type {DrawerRpcExpectedResponse} */ (await withNetworkTimeout(
     state.supabase.rpc('submit_pos_drawer_period_cashup', { payload }),
     undefined,
     'Drawer cash-up submit'
-  ).catch(drawerWriteTimeout('Drawer cash-up submit'));
+  ).catch(drawerWriteTimeout('Drawer cash-up submit')));
   if (error) throw new Error(error.message);
   return result || { success: false, error: 'Could not submit the drawer cash-up.' };
 }
@@ -4974,11 +5667,14 @@ export async function updatePosTicketStatus(id, status) {
   return { success: false, error: 'Ticket status updates require an internet connection.' };
 }
 
+/** @returns {PosStaffShiftExpectedData[]} */
 function readPosShifts() {
   const rows = readCache('pos-shifts');
-  return Array.isArray(rows) ? rows : [];
+  // Fields are supplied by pos_shifts reads and the local shift writer; persisted JSON is not validated here.
+  return Array.isArray(rows) ? /** @type {PosStaffShiftExpectedData[]} */ (rows) : [];
 }
 
+/** @param {PosStaffShiftExpectedData[]} [rows] */
 function writePosShifts(rows = []) {
   writeCache('pos-shifts', rows.slice(0, 500));
 }
@@ -5027,6 +5723,7 @@ export async function getCurrentPosShift(outletId = null, cashierId = null) {
   ) || null;
 }
 
+/** @param {PosOpenShiftRequest} [data] */
 export async function openPosShift(data = {}) {
   const operatorId = data.cashier_id || state.currentUser?.id || null;
   const operatorName = data.cashier_name || state.currentUser?.name || state.currentUser?.email || null;
@@ -5249,6 +5946,7 @@ export async function getStaffPosCashupSubmission(shiftId) {
   }
 }
 
+/** @param {PosSharedTillOperatorRequest} [request] */
 export async function activateSharedTillOperator({ staff_id, staffId, outlet_id, outletId, pin, idempotency_key, idempotencyKey } = {}) {
   const resolvedStaffId = staff_id || staffId || null;
   const resolvedOutletId = outlet_id || outletId || null;
@@ -5275,7 +5973,7 @@ export async function activateSharedTillOperator({ staff_id, staffId, outlet_id,
       };
     }
     try {
-      const queuedTill = (readSyncQueue() || []).find((item) =>
+      const queuedTill = /** @type {PosStaffShiftQueueExpectedData[]} */ (readSyncQueue() || []).find((item) =>
         item?.table === 'activate_shared_till_operator_offline' &&
         String(item?.data?.payload?.staff_user_id || '') === String(resolvedStaffId || '') &&
         String(item?.data?.payload?.outlet_id || '') === String(resolvedOutletId || '')
@@ -5386,16 +6084,20 @@ export async function linkMyPosShiftToAttendance({ pos_shift_id, attendance_shif
   if (error) throw new Error(error.message); return data || { success: false };
 }
 
+/** @param {string} shiftId @param {string|null} [idempotencyKey] @returns {Promise<PosShiftCloseResolutionExpectedData|{success: false, code: string, error: string}>} */
 async function readAuthoritativeShiftClose(shiftId, idempotencyKey = null) {
-  const { data, error } = await state.supabase.rpc('get_pos_shift_close_resolution', {
+  // This private reader is called only from closePosShift's online path (or
+  // its state.supabase-guarded recovery branch).
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_pos_shift_close_resolution', {
     p_lodge_id: state.lodgeId,
     p_shift_id: shiftId,
     p_close_idempotency_key: idempotencyKey
   });
   if (error) throw new Error(error.message);
-  return data || { success: false, code: 'shift_close_unresolved', error: 'The server returned no shift-close evidence.' };
+  return /** @type {PosShiftCloseResolutionExpectedData} */ (data) || { success: false, code: 'shift_close_unresolved', error: 'The server returned no shift-close evidence.' };
 }
 
+/** @param {PosCloseShiftRequest} [data] */
 export async function closePosShift(data = {}) {
   if (!state.isOnline || !state.supabase) {
     const shift = data.shift_id
@@ -5407,7 +6109,7 @@ export async function closePosShift(data = {}) {
     const queueId = `pos-cashup-close-${shift.id}`;
     const dependencies = [
       shift._pending_sync ? (shift._queue_id || `pos-shift-${shift.id}`) : null,
-      ...readSyncQueue().filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
+      .../** @type {PosShiftCloseQueueReadView[]} */ (readSyncQueue()).filter((item) => item?.table === 'create_pos_order_v3' && item?.data?.payload?.shift_id === shift.id).map((item) => item._queue_id)
     ].filter(Boolean);
     const payload = {
       lodge_id: state.lodgeId, shift_id: shift.id, cashup_id: cashupId,
@@ -5468,7 +6170,9 @@ export async function closePosShift(data = {}) {
       counted_by_method: countedByMethod,
       notes: data.notes || null
     });
-    const existingCloseAttempt = (Array.isArray(closeAttempts) ? closeAttempts : [])
+    // Persisted cache JSON is unvalidated; this expected row view mirrors the
+    // local writer and reads below while preserving malformed rows at runtime.
+    const existingCloseAttempt = (Array.isArray(closeAttempts) ? /** @type {PosShiftCloseAttemptExpectedData[]} */ (closeAttempts) : [])
       .find((attempt) => attempt?.shift_id === shift.id);
     if (existingCloseAttempt && existingCloseAttempt.fingerprint !== closeFingerprint) {
       return {
@@ -5486,7 +6190,7 @@ export async function closePosShift(data = {}) {
       created_at: new Date().toISOString()
     };
     if (!existingCloseAttempt) {
-      closeAttempts = Array.isArray(closeAttempts) ? closeAttempts : [];
+      closeAttempts = Array.isArray(closeAttempts) ? /** @type {PosShiftCloseAttemptExpectedData[]} */ (closeAttempts) : [];
       writeCache(closeAttemptCacheKey, [closeAttempt, ...closeAttempts]);
     }
     const idempotencyKey = closeAttempt.idempotency_key;
@@ -5499,11 +6203,13 @@ export async function closePosShift(data = {}) {
       notes: data.notes || null
     };
 
+    /** @type {PosShiftCloseRpcResultExpectedData|null|undefined} */
     let result;
     let rpcError = null;
     try {
-      const response = await state.supabase.rpc('finalize_pos_shift_cashup_v2', { payload });
-      result = response.data;
+      const response = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('finalize_pos_shift_cashup_v2', { payload });
+      // Expected SQL envelope only; response data is not runtime-validated.
+      result = /** @type {PosShiftCloseRpcResultExpectedData|null|undefined} */ (response.data);
       rpcError = response.error;
     } catch (error) {
       rpcError = error;
@@ -5517,12 +6223,12 @@ export async function closePosShift(data = {}) {
         return {
           success: false,
           code: 'shift_close_resolution_unavailable',
-          error: `${rpcError?.message || result?.error || 'The shift close result is uncertain.'} Keep the shift open; authoritative reconciliation is unavailable until the connection or migration is restored.`
+          error: `${(/** @type {PosThrownMessageReadView} */ (rpcError))?.message || result?.error || 'The shift close result is uncertain.'} Keep the shift open; authoritative reconciliation is unavailable until the connection or migration is restored.`
         };
       }
       const reconciled = classifyAuthoritativeShiftClose(resolution, idempotencyKey);
       if (!reconciled.success) {
-        return { success: false, code: reconciled.code, error: result?.error || rpcError?.message || reconciled.error };
+        return { success: false, code: reconciled.code, error: result?.error || (/** @type {PosThrownMessageReadView} */ (rpcError))?.message || reconciled.error };
       }
       const closed = { ...(reconciled.shift || shift), status: 'closed', _server_closed: true };
       writePosShifts([closed, ...readPosShifts().filter((row) => row.id !== shift.id)]);
@@ -5580,10 +6286,11 @@ export async function closePosShift(data = {}) {
         }
       } catch { /* keep the unresolved close attempt for retry/reconciliation */ }
     }
-    return { success: false, code: 'shift_close_unresolved', error: e.message };
+    return { success: false, code: 'shift_close_unresolved', error: (/** @type {PosThrownMessageReadView} */ (e)).message };
   }
 }
 
+/** @returns {Promise<import('../../shared/desktopIpcContracts.js').PosHardwareSettings>} */
 export async function getPosHardwareSettings() {
   return readPosHardwareSettings();
 }
@@ -5645,6 +6352,7 @@ function normalizeBarcodeScannerVerification(data = {}, settings = {}) {
   };
 }
 
+/** @returns {Promise<import('../../shared/desktopIpcContracts.js').BarcodeScannerVerificationResult>} */
 export async function verifyPosBarcodeScanner(data = {}) {
   const current = readPosHardwareSettings();
   const normalized = normalizeBarcodeScannerVerification(data, current);
@@ -5869,34 +6577,46 @@ export async function verifyManagerPinForManage(data = {}) {
 export async function getPosModifierGroups() {
   if (state.isOnline && state.supabase) {
     try {
-      const { data, error } = await withNetworkTimeout(state.supabase
+      // Supabase list results have the expected data/error envelope here; row
+      // contents remain unvalidated and are written through unchanged.
+      const { data, error } = /** @type {{data: unknown[] | null, error: {message: string} | null}} */ (await withNetworkTimeout(state.supabase
         .from('pos_modifier_groups')
         .select('id, lodge_id, name, applies_to_categories, min_selections, max_selections, options, active, updated_at')
         .eq('lodge_id', state.lodgeId)
-        .order('name'), 5000, 'Modifier options');
+        .order('name'), 5000, 'Modifier options'));
       if (error) throw new Error(error.message);
       writePosModifierGroups(data || []);
       return data || [];
     } catch (error) {
       // The Till loads these right after menu/stock/team; a stalled network
       // must fall back to the saved options instead of hanging the Till.
-      console.warn('[POS] Modifier groups falling back to cache:', error?.message || error);
+      console.warn('[POS] Modifier groups falling back to cache:', (/** @type {{message?: unknown} | null | undefined} */ (error))?.message || error);
       return readPosModifierGroups();
     }
   }
   return readPosModifierGroups();
 }
 
+/**
+ * Renderer forms send partial modifier-group fields; the domain preserves its
+ * existing coercions and array checks. These values are expected-data views,
+ * not IPC validation.
+ * @typedef {Partial<{id: unknown, name: unknown, applies_to_categories: unknown, options: unknown, min_selections: unknown, max_selections: unknown, active: unknown}>} PosModifierGroupSaveInputExpectedData
+ * @typedef {{id?: unknown, name?: unknown, price_delta?: unknown}} PosModifierOptionSaveInputExpectedData
+ * @typedef {{id?: unknown}} PosModifierGroupCacheIdReadView
+ */
+
+/** @param {PosModifierGroupSaveInputExpectedData} [data] */
 export async function savePosModifierGroup(data = {}) {
   const row = {
     id: data.id || randomUUID(),
     lodge_id: state.lodgeId,
     name: String(data.name || '').trim(),
     applies_to_categories: Array.isArray(data.applies_to_categories) ? data.applies_to_categories : [],
-    options: Array.isArray(data.options) ? data.options.map((option) => ({
-      id: option.id || randomUUID(),
-      name: String(option.name || '').trim(),
-      price_delta: normalizeMoney(option.price_delta || 0)
+    options: Array.isArray(data.options) ? data.options.map((/** @type {unknown} */ option) => ({
+      id: (/** @type {PosModifierOptionSaveInputExpectedData} */ (option)).id || randomUUID(),
+      name: String((/** @type {PosModifierOptionSaveInputExpectedData} */ (option)).name || '').trim(),
+      price_delta: normalizeMoney((/** @type {PosModifierOptionSaveInputExpectedData} */ (option)).price_delta || 0)
     })).filter((option) => option.name) : [],
     min_selections: Math.max(0, Number(data.min_selections || 0)),
     max_selections: Math.max(0, Number(data.max_selections || 0)),
@@ -5905,7 +6625,7 @@ export async function savePosModifierGroup(data = {}) {
   };
   if (!row.name) return { success: false, error: 'Modifier group name is required.' };
   if (!state.isOnline || !state.supabase) {
-    const rows = [row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)];
+    const rows = [row, .../** @type {PosModifierGroupCacheIdReadView[]} */ (readPosModifierGroups()).filter((entry) => entry.id !== row.id)];
     writePosModifierGroups(rows);
     const queueId = `pos-modifier-groups-${row.id}-${Date.now()}`;
     queueOperation('rpc', 'upsert_pos_modifier_groups', { payload: { lodge_id: state.lodgeId, groups: rows } }, null, { _queue_id: queueId });
@@ -5913,7 +6633,7 @@ export async function savePosModifierGroup(data = {}) {
     appendPosAudit('modifier_group_saved_offline', { entity_type: 'pos_modifier_group', entity_id: row.id, details: row });
     return { success: true, group: { ...row, _pending_sync: true }, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
   }
-  const rows = [row, ...readPosModifierGroups().filter((entry) => entry.id !== row.id)];
+  const rows = [row, .../** @type {PosModifierGroupCacheIdReadView[]} */ (readPosModifierGroups()).filter((entry) => entry.id !== row.id)];
   const { data: result, error } = await state.supabase.rpc('upsert_pos_modifier_groups', {
     payload: { lodge_id: state.lodgeId, groups: rows }
   });
@@ -5939,6 +6659,14 @@ export async function getPosPromotions() {
   return readPosPromotions();
 }
 
+/**
+ * Renderer promotion forms send partial fields. Values remain unknown until
+ * the existing normalization/coercion expressions handle them.
+ * @typedef {Partial<{id: unknown, name: unknown, discount_type: unknown, discount_value: unknown, applies_to_category: unknown, active: unknown, starts_at: unknown, ends_at: unknown, minimum_spend: unknown, customer_segment: unknown}>} PosPromotionSaveInputExpectedData
+ * @typedef {{id?: unknown}} PosPromotionCacheIdReadView
+ */
+
+/** @param {PosPromotionSaveInputExpectedData} [data] */
 export async function savePosPromotion(data = {}) {
   const row = {
     id: data.id || randomUUID(),
@@ -5957,7 +6685,7 @@ export async function savePosPromotion(data = {}) {
   if (!row.name) return { success: false, error: 'Promotion name is required.' };
   if (!(row.discount_value > 0)) return { success: false, error: 'Promotion discount must be above zero.' };
   if (!state.isOnline || !state.supabase) {
-    const rows = [row, ...readPosPromotions().filter((entry) => entry.id !== row.id)];
+    const rows = [row, .../** @type {PosPromotionCacheIdReadView[]} */ (readPosPromotions()).filter((entry) => entry.id !== row.id)];
     writePosPromotions(rows);
     const queueId = `pos-promotions-${row.id}-${Date.now()}`;
     queueOperation('rpc', 'upsert_pos_promotions', { payload: { lodge_id: state.lodgeId, promotions: rows } }, null, { _queue_id: queueId });
@@ -5965,7 +6693,7 @@ export async function savePosPromotion(data = {}) {
     appendPosAudit('promotion_saved_offline', { entity_type: 'pos_promotion', entity_id: row.id, details: row });
     return { success: true, promotion: { ...row, _pending_sync: true }, offline: true, queued: true, catalog_snapshot_id: snapshot.snapshot_id };
   }
-  const rows = [row, ...readPosPromotions().filter((entry) => entry.id !== row.id)];
+  const rows = [row, .../** @type {PosPromotionCacheIdReadView[]} */ (readPosPromotions()).filter((entry) => entry.id !== row.id)];
   const { data: result, error } = await state.supabase.rpc('upsert_pos_promotions', {
     payload: { lodge_id: state.lodgeId, promotions: rows }
   });
@@ -6025,10 +6753,20 @@ export async function getPosAuditLog(limit = 100) {
   return readPosAuditLog().slice(0, Math.max(1, Math.min(500, Number(limit || 100))));
 }
 
+/** Expected POS report query/cache projections; these views do not validate RPC or persisted rows. */
+/** @typedef {PosOrderExpectedData & {id: string, created_at: unknown, status?: string|null, outlet_id?: string|null, total?: unknown, gross_total?: unknown, discount_total?: unknown, tax_total?: unknown, tip_total?: unknown, payment_method?: string|null, payment_breakdown?: unknown, cashier_name?: string|null, cashier_id?: string|null, pos_order_items?: PosRevenueOrderItemExpectedData[]}} PosRevenueOrderExpectedData */
+/** @typedef {Record<string, unknown> & {order_id: string, menu_item_id: string|null, inventory_item_id: string|null, item_name: string, quantity: unknown, subtotal: unknown}} PosRevenueOrderItemExpectedData */
+/** @typedef {Record<string, unknown> & {id: string, name: string, inventory_item_id?: string|null, depletion_qty?: unknown, template_kind?: string|null, template_pack_size?: unknown}} PosRevenueMenuItemExpectedData */
+/** @typedef {Record<string, unknown> & {id: string, name: string, latest_unit_cost?: unknown}} PosRevenueInventoryItemExpectedData */
+/** Expected arguments forwarded by `reports:posSales`; IPC values are not runtime-validated here.
+ * @param {string} startDate
+ * @param {string} endDate
+ * @param {string} [outletId]
+ */
 export async function getPosRevenueSummary(startDate, endDate, outletId = 'all') {
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_pos_sales_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_pos_sales_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate,
@@ -6046,14 +6784,15 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
         // export contract when the filter can be represented by its UUID API.
         if (outletId !== 'unassigned') {
           try {
-            const { data: exportResponse, error: exportError } = await state.supabase.rpc('get_pos_financial_report_export_v2', {
+            const { data: exportResponse, error: exportError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_pos_financial_report_export_v2', {
               p_lodge_id: state.lodgeId,
               p_start_date: startDate,
               p_end_date: endDate,
               p_outlet_id: outletId && outletId !== 'all' ? outletId : null
             });
             if (exportError) throw exportError;
-            const envelope = exportResponse?.data || exportResponse;
+            // Expected response view from the report RPC wrapper; certification checks below remain the runtime gate.
+            const envelope = /** @type {PosCertifiedRevenueExportEnvelope} */ (exportResponse?.data || exportResponse);
             if (envelope?.dataset_status === 'certified' && envelope?.source_coverage_complete === true) {
               return buildCertifiedPosRevenueSummary(envelope, startDate, endDate, outletId || 'all');
             }
@@ -6090,7 +6829,8 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     }
   }
 
-  const cachedOrders = readCache('pos-orders').filter((order) => {
+  // Preserve the existing direct .filter receiver behavior for malformed cache values.
+  const cachedOrders = /** @type {PosRevenueOrderExpectedData[]} */ (readCache('pos-orders')).filter((order) => {
     const createdAt = String(order.created_at || '');
     const orderDate = createdAt.split('T')[0];
     return (
@@ -6104,8 +6844,11 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
 
 
   });
+  /** @type {PosRevenueOrderExpectedData[]} */
   let orders = [];
+  /** @type {PosRevenueMenuItemExpectedData[]} */
   let currentMenuItems = [];
+  /** @type {Map<string, string>} */
   let inventoryNameMap = new Map();
 
   try {
@@ -6122,9 +6865,9 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     }
     const { data: liveOrders, error: ordersError } = await posQuery;
     if (ordersError) throw ordersError;
-    const fetchedOrders = (liveOrders || []).length === 0 && cachedOrders.length > 0 ?
+    const fetchedOrders = /** @type {PosRevenueOrderExpectedData[]} */ ((liveOrders || []).length === 0 && cachedOrders.length > 0 ?
     cachedOrders :
-    liveOrders || [];
+    liveOrders || []);
 
     // Write online results to cache so offline fallback stays fresh
     if ((liveOrders || []).length > 0) {
@@ -6132,16 +6875,18 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     }
 
     // Fetch order items separately — failure here only affects top_items, not revenue totals
+    /** @type {PosRevenueOrderItemExpectedData[]} */
     let liveItems = [];
     const orderIds = fetchedOrders.map((o) => o.id).filter(Boolean);
     if (orderIds.length > 0) {
-      const { data: itemRows, error: itemsError } = await state.supabase.
+      const { data: itemRows, error: itemsError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('pos_order_items').
       select('order_id, menu_item_id, inventory_item_id, depletion_qty, item_name, quantity, unit_price, subtotal').
       in('order_id', orderIds);
-      if (!itemsError) liveItems = itemRows || [];
+      if (!itemsError) liveItems = /** @type {PosRevenueOrderItemExpectedData[]} */ (itemRows || []);
     }
     // Attach items back onto each order
+    /** @type {Record<string, PosRevenueOrderItemExpectedData[]>} */
     const itemsByOrder = {};
     for (const item of liveItems) {
       if (!itemsByOrder[item.order_id]) itemsByOrder[item.order_id] = [];
@@ -6154,9 +6899,9 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     select('id, name, inventory_item_id, depletion_qty, template_kind, template_pack_size, kitchen_station_id').
     eq('lodge_id', state.lodgeId);
     if (menuError) throw menuError;
-    currentMenuItems = (liveMenuItems || []).length === 0 ?
+    currentMenuItems = /** @type {PosRevenueMenuItemExpectedData[]} */ ((liveMenuItems || []).length === 0 ?
     readCache('pos-menu-items') :
-    liveMenuItems || [];
+    liveMenuItems || []);
 
     const inventoryIds = [...new Set(
       currentMenuItems.
@@ -6164,21 +6909,21 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
       filter(Boolean)
     )];
     if (inventoryIds.length > 0) {
-      const { data: inventoryRows, error: inventoryError } = await state.supabase.
+      const { data: inventoryRows, error: inventoryError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('inventory_items').
       select('id, name').
       eq('lodge_id', state.lodgeId).
       in('id', inventoryIds);
       if (inventoryError) throw inventoryError;
-      inventoryNameMap = new Map((inventoryRows || []).map((row) => [row.id, row.name]));
+      inventoryNameMap = new Map(/** @type {PosRevenueInventoryItemExpectedData[]} */ (inventoryRows || []).map((row) => [row.id, row.name]));
     }
   } catch (error) {
     orders = cachedOrders;
-    currentMenuItems = readCache('pos-menu-items');
-    const inventoryRows = readCache('inventory-items');
+    currentMenuItems = /** @type {PosRevenueMenuItemExpectedData[]} */ (readCache('pos-menu-items'));
+    const inventoryRows = /** @type {PosRevenueInventoryItemExpectedData[]} */ (readCache('inventory-items'));
     inventoryNameMap = new Map((inventoryRows || []).map((row) => [row.id, row.name]));
     if (!orders.length && !currentMenuItems.length && state.isOnline) {
-      throw new Error(error?.message || 'Failed to load POS revenue summary');
+      throw new Error((/** @type {PosThrownMessageReadView} */ (error))?.message || 'Failed to load POS revenue summary');
     }
   }
 
@@ -6199,6 +6944,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
   const avg_order = total_orders > 0 ? total_revenue / total_orders : 0;
 
   // Breakdown by payment method
+  /** @type {Record<string, number>} */
   const by_payment = {};
   for (const o of orders) {
     for (const payment of getOrderPaymentRows(o)) {
@@ -6206,6 +6952,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
     }
   }
 
+  /** @type {Record<string, number>} */
   const by_cashier = {};
   for (const o of orders) {
     const key = o.cashier_name || o.cashier_id || 'Unassigned';
@@ -6213,6 +6960,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
   }
 
   // Top items aggregated across all line items
+  /** @type {Record<string, PosRevenueItemAggregate>} */
   const itemMap = {};
   for (const o of orders) {
     for (const li of o.pos_order_items || []) {
@@ -6237,7 +6985,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
       itemMap[itemName].revenue += Number(li.subtotal || 0);
       const inventoryId = li.inventory_item_id || menuItem?.inventory_item_id || null;
       if (inventoryId) {
-        const inventoryCost = Number((readCache('inventory-items') || []).find((item) => item.id === inventoryId)?.latest_unit_cost || 0);
+        const inventoryCost = Number((/** @type {PosRevenueInventoryItemExpectedData[]} */ (readCache('inventory-items') || [])).find((item) => item.id === inventoryId)?.latest_unit_cost || 0);
         itemMap[itemName].cost = Number(itemMap[itemName].cost || 0) + Math.max(0, quantity) * depletionQty * inventoryCost;
         itemMap[itemName].margin = Number(itemMap[itemName].revenue || 0) - Number(itemMap[itemName].cost || 0);
       }
@@ -6246,6 +6994,7 @@ export async function getPosRevenueSummary(startDate, endDate, outletId = 'all')
   const top_items = Object.values(itemMap).sort((a, b) => b.revenue - a.revenue).slice(0, 15);
 
   // Daily totals
+  /** @type {Record<string, number>} */
   const dailyMap = {};
   for (const o of orders) {
     const date = (o.created_at || '').split('T')[0];
@@ -6676,6 +7425,7 @@ export async function clockInStaff({ staff_user_id, staffUserId, role, expected_
   }
 }
 
+/** @param {PosAttendancePinClockInRequest} [request] */
 export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId, pin, role, expected_hours, expectedHours, idempotency_key, idempotencyKey } = {}) {
   const resolvedStaffId = staff_user_id || staffUserId || null;
   const resolvedKey = idempotency_key || idempotencyKey || randomUUID();
@@ -6688,7 +7438,7 @@ export async function clockInStaffWithAttendancePin({ staff_user_id, staffUserId
     // server still holds this staff member active. Queuing a new clock-in
     // would dead-letter with "already has an active shift".
     try {
-      const queue = readSyncQueue() || [];
+      const queue = /** @type {PosStaffShiftQueueExpectedData[]} */ (readSyncQueue() || []);
       const pendingClockOut = queue.find((item) =>
         item?.table === 'clock_out_staff_with_attendance_pin' &&
         String(item?.data?.payload?.lodge_id || '') === String(state.lodgeId || '')
@@ -7206,6 +7956,15 @@ export async function completeChecklistItem({ itemId, notes }) {
   }
 }
 
+/**
+ * These views describe property reads at existing boundaries only. Main IPC
+ * data and RPC rows remain unvalidated; values are intentionally unknown.
+ * @typedef {{category?: unknown, outletId?: unknown, limit?: unknown}} PosAlertReadFiltersExpectedData
+ * @typedef {{alertType?: unknown, alert_type?: unknown, category?: unknown, severity?: unknown, message?: unknown, entityType?: unknown, entity_type?: unknown, entityId?: unknown, entity_id?: unknown, outletId?: unknown, outlet_id?: unknown}} PosRecordAlertInputExpectedData
+ * @typedef {{message?: unknown}} PosAlertCaughtValueExpectedData
+ */
+
+/** @param {PosAlertReadFiltersExpectedData} [filters] */
 export async function getActiveAlerts(filters = {}) {
   if (!state.isOnline || !state.supabase) return [];
 
@@ -7220,11 +7979,12 @@ export async function getActiveAlerts(filters = {}) {
     if (error) throw new Error(error.message);
     return Array.isArray(data) ? data : [];
   } catch (error) {
-    console.error('[POS ALERTS] Load failed:', error?.message || error);
+    console.error('[POS ALERTS] Load failed:', /** @type {PosAlertCaughtValueExpectedData} */ (error)?.message || error);
     return [];
   }
 }
 
+/** @param {PosRecordAlertInputExpectedData} payload */
 export async function recordExceptionAlert({ alertType, category, severity, message, entityType, entityId, outletId }) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot record alert offline');
 
@@ -7244,11 +8004,12 @@ export async function recordExceptionAlert({ alertType, category, severity, mess
     if (error) throw new Error(error.message);
     return result || { success: false, error: 'Unknown error' };
   } catch (error) {
-    console.error('[POS ALERTS] Record failed:', error?.message || error);
+    console.error('[POS ALERTS] Record failed:', /** @type {PosAlertCaughtValueExpectedData} */ (error)?.message || error);
     throw error;
   }
 }
 
+/** @param {unknown} alertId */
 export async function resolveExceptionAlert(alertId, reason = 'Resolved from the Bar control board.', operationId = randomUUID()) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot resolve alert offline');
 
@@ -7264,7 +8025,7 @@ export async function resolveExceptionAlert(alertId, reason = 'Resolved from the
     if (error) throw new Error(error.message);
     return result || { success: false, error: 'Unknown error' };
   } catch (error) {
-    console.error('[POS ALERTS] Resolve failed:', error?.message || error);
+    console.error('[POS ALERTS] Resolve failed:', /** @type {PosAlertCaughtValueExpectedData} */ (error)?.message || error);
     throw error;
   }
 }
@@ -7315,6 +8076,7 @@ export async function getPosPurchaseOrders(startDate, endDate) {
   }
 }
 
+/** @param {unknown} alertId */
 export async function acknowledgeExceptionAlert(alertId, reason = 'Acknowledged from the Bar control board.', operationId = randomUUID()) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot acknowledge alert offline');
   const { data: result, error } = await state.supabase.rpc('acknowledge_exception_alert', {
@@ -7324,6 +8086,7 @@ export async function acknowledgeExceptionAlert(alertId, reason = 'Acknowledged 
   return result || { success: false, error: 'Unknown error' };
 }
 
+/** @param {PosAlertReadFiltersExpectedData & {includeResolved?: unknown}} [filters] */
 export async function getAlertHistory(filters = {}) {
   if (!state.isOnline || !state.supabase) return [];
   const { data, error } = await state.supabase.rpc('get_restaurant_alert_history', {
@@ -7432,7 +8195,19 @@ export async function generateOwnerDigest() {
 // Phase 6: Restaurant Differentiators
 // ══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Required fields supplied by RestaurantReservations and HposServiceReservations.
+ * These are IPC/RPC request views, not runtime validation.
+ * @typedef {{customer_name: string, customer_phone: string|null, party_size: number, reservation_date: string, reservation_time: string, duration_minutes: number, source: string, notes: string|null}} RestaurantReservationCreateRequest
+ * @typedef {{status: string}} RestaurantReservationStatusUpdateRequest
+ * @typedef {{customer_name: string, customer_phone: string|null, party_size: number, quoted_wait_minutes: number|null, notes: string|null}} RestaurantLiveWaitlistRequest
+ * @typedef {{customer_name: string, customer_phone: string|null, party_size: number, notes: string|null, waitlist_type: 'reservation', requested_reservation_date: string, requested_reservation_time: string, requested_duration_minutes: number}} RestaurantReservationWaitlistRequest
+ * @typedef {RestaurantLiveWaitlistRequest|RestaurantReservationWaitlistRequest} RestaurantWaitlistRequest
+ * @typedef {{message?: unknown}|null|undefined} PosCaughtMessageExpectedData
+ */
+
 // 6.1 Reservations
+/** @param {string|null|undefined} [startDate] @param {string|null|undefined} [endDate] @param {string|null|undefined} [outletId] */
 export async function getRestaurantReservations(startDate, endDate, outletId) {
   if (!state.isOnline || !state.supabase) return [];
   try {
@@ -7443,13 +8218,14 @@ export async function getRestaurantReservations(startDate, endDate, outletId) {
       p_outlet_id: outletId || null
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? /** @type {unknown[]} */ (data) : [];
   } catch (error) {
-    console.error('[POS RESERVATIONS] Get failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] Get failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     return [];
   }
 }
 
+/** @param {RestaurantReservationCreateRequest} data */
 export async function createRestaurantReservation(data) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot create reservation offline');
   try {
@@ -7460,11 +8236,12 @@ export async function createRestaurantReservation(data) {
     appendPosAudit('reservation_created', { entity_type: 'restaurant_reservation', entity_id: result?.id });
     return result;
   } catch (error) {
-    console.error('[POS RESERVATIONS] Create failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] Create failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
+/** @param {string} id @param {RestaurantReservationStatusUpdateRequest} data */
 export async function updateRestaurantReservation(id, data) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot update reservation offline');
   try {
@@ -7474,11 +8251,12 @@ export async function updateRestaurantReservation(id, data) {
     if (error) throw new Error(error.message);
     return result;
   } catch (error) {
-    console.error('[POS RESERVATIONS] Update failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] Update failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
+/** @param {string} id @param {string|null|undefined} reason */
 export async function cancelRestaurantReservation(id, reason) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot cancel reservation offline');
   try {
@@ -7489,11 +8267,12 @@ export async function cancelRestaurantReservation(id, reason) {
     appendPosAudit('reservation_cancelled', { entity_type: 'restaurant_reservation', entity_id: id });
     return result;
   } catch (error) {
-    console.error('[POS RESERVATIONS] Cancel failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] Cancel failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
+/** @param {string} id @param {string|string[]} tableIds */
 export async function seatRestaurantReservation(id, tableIds) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot seat reservation offline');
   try {
@@ -7505,11 +8284,12 @@ export async function seatRestaurantReservation(id, tableIds) {
     if (error) throw new Error(error.message);
     return result;
   } catch (error) {
-    console.error('[POS RESERVATIONS] Seat failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] Seat failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
+/** @param {string} id @param {string|null|undefined} reason */
 export async function markRestaurantReservationNoShow(id, reason) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot mark no-show offline');
   try {
@@ -7519,12 +8299,13 @@ export async function markRestaurantReservationNoShow(id, reason) {
     if (error) throw new Error(error.message);
     return result;
   } catch (error) {
-    console.error('[POS RESERVATIONS] No-show failed:', error?.message || error);
+    console.error('[POS RESERVATIONS] No-show failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
 // Waitlist
+/** @param {string|null|undefined} [outletId] @param {boolean} [includeReservationWaitlist] */
 export async function getRestaurantWaitlist(outletId, includeReservationWaitlist = false) {
   if (!state.isOnline || !state.supabase) return [];
   try {
@@ -7533,13 +8314,14 @@ export async function getRestaurantWaitlist(outletId, includeReservationWaitlist
       p_outlet_id: outletId || null
     });
     if (error) throw new Error(error.message);
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? /** @type {unknown[]} */ (data) : [];
   } catch (error) {
-    console.error('[POS WAITLIST] Get failed:', error?.message || error);
+    console.error('[POS WAITLIST] Get failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     return [];
   }
 }
 
+/** @param {RestaurantWaitlistRequest} data */
 export async function createRestaurantWaitlistEntry(data) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot add to waitlist offline');
   try {
@@ -7549,11 +8331,12 @@ export async function createRestaurantWaitlistEntry(data) {
     if (error) throw new Error(error.message);
     return result;
   } catch (error) {
-    console.error('[POS WAITLIST] Create failed:', error?.message || error);
+    console.error('[POS WAITLIST] Create failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
 
+/** @param {string} id @param {string} tableId */
 export async function seatRestaurantWaitlistEntry(id, tableId) {
   if (!state.isOnline || !state.supabase) throw new Error('Cannot seat waitlist offline');
   try {
@@ -7563,7 +8346,7 @@ export async function seatRestaurantWaitlistEntry(id, tableId) {
     if (error) throw new Error(error.message);
     return result;
   } catch (error) {
-    console.error('[POS WAITLIST] Seat failed:', error?.message || error);
+    console.error('[POS WAITLIST] Seat failed:', (/** @type {PosCaughtMessageExpectedData} */ (error))?.message || error);
     throw error;
   }
 }
@@ -7757,6 +8540,7 @@ export async function getLowStockPurchaseSuggestions(outletId) {
   }
 }
 
+/** @param {string} id @param {RestaurantWaitlistRequest} data */
 export async function updateRestaurantWaitlistEntry(id, data) {
   if (!state.isOnline || !state.supabase) throw new Error('Waitlist edits require an online connection');
   const { data: result, error } = await state.supabase.rpc('update_restaurant_waitlist_entry', { payload: { ...data, id, lodge_id: state.lodgeId } });
@@ -7764,6 +8548,7 @@ export async function updateRestaurantWaitlistEntry(id, data) {
   return result;
 }
 
+/** @param {string} id @param {string} reason */
 export async function removeRestaurantWaitlistEntry(id, reason) {
   if (!state.isOnline || !state.supabase) throw new Error('Removing a waitlist entry requires an online connection');
   const { data: result, error } = await state.supabase.rpc('remove_restaurant_waitlist_entry', { p_id: id, p_lodge_id: state.lodgeId, p_reason: reason });
@@ -7771,6 +8556,7 @@ export async function removeRestaurantWaitlistEntry(id, reason) {
   return result;
 }
 
+/** @param {string} id @param {string} action @param {string[]} [tableIds] */
 export async function serviceRestaurantReservationAction(id, action, tableIds = []) {
   if (!state.isOnline || !state.supabase) throw new Error('Reservation service actions require an online connection');
   const { data: result, error } = await state.supabase.rpc('service_restaurant_reservation_action', { payload: { id, action, table_ids: tableIds, lodge_id: state.lodgeId } });

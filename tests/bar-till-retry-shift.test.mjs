@@ -98,10 +98,18 @@ test('main gate resolves the shift before authorize and leaves payloads intact',
   assert.match(source, /db\.createPosOrder\(buildAuthoritativeTillPayload\(data, tillContext, 'order'\)\)/)
 })
 
-test('server-payload rewrite still owns the journal-original-bytes contract', () => {
+test('server-payload retry keeps journalled bytes and never rewrites the shift', () => {
   const source = read('src/main/domains/pos.js')
-  assert.match(source, /retry_shift_rewritten/)
-  assert.match(source, /journal keeps the original bytes/)
+  // The generic reattribution to today's shift is gone: a retry must preserve
+  // the original shift so an already committed sale reconciles from its
+  // receipt and an uncommitted one keeps its cash-up attribution.
+  assert.doesNotMatch(source, /retry_shift_rewritten/)
+  assert.match(source, /classifySaleReplayRoute\(readCache\('pos-shifts'\), v3Payload\)/)
+  assert.match(source, /buildHistoricalReplayRequest\(\{ _queue_id: submitIntentId \}, v3Payload\)/)
+  assert.match(source, /POS_HISTORICAL_REPLAY_RPC/)
+  // The journal-original-bytes contract itself is unchanged.
+  assert.match(source, /const storedRetry = getPosSubmitAttempt\(submitIntentId\)/)
+  assert.match(source, /if \(storedRetry\?\.payload\) v3Payload = \{ \.\.\.storedRetry\.payload \}/)
 })
 
 function withJournalFile(run) {

@@ -1,3 +1,7 @@
+// @ts-check
+/** @typedef {{title: string, description: string, benefits: readonly string[]}} UpgradeShowcaseCopy */
+
+/** @param {{title: string, description: string, benefits?: string[]}} copy @returns {UpgradeShowcaseCopy} */
 const freezeCopy = (copy) => Object.freeze({
   ...copy,
   benefits: Object.freeze([...(copy.benefits || [])])
@@ -10,6 +14,7 @@ const freezeCopy = (copy) => Object.freeze({
  * a workspace, while the server and commercial catalog remain authoritative
  * for whether it is included. Copy must describe shipped behaviour only.
  */
+/** @type {Readonly<Record<string, UpgradeShowcaseCopy>>} */
 export const UPGRADE_SHOWCASE_FEATURE_COPY = Object.freeze({
   basic_reports: freezeCopy({
     title: 'Daily Summary',
@@ -253,6 +258,7 @@ export const UPGRADE_SHOWCASE_FEATURE_COPY = Object.freeze({
   })
 })
 
+/** @type {Readonly<Record<string, UpgradeShowcaseCopy>>} */
 export const UPGRADE_SHOWCASE_ROUTE_COPY = Object.freeze({
   '/food-beverage/kitchen': freezeCopy({
     title: 'Food & Beverage',
@@ -346,6 +352,7 @@ export const UPGRADE_SHOWCASE_ROUTE_COPY = Object.freeze({
   })
 })
 
+/** @param {unknown} routePath @returns {string} */
 function normalizeRoutePath(routePath) {
   const raw = String(routePath || '').trim()
     .replace(/^#/, '')
@@ -355,6 +362,7 @@ function normalizeRoutePath(routePath) {
   return prefixed.length > 1 ? prefixed.replace(/\/+$/, '') : prefixed
 }
 
+/** @param {{feature?: unknown, routePath?: unknown, module?: {description?: unknown, label?: unknown} | null}} [input] */
 export function getUpgradeShowcaseCopy({ feature, routePath, module = null } = {}) {
   const routeCopy = UPGRADE_SHOWCASE_ROUTE_COPY[normalizeRoutePath(routePath)] || null
   const featureCopy = UPGRADE_SHOWCASE_FEATURE_COPY[String(feature || '').trim()] || null

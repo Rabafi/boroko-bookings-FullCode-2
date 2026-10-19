@@ -1,123 +1,139 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
 const CACHE_KEY = 'property-groups'
 
-async function _getAllPropertyGroups() {
+/** @typedef {Record<string, unknown>} PropertyGroupReadView */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptional(value, key) {
+  return /** @type {PropertyGroupReadView | null | undefined} */ (value)?.[key]
+}
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readDirect(value, key) {
+  return /** @type {PropertyGroupReadView} */ (value)[key]
+}
+
+/** @param {...unknown} ignored */
+async function _getAllPropertyGroups(...ignored) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_all_property_groups', {})
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_all_property_groups', {})
     if (error) throw error
-    const groups = data?.groups || (Array.isArray(data) ? data : [])
+    const groups = readOptional(data, 'groups') || (Array.isArray(data) ? data : [])
     writeCache(CACHE_KEY, groups)
     return groups
   } catch (e) {
     const cached = readCache(CACHE_KEY)
     if (Array.isArray(cached) && cached.length > 0) {
-      const err = new Error(e?.message || 'Failed to load property groups; showing cached data')
-      err.code = 'STALE_CACHE'
-      err.cached = cached
+      const err = new Error(/** @type {string} */ (readOptional(e, 'message') || 'Failed to load property groups; showing cached data'))
+      const errFields = /** @type {Error & { code: string; cached: unknown[] }} */ (err)
+      errFields.code = 'STALE_CACHE'
+      errFields.cached = cached
       throw err
     }
     throw e
   }
 }
 
+/** @param {...unknown} args */
 export const getAllPropertyGroups = (...args) => dedupePromise('getAllPropertyGroups', () => _getAllPropertyGroups(...args))
 
-export async function createPropertyGroup(data) {
-  const { data: result, error } = await state.supabase.rpc('create_property_group', {
-    p_name: data.name,
-    p_description: data.description || '',
-    p_central_office_address: data.central_office_address || '',
-    p_central_office_contact: data.central_office_contact || ''
+export async function createPropertyGroup(/** @type {unknown} */ data) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_property_group', {
+    p_name: readDirect(data, 'name'),
+    p_description: readDirect(data, 'description') || '',
+    p_central_office_address: readDirect(data, 'central_office_address') || '',
+    p_central_office_contact: readDirect(data, 'central_office_contact') || ''
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not create property group')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not create property group'))
   return result
 }
 
-export async function updatePropertyGroup(id, data) {
-  const { data: result, error } = await state.supabase.rpc('update_property_group', {
+export async function updatePropertyGroup(/** @type {unknown} */ id, /** @type {unknown} */ data) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_property_group', {
     p_group_id: id,
-    p_name: data.name || null,
-    p_description: data.description || null,
-    p_central_office_address: data.central_office_address || null,
-    p_central_office_contact: data.central_office_contact || null
+    p_name: readDirect(data, 'name') || null,
+    p_description: readDirect(data, 'description') || null,
+    p_central_office_address: readDirect(data, 'central_office_address') || null,
+    p_central_office_contact: readDirect(data, 'central_office_contact') || null
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not update property group')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not update property group'))
   return result
 }
 
-export async function deletePropertyGroup(id) {
-  const { data: result, error } = await state.supabase.rpc('delete_property_group', {
+export async function deletePropertyGroup(/** @type {unknown} */ id) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('delete_property_group', {
     p_group_id: id
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not delete property group')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not delete property group'))
   return result
 }
 
-export async function getGroupProperties(groupId) {
-  const { data, error } = await state.supabase.rpc('get_group_properties', {
+export async function getGroupProperties(/** @type {unknown} */ groupId) {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_group_properties', {
     p_group_id: groupId
   })
   if (error) throw error
   return data
 }
 
-export async function addPropertyToGroup(groupId, lodgeId, role) {
-  const { data: result, error } = await state.supabase.rpc('add_property_to_group', {
+export async function addPropertyToGroup(/** @type {unknown} */ groupId, /** @type {unknown} */ lodgeId, /** @type {unknown} */ role) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_property_to_group', {
     p_group_id: groupId,
     p_lodge_id: lodgeId,
     p_role: role || 'member'
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not add property to group')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not add property to group'))
   return result
 }
 
-export async function removePropertyFromGroup(groupId, lodgeId) {
-  const { data: result, error } = await state.supabase.rpc('remove_property_from_group', {
+export async function removePropertyFromGroup(/** @type {unknown} */ groupId, /** @type {unknown} */ lodgeId) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('remove_property_from_group', {
     p_group_id: groupId,
     p_lodge_id: lodgeId
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not remove property from group')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not remove property from group'))
   return result
 }
 
-export async function getGroupSettings(groupId) {
-  const { data, error } = await state.supabase.rpc('get_group_settings', {
+export async function getGroupSettings(/** @type {unknown} */ groupId) {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_group_settings', {
     p_group_id: groupId
   })
   if (error) throw error
   return data
 }
 
-export async function updateGroupSettings(groupId, key, value) {
-  const { data: result, error } = await state.supabase.rpc('update_group_setting', {
+export async function updateGroupSettings(/** @type {unknown} */ groupId, /** @type {unknown} */ key, /** @type {unknown} */ value) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_group_setting', {
     p_group_id: groupId,
     p_key: key,
     p_value: value
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not update group setting')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not update group setting'))
   return result
 }
 
-export async function getConsolidatedDashboard(groupId) {
-  const { data, error } = await state.supabase.rpc('get_consolidated_dashboard', {
+export async function getConsolidatedDashboard(/** @type {unknown} */ groupId) {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_consolidated_dashboard', {
     p_group_id: groupId
   })
   if (error) throw error
   return data
 }
 
-export async function getConsolidatedOccupancyReport(groupId, startDate, endDate) {
-  const { data, error } = await state.supabase.rpc('get_consolidated_occupancy_report', {
+export async function getConsolidatedOccupancyReport(/** @type {unknown} */ groupId, /** @type {unknown} */ startDate, /** @type {unknown} */ endDate) {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_consolidated_occupancy_report', {
     p_group_id: groupId,
     p_start_date: startDate,
     p_end_date: endDate
@@ -126,8 +142,8 @@ export async function getConsolidatedOccupancyReport(groupId, startDate, endDate
   return data
 }
 
-export async function getConsolidatedFinancialSummary(groupId, startDate, endDate) {
-  const { data, error } = await state.supabase.rpc('get_consolidated_financial_summary', {
+export async function getConsolidatedFinancialSummary(/** @type {unknown} */ groupId, /** @type {unknown} */ startDate, /** @type {unknown} */ endDate) {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_consolidated_financial_summary', {
     p_group_id: groupId,
     p_start_date: startDate,
     p_end_date: endDate
@@ -136,8 +152,10 @@ export async function getConsolidatedFinancialSummary(groupId, startDate, endDat
   return data
 }
 
-async function _getSharedGuestProfiles(groupId) {
-  const { data, error } = await state.supabase.rpc('get_shared_guest_profiles', {
+/** @param {...unknown} args */
+async function _getSharedGuestProfiles(...args) {
+  const groupId = args[0]
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_shared_guest_profiles', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId
   })
@@ -145,33 +163,36 @@ async function _getSharedGuestProfiles(groupId) {
   return data
 }
 
+/** @param {...unknown} args */
 export const getSharedGuestProfiles = (...args) => dedupePromise('getSharedGuestProfiles', () => _getSharedGuestProfiles(...args))
 
-export async function shareGuestProfile(groupId, guestId, notes) {
-  const { data: result, error } = await state.supabase.rpc('share_guest_profile', {
+export async function shareGuestProfile(/** @type {unknown} */ groupId, /** @type {unknown} */ guestId, /** @type {unknown} */ notes) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('share_guest_profile', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_guest_id: guestId,
     p_notes: notes || ''
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not share guest profile')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not share guest profile'))
   return result
 }
 
-export async function unshareGuestProfile(groupId, guestId) {
-  const { data: result, error } = await state.supabase.rpc('unshare_guest_profile', {
+export async function unshareGuestProfile(/** @type {unknown} */ groupId, /** @type {unknown} */ guestId) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('unshare_guest_profile', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_guest_id: guestId
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not unshare guest profile')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not unshare guest profile'))
   return result
 }
 
-async function _getSharedBlacklist(groupId) {
-  const { data, error } = await state.supabase.rpc('get_shared_blacklist', {
+/** @param {...unknown} args */
+async function _getSharedBlacklist(...args) {
+  const groupId = args[0]
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_shared_blacklist', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId
   })
@@ -179,10 +200,11 @@ async function _getSharedBlacklist(groupId) {
   return data
 }
 
+/** @param {...unknown} args */
 export const getSharedBlacklist = (...args) => dedupePromise('getSharedBlacklist', () => _getSharedBlacklist(...args))
 
-export async function addBlacklistEntry(groupId, guestId, email, phone, reason) {
-  const { data: result, error } = await state.supabase.rpc('add_blacklist_entry', {
+export async function addBlacklistEntry(/** @type {unknown} */ groupId, /** @type {unknown} */ guestId, /** @type {unknown} */ email, /** @type {unknown} */ phone, /** @type {unknown} */ reason) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_blacklist_entry', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_guest_id: guestId || null,
@@ -191,23 +213,25 @@ export async function addBlacklistEntry(groupId, guestId, email, phone, reason) 
     p_reason: reason || ''
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not add blacklist entry')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not add blacklist entry'))
   return result
 }
 
-export async function removeBlacklistEntry(groupId, entryId) {
-  const { data: result, error } = await state.supabase.rpc('remove_blacklist_entry', {
+export async function removeBlacklistEntry(/** @type {unknown} */ groupId, /** @type {unknown} */ entryId) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('remove_blacklist_entry', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_entry_id: entryId
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not remove blacklist entry')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not remove blacklist entry'))
   return result
 }
 
-async function _getSharedCorporateAccounts(groupId) {
-  const { data, error } = await state.supabase.rpc('get_shared_corporate_accounts', {
+/** @param {...unknown} args */
+async function _getSharedCorporateAccounts(...args) {
+  const groupId = args[0]
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_shared_corporate_accounts', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId
   })
@@ -215,33 +239,36 @@ async function _getSharedCorporateAccounts(groupId) {
   return data
 }
 
+/** @param {...unknown} args */
 export const getSharedCorporateAccounts = (...args) => dedupePromise('getSharedCorporateAccounts', () => _getSharedCorporateAccounts(...args))
 
-export async function shareCorporateAccount(groupId, corporateAccountId, shareLevel) {
-  const { data: result, error } = await state.supabase.rpc('share_corporate_account', {
+export async function shareCorporateAccount(/** @type {unknown} */ groupId, /** @type {unknown} */ corporateAccountId, /** @type {unknown} */ shareLevel) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('share_corporate_account', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_corporate_account_id: corporateAccountId,
     p_share_level: shareLevel || 'read'
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not share corporate account')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not share corporate account'))
   return result
 }
 
-export async function unshareCorporateAccount(groupId, corporateAccountId) {
-  const { data: result, error } = await state.supabase.rpc('unshare_corporate_account', {
+export async function unshareCorporateAccount(/** @type {unknown} */ groupId, /** @type {unknown} */ corporateAccountId) {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('unshare_corporate_account', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId,
     p_corporate_account_id: corporateAccountId
   })
   if (error) throw error
-  if (!result?.success) throw new Error(result?.error || 'Could not unshare corporate account')
+  if (!readOptional(result, 'success')) throw new Error(/** @type {string} */ (readOptional(result, 'error') || 'Could not unshare corporate account'))
   return result
 }
 
-async function _getGroupMemberLodges(groupId) {
-  const { data, error } = await state.supabase.rpc('get_group_member_lodges', {
+/** @param {...unknown} args */
+async function _getGroupMemberLodges(...args) {
+  const groupId = args[0]
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_group_member_lodges', {
     p_lodge_id: state.lodgeId,
     p_group_id: groupId
   })
@@ -249,13 +276,14 @@ async function _getGroupMemberLodges(groupId) {
   return data
 }
 
+/** @param {...unknown} args */
 export const getGroupMemberLodges = (...args) => dedupePromise('getGroupMemberLodges', () => _getGroupMemberLodges(...args))
 
 /**
  * Switch active property. Fail closed: never update local lodge scope when the
  * server rejects the switch. Surfaces property isolation messaging on error.
  */
-export async function switchActiveProperty(lodgeId) {
+export async function switchActiveProperty(/** @type {unknown} */ lodgeId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) {
     throw new Error('No active property selected. Cannot switch until the current property session is established.')
@@ -274,42 +302,45 @@ export async function switchActiveProperty(lodgeId) {
 
   let result
   try {
-    const { data, error } = await state.supabase.rpc('switch_active_property', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('switch_active_property', {
       p_lodge_id: currentLodgeId,
       p_new_lodge_id: lodgeId
     })
     if (error) throw error
     result = data
   } catch (e) {
-    const err = new Error(
-      e?.message
+    const err = new Error(/** @type {string} */ (
+      readOptional(e, 'message')
       || 'Property switch failed. The active property was not changed (fail closed for lodge isolation).'
-    )
-    err.code = 'PROPERTY_SWITCH_FAILED'
-    err.current_lodge_id = currentLodgeId
-    err.target_lodge_id = lodgeId
+    ))
+    const errFields = /** @type {Error & { code: string; current_lodge_id: unknown; target_lodge_id: unknown }} */ (err)
+    errFields.code = 'PROPERTY_SWITCH_FAILED'
+    errFields.current_lodge_id = currentLodgeId
+    errFields.target_lodge_id = lodgeId
     throw err
   }
 
-  if (!result?.success) {
-    const err = new Error(
-      result?.error
+  if (!readOptional(result, 'success')) {
+    const err = new Error(/** @type {string} */ (
+      readOptional(result, 'error')
       || 'Property switch was rejected. The active property was not changed to protect data isolation.'
-    )
-    err.code = 'PROPERTY_SWITCH_REJECTED'
-    err.current_lodge_id = currentLodgeId
-    err.target_lodge_id = lodgeId
+    ))
+    const errFields = /** @type {Error & { code: string; current_lodge_id: unknown; target_lodge_id: unknown }} */ (err)
+    errFields.code = 'PROPERTY_SWITCH_REJECTED'
+    errFields.current_lodge_id = currentLodgeId
+    errFields.target_lodge_id = lodgeId
     throw err
   }
 
   // Only update local state after authoritative success.
-  const nextLodgeId = result.new_lodge_id || result.lodge_id || lodgeId
+  const resultFields = /** @type {PropertyGroupReadView} */ (result)
+  const nextLodgeId = resultFields.new_lodge_id || resultFields.lodge_id || lodgeId
   if (nextLodgeId) {
-    state.lodgeId = nextLodgeId
+    /** @type {{ lodgeId: unknown }} */ (state).lodgeId = nextLodgeId
   }
 
   return {
-    ...result,
+    ...resultFields,
     success: true,
     switched: true,
     previous_lodge_id: currentLodgeId,

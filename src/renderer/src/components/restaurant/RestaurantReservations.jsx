@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Plus, X, Clock, Users, Phone, CalendarDays, MessageCircle, Check, Armchair, CircleOff, Edit3, Trash2 } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

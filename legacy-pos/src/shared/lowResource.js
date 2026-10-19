@@ -1,3 +1,6 @@
+// @ts-check
+/** @typedef {typeof LOW_RESOURCE} LowResourceConfig */
+
 export const LOW_RESOURCE = {
   enabled: true,
 
@@ -21,6 +24,20 @@ export const LOW_RESOURCE = {
   stageTerminalData: true
 };
 
+/**
+ * @overload
+ * @returns {LowResourceConfig}
+ */
+/**
+ * @template {Partial<LowResourceConfig> & Record<string, unknown>} T
+ * @overload
+ * @param {T} overrides
+ * @returns {Omit<LowResourceConfig, keyof T> & T}
+ */
+/**
+ * @param {Partial<LowResourceConfig> & Record<string, unknown>} [overrides]
+ * @returns {LowResourceConfig}
+ */
 export function getLowResourceConfig(overrides = {}) {
   return { ...LOW_RESOURCE, ...overrides };
 }

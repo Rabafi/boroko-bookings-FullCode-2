@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Plus, X, FlaskConical, CheckCircle2, Clock } from 'lucide-react'
 import { useSettings } from '../../app-context'

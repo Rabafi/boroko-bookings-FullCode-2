@@ -1,3 +1,4 @@
+// @ts-check
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, UserX, Clock, ChevronDown, ChevronUp, Camera, X, Pencil, Plus, RefreshCw, CreditCard } from 'lucide-react'
 import { useNavigate } from 'react-router'
@@ -15,12 +16,14 @@ const emptyGuestForm = {
   nationality: ''
 }
 
+/** @returns {Promise<unknown[]>} */
 async function loadCreditSummaryRows() {
-  const rows = []
+  const rows = /** @type {unknown[]} */ ([])
   for (let offset = 0; offset < 1000; offset += 100) {
     const page = await window.api.customerCredit.getSummary(null, 100, offset).catch(() => [])
     if (!Array.isArray(page) || page.length === 0) break
-    rows.push(...page)
+    // The existing Array.isArray check above validates only the page container.
+    rows.push(.../** @type {unknown[]} */ (page))
     if (page.length < 100) break
   }
   return rows
@@ -33,32 +36,32 @@ export default function Guests() {
   const currency = settings?.currency || 'P'
   const canManageGuests = canAccessCapability(access, 'guests.manage')
 
-  const [customers, setCustomers] = useState([])
-  const [creditSummary, setCreditSummary] = useState([])
+  const [customers, setCustomers] = useState(/** @type {unknown} */ ([]))
+  const [creditSummary, setCreditSummary] = useState(/** @type {unknown[]} */ ([]))
   const [search, setSearch]       = useState('')
   const [filter, setFilter]       = useState('all') // all | active | blacklisted
   const [sortBy, setSortBy]       = useState('created_desc')
 
   // History panel
-  const [historyCustomer, setHistoryCustomer] = useState(null)
-  const [history, setHistory]                 = useState([])
+  const [historyCustomer, setHistoryCustomer] = useState(/** @type {unknown} */ (null))
+  const [history, setHistory]                 = useState(/** @type {unknown} */ ([]))
   const [historyLoading, setHistoryLoading]   = useState(false)
-  const [expandedId, setExpandedId]           = useState(null)
+  const [expandedId, setExpandedId]           = useState(/** @type {unknown} */ (null))
 
   // Blacklist modal
-  const [blacklistTarget, setBlacklistTarget] = useState(null) // { customer, removing }
+  const [blacklistTarget, setBlacklistTarget] = useState(/** @type {unknown} */ (null)) // { customer, removing }
   const [blacklistReason, setBlacklistReason] = useState('')
   const [blacklistLoading, setBlacklistLoading] = useState(false)
 
   // ID Photo
-  const [photoCustomer, setPhotoCustomer] = useState(null)
-  const [photoPreview, setPhotoPreview] = useState(null)
+  const [photoCustomer, setPhotoCustomer] = useState(/** @type {unknown} */ (null))
+  const [photoPreview, setPhotoPreview] = useState(/** @type {unknown} */ (null))
   const [photoSaving, setPhotoSaving] = useState(false)
   const photoInputRef = useRef(null)
 
   // Guest form
   const [guestModalOpen, setGuestModalOpen] = useState(false)
-  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [editingCustomer, setEditingCustomer] = useState(/** @type {unknown} */ (null))
   const [guestForm, setGuestForm] = useState(emptyGuestForm)
   const [guestSaving, setGuestSaving] = useState(false)
   const [guestError, setGuestError] = useState('')
@@ -110,7 +113,7 @@ export default function Guests() {
       loadCreditSummaryRows()
     ])
     setCustomers(data || [])
-    setCreditSummary(Array.isArray(creditRows) ? creditRows : [])
+    setCreditSummary(Array.isArray(creditRows) ? /** @type {unknown[]} */ (creditRows) : [])
     setLoading(false)
   }, [])
 

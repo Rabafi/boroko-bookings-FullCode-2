@@ -1,14 +1,16 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
 // ── Housekeeping Assignments ─────────────────────────────────────────────────
 const ASSIGNMENT_CACHE = 'housekeeping-assignments'
 
+/** @returns {Promise<unknown>} */
 async function _getAllAssignments() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_housekeeping_dashboard', { p_lodge_id: currentLodgeId, p_date: new Date().toISOString().slice(0, 10) })
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_housekeeping_dashboard', { p_lodge_id: currentLodgeId, p_date: new Date().toISOString().slice(0, 10) })
     if (error) throw error
     const rows = data?.assignments || []
     writeCache(ASSIGNMENT_CACHE, rows)
@@ -17,16 +19,20 @@ async function _getAllAssignments() {
     const cached = readCache(ASSIGNMENT_CACHE)
     if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return cached
     if (!state.isOnline) return []
-    throw new Error(e?.message || 'Could not load housekeeping assignments')
+    const errorView = /** @type {Record<string, unknown> | null | undefined} */ (e)
+    // Error() applies ToString to non-string messages; keep its existing coercion.
+    throw new Error(/** @type {string} */ (errorView?.message || 'Could not load housekeeping assignments'))
   }
 }
 
-export const getAllAssignments = (...args) => dedupePromise('getAllAssignments', () => _getAllAssignments(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getAllAssignments>} */
+export const getAllAssignments = (...args) => dedupePromise('getAllAssignments', () => _getAllAssignments())
 
+/** @param {unknown} roomId @param {unknown} assignedTo @param {unknown} date @param {unknown} shift @param {unknown} [lodgeIdArg] */
 export async function createAssignment(roomId, assignedTo, date, shift, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_housekeeping_assignment', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_housekeeping_assignment', {
     p_lodge_id: currentLodgeId,
     p_room_id: roomId,
     p_assigned_to: assignedTo,
@@ -38,10 +44,11 @@ export async function createAssignment(roomId, assignedTo, date, shift, lodgeIdA
   return data
 }
 
+/** @param {unknown} id @param {unknown} status @param {unknown} notes @param {unknown} [lodgeIdArg] */
 export async function updateAssignmentStatus(id, status, notes, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('update_housekeeping_assignment_status', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_housekeeping_assignment_status', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_status: status,
@@ -55,11 +62,12 @@ export async function updateAssignmentStatus(id, status, notes, lodgeIdArg) {
 // ── Housekeeping Inspections ─────────────────────────────────────────────────
 const INSPECTION_CACHE = 'housekeeping-inspections'
 
+/** @returns {Promise<unknown>} */
 async function _getAllInspections() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_housekeeping_dashboard', { p_lodge_id: currentLodgeId, p_date: new Date().toISOString().slice(0, 10) })
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_housekeeping_dashboard', { p_lodge_id: currentLodgeId, p_date: new Date().toISOString().slice(0, 10) })
     if (error) throw error
     const rows = data?.inspections || []
     writeCache(INSPECTION_CACHE, rows)
@@ -70,12 +78,14 @@ async function _getAllInspections() {
   }
 }
 
-export const getAllInspections = (...args) => dedupePromise('getAllInspections', () => _getAllInspections(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getAllInspections>} */
+export const getAllInspections = (...args) => dedupePromise('getAllInspections', () => _getAllInspections())
 
+/** @param {unknown} roomId @param {unknown} inspectedBy @param {unknown} checklistResults @param {unknown} [lodgeIdArg] */
 export async function createInspection(roomId, inspectedBy, checklistResults, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_housekeeping_inspection', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_housekeeping_inspection', {
     p_lodge_id: currentLodgeId,
     p_room_id: roomId,
     p_inspected_by: inspectedBy,
@@ -87,10 +97,11 @@ export async function createInspection(roomId, inspectedBy, checklistResults, lo
 }
 
 // ── Turnaround Tracking ──────────────────────────────────────────────────────
+/** @param {unknown} bookingId @param {unknown} [lodgeIdArg] */
 export async function startTurnaround(bookingId, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('start_turnaround', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('start_turnaround', {
     p_booking_id: bookingId,
     p_lodge_id: currentLodgeId
   })
@@ -99,10 +110,11 @@ export async function startTurnaround(bookingId, lodgeIdArg) {
   return data
 }
 
+/** @param {unknown} turnaroundId @param {unknown} [lodgeIdArg] */
 export async function completeTurnaround(turnaroundId, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('complete_turnaround', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('complete_turnaround', {
     p_turnaround_id: turnaroundId,
     p_lodge_id: currentLodgeId
   })
@@ -111,10 +123,11 @@ export async function completeTurnaround(turnaroundId, lodgeIdArg) {
   return data
 }
 
+/** @param {unknown} startDate @param {unknown} endDate @param {unknown} [lodgeIdArg] */
 export async function getTurnaroundTimes(startDate, endDate, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) return []
-  const { data, error } = await state.supabase.rpc('get_turnaround_times', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_turnaround_times', {
     p_lodge_id: currentLodgeId,
     p_start_date: startDate,
     p_end_date: endDate
@@ -124,10 +137,11 @@ export async function getTurnaroundTimes(startDate, endDate, lodgeIdArg) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
+/** @param {unknown} date @param {unknown} [lodgeIdArg] */
 export async function getHousekeepingDashboard(date, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) return null
-  const { data, error } = await state.supabase.rpc('get_housekeeping_dashboard', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_housekeeping_dashboard', {
     p_lodge_id: currentLodgeId,
     p_date: date || new Date().toISOString().slice(0, 10)
   })
@@ -136,10 +150,11 @@ export async function getHousekeepingDashboard(date, lodgeIdArg) {
   return data
 }
 
+/** @param {unknown} startDate @param {unknown} endDate @param {unknown} [lodgeIdArg] */
 export async function getProductivity(startDate, endDate, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) return []
-  const { data, error } = await state.supabase.rpc('get_housekeeping_productivity', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_housekeeping_productivity', {
     p_lodge_id: currentLodgeId,
     p_start_date: startDate,
     p_end_date: endDate
@@ -151,11 +166,12 @@ export async function getProductivity(startDate, endDate, lodgeIdArg) {
 // ── Checklist Items ──────────────────────────────────────────────────────────
 const CHECKLIST_CACHE = 'housekeeping-checklist'
 
+/** @returns {Promise<unknown>} */
 async function _getChecklistItems() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_housekeeping_checklist_items', { p_lodge_id: currentLodgeId })
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_housekeeping_checklist_items', { p_lodge_id: currentLodgeId })
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
     writeCache(CHECKLIST_CACHE, rows)
@@ -166,12 +182,14 @@ async function _getChecklistItems() {
   }
 }
 
-export const getChecklistItems = (...args) => dedupePromise('getChecklistItems', () => _getChecklistItems(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getChecklistItems>} */
+export const getChecklistItems = (...args) => dedupePromise('getChecklistItems', () => _getChecklistItems())
 
+/** @param {unknown} data @param {unknown} [lodgeIdArg] */
 export async function createChecklistItem(data, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('create_housekeeping_checklist_item', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_housekeeping_checklist_item', {
     p_lodge_id: currentLodgeId,
     p_payload: data
   })
@@ -179,10 +197,11 @@ export async function createChecklistItem(data, lodgeIdArg) {
   return result
 }
 
+/** @param {unknown} id @param {unknown} data @param {unknown} [lodgeIdArg] */
 export async function updateChecklistItem(id, data, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('update_housekeeping_checklist_item', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_housekeeping_checklist_item', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_payload: data
@@ -191,10 +210,11 @@ export async function updateChecklistItem(id, data, lodgeIdArg) {
   return result
 }
 
+/** @param {unknown} id @param {unknown} [lodgeIdArg] */
 export async function deleteChecklistItem(id, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('delete_housekeeping_checklist_item', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('delete_housekeeping_checklist_item', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })

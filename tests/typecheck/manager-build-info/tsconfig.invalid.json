@@ -1,0 +1,9 @@
+{
+  "extends": "../../../manager-pwa/tsconfig.typecheck.json",
+  "files": [
+    "../../../manager-pwa/src/lib/buildInfo.js",
+    "../../../manager-pwa/src/types/build-info.d.ts",
+    "./invalid.ts"
+  ],
+  "include": []
+}

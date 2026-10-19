@@ -1,8 +1,11 @@
+// @ts-check
+
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
 const CACHE_KEY = 'payment-provider-configs'
 
+/** @param {string | null | undefined} lodgeIdArg @param {string | null} [provider] @returns {Promise<{data: unknown, error: Error | null}>} */
 export async function getPaymentProviderConfig(lodgeIdArg, provider = null) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) {
@@ -25,6 +28,7 @@ export async function getPaymentProviderConfig(lodgeIdArg, provider = null) {
   }
 }
 
+/** @param {unknown} payload @param {string | null | undefined} lodgeIdArg @returns {Promise<unknown>} */
 export async function savePaymentProviderConfig(payload, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) {
@@ -39,6 +43,7 @@ export async function savePaymentProviderConfig(payload, lodgeIdArg) {
   return data
 }
 
+/** @param {string | null | undefined} lodgeIdArg @param {string} provider @returns {Promise<unknown>} */
 export async function getProviderSecrets(lodgeIdArg, provider) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -50,6 +55,7 @@ export async function getProviderSecrets(lodgeIdArg, provider) {
   return data
 }
 
+/** @param {string} provider @param {unknown} signature @param {unknown} payloadRaw @returns {Promise<unknown>} */
 export async function verifyWebhookSignature(provider, signature, payloadRaw) {
   const { data, error } = await state.supabase.rpc('verify_webhook_signature', {
     p_provider: provider,
@@ -60,12 +66,13 @@ export async function verifyWebhookSignature(provider, signature, payloadRaw) {
   return data
 }
 
+/** @param {unknown} payload @param {unknown} signature @param {string | null | undefined} lodgeIdArg @returns {Promise<unknown>} */
 export async function recordWebhookPayment(payload, signature, lodgeIdArg) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   // Webhook payment recording is ONLINE-ONLY financial authority (docs/OFFLINE_MATRIX.md).
   if (state.isOnline === false) {
-    const err = new Error('Record webhook payment requires an internet connection. Payment confirmation cannot be queued offline.')
+    const err = /** @type {Error & {onlineOnly: boolean}} */ (new Error('Record webhook payment requires an internet connection. Payment confirmation cannot be queued offline.'))
     err.onlineOnly = true
     throw err
   }
@@ -78,6 +85,7 @@ export async function recordWebhookPayment(payload, signature, lodgeIdArg) {
   return data
 }
 
+/** @param {string} slug @param {unknown} payload @returns {Promise<unknown>} */
 export async function createBookingIntent(slug, payload) {
   const { data, error } = await state.supabase.rpc('create_booking_intent', {
     p_slug: slug,
@@ -87,6 +95,7 @@ export async function createBookingIntent(slug, payload) {
   return data
 }
 
+/** @param {string} bookingIntentId @param {string} provider @param {number} amount @returns {Promise<unknown>} */
 export async function createPaymentIntent(bookingIntentId, provider, amount) {
   const { data, error } = await state.supabase.rpc('create_payment_intent', {
     p_booking_intent_id: bookingIntentId,
@@ -97,10 +106,11 @@ export async function createPaymentIntent(bookingIntentId, provider, amount) {
   return data
 }
 
+/** @param {string} providerPaymentId @param {string} provider @param {unknown} [webhookPayload] @returns {Promise<unknown>} */
 export async function confirmPaymentFromWebhook(providerPaymentId, provider, webhookPayload = {}) {
   // Payment confirmation is ONLINE-ONLY (docs/OFFLINE_MATRIX.md).
   if (state.isOnline === false) {
-    const err = new Error('Confirm payment requires an internet connection. Payment confirmation cannot be queued offline.')
+    const err = /** @type {Error & {onlineOnly: boolean}} */ (new Error('Confirm payment requires an internet connection. Payment confirmation cannot be queued offline.'))
     err.onlineOnly = true
     throw err
   }
@@ -147,6 +157,7 @@ export function getPaymentDashboard(lodgeIdArg = null) {
  * It must never invent client-side payment_status or amount_paid — those remain
  * authoritative database ledger fields from payment RPCs only.
  */
+/** @param {string} sessionToken @returns {Promise<unknown>} */
 export async function recoverAbandonedPaymentSession(sessionToken) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   if (!sessionToken) throw new Error('Session token is required')
@@ -176,6 +187,7 @@ export async function recoverAbandonedPaymentSession(sessionToken) {
   }
 }
 
+/** @param {string | null} [statusFilter] @returns {Promise<unknown>} */
 export async function listAbandonedPaymentSessions(statusFilter = null) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   const { data, error } = await state.supabase.rpc('get_abandoned_sessions', {

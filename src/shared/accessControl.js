@@ -1,4 +1,8 @@
+// @ts-check
 import { getCommercialFeatureOverride, isCommercialFeatureIncluded } from './commercialAccess.js'
+
+/** @typedef {{label: string, description: string, accent: string, highlights: string[]}} RoleDefinition */
+/** @typedef {{role: string, roleLabel: string, capabilities: Record<string, boolean>, allowedByRole: Record<string, boolean>, effectiveCapabilities: Record<string, boolean>, blockedByFeature: Record<string, string>, capabilityOverrides: Record<string, boolean>, features: Record<string, unknown>, enabledCount: number, productId?: unknown, commercialPackageKey?: unknown, commercialAddonKeys?: unknown[]}} CapabilitySnapshot */
 
 export const APP_FEATURES = [
   'basic_reports',
@@ -74,6 +78,7 @@ export const FEATURE_LABELS = {
   multi_outlet_controls: 'Multi-outlet control'
 }
 
+/** @type {Record<string, string>} */
 export const CAPABILITY_LABELS = {
   'dashboard.view': 'Dashboard',
   'bookings.view': 'View bookings',
@@ -215,7 +220,8 @@ export const CAPABILITY_LABELS = {
   'housekeeping.assign': 'Assign housekeeping',
   'housekeeping.inspect': 'Inspect rooms',
   'linen.manage': 'Manage linen/laundry',
-  'lost_found.manage': 'Manage lost and found',
+  // Preserve the existing later label override and property insertion position.
+  [/** @type {string} */ ('lost_found.manage')]: 'Manage lost and found',
   'incidents.manage': 'Manage incidents',
   'visitors.manage': 'Manage visitor register',
   'emergency.view': 'View emergency/evacuation list',
@@ -260,14 +266,17 @@ Object.assign(CAPABILITY_LABELS, {
 
 export const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS)
 
+/** @type {string[]} */
 export const STAFF_STATUSES = ['active', 'suspended', 'archived']
 
+/** @type {Record<string, string>} */
 export const STAFF_STATUS_LABELS = {
   active: 'Active',
   suspended: 'Suspended',
   archived: 'Archived'
 }
 
+/** @type {Record<string, RoleDefinition>} */
 export const ROLE_DEFINITIONS = {
   cashier: {
     label: 'POS Operator',
@@ -327,6 +336,7 @@ export const POS_FULL_ACCESS_ROLES = ['manager', 'admin', 'super_admin']
 // Roles that require outlet assignment to access POS
 export const POS_OUTLET_SCOPED_ROLES = ['cashier', 'supervisor']
 
+/** @type {Record<string, string[]>} */
 const ROLE_CAPABILITIES = {
   cashier: [
     'pos.view',
@@ -522,6 +532,7 @@ const ROLE_CAPABILITIES = {
   super_admin: [...ALL_CAPABILITIES]
 }
 
+/** @type {Record<string, string>} */
 const CAPABILITY_FEATURE_REQUIREMENTS = {
   'prepayments.view': 'prepayments_basic',
   'prepayments.receive': 'prepayments_basic',
@@ -660,6 +671,7 @@ const CAPABILITY_FEATURE_REQUIREMENTS = {
   'accounting.payroll_manage': 'restaurant_accounting'
 }
 
+/** @param {unknown} role @returns {string} */
 export function normalizeAppRole(role) {
   const raw = String(role || '').trim().toLowerCase()
   if (raw === 'superadmin') return 'super_admin'
@@ -677,27 +689,31 @@ export function normalizeAppRole(role) {
   return 'receptionist'
 }
 
+/** @param {unknown} status @returns {string} */
 export function normalizeStaffStatus(status) {
   const normalized = String(status || '').trim().toLowerCase()
   return STAFF_STATUSES.includes(normalized) ? normalized : 'active'
 }
 
+/** @param {unknown} role @returns {RoleDefinition} */
 function getRoleDefinition(role) {
   return ROLE_DEFINITIONS[normalizeAppRole(role)] || ROLE_DEFINITIONS.receptionist
 }
 
+/** @param {unknown} [overrides] @returns {Record<string, boolean>} */
 function normalizeCapabilityOverrides(overrides = null) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
     return {}
   }
 
-  return Object.fromEntries(
+  return /** @type {Record<string, boolean>} */ (Object.fromEntries(
     Object.entries(overrides).filter(([capability, allowed]) => (
       ALL_CAPABILITIES.includes(capability) && typeof allowed === 'boolean'
     ))
-  )
+  ))
 }
 
+/** @param {{role?: unknown, isMasterAdmin?: unknown, features?: (Record<string, unknown> | null), capabilityOverrides?: unknown, productId?: string | null, commercialPackageKey?: string | null, commercialAddonKeys?: unknown, commercialEntitlement?: unknown, commercialLodgeId?: string | null}} [input] @returns {CapabilitySnapshot} */
 export function buildCapabilitySnapshot({
   role,
   isMasterAdmin = false,
@@ -726,14 +742,18 @@ export function buildCapabilitySnapshot({
 
   const normalizedRole = normalizeAppRole(role)
   const normalizedOverrides = normalizeCapabilityOverrides(capabilityOverrides)
-  const allowedByRole = Object.fromEntries(ALL_CAPABILITIES.map((capability) => [
+  const allowedByRole = /** @type {Record<string, boolean>} */ (Object.fromEntries(ALL_CAPABILITIES.map((capability) => [
     capability,
     (ROLE_CAPABILITIES[normalizedRole] || []).includes(capability)
-  ]))
+  ])))
 
+  /** @type {Record<string, string>} */
   const blockedByFeature = {}
+  /** @type {Record<string, boolean>} */
   const capabilities = {}
+  /** @type {Record<string, boolean>} */
   const effectiveCapabilities = {}
+  const featureFields = /** @type {Record<string, unknown> | null | undefined} */ (features)
 
   ALL_CAPABILITIES.forEach((capability) => {
     const requiredFeature = CAPABILITY_FEATURE_REQUIREMENTS[capability]
@@ -741,7 +761,7 @@ export function buildCapabilitySnapshot({
     const commercialOverride = requiredFeature
       ? getCommercialFeatureOverride(commercialEntitlement, productId, requiredFeature, commercialPackageKey, commercialLodgeId)
       : null
-    const featureBlocked = Boolean(requiredFeature) && features?.[requiredFeature] === false && commercialOverride !== true
+    const featureBlocked = Boolean(requiredFeature) && featureFields?.[requiredFeature] === false && commercialOverride !== true
     const commercialBlocked = Boolean(requiredFeature) && !isCommercialFeatureIncluded(
       productId,
       commercialPackageKey,
@@ -777,10 +797,14 @@ export function buildCapabilitySnapshot({
   }
 }
 
+/** @param {unknown} snapshot @param {unknown} capability @returns {boolean} */
 export function canAccessCapability(snapshot, capability) {
-  return snapshot?.capabilities?.[capability] === true
+  const snapshotFields = /** @type {Record<string, unknown> | null | undefined} */ (snapshot)
+  const capabilities = /** @type {Record<string, unknown> | null | undefined} */ (snapshotFields?.capabilities)
+  return capabilities?.[/** @type {string} */ (capability)] === true
 }
 
+/** @returns {Array<{value: string} & RoleDefinition>} */
 export function getRoleOptions() {
   return Object.entries(ROLE_DEFINITIONS).map(([value, definition]) => ({
     value,
@@ -788,10 +812,12 @@ export function getRoleOptions() {
   }))
 }
 
+/** @param {unknown} role @param {Record<string, unknown>} [features] @param {unknown} [capabilityOverrides] @returns {Record<string, boolean>} */
 export function getRoleCapabilities(role, features = {}, capabilityOverrides = {}) {
   return buildCapabilitySnapshot({ role, features, capabilityOverrides }).capabilities
 }
 
+/** @param {unknown} role @returns {boolean} */
 export function isPwaEligibleRole(role) {
   return PWA_ELIGIBLE_ROLES.includes(normalizeAppRole(role))
 }
@@ -800,6 +826,7 @@ export function isPwaEligibleRole(role) {
  * Returns true if the role has unrestricted access to all outlets.
  * Cashier and supervisor roles are outlet-scoped and must have allowed_outlet_ids set.
  */
+/** @param {unknown} role @returns {boolean} */
 export function isPosFullAccessRole(role) {
   return POS_FULL_ACCESS_ROLES.includes(normalizeAppRole(role))
 }
@@ -808,6 +835,7 @@ export function isPosFullAccessRole(role) {
  * Returns true if the role is outlet-scoped (cashier or supervisor).
  * These roles must have allowed_outlet_ids set to access POS.
  */
+/** @param {unknown} role @returns {boolean} */
 export function isPosOutletScopedRole(role) {
   return POS_OUTLET_SCOPED_ROLES.includes(normalizeAppRole(role))
 }

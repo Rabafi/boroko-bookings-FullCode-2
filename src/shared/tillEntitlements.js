@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Till entitlement decisions (pure, node-testable): which customer,
  * promotion, voucher, tip and recipe capabilities the current commercial
@@ -8,6 +9,9 @@
  */
 import { getCommercialFeatureSet } from "./commercialAccess.js";
 
+/**
+ * @param {{productId?: string | null, packageKey?: string | null, addonKeys?: string[], entitlement?: unknown, lodgeId?: string | null, barOnly?: boolean}} [options]
+ */
 export function getTillEntitlements({
   productId = null,
   packageKey = null,
@@ -31,6 +35,7 @@ export function getTillEntitlements({
   } catch {
     features = new Set();
   }
+  /** @param {string} feature */
   const has = (feature) => features instanceof Set && features.has(feature);
   return {
     canAccounts: has("customer_accounts"),

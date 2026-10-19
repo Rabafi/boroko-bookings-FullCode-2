@@ -1,3 +1,4 @@
+// @ts-check
 import { BrowserWindow } from 'electron';
 import { readCache, writeCache } from '../cacheStore.js';
 import { readFailedSyncQueue, readSyncQueue, writeFailedSyncQueue, writeSyncQueue } from '../syncStore.js';
@@ -19,86 +20,72 @@ export function datesOverlap(checkIn1, checkOut1, checkIn2, checkOut2) {
 export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, allRooms, allBookings, queuedOps) {
   const currentRoom = allRooms.find((r) => r.id === currentRoomId);
   const currentRate = currentRoom ? Number(currentRoom.rate_per_night || 0) : 0;
-  const currentType = currentRoom ? currentRoom.room_type : '';
 
-  // Get list of occupied room IDs during this period
   const occupiedRoomIds = new Set();
-
-  // 1. Check existing bookings
-  for (const b of allBookings) {
-    if (b.status !== 'cancelled' && datesOverlap(b.check_in, b.check_out, checkIn, checkOut)) {
-      occupiedRoomIds.add(b.room_id);
+  for (const booking of allBookings) {
+    if (booking.status !== 'cancelled' && datesOverlap(booking.check_in, booking.check_out, checkIn, checkOut)) {
+      occupiedRoomIds.add(booking.room_id);
     }
   }
-
-  // 2. Check queued creation operations
   for (const op of queuedOps) {
-    if (op.table === 'create_booking' || op.table === 'create_booking_record') {
-      const data = op.table === 'create_booking_record' ? (op.data?.payload || {}) : (op.data || {});
-      if (datesOverlap(data.p_check_in || data.check_in, data.p_check_out || data.check_out, checkIn, checkOut)) {
-        occupiedRoomIds.add(data.p_room_id || data.room_id);
-      }
+    for (const queued of getQueuedBookingRecords(op)) {
+      if (datesOverlap(queued.checkIn, queued.checkOut, checkIn, checkOut)) occupiedRoomIds.add(queued.roomId);
     }
   }
 
   const suggestions = [];
-
-  // Scan all rooms for availability
   for (const room of allRooms) {
-    if (room.id === currentRoomId) continue;
-    if (occupiedRoomIds.has(room.id)) continue;
-
+    if (room.id === currentRoomId || occupiedRoomIds.has(room.id)) continue;
     const rate = Number(room.rate_per_night || 0);
-    let action = 'swap';
-    let label = `Swap to Room ${room.room_number}`;
-
-    if (rate > currentRate) {
-      action = 'upgrade';
-      label = `Upgrade to Room ${room.room_number} (${room.room_type})`;
-    }
-
-    suggestions.push({
-      roomId: room.id,
-      roomNumber: room.room_number,
-      roomType: room.room_type,
-      ratePerNight: rate,
-      action,
-      label
-    });
+    const action = rate > currentRate ? 'upgrade' : 'swap';
+    const label = action === 'upgrade'
+      ? 'Upgrade to Room ' + room.room_number + ' (' + room.room_type + ')'
+      : 'Swap to Room ' + room.room_number;
+    suggestions.push({ roomId: room.id, roomNumber: room.room_number, roomType: room.room_type, ratePerNight: rate, action, label });
   }
-
-  // Sort upgrades first (higher rates first), then swaps
   return suggestions.sort((a, b) => {
     if (a.action === 'upgrade' && b.action !== 'upgrade') return -1;
     if (a.action !== 'upgrade' && b.action === 'upgrade') return 1;
     return b.ratePerNight - a.ratePerNight;
   });
 }
-
-function getQueuedBookingRecord(op) {
+function getQueuedBookingRecords(op) {
+  const createdAt = op?.created_at || op?.timestamp || new Date(0).toISOString();
+  if (op?.table === 'create_multi_room_booking') {
+    const data = op.data || {};
+    const rooms = Array.isArray(data.p_rooms) ? data.p_rooms : [];
+    const ids = Array.isArray(op._local_booking_ids) ? op._local_booking_ids : [];
+    return rooms.map((room, index) => ({
+      id: ids[index] || null,
+      roomId: room?.room_id,
+      checkIn: data.p_check_in,
+      checkOut: data.p_check_out,
+      groupId: data.p_group_key || op._group_id || op._queue_id || null,
+      createdAt: data.created_at || createdAt
+    })).filter((booking) => booking.id && booking.roomId);
+  }
   if (op?.table === 'create_booking') {
     const data = op.data || {};
-    return {
+    return [{
       id: data.p_booking_id,
       roomId: data.p_room_id,
       checkIn: data.p_check_in,
       checkOut: data.p_check_out,
-      createdAt: data.created_at || op.created_at || op.timestamp || new Date(0).toISOString()
-    };
+      createdAt: data.created_at || createdAt
+    }];
   }
   if (op?.table === 'create_booking_record') {
     const payload = op.data?.payload || {};
-    return {
+    return [{
       id: payload.id,
       roomId: payload.room_id,
       checkIn: payload.check_in,
       checkOut: payload.check_out,
-      createdAt: payload.created_at || op.created_at || op.timestamp || new Date(0).toISOString()
-    };
+      createdAt: payload.created_at || createdAt
+    }];
   }
-  return null;
+  return [];
 }
-
 function moveQueuedBookingToManualReview(queueItem, message, suggestions = []) {
   if (!queueItem?._queue_id) return false;
   const pending = readSyncQueue();
@@ -129,7 +116,7 @@ function moveQueuedBookingToManualReview(queueItem, message, suggestions = []) {
 
 function findPendingQueueItemForBooking(bookingId) {
   if (!bookingId) return null;
-  return readSyncQueue().find((item) => getQueuedBookingRecord(item)?.id === bookingId) || null;
+  return readSyncQueue().find((item) => getQueuedBookingRecords(item).some((booking) => booking.id === bookingId)) || null;
 }
 
 /**
@@ -156,6 +143,7 @@ export async function detectConflicts() {
       checkOut: b.check_out,
       createdAt: b.created_at || new Date(0).toISOString(),
       sourceNodeId: b._mesh_source_node_id || 'local',
+      groupId: b.group_key || b._mesh_group_operation_id || null,
       original: b,
       isQueued: false
     });
@@ -163,21 +151,24 @@ export async function detectConflicts() {
 
   // Add queued booking operations that might not yet be in cache
   for (const op of queuedOps) {
-    const queuedBooking = getQueuedBookingRecord(op);
-    if (!queuedBooking?.id) continue;
-    // Skip if already captured in cache
-    if (activeBookings.some((ab) => ab.id === queuedBooking.id)) continue;
+    for (const queuedBooking of getQueuedBookingRecords(op)) {
+      if (!queuedBooking?.id) continue;
+      // Skip if already captured in cache. findPendingQueueItemForBooking links
+      // that cached group child back to the one atomic group operation.
+      if (activeBookings.some((ab) => ab.id === queuedBooking.id)) continue;
 
-    activeBookings.push({
-      id: queuedBooking.id,
-      roomId: queuedBooking.roomId,
-      checkIn: queuedBooking.checkIn,
-      checkOut: queuedBooking.checkOut,
-      createdAt: queuedBooking.createdAt,
-      sourceNodeId: op._mesh_source_node_id || 'local',
-      original: op,
-      isQueued: true
-    });
+      activeBookings.push({
+        id: queuedBooking.id,
+        roomId: queuedBooking.roomId,
+        checkIn: queuedBooking.checkIn,
+        checkOut: queuedBooking.checkOut,
+        createdAt: queuedBooking.createdAt,
+        sourceNodeId: op._mesh_source_node_id || 'local',
+        original: op,
+        isQueued: true,
+        groupId: queuedBooking.groupId || null
+      });
+    }
   }
 
   const conflicts = [];
@@ -220,7 +211,9 @@ export async function detectConflicts() {
         winner = b2;
         loser = b1;
       } else if (b1.sourceNodeId === b2.sourceNodeId) {
-        if (b2.id < b1.id) {
+        const tieId1 = b1.groupId || b1.id;
+        const tieId2 = b2.groupId || b2.id;
+        if (tieId2 < tieId1) {
           winner = b2;
           loser = b1;
         }
@@ -257,6 +250,19 @@ export async function detectConflicts() {
     }
     const loserQueueItem = loser.isQueued ? loser.original : findPendingQueueItemForBooking(loser.id);
     if (loserQueueItem) {
+      if (loserQueueItem.table === 'create_multi_room_booking' && Array.isArray(loserQueueItem._local_booking_ids)) {
+        const childIds = new Set(loserQueueItem._local_booking_ids);
+        updatedBookings.forEach((booking, index) => {
+          if (!childIds.has(booking?.id)) return;
+          updatedBookings[index] = {
+            ...booking,
+            _sync_state: 'manual_review_required',
+            _sync_error: message,
+            _sync_resolution_suggestions: suggestions
+          };
+          cacheDirty = true;
+        });
+      }
       const moved = moveQueuedBookingToManualReview(loserQueueItem, message, suggestions);
       cacheDirty = moved || cacheDirty;
     }

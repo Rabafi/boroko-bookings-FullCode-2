@@ -1,0 +1,11 @@
+import { createPreloadTransport } from '../../../src/preload/transport.js';
+import type { IpcRenderer } from 'electron';
+declare const ipcRenderer: IpcRenderer;
+const transport = createPreloadTransport(ipcRenderer);
+transport.invoke(42);
+transport.onIpc('review:probe', (value: string) => value.toUpperCase());
+const result: Promise<string> = transport.invoke('review:probe');
+transport.onIpc('review:probe', () => {}).missing;
+const cleanupValue: string = transport.onIpc('review:probe', () => {})();
+const managerBuild = __BOROKO_APP_VERSION__;
+void result; void cleanupValue; void managerBuild;

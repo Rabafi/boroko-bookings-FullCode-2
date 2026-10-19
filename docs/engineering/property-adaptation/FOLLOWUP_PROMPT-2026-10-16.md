@@ -1,0 +1,19 @@
+# Follow-up implementation prompt
+
+Complete the remaining findings in `docs/engineering/property-adaptation/RE_REVIEW-2026-10-16.md`. Read that entire review, AGENTS.md, PROJECT_STATE.md, the architecture guide and the original property-adaptation plan. Implement fixes rather than returning another plan. Preserve unrelated/in-flight work.
+
+The revised R1–R8 work is materially improved: receipt-first ordering is now present, controller/persistence changes are integrated, and the independently rerun queue-replay-authority suite passes 9/9. Do not repeat obsolete failure claims or undo valid corrections.
+
+Use bounded in-task agents for (A) public booking/server parity, (B) archived-operation recovery and actual mounted Settings tests, and (C) disposable SQL/rendered acceptance evidence. The parent owns integration and a final independent review by a non-author. Do not create separate user-owned chats.
+
+Required fixes:
+
+1. **F1, public permanent-tent parity:** the new priced-family contract includes campsite and tent, but BookingPage.jsx still uses campsite-only checks for pricing/occupancy/counts and the new SQL explicitly leaves create_online_booking's old branch unchanged. Trace latest public wrappers/inner functions, availability/quote readers, single/group creation and receipt/payload contracts. Align priced-family checks, independent capacities, per-line counts, estimates, server totals and saved details. Preserve Permanent tent display wording, confirmed financial history and stable retry keys. Add all-mode public single/group tests and real disposable SQL. Do not claim booking-site unaffected merely because its files were not edited.
+2. **F2, archived unresolved operation recovery:** retaining raw localStorage data is not an operator recovery flow. Provide a scoped read-only history/archive selection and status lookup using the original key, or retain unresolved operations in an accessible pending collection. An old result must not clear/resubmit a newer operation. Cover timeout → supersede → new operation → reopen/restart → check old late outcome, user/property isolation and truthful audit reason. Mount actual production Settings, not just its controller.
+3. **Close evidence gates:** execute the approved migration chain and live SQL fixtures on a verified disposable target; mount actual Settings/Bookings in a DOM-capable runner and perform isolated five-type walkthroughs including errors/recovery. Existing controller-envelope tests and resolver screenshots do not replace these. Use existing browser tooling/build transforms if suitable; do not treat the absence of a JSX Node parser alone as proof that mounting is impossible. Do not touch customer properties for fixtures.
+
+Run affected focused regressions, appropriate typechecks/builds, booking-site checks, offline-queue and replay-authority integration. Report exact counts with genuine skips. If external credentials/access genuinely prevent a required run, complete independent code fixes and explicitly retain the acceptance gate; do not manufacture SQL/UI proof or downgrade requirements.
+
+Use forward migrations as appropriate; inspect all later definitions and grants. Keep database enforcement authoritative, payload-bound retries, atomic ledger behavior and legacy queue compatibility. Do not deploy unrelated pending migrations. Production migration application, customer classification changes and releases need explicit existing authorization.
+
+Update PROJECT_STATE, cross-surface applicability, operator/deployment guidance and manual-impact assessment against the actual final diff. Give a final F1/F2 disposition, agent ownership, independent-review findings/fixes, test/build/database/rendered evidence and accurate deployment state. Claim full acceptance only when the required proof exists.

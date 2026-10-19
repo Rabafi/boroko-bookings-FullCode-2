@@ -9,6 +9,7 @@ import {
 import {
   computeEffectiveFeatures
 } from '../src/shared/entitlementMerge.js'
+import { registerBarGuideIpc } from '../src/main/barGuidesIpc.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -169,13 +170,21 @@ test('every preload ipcRenderer.invoke channel has a matching ipcMain.handle', (
     handleChannels.add(match[1])
   }
   assert.ok(handleChannels.size > 0, 'Expected ipcMain.handle channels')
+  // Bar guide channels are intentionally registered by an imported module.
+  // Execute that real registration seam instead of demanding literal handlers
+  // in main/index.js (which would invite duplicate IPC registration).
+  assert.match(mainIndex, /import \{ registerBarGuideIpc \} from '\.\/barGuidesIpc\.js'/)
+  assert.match(mainIndex, /registerBarGuideIpc\(\{/)
+  const modularChannels = new Set()
+  registerBarGuideIpc({ ipcMain: { handle: (channel) => modularChannels.add(channel) } })
+  assert.deepEqual([...modularChannels].sort(), ['barGuides:getManifest', 'barGuides:open', 'barGuides:save'])
 
   // Known edge case: channel exists in preload but handler registered via different
   // mechanism (e.g. dynamic registration, different file). Logged but not failed.
   const KNOWN_GAPS = new Set(['app:showTouchKeyboard'])
 
   for (const channel of invokeChannels) {
-    if (KNOWN_GAPS.has(channel)) continue
+    if (KNOWN_GAPS.has(channel) || modularChannels.has(channel)) continue
     assert.ok(
       handleChannels.has(channel),
       `Preload channel "${channel}" must have matching ipcMain.handle`

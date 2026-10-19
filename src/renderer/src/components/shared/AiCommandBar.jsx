@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { Users, DollarSign, TrendingUp, ArrowRight, CheckCircle, XCircle, AlertTriangle, ClipboardList, BarChart3, Package, ShoppingCart, Lock, Info, CalendarCheck, Clock, CreditCard, Tag, Globe, Boxes, Presentation, Waves, BookOpen, Receipt } from 'lucide-react'
 

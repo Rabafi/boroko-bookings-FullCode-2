@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Pure catalog-publication sweep (no Electron): claim with token+lease,
  * publish the derived snapshot, complete with token+unexpired lease.
@@ -14,22 +15,24 @@
 /**
  * @param {object} deps
  * @param {string[]} deps.outlets
- * @param {(outletId: string) => Promise<object|null>} deps.claim - null when nothing claimable
- * @param {(outletId: string, job: object) => Promise<void>} deps.publish - throws on failure
- * @param {(job: object) => Promise<{ completed: boolean; superseded?: boolean; error?: string }>} deps.complete
- * @param {(job: object, error: string, permanent: boolean) => Promise<void>} deps.release
+ * @param {(outletId: string) => Promise<{job?: Record<string, unknown>} | null>} deps.claim - null when nothing claimable
+ * @param {(outletId: string, job: Record<string, unknown>) => Promise<void>} deps.publish - throws on failure
+ * @param {(job: Record<string, unknown>) => Promise<{ completed: boolean; superseded?: boolean; error?: string }>} deps.complete
+ * @param {(job: Record<string, unknown>, error: unknown, permanent: boolean) => Promise<void>} deps.release
  * @param {number} [deps.maxAttempts]
  */
 export async function runPublicationSweep(deps) {
   const outlets = [...new Set((Array.isArray(deps?.outlets) ? deps.outlets : []).filter(Boolean))];
   const maxAttempts = Number.isFinite(Number(deps?.maxAttempts)) ? Number(deps.maxAttempts) : 5;
+  /** @type {Array<{outlet_id: string, status: string, job_id?: unknown, attempts?: number, error?: unknown, note?: string}>} */
   const results = [];
   for (const outletId of outlets) {
+    /** @type {{job?: Record<string, unknown>} | null} */
     let claimed = null;
     try {
       claimed = await deps.claim(outletId);
     } catch (error) {
-      results.push({ outlet_id: outletId, status: "pending", error: error?.message || "Claim failed" });
+      results.push({ outlet_id: outletId, status: "pending", error: getErrorMessage(error) || "Claim failed" });
       continue;
     }
     if (!claimed?.job) {
@@ -56,11 +59,11 @@ export async function runPublicationSweep(deps) {
       await deps.publish(outletId, job);
     } catch (error) {
       try {
-        await deps.release(job, error?.message || "Publication failed", false);
+        await deps.release(job, getErrorMessage(error) || "Publication failed", false);
       } catch {
         /* Lease expiry remains the backstop. */
       }
-      results.push({ outlet_id: outletId, status: "pending", job_id: job.job_id || null, error: error?.message || "Publication failed" });
+      results.push({ outlet_id: outletId, status: "pending", job_id: job.job_id || null, error: getErrorMessage(error) || "Publication failed" });
       continue;
     }
     try {
@@ -73,7 +76,7 @@ export async function runPublicationSweep(deps) {
         results.push({ outlet_id: outletId, status: "pending", job_id: job.job_id || null, error: done?.error || "Completion rejected" });
       }
     } catch (error) {
-      results.push({ outlet_id: outletId, status: "pending", job_id: job.job_id || null, error: error?.message || "Completion failed" });
+      results.push({ outlet_id: outletId, status: "pending", job_id: job.job_id || null, error: getErrorMessage(error) || "Completion failed" });
     }
   }
   return results;
@@ -83,12 +86,23 @@ export async function runPublicationSweep(deps) {
  * Map sweep results onto an expected outlet set: outlets with no published
  * result stay pending. Never translate an empty sweep into "published".
  */
+/** @param {unknown} expectedOutlets @param {unknown} results */
 export function summarizePublication(expectedOutlets, results) {
-  const byOutlet = new Map((Array.isArray(results) ? results : []).map((row) => [row?.outlet_id, row]));
-  return (Array.isArray(expectedOutlets) ? expectedOutlets : []).filter(Boolean).map((outletId) => {
-    const row = byOutlet.get(outletId);
+  const resultRows = /** @type {unknown[]} */ (Array.isArray(results) ? results : [])
+  const byOutlet = new Map(resultRows.map((row) => [
+    (/** @type {Record<string, unknown> | null | undefined} */ (row))?.outlet_id,
+    row
+  ]))
+  return (/** @type {unknown[]} */ (Array.isArray(expectedOutlets) ? expectedOutlets : [])).filter(Boolean).map((outletId) => {
+    const row = /** @type {Record<string, unknown> | null | undefined} */ (byOutlet.get(outletId))
     if (row?.status === "published") return { outlet_id: outletId, status: "published", job_id: row.job_id || null };
     if (row?.status === "failed") return { outlet_id: outletId, status: "failed", job_id: row.job_id || null, error: row.error || null };
     return { outlet_id: outletId, status: "pending", job_id: row?.job_id || null, error: row?.error || null };
   });
+}
+
+/** @param {unknown} error @returns {unknown} */
+function getErrorMessage(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return undefined
+  return /** @type {Record<string, unknown>} */ (error).message
 }

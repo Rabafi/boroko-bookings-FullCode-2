@@ -288,7 +288,7 @@ test('duplicate-name guard blocks cross-key duplicate products before any mutati
   assert.match(sql, /grant execute on function public\.save_bar_product_with_stock\(jsonb\) to anon, authenticated, service_role/)
 })
 
-test('duplicate-name refusals are terminal and resolved-elsewhere across surfaces', () => {
+test('duplicate-name refusals stop retries and remain manager-reviewable across surfaces', () => {
   // Domain dispatch must classify SQLSTATE-coded refusals as terminal so the
   // stored request stops re-dispatching (previously they stayed retryable
   // unknown and the retry storm minted duplicates under fresh keys).
@@ -298,16 +298,18 @@ test('duplicate-name refusals are terminal and resolved-elsewhere across surface
   const shared = read('src/shared/productRequest.js')
   assert.match(shared, /export function isDefinitiveProductRejection/)
   assert.match(shared, /code === "22023" \|\| code === "23505"/)
-  // Queue replay: a duplicate-name refusal means another key already created
-  // the product server-side, so the queued item is resolved (consumed), not
-  // dead-lettered into an unfailing retry loop. Barcode/operation-key
-  // conflicts use different message shapes and stay reviewable.
+  // A different idempotency key with a duplicate name cannot prove that the
+  // existing row is the queued intent. Stop retrying the immutable refusal,
+  // park it for manager review, and leave dependent sales blocked.
   const infrastructure = read('src/main/domains/infrastructure.js')
-  assert.match(infrastructure, /item\?\.table === 'save_bar_product_with_stock' &&/)
-  assert.match(infrastructure, /\^A \(\?:product\|stock item\) named /i)
-  // The refusal must not match the generic already-exists tail (barcode
-  // conflicts also end with "Use the existing product instead.").
-  assert.doesNotMatch(infrastructure, /Use the existing product instead\.\?\?\)\{0,\}\s*return true/)
+  const manualReview = infrastructure.slice(
+    infrastructure.indexOf('function shouldManualReviewSyncItem'),
+    infrastructure.indexOf('function isAmbiguousPosOrderReplayError'),
+  )
+  assert.match(manualReview, /item\?\.table === 'save_bar_product_with_stock'/)
+  assert.match(manualReview, /errorObj\?\.code/)
+  assert.match(manualReview, /'22023', '23505'/)
+
 })
 
 test('Bar System Health exposes clear-with-review for failed queue items', () => {
@@ -349,7 +351,10 @@ test('domain and IPC wire the new contracts with dual capabilities', () => {
   assert.match(domain, /upsertLocalInventoryMovement/)
   // Replays reuse journalled bytes: changed configuration can never block
   // committed work at the domain layer.
-  assert.match(domain, /if \(!attemptResolution\.reused\) assertSaleModifierRequirements/)
+  // The direct recordAttempt results preserve replay bytes and check modifiers
+  // only for fresh attempts on both the offline and online paths.
+  assert.match(domain, /const offlineAttempt = recordAttempt\(v3OfflinePayload\);[\s\S]*?if \(offlineAttempt\.conflict\) return offlineAttempt\.error;[\s\S]*?if \(!offlineAttempt\.resolution\.reused\) assertSaleModifierRequirements\(effectiveOfflinePayload\.items\);/)
+  assert.match(domain, /const onlineAttempt = recordAttempt\(v3Payload\);[\s\S]*?if \(onlineAttempt\.conflict\) return onlineAttempt\.error;[\s\S]*?if \(!onlineAttempt\.resolution\.reused\) assertSaleModifierRequirements\(v3Payload\.items\);/)
   const main = read('src/main/index.js')
   assert.match(main, /pos:saveBarProductWithStock/)
   assert.match(main, /requireCapability\('pos\.menu_manage'\)/)
@@ -384,7 +389,9 @@ test('banner retry sweeps publication for committed requests', () => {
   // pending-publication notice.
   const domain = read('src/main/domains/pos.js')
   assert.match(domain, /entry\?\.state === "committed" && entry\?\.publication && entry\.publication !== "published"/)
-  assert.match(domain, /entry\.payload\?\.stock\?\.outlet_id/)
+  // The payload remains unvalidated; allow its expected-data view at this
+  // existing optional property read without weakening the outlet sweep check.
+  assert.match(domain, /\/\*\* @type \{ProductSaveRequestPayloadReadView\|null\|undefined\} \*\/\s*\(entry\.payload\)\)\?\.stock\?\.outlet_id/)
   assert.match(domain, /processPendingPublicationJobs\(outletIds\)/)
   assert.match(domain, /markProductRequest\(entry\.operation_key, \{ publication \}\)/)
   assert.match(domain, /never report published on a failed sweep/i)

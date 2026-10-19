@@ -1,5 +1,47 @@
+// @ts-check
 import fs from 'fs';
 import net from 'net';
+
+/**
+ * Input views at the hardware boundary describe fields read by this adapter.
+ * Persisted settings and provider/cache rows are not runtime-validated here.
+ * @typedef {Record<string, unknown>} HardwareSettingsExpectedData
+ * @typedef {Record<string, unknown>} ReceiptOrderExpectedView
+ * @typedef {Record<string, unknown>} ReceiptBusinessExpectedView
+ * @typedef {Record<string, unknown>} ReceiptItemExpectedView
+ * @typedef {Record<string, unknown>} ReceiptPaymentExpectedView
+ * @typedef {{openDrawer?: unknown}} ReceiptBuildOptionsExpectedView
+ * @typedef {{
+ *   receipt_printer_name: string,
+ *   receipt_paper_width: unknown,
+ *   receipt_print_mode: 'escpos' | 'windows',
+ *   auto_print_receipts: boolean,
+ *   receipt_cut_enabled: boolean,
+ *   cash_drawer_enabled: boolean,
+ *   cash_drawer_command: unknown,
+ *   cash_drawer_open_on_cash: boolean,
+ *   cash_drawer_open_timing: 'before_receipt' | 'after_payment',
+ *   cash_drawer_pin: '1' | '0',
+ *   cash_drawer_pulse_on_ms: number,
+ *   cash_drawer_pulse_off_ms: number,
+ *   escpos_enabled: boolean,
+ *   escpos_connection_type: string,
+ *   escpos_network_host: string,
+ *   escpos_network_port: number,
+ *   escpos_printer_path: string,
+ *   escpos_codepage: unknown,
+ *   escpos_timeout_ms: number,
+ *   payment_terminal_provider: string,
+ *   payment_terminal_name: string,
+ *   payment_terminal_mode: 'manual' | 'local_bridge' | 'provider_api',
+ *   payment_terminal_bridge_url: string,
+ *   payment_terminal_timeout_ms: number,
+ *   customer_display_enabled: boolean,
+ *   updated_at: unknown
+ * }} NormalizedHardwareAdapterSettings
+ * @typedef {{type: 'network', host: string, port: number} | {type: 'path', path: string}} RawPrinterTarget
+ * @typedef {Record<string, unknown>} PaymentTerminalBridgeReplyExpectedView
+ */
 
 const ESC = 0x1b;
 const GS = 0x1d;
@@ -7,29 +49,35 @@ const GS = 0x1d;
 const DEFAULT_NETWORK_PORT = 9100;
 const DEFAULT_TIMEOUT_MS = 8000;
 
+/** @param {unknown} value @param {boolean} [fallback] @returns {boolean} */
 function toBool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+/** @param {unknown} value @param {number} [fallback] @returns {number} */
 function toNumber(value, fallback = 0) {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
 }
 
+/** @param {unknown} value @param {number} fallback @param {number} min @param {number} max @returns {number} */
 function clampNumber(value, fallback, min, max) {
   return Math.max(min, Math.min(max, toNumber(value, fallback)));
 }
 
+/** @param {unknown} value @returns {number} */
 function normalizeMoney(value) {
   const amount = Number(value || 0);
   return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0;
 }
 
+/** @param {unknown} value @returns {string} */
 function stripControl(value) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
 }
 
+/** @param {unknown} value @returns {string} */
 function sanitizeText(value) {
   return String(value || '')
     .replace(/[\u2013\u2014]/g, '-')
@@ -39,14 +87,17 @@ function sanitizeText(value) {
     .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '?');
 }
 
+/** @param {unknown} [value] @returns {Buffer} */
 function textBuffer(value = '') {
   return Buffer.from(sanitizeText(value), 'latin1');
 }
 
+/** @param {number[]} [values] @returns {Buffer} */
 function commandBuffer(values = []) {
   return Buffer.from(values);
 }
 
+/** @param {unknown} [codepage] @returns {number} */
 function escposCodepageByte(codepage = 'cp437') {
   const normalized = String(codepage || '').toLowerCase();
   if (normalized === 'cp850') return 2;
@@ -57,6 +108,7 @@ function escposCodepageByte(codepage = 'cp437') {
   return 0;
 }
 
+/** @param {unknown} [width] @returns {number} */
 function paperColumns(width = '80mm') {
   const normalized = String(width || '').toLowerCase();
   if (normalized.includes('58')) return 32;
@@ -64,6 +116,7 @@ function paperColumns(width = '80mm') {
   return 42;
 }
 
+/** @param {unknown} value @param {number} width @returns {string[]} */
 function wrapText(value, width) {
   const words = sanitizeText(value).split(/\s+/).filter(Boolean);
   const lines = [];
@@ -82,6 +135,7 @@ function wrapText(value, width) {
   return lines.length ? lines : [''];
 }
 
+/** @param {unknown} left @param {unknown} right @param {number} width @returns {string[]} */
 function twoColumn(left, right, width) {
   const safeRight = sanitizeText(right);
   const rightWidth = Math.min(width, safeRight.length);
@@ -93,6 +147,7 @@ function twoColumn(left, right, width) {
   });
 }
 
+/** @param {unknown} pathValue @returns {string} */
 function normalizeDevicePath(pathValue) {
   const raw = stripControl(pathValue);
   if (/^(com|lpt)\d+:?$/i.test(raw)) {
@@ -101,6 +156,7 @@ function normalizeDevicePath(pathValue) {
   return raw;
 }
 
+/** @param {unknown} pathValue @returns {{host: string, port: number} | null} */
 function parseNetworkPath(pathValue) {
   const raw = stripControl(pathValue);
   if (!raw) return null;
@@ -121,6 +177,7 @@ function parseNetworkPath(pathValue) {
   return null;
 }
 
+/** @param {HardwareSettingsExpectedData} settings @returns {RawPrinterTarget | null} */
 function inferRawTarget(settings) {
   const connectionType = String(settings.escpos_connection_type || 'network').toLowerCase();
   const pathTarget = stripControl(settings.escpos_printer_path);
@@ -145,6 +202,10 @@ function inferRawTarget(settings) {
   return null;
 }
 
+/**
+ * @param {HardwareSettingsExpectedData} [settings]
+ * @returns {NormalizedHardwareAdapterSettings}
+ */
 export function normalizePosHardwareSettings(settings = {}) {
   const escposEnabled = toBool(settings.escpos_enabled, false);
   const receiptPrintMode = String(
@@ -191,42 +252,53 @@ export function buildCashDrawerPulse(settings = {}) {
   return commandBuffer([ESC, 0x70, pin, Math.max(1, Math.min(255, on)), Math.max(1, Math.min(255, off))]);
 }
 
+/** @param {ReceiptOrderExpectedView} [order] @returns {boolean} */
 function isCashOrder(order = {}) {
+  /** @type {unknown[]} */
   const payments = Array.isArray(order.payment_breakdown)
     ? order.payment_breakdown
     : typeof order.payment_breakdown === 'string'
-      ? (() => { try { const parsed = JSON.parse(order.payment_breakdown); return Array.isArray(parsed) ? parsed : []; } catch { return []; } })()
+      ? (() => { try { const parsed = JSON.parse(order.payment_breakdown); return Array.isArray(parsed) ? /** @type {unknown[]} */ (parsed) : []; } catch { return []; } })()
       : [];
-  return payments.some((p) => String(p.method || '').toLowerCase() === 'cash' && normalizeMoney(p.amount) > 0);
+  // The pre-existing array guard does not validate persisted elements.
+  return payments.some((payment) => String((/** @type {ReceiptPaymentExpectedView} */ (payment)).method || '').toLowerCase() === 'cash'
+    && normalizeMoney((/** @type {ReceiptPaymentExpectedView} */ (payment)).amount) > 0);
 }
 
+/** @param {Buffer[]} buffers @param {unknown} [value] */
 function pushText(buffers, value = '') {
   buffers.push(textBuffer(`${value}\n`));
 }
 
+/** @param {Buffer[]} buffers @param {string} [align] */
 function pushAlign(buffers, align = 'left') {
   const code = align === 'center' ? 1 : align === 'right' ? 2 : 0;
   buffers.push(commandBuffer([ESC, 0x61, code]));
 }
 
+/** @param {Buffer[]} buffers @param {boolean} enabled */
 function pushBold(buffers, enabled) {
   buffers.push(commandBuffer([ESC, 0x45, enabled ? 1 : 0]));
 }
 
+/** @param {Buffer[]} buffers @param {number} width @param {string} [value] */
 function pushRule(buffers, width, value = '-') {
   pushText(buffers, value.repeat(width));
 }
 
+/** @param {unknown} currency @param {unknown} value @returns {string} */
 function formatCurrency(currency, value) {
   return `${currency || 'P'} ${normalizeMoney(value).toFixed(2)}`;
 }
 
+/** @param {unknown} value @returns {number | null} */
 function recordedMoney(value) {
   if (value === null || value === undefined || value === '') return null;
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : null;
 }
 
+/** @param {ReceiptItemExpectedView} [item] @returns {number | null} */
 function recordedItemAmount(item = {}) {
   for (const key of ['net_subtotal', 'subtotal', 'gross_subtotal']) {
     const amount = recordedMoney(item?.[key]);
@@ -235,10 +307,20 @@ function recordedItemAmount(item = {}) {
   return null;
 }
 
+/**
+ * Existing Array.isArray checks retain their behavior but do not validate rows.
+ * @param {ReceiptOrderExpectedView} order
+ * @returns {ReceiptItemExpectedView[]}
+ */
 function receiptItems(order) {
   return Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : [];
 }
 
+/**
+ * Existing Array.isArray checks retain their behavior but do not validate rows.
+ * @param {ReceiptOrderExpectedView} order
+ * @returns {ReceiptPaymentExpectedView[]}
+ */
 function receiptPayments(order) {
   if (Array.isArray(order?.payment_breakdown)) return order.payment_breakdown;
   if (typeof order?.payment_breakdown === 'string') {
@@ -252,6 +334,13 @@ function receiptPayments(order) {
   return [];
 }
 
+/**
+ * @param {ReceiptOrderExpectedView} [order]
+ * @param {ReceiptBusinessExpectedView} [business]
+ * @param {HardwareSettingsExpectedData} [settings]
+ * @param {ReceiptBuildOptionsExpectedView} [options]
+ * @returns {Buffer}
+ */
 export function buildEscPosReceipt(order = {}, business = {}, settings = {}, options = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   const width = paperColumns(normalized.receipt_paper_width);
@@ -305,7 +394,8 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
     const amountLabel = total === null ? 'Amount unavailable' : formatCurrency(currency, total);
     pushText(buffers, twoColumn(unitLabel, amountLabel, width)[0]);
     const modifierText = [
-      ...(Array.isArray(item.modifiers) ? item.modifiers.map((m) => m.name).filter(Boolean) : []),
+      // The existing array test does not validate persisted modifier rows.
+      ...(Array.isArray(item.modifiers) ? /** @type {unknown[]} */ (item.modifiers).map((modifier) => (/** @type {Record<string, unknown>} */ (modifier)).name).filter(Boolean) : []),
       item.item_notes
     ].filter(Boolean).join(', ');
     if (modifierText) {
@@ -314,6 +404,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   }
 
   pushRule(buffers, width);
+  /** @type {[string, unknown][]} */
   const totals = [
     ['Gross', order.gross_total],
     ['Discount', recordedMoney(order.discount_total) !== null && Number(order.discount_total) > 0 ? -Math.abs(Number(order.discount_total)) : null],
@@ -355,6 +446,10 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   return Buffer.concat(buffers);
 }
 
+/**
+ * @param {HardwareSettingsExpectedData} [settings]
+ * @param {unknown} payload
+ */
 export async function sendRawEscPos(settings = {}, payload) {
   const normalized = normalizePosHardwareSettings(settings);
   if (!normalized.escpos_enabled && normalized.receipt_print_mode !== 'escpos') {
@@ -365,7 +460,7 @@ export async function sendRawEscPos(settings = {}, payload) {
     return { success: false, error: 'Set an ESC/POS network host, device path, or Windows printer share first.' };
   }
 
-  const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
+  const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(/** @type {string | ArrayLike<number>} */ (payload || []));
   try {
     if (target.type === 'network') {
       await sendTcp(target.host, target.port, bytes, normalized.escpos_timeout_ms || DEFAULT_TIMEOUT_MS);
@@ -374,14 +469,16 @@ export async function sendRawEscPos(settings = {}, payload) {
     await sendPath(target.path, bytes);
     return { success: true, transport: 'path', target: target.path };
   } catch (error) {
-    return { success: false, error: error?.message || 'Could not send ESC/POS command.' };
+    return { success: false, error: (/** @type {{message?: unknown} | null | undefined} */ (error))?.message || 'Could not send ESC/POS command.' };
   }
 }
 
+/** @param {string} host @param {number} port @param {Buffer} payload @param {number} [timeoutMs] @returns {Promise<void>} */
 function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const socket = net.createConnection({ host, port });
+    /** @param {Error | undefined} [error] */
     const finish = (error) => {
       if (settled) return;
       settled = true;
@@ -390,7 +487,7 @@ function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
     };
     socket.setTimeout(timeoutMs);
     socket.once('connect', () => {
-      socket.write(payload, (error) => {
+      socket.write(payload, (/** @type {Error | undefined} */ error) => {
         if (error) finish(error); else socket.end();
       });
     });
@@ -400,6 +497,7 @@ function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
   });
 }
 
+/** @param {string} targetPath @param {Buffer} payload @returns {Promise<void>} */
 function sendPath(targetPath, payload) {
   return new Promise((resolve, reject) => {
     const stream = fs.createWriteStream(targetPath);
@@ -409,6 +507,7 @@ function sendPath(targetPath, payload) {
   });
 }
 
+/** @param {{order?: ReceiptOrderExpectedView, business?: ReceiptBusinessExpectedView, settings?: HardwareSettingsExpectedData, openDrawer?: boolean}} [request] */
 export async function printEscPosReceipt({ order = {}, business = {}, settings = {}, openDrawer = false } = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   const drawerTiming = openDrawer && normalized.cash_drawer_enabled && isCashOrder(order)
@@ -425,6 +524,7 @@ export async function printEscPosReceipt({ order = {}, business = {}, settings =
     : result;
 }
 
+/** @param {HardwareSettingsExpectedData} [settings] */
 export async function openCashDrawer(settings = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   if (!normalized.cash_drawer_enabled) {
@@ -436,6 +536,7 @@ export async function openCashDrawer(settings = {}) {
     : result;
 }
 
+/** @param {string} [kind] @param {HardwareSettingsExpectedData} [settings] @param {ReceiptBusinessExpectedView} [business] */
 export async function testPosHardwareDevice(kind = 'receipt', settings = {}, business = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   if (kind === 'drawer') return openCashDrawer(normalized);
@@ -467,6 +568,7 @@ export async function testPosHardwareDevice(kind = 'receipt', settings = {}, bus
   };
 }
 
+/** @param {HardwareSettingsExpectedData} [settings] @param {Record<string, unknown>} [data] */
 export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
   const normalized = normalizePosHardwareSettings(settings);
   const mode = normalized.payment_terminal_mode;
@@ -506,8 +608,10 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
       signal: controller.signal
     });
     const text = await response.text();
-    let body = {};
-    try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+    // Provider JSON is untrusted. This expected view records fields consumed
+    // below without claiming the response was validated.
+    let body = /** @type {PaymentTerminalBridgeReplyExpectedView} */ ({});
+    try { body = /** @type {PaymentTerminalBridgeReplyExpectedView} */ (text ? JSON.parse(text) : {}); } catch { body = { raw: text }; }
     if (!response.ok) {
       return { success: false, error: body.error || body.message || `Terminal bridge returned ${response.status}.` };
     }
@@ -531,9 +635,9 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
   } catch (error) {
     return {
       success: false,
-      error: error?.name === 'AbortError'
+      error: (/** @type {{name?: unknown; message?: unknown} | null | undefined} */ (error))?.name === 'AbortError'
         ? 'Timed out waiting for the payment terminal.'
-        : error?.message || 'Could not reach payment terminal bridge.'
+        : (/** @type {{message?: unknown} | null | undefined} */ (error))?.message || 'Could not reach payment terminal bridge.'
     };
   } finally {
     clearTimeout(timer);

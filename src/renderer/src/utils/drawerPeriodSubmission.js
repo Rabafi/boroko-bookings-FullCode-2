@@ -1,28 +1,43 @@
+// @ts-check
 const PREFIX = 'tsa-bonno-pos-drawer-period:'
 const SUCCESS_STATUSES = new Set(['approved'])
 
+/** @typedef {{getItem(key:string):string|null,setItem(key:string,value:string):void,removeItem(key:string):void}} StorageLike */
+/** @typedef {Record<string, unknown>} PersistedRecord */
+
+/** @param {unknown} value @returns {string|undefined} */
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   if (!value || typeof value !== 'object') return JSON.stringify(value)
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  const record = /** @type {PersistedRecord} */ (value)
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
 }
 
+/** @param {unknown} error @returns {unknown} */
+function readErrorMessage(error) {
+  if (error === null || error === undefined) return undefined
+  return /** @type {PersistedRecord} */ (Object(error)).message
+}
+
+/** @param {StorageLike|null|undefined} storage @returns {StorageLike|null} */
 function storageOrDefault(storage) {
   if (storage) return storage
   if (typeof window !== 'undefined') return window.localStorage
   return null
 }
 
+/** @param {unknown} value @param {string} label */
 function requiredId(value, label) {
   const normalized = String(value || '').trim()
   if (!normalized || ['current', 'unknown', 'null', 'undefined'].includes(normalized.toLowerCase())) {
-    const error = new Error(`A real ${label} is required before saving a drawer cash-up.`)
+    const error = /** @type {Error & {code?: string}} */ (new Error(`A real ${label} is required before saving a drawer cash-up.`))
     error.code = 'drawer_round_scope_required'
     throw error
   }
   return normalized
 }
 
+/** @param {{lodgeId?:string,periodId?:string}} [scope] */
 function contextKey({ lodgeId, periodId } = {}) {
   return `${PREFIX}${[lodgeId, periodId].map((value) => encodeURIComponent(String(value))).join(':')}`
 }
@@ -32,10 +47,12 @@ function newOperationId() {
   return `drawer-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
 }
 
+/** @param {unknown} payload */
 export function drawerSubmissionFingerprint(payload = {}) {
   return stableStringify(payload)
 }
 
+/** @param {StorageLike|null} storage @param {string} key @returns {PersistedRecord|null} */
 function readRound(storage, key) {
   if (!storage) throw new Error('Durable local storage is unavailable.')
   const raw = storage.getItem(key)
@@ -43,27 +60,30 @@ function readRound(storage, key) {
   try {
     const round = JSON.parse(raw)
     if (!round || typeof round !== 'object' || !round.idempotencyKey || !round.fingerprint) throw new Error('drawer cash-up round is invalid')
-    return round
+    return /** @type {PersistedRecord} */ (round)
   } catch (error) {
-    const wrapped = new Error(`The saved drawer cash-up could not be read safely: ${error.message}. Do not submit a new count until a manager reviews this device.`)
+    const detail = readErrorMessage(error)
+    const wrapped = /** @type {Error & {code?: string}} */ (new Error(`The saved drawer cash-up could not be read safely: ${detail}. Do not submit a new count until a manager reviews this device.`))
     wrapped.code = 'drawer_round_unavailable'
     throw wrapped
   }
 }
 
+/** @param {StorageLike|null} storage @param {string} key @param {PersistedRecord} round */
 function writeRound(storage, key, round) {
   if (!storage) return false
   const serialized = JSON.stringify(round)
   try {
     storage.setItem(key, serialized)
     if (storage.getItem(key) !== serialized) return false
-    const stored = JSON.parse(storage.getItem(key))
+    const stored = JSON.parse(/** @type {string} */ (storage.getItem(key)))
     return stored?.idempotencyKey === round?.idempotencyKey && stored?.fingerprint === round?.fingerprint
   } catch {
     return false
   }
 }
 
+/** @param {StorageLike|null} storage @param {string} key */
 function clearRoundStorage(storage, key) {
   if (!storage) return false
   try {
@@ -74,13 +94,17 @@ function clearRoundStorage(storage, key) {
   }
 }
 
+/** @param {string|null} key @param {unknown} error */
 function invalidRound(key, error) {
-  return { key, round: null, conflict: true, durable: false, error: error?.message || String(error) }
+  return { key, round: null, conflict: true, durable: false, error: readErrorMessage(error) || String(error) }
 }
 
 // Stable per-period submit round: exact retries reuse the persisted key and
 // original payload; changed counts refuse until the server confirms rejection
 // of the saved key; an approved period clears the round.
+/**
+ * @param {{lodgeId?:string,periodId?:string,actorId?:string,operatorId?:string|null,payload?:unknown,serverStatus?:string|null,serverIdempotencyKey?:string|null,storage?:StorageLike|null}} [request]
+ */
 export function getDrawerSubmissionRound({
   lodgeId,
   periodId,
@@ -102,7 +126,7 @@ export function getDrawerSubmissionRound({
     return invalidRound(null, error)
   }
   const targetStorage = storageOrDefault(storage)
-  let key
+  let key = null
   try {
     key = contextKey({ lodgeId: normalizedLodge, periodId: normalizedPeriod })
     const fingerprint = drawerSubmissionFingerprint(payload)
@@ -166,6 +190,7 @@ export function getDrawerSubmissionRound({
   }
 }
 
+/** @param {{lodgeId?:string,periodId?:string,storage?:StorageLike|null}} [request] */
 export function clearDrawerSubmissionRound({ lodgeId, periodId, storage } = {}) {
   try {
     const normalizedLodge = requiredId(lodgeId, 'lodge ID')
@@ -189,18 +214,20 @@ export function clearDrawerSubmissionRound({ lodgeId, periodId, storage } = {}) 
 // issued and no server call may be sent.
 const ATTEMPT_PREFIX = 'tsa-bonno-pos-drawer-attempt:'
 
+/** @param {string|null|undefined} scope */
 function attemptScopeKey(scope) {
   const normalized = String(scope || '').trim()
   if (!normalized) {
-    const error = new Error('A retry scope is required before issuing a drawer retry key.')
+    const error = /** @type {Error & {code?: string}} */ (new Error('A retry scope is required before issuing a drawer retry key.'))
     error.code = 'drawer_attempt_scope_required'
     throw error
   }
   return `${ATTEMPT_PREFIX}${encodeURIComponent(normalized)}`
 }
 
+/** @param {unknown} payload */
 export function drawerAttemptFingerprint(payload = {}) {
-  const intent = { ...(payload || {}) }
+  const intent = /** @type {PersistedRecord} */ ({ ...(payload || {}) })
   delete intent.pin
   delete intent.pin_hash
   delete intent.device_id
@@ -210,6 +237,7 @@ export function drawerAttemptFingerprint(payload = {}) {
   return stableStringify(intent)
 }
 
+/** @param {StorageLike|null} storage @param {string} key @returns {PersistedRecord|null} */
 function readAttempt(storage, key) {
   if (!storage) throw new Error('Durable local storage is unavailable.')
   const raw = storage.getItem(key)
@@ -218,26 +246,29 @@ function readAttempt(storage, key) {
   if (!attempt || typeof attempt !== 'object' || !attempt.key || !attempt.fingerprint) {
     throw new Error('drawer retry key is invalid')
   }
-  return attempt
+  return /** @type {PersistedRecord} */ (attempt)
 }
 
+/** @param {StorageLike|null} storage @param {string} key @param {PersistedRecord} attempt */
 function writeAttempt(storage, key, attempt) {
   if (!storage) return false
   const serialized = JSON.stringify(attempt)
   try {
     storage.setItem(key, serialized)
     if (storage.getItem(key) !== serialized) return false
-    const stored = JSON.parse(storage.getItem(key))
+    const stored = JSON.parse(/** @type {string} */ (storage.getItem(key)))
     return stored?.key === attempt?.key && stored?.fingerprint === attempt?.fingerprint
   } catch {
     return false
   }
 }
 
+/** @param {string|null} key @param {unknown} error */
 function invalidAttempt(key, error) {
-  return { key, scopeKey: key, attemptKey: null, reused: false, durable: false, error: error?.message || String(error) }
+  return { key, scopeKey: key, attemptKey: null, reused: false, durable: false, error: readErrorMessage(error) || String(error) }
 }
 
+/** @param {{scope?:string,keyPrefix?:string,fingerprint?:string,storage?:StorageLike|null}} [request] */
 export function getDrawerAttemptKey({ scope, keyPrefix = 'pos-drawer-attempt', fingerprint, storage } = {}) {
   let scopeKey = null
   try {
@@ -268,6 +299,7 @@ export function getDrawerAttemptKey({ scope, keyPrefix = 'pos-drawer-attempt', f
   }
 }
 
+/** @param {{scope?:string,storage?:StorageLike|null}} [request] */
 export function clearDrawerAttemptKey({ scope, storage } = {}) {
   try {
     const targetStorage = storageOrDefault(storage)

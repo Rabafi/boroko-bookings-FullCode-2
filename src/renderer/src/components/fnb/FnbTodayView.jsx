@@ -1,16 +1,17 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
-
 /**
  * Today landing view: actionable counts only. Money is intentionally absent
  * here; financial evidence lives in the consolidated report with source +
  * completeness certification.
  */
+/** @param {{outletId?: string | null}} props */
 export default function FnbTodayView({ outletId }) {
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(/** @type {unknown} */ (''))
   const [stale, setStale] = useState(false)
 
   const load = async () => {
@@ -18,11 +19,17 @@ export default function FnbTodayView({ outletId }) {
     setError('')
     try {
       const result = await window.api?.fnb?.getToday?.(outletId || null)
+      // These views describe the current IPC response; the assertions add no
+      // runtime validation and leave all original property reads intact.
+      const resultView = /** @type {{_source?: unknown, success?: unknown, error?: unknown} | null | undefined} */ (result)
       setData(result)
-      setStale(result?._source === 'cache')
-      if (result?.success === false) setError(result?.error || 'Today view is unavailable.')
+      setStale(resultView?._source === 'cache')
+      if (resultView?.success === false) setError(resultView?.error || 'Today view is unavailable.')
     } catch (e) {
-      setError(e?.message || 'Today view is unavailable. Reconnect and retry.')
+      // Catch values are not normalized: the original optional message read
+      // and truthy fallback remain intact.
+      const errorView = /** @type {{message?: unknown} | null | undefined} */ (e)
+      setError(errorView?.message || 'Today view is unavailable. Reconnect and retry.')
     } finally {
       setLoading(false)
     }
@@ -33,7 +40,9 @@ export default function FnbTodayView({ outletId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outletId])
 
-  const counts = data?.counts || {}
+  const dataView = /** @type {{counts?: Record<string, unknown>} | null | undefined} */ (data)
+  const counts = dataView?.counts || {}
+  /** @param {string} to */
   const withOutlet = (to) => {
     if (!outletId) return to
     const sep = to.includes('?') ? '&' : '?'

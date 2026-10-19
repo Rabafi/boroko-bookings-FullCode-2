@@ -43,7 +43,10 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 const results = [];
-const browser = await chromium.launch({ headless: true });
+const browserLaunchOptions = { headless: true };
+const configuredChromium = String(process.env.LUNA_CHROMIUM_EXECUTABLE_PATH || '').trim();
+if (configuredChromium) browserLaunchOptions.executablePath = configuredChromium;
+const browser = await chromium.launch(browserLaunchOptions);
 async function scenario(name, fn) {
   const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
   try {
@@ -701,6 +704,40 @@ await scenario('Z1 later revision approval does not confirm the old review', asy
   assert.equal(await page.getByRole('button', { name: 'Approve cutover batch' }).count(), 0);
 });
 
+// POS posting responses arrive directly through IPC; legacy envelopes remain supported.
+for (const shape of ['raw', 'envelope']) {
+  await scenario(`GL POS posting notices preserve ${shape} replay evidence`, async (page) => {
+    await page.goto(`${base}/?suite=pos-post-notice&shape=${shape}`);
+    await page.getByText(/Debits.*12\.34.*Credits.*12\.34/).waitFor();
+    const input = page.getByPlaceholder('POS order UUID', { exact: true });
+    await input.waitFor();
+    const form = page.locator('form').filter({ has: input });
+    const post = form.getByRole('button', { name: 'Post', exact: true });
+    await input.fill(K1);
+    await post.click();
+    await page.getByText('POS order posted as one retry-safe journal.', { exact: true }).waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll('input')].find((node) => node.placeholder === 'POS order UUID')?.value === '');
+    await input.fill(K1);
+    await post.click();
+    await page.getByText('This POS order was already posted; no duplicate journal was created.', { exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__calls.filter((call) => call.operation === 'postPosOrder').map((call) => call.args)), [[K1], [K1]]);
+  });
+}
+await scenario('GL missing trial balance never becomes a confirmed zero', async (page) => {
+  await page.goto(`${base}/?suite=pos-post-notice&balance=missing`);
+  await page.getByText('Trial balance could not be verified', { exact: true }).waitFor();
+  assert.doesNotMatch(await text(page), /Debits.*0\.00.*Credits.*0\.00/);
+  assert.doesNotMatch(await text(page), /No posted ledger activity in this period/);
+});
+await scenario('GL older filter response cannot replace current trial balance', async (page) => {
+  await page.goto(`${base}/?suite=pos-post-notice&balance=race`);
+  await page.waitForFunction(() => window.__calls.some((call) => call.operation === 'getLedger'));
+  await page.getByLabel('From', { exact: true }).fill('2026-01-01');
+  await page.getByText(/Debits.*24\.68.*Credits.*24\.68/).waitFor();
+  await page.waitForTimeout(1700);
+  await page.getByText(/Debits.*24\.68.*Credits.*24\.68/).waitFor();
+  assert.doesNotMatch(await text(page), /Debits.*12\.34.*Credits.*12\.34/);
+});
 await new Promise((r) => server.close(r));
 await browser.close();
 for (const line of results) console.log(line);

@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // Admin Notification Inbox — backend domain
 // ══════════════════════════════════════════════════════════════════════════════
+// @ts-check
 import { state } from '../state.js'
 
 function requireAdmin() {
@@ -9,6 +10,7 @@ function requireAdmin() {
 }
 
 // ── Create a notification ────────────────────────────────────────────────────
+/** @param {Record<string, unknown>} [payload] @returns {Promise<unknown>} */
 export async function createNotification(payload = {}) {
   if (!state.isOnline) return null
   const db = requireAdmin()
@@ -28,6 +30,7 @@ export async function createNotification(payload = {}) {
 }
 
 // ── List notifications ───────────────────────────────────────────────────────
+/** @param {Record<string, unknown>} [filters] @returns {Promise<unknown>} */
 export async function getNotifications(filters = {}) {
   if (!state.isOnline) return []
   const db = requireAdmin()
@@ -42,6 +45,7 @@ export async function getNotifications(filters = {}) {
 }
 
 // ── Get unread count ─────────────────────────────────────────────────────────
+/** @returns {Promise<unknown>} */
 export async function getUnreadCount() {
   if (!state.isOnline) return 0
   const db = requireAdmin()
@@ -51,6 +55,7 @@ export async function getUnreadCount() {
 }
 
 // ── Mark as read ─────────────────────────────────────────────────────────────
+/** @param {unknown} [ids] @returns {Promise<unknown>} */
 export async function markRead(ids = null) {
   if (!state.isOnline) return 0
   const db = requireAdmin()
@@ -62,6 +67,7 @@ export async function markRead(ids = null) {
 }
 
 // ── Cleanup old notifications ────────────────────────────────────────────────
+/** @param {unknown} [days] @returns {Promise<unknown>} */
 export async function cleanup(days = 90) {
   if (!state.isOnline) return 0
   const db = requireAdmin()

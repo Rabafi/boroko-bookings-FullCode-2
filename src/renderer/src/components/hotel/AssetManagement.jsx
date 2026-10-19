@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, Search, RefreshCw, AlertTriangle, FileText, Wrench, Calendar, DollarSign, CheckCircle, XCircle, Clock, Tag, Paperclip, Shield } from 'lucide-react'
 import { Modal } from '../shared/Modal'

@@ -24,6 +24,18 @@ import {
 import { parseOptionalNonNegativeCost } from '../../shared/inventoryStockForm.js'
 import { normalizeBarcode } from '../../shared/barcodeScanner.js'
 
+/** @typedef {import('../../shared/desktopIpcContracts.js').ReadMetadataRows} ReadMetadataRows */
+
+/**
+ * Expected fields consumed from the purchase query and the matching cache.
+ * Cache JSON and query rows are not validated here; provenance fields remain
+ * optional because the legacy SELECT omits them and older cached rows may not
+ * carry them.
+ * @typedef {{id: unknown, lodge_id: unknown, item_id: unknown, quantity_purchased: unknown, unit_cost: unknown, total_cost: unknown, date?: unknown, _deleted_offline?: unknown, operation_id?: unknown, source_document_type?: unknown, payload_hash?: unknown, valuation_method?: unknown}} InventoryPurchaseReadExpectedData
+ */
+
+/** @typedef {{message?: unknown}} InventoryPurchaseErrorMessageReadView */
+
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
 const INVENTORY_MOVEMENTS_CACHE = 'inventory-movements';
@@ -32,13 +44,76 @@ const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, r
 const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
 const INVENTORY_PURCHASE_EVIDENCE_SELECT = `${INVENTORY_PURCHASE_SELECT}, operation_id, payload_hash, source_document_type, source_document_id, lot_id, valuation_method, evidence_ref`;
 
+/**
+ * Expected inventory movement shape written by this module and selected from
+ * `inventory_movements`. Cache JSON is not runtime-validated before use.
+ * @typedef {Object} InventoryMovementExpectedData
+ * @property {string} id
+ * @property {string | null} lodge_id
+ * @property {string} item_id
+ * @property {string} movement_type
+ * @property {number | string} quantity
+ * @property {number | string} unit_cost
+ * @property {number | string} total_cost
+ * @property {string | null} notes
+ * @property {string | null} reference_type
+ * @property {string | null} reference_id
+ * @property {string | null} operation_id
+ * @property {string | null} source_document_type
+ * @property {string | null} source_document_id
+ * @property {string | null} valuation_method
+ * @property {string | null} payload_hash
+ * @property {number | string | null} [quantity_before]
+ * @property {number | string | null} [quantity_after]
+ * @property {number | string | null} [expected_qty]
+ * @property {number | string | null} [actual_qty]
+ * @property {string | null} [reason_code]
+ * @property {string} source
+ * @property {string | null} created_by
+ * @property {string | null} [created_by_name]
+ * @property {string} created_at
+ * @property {string} [date]
+ * @property {boolean} [_pending_sync]
+ * @property {string} [_sync_state]
+ */
+
+/**
+ * @typedef {Object} InventoryMovementInput
+ * @property {string} item_id
+ * @property {string} movement_type
+ * @property {string} [id]
+ * @property {unknown} [quantity]
+ * @property {unknown} [unit_cost]
+ * @property {unknown} [total_cost]
+ * @property {string | null} [notes]
+ * @property {string | null} [reference_type]
+ * @property {string | null} [reference_id]
+ * @property {string | null} [operation_id]
+ * @property {string | null} [source_document_type]
+ * @property {string | null} [source_document_id]
+ * @property {string} [valuation_method]
+ * @property {string | null} [payload_hash]
+ * @property {unknown} [quantity_before]
+ * @property {unknown} [quantity_after]
+ * @property {unknown} [expected_qty]
+ * @property {unknown} [actual_qty]
+ * @property {string | null} [reason_code]
+ * @property {string} [source]
+ * @property {string | null} [created_by]
+ * @property {string | null} [created_by_name]
+ * @property {string} [created_at]
+ * @property {boolean} [_pending_sync]
+ * @property {string} [_sync_state]
+ */
+
+/** @param {unknown} rows @param {unknown} source @param {unknown} complete @returns {ReadMetadataRows} */
 function withReadMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : [];
   Object.defineProperties(result, {
     _source: { value: source, enumerable: true, configurable: true },
     _complete: { value: complete === true, enumerable: true, configurable: true }
   });
-  return result;
+  return /** @type {ReadMetadataRows} */ (result);
 }
 
 function isMissingInventoryCompatibilityColumnError(error) {
@@ -55,11 +130,13 @@ async function selectInventoryItems(selectColumns = INVENTORY_ITEM_SELECT, from 
   range(from, from + pageSize - 1);
 }
 
+/** @param {unknown} value @param {number} [fallback] */
 function normalizeStockNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+/** @param {unknown} value @param {number} [fallback] */
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
@@ -89,10 +166,12 @@ function readOptionalBarcode(data = {}) {
   return normalized
 }
 
+/** @param {InventoryMovementExpectedData} a @param {InventoryMovementExpectedData} b */
 function movementSort(a, b) {
   return String(b.created_at || b.date || '').localeCompare(String(a.created_at || a.date || ''));
 }
 
+/** @param {unknown} value @param {boolean} [endExclusive] */
 function localDateBoundary(value, endExclusive = false) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null;
   const boundary = new Date(`${value}T00:00:00`);
@@ -100,6 +179,7 @@ function localDateBoundary(value, endExclusive = false) {
   return boundary.toISOString();
 }
 
+/** @param {InventoryMovementExpectedData[]} [rows] @param {unknown} startDate @param {unknown} endDate */
 function filterMovementsByDate(rows = [], startDate, endDate) {
   const start = localDateBoundary(startDate);
   const end = localDateBoundary(endDate, true);
@@ -109,6 +189,7 @@ function filterMovementsByDate(rows = [], startDate, endDate) {
   });
 }
 
+/** @param {InventoryMovementExpectedData | Record<string, undefined>} [row] */
 function movementIdentity(row = {}) {
   if (row.reference_type && row.reference_id && row.item_id && row.movement_type) {
     return `${row.reference_type}:${row.reference_id}:${row.item_id}:${row.movement_type}`;
@@ -116,11 +197,13 @@ function movementIdentity(row = {}) {
   return row.id || `${row.item_id}:${row.movement_type}:${row.created_at || row.date || ''}:${row.quantity || 0}`;
 }
 
+/** @returns {InventoryMovementExpectedData[]} */
 function readInventoryMovementsCache() {
   const rows = readCache(INVENTORY_MOVEMENTS_CACHE);
-  return Array.isArray(rows) ? rows : [];
+  return Array.isArray(rows) ? /** @type {InventoryMovementExpectedData[]} */ (rows) : [];
 }
 
+/** @param {InventoryMovementExpectedData[]} [rows] */
 function writeInventoryMovementsCache(rows = []) {
   writeCache(INVENTORY_MOVEMENTS_CACHE, rows.slice(0, 1000));
 }
@@ -135,6 +218,7 @@ function removeInventoryDraftFromQueues(id) {
   if (nextFailed.removed) writeFailedSyncQueue(nextFailed.queue);
 }
 
+/** @param {InventoryMovementInput | Record<string, undefined>} [entry] @returns {InventoryMovementExpectedData | null} */
 export function upsertLocalInventoryMovement(entry = {}) {
   if (!entry?.item_id || !entry?.movement_type) return null;
   const row = {
@@ -559,29 +643,36 @@ export async function addInventoryPurchase(data) {
   return { success: true };
 }
 
+/** @param {string} itemId */
 export async function getInventoryPurchases(itemId) {
-  const cached = readCache('inventory-purchases').filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
+  // Expected cache shape at the existing direct filter; persisted JSON remains
+  // unvalidated, including the native failure if the value has no .filter.
+  const cached = /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
   if (!state.isOnline) {
     return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
   }
 
   try {
-    let { data, error } = await state.supabase.
+    // initDatabase assigns the client before it marks connectivity online.
+    /** @type {{data: unknown, error: unknown}} */
+    let { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('inventory_purchases').
     select(INVENTORY_PURCHASE_EVIDENCE_SELECT).
     eq('lodge_id', state.lodgeId).
     eq('item_id', itemId).
     order('date', { ascending: false }).
     limit(200);
-    if (error && /column|schema cache|PGRST/i.test(String(error.message || error))) {
-      const legacyResult = await state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).eq('item_id', itemId).order('date', { ascending: false }).limit(200);
+    if (error && /column|schema cache|PGRST/i.test(String((/** @type {InventoryPurchaseErrorMessageReadView} */ (error)).message || error))) {
+      const legacyResult = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).eq('item_id', itemId).order('date', { ascending: false }).limit(200);
       data = legacyResult.data;
       error = legacyResult.error;
     }
     if (error) throw error;
 
-    const liveRows = Array.isArray(data) ? data : [];
-    const otherCachedRows = readCache('inventory-purchases').filter((row) => row.item_id !== itemId);
+    // Array.isArray preserves the existing container fallback; row fields are
+    // still an expected, unvalidated view of the selected purchase columns.
+    const liveRows = /** @type {InventoryPurchaseReadExpectedData[]} */ (Array.isArray(data) ? data : []);
+    const otherCachedRows = /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id !== itemId);
     if (liveRows.length === 0 && cached.length > 0) {
       console.warn('getInventoryPurchases received empty live result; using cached purchases instead');
       return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
@@ -591,38 +682,46 @@ export async function getInventoryPurchases(itemId) {
     return withReadMetadata(liveRows, 'server', liveRows.every((row) => row.operation_id && row.source_document_type && row.payload_hash && row.valuation_method !== 'unknown_legacy'));
   } catch (error) {
     if (cached.length > 0) {
-      console.warn('getInventoryPurchases falling back to cache:', error.message);
+      console.warn('getInventoryPurchases falling back to cache:', (/** @type {InventoryPurchaseErrorMessageReadView} */ (error)).message);
       return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
-    throw new Error(error.message);
+    // This expected error view does not normalize caught values; Error keeps
+    // its native runtime coercion for the original message value.
+    throw new Error(/** @type {string} */ ((/** @type {InventoryPurchaseErrorMessageReadView} */ (error)).message));
   }
 }
 
 export async function getAllInventoryPurchases() {
-  const cached = readCache('inventory-purchases').filter((row) => row?._deleted_offline !== true);
+  // Expected cache shape at the existing direct filter; no runtime validation.
+  const cached = /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row?._deleted_offline !== true);
   if (!state.isOnline) {
     return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
   }
 
   try {
+    /** @type {InventoryPurchaseReadExpectedData[]} */
     const liveRows = [];
     let legacyShape = false;
     for (let from = 0; from < 100000; from += 500) {
-      let query = state.supabase.
+      // initDatabase assigns the client before it marks connectivity online.
+      let query = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('inventory_purchases').
       select(legacyShape ? INVENTORY_PURCHASE_SELECT : INVENTORY_PURCHASE_EVIDENCE_SELECT).
       eq('lodge_id', state.lodgeId).
       order('date', { ascending: false }).
       range(from, from + 499);
+      /** @type {{data: unknown, error: unknown}} */
       let { data, error } = await query;
       if (error && !legacyShape && /column|schema cache|PGRST/i.test(String(error.message || error))) {
         legacyShape = true;
-        const legacyResult = await state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).range(from, from + 499);
+        const legacyResult = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).range(from, from + 499);
         data = legacyResult.data;
         error = legacyResult.error;
       }
       if (error) throw error;
-      const page = Array.isArray(data) ? data : [];
+      // The array guard is unchanged; the expected row view does not validate
+      // individual query results or assert financial completeness.
+      const page = /** @type {InventoryPurchaseReadExpectedData[]} */ (Array.isArray(data) ? data : []);
       liveRows.push(...page);
       if (page.length < 500) break;
     }
@@ -638,10 +737,12 @@ export async function getAllInventoryPurchases() {
     );
   } catch (error) {
     if (cached.length > 0) {
-      console.warn('getAllInventoryPurchases falling back to cache:', error?.message || error);
+      console.warn('getAllInventoryPurchases falling back to cache:', (/** @type {InventoryPurchaseErrorMessageReadView} */ (error))?.message || error);
       return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
-    throw new Error(error?.message || 'Failed to load inventory purchases');
+    // This expected error view does not normalize caught values; Error keeps
+    // its native runtime coercion for the original message value.
+    throw new Error(/** @type {string} */ ((/** @type {InventoryPurchaseErrorMessageReadView} */ (error))?.message || 'Failed to load inventory purchases'));
   }
 }
 

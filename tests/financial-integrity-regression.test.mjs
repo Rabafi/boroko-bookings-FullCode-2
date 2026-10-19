@@ -131,14 +131,15 @@ async function run() {
 
   assert.match(infrastructure, /shouldRefreshBookingsAfterFailure = true/)
   assert.match(infrastructure, /\|\| shouldRefreshBookingsAfterFailure\) refreshTargets\.push\('bookings', 'booking-charges'\)/)
-  assert.match(syncCache, /\['failed', 'sync_failed', 'manual_review_required'\]\.includes\(patch\._sync_state\)/)
+  assert.match(syncCache, /const failedSyncStates = \/\*\* @type \{unknown\[\]\} \*\/ \(\['failed', 'sync_failed', 'manual_review_required'\]\)/)
+  assert.match(syncCache, /failedSyncStates\.includes\(patchFields\._sync_state\)/)
 
   assert.doesNotMatch(pwaApi, /async function executeCreateBooking\(/)
   assert.doesNotMatch(pwaApi, /async function executeUpdateBookingStatus\(/)
   assert.doesNotMatch(pwaApi, /async function executeUpdateBookingPayment\(/)
   assert.doesNotMatch(pwaApi, /function rejectFrontDeskOnlyAction\(/)
-  assert.match(pwaApi, /p_item_id:\s*payload\.id/)
-  assert.match(pwaApi, /p_adjustment_id:\s*payload\.adjustment_id \|\| crypto\.randomUUID\(\)/)
+  assert.match(pwaApi, /p_item_id:\s*(?:payload\.id|readDirectField\(payload,\s*'id'\))/)
+  assert.match(pwaApi, /p_adjustment_id:\s*(?:payload\.adjustment_id|readDirectField\(payload,\s*'adjustment_id'\))\s*\|\|\s*crypto\.randomUUID\(\)/)
 
   assert.match(baselineSql, /ADD CONSTRAINT no_overlapping_bookings EXCLUDE USING gist/)
   assert.match(baselineSql, /insert into public\.invoice_sequences[\s\S]*on conflict \(lodge_id, year\)[\s\S]*do update/)

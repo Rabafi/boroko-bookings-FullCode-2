@@ -2,6 +2,14 @@ import fs from 'fs'
 import crypto from 'crypto'
 import * as XLSX from '@e965/xlsx'
 
+// @ts-check
+
+/**
+ * @param {string} filePath
+ * @param {(bytes: Buffer) => boolean} predicate
+ * @param {string} message
+ * @returns {{ byteCount: number, fileHash: string }}
+ */
 function verifiedFile(filePath, predicate, message) {
   const saved = fs.statSync(filePath)
   if (!saved.isFile() || saved.size <= 0) throw new Error(message)
@@ -13,6 +21,7 @@ function verifiedFile(filePath, predicate, message) {
   }
 }
 
+/** @param {string} filePath @param {XLSX.WorkBook} workbook @returns {{ byteCount: number, fileHash: string }} */
 export function writePosHistoryExcelArtifact(filePath, workbook) {
   const bytes = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' })
   fs.writeFileSync(filePath, bytes)
@@ -24,11 +33,13 @@ export function writePosHistoryExcelArtifact(filePath, workbook) {
   return result
 }
 
+/** @param {string} filePath @param {Buffer} pdfBuffer @returns {{ byteCount: number, fileHash: string }} */
 export function writePosHistoryPdfArtifact(filePath, pdfBuffer) {
   fs.writeFileSync(filePath, pdfBuffer)
   return verifiedFile(filePath, (bytes) => bytes.length >= 20 && bytes.subarray(0, 4).toString() === '%PDF', 'The POS PDF file could not be written or reopened.')
 }
 
+/** @param {string} filePath @param {unknown} dataset @returns {{ byteCount: number, fileHash: string }} */
 export function writePosHistoryJsonArtifact(filePath, dataset) {
   fs.writeFileSync(filePath, JSON.stringify(dataset, null, 2), 'utf8')
   const result = verifiedFile(filePath, (bytes) => bytes.length > 2, 'The POS detailed companion file was not written.')

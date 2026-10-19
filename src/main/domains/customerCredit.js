@@ -8,6 +8,7 @@ import { recordCriticalError } from './operationalLog.js';
 const CREDIT_IN_TYPES = new Set(['receipt', 'adjustment_in', 'reversal_in']);
 const CREDIT_OUT_TYPES = new Set(['booking_allocation', 'refund', 'adjustment_out', 'reversal_out']);
 
+/** @param {unknown} value @param {string} [label] */
 function requireStableOperationId(value, label = 'operation') {
   const key = String(value || '').trim();
   if (!key || key.length < 8 || key.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(key)) {
@@ -75,6 +76,7 @@ function patchCreditSummaryBalance(customerId, balance, patch = {}) {
   ]);
 }
 
+/** @param {unknown} customerId @param {unknown} value */
 function patchAuthoritativeCreditBalance(customerId, value, patch = {}) {
   const balance = Number(value);
   if (!Number.isFinite(balance)) return false;

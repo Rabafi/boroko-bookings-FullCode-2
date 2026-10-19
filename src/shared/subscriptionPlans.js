@@ -1,5 +1,16 @@
+// @ts-check
+/** @typedef {'Starter' | 'Standard' | 'Pro' | 'Enterprise'} PlanName */
+/** @typedef {keyof typeof PLANS} PlanKey */
+/** @typedef {typeof PLANS[PlanKey]} PlanDetails */
+/** @typedef {{monthlyBookings?: number | null, monthlyBookingsGrace?: number | null, rooms?: number | null, users?: number | null}} UsageLimits */
+/** @typedef {Record<string, unknown>} UnknownRecord */
+/** @typedef {{getItem(key: string): string | null, setItem(key: string, value: string): void}} StorageLike */
+/** @typedef {{created_at?: string | number, status?: unknown, is_exclusive_event?: unknown, check_in?: string | number}} BookingUsageInput */
+
+/** @type {PlanName[]} */
 export const SUBSCRIPTION_PLAN_ORDER = ['Starter', 'Standard', 'Pro', 'Enterprise']
 
+/** @type {Record<string, PlanName>} */
 const PLAN_ALIASES = {
   basic: 'Starter',
   starter: 'Starter',
@@ -12,6 +23,8 @@ const PLAN_ALIASES = {
   resort: 'Enterprise'
 }
 
+/** @type {Record<string, PlanName>} */
+/** @type {Record<string, PlanName>} */
 const FEATURE_REQUIRED_PLAN = {
   basic_reports: 'Starter',
   starter_backup: 'Starter',
@@ -58,6 +71,8 @@ const FEATURE_REQUIRED_PLAN = {
   emergency_list: 'Enterprise'
 }
 
+/** @type {Record<string, string>} */
+/** @type {Record<string, string>} */
 const FEATURE_UPGRADE_CONTEXT = {
   basic_reports: 'The lodge needs a certified daily, 7-day, or 30-day operating summary.',
   starter_backup: 'The lodge needs a customer-owned core-data copy for support-led recovery.',
@@ -187,6 +202,7 @@ const PLANS = {
   }
 }
 
+/** @type {Record<PlanName, {monthlyBookings: number, monthlyBookingsGrace: number, rooms: number, users: number}>} */
 const PLAN_USAGE_LIMITS = {
   Starter: {
     monthlyBookings: 120,
@@ -219,6 +235,7 @@ const UPGRADE_NUDGE_COOLDOWN_MS = 24 * 60 * 60 * 1000
 const UPGRADE_INTENT_LOG_KEY = 'boroko:upgrade-intent-log'
 const UPGRADE_INTENT_LOG_LIMIT = 50
 
+/** @type {Record<PlanName, {nextPlan: PlanName | null, capacities: string[], features: string[]}>} */
 const PLAN_UPSELL_BENEFITS = {
   Starter: {
     nextPlan: 'Standard',
@@ -242,19 +259,23 @@ const PLAN_UPSELL_BENEFITS = {
   }
 }
 
+/** @param {unknown} plan @returns {PlanName} */
 export function normalizeSubscriptionPlan(plan) {
   const raw = String(plan || '').trim().toLowerCase()
   return PLAN_ALIASES[raw] || 'Starter'
 }
 
+/** @param {unknown} plan @returns {PlanDetails} */
 export function getSubscriptionPlan(plan) {
   return PLANS[normalizeSubscriptionPlan(plan)]
 }
 
+/** @returns {PlanDetails[]} */
 export function getAllSubscriptionPlans() {
   return SUBSCRIPTION_PLAN_ORDER.map((planName) => PLANS[planName])
 }
 
+/** @param {unknown} plan @returns {Record<string, number>} */
 export function getPlanUsageLimits(plan) {
   return PLAN_USAGE_LIMITS[normalizeSubscriptionPlan(plan)]
 }
@@ -266,11 +287,13 @@ const USAGE_LIMIT_FIELD_ALIASES = {
   users: ['users']
 }
 
+/** @param {unknown} source @param {string[]} aliases @returns {{found: boolean, value: unknown}} */
 function readEffectiveLimit(source, aliases) {
   if (!source || typeof source !== 'object') return { found: false, value: undefined }
+  const record = /** @type {Record<string, unknown>} */ (source)
   for (const alias of aliases) {
-    if (Object.prototype.hasOwnProperty.call(source, alias)) {
-      return { found: true, value: source[alias] }
+    if (Object.prototype.hasOwnProperty.call(record, alias)) {
+      return { found: true, value: record[alias] }
     }
   }
   return { found: false, value: undefined }
@@ -282,9 +305,11 @@ function readEffectiveLimit(source, aliases) {
  * values through Command Central. A present null means unlimited; a missing
  * key means "use the package default".
  */
+/** @param {Record<string, unknown>} [entitlement] @param {unknown} [fallbackPlan] */
+/** @param {Record<string, unknown>} [entitlement] @param {unknown} [fallbackPlan] @returns {Record<string, number | null>} */
 export function getEffectiveUsageLimits(entitlement = {}, fallbackPlan = null) {
   const plan = fallbackPlan || entitlement?.plan || entitlement?.subscription_plan || 'Starter'
-  const resolved = { ...getPlanUsageLimits(plan) }
+  const resolved = /** @type {Record<string, number | null>} */ ({ ...getPlanUsageLimits(plan) })
   const effective = entitlement?.effective_limits
     || entitlement?.effectiveLimits
     || entitlement?.usage_limits
@@ -304,10 +329,12 @@ export function getEffectiveUsageLimits(entitlement = {}, fallbackPlan = null) {
   return resolved
 }
 
+/** @param {unknown} value @returns {boolean} */
 export function isUnlimited(value) {
   return value == null || value === Infinity
 }
 
+/** @param {unknown} plan @returns {PlanName | null} */
 export function getNextSubscriptionPlan(plan) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
   const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
@@ -315,15 +342,18 @@ export function getNextSubscriptionPlan(plan) {
   return SUBSCRIPTION_PLAN_ORDER[planIndex + 1]
 }
 
+/** @param {unknown} plan */
 export function getPlanUpsell(plan) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
   return PLAN_UPSELL_BENEFITS[normalizedPlan] || PLAN_UPSELL_BENEFITS.Starter
 }
 
+/** @param {{used?: unknown, limit?: unknown, grace?: unknown}} [input] */
 export function getUsageLimitStatus({ used = 0, limit = null, grace = 0 } = {}) {
   return getUsageLimitStatusWithGrace({ used, limit, grace })
 }
 
+/** @param {{used?: unknown, limit?: unknown, grace?: unknown}} [input] */
 export function getUsageLimitStatusWithGrace({ used = 0, limit = null, grace = 0 } = {}) {
   const safeUsed = Number.isFinite(Number(used)) ? Number(used) : 0
   if (isUnlimited(limit)) {
@@ -391,6 +421,7 @@ export function getUsageLimitStatusWithGrace({ used = 0, limit = null, grace = 0
   }
 }
 
+/** @param {Record<string, unknown>} [status] @returns {'normal' | 'enterprise' | 'above_plan' | 'blocked' | 'in_grace' | 'critical' | 'near_limit'} */
 export function getUsageStateKey(status = {}) {
   if (!status || typeof status !== 'object') return 'normal'
   if (status.state === 'unlimited') return 'enterprise'
@@ -402,6 +433,7 @@ export function getUsageStateKey(status = {}) {
   return 'normal'
 }
 
+/** @param {string | Record<string, unknown>} [statusOrKey] @returns {number} */
 export function getUsagePriorityScore(statusOrKey = '') {
   const key = typeof statusOrKey === 'string' ? statusOrKey : getUsageStateKey(statusOrKey)
   const order = {
@@ -414,11 +446,13 @@ export function getUsagePriorityScore(statusOrKey = '') {
     enterprise: 0,
     unknown: 0
   }
-  return order[key] || 0
+  return (/** @type {Record<string, number>} */ (order))[key] || 0
 }
 
+/** @param {string | Record<string, unknown>} [statusOrKey] */
 export function getUsageStatePresentation(statusOrKey = '') {
   const key = typeof statusOrKey === 'string' ? statusOrKey : getUsageStateKey(statusOrKey)
+  /** @type {Record<string, {label: string, cls: string}>} */
   const styles = {
     normal: {
       label: 'Normal',
@@ -452,6 +486,7 @@ export function getUsageStatePresentation(statusOrKey = '') {
   return { key, ...(styles[key] || styles.normal) }
 }
 
+/** @param {{plan?: unknown, bookingsUsage?: unknown, roomsUsage?: unknown, usersUsage?: unknown, limits?: Partial<Record<string, unknown>>}} [input] */
 export function getEarlyUpgradePromptState({
   plan,
   bookingsUsage = 0,
@@ -507,6 +542,7 @@ export function getEarlyUpgradePromptState({
   }
 }
 
+/** @param {unknown} plan */
 export function formatPlanLimits(plan) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
   const limits = getPlanUsageLimits(normalizedPlan)
@@ -535,10 +571,12 @@ export function formatPlanLimits(plan) {
   }
 }
 
+/** @param {string} storageKey @param {unknown} fallback @returns {unknown} */
 function readStoredJson(storageKey, fallback) {
-  if (typeof window === 'undefined' || !window.localStorage) return fallback
+  const runtime = /** @type {typeof globalThis & {window?: {localStorage?: StorageLike}}} */ (globalThis)
+  if (typeof runtime.window === 'undefined' || !runtime.window.localStorage) return fallback
   try {
-    const raw = window.localStorage.getItem(storageKey)
+    const raw = runtime.window.localStorage.getItem(storageKey)
     if (!raw) return fallback
     return JSON.parse(raw)
   } catch {
@@ -546,20 +584,24 @@ function readStoredJson(storageKey, fallback) {
   }
 }
 
+/** @param {string} storageKey @param {unknown} value @returns {boolean} */
 function writeStoredJson(storageKey, value) {
-  if (typeof window === 'undefined' || !window.localStorage) return false
+  const runtime = /** @type {typeof globalThis & {window?: {localStorage?: StorageLike}}} */ (globalThis)
+  if (typeof runtime.window === 'undefined' || !runtime.window.localStorage) return false
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(value))
+    runtime.window.localStorage.setItem(storageKey, JSON.stringify(value))
     return true
   } catch {
     return false
   }
 }
 
+/** @param {string} storageKey @param {number} [now] @param {number} [cooldownMs] */
 export function getUpgradeNudgeCooldownState(storageKey, now = Date.now(), cooldownMs = UPGRADE_NUDGE_COOLDOWN_MS) {
   const entry = readStoredJson(storageKey, null)
-  const lastShownAt = Number(entry?.lastShownAt || 0)
-  const nextAllowedAt = Number(entry?.nextAllowedAt || 0)
+  const stored = /** @type {{lastShownAt?: unknown, nextAllowedAt?: unknown} | null} */ (entry)
+  const lastShownAt = Number(stored?.lastShownAt || 0)
+  const nextAllowedAt = Number(stored?.nextAllowedAt || 0)
   const allowed = !Number.isFinite(nextAllowedAt) || nextAllowedAt <= now
 
   return {
@@ -570,6 +612,7 @@ export function getUpgradeNudgeCooldownState(storageKey, now = Date.now(), coold
   }
 }
 
+/** @param {string} storageKey @param {number} [now] @param {number} [cooldownMs] */
 export function markUpgradeNudgeShown(storageKey, now = Date.now(), cooldownMs = UPGRADE_NUDGE_COOLDOWN_MS) {
   const state = {
     lastShownAt: now,
@@ -579,6 +622,7 @@ export function markUpgradeNudgeShown(storageKey, now = Date.now(), cooldownMs =
   return state
 }
 
+/** @param {{lodgeId?: unknown, lodgeName?: unknown, plan?: unknown, usage?: UnknownRecord, recommendation?: UnknownRecord | null, trigger?: unknown}} [input] */
 export function trackUpgradeIntent({
   lodgeId = '',
   lodgeName = '',
@@ -587,16 +631,18 @@ export function trackUpgradeIntent({
   recommendation = null,
   trigger = 'modal'
 } = {}) {
+  const usageRecord = /** @type {UnknownRecord} */ (usage)
+  const recommended = /** @type {UnknownRecord | null} */ (recommendation)
   const event = {
     lodgeId: lodgeId || '',
     lodgeName: lodgeName || '',
     plan: normalizeSubscriptionPlan(plan),
     usage: {
-      bookings: Number(usage?.bookings ?? usage?.monthlyBookings ?? usage?.targetMonthBookings ?? 0),
-      rooms: Number(usage?.rooms ?? 0),
-      users: Number(usage?.users ?? 0)
+      bookings: Number(usageRecord.bookings ?? usageRecord.monthlyBookings ?? usageRecord.targetMonthBookings ?? 0),
+      rooms: Number(usageRecord.rooms ?? 0),
+      users: Number(usageRecord.users ?? 0)
     },
-    recommendedPlan: normalizeSubscriptionPlan(recommendation?.recommendedPlan || recommendation?.plan || plan),
+    recommendedPlan: normalizeSubscriptionPlan(recommended?.recommendedPlan || recommended?.plan || plan),
     trigger: String(trigger || 'modal').trim().toLowerCase(),
     timestamp: new Date().toISOString()
   }
@@ -606,7 +652,8 @@ export function trackUpgradeIntent({
   writeStoredJson(UPGRADE_INTENT_LOG_KEY, nextLog)
 
   try {
-    console.info?.('[Tsa Bonno] upgrade intent', event)
+    const runtime = /** @type {typeof globalThis & {console?: {info?: (...values: unknown[]) => void}}} */ (globalThis)
+    runtime.console?.info?.('[Tsa Bonno] upgrade intent', event)
   } catch {
     // Best-effort only.
   }
@@ -614,6 +661,7 @@ export function trackUpgradeIntent({
   return event
 }
 
+/** @param {{plan?: unknown, used?: unknown, limits?: UsageLimits}} [input] */
 export function canCreateBooking({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatusWithGrace({
     used,
@@ -622,22 +670,26 @@ export function canCreateBooking({ plan, used, limits = getPlanUsageLimits(plan)
   })
 }
 
+/** @param {{plan?: unknown, used?: unknown, limits?: UsageLimits}} [input] */
 export function canCreateRoom({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatus({ used, limit: limits.rooms })
 }
 
+/** @param {{plan?: unknown, used?: unknown, limits?: UsageLimits}} [input] */
 export function canCreateUser({ plan, used, limits = getPlanUsageLimits(plan) } = {}) {
   return getUsageLimitStatus({ used, limit: limits.users })
 }
 
+/** @param {BookingUsageInput} [booking] @param {Date} [monthDate] */
 export function isBookingCreatedInUsageMonth(booking = {}, monthDate = new Date()) {
-  const createdAt = new Date(booking?.created_at || 0)
+  const createdAt = new Date(/** @type {string | number} */ (booking?.created_at || 0))
   if (!Number.isFinite(createdAt.getTime())) return false
   const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
   const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 1)
   return createdAt >= start && createdAt < end
 }
 
+/** @param {BookingUsageInput} [booking] */
 export function isCountableBookingForUsage(booking = {}) {
   const status = String(booking?.status || '').trim().toLowerCase()
   if (!['confirmed', 'checked_in', 'checked_out'].includes(status)) return false
@@ -645,26 +697,30 @@ export function isCountableBookingForUsage(booking = {}) {
   return true
 }
 
+/** @param {BookingUsageInput} [booking] @param {Date} [monthDate] */
 export function isBookingInUsageMonth(booking = {}, monthDate = new Date()) {
-  const checkIn = new Date(booking?.check_in || 0)
+  const checkIn = new Date(/** @type {string | number} */ (booking?.check_in || 0))
   if (!Number.isFinite(checkIn.getTime())) return false
   const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
   const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 1)
   return checkIn >= start && checkIn < end
 }
 
+/** @param {BookingUsageInput[]} [bookings] @param {Date} [monthDate] */
 export function countMonthlyUsageBookings(bookings = [], monthDate = new Date()) {
   return (bookings || []).filter((booking) => (
     isCountableBookingForUsage(booking) && isBookingInUsageMonth(booking, monthDate)
   )).length
 }
 
+/** @param {BookingUsageInput[]} [bookings] @param {Date} [monthDate] */
 export function countMonthlyCreatedBookings(bookings = [], monthDate = new Date()) {
   return (bookings || []).filter((booking) => (
     isCountableBookingForUsage(booking) && isBookingCreatedInUsageMonth(booking, monthDate)
   )).length
 }
 
+/** @param {unknown} candidate @param {unknown} [fallback] */
 function resolveUsageValue(candidate, fallback = 0) {
   const value = Number(candidate)
   if (Number.isFinite(value)) return value
@@ -672,6 +728,7 @@ function resolveUsageValue(candidate, fallback = 0) {
   return Number.isFinite(nextValue) ? nextValue : 0
 }
 
+/** @param {{plan?: unknown, targetMonthUsed?: number, createdMonthUsed?: number, limits?: UsageLimits}} [input] */
 export function evaluateBookingCreationAllowance({
   plan,
   targetMonthUsed = 0,
@@ -706,6 +763,7 @@ export function evaluateBookingCreationAllowance({
   }
 }
 
+/** @param {{plan?: unknown, bookingsUsage?: unknown, roomsUsage?: unknown, usersUsage?: unknown, usage?: UnknownRecord, limits?: UsageLimits}} [input] */
 export function getPlanRecommendation({
   plan,
   bookingsUsage = null,
@@ -808,18 +866,22 @@ export function getPlanRecommendation({
   }
 }
 
+/** @param {unknown} plan */
 export function formatSubscriptionPlan(plan) {
   return getSubscriptionPlan(plan).name
 }
 
+/** @param {string} featureName */
 export function getFeatureRequiredPlan(featureName) {
   return FEATURE_REQUIRED_PLAN[featureName] || 'Standard'
 }
 
+/** @param {string} featureName */
 function getFeatureUpgradeContext(featureName) {
   return FEATURE_UPGRADE_CONTEXT[featureName] || ''
 }
 
+/** @param {unknown} value */
 function inferFeatureKey(value) {
   const raw = String(value || '').trim().toLowerCase()
   if (!raw) return ''
@@ -839,6 +901,7 @@ function inferFeatureKey(value) {
   return ''
 }
 
+/** @param {UnknownRecord} [lodge] @param {UnknownRecord} [usage] @param {UnknownRecord} [recommendation] @param {UnknownRecord} [options] */
 export function buildUpgradeRequestMessage(lodge = {}, usage = {}, recommendation = {}, options = {}) {
   const lodgeName = lodge?.lodgeName || lodge?.lodge_name || lodge?.company_name || lodge?.name || 'Unknown lodge'
   const currentPlan = normalizeSubscriptionPlan(lodge?.currentPlan || lodge?.plan || recommendation?.currentPlan || usage?.currentPlan || 'Starter')
@@ -854,6 +917,7 @@ export function buildUpgradeRequestMessage(lodge = {}, usage = {}, recommendatio
   })
   const channel = String(options?.channel || 'email').toLowerCase()
 
+  /** @param {number} used @param {number} limit @param {number} [grace] */
   const formatUsage = (used, limit, grace = 0) => {
     if (isUnlimited(limit)) return 'Unlimited'
     const base = `${used} / ${limit}`
@@ -922,6 +986,7 @@ export function buildUpgradeRequestMessage(lodge = {}, usage = {}, recommendatio
   }
 }
 
+/** @param {{lodgeName?: unknown, currentPlan?: unknown, requestedPlan?: unknown, requestedFeature?: unknown, requestedFeatureKey?: unknown, notes?: string}} [input] */
 export function buildUpgradeRequestDescription({
   lodgeName,
   currentPlan,

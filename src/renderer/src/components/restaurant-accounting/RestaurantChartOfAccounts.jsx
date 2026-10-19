@@ -76,7 +76,7 @@ export default function RestaurantChartOfAccounts() {
               <label className={labelClass}>Type<select className={inputClass} value={account.accountType} onChange={e=>setAccount({...account,accountType:e.target.value})}>{['asset','liability','equity','revenue','expense'].map(x=><option key={x}>{x}</option>)}</select></label>
               <label className={labelClass}>Parent (optional)<select className={inputClass} value={account.parentId} onChange={e=>setAccount({...account,parentId:e.target.value})}><option value="">None</option>{accounts.filter(a=>a.is_active).map(a=><option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}</select></label>
               <label className={labelClass}>Description<textarea className={inputClass} value={account.description} onChange={e=>setAccount({...account,description:e.target.value})}/></label>
-              <AccountingButton busy={busy==='create'}><Plus size={15}/>Create account</AccountingButton>
+              <AccountingButton busy={busy==='create'} type="submit"><Plus size={15}/>Create account</AccountingButton>
             </form>}
           </AccountingPanel>
           <AccountingPanel title="Post opening balance" description="Creates a dated double-entry journal against equity.">
@@ -85,7 +85,7 @@ export default function RestaurantChartOfAccounts() {
               <label className={labelClass}>Equity offset<select required className={inputClass} value={opening.equityAccountId} onChange={e=>setOpening({...opening,equityAccountId:e.target.value})}><option value="">Select</option>{activeEquity.map(a=><option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}</select></label>
               <label className={labelClass}>Entry date<input required type="date" className={inputClass} value={opening.entryDate} onChange={e=>setOpening({...opening,entryDate:e.target.value})}/></label>
               <label className={labelClass}>Amount<input required type="number" step="0.01" min="0.01" className={inputClass} value={opening.amount} onChange={e=>setOpening({...opening,amount:e.target.value})}/></label>
-              <AccountingButton busy={busy==='opening'}><Scale size={15}/>Post balanced opening</AccountingButton>
+              <AccountingButton busy={busy==='opening'} type="submit"><Scale size={15}/>Post balanced opening</AccountingButton>
             </form>}
           </AccountingPanel>
         </div>

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { Plus, CheckCircle, Wrench, AlertTriangle, RefreshCw } from 'lucide-react'

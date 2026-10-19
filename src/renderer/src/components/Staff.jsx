@@ -1,3 +1,4 @@
+// @ts-check
 import React, { useEffect, useMemo, useState, useCallback, Suspense, lazy } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import {

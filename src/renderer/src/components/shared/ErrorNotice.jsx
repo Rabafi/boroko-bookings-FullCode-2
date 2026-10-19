@@ -15,6 +15,7 @@ import { friendlyErrorMessage } from './friendlyError'
 // would yank them out of the field they are typing in. Long scrolling
 // dialogs (for example a Till unlock list with dozens of staff) opt back in
 // with `scrollInDialog`, which scrolls within the dialog instead.
+/** @param {{children: import('react').ReactNode, className?: string, style?: import('react').CSSProperties, testId?: string, role?: string, scrollInDialog?: boolean}} props */
 export function ErrorNotice({ children, className = '', style, testId, role = 'alert', scrollInDialog = false }) {
   const ref = useRef(null)
   useEffect(() => {

@@ -91,6 +91,7 @@ function cell(value) {
 export async function probeFixturePrerequisites(client, required = requiredFixturePrerequisites()) {
   const profile = { user: null, sessionUser: null, isSuperuser: false, tables: {}, functions: {}, roleswitch: {}, authHelper: false, probeErrors: [] }
   const identity = (await client.query('select current_user as u, session_user as s')).rows[0]
+  if (!/^[a-z_][a-z0-9_]*$/.test(identity.u)) throw new Error('Fixture role identifier is not supported')
   profile.user = identity.u
   profile.sessionUser = identity.s
   try {
@@ -137,7 +138,8 @@ export async function probeFixturePrerequisites(client, required = requiredFixtu
       profile.roleswitch[need.role] = false
     } finally {
       try {
-        await client.query('reset role')
+        // RESET ROLE would lose an explicitly assumed fixture role on a NOINHERIT CLI login.
+        await client.query(`set role ${identity.u}`)
       } catch {
         profile.roleswitch[need.role] = false
       }

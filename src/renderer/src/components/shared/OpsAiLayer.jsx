@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router'

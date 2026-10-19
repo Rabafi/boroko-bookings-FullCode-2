@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Rocket, Clock, CheckCircle, AlertTriangle, AlertCircle, RefreshCw, Calendar } from 'lucide-react'
 import Pagination, { usePagination } from './shared/Pagination'
@@ -33,7 +34,7 @@ const STATUS_STYLE = {
 }
 
 export default function ReleaseControl() {
-  const [releases, setReleases] = useState([])
+  const [releases, setReleases] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expiring, setExpiring] = useState(false)

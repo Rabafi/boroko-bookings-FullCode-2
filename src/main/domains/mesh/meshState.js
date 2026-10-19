@@ -1,30 +1,37 @@
+// @ts-check
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { state } from '../../state.js';
 import { broadcastSyncStatus } from '../connectivity.js';
+import { readHealthFaults } from '../syncStore.js';
+
+/** @typedef {{ nodeId: unknown, address: string, httpPort: number, lastSeenAt: string, clockOffsetMs: number, manual: boolean, discoverySource: unknown, sameSubnet: unknown }} MeshPeer */
+/** @typedef {{ name: string, address: string, netmask: string, network: string, broadcast: string, cidr: string | null, private: boolean }} MeshInterface */
 
 export const meshState = {
   enabled: false,
   running: false,
-  nodeId: null,
-  lodgeId: null,
-  lodgeMeshSecret: null,
-  httpPort: null,
-  peers: new Map(), // nodeId -> peer object { nodeId, address, httpPort, lastSeenAt, clockOffsetMs }
-  activeLocks: [], // local and remote locks { lockId, roomId, startDate, endDate, sourceNodeId, createdAt, expiresAt }
-  lastError: null,
+  nodeId: /** @type {unknown} */ (null),
+  lodgeId: /** @type {string | null} */ (null),
+  lodgeMeshSecret: /** @type {string | null} */ (null),
+  httpPort: /** @type {number | null} */ (null),
+  peers: /** @type {Map<unknown, MeshPeer>} */ (new Map()), // nodeId -> peer object { nodeId, address, httpPort, lastSeenAt, clockOffsetMs }
+  activeLocks: /** @type {unknown[]} */ ([]), // local and remote locks { lockId, roomId, startDate, endDate, sourceNodeId, createdAt, expiresAt }
+  lastError: /** @type {unknown} */ (null),
   server: null, // HTTP server instance
-  discoverySocket: null, // UDP Socket
+  discoverySocket: /** @type {unknown} */ (null), // UDP Socket
   serverNonceCache: new Set(), // Received nonces (HMAC replay protection)
-  lastQueueMergeAt: null,
+  lastQueueMergeAt: /** @type {Date | null} */ (null),
   lastQueueRepair: null,
-  localInterfaces: [],
-  discoveryTargets: [],
-  lastBeaconAt: null,
-  lastPeerSeenAt: null,
-  lastDiscoveryError: null
+  localInterfaces: /** @type {MeshInterface[]} */ ([]),
+  discoveryTargets: /** @type {string[]} */ ([]),
+  lastBeaconAt: /** @type {string | null} */ (null),
+  lastPeerSeenAt: /** @type {string | null} */ (null),
+  lastDiscoveryError: /** @type {string | null} */ (null)
 };
+/** @type {typeof meshState & { lastTeamSync?: unknown }} */
+const meshStateWithTeamSync = meshState;
 
 const REMEMBERED_PEERS_FILE = 'mesh-peers.json';
 
@@ -37,37 +44,40 @@ export function readRememberedMeshPeers() {
   if (!filePath) return [];
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return Array.isArray(parsed) ? parsed.filter((peer) =>
-      peer && typeof peer.address === 'string' && Number.isInteger(Number(peer.httpPort))
-    ) : [];
+    return Array.isArray(parsed) ? parsed.filter((peer) => {
+      const peerFields = /** @type {Record<string, unknown>} */ (peer);
+      return peer && typeof peerFields.address === 'string' && Number.isInteger(Number(peerFields.httpPort));
+    }) : [];
   } catch {
     return [];
   }
 }
 
 export function rememberMeshPeer(peer = {}) {
+  const peerFields = /** @type {Record<string, unknown>} */ (peer);
   const filePath = rememberedPeersPath();
-  if (!filePath || !peer.address || !Number.isInteger(Number(peer.httpPort))) return;
+  if (!filePath || !peerFields.address || !Number.isInteger(Number(peerFields.httpPort))) return;
   const existing = readRememberedMeshPeers();
-  const key = peer.nodeId || `${peer.address}:${peer.httpPort}`;
+  const key = peerFields.nodeId || `${peerFields.address}:${peerFields.httpPort}`;
   const nextPeer = {
-    nodeId: peer.nodeId || null,
-    address: peer.address,
-    httpPort: Number(peer.httpPort),
-    manual: peer.manual === true,
-    lastSeenAt: peer.lastSeenAt || new Date().toISOString()
+    nodeId: peerFields.nodeId || null,
+    address: peerFields.address,
+    httpPort: Number(peerFields.httpPort),
+    manual: peerFields.manual === true,
+    lastSeenAt: peerFields.lastSeenAt || new Date().toISOString()
   };
   const next = [
     nextPeer,
     ...existing.filter((entry) =>
-      (entry.nodeId || `${entry.address}:${entry.httpPort}`) !== key &&
-      `${entry.address}:${entry.httpPort}` !== `${nextPeer.address}:${nextPeer.httpPort}`
+      (/** @type {Record<string, unknown>} */ (entry).nodeId || `${/** @type {Record<string, unknown>} */ (entry).address}:${/** @type {Record<string, unknown>} */ (entry).httpPort}`) !== key &&
+      `${/** @type {Record<string, unknown>} */ (entry).address}:${/** @type {Record<string, unknown>} */ (entry).httpPort}` !== `${nextPeer.address}:${nextPeer.httpPort}`
     )
   ].slice(0, 12);
   try {
     fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
   } catch (error) {
-    console.warn('[MeshState] Could not remember peer:', error?.message || error);
+    const errorFields = /** @type {Record<string, unknown> | null | undefined} */ (error);
+    console.warn('[MeshState] Could not remember peer:', errorFields?.message || error);
   }
 }
 
@@ -87,10 +97,11 @@ export function getOrCreateLocalNodeId() {
   const identityPath = path.join(cacheDir, 'mesh-identity.json');
   try {
     if (fs.existsSync(identityPath)) {
-      const data = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
-      if (data && data.nodeId) {
-        meshState.nodeId = data.nodeId;
-        return data.nodeId;
+      const data = /** @type {unknown} */ (JSON.parse(fs.readFileSync(identityPath, 'utf8')));
+      const identityFields = /** @type {Record<string, unknown> | null | undefined} */ (data);
+      if (data && identityFields?.nodeId) {
+        meshState.nodeId = identityFields.nodeId;
+        return identityFields.nodeId;
       }
     }
   } catch (err) {
@@ -122,6 +133,7 @@ export function getOrCreateLocalNodeId() {
  * Exposes a clean health snapshot of the P2P mesh.
  */
 export function getMeshHealthSnapshot() {
+  const persistentMeshReview = readHealthFaults().filter((fault) => ['mesh_queue_identity_conflict','mesh_peer_protocol_incompatible'].includes(fault?.type));
   const peersArray = [];
   const now = Date.now();
   
@@ -155,7 +167,7 @@ export function getMeshHealthSnapshot() {
     activeLocks: meshState.activeLocks,
     lastQueueMergeAt: meshState.lastQueueMergeAt ? meshState.lastQueueMergeAt.toISOString() : null,
     lastQueueRepair: meshState.lastQueueRepair || null,
-    lastTeamSync: meshState.lastTeamSync || null,
+    lastTeamSync: meshStateWithTeamSync.lastTeamSync || null,
     lastError: meshState.lastError,
     lastDiscoveryError: meshState.lastDiscoveryError,
     lastBeaconAt: meshState.lastBeaconAt,
@@ -165,6 +177,8 @@ export function getMeshHealthSnapshot() {
     discoveryTargets: meshState.discoveryTargets,
     rememberedPeerCount: readRememberedMeshPeers().length,
     warnings: [
+      ...(persistentMeshReview.some((fault) => fault.type === 'mesh_queue_identity_conflict') ? ['Mesh queue identity conflict is quarantined. A manager must review local sync details before creating or retrying the affected operation.'] : []),
+      ...(persistentMeshReview.some((fault) => fault.type === 'mesh_peer_protocol_incompatible') ? ['A nearby device has an incompatible multi-room queue item. Keep its source device online and have a manager review it; do not recreate the group.'] : []),
       ...(meshState.localInterfaces.length === 0 ? ['No active private IPv4 network adapter was found.'] : []),
       ...(meshState.running && peersArray.length === 0
         ? ['No nearby Tsa Bonno devices found. If another device is online, check extender AP/client isolation or add its IP manually.']
@@ -183,6 +197,7 @@ export function getMeshHealthSnapshot() {
 /**
  * Registers/updates a peer in the local mesh registry.
  */
+/** @param {unknown} nodeId @param {string} address @param {number} httpPort @param {number} [clockOffsetMs] @param {Record<string, unknown>} [metadata] */
 export function registerPeer(nodeId, address, httpPort, clockOffsetMs = 0, metadata = {}) {
   const peer = {
     nodeId,
@@ -204,6 +219,7 @@ export function registerPeer(nodeId, address, httpPort, clockOffsetMs = 0, metad
 /**
  * Removes a peer from the local mesh registry.
  */
+/** @param {unknown} nodeId */
 export function removePeer(nodeId) {
   if (meshState.peers.has(nodeId)) {
     meshState.peers.delete(nodeId);

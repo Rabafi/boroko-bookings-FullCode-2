@@ -91,11 +91,16 @@ test('existing directory package contains the approved guide pair', (t) => {
   const manifestPath = path.join(packagedRoot, 'document-manifest.json')
   assert.ok(fs.existsSync(manifestPath), 'packaged guide manifest must exist')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  const approvedManifest = readBarGuideManifest({ currentDir: path.join(root, 'src', 'main') })
+  assert.deepEqual(manifest, approvedManifest, 'packaged manifest must match the approval manifest exactly')
   assert.equal(manifest.productId, 'hospitality-pos')
   assert.equal(manifest.operatingMode, 'bar_only')
   for (const definition of Object.values(BAR_GUIDE_DOCUMENTS)) {
     const packagedPath = path.join(packagedRoot, definition.filename)
     assert.ok(fs.existsSync(packagedPath), `${definition.filename} must be in the directory package`)
+    const approvedRow = approvedManifest.documents.find((item) => item.id === definition.id)
+    assert.ok(approvedRow, `${definition.id} must be present in approval manifest`)
+    assert.equal(sha256(packagedPath), approvedRow.sha256, `${definition.filename} package bytes must match the approved checksum`)
     assert.equal(sha256(packagedPath), sha256(path.join(pdfRoot, definition.filename)), `${definition.filename} package checksum must match approved PDF`)
   }
 })

@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Plus, Pencil, X } from 'lucide-react'
 

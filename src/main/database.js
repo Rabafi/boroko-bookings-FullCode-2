@@ -1,3 +1,5 @@
+// @ts-check
+
 export {
   getSystemHealth,
   getSupportBundle,
@@ -569,6 +571,13 @@ export {
   initializeCompanySetup
 } from './domains/settings.js'
 export {
+  SUPPORTED_LODGING_TYPES,
+  previewPropertyTypeChange,
+  commitPropertyTypeChange,
+  getPropertyTypeTransitionStatus,
+  refreshSettingsFromServer
+} from './domains/propertyTransitions.js'
+export {
   getUsageLimitSnapshot,
   getTrialStatus,
   activateLicenseKey
@@ -744,6 +753,7 @@ export {
   recordInvoiceDelivery,
   getInvoiceDeliveryHistory,
   runFinancialValidation,
+  retryFinancialValidationRun,
   getFinancialValidationAlerts,
   getFinancialValidationRuns,
   runScheduledFinancialValidation,
@@ -1234,7 +1244,7 @@ export {
   getRestaurantAccountsV2, getRestaurantChartExportV2, getRestaurantChartExportV3, createRestaurantAccountV2, updateRestaurantAccountV2, setRestaurantAccountCashFlowV2, deleteRestaurantAccountV2,
   seedRestaurantAccountsV2, postRestaurantOpeningBalanceV2, getRestaurantLedgerWorkspaceV2,
   getRestaurantLedgerPageV2, getRestaurantLedgerExportV2, getRestaurantLedgerReportExportV2, getRestaurantLedgerExportV3, createRestaurantJournalV2,
-  createRestaurantManualJournalDraftV2, submitRestaurantManualJournalV2,
+  createRestaurantManualJournalDraftV2, createAndSubmitRestaurantManualJournalV2, getRestaurantManualJournalSubmissionStatusV2, submitRestaurantManualJournalV2,
   approveRestaurantManualJournalV2, postRestaurantManualJournalV2, reverseRestaurantJournalV2, getRestaurantPosMappingsV2,
   setRestaurantPosMappingV2, setRestaurantPosMappingEffectiveV2, postRestaurantPosOrderV2, getRestaurantApWorkspaceV2, getRestaurantApExportV2, getRestaurantApSupplierStatementV2,
   setRestaurantApGlSettingsV2, createRestaurantBillV2, submitRestaurantBillV2,

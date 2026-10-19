@@ -1,5 +1,9 @@
+// @ts-check
 import { COMMERCIAL_PRODUCT_IDS, getCommercialAddon, getCommercialOffer } from './commercialEntitlements.js'
 
+/** @import {CommercialProductId} from './commercialEntitlements.js' */
+
+/** @type {Readonly<Record<string, string>>} */
 const COMMERCIAL_FEATURE_ALIASES = Object.freeze({
   restaurant_service: 'tables',
   restaurant_control: 'stock_control',
@@ -10,6 +14,7 @@ const COMMERCIAL_FEATURE_ALIASES = Object.freeze({
   guest_crm_manage: 'customer_accounts'
 })
 
+/** @type {Set<string>} */
 const ACCESSIBLE_COMMERCIAL_STATUSES = new Set([
   'licensed',
   'trial',
@@ -17,12 +22,14 @@ const ACCESSIBLE_COMMERCIAL_STATUSES = new Set([
   'grace_period'
 ])
 
+/** @type {Set<string>} */
 const ACCESSIBLE_SUBSCRIPTION_STATES = new Set([
   'active',
   'trial',
   'grace_period'
 ])
 
+/** @type {Set<string>} */
 const DENIED_COMMERCIAL_STATES = new Set([
   'expired',
   'suspended',
@@ -32,16 +39,33 @@ const DENIED_COMMERCIAL_STATES = new Set([
   'revoked'
 ])
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isPlainRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
 }
 
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptionalField(value, key) {
+  return value === null || value === undefined
+    ? undefined
+    : Reflect.get(Object(value), key, value)
+}
+
+/** @param {unknown} value @returns {Date} */
+function dateFromUnknown(value) {
+  // Reflect.construct with the built-in Date constructor returns a Date while
+  // preserving Date's coercion and error behavior for the untrusted input.
+  return /** @type {Date} */ (Reflect.construct(Date, [value]))
+}
+
+/** @param {unknown} productId @returns {string} */
 function normalizeProductId(productId) {
   return String(productId || '').trim().toLowerCase()
 }
 
+/** @param {unknown} featureKey @returns {string} */
 function normalizeFeatureKey(featureKey) {
   const feature = String(featureKey || '').trim().toLowerCase()
   return COMMERCIAL_FEATURE_ALIASES[feature] || feature
@@ -54,6 +78,7 @@ function normalizeFeatureKey(featureKey) {
  * snapshot from another executable. Server/RBAC/outlet checks remain the
  * final authority for every action.
  */
+/** @param {unknown} entitlement @param {unknown} expectedProductId @param {string | null} [expectedPackageKey] @param {string | null} [expectedLodgeId] */
 export function isCommercialEntitlementContextValid(entitlement, expectedProductId, expectedPackageKey = null, expectedLodgeId = null) {
   if (!isPlainRecord(entitlement)) return false
 
@@ -88,14 +113,14 @@ export function isCommercialEntitlementContextValid(entitlement, expectedProduct
   // The online RPC and the offline lease cache both expose this boundary.
   // A malformed timestamp is treated as untrusted instead of granting access.
   if (entitlement.offline_valid_until !== undefined && entitlement.offline_valid_until !== null) {
-    const offlineValidUntil = new Date(entitlement.offline_valid_until)
+    const offlineValidUntil = dateFromUnknown(entitlement.offline_valid_until)
     if (!Number.isFinite(offlineValidUntil.getTime()) || offlineValidUntil.getTime() <= Date.now()) return false
   }
 
   // A normal licensed/trial snapshot cannot carry an already-expired licence.
   // Grace-period access is represented by subscription_state and is retained.
   if (entitlement.expires_at !== undefined && entitlement.expires_at !== null) {
-    const expiresAt = new Date(entitlement.expires_at)
+    const expiresAt = dateFromUnknown(entitlement.expires_at)
     if (!Number.isFinite(expiresAt.getTime())) return false
     if (expiresAt.getTime() <= Date.now() && subscriptionState !== 'grace_period') return false
   }
@@ -117,8 +142,10 @@ export function isCommercialEntitlementContextValid(entitlement, expectedProduct
  * @returns {boolean|null} true/false for an explicit active override, null
  * when there is no trusted override for this feature.
  */
+/** @param {unknown} entitlement @param {unknown} expectedProductId @param {string} featureKey @param {string | null} [expectedPackageKey] @param {string | null} [expectedLodgeId] @returns {boolean | null} */
 export function getCommercialFeatureOverride(entitlement, expectedProductId, featureKey, expectedPackageKey = null, expectedLodgeId = null) {
   if (!isCommercialEntitlementContextValid(entitlement, expectedProductId, expectedPackageKey, expectedLodgeId)) return null
+  if (!isPlainRecord(entitlement)) return null
 
   const overrides = entitlement.commercial_overrides
   if (!isPlainRecord(overrides) || !isPlainRecord(overrides.features)) return null
@@ -144,6 +171,7 @@ export function getCommercialFeatureOverride(entitlement, expectedProductId, fea
  * override is evaluated before that package boundary; no other entitlement
  * field can manufacture a feature.
  */
+/** @param {unknown} productId @param {string | null} commercialPackageKey @param {string} featureKey @param {unknown} [selectedAddonKeys] @param {unknown} [commercialEntitlement] @param {string | null} [expectedLodgeId] */
 export function isCommercialFeatureIncluded(productId, commercialPackageKey, featureKey, selectedAddonKeys = [], commercialEntitlement = null, expectedLodgeId = null) {
   const normalizedProductId = normalizeProductId(productId)
   if (normalizedProductId !== COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS) return true
@@ -177,32 +205,46 @@ export function isCommercialFeatureIncluded(productId, commercialPackageKey, fea
   })
 }
 
+/** @param {string | null} productId @param {string | null} commercialPackageKey @param {string[]} [selectedAddonKeys] @param {unknown} [commercialEntitlement] @param {string | null} [expectedLodgeId] @returns {Set<string>} */
 export function getCommercialFeatureSet(productId, commercialPackageKey, selectedAddonKeys = [], commercialEntitlement = null, expectedLodgeId = null) {
   const normalizedProductId = normalizeProductId(productId)
   if (normalizedProductId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && commercialEntitlement !== null) {
     if (!isCommercialEntitlementContextValid(commercialEntitlement, normalizedProductId, commercialPackageKey, expectedLodgeId)) return new Set()
   }
-  const offer = getCommercialOffer(normalizedProductId, commercialPackageKey)
+  // Keep the catalog's ordinary property lookup semantics. In particular,
+  // inherited keys such as "constructor" reach getCommercialOffers and retain
+  // its existing failure behavior; this assertion only satisfies that helper's
+  // declared product-ID input and does not validate the caller's value.
+  const offer = getCommercialOffer(/** @type {CommercialProductId} */ (normalizedProductId), commercialPackageKey)
   if (normalizedProductId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && !offer) return new Set()
   const features = new Set(offer?.includedFeatures || [])
   for (const addonKey of [...new Set(Array.isArray(selectedAddonKeys) ? selectedAddonKeys : [])]) {
-    const addon = getCommercialAddon(normalizedProductId, addonKey)
-    if (!addon?.eligiblePackageKeys || addon.eligiblePackageKeys.includes(commercialPackageKey)) {
+    const addon = getCommercialAddon(/** @type {CommercialProductId} */ (normalizedProductId), addonKey)
+    if (!addon?.eligiblePackageKeys || addon.eligiblePackageKeys.some((key) => key === commercialPackageKey)) {
       addon?.includedFeatures?.forEach((feature) => features.add(feature))
     }
   }
 
-  const overrides = commercialEntitlement?.commercial_overrides?.features
+  // Preserve optional property reads, including inherited commercial_overrides.
+  const overrides = readOptionalField(
+    readOptionalField(commercialEntitlement, 'commercial_overrides'),
+    'features',
+  )
   if (normalizedProductId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && isPlainRecord(overrides)) {
     // Group by normalized key so conflicting aliases fail closed consistently
     // with getCommercialFeatureOverride (deny wins over last-write-wins).
+    /** @type {Map<string, Set<boolean>>} */
     const grouped = new Map()
     for (const [featureKey, enabled] of Object.entries(overrides)) {
       if (typeof enabled !== 'boolean') continue
       const normalizedFeature = normalizeFeatureKey(featureKey)
       if (!normalizedFeature) continue
-      if (!grouped.has(normalizedFeature)) grouped.set(normalizedFeature, new Set())
-      grouped.get(normalizedFeature).add(enabled)
+      let values = grouped.get(normalizedFeature)
+      if (!values) {
+        values = new Set()
+        grouped.set(normalizedFeature, values)
+      }
+      values.add(enabled)
     }
     for (const [normalizedFeature, values] of grouped) {
       if (values.size > 1) {
@@ -216,6 +258,7 @@ export function getCommercialFeatureSet(productId, commercialPackageKey, selecte
   return features
 }
 
+/** @param {CommercialProductId} productId @param {string | null} commercialPackageKey */
 export function isCommercialPackageSelected(productId, commercialPackageKey) {
   return Boolean(getCommercialOffer(productId, commercialPackageKey))
 }

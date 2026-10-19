@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Bar Only operating-mode profile for Restaurant & Bar POS.
  * Single source of truth for visibility, service defaults, and bar-facing labels.
@@ -278,10 +279,12 @@ export const BAR_COUNTED_UNITS = Object.freeze([
 export const POOL_COLLECTION_UNIT_PRICE = 1
 export const POOL_CATEGORY = 'Pool'
 
+/** @param {unknown} category */
 export function isPoolCategory(category) {
   return String(category || '').trim().toLowerCase() === 'pool'
 }
 
+/** @param {Record<string, unknown> | null | undefined} item */
 export function isPoolProduct(item) {
   if (!item) return false
   return isPoolCategory(item.category || item.menu_category)
@@ -326,6 +329,7 @@ export function getBarAddonFeatureForPath(path) {
   return match?.[1] || null
 }
 
+/** @param {string} path @param {string[]} [enabledFeatures] */
 export function isBarOnlyBlockedPath(path, enabledFeatures = []) {
   const normalized = normalizeAppPath(path)
   const requiredAddonFeature = getBarAddonFeatureForPath(normalized)
@@ -339,6 +343,7 @@ export function isBarOnlyBlockedPath(path, enabledFeatures = []) {
  * Map UI service mode to the POS order payload service_mode + table/tab fields.
  * Reuses existing tab/session contracts (no new money RPCs).
  */
+/** @param {string} uiServiceMode @param {{tableName?: string, tabName?: string}} [options] */
 export function resolvePosServicePayload(uiServiceMode, { tableName = '', tabName = '' } = {}) {
   const mode = String(uiServiceMode || '').toLowerCase()
   if (mode === 'counter') {
@@ -391,12 +396,13 @@ export function resolvePosServicePayload(uiServiceMode, { tableName = '', tabNam
 
 /**
  * Default terminal service mode for the hospitality mode.
- * @param {object|string|null} settingsOrMode
+ * @param {unknown} settingsOrMode
  */
 export function getDefaultHposServiceMode(settingsOrMode) {
   if (settingsOrMode === true || settingsOrMode === HOSPITALITY_MODES.BAR_ONLY) {
     return 'counter'
   }
+  if (typeof settingsOrMode === 'boolean') return 'table'
   if (typeof settingsOrMode === 'string') {
     return settingsOrMode === HOSPITALITY_MODES.BAR_ONLY ? 'counter' : 'table'
   }
@@ -457,6 +463,7 @@ export function getHposMoreItems(settingsOrBarOnly) {
  * { ok: false, code, error } when the sale must be blocked before anything
  * is journalled or sent.
  */
+/** @param {{resumeIntent?: boolean, resumeTabId?: unknown, resumeTabVersion?: unknown, selectedTab?: {id?: unknown, tab_version?: unknown} | null, settlesTab?: boolean}} [options] */
 export function resolveResumedTabPayment({
   resumeIntent = false,
   resumeTabId = null,
@@ -464,10 +471,12 @@ export function resolveResumedTabPayment({
   selectedTab = null,
   settlesTab = false,
 } = {}) {
+  /** @param {unknown} value */
   const asId = (value) => {
     const text = String(value || '').trim();
     return text || null;
   };
+  /** @param {unknown} value */
   const asVersion = (value) => {
     const numeric = Number(value);
     return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
@@ -529,6 +538,7 @@ export function resolveResumedTabPayment({
 /**
  * Dashboard / home shortcuts for restaurant property types.
  */
+/** @param {object | boolean | null} settingsOrBarOnly */
 export function getRestaurantDashboardShortcuts(settingsOrBarOnly) {
   const barOnly = typeof settingsOrBarOnly === 'boolean'
     ? settingsOrBarOnly
@@ -592,7 +602,7 @@ export function getBarModeProfile(settingsOrProfile = null) {
 
 /**
  * Whether the current settings describe a restaurant (or hospitality POS) in bar_only.
- * @param {object|null} settings
+ * @param {Record<string, unknown> | null} settings
  */
 export function isHospitalityBarOnly(settings) {
   if (!settings) return false

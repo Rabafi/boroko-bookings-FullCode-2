@@ -1,3 +1,4 @@
+// @ts-check
 import { normalizePropertyType, isHotelPropertyType, isRestaurantOnly } from './propertyTypes.js'
 import { normalizeSubscriptionPlan } from './subscriptionPlans.js'
 
@@ -299,7 +300,12 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Standard',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['lodge', 'camp', 'hotel', 'resort'],
+    // Guest houses and B&Bs keep configured+entitled event services across
+    // same-product type changes: no server/commercial policy prohibits them
+    // (commercial packages are product-level; RPCs enforce lodge capability,
+    // not property type). Visibility never grants access; plan/role/capability
+    // locks still apply.
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'hotel', 'resort'],
     visibility: 'property_type_relevant',
     upsellPriority: 60,
     routes: ['/conference'],
@@ -314,7 +320,9 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Standard',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['lodge', 'camp', 'hotel', 'resort'],
+    // Same configured-service preservation as conference: no server/commercial
+    // property-type prohibition exists; plan/role/capability locks still apply.
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'hotel', 'resort'],
     visibility: 'property_type_relevant',
     upsellPriority: 55,
     routes: ['/dayuse'],
@@ -359,7 +367,9 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Pro',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
+    // Same configured-service preservation: Pro commercial packages include
+    // POS product-wide; no server/commercial property-type prohibition exists.
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
     visibility: 'property_type_relevant',
     upsellPriority: 80,
     routes: ['/pos'],
@@ -374,7 +384,8 @@ export const MODULE_CATALOG = [
     requiredPlan: 'Pro',
     isAddon: false,
     addonKey: null,
-    allowedPropertyTypes: ['lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
+    // Same configured-service preservation as POS.
+    allowedPropertyTypes: ['guest_house', 'bnb', 'lodge', 'camp', 'motel', 'hotel', 'resort', 'restaurant'],
     visibility: 'property_type_relevant',
     upsellPriority: 75,
     routes: ['/inventory'],
@@ -1090,14 +1101,17 @@ export const MODULE_CATALOG = [
   }
 ]
 
+/** @param {string} moduleKey */
 export function getModuleByKey(moduleKey) {
   return MODULE_CATALOG.find(m => m.key === moduleKey) || null
 }
 
+/** @param {string} category */
 export function getModulesByCategory(category) {
   return MODULE_CATALOG.filter(m => m.category === category)
 }
 
+/** @param {string} requiredPlan */
 export function getModulesByPlan(requiredPlan) {
   return MODULE_CATALOG.filter(m => {
     const planOrder = ['Starter', 'Standard', 'Pro', 'Enterprise']
@@ -1115,6 +1129,7 @@ export function getEnterpriseModules() {
   return MODULE_CATALOG.filter(m => m.requiredPlan === 'Enterprise')
 }
 
+/** @param {string} moduleKey @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function resolveModuleVisibility(moduleKey, propertyType, subscriptionPlan, addons = []) {
   const module = getModuleByKey(moduleKey)
   if (!module) return MODULE_VISIBILITY_STATES.hidden
@@ -1164,6 +1179,7 @@ export function resolveModuleVisibility(moduleKey, propertyType, subscriptionPla
   return MODULE_VISIBILITY_STATES.hidden
 }
 
+/** @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function getVisibleModules(propertyType, subscriptionPlan, addons = []) {
   return MODULE_CATALOG.filter(m => {
     const visibility = resolveModuleVisibility(m.key, propertyType, subscriptionPlan, addons)
@@ -1171,6 +1187,7 @@ export function getVisibleModules(propertyType, subscriptionPlan, addons = []) {
   })
 }
 
+/** @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function getLockedModules(propertyType, subscriptionPlan, addons = []) {
   return MODULE_CATALOG.filter(m => {
     const visibility = resolveModuleVisibility(m.key, propertyType, subscriptionPlan, addons)
@@ -1178,6 +1195,7 @@ export function getLockedModules(propertyType, subscriptionPlan, addons = []) {
   })
 }
 
+/** @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function getHiddenModules(propertyType, subscriptionPlan, addons = []) {
   return MODULE_CATALOG.filter(m => {
     const visibility = resolveModuleVisibility(m.key, propertyType, subscriptionPlan, addons)
@@ -1185,6 +1203,7 @@ export function getHiddenModules(propertyType, subscriptionPlan, addons = []) {
   })
 }
 
+/** @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function getRelevantModules(propertyType, subscriptionPlan, addons = []) {
   return MODULE_CATALOG.filter(m => {
     const visibility = resolveModuleVisibility(m.key, propertyType, subscriptionPlan, addons)
@@ -1192,6 +1211,7 @@ export function getRelevantModules(propertyType, subscriptionPlan, addons = []) 
   })
 }
 
+/** @param {string} moduleKey @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] @param {unknown[]} [userCapabilities] */
 export function canAccessModule(moduleKey, propertyType, subscriptionPlan, addons = [], userCapabilities = []) {
   const visibility = resolveModuleVisibility(moduleKey, propertyType, subscriptionPlan, addons)
   if (visibility !== MODULE_VISIBILITY_STATES.visible) return false
@@ -1204,6 +1224,7 @@ export function canAccessModule(moduleKey, propertyType, subscriptionPlan, addon
   return module.capabilities.some(cap => userCapabilities.includes(cap))
 }
 
+/** @param {unknown} propertyType @param {unknown} subscriptionPlan @param {unknown[]} [addons] */
 export function getUpsellRecommendations(propertyType, subscriptionPlan, addons = []) {
   const locked = getLockedModules(propertyType, subscriptionPlan, addons)
   return locked

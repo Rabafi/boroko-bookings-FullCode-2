@@ -1,4 +1,12 @@
+// @ts-check
 import { ENTERPRISE_ADDON_CATALOG } from './enterpriseAddons.js'
+
+/** @typedef {'lodge-camp' | 'hotel' | 'hospitality-pos'} CommercialProductId */
+/** @typedef {'Starter' | 'Standard' | 'Pro' | 'Enterprise'} InternalPlan */
+/** @typedef {'annual_license' | 'initial_purchase' | 'one_time_addon' | 'annual_addon'} CommercialBillingBasis */
+/** @typedef {{productId: CommercialProductId, commercialPackageKey: string, displayName: string, name: string, internalPlan: InternalPlan, billingBasis: CommercialBillingBasis, priceBwp: number, includedFeatures: readonly string[], excludedFeatures: readonly string[], upgradeTarget: string | null, eligibleOperatingProfiles: readonly string[] | null, salesCopy: string, hasUsageLimits: boolean, compatibilityPlan: InternalPlan}} CommercialOffer */
+/** @typedef {{productId: 'hospitality-pos', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number, eligiblePropertyTypes: readonly string[], eligibleOperatingProfiles: readonly string[], eligiblePackageKeys: readonly string[], includedFeatures: readonly string[]}} BarPosAddon */
+/** @typedef {{productId: 'hotel', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number | null, eligiblePropertyTypes: readonly string[], eligiblePackageKeys?: readonly string[], includedFeatures: readonly string[], sourceAddon: (typeof ENTERPRISE_ADDON_CATALOG)[number]}} HotelAddon */
 
 export const COMMERCIAL_PRODUCT_IDS = Object.freeze({
   LODGE_CAMP: 'lodge-camp',
@@ -57,6 +65,7 @@ const BAR_POS_FEATURES = Object.freeze([
   'pwa', 'customer_display', 'bar_board', 'checklists', 'alerts', 'incident_log'
 ])
 
+/** @type {readonly BarPosAddon[]} */
 export const BAR_POS_ADDON_CATALOG = Object.freeze([
   Object.freeze({
     productId: COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS,
@@ -131,6 +140,10 @@ const EXCLUDED_LODGE_LIMITS = Object.freeze([
   'No LodgingOS upgrade ladder'
 ])
 
+/**
+ * @param {{productId: CommercialProductId, commercialPackageKey: string, displayName: string, legacyName?: string, internalPlan: InternalPlan, billingBasis: CommercialBillingBasis, priceBwp: number, includedFeatures?: readonly string[], excludedFeatures?: readonly string[], upgradeTarget?: string | null, eligibleOperatingProfiles?: readonly string[] | null, salesCopy: string, compatibility?: {hasUsageLimits?: boolean}}} options
+ * @returns {CommercialOffer}
+ */
 function offer({
   productId,
   commercialPackageKey,
@@ -166,6 +179,7 @@ function offer({
   })
 }
 
+/** @type {Readonly<Record<CommercialProductId, readonly CommercialOffer[]>>} */
 export const COMMERCIAL_PACKAGE_CATALOG = Object.freeze({
   [COMMERCIAL_PRODUCT_IDS.LODGE_CAMP]: Object.freeze([
     offer({
@@ -284,6 +298,7 @@ export const COMMERCIAL_PACKAGE_CATALOG = Object.freeze({
   ])
 })
 
+/** @type {readonly HotelAddon[]} */
 export const HOTEL_ADDON_CATALOG = Object.freeze(
   ENTERPRISE_ADDON_CATALOG
     .filter((addon) => addon.advertise === true)
@@ -302,18 +317,22 @@ export const HOTEL_ADDON_CATALOG = Object.freeze(
     }))
 )
 
+/** @param {CommercialProductId} productId @returns {readonly CommercialOffer[]} */
 export function getCommercialOffers(productId) {
   return COMMERCIAL_PACKAGE_CATALOG[productId] || []
 }
 
+/** @param {CommercialProductId} productId @param {unknown} commercialPackageKey @returns {CommercialOffer | null} */
 export function getCommercialOffer(productId, commercialPackageKey) {
   return getCommercialOffers(productId).find((entry) => entry.commercialPackageKey === commercialPackageKey) || null
 }
 
+/** @param {string} addonKey @returns {HotelAddon | null} */
 export function getHotelAddon(addonKey) {
   return HOTEL_ADDON_CATALOG.find((entry) => entry.addonKey === addonKey) || null
 }
 
+/** @param {CommercialProductId} productId @param {string} addonKey @returns {HotelAddon | BarPosAddon | null} */
 export function getCommercialAddon(productId, addonKey) {
   if (productId === COMMERCIAL_PRODUCT_IDS.HOTEL) return getHotelAddon(addonKey)
   if (productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS) {
@@ -328,12 +347,14 @@ export function getCommercialAddon(productId, addonKey) {
  * or null for base-package features. Used for small in-app "belongs to"
  * signs so operators can tell at a glance which add-on unlocks a page.
  */
+/** @param {string} featureKey @returns {BarPosAddon | null} */
 export function getBarAddonForFeature(featureKey) {
   const key = String(featureKey || '').trim()
   if (!key) return null
   return BAR_POS_ADDON_CATALOG.find((addon) => Array.isArray(addon.includedFeatures) && addon.includedFeatures.includes(key)) || null
 }
 
+/** @param {CommercialProductId} productId @param {string | null} [propertyType] @returns {(HotelAddon | BarPosAddon)[]} */
 export function getCommercialAddonOffers(productId, propertyType = null) {
   if (productId === COMMERCIAL_PRODUCT_IDS.HOTEL) {
     return HOTEL_ADDON_CATALOG.filter((addon) => !propertyType || addon.eligiblePropertyTypes.includes(propertyType))
@@ -344,26 +365,34 @@ export function getCommercialAddonOffers(productId, propertyType = null) {
   return []
 }
 
+/** @param {{productId?: CommercialProductId, commercialPackageKey?: unknown, internalPlan?: unknown}} [options] @returns {CommercialOffer | null} */
 export function resolveCommercialOffer({ productId, commercialPackageKey, internalPlan } = {}) {
+  if (!productId) return null
   if (commercialPackageKey) return getCommercialOffer(productId, commercialPackageKey)
   const offers = getCommercialOffers(productId)
   return offers.find((entry) => entry.internalPlan === internalPlan) || null
 }
 
+/** @param {{productId?: CommercialProductId, commercialPackageKey?: unknown, operatingProfile?: unknown}} [options] @returns {boolean} */
 export function isCommercialSelectionEligible({ productId, commercialPackageKey, operatingProfile } = {}) {
+  if (!productId) return false
   const selected = getCommercialOffer(productId, commercialPackageKey)
   if (!selected) return false
   if (!selected.eligibleOperatingProfiles || selected.eligibleOperatingProfiles.length === 0) return true
-  return selected.eligibleOperatingProfiles.includes(operatingProfile)
+  // Array.includes accepts any search value at runtime; keep strict equality semantics for unknown input.
+  return selected.eligibleOperatingProfiles.includes(/** @type {string} */ (operatingProfile))
 }
 
+/** @param {{productId?: CommercialProductId, commercialPackageKey?: unknown, selectedAddonKeys?: string[]}} [options] @returns {string[]} */
 export function getCommercialEntitlementKeys({ productId, commercialPackageKey, selectedAddonKeys = [] } = {}) {
+  if (!productId) return []
   const offer = getCommercialOffer(productId, commercialPackageKey)
   if (!offer) return []
   const keys = new Set(offer.includedFeatures)
   for (const addonKey of selectedAddonKeys) {
     const addon = getCommercialAddon(productId, addonKey)
-    const eligible = !addon?.eligiblePackageKeys || addon.eligiblePackageKeys.includes(commercialPackageKey)
+    // An offer exists only when this exact key matched a string catalog key.
+    const eligible = !addon?.eligiblePackageKeys || addon.eligiblePackageKeys.includes(/** @type {string} */ (commercialPackageKey))
     if (eligible && addon && addon.productId === productId) addon.includedFeatures.forEach((key) => keys.add(key))
   }
   return [...keys]

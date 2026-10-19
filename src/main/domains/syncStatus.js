@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js';
 import { FINANCIAL_SYNC_TABLES, isFinancialSyncItem } from '../../shared/syncQueue.js';
 import { readCache } from './cacheStore.js';
@@ -10,6 +11,11 @@ import {
   readSyncQueue
 } from './syncStore.js';
 import { getMeshHealthSnapshot } from './mesh/meshState.js';
+
+/** @typedef {{_queue_id?: unknown, _depends_on?: unknown, _depends_on_all?: unknown, table?: string, data?: SyncStatusQueueData | null, _pending_sync?: unknown, _sync_state?: unknown, _local_booking_id?: unknown}} SyncStatusQueueItem */
+/** @typedef {{p_booking_id?: unknown, payload?: {booking_id?: unknown, id?: unknown} | null, p_id?: unknown}} SyncStatusQueueData */
+/** @typedef {{lastSuccessfulSyncAt?: unknown, lastSyncStartedAt?: unknown, lastSyncFinishedAt?: unknown, lastSyncOutcome?: unknown, lastSyncError?: unknown, replayAuthNotReadyAt?: unknown}} SyncStatusMetaView */
+/** @typedef {Record<string, unknown>} SyncCacheRowExpectation */
 
 const QUEUED_DEPENDENCY_CACHE_MAP = [
 { prefix: 'booking-', cache: 'bookings' },
@@ -25,6 +31,7 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
 { prefix: 'conference-booking-', cache: 'conference-bookings' },
 { prefix: 'pool-day-use-', cache: 'pool-day-use' }];
 
+/** @param {unknown} dependencyId @returns {boolean} */
 export function isQueuedDependencyResolved(dependencyId) {
   const resolved = createDependencyCacheResolver().isResolved(dependencyId);
   return resolved;
@@ -39,28 +46,41 @@ export function isQueuedDependencyResolved(dependencyId) {
 // serves the rest from an in-memory index. Same resolution semantics as
 // isQueuedDependencyResolved; scoped to one computation, never shared across
 // calls, so later file writes are always picked up fresh.
+/** @returns {{isResolved: (dependencyId: unknown) => boolean}} */
 export function createDependencyCacheResolver() {
+  /** @type {Map<string, unknown[]>} */
   const rowsByCache = new Map();
+  /** @type {Map<string, Map<string, unknown>>} */
   const indexByCacheField = new Map();
+  /** @param {string} cacheName @returns {unknown[]} */
   const readOnce = (cacheName) => {
     if (!rowsByCache.has(cacheName)) {
       const rows = readCache(cacheName);
-      rowsByCache.set(cacheName, Array.isArray(rows) ? rows : []);
+      // Only the array container is narrowed; persisted row values remain unknown.
+      rowsByCache.set(cacheName, Array.isArray(rows) ? /** @type {unknown[]} */ (rows) : []);
     }
-    return rowsByCache.get(cacheName);
+    // A cache entry is populated above before this lookup; retain an empty
+    // array fallback for TypeScript's Map.get undefined branch.
+    return rowsByCache.get(cacheName) || [];
   };
+  /** @param {string} cacheName @param {string} idField @param {string} entityId @returns {unknown | null} */
   const findRow = (cacheName, idField, entityId) => {
     const mapKey = `${cacheName}::${idField}`;
     if (!indexByCacheField.has(mapKey)) {
+      /** @type {Map<string, unknown>} */
       const index = new Map();
       for (const row of readOnce(cacheName)) {
-        const key = row?.[idField];
+        // Type-only view for the original property read; cache rows are not validated.
+        const rowView = /** @type {SyncCacheRowExpectation | null | undefined} */ (row);
+        const key = rowView?.[idField];
         if (key !== undefined && key !== null && !index.has(String(key))) index.set(String(key), row);
       }
       indexByCacheField.set(mapKey, index);
     }
-    return indexByCacheField.get(mapKey).get(String(entityId)) || null;
+    // The index is installed above before this lookup.
+    return indexByCacheField.get(mapKey)?.get(String(entityId)) || null;
   };
+  /** @param {unknown} dependencyId @returns {boolean} */
   const isResolved = (dependencyId) => {
     const normalizedDependencyId = String(dependencyId || '').trim();
     if (!normalizedDependencyId) return false;
@@ -74,19 +94,23 @@ export function createDependencyCacheResolver() {
     const cachedRow = findRow(target.cache, target.idField || 'id', entityId);
     if (!cachedRow) return false;
 
-    return cachedRow._pending_sync !== true &&
-    cachedRow._sync_state !== 'manual_review_required' &&
-    cachedRow._sync_state !== 'failed';
+    // This type-only view does not validate rows read from persistent cache.
+    const rowView = /** @type {SyncCacheRowExpectation} */ (cachedRow);
+    return rowView._pending_sync !== true &&
+    rowView._sync_state !== 'manual_review_required' &&
+    rowView._sync_state !== 'failed';
   };
   return { isResolved };
 }
 
+/** @param {SyncStatusQueueItem[]} [pending] @param {SyncStatusQueueItem[]} [failed] */
 function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
   const resolver = createDependencyCacheResolver();
   // Build id sets once per status computation. Rebuilding them per item is
   // O(n^2) and froze the app for minutes on 3k+ backlogs every 30s poll.
   const pendingIds = new Set((pending || []).map((entry) => entry?._queue_id).filter(Boolean));
   const failedIds = new Set((failed || []).map((entry) => entry?._queue_id).filter(Boolean));
+  /** @param {SyncStatusQueueItem} [item] @returns {'none' | 'blocked_dependencies' | 'resolved'} */
   const classify = (item = {}) => {
     const dependencyIds = [...new Set([
       item?._depends_on,
@@ -115,11 +139,13 @@ function buildSyncGroupedCountsForStatus(pending = [], failed = []) {
   };
 }
 
+/** @returns {import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot} */
 export function buildSyncStatusSnapshot() {
-  const queue = readSyncQueue();
-  const failed = readFailedSyncQueue();
+  const queue = /** @type {SyncStatusQueueItem[]} */ (readSyncQueue());
+  const failed = /** @type {SyncStatusQueueItem[]} */ (readFailedSyncQueue());
   const faults = readHealthFaults();
-  const syncMeta = readSyncMeta();
+  const syncMeta = /** @type {SyncStatusMetaView} */ (readSyncMeta());
+  /** @param {SyncStatusQueueItem} item */
   const extractBookingId = (item) =>
   item?.data?.p_booking_id ||
   item?.data?.payload?.booking_id ||
@@ -129,23 +155,23 @@ export function buildSyncStatusSnapshot() {
   null;
 
   const failedBookingIds = failed.
-  filter((item) => ['create_booking', 'create_booking_record', 'update_booking'].includes(item.table)).
+  filter((item) => ['create_booking', 'create_booking_record', 'update_booking'].includes(/** @type {string} */ (item.table))).
   map((item) => item.data?.p_booking_id || item.data?.payload?.id || item.data?.p_id).
   filter(Boolean);
   const financialPendingBookingIds = [...new Set(
     queue.
-    filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).
+    filter((item) => FINANCIAL_SYNC_TABLES.has(/** @type {string} */ (item?.table))).
     map(extractBookingId).
     filter(Boolean)
   )];
   const financialFailedBookingIds = [...new Set(
     failed.
-    filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).
+    filter((item) => FINANCIAL_SYNC_TABLES.has(/** @type {string} */ (item?.table))).
     map(extractBookingId).
     filter(Boolean)
   )];
-  const financialPendingCount = queue.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length;
-  const financialFailedCount = failed.filter((item) => FINANCIAL_SYNC_TABLES.has(item?.table)).length;
+  const financialPendingCount = queue.filter((item) => FINANCIAL_SYNC_TABLES.has(/** @type {string} */ (item?.table))).length;
+  const financialFailedCount = failed.filter((item) => FINANCIAL_SYNC_TABLES.has(/** @type {string} */ (item?.table))).length;
   const groupedCounts = buildSyncGroupedCountsForStatus(queue, failed);
   // P0-1: lastSuccessfulSyncAt from memory first, fall back to persisted meta
   const resolvedLastSync = state.lastSuccessfulSyncAt || syncMeta.lastSuccessfulSyncAt || null;

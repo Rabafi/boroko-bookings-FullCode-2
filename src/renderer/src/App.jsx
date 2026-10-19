@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router'
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
@@ -175,13 +176,17 @@ const HposSetupReadiness = lazy(() => import('./components/hospitality-pos/HposS
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
+  const productId = getRuntimeProductId()
+  const accent = productId === 'hospitality-pos' ? '#c95635' : productId === 'hotel' ? '#b8734a' : '#174c3a'
+  const ink = productId === 'hospitality-pos' ? '#7a2e1c' : productId === 'hotel' ? '#1f1814' : '#163229'
+  const productName = getProductDefinition(productId).brandName
   return (
     <div className="flex min-h-[400px] h-full items-center justify-center p-6">
       <div className="bb-card flex min-w-[220px] flex-col items-center gap-4 px-8 py-7 text-center">
-        <div className="h-9 w-9 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" />
+        <div className="h-9 w-9 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: accent, borderTopColor: 'transparent' }} />
         <div>
-          <p className="text-sm font-semibold text-[#163229]">Loading workspace</p>
-          <p className="mt-1 text-xs text-[#6e857d]">Preparing {BUILD_PRODUCT.brandName} for this screen.</p>
+          <p className="text-sm font-semibold" style={{ color: ink }}>Loading workspace</p>
+          <p className="mt-1 text-xs text-[#6e857d]">Preparing {productName} for this screen.</p>
         </div>
       </div>
     </div>
@@ -211,6 +216,13 @@ const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
 const IS_HPOS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
+// Window/chrome accent per product so the taskbar, theme-color meta, and
+// loading surfaces never share LodgingOS green across products.
+const PRODUCT_THEME_COLORS = Object.freeze({
+  'lodge-camp': '#0f3d2c',
+  hotel: '#1a1512',
+  'hospitality-pos': '#2f222a'
+})
 
 // ── Upgrade Wall ───────────────────────────────────────────────────────────────
 function UpgradeWall({ feature, children }) {
@@ -1299,7 +1311,9 @@ export default function App() {
   const [user, setUser] = useState(() => {
     try {
       const saved = localStorage.getItem('bb_user')
-      return saved ? JSON.parse(saved) : null
+      return saved
+        ? /** @type {import('./app-context.jsx').AuthContextUser} */ (JSON.parse(saved))
+        : null
     } catch {
       return null
     }
@@ -1309,8 +1323,8 @@ export default function App() {
   const [activeProfile, setActiveProfile] = useState(null)
   const [profilesLoading, setProfilesLoading] = useState(!isBrowserPreview)
   const [settingsLoading, setSettingsLoading] = useState(!isBrowserPreview)
-  const [settings, setSettings] = useState(null)
-  const [features, setFeatures] = useState({}) // feature flags keyed by feature name
+  const [settings, setSettings] = useState(/** @type {import('./app-context.jsx').SettingsRowView | null} */ (null))
+  const [features, setFeatures] = useState(/** @type {import('./app-context.jsx').FeatureFlags} */ ({})) // feature flags keyed by feature name
   const [trialStatus, setTrialStatus] = useState(DEFAULT_TRIAL_STATUS)
   const [profileContextVersion, setProfileContextVersion] = useState(0)
   const [onlineRequests, setOnlineRequests] = useState([])
@@ -1324,6 +1338,8 @@ export default function App() {
   // Let Electron's native frame own the caption and window controls.
   useEffect(() => {
     document.title = BUILD_PRODUCT.name
+    const themeColor = PRODUCT_THEME_COLORS[BUILD_PRODUCT.id] || PRODUCT_THEME_COLORS['lodge-camp']
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor)
   }, [])
 
   // Theme — apply saved preference on startup and follow system changes when requested.
@@ -1414,8 +1430,10 @@ export default function App() {
     })
   }, [])
 
+  /** @param {unknown} entitlement Expected entitlement view; upstream IPC/cache values remain unvalidated. */
   const applyEntitlement = useCallback((entitlement) => {
     const nextTrial = entitlement || DEFAULT_TRIAL_STATUS
+    /** @type {import('./app-context.jsx').FeatureFlags} */
     const nextFeatures = {}
     const normalizedPlan = normalizeSubscriptionPlan(nextTrial?.plan || 'Starter')
     const planIndex = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizedPlan)
@@ -1450,6 +1468,7 @@ export default function App() {
   // global capability snapshot immediately. The main process receives
   // forceFresh and invalidates its in-memory entitlement result before the
   // authoritative read; disk cache remains available only for offline use.
+  /** @param {{forceFresh?: boolean}} [options] */
   const refreshEntitlement = useCallback(async ({ forceFresh = false } = {}) => {
     const lodgeId = activeProfile?.lodge_id
     if (isBrowserPreview || !lodgeId || !window.api?.trial?.getStatus) return null
@@ -1738,6 +1757,7 @@ export default function App() {
     }
   }, [isBrowserPreview, runFocusRecovery])
 
+  /** @param {import('./app-context.jsx').AuthContextUser} userData Expected auth IPC user view; IPC/cache payloads are not validated here. */
   const login = useCallback(async (userData) => {
     setIsLoggingIn(true)
     try {
@@ -1860,6 +1880,7 @@ export default function App() {
       ? null
       : (user?.allowed_outlet_ids || [])
 
+  /** @type {import('./app-context.jsx').AccessContextValue} */
   const accessContextValue = {
     ...buildCapabilitySnapshot({
       role: user?.role,

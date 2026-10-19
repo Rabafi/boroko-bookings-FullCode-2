@@ -1,7 +1,11 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { Shield, Eye, EyeOff } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** @typedef {{success: true, id: unknown} | {success: false, error: unknown}} MasterAdminSetupReply */
+
+/** @param {{onComplete: () => void}} props */
 export default function MasterSetup({ onComplete }) {
   const [checking, setChecking] = useState(true)
   const [alreadyExists, setAlreadyExists] = useState(false)
@@ -12,8 +16,10 @@ export default function MasterSetup({ onComplete }) {
   const [showConfirm, setShowConfirm] = useState(false)
 
   useEffect(() => {
+    // admin:exists is backed by masterAdminExists(), which returns a boolean;
+    // the catch path also returns false in the main handler.
     window.api.admin.exists().then((exists) => {
-      setAlreadyExists(exists)
+      setAlreadyExists(/** @type {boolean} */ (exists))
       setChecking(false)
     }).catch(() => setChecking(false))
   }, [])
@@ -25,7 +31,10 @@ export default function MasterSetup({ onComplete }) {
     setSaving(true)
     setError('')
     try {
-      const res = await window.api.admin.setup(form.name, form.email, form.password)
+      // The handler returns createMasterAdmin's {success:true,id} or its
+      // explicit {success:false,error} catch envelope; keep the data ID/error
+      // unvalidated because the Supabase response or thrown value is upstream.
+      const res = /** @type {MasterAdminSetupReply} */ (await window.api.admin.setup(form.name, form.email, form.password))
       if (res?.success) {
         onComplete()
       } else {

@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
@@ -9,29 +10,40 @@ const CACHE_SUPPLIERS = 'supplier-coordination'
 const CACHE_MILESTONES = 'deposit-milestones'
 const CACHE_SETTLEMENTS = 'event-settlements'
 
+/** @typedef {Record<string, unknown>} VenuePropertyView */
+
+/** @returns {void} */
 function requireOnline() {
   if (!state.isOnline) {
-    const err = new Error('Venue management requires an internet connection')
+    const err = /** @type {Error & { onlineOnly?: boolean }} */ (new Error('Venue management requires an internet connection'))
     err.onlineOnly = true
     throw err
   }
 }
 
+/** @param {string} key @returns {unknown} */
 function readCached(key) {
   try { return readCache(key) || [] } catch { return [] }
 }
 
+/** @param {string} key @param {unknown} data @param {Parameters<typeof writeCache>[2]} [meta] */
 function writeCached(key, data, meta) {
   try { writeCache(key, data, meta) } catch {}
 }
 
+/** @param {unknown} error @returns {unknown} */
+function readThrownMessage(error) {
+  return /** @type {VenuePropertyView} */ (error).message
+}
+
 // ── Leads ─────────────────────────────────────────────────────────────────
 
+/** @param {unknown} status */
 async function _getEventLeads(status) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_event_leads', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_event_leads', {
       p_lodge_id: currentLodgeId,
       p_status: status || null
     })
@@ -44,30 +56,33 @@ async function _getEventLeads(status) {
     return []
   }
 }
-export const getEventLeads = (...args) => dedupePromise(`${MODULE_KEY}:getEventLeads`, () => _getEventLeads(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getEventLeads>} */
+export const getEventLeads = (...args) => dedupePromise(`${MODULE_KEY}:getEventLeads`, () => _getEventLeads(args[0]))
 
+/** @param {unknown} data */
 export async function createEventLead(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('create_event_lead', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_event_lead', {
       p_lodge_id: currentLodgeId,
       p_payload: data
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} data */
 export async function updateEventLead(id, data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('update_event_lead', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_event_lead', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_payload: data
@@ -75,33 +90,35 @@ export async function updateEventLead(id, data) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} leadId */
 export async function convertLeadToBooking(leadId) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('convert_lead_to_booking', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('convert_lead_to_booking', {
       p_lead_id: leadId,
       p_lodge_id: currentLodgeId
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
 // ── Venue Availability ────────────────────────────────────────────────────
 
+/** @param {unknown} resourceKey */
 async function _getVenueAvailabilityRules(resourceKey) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_venue_availability_rules', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_venue_availability_rules', {
       p_lodge_id: currentLodgeId,
       p_resource_key: resourceKey || null
     })
@@ -114,30 +131,33 @@ async function _getVenueAvailabilityRules(resourceKey) {
     return []
   }
 }
-export const getVenueAvailabilityRules = (...args) => dedupePromise(`${MODULE_KEY}:getVenueAvailabilityRules`, () => _getVenueAvailabilityRules(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getVenueAvailabilityRules>} */
+export const getVenueAvailabilityRules = (...args) => dedupePromise(`${MODULE_KEY}:getVenueAvailabilityRules`, () => _getVenueAvailabilityRules(args[0]))
 
+/** @param {unknown} data */
 export async function upsertVenueAvailabilityRule(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('upsert_venue_availability_rule', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('upsert_venue_availability_rule', {
       p_lodge_id: currentLodgeId,
       p_payload: data
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} resourceKey @param {unknown} startDate @param {unknown} endDate */
 export async function getVenueAvailabilityCalendar(resourceKey, startDate, endDate) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return null
   if (!state.isOnline) return null
   try {
-    const { data, error } = await state.supabase.rpc('get_venue_availability_calendar', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_venue_availability_calendar', {
       p_lodge_id: currentLodgeId,
       p_resource_key: resourceKey,
       p_start_date: startDate,
@@ -152,11 +172,12 @@ export async function getVenueAvailabilityCalendar(resourceKey, startDate, endDa
 
 // ── Run Sheets ────────────────────────────────────────────────────────────
 
+/** @param {unknown} eventBookingId */
 async function _getRunSheet(eventBookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId || !eventBookingId) return null
   try {
-    const { data, error } = await state.supabase.rpc('get_run_sheet', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_run_sheet', {
       p_event_booking_id: eventBookingId,
       p_lodge_id: currentLodgeId
     })
@@ -171,30 +192,33 @@ async function _getRunSheet(eventBookingId) {
     return cached
   }
 }
-export const getRunSheet = (...args) => dedupePromise(`${MODULE_KEY}:getRunSheet`, () => _getRunSheet(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getRunSheet>} */
+export const getRunSheet = (...args) => dedupePromise(`${MODULE_KEY}:getRunSheet`, () => _getRunSheet(args[0]))
 
+/** @param {unknown} data */
 export async function createRunSheet(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('create_run_sheet', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_run_sheet', {
       p_lodge_id: currentLodgeId,
       p_payload: data
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} data */
 export async function updateRunSheet(id, data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('update_run_sheet', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_run_sheet', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_payload: data
@@ -202,49 +226,52 @@ export async function updateRunSheet(id, data) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id */
 export async function finalizeRunSheet(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('finalize_run_sheet', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('finalize_run_sheet', {
       p_id: id,
       p_lodge_id: currentLodgeId
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id */
 export async function executeRunSheet(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('execute_run_sheet', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('execute_run_sheet', {
       p_id: id,
       p_lodge_id: currentLodgeId
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
 // ── Suppliers ─────────────────────────────────────────────────────────────
 
+/** @param {unknown} eventBookingId */
 async function _getEventSuppliers(eventBookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId || !eventBookingId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_event_suppliers', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_event_suppliers', {
       p_event_booking_id: eventBookingId,
       p_lodge_id: currentLodgeId
     })
@@ -256,30 +283,33 @@ async function _getEventSuppliers(eventBookingId) {
     return readCached(CACHE_SUPPLIERS).filter((s) => s.event_booking_id === eventBookingId)
   }
 }
-export const getEventSuppliers = (...args) => dedupePromise(`${MODULE_KEY}:getEventSuppliers`, () => _getEventSuppliers(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getEventSuppliers>} */
+export const getEventSuppliers = (...args) => dedupePromise(`${MODULE_KEY}:getEventSuppliers`, () => _getEventSuppliers(args[0]))
 
+/** @param {unknown} data */
 export async function createSupplierEntry(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('create_supplier_entry', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_supplier_entry', {
       p_lodge_id: currentLodgeId,
       p_payload: data
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} data */
 export async function updateSupplierEntry(id, data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('update_supplier_entry', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_supplier_entry', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_payload: data
@@ -287,16 +317,17 @@ export async function updateSupplierEntry(id, data) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} status @param {unknown} actualAmount */
 export async function updateSupplierStatus(id, status, actualAmount) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('update_supplier_status', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_supplier_status', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_status: status,
@@ -305,17 +336,18 @@ export async function updateSupplierStatus(id, status, actualAmount) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
 // ── Deposit Milestones ────────────────────────────────────────────────────
 
+/** @param {unknown} eventBookingId */
 async function _getDepositMilestones(eventBookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId || !eventBookingId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_deposit_milestones', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_deposit_milestones', {
       p_event_booking_id: eventBookingId,
       p_lodge_id: currentLodgeId
     })
@@ -327,30 +359,33 @@ async function _getDepositMilestones(eventBookingId) {
     return readCached(CACHE_MILESTONES).filter((m) => m.event_booking_id === eventBookingId)
   }
 }
-export const getDepositMilestones = (...args) => dedupePromise(`${MODULE_KEY}:getDepositMilestones`, () => _getDepositMilestones(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getDepositMilestones>} */
+export const getDepositMilestones = (...args) => dedupePromise(`${MODULE_KEY}:getDepositMilestones`, () => _getDepositMilestones(args[0]))
 
+/** @param {unknown} data */
 export async function createDepositMilestone(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('create_deposit_milestone', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_deposit_milestone', {
       p_lodge_id: currentLodgeId,
       p_payload: data
     })
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} paidDate @param {unknown} method @param {unknown} reference */
 export async function markMilestonePaid(id, paidDate, method, reference) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('mark_milestone_paid', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('mark_milestone_paid', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_paid_date: paidDate,
@@ -360,16 +395,17 @@ export async function markMilestonePaid(id, paidDate, method, reference) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} id @param {unknown} reason */
 export async function waiveMilestone(id, reason) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('waive_milestone', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('waive_milestone', {
       p_id: id,
       p_lodge_id: currentLodgeId,
       p_reason: reason
@@ -377,18 +413,19 @@ export async function waiveMilestone(id, reason) {
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
 // ── Settlement ────────────────────────────────────────────────────────────
 
+/** @param {unknown} eventBookingId @param {unknown} idempotencyKey @param {number} [adjustmentAmount] @param {unknown} [adjustmentType] @param {unknown} [adjustmentReason] @param {unknown} [notes] */
 export async function settleEvent(eventBookingId, idempotencyKey, adjustmentAmount = 0, adjustmentType = null, adjustmentReason = null, notes = null) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   try {
-    const { data: result, error } = await state.supabase.rpc('settle_event', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('settle_event', {
       p_event_booking_id: eventBookingId,
       p_lodge_id: currentLodgeId,
       p_idempotency_key: idempotencyKey,
@@ -400,34 +437,36 @@ export async function settleEvent(eventBookingId, idempotencyKey, adjustmentAmou
     if (error) return { success: false, error: error.message }
     return result || { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
 // ── Profitability ─────────────────────────────────────────────────────────
 
+/** @param {unknown} eventBookingId */
 export async function getEventProfitability(eventBookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId || !eventBookingId) return { success: false, error: 'Invalid parameters' }
   if (!state.isOnline) return { success: false, error: 'Requires internet connection' }
   try {
-    const { data, error } = await state.supabase.rpc('get_event_profitability', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_event_profitability', {
       p_event_booking_id: eventBookingId,
       p_lodge_id: currentLodgeId
     })
     if (error) return { success: false, error: error.message }
     return data
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 export async function getVenueProfitabilityReport(startDate, endDate) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { success: false, error: 'No lodge selected' }
   if (!state.isOnline) return { success: false, error: 'Requires internet connection' }
   try {
-    const { data, error } = await state.supabase.rpc('get_venue_profitability_report', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_venue_profitability_report', {
       p_lodge_id: currentLodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -435,6 +474,6 @@ export async function getVenueProfitabilityReport(startDate, endDate) {
     if (error) return { success: false, error: error.message }
     return { success: true, data: data || [] }
   } catch (e) {
-    return { success: false, error: e.message }
+    return { success: false, error: readThrownMessage(e) }
   }
 }

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, Eye, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -37,8 +38,8 @@ function displayDeliveryStatus(m) {
 }
 
 export default function GuestMessaging() {
-  const [templates, setTemplates] = useState([])
-  const [triggers, setTriggers] = useState([])
+  const [templates, setTemplates] = useState(/** @type {unknown} */ ([]))
+  const [triggers, setTriggers] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('templates')
   const [error, setError] = useState('')
@@ -47,23 +48,23 @@ export default function GuestMessaging() {
   const [saving, setSaving] = useState(false)
 
   const [showTemplateModal, setShowTemplateModal] = useState(false)
-  const [editingTemplate, setEditingTemplate] = useState(null)
+  const [editingTemplate, setEditingTemplate] = useState(/** @type {unknown} */ (null))
   const [templateForm, setTemplateForm] = useState(emptyTemplate)
 
   const [showTriggerModal, setShowTriggerModal] = useState(false)
-  const [editingTrigger, setEditingTrigger] = useState(null)
+  const [editingTrigger, setEditingTrigger] = useState(/** @type {unknown} */ (null))
   const [triggerForm, setTriggerForm] = useState(emptyTrigger)
 
   const [confirmDialog, setConfirmDialog] = useState(null)
   const [showRenderModal, setShowRenderModal] = useState(false)
-  const [renderTemplateId, setRenderTemplateId] = useState(null)
+  const [renderTemplateId, setRenderTemplateId] = useState(/** @type {unknown} */ (null))
   const [renderVariables, setRenderVariables] = useState('{}')
-  const [renderResult, setRenderResult] = useState(null)
+  const [renderResult, setRenderResult] = useState(/** @type {unknown} */ (null))
 
-  const [deliveryStatus, setDeliveryStatus] = useState([])
+  const [deliveryStatus, setDeliveryStatus] = useState(/** @type {unknown[]} */ ([]))
   const [deliveryFilter, setDeliveryFilter] = useState('')
   const [deliveryError, setDeliveryError] = useState('')
-  const [channelReadiness, setChannelReadiness] = useState(null)
+  const [channelReadiness, setChannelReadiness] = useState(/** @type {unknown} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)

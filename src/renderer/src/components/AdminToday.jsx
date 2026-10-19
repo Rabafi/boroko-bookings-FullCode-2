@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { CalendarCheck, AlertTriangle, RefreshCw, ChevronRight, Receipt, Server, LifeBuoy, Users, Clock } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
@@ -29,10 +30,14 @@ const TASK_BG = {
   recent_payments: 'bg-green-950/30 border-green-900/40'
 }
 
+/** @typedef {'overdue_bookings' | 'trials_ending' | 'failed_devices' | 'urgent_tickets' | 'lead_followups' | 'recent_payments'} AdminTodayTaskKey */
+/** @typedef {{key: AdminTodayTaskKey, title: string, data: unknown, count: unknown, extra?: string | null}} AdminTodaySection */
+
 export default function AdminToday() {
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {unknown} */ (null))
+  /** @type {Record<string, boolean>} */
   const [expanded, setExpanded] = useState({})
 
   const load = useCallback(async () => {
@@ -47,10 +52,13 @@ export default function AdminToday() {
 
   useEffect(() => { load() }, [load])
 
+  /** @param {AdminTodayTaskKey} key */
   const toggle = (key) => setExpanded(prev => ({ ...prev, [key]: !prev[key] }))
 
+  /** @param {unknown} n */
   const fmt = (n) => `$${Number(n || 0).toLocaleString()}`
 
+  /** @type {AdminTodaySection[]} */
   const sections = [
     { key: 'overdue_bookings', title: 'Overdue Bookings', data: data?.overdue_bookings, count: data?.summary?.overdue_bookings_count, extra: data?.summary?.overdue_bookings_total ? fmt(data.summary.overdue_bookings_total) + ' total' : null },
     { key: 'trials_ending', title: 'Trials Ending (3 days)', data: data?.trials_ending, count: data?.summary?.trials_ending_count },

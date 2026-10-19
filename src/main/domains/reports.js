@@ -18,6 +18,18 @@ import { getSupplySpend, getRoomSupplyAllocations } from './supplies.js'
 import { getConferenceBookings } from './conference.js'
 import { getPoolDayUse } from './pool.js'
 
+/** @typedef {import('../../shared/desktopIpcContracts.js').ReadMetadataRows} ReadMetadataRows */
+
+/**
+ * Expected fields from the occupancy bookings projection and its existing
+ * cache consumers. Cache JSON is not validated here; this read-site view only
+ * records the fields the current report reads and preserves native behavior
+ * for malformed cache values.
+ * @typedef {{room_id?: string|null, check_in?: string, check_out?: string, total_amount?: number|string|null, charges_total?: number|string|null, is_exclusive_event?: boolean|null, status?: string|null}} OccupancyBookingExpectedData
+ */
+
+/** @typedef {Record<string, unknown> & {id?: unknown}} OccupancyRoomExpectedData */
+
 async function getAllExpenses() {
   return getExpenses('2000-01-01', '2099-12-31')
 }
@@ -36,26 +48,34 @@ async function getAllPoolDayUse() {
 
 let dashboardSnapshotWarningShown = false;
 
+/** @param {unknown} rows @param {unknown} source @param {unknown} complete @returns {ReadMetadataRows} */
 function withReportMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : [];
   Object.defineProperties(result, {
     _source: { value: source, enumerable: true, configurable: true },
     _complete: { value: complete === true, enumerable: true, configurable: true }
   });
-  return result;
+  return /** @type {ReadMetadataRows} */ (result);
 }
 
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 
+/** @param {string} startDate @param {string} endDate */
 export async function getOccupancyReport(startDate, endDate) {
+  // getAllRooms normalizes to an array and attaches read metadata. This local
+  // expected view describes its existing result shape without validating cache.
+  /** @type {OccupancyRoomExpectedData[] & ReadMetadataRows} */
   const rooms = await getAllRooms().catch((error) => {
     const cached = readCache('rooms');
     if (cached.length > 0) return withReportMetadata(cached, 'cache', false);
     throw error;
   });
-  const cachedBookingsInRange = readCache('bookings').filter(
+  // Expected cache row shape at the existing direct filter; this assertion is
+  // not validation, and a malformed non-array cache still fails at `.filter`.
+  const cachedBookingsInRange = /** @type {OccupancyBookingExpectedData[]} */ (readCache('bookings')).filter(
     (b) => b.status !== 'cancelled' && b.status !== 'pending' && b.check_in <= endDate && b.check_out > startDate
   );
+  /** @type {OccupancyBookingExpectedData[]} */
   let bookings = [];
   let bookingsSource = 'server';
   try {

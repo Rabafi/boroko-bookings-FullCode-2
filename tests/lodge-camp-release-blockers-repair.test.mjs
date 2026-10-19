@@ -21,7 +21,13 @@ function latestCreatePosOrderBody() {
   for (const file of files) {
     const sql = readFileSync(join(dir, file), 'utf8')
     const upper = sql.toUpperCase()
-    const idx = upper.lastIndexOf('CREATE OR REPLACE FUNCTION PUBLIC.CREATE_POS_ORDER_V3')
+    // The historical sale replay migration layers the public entry point as a
+    // thin delegator over the private implementation that carries the real
+    // financial body. Prefer the implementation definition so the contract
+    // checks still run against the executable body.
+    const implIdx = upper.lastIndexOf('CREATE OR REPLACE FUNCTION PUBLIC._CREATE_POS_ORDER_V3_IMPL')
+    const publicIdx = upper.lastIndexOf('CREATE OR REPLACE FUNCTION PUBLIC.CREATE_POS_ORDER_V3')
+    const idx = implIdx >= 0 ? implIdx : publicIdx
     if (idx >= 0) {
       body = sql.slice(idx, idx + 40000)
     }

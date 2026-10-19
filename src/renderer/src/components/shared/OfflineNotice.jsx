@@ -1,12 +1,15 @@
+// @ts-check
 import { useState, useEffect, useRef } from 'react'
 import { WifiOff, Info, FileDown } from 'lucide-react'
 
+/** @param {{tasks?: string[]}} props */
 export default function OfflineNotice({ tasks = [] }) {
   const [isOnline, setIsOnline] = useState(true)
   const [showOfflineNotice, setShowOfflineNotice] = useState(false)
-  const offlineNoticeTimerRef = useRef(null)
+  const offlineNoticeTimerRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null))
 
   useEffect(() => {
+    /** @param {boolean} online */
     const applyOnlineState = (online) => {
       setIsOnline(online)
       if (offlineNoticeTimerRef.current) {
@@ -25,7 +28,10 @@ export default function OfflineNotice({ tasks = [] }) {
     const checkStatus = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        applyOnlineState(status?.isOnline !== false)
+        // The main sync producer constructs this snapshot; this view only
+        // permits its original property read and does not validate the value.
+        const statusFields = /** @type {Record<string, unknown> | null | undefined} */ (status)
+        applyOnlineState(statusFields?.isOnline !== false)
       } catch {
         applyOnlineState(true)
       }
@@ -33,7 +39,8 @@ export default function OfflineNotice({ tasks = [] }) {
 
     checkStatus()
     const unsubscribe = window.api.sync.onStatusChanged((status) => {
-      applyOnlineState(status?.isOnline !== false)
+      const statusFields = /** @type {Record<string, unknown> | null | undefined} */ (status)
+      applyOnlineState(statusFields?.isOnline !== false)
     })
 
     return () => {
@@ -74,7 +81,9 @@ export default function OfflineNotice({ tasks = [] }) {
           type="button"
           onClick={async () => {
             try {
-              const result = await window.api.reports.exportOfflineSafetyManifest()
+              // The IPC handler returns constructed success/cancel/error records;
+              // values stay unknown and the status check is unchanged.
+              const result = /** @type {Record<string, unknown>} */ (await window.api.reports.exportOfflineSafetyManifest())
               if (result?.success) {
                 alert(`Safety manifest exported successfully to: ${result.filePath}`)
               }

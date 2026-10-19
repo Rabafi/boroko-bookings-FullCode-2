@@ -1,3 +1,4 @@
+// @ts-check
 export const ENTERPRISE_PREVIEW_STORAGE_KEY = 'boroko:enterprise-preview'
 export const ENTERPRISE_PREVIEW_EVENT = 'boroko:enterprise-preview-changed'
 
@@ -25,6 +26,7 @@ export function isEnterprisePreviewEnabled() {
   return window.localStorage.getItem(ENTERPRISE_PREVIEW_STORAGE_KEY) === 'true'
 }
 
+/** @param {boolean} enabled */
 export function setEnterprisePreviewEnabled(enabled) {
   if (typeof window === 'undefined' || !window.localStorage) return false
   if (enabled) {
@@ -36,30 +38,35 @@ export function setEnterprisePreviewEnabled(enabled) {
   return true
 }
 
+/** @param {string} realPlan @param {boolean} [previewEnabled] */
 export function getEffectiveUiPlan(realPlan, previewEnabled = isEnterprisePreviewEnabled()) {
   return previewEnabled ? 'Enterprise' : realPlan
 }
 
+/** @param {string|null} realPropertyType @param {boolean} [previewEnabled] */
 export function getEffectiveUiPropertyType(realPropertyType, previewEnabled = isEnterprisePreviewEnabled()) {
   if (!previewEnabled) return realPropertyType
   return PREVIEW_PROPERTY_TYPE
 }
 
+/** @param {string|null} realBusinessType @param {boolean} [previewEnabled] */
 export function getEffectiveUiBusinessType(realBusinessType, previewEnabled = isEnterprisePreviewEnabled()) {
   if (!previewEnabled) return realBusinessType
   return 'lodge'
 }
 
+/** @param {unknown} realAddons @param {boolean} [previewEnabled] */
 export function getEffectiveUiAddons(realAddons = [], previewEnabled = isEnterprisePreviewEnabled()) {
   if (!previewEnabled) return Array.isArray(realAddons) ? realAddons : []
   return PREVIEW_ADDONS
 }
 
+/** @param {Record<string, unknown>|null|undefined} access */
 export function buildEnterprisePreviewAccess(access) {
   if (!isEnterprisePreviewEnabled()) return access
   return {
     ...(access || {}),
-    allowedByRole: new Proxy(access?.allowedByRole || {}, {
+    allowedByRole: new Proxy(/** @type {Record<PropertyKey, unknown>} */ (access?.allowedByRole || {}), {
       get(target, prop) {
         if (typeof prop === 'string') return true
         return target[prop]

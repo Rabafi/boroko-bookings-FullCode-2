@@ -62,11 +62,16 @@ test('offline clock-out mirrors the cash-up guard before mutating cache', () => 
   assert.ok(fn.indexOf('localOpenTill') < fn.indexOf("status: 'completed'"))
 })
 
-test('queue replay can still reattribute sales to the current open shift', () => {
+test('queue replay keeps the original shift for sales and resolves only tab saves', () => {
   const shared = read('src/main/domains/syncShared.js')
   assert.match(shared, /export function resolveCurrentOpenShiftId/)
+  assert.match(shared, /export function classifySaleReplayRoute/)
+  assert.match(shared, /export const POS_HISTORICAL_REPLAY_RPC/)
   const infra = read('src/main/domains/infrastructure.js')
-  assert.match(infra, /resolveCurrentOpenShiftId/)
+  assert.match(infra, /classifySaleReplayRoute\(readCache\('pos-shifts'\), replayData\.payload\)/)
+  assert.match(infra, /POS_HISTORICAL_REPLAY_RPC/)
+  // Sales are no longer lumped into the generic rewrite branch.
+  assert.doesNotMatch(infra, /item\.table === 'upsert_pos_tab' \|\| item\.table === 'create_pos_order_v3'/)
 })
 
 test('offline clock-out waits for its provisional cash-up in the replay order', () => {

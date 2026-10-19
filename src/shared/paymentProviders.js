@@ -1,6 +1,10 @@
+// @ts-check
 // ── Payment Provider Abstraction ────────────────────────────────────────────
 // Shared module for payment intent state machine and provider config.
 
+/** @typedef {{key: string, label: string, countries: string[], defaultCurrency: string, modes: string[], requiresWebhookSecret: boolean}} PaymentProvider */
+
+/** @type {Record<string, PaymentProvider>} */
 export const PAYMENT_PROVIDERS = {
   dpo: {
     key: 'dpo',
@@ -61,6 +65,7 @@ export const PAYMENT_INTENT_STATUS = {
   refunded: 'refunded'
 }
 
+/** @type {Record<string, string[]>} */
 const VALID_TRANSITIONS = {
   created: ['processing', 'failed'],
   processing: ['succeeded', 'failed'],
@@ -91,6 +96,7 @@ export const BOOKING_INTENT_STATUS = {
   confirmed: 'confirmed'
 }
 
+/** @type {Record<string, string[]>} */
 const BOOKING_TRANSITIONS = {
   pending: ['payment_started', 'expired', 'cancelled'],
   payment_started: ['payment_completed', 'payment_failed', 'expired', 'cancelled'],
@@ -123,13 +129,13 @@ export function getNextBookingIntentStates(currentStatus) {
 
 /**
  * Validate provider config payload before saving.
- * @param {object} config
+ * @param {Record<string, unknown>} config
  * @returns {{ valid: boolean, errors: string[] }}
  */
 export function validateProviderConfig(config) {
   const errors = []
 
-  if (!config.provider || !PAYMENT_PROVIDERS[config.provider]) {
+  if (!config.provider || !PAYMENT_PROVIDERS[/** @type {string} */ (config.provider)]) {
     errors.push('Invalid or missing payment provider')
   }
 
@@ -139,11 +145,11 @@ export function validateProviderConfig(config) {
     if (!config.webhook_secret) errors.push('Webhook secret is required')
   }
 
-  if (config.country && config.country.length !== 2) {
+  if (config.country && /** @type {{length?: unknown}} */ (config.country).length !== 2) {
     errors.push('Country must be a 2-letter ISO code')
   }
 
-  if (!config.mode || !['test', 'live'].includes(config.mode)) {
+  if (!config.mode || !['test', 'live'].includes(/** @type {string} */ (config.mode))) {
     errors.push('Mode must be test or live')
   }
 
@@ -153,10 +159,10 @@ export function validateProviderConfig(config) {
 /**
  * Get the checkout URL for a provider. In test mode, returns a mock URL.
  * @param {string} provider
- * @param {object} paymentIntent - { id, amount, currency, provider_payment_id }
+ * @param {Record<string, unknown>} paymentIntent - { id, amount, currency, provider_payment_id }
  * @param {string} successUrl
  * @param {string} cancelUrl
- * @returns {string|null}
+ * @returns {{provider: string, payment_intent_id: unknown, amount: unknown, currency: unknown, success_url: string, cancel_url: string, mode: string}|null}
  */
 export function getCheckoutUrl(provider, paymentIntent, successUrl, cancelUrl) {
   if (!provider || !PAYMENT_PROVIDERS[provider]) return null

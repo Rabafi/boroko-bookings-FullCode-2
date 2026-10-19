@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Archived-only stock helper.
  *
@@ -16,25 +17,46 @@
  * keep their stock listed server-side so they can be restored).
  */
 
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptionalField(value, key) {
+  return value === null || value === undefined
+    ? undefined
+    : Reflect.get(Object(value), key, value)
+}
+
+/** @param {unknown} stockItemId @param {unknown} [menuItems] @returns {unknown[]} */
 export function linkedMenuItemsForStock(stockItemId, menuItems = []) {
   const target = String(stockItemId || '');
   if (!target) return [];
-  return (Array.isArray(menuItems) ? menuItems : []).filter(
-    (row) => row?.inventory_item_id != null && String(row.inventory_item_id) === target,
+  /** @type {unknown[]} */
+  const rows = Array.isArray(menuItems) ? menuItems : [];
+  return rows.filter(
+    (candidate) => {
+      const inventoryItemId = readOptionalField(candidate, 'inventory_item_id')
+      return inventoryItemId != null && String(readOptionalField(candidate, 'inventory_item_id')) === target;
+    },
   );
 }
 
+/** @param {unknown} stockItem @param {unknown} [menuItems] @returns {boolean} */
 export function isArchivedOnlyStockItem(stockItem, menuItems = []) {
-  if (!stockItem?.id) return false;
-  const linked = linkedMenuItemsForStock(stockItem.id, menuItems);
+  if (!readOptionalField(stockItem, 'id')) return false;
+  const linked = linkedMenuItemsForStock(readOptionalField(stockItem, 'id'), menuItems);
   if (linked.length === 0) return false;
-  return linked.every((row) => Boolean(row?.archived_at));
+  return linked.every((candidate) => {
+    return Boolean(readOptionalField(candidate, 'archived_at'));
+  });
 }
 
+/** @param {unknown} stockItems @param {unknown} [menuItems] @returns {{live: unknown[], archived: unknown[]}} */
 export function partitionStockByArchive(stockItems = [], menuItems = []) {
+  /** @type {unknown[]} */
   const live = [];
+  /** @type {unknown[]} */
   const archived = [];
-  for (const item of Array.isArray(stockItems) ? stockItems : []) {
+  /** @type {unknown[]} */
+  const items = Array.isArray(stockItems) ? stockItems : [];
+  for (const item of items) {
     if (isArchivedOnlyStockItem(item, menuItems)) archived.push(item);
     else live.push(item);
   }

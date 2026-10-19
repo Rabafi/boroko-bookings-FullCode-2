@@ -29,14 +29,16 @@ test('addon activation does not grant cashier accounting permissions', () => {
  const ent=coerce(fixture(),lodge)
  assert.equal(buildCapabilitySnapshot({role:'cashier',features:ent.effective_features,productId:ent.product_id,commercialPackageKey:ent.commercial_package_key,commercialAddonKeys:ent.enterprise_addons,commercialEntitlement:ent,commercialLodgeId:lodge}).capabilities['accounting.read'],false)
 })
-test('Manage refresh forces the shared access refresh and displays recovery on failure', async () => {
- const source=fs.readFileSync('src/renderer/src/components/hospitality-pos/HposManageHub.jsx','utf8')
- const body=source.split('const refreshAccess = useCallback(async () => {')[1].split('}, [refreshEntitlement])')[0]
- const run=new Function('refreshEntitlement','setAccessRefreshing','setAccessRefreshError',`return (async () => {${body}})()`)
- let requested, error, busy
- await run(async options=>{requested=options;return fixture()},v=>busy=v,v=>error=v)
- assert.deepEqual(requested,{forceFresh:true});assert.equal(error,'');assert.equal(busy,false)
- await run(async()=>null,v=>busy=v,v=>error=v)
- assert.match(error,/Reconnect/);assert.equal(busy,false)
- assert.match(source,/useEffect\(\(\) => \{ refreshAccess\(\); \}, \[refreshAccess\]\)/)
+test('Manage access refreshes silently on its own with no manual bar', async () => {
+  const source=fs.readFileSync('src/renderer/src/components/hospitality-pos/HposManageHub.jsx','utf8')
+  // No manual refresh bar anywhere.
+  assert.equal(source.includes('Refresh package access'),false,'manual refresh bar must be gone')
+  assert.equal(source.includes('accessRefreshing'),false,'no refreshing button state')
+  assert.equal(source.includes('accessRefreshError'),false,'no refresh error bar state')
+  // Silent force-fresh refresh on open, every 60s, and on return to the tab.
+  assert.match(source,/await refreshEntitlement\(\{ forceFresh: true \}\)/)
+  assert.match(source,/setInterval\(\(\) => \{ refreshAccess\(\)/)
+  assert.match(source,/60_000/)
+  assert.match(source,/visibilitychange/)
+  assert.match(source,/refreshAccess\(\);/)
 })

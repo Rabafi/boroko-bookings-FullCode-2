@@ -111,6 +111,7 @@ async function run() {
     await read('src/main/database.js'),
     ...(await readTree('src/main/domains'))
   ].join('\n')
+  const syncShared = await read('src/main/domains/syncShared.js')
   const mainIndex = await read('src/main/index.js')
   const preload = await read('src/preload/index.js')
   const packageJson = await read('package.json')
@@ -152,9 +153,14 @@ async function run() {
   assert.match(database, /manualRetryOnly:\s*manualReviewOnly/)
   assert.match(database, /function normalizeQueuedSyncItemForReplay\(item = \{\}\)/)
   assert.match(database, /function resolveQueuedItemCreatedAtRaw\(item = \{\}\)/)
-  assert.match(database, /item\?\.timestamp[\s\S]{0,180}item\?\.createdAt[\s\S]{0,180}item\?\.created_at[\s\S]{0,180}item\?\.queued_at/)
-  assert.match(database, /\['update_booking', 'update_customer', 'update_room', 'update_quotation'\]\.includes\(next\.table\)[\s\S]{0,180}next\.data\.p_expected_updated_at = null/)
-  assert.match(database, /next\.table === 'update_booking_status'[\s\S]{0,240}startsWith\('booking-'\)[\s\S]{0,120}next\.data\.p_expected_updated_at = null/)
+  assert.match(database, /\w+\?\.timestamp[\s\S]{0,180}\w+\?\.createdAt[\s\S]{0,180}\w+\?\.created_at[\s\S]{0,180}\w+\?\.queued_at/)
+  // Queue normalization compares untrusted persisted RPC names directly;
+  // preserve its stable-key allowlist and null expected-version envelope.
+  assert.match(syncShared, /next\.table === 'post_bar_physical_count' \|\| next\.table === 'post_bar_simple_delivery'/)
+  assert.match(syncShared, /next\.table === 'record_customer_credit'[\s\S]{0,240}next\.table === 'reverse_customer_credit_entry'/)
+  assert.match(syncShared, /next\.table === 'update_booking'[\s\S]{0,240}next\.table === 'update_quotation'/)
+  assert.match(syncShared, /next\.data\.p_expected_updated_at = null/)
+  assert.match(syncShared, /next\.table === 'update_booking_status'[\s\S]{0,240}startsWith\('booking-'\)/)
   assert.match(database, /function isBenignBookingDriftFault\(fault = \{\}\)/)
   assert.match(database, /parsed\.filter\(\(fault\) => !isBenignBookingDriftFault\(fault\)\)/)
   assert.match(mainIndex, /ipcMain\.handle\('sync:getStatus'/)
@@ -200,7 +206,7 @@ async function run() {
   assert.match(database, /booking-invoice-groups/)
   assert.match(database, /export async function updateGroupInvoicePayment/)
   assert.doesNotMatch(database, /await createBooking\(\{[\s\S]*room_id: plan\.room_id/)
-  assert.match(database, /p_total_amount: null/)
+  assert.match(database, /p_total_amount:\s*data\.total_amount \?\? null/)
   assert.match(database, /_local_booking_ids/)
   assert.match(database, /function mergeRemoteBookingsWithLocalState\(/)
   assert.match(database, /writeCache\(name, mergeRemoteBookingsWithLocalState\(data \|\| \[\]\), \{ source: 'remote' \}\)/)
@@ -279,7 +285,7 @@ async function run() {
   // mark_quotation_sent must trigger quotation cache refresh after sync.
   assert.match(
     database,
-    /'mark_quotation_sent'[\s\S]{0,80}shouldRefreshQuotations/
+    /if \(item\.type === 'rpc' && \['create_quotation', 'update_quotation', 'mark_quotation_sent', 'convert_quotation_to_booking', 'create_multi_room_booking'\]\.includes\(item\.table\)\) shouldRefreshQuotations = true/
   )
 
   // Quotation merge contract: mergeRemoteQuotationsWithLocalState must exist and
@@ -481,13 +487,13 @@ async function run() {
   // PIN validation) or `Cannot void a settled order` can never succeed with
   // identical bytes, so it dead-letters manual-review-only (visible in System
   // Health, excluded from auto-retry) instead of cycling retries and the
-  // 30-minute auto-requeue. `Order is already voided` is the desired end
-  // state and is consumed as synced.
+  // 30-minute auto-requeue. An already-voided server state without an exact
+  // stored operation receipt is ambiguous and remains in manual review.
   assert.match(database, /function isTerminalPosVoidFailure\(item, errorMessage = ''\)/)
   assert.match(database, /item\?\.table !== 'approve_pos_void_with_pin'/)
-  assert.match(database, /Order not found\|Cannot void a settled order/)
+  assert.match(database, /Order not found\|Cannot void a settled order\|Order is already voided\|idempotency_conflict\|idempotency_receipt_unavailable/)
   assert.match(database, /if \(isTerminalPosVoidFailure\(item, errorMessage\)\) return true/)
-  assert.match(database, /item\?\.table === 'approve_pos_void_with_pin' && \/Order is already voided\/i/)
+  assert.match(database, /idempotency_receipt_unavailable/)
   // A skip behind a parent that can never replay (manual-only dead this run,
   // already manual-only, or gone entirely) parks the child manual-only too;
   // a fail-then-succeed parent in the same run must not keep blocking.
@@ -501,7 +507,8 @@ async function run() {
   const voidItem = { type: 'rpc', table: 'approve_pos_void_with_pin' }
   assert.equal(isTerminalPosVoidFailure(voidItem, 'Order not found'), true)
   assert.equal(isTerminalPosVoidFailure(voidItem, 'Cannot void a settled order'), true)
-  assert.equal(isTerminalPosVoidFailure(voidItem, 'Order is already voided'), false)
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'Order is already voided'), true, 'without an exact receipt this state requires manager review, not success')
+  assert.equal(isTerminalPosVoidFailure(voidItem, 'idempotency_receipt_unavailable'), true)
   assert.equal(isTerminalPosVoidFailure(voidItem, 'Invalid PIN or unauthorized approver'), false)
   assert.equal(isTerminalPosVoidFailure(voidItem, 'TypeError: fetch failed'), false)
   assert.equal(isTerminalPosVoidFailure({ type: 'rpc', table: 'create_pos_order_v3' }, 'Order not found'), false)

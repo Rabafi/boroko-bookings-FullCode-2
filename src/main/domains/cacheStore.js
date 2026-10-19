@@ -1,3 +1,5 @@
+// @ts-check
+
 import fs from 'fs';
 import path from 'path';
 import { state } from '../state.js';
@@ -7,10 +9,12 @@ const CACHE_FRESHNESS_FILE = 'cache-freshness.json';
 
 export const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS === 'true';
 
+/** @param {string} name @returns {string} */
 function getCachePath(name) {
   return path.join(state.cacheDir, `${name}.json`);
 }
 
+/** @param {string} name @returns {unknown} */
 export function readCache(name) {
   const filePath = getCachePath(name);
   const tmpPath = filePath + '.tmp';
@@ -44,6 +48,7 @@ export function readCache(name) {
   }
 }
 
+/** @param {string} name @param {unknown} data @param {{source?: string}} [options] */
 export function writeCache(name, data, { source = 'local' } = {}) {
   const filePath = getCachePath(name);
   const tmpPath = filePath + '.tmp';
@@ -68,6 +73,7 @@ export function writeCache(name, data, { source = 'local' } = {}) {
   } catch {/* freshness tracking is non-critical */}
 }
 
+/** @param {string} name @param {unknown} [fallback] */
 export function clearCache(name, fallback = []) {
   writeCache(name, fallback);
 }
@@ -76,8 +82,10 @@ export function clearCache(name, fallback = []) {
 // If two callers request the same key while a promise is already in-flight,
 // the second caller waits for the first result instead of firing a duplicate.
 
+/** @type {Map<string, Promise<unknown>>} */
 const inFlightPromises = new Map();
 
+/** @param {string} key @param {() => Promise<unknown>} factory @returns {Promise<unknown>} */
 export function dedupePromise(key, factory) {
   const existing = inFlightPromises.get(key);
   if (existing) return existing;

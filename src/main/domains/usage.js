@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js';
 import {
   MONTHLY_USAGE_RESET_COPY,
@@ -21,6 +22,8 @@ import {
   getMonthWindowIso
 } from './usageSupport.js';
 
+/** @typedef {Record<string, unknown>} UsageOptionsView */
+
 export {
   MONTHLY_USAGE_RESET_COPY,
   canCreateBooking,
@@ -34,6 +37,7 @@ export {
   normalizeSubscriptionPlan
 };
 
+/** @param {string | null} [targetLodgeId] @param {{monthDate?: Date, creationMonthDate?: Date, forceRemoteRefresh?: boolean}} [options] */
 export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { monthDate = new Date(), creationMonthDate = new Date(), forceRemoteRefresh = false } = {}) {
   const entitlement = await getTrialStatus(targetLodgeId).catch(() => null);
   const plan = normalizeSubscriptionPlan(entitlement?.plan || 'Starter');
@@ -46,7 +50,7 @@ export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { m
   const { dateStart, dateEnd } = getMonthWindowIso(monthDate);
   const creationWindow = getMonthWindowIso(creationMonthDate);
   const [bookingsResult, createdBookingsResult, roomsResult, usersResult] = await Promise.all([
-  state.supabase.
+  /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('bookings').
   select('id', { count: 'exact', head: true }).
   eq('lodge_id', targetLodgeId).
@@ -54,7 +58,7 @@ export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { m
   neq('is_exclusive_event', true).
   gte('check_in', dateStart).
   lt('check_in', dateEnd),
-  state.supabase.
+  /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('bookings').
   select('id', { count: 'exact', head: true }).
   eq('lodge_id', targetLodgeId).
@@ -62,11 +66,11 @@ export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { m
   neq('is_exclusive_event', true).
   gte('created_at', creationWindow.start).
   lt('created_at', creationWindow.end),
-  state.supabase.
+  /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('rooms').
   select('id', { count: 'exact', head: true }).
   eq('lodge_id', targetLodgeId),
-  state.supabase.
+  /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('users').
   select('id', { count: 'exact', head: true }).
   eq('lodge_id', targetLodgeId)]
@@ -96,12 +100,14 @@ export async function getCreationUsageSummary(targetLodgeId = state.lodgeId, { m
   };
 }
 
+/** @param {unknown} [options] */
 export async function getUsageLimitSnapshot(options = {}) {
-  const monthDate = options?.monthDate ? new Date(options.monthDate) : new Date();
+  const optionView = /** @type {UsageOptionsView | null | undefined} */ (options)
+  const monthDate = optionView?.monthDate ? new Date(/** @type {string | number | Date} */ (optionView.monthDate)) : new Date();
   const summary = await getCreationUsageSummary(state.lodgeId, {
     monthDate,
     creationMonthDate: new Date(),
-    forceRemoteRefresh: options?.forceRemoteRefresh === true
+    forceRemoteRefresh: optionView?.forceRemoteRefresh === true
   });
   return {
     ...summary,
@@ -110,6 +116,7 @@ export async function getUsageLimitSnapshot(options = {}) {
   };
 }
 
+/** @param {'booking' | 'room' | 'user'} resource @param {{targetMonthDate?: Date, monthDate?: Date, creationMonthDate?: Date, forceRemoteRefresh?: boolean, requestedUnits?: number}} [options] */
 export async function assertCreationWithinUsageLimit(resource, options = {}) {
   const targetMonthDate = options.targetMonthDate || options.monthDate || new Date();
   const creationMonthDate = options.creationMonthDate || new Date();

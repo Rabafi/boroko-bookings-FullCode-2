@@ -1,3 +1,5 @@
+// @ts-check
+/** @param {{netSales?: unknown, earnRate?: unknown, minimumSpend?: unknown}} [input] */
 export function calculateLoyaltyEarn({ netSales = 0, earnRate = 1, minimumSpend = 0 } = {}) {
   const sales = normalizeMoney(netSales)
   const rate = Number(earnRate)
@@ -7,6 +9,7 @@ export function calculateLoyaltyEarn({ netSales = 0, earnRate = 1, minimumSpend 
   return Math.floor(sales * rate)
 }
 
+/** @param {{availablePoints?: unknown, redeemPoints?: unknown, pointValue?: unknown, orderTotal?: unknown}} [input] */
 export function applyLoyaltyRedemption({ availablePoints = 0, redeemPoints = 0, pointValue = 0.01, orderTotal = 0 } = {}) {
   const available = Math.max(0, Math.floor(Number(availablePoints || 0)))
   const requested = Math.max(0, Math.floor(Number(redeemPoints || 0)))
@@ -24,6 +27,7 @@ export function applyLoyaltyRedemption({ availablePoints = 0, redeemPoints = 0, 
   }
 }
 
+/** @param {{customerId?: unknown, amount?: unknown, type?: unknown, referenceId?: unknown, note?: unknown}} [input] */
 export function buildCustomerAccountEntry({ customerId, amount, type, referenceId, note } = {}) {
   const normalizedType = String(type || '').trim().toLowerCase()
   if (!customerId) throw new Error('Customer account entry requires customerId.')
@@ -43,6 +47,7 @@ export function buildCustomerAccountEntry({ customerId, amount, type, referenceI
   }
 }
 
+/** @param {{grossSales?: unknown, platformCommission?: unknown, deliveryFees?: unknown, adjustments?: unknown}} [input] */
 export function calculateDeliverySettlement({ grossSales = 0, platformCommission = 0, deliveryFees = 0, adjustments = 0 } = {}) {
   const gross = normalizeMoney(grossSales)
   const commission = normalizeMoney(platformCommission)
@@ -57,16 +62,19 @@ export function calculateDeliverySettlement({ grossSales = 0, platformCommission
   }
 }
 
+/** @param {unknown} [rows] */
 export function compareRestaurantOutlets(rows = []) {
-  return (Array.isArray(rows) ? rows : [])
+  return (/** @type {unknown[]} */ (Array.isArray(rows) ? rows : []))
     .map((row) => {
-      const sales = normalizeMoney(row.sales)
-      const cogs = normalizeMoney(row.cogs)
-      const expenses = normalizeMoney(row.expenses)
+      // Compile-time projection only: null rows still throw on the same field access.
+      const fields = /** @type {Record<string, unknown>} */ (row)
+      const sales = normalizeMoney(fields.sales)
+      const cogs = normalizeMoney(fields.cogs)
+      const expenses = normalizeMoney(fields.expenses)
       const profit = normalizeMoney(sales - cogs - expenses)
       return {
-        outlet_id: row.outlet_id,
-        outlet_name: row.outlet_name || 'Outlet',
+        outlet_id: fields.outlet_id,
+        outlet_name: fields.outlet_name || 'Outlet',
         sales,
         cogs,
         expenses,
@@ -77,6 +85,7 @@ export function compareRestaurantOutlets(rows = []) {
     .sort((a, b) => b.profit - a.profit)
 }
 
+/** @param {unknown} value @returns {number} */
 function normalizeMoney(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 0

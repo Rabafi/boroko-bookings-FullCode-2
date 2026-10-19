@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { Plus, Pencil, Trash2, BedDouble, Image, X, ChevronLeft, ChevronRight, Calendar, RefreshCw, Lock, TentTree, Zap } from 'lucide-react'
@@ -12,7 +13,8 @@ import UsageUpgradePrompt from './shared/UpgradePromptModal'
 import UpgradeNudgeBanner from './shared/UpgradeNudgeBanner'
 import { useAccess, useSettings, useFeatures } from '../app-context'
 import { MONTHLY_USAGE_RESET_COPY, canCreateRoom, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
-import { getAccommodationInventoryLabel, getAccommodationKindLabel, isCampsiteUnit, ACCOMMODATION_KIND_LABELS, RATE_MODE_LABELS } from '../../../shared/accommodation'
+import { getAccommodationInventoryLabel, getAccommodationKindLabel, isCampsitePriced, isCampsiteUnit, ACCOMMODATION_KIND_LABELS, RATE_MODE_LABELS } from '../../../shared/accommodation'
+import { getPropertyPresentation, getPresentationUnitName } from '../../../shared/propertyPresentation'
 import { isCampPropertyType, normalizePropertyType } from '../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { formatLocalDate } from '../utils/localDate'
@@ -76,7 +78,15 @@ export default function Rooms() {
 
   const { settings } = useSettings()
   const propertyType = normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge')
-  const inventoryLabel = getAccommodationInventoryLabel(propertyType, { plural: true })
+  // Resolver owns inventory wording (single table); accommodation.js stays the
+  // per-kind label source. Operating-profile mix tailors the label only.
+  const inventoryLabel = (() => {
+    try {
+      return getPropertyPresentation({ propertyType, operatingProfile: settings?.operating_profile }).inventoryLabel
+    } catch {
+      return getAccommodationInventoryLabel(propertyType, { plural: true })
+    }
+  })()
 
   const TABS = [
     ['rooms', inventoryLabel],
@@ -132,6 +142,25 @@ function RoomsTab() {
   const access = useAccess()
   const { settings } = useSettings()
   const [rooms, setRooms] = useState([])
+  const tabPropertyType = normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge')
+  // Mix-aware wording from the loaded inventory: sites-only, rooms-only or
+  // mixed. Per-row names still come from accommodation.js kind labels.
+  const tabPresentation = useMemo(() => {
+    try {
+      return getPropertyPresentation({
+        propertyType: tabPropertyType,
+        accommodationMix: rooms,
+        operatingProfile: settings?.operating_profile
+      })
+    } catch {
+      return null
+    }
+  }, [tabPropertyType, rooms, settings?.operating_profile])
+  const unitSingular = tabPresentation?.inventoryLabelSingular || 'Room'
+  const unitPlural = tabPresentation?.unitNounPlural || 'Rooms'
+  const tabInventoryLabel = tabPresentation?.inventoryLabel || 'Rooms'
+  const tabBoardLabel = tabPresentation?.navHints?.boardLabel || 'Room Board'
+  const tabFirstUnit = tabPresentation?.dashboardHints || { firstUnitTitle: 'Add your first room', firstUnitCopy: 'Create the room list before bookings, housekeeping, and availability can work properly.', firstUnitAction: 'Add rooms' }
   const [usageSnapshot, setUsageSnapshot] = useState(null)
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -224,6 +253,13 @@ function RoomsTab() {
       window.api.floorSections?.getAll?.().catch(() => null)
     ])
     setRooms(data)
+    // Notify the shell so sidebar/header wording follows the same loaded
+    // inventory mix (Layout listens for `boroko:rooms-changed`).
+    try {
+      if (Array.isArray(data)) window.dispatchEvent(new CustomEvent('boroko:rooms-changed'))
+    } catch {
+      // Best-effort only: shell keeps its last mix snapshot.
+    }
     setDbRoomTypes(Array.isArray(roomTypes) ? roomTypes.filter((rt) => rt.active !== false) : [])
     setFloorSections(Array.isArray(sections) ? sections.filter((section) => section.active !== false) : [])
     const today = new Date()
@@ -306,8 +342,10 @@ function RoomsTab() {
       max_occupancy: parseInt(form.max_occupancy || form.capacity_adults || 2, 10),
       capacity_adults: parseInt(form.capacity_adults || form.max_occupancy || 2, 10),
       capacity_children: parseInt(form.capacity_children || 0, 10),
-      max_tents: form.accommodation_kind === 'campsite' ? parseInt(form.max_tents || 1, 10) : null,
-      max_vehicles: form.accommodation_kind === 'campsite' ? parseInt(form.max_vehicles || 1, 10) : null,
+      // Priced family (campsite + tent) persists independent tent/vehicle
+      // caps; room/unit kinds persist null, matching the server contract.
+      max_tents: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(form.max_tents || 1, 10) : null,
+      max_vehicles: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(form.max_vehicles || 1, 10) : null,
       is_powered: form.is_powered === true,
       shared_facilities: form.shared_facilities === true,
       rate_per_person: parseFloat(form.rate_per_person) || 0,
@@ -321,7 +359,7 @@ function RoomsTab() {
     const isNewMaintenanceState = form.status === 'maintenance' && existingRoom?.status !== 'maintenance'
     if (isNewMaintenanceState && !form.maintenance_issue.trim()) {
       setLoading(false)
-      setError('Describe why this room is under maintenance so staff can track and resolve it.')
+      setError(`Describe why this ${unitSingular.toLowerCase()} is under maintenance so staff can track and resolve it.`)
       return
     }
     let res
@@ -344,21 +382,22 @@ function RoomsTab() {
     } else {
       setShowModal(false)
       load()
-      setSuccess(editing ? 'Room changes saved.' : 'Room added successfully.')
+      setSuccess(editing ? `${unitSingular} changes saved.` : `${unitSingular} added successfully.`)
     }
   }
 
   const handleDelete = async (room) => {
+    const unitName = getPresentationUnitName(room) || unitSingular
     setConfirmDialog({
-      title: `Delete Room ${room.room_number}?`,
-      message: 'This permanently removes the room from the desktop workspace and cannot be undone.',
-      confirmLabel: 'Delete room',
+      title: `Delete ${unitName}?`,
+      message: `This permanently removes the ${unitName.toLowerCase()} from the desktop workspace and cannot be undone.`,
+      confirmLabel: `Delete ${unitSingular.toLowerCase()}`,
       onConfirm: async () => {
         setConfirmDialog(null)
         await window.api.rooms.delete(room.id)
         setSelectedRoom(null)
         load()
-        setSuccess(`Room ${room.room_number} deleted.`)
+        setSuccess(`${unitName} deleted.`)
       }
     })
   }
@@ -413,12 +452,12 @@ function RoomsTab() {
       <div className="bb-page-header">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-700/70">Property Operations</p>
-          <h1 className="bb-page-header-title mt-2">Rooms</h1>
+          <h1 className="bb-page-header-title mt-2">{tabInventoryLabel}</h1>
           <p className="bb-page-header-subtitle">
             {rooms.length} total · {available} available · {occupied} occupied · {maintenance} maintenance
           </p>
           <div className="mt-2">
-            <UsageLimitIndicator label="Rooms" used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
+            <UsageLimitIndicator label={tabInventoryLabel} used={usageSnapshot?.usage?.rooms ?? rooms.length} limit={usageLimits.rooms} />
             <p className="mt-1 text-xs text-slate-500">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
             {roomLimitMessage && <p className="mt-2 text-xs text-rose-700">{roomLimitMessage}</p>}
             <div className="mt-2">
@@ -440,7 +479,7 @@ function RoomsTab() {
         <div className="bb-card-muted hidden max-w-xs flex-wrap items-center gap-2 px-3 py-2.5 xl:flex">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Snapshot</p>
-            <p className="mt-0.5 text-xs text-slate-600">Room readiness and occupancy at a glance.</p>
+            <p className="mt-0.5 text-xs text-slate-600">{tabInventoryLabel} readiness and occupancy at a glance.</p>
           </div>
         </div>
         <button
@@ -448,7 +487,7 @@ function RoomsTab() {
           disabled={roomLimitStatus.isBlocked}
           className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <Plus size={16} /> Add Room
+          <Plus size={16} /> {tabFirstUnit.firstUnitAction.charAt(0).toUpperCase() + tabFirstUnit.firstUnitAction.slice(1)}
         </button>
       </div>
 
@@ -458,7 +497,7 @@ function RoomsTab() {
           <SummaryPill label="Occupied" value={occupied} tone="amber" />
           <SummaryPill label="Maintenance" value={maintenance} tone="red" />
           <SummaryPill label="Mesh Holds" value={heldRoomCount} tone="amber" />
-          <SummaryPill label="Room Count" value={rooms.length} tone="slate" />
+          <SummaryPill label={`${tabInventoryLabel} count`} value={rooms.length} tone="slate" />
         </div>
       )}
 
@@ -476,18 +515,18 @@ function RoomsTab() {
       {listLoading && rooms.length === 0 ? (
         <div className="flex items-center justify-center gap-3 min-h-[260px] text-sm text-gray-500">
           <RefreshCw size={16} className="animate-spin" />
-          Loading rooms…
+          Loading {tabInventoryLabel.toLowerCase()}…
         </div>
       ) : rooms.length === 0 ? (
         <div className="bb-empty-state min-h-[260px]">
           <BedDouble size={40} className="mx-auto mb-3 text-slate-300" />
-          <p className="text-slate-500">No rooms yet. Add your first room to get started.</p>
+          <p className="text-slate-500">{tabFirstUnit.firstUnitTitle}. {tabFirstUnit.firstUnitCopy}</p>
         </div>
       ) : (
         <>
           <DataViewToolbar
-            title="Room Board"
-            subtitle="Saved views, density controls, and room context live here so property ops stays compact."
+            title={tabBoardLabel}
+            subtitle={`Saved views, density controls, and ${tabInventoryLabel.toLowerCase()} context live here so property ops stays compact.`}
             views={roomViews}
             activeView={activeView}
             onViewChange={setActiveView}
@@ -513,7 +552,7 @@ function RoomsTab() {
 
       {showModal && (
         <Modal
-          title={editing ? 'Edit Room' : 'Add Room'}
+          title={editing ? `Edit ${unitSingular}` : `Add ${unitSingular}`}
           onClose={() => setShowModal(false)}
         >
           <form onSubmit={handleSave} className="space-y-4">
@@ -539,7 +578,7 @@ function RoomsTab() {
                       room_type: kind === 'campsite' && !String(form.room_type || '').toLowerCase().includes('site')
                         ? (form.is_powered ? 'Powered site' : 'Campsite')
                         : form.room_type,
-                      rate_mode: kind === 'campsite' ? (form.rate_mode || 'site') : form.rate_mode
+                      rate_mode: isCampsitePriced({ accommodation_kind: kind }) ? (form.rate_mode || 'site') : form.rate_mode
                     })
                   }}
                 >
@@ -669,7 +708,7 @@ function RoomsTab() {
                   onChange={(e) => setForm({ ...form, capacity_children: e.target.value })}
                 />
               </Field>
-              {form.accommodation_kind === 'campsite' && (
+              {isCampsitePriced({ accommodation_kind: form.accommodation_kind }) && (
                 <>
                   <Field label="Max tents">
                     <input
@@ -691,6 +730,8 @@ function RoomsTab() {
                       onChange={(e) => setForm({ ...form, max_vehicles: e.target.value })}
                     />
                   </Field>
+                  {form.accommodation_kind === 'campsite' && (
+                  <>
                   <Field label="Site surface">
                     <input
                       className="input"
@@ -715,6 +756,8 @@ function RoomsTab() {
                     />
                     Shared ablutions / facilities
                   </label>
+                  </>
+                  )}
                 </>
               )}
             </div>
@@ -926,7 +969,7 @@ function RoomsTab() {
       />
       <ContextDrawer
         open={!!selectedRoom}
-        title={selectedRoom ? `Room ${selectedRoom.room_number}` : ''}
+          title={selectedRoom ? getPresentationUnitName(selectedRoom) : ''}
         subtitle={selectedRoom ? `${selectedRoom.room_type} · ${selectedRoom.status}${meshLocksByRoom.has(String(selectedRoom.id)) ? ' · held by another desk' : ''}` : ''}
         onClose={() => setSelectedRoom(null)}
         actions={selectedRoom ? [
@@ -1183,7 +1226,7 @@ function AvailabilityRulesTab() {
               return (
                 <div key={rateOverride.id} className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                   <div>
-                    <p className="font-medium text-slate-800">{rateOverride.name || 'Rate override'} — {room ? `Room ${room.room_number}` : rateOverride.room_id ? rateOverride.room_id : 'All rooms'}</p>
+                    <p className="font-medium text-slate-800">{rateOverride.name || 'Rate override'} — {room ? getPresentationUnitName(room) : rateOverride.room_id ? rateOverride.room_id : `All ${unitPlural.toLowerCase()}`}</p>
                     <p className="mt-1 text-xs text-slate-500">{rateOverride.start_date} to {rateOverride.end_date}</p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -1210,13 +1253,13 @@ function AvailabilityRulesTab() {
                   onChange={(e) => setRateForm({ ...rateForm, apply_scope: e.target.value })}
                   disabled={!!editingRate}
                 >
-                  <option value="single">One room</option>
-                  <option value="all">All rooms</option>
+                  <option value="single">One {unitSingular.toLowerCase()}</option>
+                  <option value="all">All {unitPlural.toLowerCase()}</option>
                 </select>
               </Field>
-              <Field label="Room" required>
+              <Field label={unitSingular} required>
                 <select className="input" value={rateForm.room_id} onChange={(e) => setRateForm({ ...rateForm, room_id: e.target.value })} required disabled={(rateForm.apply_scope || 'single') === 'all' || !!editingRate && (rateForm.pricing_mode || 'fixed') === 'percent'}>
-                  {rooms.map((room) => (<option key={room.id} value={room.id}>Room {room.room_number} — {room.room_type}</option>))}
+                  {rooms.map((room) => (<option key={room.id} value={room.id}>{getPresentationUnitName(room)} — {room.room_type}</option>))}
                 </select>
               </Field>
               <Field label="Name / Label">
@@ -1346,7 +1389,7 @@ function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect,
             {Number(room.capacity_children) > 0 ? ` + ${room.capacity_children} children` : ''}
           </span>
         </div>
-        {campsite && (
+        {isCampsitePriced(room) && (
           <div className="flex items-center justify-between gap-4">
             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Site limits</span>
             <span className="font-semibold text-slate-800">

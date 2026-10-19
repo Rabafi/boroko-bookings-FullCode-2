@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   LayoutDashboard, Users, Calendar, ClipboardList, Truck, Wallet,
@@ -23,6 +24,15 @@ const SUPPLIER_STATUSES = ['pending', 'confirmed', 'arrived', 'completed', 'canc
 const MILESTONE_STATUSES = ['pending', 'paid', 'waived', 'overdue']
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const RUN_SHEET_STATUSES = ['draft', 'final', 'executed']
+
+/**
+ * Expected views for the existing event option and supplier coordination IPC
+ * results. The RPC/cache values are not runtime-validated by these types.
+ * @typedef {{id: string, event_name?: string|null, client_name?: string|null, booking_date?: string|null, status?: string|null}} VenueEventOptionExpectedView
+ * @typedef {{id: string, event_booking_id: string, supplier_name: string, contact_person: string|null, contact_phone: string|null, service_description: string|null, quoted_amount: number|null, actual_amount: number|null, scheduled_arrival: string|null, status: string, notes: string|null}} SupplierCoordinationExpectedView
+ * New supplier drafts omit persisted fields until the user supplies them; these optional form fields do not describe validated IPC data.
+ * @typedef {{id?: string, event_booking_id: string, supplier_name: string, contact_person?: string|null, contact_phone?: string|null, service_description?: string|null, quoted_amount?: number|null, actual_amount?: number|null, scheduled_arrival?: string|null, status: string, notes?: string|null}} SupplierCoordinationForm
+ */
 
 function money(amount, currency = 'P') {
   const symbol = currency || 'P'
@@ -52,12 +62,12 @@ export default function VenueManagement() {
   const [warnings, setWarnings] = useState([])
   const [activeTab, setActiveTab] = useState('dashboard')
 
-  const [events, setEvents] = useState([])
+  const [events, setEvents] = useState(/** @type {VenueEventOptionExpectedView[]} */ ([]))
   const [leads, setLeads] = useState([])
   const [availabilityRules, setAvailabilityRules] = useState([])
   const [availabilityCalendar, setAvailabilityCalendar] = useState(null)
   const [runSheets, setRunSheets] = useState([])
-  const [suppliers, setSuppliers] = useState([])
+  const [suppliers, setSuppliers] = useState(/** @type {SupplierCoordinationExpectedView[]} */ ([]))
   const [milestones, setMilestones] = useState([])
   const [profitability, setProfitability] = useState(null)
   const [venueReport, setVenueReport] = useState([])
@@ -67,7 +77,7 @@ export default function VenueManagement() {
   const [availResourceKey, setAvailResourceKey] = useState('')
   const [availCalendarDate, setAvailCalendarDate] = useState(new Date().toISOString().slice(0, 10))
   const [runSheetModal, setRunSheetModal] = useState(null)
-  const [supplierModal, setSupplierModal] = useState(null)
+  const [supplierModal, setSupplierModal] = useState(/** @type {SupplierCoordinationForm|null} */ (null))
   const [milestoneModal, setMilestoneModal] = useState(null)
   const [settlementForm, setSettlementForm] = useState({ final_total: 0, adjustment_amount: 0, adjustment_type: '', adjustment_reason: '', notes: '' })
   const [settlementResult, setSettlementResult] = useState(null)
@@ -105,7 +115,7 @@ export default function VenueManagement() {
         return
       }
       setWarnings(warn)
-      if (evts) setEvents(Array.isArray(evts) ? evts : [])
+      if (evts) setEvents(Array.isArray(evts) ? /** @type {VenueEventOptionExpectedView[]} */ (evts) : [])
       if (lds) setLeads(Array.isArray(lds) ? lds : [])
       if (rpts?.data) setVenueReport(rpts.data)
     } catch (e) {
@@ -264,7 +274,7 @@ export default function VenueManagement() {
     setSupplierFilterEvent(eventBookingId)
     try {
       const data = await window.api.venueManagement.getEventSuppliers(eventBookingId)
-      setSuppliers(Array.isArray(data) ? data : [])
+      setSuppliers(Array.isArray(data) ? /** @type {SupplierCoordinationExpectedView[]} */ (data) : [])
     } catch (e) { setError(e?.message || 'Failed to load suppliers') }
   }
 
@@ -281,6 +291,7 @@ export default function VenueManagement() {
     } catch (e) { setError(e?.message || 'Failed to save supplier') }
   }
 
+  /** @param {string} id @param {string} status @param {number|null} actualAmount */
   const handleUpdateSupplierStatus = async (id, status, actualAmount) => {
     try {
       const result = await window.api.venueManagement.updateSupplierStatus(id, status, actualAmount)

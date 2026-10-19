@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "checkJs": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "files": [
+    "src/preload/transport.js",
+    "src/preload/index.js",
+    "src/renderer/src/types/desktop-api.d.ts",
+    "src/renderer/src/types/admin-export.d.ts",
+    "tests/typecheck/preload-transport/valid.ts"
+  ],
+  "include": []
+}

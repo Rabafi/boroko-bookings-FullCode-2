@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp, CreditCard, Building2 } from 'lucide-react'

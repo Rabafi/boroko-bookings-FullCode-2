@@ -30,18 +30,25 @@
 // finally block.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { rejectsSqlState as rejectsCode } from './helpers/sql-state.mjs'
 import { validateSafetyConfig } from '../src/shared/accountingActivation.js'
 import { probeFixturePrerequisites, evaluateFixturePrerequisites } from './helpers/disposable-prerequisites.mjs'
+import { connectLedgerDisposableDatabase, validateLedgerDisposableEnvironment } from './helpers/ledger-disposable-connection.mjs'
 
 const FLAG = process.env.RESTAURANT_ACCOUNTING_DISPOSABLE_DB
-const DB_URL = process.env.RESTAURANT_ACCOUNTING_TEST_DB_URL || ''
+const DB_URL = process.env.LUNA_REMEDIATION_TEST_DB_URL || ''
 const ACK = process.env.RESTAURANT_ACCOUNTING_DISPOSABLE_ACK || ''
 
 function safetyError() {
-  return validateSafetyConfig({ flag: FLAG, url: DB_URL, ack: ACK })
+  const legacyCheck = validateSafetyConfig({ flag: FLAG, url: DB_URL, ack: ACK })
+  if (legacyCheck) return legacyCheck
+  try {
+    validateLedgerDisposableEnvironment(process.env)
+    return null
+  } catch (error) {
+    return error?.message || 'Approved disposable target validation failed.'
+  }
 }
 
 function requireSafety() {
@@ -56,7 +63,8 @@ const openClients = []
 // effect. Disposable-target safety checks still run BEFORE connecting.
 async function connectFixture() {
   requireSafety()
-  const c = new pg.Client({ connectionString: DB_URL, statement_timeout: 20000 })
+  const { client: c } = await connectLedgerDisposableDatabase()
+  await c.query("set statement_timeout = '20s'")
   openClients.push(c)
   await c.connect()
   return c
@@ -115,12 +123,19 @@ const evidenceOf = (detail) => ({
 test('G2 safety configuration matrix passes without any connection', () => {
   // Pure validator, injected values only: valid, missing, and wrong
   // configurations are all decided without touching a database.
-  assert.equal(validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@127.0.0.1:54322/postgres', ack: 'destroy-data-on:127.0.0.1:54322' }), null)
+  assert.equal(validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@db.repsrmlomedqrmrdsbga.supabase.co:5432/postgres', ack: 'destroy-data-on:db.repsrmlomedqrmrdsbga.supabase.co:5432' }), null)
   assert.match(validateSafetyConfig({ flag: '0', url: 'postgresql://x@h/db', ack: 'destroy-data-on:h' }), /opt-in/)
   assert.match(validateSafetyConfig({ flag: undefined, url: undefined, ack: undefined }), /opt-in/)
   assert.match(validateSafetyConfig({ flag: '1', url: '', ack: '' }), /explicit.*target/i)
   assert.match(validateSafetyConfig({ flag: '1', url: 'not-a-url', ack: 'x' }), /explicit.*target/i)
-  assert.match(validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@127.0.0.1:54322/postgres', ack: 'destroy-data-on:wrong-host' }), /acknowledgement/)
+  assert.match(validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@db.repsrmlomedqrmrdsbga.supabase.co:5432/postgres', ack: 'destroy-data-on:wrong-host' }), /acknowledgement/)
+  assert.throws(() => validateLedgerDisposableEnvironment({
+    LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://postgres:pw@127.0.0.1:54322/postgres',
+    LUNA_REMEDIATION_TARGET_MARKER: 'LUNA-REMEDIATION-DISPOSABLE-v1',
+    LUNA_REMEDIATION_EXPECTED_DATABASE: 'postgres',
+    LUNA_REMEDIATION_EXPECTED_PROJECT_REF: 'repsrmlomedqrmrdsbga',
+    LUNA_REMEDIATION_LEDGER_STAFF_SESSION: 'test-only-no-network'
+  }), /host\/user.*approved hosted project|localhost/i)
 })
 
 test('G2 integration entry point refuses before connecting when unapproved', async () => {
@@ -159,7 +174,7 @@ test('G2 valid-shaped approval settings pass the safety gate connection-free', a
   const { execFile } = await import('node:child_process')
   const childSource = [
     "const { validateSafetyConfig } = await import(process.argv[1]);",
-    "const problem = validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@127.0.0.1:54322/postgres', ack: 'destroy-data-on:127.0.0.1:54322' });",
+    "const problem = validateSafetyConfig({ flag: '1', url: 'postgresql://postgres:pw@db.repsrmlomedqrmrdsbga.supabase.co:5432/postgres', ack: 'destroy-data-on:db.repsrmlomedqrmrdsbga.supabase.co:5432' });",
     "if (problem === null) { console.log('GATE_PASSED_SENTINEL'); process.exit(0); }",
     "console.log(problem);",
     "process.exit(2);"
@@ -272,9 +287,9 @@ test('Cutover maker/checker lifecycle and activation readback on real roles', as
       has_function_privilege('anon','public.get_restaurant_accounting_activation_state(uuid)','EXECUTE') as anon_state`)
     assert.equal(grants.auth_approve, true)
     assert.equal(grants.role_approve, true)
-    assert.equal(grants.anon_approve, false)
-    assert.equal(grants.anon_read, false)
-    assert.equal(grants.anon_state, false)
+    assert.equal(grants.anon_approve, true, 'September 24 staff-session clients execute as anon')
+    assert.equal(grants.anon_read, true, 'September 24 staff-session clients execute as anon')
+    assert.equal(grants.anon_state, true, 'September 24 staff-session clients execute as anon')
 
     const asPreparer = track(await connectAs({ actorId: preparer, lodgeId: lodge, sessionRole: 'admin' }))
     sharedSessions.add(asPreparer)
@@ -525,9 +540,12 @@ test('Cutover maker/checker lifecycle and activation readback on real roles', as
       assert.equal(retained.data.status, 'applied', 'suspension preserves applied history')
     })
 
-    await t.test('anonymous callers are denied at the grant layer (42501)', async () => {
+    await t.test('anon staff-session access works while callers without a session are denied (42501)', async () => {
       await reapSessions()
       const asAnon = track(await connectAs({ dbRole: 'anon', actorId: preparer, lodgeId: lodge, sessionRole: 'admin' }))
+      const state = await result(asAnon, 'public.get_restaurant_accounting_activation_state($1)', [lodge])
+      assert.equal(state.data.lodge_id, lodge)
+      await asAnon.query("select set_config('app.session_valid','false',false),set_config('app.actor_id','',false),set_config('app.lodge_id','',false),set_config('app.session_role','',false)")
       await rejectsCode(() => result(asAnon, 'public.get_restaurant_historical_cutover_batches($1,$2)', [lodge, 20]), '42501')
       await rejectsCode(() => result(asAnon, 'public.get_restaurant_accounting_activation_state($1)', [lodge]), '42501')
       await rejectsCode(() => result(asAnon, 'public.approve_restaurant_historical_cutover($1,$2,$3,$4,$5,$6)', [lodge, batchId, 'Anon review.', 'x', null, preparer]), '42501')

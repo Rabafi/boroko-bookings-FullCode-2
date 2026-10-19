@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Wallet, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
 import { unpackTransport } from '../../transportUnpack'

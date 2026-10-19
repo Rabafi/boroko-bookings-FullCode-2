@@ -1,3 +1,7 @@
+// @ts-check
+/** @typedef {Record<string, unknown>} DayUseRecord */
+
+/** @param {unknown} value @param {string} [fallback] */
 function slugifyKey(value, fallback = 'day-use') {
   return String(value || fallback)
     .trim()
@@ -94,85 +98,99 @@ export const DEFAULT_DAY_USE_RESOURCES = [
 export const DAY_USE_STATUS_OPTIONS = ['reserved', 'checked_in', 'active', 'completed', 'cancelled']
 export const DAY_USE_PRICING_MODES = ['per_person', 'flat', 'hourly', 'package']
 
+/** @param {unknown} extra */
 export function normalizeDayUseExtraPreset(extra = {}) {
+  const item = /** @type {DayUseRecord} */ (extra)
   return {
-    inventory_item_id: extra.inventory_item_id || null,
-    name: String(extra.name || '').trim(),
-    quantity: Math.max(0, Number(extra.quantity || 0)),
-    unit_price: Math.max(0, Number(extra.unit_price || 0)),
-    unit: String(extra.unit || '').trim()
+    inventory_item_id: item.inventory_item_id || null,
+    name: String(item.name || '').trim(),
+    quantity: Math.max(0, Number(item.quantity || 0)),
+    unit_price: Math.max(0, Number(item.unit_price || 0)),
+    unit: String(item.unit || '').trim()
   }
 }
 
+/** @param {unknown} template */
 export function normalizeDayUseTemplate(template = {}) {
-  const key = slugifyKey(template.key || template.name || 'day-use')
-  const pricingMode = DAY_USE_PRICING_MODES.includes(template.pricing_mode) ? template.pricing_mode : 'per_person'
+  const value = /** @type {DayUseRecord} */ (template)
+  const key = slugifyKey(value.key || value.name || 'day-use')
+  const pricingMode = DAY_USE_PRICING_MODES.includes(/** @type {string} */ (value.pricing_mode)) ? value.pricing_mode : 'per_person'
   return {
     key,
-    name: String(template.name || 'Day Use').trim() || 'Day Use',
-    description: String(template.description || '').trim(),
-    activity_type: String(template.activity_type || 'facility'),
-    includes_pool: template.includes_pool === true,
-    includes_facility_access: template.includes_facility_access !== false,
-    includes_braai: template.includes_braai === true,
+    name: String(value.name || 'Day Use').trim() || 'Day Use',
+    description: String(value.description || '').trim(),
+    activity_type: String(value.activity_type || 'facility'),
+    includes_pool: value.includes_pool === true,
+    includes_facility_access: value.includes_facility_access !== false,
+    includes_braai: value.includes_braai === true,
     pricing_mode: pricingMode,
-    fee_per_adult: Number(template.fee_per_adult || 0),
-    fee_per_child: Number(template.fee_per_child || 0),
-    flat_fee: Number(template.flat_fee || 0),
-    hourly_rate: Number(template.hourly_rate || 0),
-    package_name: String(template.package_name || '').trim(),
-    package_fee: Number(template.package_fee || 0),
-    default_duration_hours: Number(template.default_duration_hours || 0),
-    bundled_extras: (Array.isArray(template.bundled_extras) ? template.bundled_extras : [])
+    fee_per_adult: Number(value.fee_per_adult || 0),
+    fee_per_child: Number(value.fee_per_child || 0),
+    flat_fee: Number(value.flat_fee || 0),
+    hourly_rate: Number(value.hourly_rate || 0),
+    package_name: String(value.package_name || '').trim(),
+    package_fee: Number(value.package_fee || 0),
+    default_duration_hours: Number(value.default_duration_hours || 0),
+    bundled_extras: (Array.isArray(value.bundled_extras) ? /** @type {unknown[]} */ (value.bundled_extras) : [])
       .map(normalizeDayUseExtraPreset)
       .filter((extra) => extra.quantity > 0 && (extra.inventory_item_id || extra.name))
   }
 }
 
+/** @param {unknown} resource */
 export function normalizeDayUseResource(resource = {}) {
-  const key = slugifyKey(resource.key || resource.name || 'resource')
+  const value = /** @type {DayUseRecord} */ (resource)
+  const key = slugifyKey(value.key || value.name || 'resource')
   return {
     key,
-    name: String(resource.name || 'Resource').trim() || 'Resource',
-    type: String(resource.type || 'general').trim() || 'general',
-    notes: String(resource.notes || '').trim()
+    name: String(value.name || 'Resource').trim() || 'Resource',
+    type: String(value.type || 'general').trim() || 'general',
+    notes: String(value.notes || '').trim()
   }
 }
 
+/** @param {unknown} settings */
 export function resolveDayUseTemplates(settings = {}) {
-  const rows = Array.isArray(settings?.day_use_templates)
-    ? settings.day_use_templates
+  const value = /** @type {DayUseRecord|null|undefined} */ (settings)
+  const rows = Array.isArray(value?.day_use_templates)
+    ? /** @type {unknown[]} */ (value.day_use_templates)
     : DEFAULT_DAY_USE_TEMPLATES
   return rows.map(normalizeDayUseTemplate)
 }
 
+/** @param {unknown} settings */
 export function resolveDayUseResources(settings = {}) {
-  const rows = Array.isArray(settings?.day_use_resources)
-    ? settings.day_use_resources
+  const value = /** @type {DayUseRecord|null|undefined} */ (settings)
+  const rows = Array.isArray(value?.day_use_resources)
+    ? /** @type {unknown[]} */ (value.day_use_resources)
     : DEFAULT_DAY_USE_RESOURCES
   return rows.map(normalizeDayUseResource)
 }
 
+/** @param {unknown} [value] */
 export function normalizeDayUseStatus(value = 'checked_in') {
   const normalized = String(value || 'checked_in').trim().toLowerCase()
   return DAY_USE_STATUS_OPTIONS.includes(normalized) ? normalized : 'checked_in'
 }
 
+/** @param {unknown} [value] */
 export function normalizeDayUsePricingMode(value = 'per_person') {
   const normalized = String(value || 'per_person').trim().toLowerCase()
   return DAY_USE_PRICING_MODES.includes(normalized) ? normalized : 'per_person'
 }
 
+/** @param {unknown} payload */
 export function computeDayUseBaseTotal(payload = {}) {
-  const pricingMode = normalizeDayUsePricingMode(payload.pricing_mode)
-  const adults = Math.max(0, Number(payload.adults || 0))
-  const children = Math.max(0, Number(payload.children || 0))
-  const feePerAdult = Math.max(0, Number(payload.fee_per_adult || 0))
-  const feePerChild = Math.max(0, Number(payload.fee_per_child || 0))
-  const flatFee = Math.max(0, Number(payload.flat_fee || 0))
-  const hourlyRate = Math.max(0, Number(payload.hourly_rate || 0))
-  const durationHours = Math.max(0, Number(payload.duration_hours || 0))
-  const packageFee = Math.max(0, Number(payload.package_fee || 0))
+  const value = /** @type {DayUseRecord} */ (payload)
+  const pricingMode = normalizeDayUsePricingMode(value.pricing_mode)
+  const adults = Math.max(0, Number(value.adults || 0))
+  const children = Math.max(0, Number(value.children || 0))
+  const feePerAdult = Math.max(0, Number(value.fee_per_adult || 0))
+  const feePerChild = Math.max(0, Number(value.fee_per_child || 0))
+  const flatFee = Math.max(0, Number(value.flat_fee || 0))
+  const hourlyRate = Math.max(0, Number(value.hourly_rate || 0))
+  const durationHours = Math.max(0, Number(value.duration_hours || 0))
+  const packageFee = Math.max(0, Number(value.package_fee || 0))
 
   if (pricingMode === 'flat') return flatFee
   if (pricingMode === 'hourly') return hourlyRate * durationHours
@@ -180,6 +198,7 @@ export function computeDayUseBaseTotal(payload = {}) {
   return (adults * feePerAdult) + (children * feePerChild)
 }
 
+/** @param {unknown} [startTime] @param {unknown} [durationHours] */
 export function computeDayUseEndTime(startTime = '', durationHours = 0) {
   const raw = String(startTime || '').trim()
   if (!/^\d{2}:\d{2}$/.test(raw)) return ''
@@ -190,6 +209,7 @@ export function computeDayUseEndTime(startTime = '', durationHours = 0) {
   return `${String(nextHours).padStart(2, '0')}:${String(nextMinutes).padStart(2, '0')}`
 }
 
+/** @param {unknown} [startTime] @param {unknown} [durationHours] */
 function toMinutes(startTime = '', durationHours = 0) {
   const raw = String(startTime || '').trim()
   if (!/^\d{2}:\d{2}$/.test(raw)) return null
@@ -200,21 +220,27 @@ function toMinutes(startTime = '', durationHours = 0) {
   }
 }
 
+/** @param {unknown} entry */
 function resolveResourceIdentities(entry = {}) {
-  return [entry.resource_key, entry.resource_name]
+  const value = /** @type {DayUseRecord} */ (entry)
+  return [value.resource_key, value.resource_name]
     .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean)
 }
 
+/** @param {unknown} entries @param {unknown} payload @param {unknown} [excludeId] */
 export function findDayUseResourceConflict(entries = [], payload = {}, excludeId = null) {
-  const resourceIdentities = resolveResourceIdentities(payload)
-  const targetDate = String(payload.date || '').trim()
+  const value = /** @type {DayUseRecord} */ (payload)
+  const resourceIdentities = resolveResourceIdentities(value)
+  const targetDate = String(value.date || '').trim()
   if (resourceIdentities.length === 0 || !targetDate) return null
 
-  const candidateWindow = toMinutes(payload.start_time, payload.duration_hours)
-  const sourceEntries = Array.isArray(entries) ? entries : []
-  for (const entry of sourceEntries) {
-    if (!entry || entry.id === excludeId) continue
+  const candidateWindow = toMinutes(value.start_time, value.duration_hours)
+  const sourceEntries = Array.isArray(entries) ? /** @type {unknown[]} */ (entries) : []
+  for (const untrustedEntry of sourceEntries) {
+    if (!untrustedEntry) continue
+    const entry = /** @type {DayUseRecord} */ (untrustedEntry)
+    if (entry.id === excludeId) continue
     if (String(entry.status || '').trim().toLowerCase() === 'cancelled') continue
     if (String(entry.date || '').trim() !== targetDate) continue
     const entryIdentities = resolveResourceIdentities(entry)

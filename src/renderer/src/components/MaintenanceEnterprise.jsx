@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, AlertTriangle, Wrench } from 'lucide-react'
 import { StatusBadge } from './shared/StatusBadge'

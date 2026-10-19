@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { TrendingUp, BedDouble, DollarSign, Calendar, Download, Printer, FileDown, Table, PiggyBank, ShoppingCart, Package, Building2, CreditCard, Presentation, Briefcase } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router'
@@ -11,6 +12,22 @@ import { canAccessCapability } from '../../../shared/accessControl'
 import { unpackTransport } from '../transportUnpack'
 import { getDayUseActivityLabel, normalizeDayUseReportRow, summarizeDayUseExtras } from '../../../shared/dayUseReporting'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
+
+/**
+ * Expected views of the reports.js producers used by this component. IPC and
+ * Supabase values are not runtime-validated here; these declarations retain
+ * the producer's server/local/cache and completeness distinctions.
+ * @typedef {'server'|'local'|'cache'|'derived-estimate'} ReportSource
+ * @typedef {{ id: string, room_number: string, room_type: string, rate_per_night: number|string, occupied_nights: number, occupancy_rate: number, actual_revenue: number|string, has_event: boolean }} OccupancyReportRow
+ * @typedef {OccupancyReportRow[] & { readonly _source?: ReportSource, readonly _complete?: boolean }} OccupancyReportRows
+ * @typedef {{ id: string, room_number: string, room_type: string, occupancy_rate: number, revenue: number, supply_cost: number, maintenance_cost: number, running_cost: number, contribution: number, margin_pct: number, supply_units_used: number, maintenance_count: number, open_maintenance_count: number, source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean }} RoomProfitabilityRow
+ * @typedef {RoomProfitabilityRow[] & { readonly _source?: ReportSource, readonly _complete?: boolean }} RoomProfitabilityRows
+ * @typedef {{ source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean, total_revenue?: number, regular_revenue?: number, event_revenue?: number, event_count?: number, total_bookings?: number, avg_booking_value?: number, confirmed_count?: number, checked_in_count?: number, checked_out_count?: number, cancelled_count?: number, paid_revenue?: number, refunds_issued?: number, retained_revenue?: number, outstanding_amount?: number, unpaid_count?: number, partial_count?: number, vat_enabled?: boolean, vat_mixed?: boolean, vat_rate?: number, vat_amount?: number, net_revenue?: number, booking_payment_by_method?: Record<string, number>, complete?: boolean }} BookingRevenueReport
+ * @typedef {{ source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean, bookingRevenue: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, retainedRevenue: number, totalRevenue: number, totalExpenses: number, invCosts: number, supCosts: number, maintenanceCosts: number, totalCosts: number, grossProfit: number, grossMarginPct: number, vatAmount: number, netRevenue: number, totalBookings: number, avgBookingValue: number, refundsIssued: number, outstandingAmount: number, vatEnabled?: boolean, vatMixed?: boolean, vatRate?: number, expByCategory?: Record<string, number>, bookingPaymentByMethod: Record<string, number> }} ProfitLossReport
+ * @typedef {{ key: string, name: string, posRevenue: number, bookingRevenue: number, revenue: number, inventoryCost: number, supplyCost: number, maintenanceCost?: number, expenses: number, profit: number }} OutletProfitLossRow
+ * @typedef {{ posRevenue: number, bookingRevenue: number, revenue: number, inventoryCost: number, supplyCost: number, maintenanceCost?: number, expenses: number, profit: number }} OutletProfitLossTotals
+ * @typedef {{ source: 'server'|'local', outlets: OutletProfitLossRow[], combined: OutletProfitLossTotals }} OutletProfitLossReport
+ */
 
 function formatLocalDate(value = new Date()) {
   const d = value instanceof Date ? value : new Date(value)
@@ -187,8 +204,8 @@ export default function Reports() {
   }, [searchParams])
 
   // Bookings tab
-  const [occupancy, setOccupancy] = useState([])
-  const [revenue, setRevenue]     = useState(null)
+  const [occupancy, setOccupancy] = useState(/** @type {OccupancyReportRows} */ ([]))
+  const [revenue, setRevenue]     = useState(/** @type {BookingRevenueReport|null} */ (null))
   const [reportBookings, setReportBookings] = useState([])
   const [conferenceBookings, setConferenceBookings] = useState([])
   const [dayUseEntries, setDayUseEntries] = useState([])
@@ -215,10 +232,10 @@ export default function Reports() {
   const [costsLoading, setCostsLoading] = useState(false)
 
   // P&L tab
-  const [pl, setPl]                 = useState(null)
+  const [pl, setPl]                 = useState(/** @type {ProfitLossReport|null} */ (null))
   const [plLoading, setPlLoading]   = useState(false)
-  const [outletPL, setOutletPL]     = useState(null)
-  const [roomProfitability, setRoomProfitability] = useState([])
+  const [outletPL, setOutletPL]     = useState(/** @type {OutletProfitLossReport|null} */ (null))
+  const [roomProfitability, setRoomProfitability] = useState(/** @type {RoomProfitabilityRows} */ ([]))
   const [customerCredits, setCustomerCredits] = useState([])
   const [creditLoading, setCreditLoading] = useState(false)
 
@@ -374,8 +391,10 @@ export default function Reports() {
             window.api.reports.profitLoss(start, end),
             canViewCombinedReports ? window.api.reports.outletProfitLoss(start, end) : Promise.resolve(null)
           ])
-          setPl(plData)
-          setOutletPL(outletData)
+          // Expected view of getProfitLoss/getOutletProfitLoss; the IPC payload
+          // and underlying RPC/cache values are not validated at this boundary.
+          setPl(/** @type {ProfitLossReport|null} */ (plData))
+          setOutletPL(/** @type {OutletProfitLossReport|null} */ (outletData))
         } catch (err) {
           setPl(null)
           setOutletPL(null)
@@ -426,14 +445,16 @@ export default function Reports() {
           window.api.conference.getAll(s, e).catch(() => []),
           window.api.dayuse.getAll(s, e).catch(() => [])
         ])
-        setOccupancy(Array.isArray(occ) ? occ : [])
-        setRevenue(rev && typeof rev === 'object' ? rev : null)
+        // Keep the existing container guards and attach only the producer-backed
+        // expected row/result views; these casts do not validate IPC payloads.
+        setOccupancy(/** @type {OccupancyReportRows} */ (Array.isArray(occ) ? occ : []))
+        setRevenue(rev && typeof rev === 'object' ? /** @type {BookingRevenueReport} */ (rev) : null)
         setReportBookings(Array.isArray(bookings) ? bookings : [])
         setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
         setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
         setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
         const roomRows = await window.api.reports.roomProfitability(s, e).then(unpackTransport).catch(() => [])
-        setRoomProfitability(Array.isArray(roomRows) ? roomRows : [])
+        setRoomProfitability(/** @type {RoomProfitabilityRows} */ (Array.isArray(roomRows) ? roomRows : []))
         // TEMP DIAG: report metadata dump (remove after diagnosis)
         console.log('[DIAG-REPORTS]', JSON.stringify({
           range: [s, e],

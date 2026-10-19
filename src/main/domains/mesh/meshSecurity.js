@@ -1,3 +1,4 @@
+// @ts-check
 import crypto from 'crypto';
 import { meshState } from './meshState.js';
 
@@ -7,6 +8,8 @@ noncePurgeInterval.unref?.();
 
 /**
  * Computes the SHA256 hex hash of a request body (string or buffer).
+ * @param {unknown} body
+ * @returns {string}
  */
 export function computeBodyHash(body) {
   const hash = crypto.createHash('sha256');
@@ -35,6 +38,13 @@ export function computeBodyHash(body) {
  *   SHA256(BODY)
  *
  * NOTE: PATH includes the query string exactly as received/sent.
+ * @param {string} method
+ * @param {string} path
+ * @param {string} timestamp
+ * @param {string} nonce
+ * @param {unknown} body
+ * @param {string} secret
+ * @returns {string}
  */
 export function generateMeshSignature(method, path, timestamp, nonce, body, secret) {
   if (!secret) {
@@ -58,6 +68,12 @@ export function generateMeshSignature(method, path, timestamp, nonce, body, secr
 /**
  * Validates a incoming request's HMAC signature.
  * Enforces timing-safe comparisons, nonce validation, and a strict 30s timestamp drift.
+ * @param {string} method
+ * @param {string} path
+ * @param {Record<string, string | string[] | undefined>} headers
+ * @param {unknown} body
+ * @param {string} secret
+ * @returns {{isValid: false, error: string} | {isValid: true}}
  */
 export function validateIncomingRequest(method, path, headers, body, secret) {
   const nodeId = headers['x-boroko-mesh-node-id'];
@@ -108,7 +124,8 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
       return { isValid: false, error: 'Signature verification failed' };
     }
   } catch (err) {
-    return { isValid: false, error: `Signature verification error: ${err.message}` };
+    const errorFields = /** @type {{message: unknown}} */ (err);
+    return { isValid: false, error: `Signature verification error: ${errorFields.message}` };
   }
 
   // Cache nonce to prevent replay attacks (associated with timestamp expires in 10s)
@@ -116,10 +133,11 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
   
   // Store expiration timestamp along with nonce to allow purging
   // Stored in the same map or Set, here we also save a map of nonce -> expire timestamp
-  if (!meshState.nonceExpiries) {
-    meshState.nonceExpiries = new Map();
+  const stateWithNonceExpiries = /** @type {typeof meshState & {nonceExpiries?: Map<string, number>}} */ (meshState);
+  if (!stateWithNonceExpiries.nonceExpiries) {
+    stateWithNonceExpiries.nonceExpiries = new Map();
   }
-  meshState.nonceExpiries.set(nonce, requestTime + 30000);
+  stateWithNonceExpiries.nonceExpiries.set(nonce, requestTime + 30000);
 
   return { isValid: true };
 }
@@ -128,12 +146,13 @@ export function validateIncomingRequest(method, path, headers, body, secret) {
  * Periodically purges nonces whose validity tolerance window has expired.
  */
 function purgeExpiredNonces() {
-  if (!meshState.nonceExpiries) return;
+  const stateWithNonceExpiries = /** @type {typeof meshState & {nonceExpiries?: Map<string, number>}} */ (meshState);
+  if (!stateWithNonceExpiries.nonceExpiries) return;
   const now = Date.now();
-  for (const [nonce, expireTime] of meshState.nonceExpiries.entries()) {
+  for (const [nonce, expireTime] of stateWithNonceExpiries.nonceExpiries.entries()) {
     if (now > expireTime) {
       meshState.serverNonceCache.delete(nonce);
-      meshState.nonceExpiries.delete(nonce);
+      stateWithNonceExpiries.nonceExpiries.delete(nonce);
     }
   }
 }

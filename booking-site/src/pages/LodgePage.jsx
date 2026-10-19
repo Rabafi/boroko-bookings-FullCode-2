@@ -27,6 +27,27 @@ import RoomCard from '../components/RoomCard.jsx'
 import FaqSection from '../components/FaqSection.jsx'
 import tsaBonnoLodgingLogo from '../assets/tsa-bonno-lodgingos-logo-color.png'
 
+/**
+ * Expected consumer views from the existing public booking RPCs. These shapes
+ * follow their SQL producers; neither RPC nor session-cache values are validated.
+ * @typedef {{found: true, lodge_id: string, lodge_name: string, currency: string, city: string|null, country: string|null, phone: string|null, email: string|null, website: string|null, address: string|null, whatsapp_number: string, booking_tagline: string, booking_description: string, booking_check_in_from: string, booking_check_out_until: string, booking_cancellation_policy: string, booking_payment_terms: string, booking_house_rules: string, booking_faq: unknown, logo: string, hero_image: string}} PublicLodgeProfile
+ * @typedef {{found: false, error: string}|PublicLodgeProfile} PublicLodgeProfileResponse
+ * The media RPC has a deliberately smaller producer payload than the shell/full profile RPCs.
+ * @typedef {{found: true, lodge_id: string, logo: string, hero_image: string}|{found: false, error: string}} PublicLodgeMediaResponse
+ * The media cache stores either the successful media RPC result or the reduced media object written by the shell fetch below.
+ * @typedef {Extract<PublicLodgeMediaResponse, {found: true}>|Pick<PublicLodgeProfile, 'logo'|'hero_image'>} PublicLodgeMediaCacheView
+ * @typedef {{id: string, room_number: string|null, room_type: string|null, rate_per_night: number, max_occupancy: number|null, description: string|null, photos: string[], amenities: string[], nights: number, total_price: number, accommodation_kind: string, capacity_adults: number|null, capacity_children: number, max_tents: number|null, max_vehicles: number|null, is_powered: boolean, site_surface: string|null, shared_facilities: boolean, rate_mode: string, rate_per_person: number, rate_per_tent: number, rate_per_vehicle: number, photo?: string|null}} PublicAccommodationUnit
+ * @typedef {{success: true, rooms: PublicAccommodationUnit[], campsites: PublicAccommodationUnit[]}|{success: false, error: string}} PublicRoomSearchResponse
+ * @typedef {{rooms: PublicAccommodationUnit[], campsites: PublicAccommodationUnit[]}} PublicRoomSearchCacheView
+ * @typedef {PublicAccommodationUnit[] & {rooms?: PublicAccommodationUnit[], campsites?: PublicAccommodationUnit[]}} PublicRoomArrayCacheView
+ * @typedef {{rooms: boolean, multi_room: boolean, full_lodge: boolean, day_use: boolean, events: boolean}} PublicBookingOfferFlags
+ * @typedef {{key?: string|null, name?: string|null}} PublicDayUseTemplateView
+ * @typedef {{success: boolean, offers?: PublicBookingOfferFlags, day_use?: {templates: PublicDayUseTemplateView[]}}} PublicBookingOffersResponse
+ * @typedef {{message: unknown, status: number}} PublicRpcErrorView
+ * @template T
+ * @typedef {{data: T|null, error: PublicRpcErrorView|null}} PublicRpcResponse
+ */
+
 function SkeletonCard() {
   return (
     <article className="surface-card flex h-full flex-col overflow-hidden rounded-[28px]">
@@ -64,8 +85,8 @@ const PUBLIC_OFFERS_TTL_MS = 10 * 60 * 1000
 export default function LodgePage() {
   const { slug } = useParams()
   const navigate = useNavigate()
-  const resultsRef = useRef(null)
-  const headingRef = useRef(null)
+  const resultsRef = useRef(/** @type {HTMLDivElement|null} */ (null))
+  const headingRef = useRef(/** @type {HTMLHeadingElement|null} */ (null))
 
   useFocusOnMount(headingRef, [slug])
 
@@ -81,8 +102,8 @@ export default function LodgePage() {
     )
   }
 
-  const [lodge, setLodge] = useState(null)
-  const [lodgeError, setLodgeError] = useState(null)
+  const [lodge, setLodge] = useState(/** @type {PublicLodgeProfile|null} */ (null))
+  const [lodgeError, setLodgeError] = useState(/** @type {string|null} */ (null))
   const [loadingLodge, setLoadingLodge] = useState(true)
 
   const today = format(new Date(), 'yyyy-MM-dd')
@@ -90,15 +111,15 @@ export default function LodgePage() {
 
   const [checkIn, setCheckIn] = useState(today)
   const [checkOut, setCheckOut] = useState(tomorrow)
-  const [rooms, setRooms] = useState(null)
-  const [campsites, setCampsites] = useState(null)
+  const [rooms, setRooms] = useState(/** @type {PublicAccommodationUnit[]|null} */ (null))
+  const [campsites, setCampsites] = useState(/** @type {PublicAccommodationUnit[]|null} */ (null))
   const [loadingRooms, setLoadingRooms] = useState(false)
   const [roomError, setRoomError] = useState(null)
   const [searched, setSearched] = useState(false)
   const [sortBy, setSortBy] = useState('recommended')
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
-  const [offers, setOffers] = useState(null)
-  const [selectedRoomIds, setSelectedRoomIds] = useState([])
+  const [offers, setOffers] = useState(/** @type {PublicBookingOffersResponse|null} */ (null))
+  const [selectedRoomIds, setSelectedRoomIds] = useState(/** @type {string[]} */ ([]))
 
   useEffect(() => {
     const onOnline = () => setOnline(true)
@@ -115,20 +136,21 @@ export default function LodgePage() {
     const controller = new AbortController()
     const shellCacheKey = `lodge-shell:${slug}`
     const mediaCacheKey = `lodge-media:${slug}`
-    const cachedShell = readSessionCache(shellCacheKey, LODGE_SHELL_TTL_MS)
-    const cachedMedia = readSessionCache(mediaCacheKey, LODGE_MEDIA_TTL_MS)
+    // These producer-backed expected cache views are assertions only; readSessionCache parses persisted JSON but does not validate it.
+    const cachedShell = /** @type {PublicLodgeProfile|null} */ (readSessionCache(shellCacheKey, LODGE_SHELL_TTL_MS))
+    const cachedMedia = /** @type {PublicLodgeMediaCacheView|null} */ (readSessionCache(mediaCacheKey, LODGE_MEDIA_TTL_MS))
     const hasCachedShell = Boolean(cachedShell?.found)
     let active = true
     let mediaRequested = false
-    let timeoutId = null
-    let idleId = null
+    /** @type {number|null} */ let timeoutId = null
+    /** @type {number|null} */ let idleId = null
 
     async function fetchMedia() {
-      const { data, error } = await rpc(
+      const { data, error } = /** @type {PublicRpcResponse<PublicLodgeMediaResponse>} */ (await rpc(
         'get_lodge_public_media',
         { p_slug: slug },
         { signal: controller.signal }
-      )
+      ))
 
       if (!active || error || !data?.found) return
 
@@ -136,6 +158,7 @@ export default function LodgePage() {
       setLodge((current) => (current ? { ...current, ...data } : current))
     }
 
+    /** @param {Partial<PublicLodgeProfile>|null} [source] */
     function scheduleMediaFetch(source = null) {
       if (
         cachedMedia?.hero_image ||
@@ -172,18 +195,18 @@ export default function LodgePage() {
     }
 
     async function fetchLodgeShell() {
-      let { data, error } = await rpc(
+      let { data, error } = /** @type {PublicRpcResponse<PublicLodgeProfileResponse>} */ (await rpc(
         'get_lodge_public_profile_shell',
         { p_slug: slug },
         { signal: controller.signal }
-      )
+      ))
 
       if ((error || !data?.found) && isMissingRpcError(error)) {
-        const legacyResult = await rpc(
+        const legacyResult = /** @type {PublicRpcResponse<PublicLodgeProfileResponse>} */ (await rpc(
           'get_lodge_public_profile',
           { p_slug: slug },
           { signal: controller.signal }
-        )
+        ))
         data = legacyResult.data
         error = legacyResult.error
       }
@@ -193,9 +216,9 @@ export default function LodgePage() {
       if (error || !data?.found) {
         if (!hasCachedShell) {
           setLoadingLodge(false)
-          setLodgeError(data?.error || error?.message || 'This lodge could not be found.')
+          setLodgeError(data?.error || /** @type {string} */ (error?.message) || 'This lodge could not be found.')
         }
-        captureException(error || new Error('Lodge shell not found'), { slug })
+        captureException(error || new Error('Lodge shell not found'), { slug: slug })
         return
       }
 
@@ -228,10 +251,11 @@ export default function LodgePage() {
 
   useEffect(() => {
     const cacheKey = `booking-offers:${slug}`
-    const cachedOffers = readSessionCache(cacheKey, PUBLIC_OFFERS_TTL_MS)
+    // Expected cache view only; cached JSON remains unvalidated at runtime.
+    const cachedOffers = /** @type {PublicBookingOffersResponse|null} */ (readSessionCache(cacheKey, PUBLIC_OFFERS_TTL_MS))
     if (cachedOffers?.success) setOffers(cachedOffers)
     let active = true
-    rpc('get_public_booking_offers', { p_slug: slug }).then(({ data }) => {
+    /** @type {Promise<PublicRpcResponse<PublicBookingOffersResponse>>} */ (rpc('get_public_booking_offers', { p_slug: slug })).then(({ data }) => {
       if (!active || !data?.success) return
       writeSessionCache(cacheKey, data)
       setOffers(data)
@@ -239,6 +263,7 @@ export default function LodgePage() {
     return () => { active = false }
   }, [slug])
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   async function handleSearch(event) {
     event.preventDefault()
 
@@ -253,7 +278,8 @@ export default function LodgePage() {
       resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 80)
     const roomCacheKey = `rooms:${slug}:${checkIn}:${checkOut}`
-    const cachedRooms = readSessionCache(roomCacheKey, ROOM_RESULTS_TTL_MS)
+    // Expected cache views only; the existing array branch and JSON trust are preserved.
+    const cachedRooms = /** @type {PublicRoomSearchCacheView|PublicRoomArrayCacheView|null} */ (readSessionCache(roomCacheKey, ROOM_RESULTS_TTL_MS))
     const hasCachedRooms = Array.isArray(cachedRooms)
 
     if (hasCachedRooms) {
@@ -269,18 +295,18 @@ export default function LodgePage() {
       setLoadingRooms(true)
     }
 
-    let { data, error } = await rpc('get_available_rooms_summary', {
+    let { data, error } = /** @type {PublicRpcResponse<PublicRoomSearchResponse>} */ (await rpc('get_available_rooms_summary', {
       p_slug: slug,
       p_check_in: checkIn,
       p_check_out: checkOut
-    })
+    }))
 
     if ((error || !data?.success) && isMissingRpcError(error)) {
-      const legacyResult = await rpc('get_available_rooms', {
+      const legacyResult = /** @type {PublicRpcResponse<PublicRoomSearchResponse>} */ (await rpc('get_available_rooms', {
         p_slug: slug,
         p_check_in: checkIn,
         p_check_out: checkOut
-      })
+      }))
       data = legacyResult.data
       error = legacyResult.error
     }
@@ -288,14 +314,14 @@ export default function LodgePage() {
     if (error || !data?.success) {
       setLoadingRooms(false)
       if (!hasCachedRooms) {
-        setRoomError(data?.error || error?.message || 'Could not load available rooms or campsites. Please try again.')
+        setRoomError(data?.error || /** @type {string} */ (error?.message) || 'Could not load available rooms or campsites. Please try again.')
       }
-      captureException(error || new Error('Room search failed'), { slug, checkIn, checkOut })
+      captureException(error || new Error('Room search failed'), { slug: slug, checkIn, checkOut })
       return
     }
 
-    const roomList = Array.isArray(data.rooms) ? data.rooms : []
-    const campsiteList = Array.isArray(data.campsites) ? data.campsites : []
+    const roomList = Array.isArray(data.rooms) ? /** @type {PublicAccommodationUnit[]} */ (data.rooms) : []
+    const campsiteList = Array.isArray(data.campsites) ? /** @type {PublicAccommodationUnit[]} */ (data.campsites) : []
     writeSessionCache(roomCacheKey, { rooms: roomList, campsites: campsiteList })
     setRooms(roomList)
     setCampsites(campsiteList)
@@ -304,8 +330,9 @@ export default function LodgePage() {
     trackSearch(slug, checkIn, checkOut, roomList.length + campsiteList.length)
   }
 
+  /** @param {PublicAccommodationUnit} room */
   function handleBook(room) {
-    trackSelectRoom(slug, room.id, room.room_type, Number(room.nights || 1), Number(room.total_price || 0))
+    trackSelectRoom(slug, room.id, /** @type {string} */ (room.room_type), Number(room.nights || 1), Number(room.total_price || 0))
     const nights = rooms ? Number(room.nights) : 1
     const bookingState = {
       lodge,
@@ -322,6 +349,7 @@ export default function LodgePage() {
     )
   }
 
+  /** @param {{fullLodge?: boolean}} [options] */
   function handleBookSelected({ fullLodge = false } = {}) {
     const selectedRooms = fullLodge
       ? [...(rooms || [])]

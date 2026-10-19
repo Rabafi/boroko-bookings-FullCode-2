@@ -76,8 +76,8 @@ test('property selection fails closed and cannot fall through to another tenant'
   assert.doesNotMatch(issue, /\|\|\s*rows\[0\]/)
   assert.match(issue, /That business is no longer available for this account/)
   assert.match(issue, /isManagerPwaMembershipSelectable\(selected\)/)
-  assert.match(api, /row\?\.pwa_enabled\s*===\s*true/)
-  assert.match(api, /row\?\.pwa_feature_enabled\s*===\s*true/)
+  assert.match(api, /fields\?\.pwa_enabled\s*===\s*true/)
+  assert.match(api, /fields\?\.pwa_feature_enabled\s*===\s*true/)
 
   const select = between(auth, 'const selectMembership = async', '  const logout = async')
   assert.match(select, /issueManagerPwaSession\(membership\.lodge_id\)/)

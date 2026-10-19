@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ClipboardList, Save, ShieldCheck } from 'lucide-react'
 import { getEnterpriseWorkflow } from '../../../shared/enterpriseWorkflows'

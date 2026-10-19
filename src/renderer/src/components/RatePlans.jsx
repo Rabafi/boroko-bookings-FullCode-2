@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import { Plus, Pencil, Trash2, CreditCard, AlertTriangle, RefreshCw, Calendar, Clock } from 'lucide-react'
 import { useSearchParams } from 'react-router'

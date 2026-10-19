@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ScanLine, X } from "lucide-react";
 import { useSettings } from "../../app-context";

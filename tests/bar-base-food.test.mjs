@@ -158,8 +158,15 @@ test('no-stock saves use the plain menu-item contract, never the atomic one', ()
 })
 
 test('menu list read carries stock_method so non-stock never reads as missing', () => {
+  // The online menu read moved from a direct column select to the
+  // get_pos_menu_items_for_staff_v1 RPC (authenticated staff lack table
+  // SELECT since the RLS grant was removed). The RPC returns the full
+  // pos_menu_items row, so stock_method (and every other column the Till
+  // relies on) is still carried; only the transport changed.
   const domain = read('src/main/domains/pos.js')
-  assert.match(domain, /barcode, stock_method, inventory_item_id/)
+  assert.match(domain, /get_pos_menu_items_for_staff_v1/)
+  const migration = read('supabase/migrations/20261010010000_pos_staff_menu_read_rpc.sql')
+  assert.match(migration, /returns setof public\.pos_menu_items/)
 })
 
 test('review sentence uses the linked stock unit, not the form default', () => {

@@ -176,6 +176,7 @@ function buildSyncGroupedCounts(pending = [], failed = [], resolveDep = null) {
   };
 }
 
+/** @returns {import('../../shared/desktopIpcContracts.js').SyncDetailsSnapshot} */
 export function getSyncDetails() {
   const pending = readSyncQueue();
   const failed = readFailedSyncQueue();
@@ -372,8 +373,10 @@ export async function retrySyncItems(queueIds = []) {
       });
     }
   }
-  writeFailedSyncQueue(keepFailed);
+  // Keep the failed copy until the pending destination is durable. If the
+  // cleanup fails, the next retry deduplicates by the original queue ID.
   writeSyncQueue(queue);
+  writeFailedSyncQueue(keepFailed);
   if (state.isOnline) await processSyncQueue();
   return { success: true, retried: retryItems.length, remaining: keepFailed.length };
 }

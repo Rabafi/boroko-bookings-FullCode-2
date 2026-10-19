@@ -175,10 +175,14 @@ test('Recovery screen reports the full error, not just a reload prompt', () => {
   assert.match(boundary, /Reload App/, 'Recovery must keep the reload escape');
 });
 
-test('Till reprint stays visible mid-sale and never re-charges', () => {
+test('Till reprint lives in the empty basket and never re-charges', () => {
   const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx');
   assert.match(terminal, /reprintLastReceipt/, 'Till must share one reprint path');
-  assert.match(terminal, /lastReceipt && !showPayment && cart\.length > 0/, 'Reprint must stay visible with a non-empty basket (the empty-state button alone vanishes on first add)');
+  // 2026-09-24 operator fix: the mid-sale slim reprint row crowded the basket
+  // and hid Record payment, so reprint lives only in the empty-basket
+  // placeholder (Same again + lost-slip) while My sales / history keep printing.
+  assert.doesNotMatch(terminal, /lastReceipt && !showPayment && cart\.length > 0/, 'Reprint must not render a mid-sale row above the cart that hides the payment footer');
+  assert.match(terminal, /Reprint last receipt \(lost slip\?\)/, 'Empty-basket reprint must stay for lost slips');
   assert.match(terminal, /autoPrint: false/, 'Reprint must open the recorded receipt without auto-printing or re-submitting payment');
   assert.doesNotMatch(terminal, /bb-accent-gradient/, 'Reprint must not use the undefined gradient token that rendered white-on-white and invisible');
 });
@@ -418,4 +422,26 @@ test('Lodge/hotel shares the guest-screen welcome message', () => {
   assert.ok(adapter.includes('display_welcome_message'), 'Adapter must persist the welcome message');
   assert.ok(domain.includes('display_welcome_message'), 'Domain read must return the welcome message');
   assert.match(pos, /display_welcome_message/, 'Lodge/hotel setup must edit the same welcome message');
+});
+
+test('Offline Sell declutters so Record payment stays visible', () => {
+  const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx');
+  // Amber + unsent strips are slim pills that auto-collapse after 8s.
+  assert.match(terminal, /stockNoticeMin/, 'Offline stock strip must auto-collapse instead of parking tall');
+  assert.match(terminal, /unsentNoticeMin/, 'Unsent-sales strip must auto-collapse instead of stacking tall');
+  assert.match(terminal, /setTimeout\(\(\) => setStockNoticeMin\(true\), 8000\)/, 'Stock strip must collapse after a few seconds');
+  // Green unlock success auto-dismisses instead of hiding the footer.
+  assert.match(terminal, /setTimeout\(\(\) => setSuccessMessage\(""\), 6000\)/, 'Success strip must disappear after unlock so the cart stays usable');
+  // Undo-add is a slim pill that fades in ~2.5s, never the tall card.
+  assert.match(terminal, /setTimeout\(\(\) => setUndoAdd\(null\), 2500\)/, 'Undo add must disappear after 2-3 seconds so the cart stays usable');
+  // Compact Sell: ONLY the cart list scrolls; the footer never scrolls and
+  // Record payment stays on screen as the basket grows.
+  assert.match(terminal, /ONLY the cart list scrolls/, 'Sell layout must reserve scrolling for the cart list alone');
+  assert.doesNotMatch(terminal, /maxHeight: "52%", overflowY: "auto"/, 'Payment footer must not take its own scroll region');
+  assert.match(terminal, /width: "440px"/, 'Cart panel is widened so item names read fully');
+  // Scanner chip names the blocking overlay instead of a bare "paused".
+  assert.match(terminal, /Scanner paused because the payment panel is open/, 'Scanner pause must explain the payment block');
+  // Card tile must keep a hex color: the box builds `${color}20` / `${color}08`
+  // and a var() value invalidates both, making Card look vanished.
+  assert.match(terminal, /color: "#356ed8"/, 'Card payment tile must use a hex color so its box renders');
 });

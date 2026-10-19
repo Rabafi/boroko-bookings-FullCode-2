@@ -1,3 +1,4 @@
+// @ts-check
 const ANALYTICS_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
 
 export function telemetryUrl() {
@@ -7,6 +8,7 @@ export function telemetryUrl() {
   return `${url.origin}${url.pathname}`
 }
 
+/** @param {Record<string, unknown>} properties */
 function safeProperties(properties = {}) {
   const blocked = new Set(['token', 'session', 'code', 'guest_name', 'guest_email', 'guest_phone', 'notes', 'booking_id', 'full_url'])
   return Object.fromEntries(Object.entries(properties).filter(([key, value]) => {
@@ -21,6 +23,7 @@ function safeProperties(properties = {}) {
  * If VITE_ANALYTICS_ENDPOINT is set, events are POSTed there.
  * Otherwise they are logged to the console in production builds.
  */
+/** @param {string} eventName @param {Record<string, unknown>} [properties] */
 export function trackEvent(eventName, properties = {}) {
   const payload = {
     event: eventName,
@@ -44,6 +47,7 @@ export function trackEvent(eventName, properties = {}) {
   }
 }
 
+/** @param {string} lodgeSlug @param {string} checkIn @param {string} checkOut @param {number} roomCount */
 export function trackSearch(lodgeSlug, checkIn, checkOut, roomCount) {
   trackEvent('search_availability', {
     lodge_slug: lodgeSlug,
@@ -53,6 +57,7 @@ export function trackSearch(lodgeSlug, checkIn, checkOut, roomCount) {
   })
 }
 
+/** @param {string} lodgeSlug @param {string} roomId @param {string} roomType @param {number} nights @param {number} totalPrice */
 export function trackSelectRoom(lodgeSlug, roomId, roomType, nights, totalPrice) {
   trackEvent('select_room', {
     lodge_slug: lodgeSlug,
@@ -63,6 +68,7 @@ export function trackSelectRoom(lodgeSlug, roomId, roomType, nights, totalPrice)
   })
 }
 
+/** @param {string} lodgeSlug @param {string} roomId @param {number} totalPrice */
 export function trackBeginCheckout(lodgeSlug, roomId, totalPrice) {
   trackEvent('begin_checkout', {
     lodge_slug: lodgeSlug,
@@ -71,6 +77,7 @@ export function trackBeginCheckout(lodgeSlug, roomId, totalPrice) {
   })
 }
 
+/** @param {string} lodgeSlug @param {string} roomId @param {string} bookingId @param {number} totalPrice */
 export function trackBookingRequest(lodgeSlug, roomId, bookingId, totalPrice) {
   trackEvent('booking_request', {
     lodge_slug: lodgeSlug,

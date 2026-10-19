@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowDownToLine, Banknote, CheckCircle2, HandCoins, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
 import { useAuth, useSettings } from '../../app-context'

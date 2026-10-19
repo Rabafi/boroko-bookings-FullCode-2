@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useToast } from './shared/Toast'
 import { timeAgo } from '../utils/timeAgo'
@@ -37,6 +38,8 @@ const STATUS_FLOW = [
   { from: 'payment_under_review', to: 'rejected', label: 'Reject' }
 ]
 
+/** @typedef {{ rows: unknown[], total: unknown }} SubscriptionRequestPage */
+
 function addonLabel(key, productId = null) {
   const addon = getCommercialAddon(productId, key)
     || ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
@@ -54,22 +57,26 @@ function isActivationTargetLicense(license, request) {
 
 export default function SubscriptionRequests({ licenses = [] }) {
   const toast = useToast()
-  const [requests, setRequests] = useState([])
-  const [total, setTotal] = useState(0)
+  const [requests, setRequests] = useState(/** @type {unknown[]} */ ([]))
+  const [total, setTotal] = useState(/** @type {unknown} */ (0))
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState(null)
-  const [selected, setSelected] = useState(null)
+  const [selected, setSelected] = useState(/** @type {unknown} */ (null))
   const [detailLoading, setDetailLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [showReject, setShowReject] = useState(false)
   const [showActivationConfirm, setShowActivationConfirm] = useState(false)
-  const [selectedLicenseId, setSelectedLicenseId] = useState('')
+  const [selectedLicenseId, setSelectedLicenseId] = useState(/** @type {unknown} */ (''))
 
   const loadRequests = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await window.api.subscriptionRequests.getAll(statusFilter, 50, 0)
+      // On success, the current main/domain producer constructs this envelope and only
+      // guarantees an array container. The RPC/cache row contents and total remain unknown.
+      const result = /** @type {SubscriptionRequestPage} */ (
+        await window.api.subscriptionRequests.getAll(statusFilter, 50, 0)
+      )
       setRequests(result?.rows || [])
       setTotal(result?.total || 0)
     } catch (err) {

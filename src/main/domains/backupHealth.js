@@ -1,16 +1,33 @@
+// @ts-check
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { buildManagedBackupStatus, readManagedBackupPolicy } from './backupPolicy.js';
+import { getBarTradingBackupHealth, readBarTradingBackupTarget } from './barTradingBackup.js';
+import { readBarTradingBackupAutomationTargetForHealth } from './barTradingBackupAutomation.js';
 
 function getManagedBackupPolicyForHealth() {
   return readManagedBackupPolicy();
 }
 
+function getBarTradingBackupHealthForHealth() {
+  try {
+    // The automation config is the operator-facing source of truth; the
+    // engine-level target config remains a fallback for setups made directly
+    // through the domain API.
+    const configDir = app.getPath('userData');
+    const targetDir = readBarTradingBackupAutomationTargetForHealth() || readBarTradingBackupTarget({ configDir });
+    return getBarTradingBackupHealth({ targetDir });
+  } catch (error) {
+    return { ok: false, state: 'unavailable', warnings: [error?.message || 'Bar trading recovery status is unavailable.'], limitations: [] };
+  }
+}
+
 export function getBackupInfoForHealth() {
+  const bar_trading = getBarTradingBackupHealthForHealth();
   try {
     const backupDir = path.join(app.getPath('userData'), 'boroko-backups');
-    if (!fs.existsSync(backupDir)) return { backupDir, backups: [], policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()) };
+    if (!fs.existsSync(backupDir)) return { backupDir, backups: [], policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()), bar_trading };
 
     const files = fs.readdirSync(backupDir).
     filter((f) => f.startsWith('backup-') && f.endsWith('.json')).
@@ -23,9 +40,9 @@ export function getBackupInfoForHealth() {
       return { name: f, size: stats.size, created: stats.mtime.toISOString() };
     });
 
-    return { backupDir, backups, policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()) };
+    return { backupDir, backups, policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()), bar_trading };
   } catch {
-    return { backupDir: '', backups: [], policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()) };
+    return { backupDir: '', backups: [], policy: buildManagedBackupStatus(getManagedBackupPolicyForHealth()), bar_trading };
   }
 }
 
@@ -46,10 +63,15 @@ export function getBackupHealthSummary(backupsInfo = getBackupInfoForHealth()) {
   if (!newestLocalBackup) {
     warnings.push('No local JSON backup has been created on this computer.');
   }
+  const barTradingWarnings = Array.isArray(backupsInfo?.bar_trading?.warnings) ? backupsInfo.bar_trading.warnings : [];
+  for (const warning of barTradingWarnings) {
+    warnings.push(`Bar trading recovery: ${warning}`);
+  }
   return {
     ok: warnings.length === 0,
     warnings,
     newest_local_backup: newestLocalBackup,
-    policy
-  };
+    policy,
+    bar_trading: backupsInfo?.bar_trading || null
+  }
 }

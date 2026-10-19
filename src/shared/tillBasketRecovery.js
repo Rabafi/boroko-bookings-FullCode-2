@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Pure Till basket-recovery helpers (no window, no React): cash-tender
  * validation, draft freshness, and catalogue revalidation. Imported by the
@@ -9,10 +10,13 @@ export const BASKET_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const QUICK_CASH_AMOUNTS = Object.freeze([20, 50, 100, 200]);
 
+/** @typedef {{id?: unknown, tabId?: unknown, at?: unknown, lines?: unknown, savedAt?: unknown, on_hand?: unknown, menu_item_id?: unknown, stock_unit?: unknown, readiness?: unknown, success?: unknown, rows?: unknown, error?: unknown, code?: unknown, unit_price?: unknown, category?: unknown, item_name?: unknown, template_kind?: unknown, template_pack_size?: unknown, archived_at?: unknown, is_available?: unknown, available?: unknown, price?: unknown, name?: unknown}} BasketRecord */
+
 /**
  * Scope an unsent basket/hold intent to tenant + outlet + operator + shift.
  * Anything outside the scope never restores.
  */
+/** @param {unknown} lodgeId @param {unknown} outletId @param {unknown} operatorId @param {unknown} shiftId */
 export function basketScopeKey(lodgeId, outletId, operatorId, shiftId) {
   return `${lodgeId || "nolid"}:${outletId || "nooutlet"}:${operatorId || "noop"}:${shiftId || "noshift"}`;
 }
@@ -21,16 +25,19 @@ export function basketScopeKey(lodgeId, outletId, operatorId, shiftId) {
  * Canonical storage keys. Exactly one function builds each key so writers
  * and readers can never diverge (a mismatched key silently orphans drafts).
  */
+/** @param {unknown} lodgeId @param {unknown} outletId @param {unknown} operatorId @param {unknown} shiftId */
 export function basketDraftKey(lodgeId, outletId, operatorId, shiftId) {
   return `hpos-basket-draft:${basketScopeKey(lodgeId, outletId, operatorId, shiftId)}`;
 }
 
+/** @param {unknown} lodgeId @param {unknown} outletId @param {unknown} operatorId */
 export function holdIntentKey(lodgeId, outletId, operatorId) {
   // Intents outlive a single shift id on purpose: a crash between dispatch
   // and response must still reconcile after a shift reload.
   return `hpos-hold-intent:${basketScopeKey(lodgeId, outletId, operatorId, "any")}`;
 }
 
+/** @param {unknown} lodgeId @param {unknown} outletId */
 export function lastReceiptKey(lodgeId, outletId) {
   return `hpos-last-receipt:${lodgeId || "nolid"}:${outletId || "nooutlet"}`;
 }
@@ -43,13 +50,18 @@ export function lastReceiptKey(lodgeId, outletId) {
  * - unknown: preserved — the save may still have committed.
  * - absent: no intent to reconcile.
  */
+/** @param {unknown} intent @param {unknown} tabs @param {number} [now] */
 export function reconcileHoldIntent(intent, tabs, now = Date.now()) {
-  if (!intent?.tabId) return { outcome: "absent" };
-  if (intent.at != null && Number(now) - Number(intent.at) > BASKET_DRAFT_TTL_MS) {
+  const held = /** @type {BasketRecord|null|undefined} */ (intent)
+  if (!held?.tabId) return { outcome: "absent" };
+  if (held.at != null && Number(now) - Number(held.at) > BASKET_DRAFT_TTL_MS) {
     return { outcome: "expired" };
   }
-  const match = (Array.isArray(tabs) ? tabs : []).find(
-    (tab) => tab?.id != null && String(tab.id) === String(intent.tabId),
+  const match = (Array.isArray(tabs) ? /** @type {unknown[]} */ (tabs) : []).find(
+    (tab) => {
+      const tabRecord = /** @type {BasketRecord|null|undefined} */ (tab)
+      return tabRecord?.id != null && String(tabRecord.id) === String(held.tabId)
+    },
   );
   if (match) return { outcome: "confirmed", tab: match };
   return { outcome: "unknown" };
@@ -60,6 +72,7 @@ export function reconcileHoldIntent(intent, tabs, now = Date.now()) {
  * string math instead of binary floats (roundCash(1.005) === 1.01, where
  * Math.round(1.005 * 100) / 100 === 1). Returns NaN for non-numeric input.
  */
+/** @param {unknown} value */
 export function roundCash(value) {
   const text = String(value ?? "").trim();
   const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(text);
@@ -80,6 +93,7 @@ export function roundCash(value) {
  * Returns { ok, cashTender: { cash_received, change_due } | null, ... }.
  * A blank input is valid and means "no tendering aids recorded".
  */
+/** @param {unknown} receivedInput @param {unknown} total */
 export function computeCashTender(receivedInput, total) {
   const text = String(receivedInput ?? "").trim();
   if (text === "") return { ok: true, cashTender: null };
@@ -108,13 +122,16 @@ export function computeCashTender(receivedInput, total) {
 }
 
 /** A stored draft restores only when non-empty and within TTL. */
+/** @param {unknown} draft @param {number} [now] */
 export function isDraftFresh(draft, now = Date.now()) {
-  if (!draft || !Array.isArray(draft.lines) || draft.lines.length === 0) return false;
-  return Number(now) - Number(draft.savedAt || 0) <= BASKET_DRAFT_TTL_MS;
+  const value = /** @type {BasketRecord|null|undefined} */ (draft)
+  if (!value || !Array.isArray(value.lines) || value.lines.length === 0) return false;
+  return Number(now) - Number(value.savedAt || 0) <= BASKET_DRAFT_TTL_MS;
 }
 
 export const READINESS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** @param {unknown} lodgeId */
 export function readinessCacheKey(lodgeId) {
   return `hpos-readiness:${lodgeId || "nolid"}`;
 }
@@ -127,40 +144,53 @@ export function readinessCacheKey(lodgeId) {
  * counted on-hand quantity per sellable for automatic sold-out (direct
  * rows only; absent on old servers and stays empty there).
  */
+/** @param {unknown} fetchResult @param {unknown} cached @param {number} [now] */
 export function resolveReadinessState(fetchResult, cached, now = Date.now()) {
+  const fetched = /** @type {BasketRecord|null|undefined} */ (fetchResult)
+  const cachedRecord = /** @type {BasketRecord|null|undefined} */ (cached)
+  /** @param {unknown} rows */
   const countsOf = (rows) => {
     const counts = new Map();
-    for (const row of Array.isArray(rows) ? rows : []) {
+    for (const row of Array.isArray(rows) ? /** @type {unknown[]} */ (rows) : []) {
+      const stock = /** @type {BasketRecord|null|undefined} */ (row)
       // Null means "uncounted" (non-stock, recipe, unlinked): it must never
       // read as zero — Number(null) is 0, so null is skipped explicitly.
-      if (row?.on_hand === null || row?.on_hand === undefined) continue;
-      const qty = Number(row.on_hand);
-      if (!row?.menu_item_id || !Number.isFinite(qty)) continue;
-      counts.set(row.menu_item_id, { qty, unit: String(row?.stock_unit || 'each') });
+      if (stock?.on_hand === null || stock?.on_hand === undefined) continue;
+      const qty = Number(stock.on_hand);
+      if (!stock?.menu_item_id || !Number.isFinite(qty)) continue;
+      counts.set(stock.menu_item_id, { qty, unit: String(stock?.stock_unit || 'each') });
     }
     return counts;
   };
-  if (fetchResult?.success && Array.isArray(fetchResult.rows)) {
+  if (fetched?.success && Array.isArray(fetched.rows)) {
+    const rows = /** @type {unknown[]} */ (fetched.rows)
     return {
       status: "ready",
-      map: new Map(fetchResult.rows.map((row) => [row?.menu_item_id, row?.readiness])),
-      counts: countsOf(fetchResult.rows),
+      map: new Map(rows.map((row) => {
+        const item = /** @type {BasketRecord|null|undefined} */ (row)
+        return [item?.menu_item_id, item?.readiness]
+      })),
+      counts: countsOf(rows),
       cachedAt: null,
     };
   }
   const freshCache =
-    cached && Array.isArray(cached.rows) && Number(now) - Number(cached.at || 0) <= READINESS_CACHE_TTL_MS
-      ? cached
+    cachedRecord && Array.isArray(cachedRecord.rows) && Number(now) - Number(cachedRecord.at || 0) <= READINESS_CACHE_TTL_MS
+      ? cachedRecord
       : null;
   if (freshCache) {
+    const rows = /** @type {unknown[]} */ (freshCache.rows)
     return {
       status: "stale",
-      map: new Map(freshCache.rows.map((row) => [row?.menu_item_id, row?.readiness])),
-      counts: countsOf(freshCache.rows),
+      map: new Map(rows.map((row) => {
+        const item = /** @type {BasketRecord|null|undefined} */ (row)
+        return [item?.menu_item_id, item?.readiness]
+      })),
+      counts: countsOf(rows),
       cachedAt: freshCache.at,
     };
   }
-  return { status: "failed", map: new Map(), counts: new Map(), cachedAt: null, error: fetchResult?.error || null, code: fetchResult?.code || null };
+  return { status: "failed", map: new Map(), counts: new Map(), cachedAt: null, error: fetched?.error || null, code: fetched?.code || null };
 }
 
 /**
@@ -168,26 +198,30 @@ export function resolveReadinessState(fetchResult, cached, now = Date.now()) {
  * missing or unavailable products, refresh names/prices from the server
  * read. Reports counts so the UI can explain what changed.
  */
+/** @param {unknown} lines @param {unknown} menuItems */
 export function revalidateBasketLines(lines, menuItems) {
-  const byId = new Map((Array.isArray(menuItems) ? menuItems : []).map((item) => [item?.id, item]));
+  const byId = new Map((Array.isArray(menuItems) ? /** @type {unknown[]} */ (menuItems) : []).map((item) => [/** @type {BasketRecord|null|undefined} */ (item)?.id, item]));
   let dropped = 0;
   let repriced = 0;
   const kept = [];
-  for (const line of Array.isArray(lines) ? lines : []) {
-    const menu = byId.get(line?.menu_item_id);
+  for (const untrustedLine of Array.isArray(lines) ? /** @type {unknown[]} */ (lines) : []) {
+    const line = /** @type {BasketRecord|null|undefined} */ (untrustedLine)
+    const untrustedMenu = byId.get(line?.menu_item_id)
+    const menu = /** @type {BasketRecord|null|undefined} */ (untrustedMenu)
     if (!menu || menu.archived_at || menu.is_available === false || menu.available === false) {
       dropped += 1;
       continue;
     }
+    const lineFields = /** @type {BasketRecord} */ (line)
     const price = Number(menu.price || 0);
-    if (price !== Number(line.unit_price || 0)) repriced += 1;
+    if (price !== Number(lineFields.unit_price || 0)) repriced += 1;
     kept.push({
-      ...line,
+      ...lineFields,
       item_name: menu.name,
       unit_price: price,
-      category: menu.category || line.category || null,
-      template_kind: menu.template_kind ?? line.template_kind ?? null,
-      template_pack_size: menu.template_pack_size ?? line.template_pack_size ?? null,
+      category: menu.category || lineFields.category || null,
+      template_kind: menu.template_kind ?? lineFields.template_kind ?? null,
+      template_pack_size: menu.template_pack_size ?? lineFields.template_pack_size ?? null,
     });
   }
   return { lines: kept, dropped, repriced };

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useAuth } from '../app-context'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
@@ -79,29 +80,68 @@ const PRIORITY_COLOR = { Low: 'text-gray-400', Normal: 'text-blue-400', High: 't
 const STATUS_COLOR = { open: 'bg-yellow-500/20 text-yellow-300', acknowledged: 'bg-amber-500/20 text-amber-300', in_progress: 'bg-blue-500/20 text-blue-300', resolved: 'bg-green-500/20 text-green-300', closed: 'bg-gray-500/20 text-gray-400' }
 const DEFAULT_PLAN = 'Starter'
 
+/**
+ * Expected projection from admin.getCompanyUsers (users query in
+ * main/domains/admin.js). IPC rows are not runtime-validated by this view.
+ * Company records follow normalizeCompanySettingsRow in the same main domain.
+ * Company usage records mirror getCompanyStats and license rows mirror
+ * normalizeLicenseRow/getLicenses in that domain. IPC values are not validated
+ * by these expected-data views.
+ * Bookkeeping rows mirror the commercial billing RPC projection and the
+ * expenses read/cache producer. Renderer IPC/cache values remain unvalidated.
+ * Dashboard rows mirror the fields consumed from normalized admin queries and
+ * the get_command_central_audit_log RPC. These are expected IPC views only.
+ * @typedef {{bookings: number, rooms: number, users: number}} CompanyUsageMetrics
+ * @typedef {{label: string, recommendedPlan: string, reason: string, tone?: string, strong?: boolean, details?: string, currentUsage?: CompanyUsageMetrics, currentUsagePct?: CompanyUsageMetrics, metrics?: unknown[]}} CompanyUsageRecommendation
+ * @typedef {{ id: string, auth_user_id: string|null, name: string|null, email: string|null, role: string, status: string|null, lodge_id: string, created_at: string|null, pwa_enabled: boolean|null, pwa_password_set_at: string|null, pwa_disabled_reason: string|null, pwa_password_reset_by: string|null }} CompanySecurityUser
+ * @typedef {{ lodge_id: string, lodge_name: string }} AdminCompanyIdentity
+ * @typedef {{ lodge_id: string, lodge_name: string, company_name: string, business_type: string, property_type: string, city: string, country: string, email: string, phone: string, operating_profile: Record<string, unknown>, updated_at: string|null, setup_complete: boolean, trial_started_at: string|null, deleted: boolean }} AdminCompanyRecord
+ * @typedef {{success: true}|{success: false, error: string}} CompanyLifecycleResultExpected
+ * @typedef {{lodge_id: string, event_group: string, kept_booking_id: string, removed_booking_count: number}} DuplicateEventRepairRowExpected
+ * @typedef {{success: true, repaired: DuplicateEventRepairRowExpected[]}|{success: false, error: string}} DuplicateEventRepairResultExpected
+ * @typedef {Record<string, unknown> & {percentUsed?: number}} CompanyUsageStatus
+ * @typedef {{ rooms: number, users: number, bookings_30d: number, monthly_confirmed_bookings: number, monthly_created_bookings: number, plan: string, usage: {monthlyBookings: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, usage_limits: Record<string, number|null>, usage_status: {bookings: CompanyUsageStatus, booking_target_month: CompanyUsageStatus, booking_creation_month: CompanyUsageStatus, rooms: CompanyUsageStatus, users: CompanyUsageStatus}, warning: string, recommendation: Record<string, unknown>, next_recommended_plan: string, monthly_reset_copy: string, expenses_30d: number, open_maintenance: number, last_booking_date: string|null}} CompanyUsageStats
+ * @typedef {{ id: string, lodge_id: string|null, lodge_name: string, business_type: string, subscription_plan: string, subscription_state: string, payment_status: string, is_active: boolean, monthly_fee: number|string|null, currency: string|null, issued_at: string|null, expires_at: string|null, next_due_date: string|null, last_payment_date: string|null, created_at?: string|null, updated_at?: string|null }} CompanyLicenseUsageView
+ * @typedef {{ id: string, invoice_number: string, lodge_id: string, lodge_name: string, product_id: string, status: string, currency: string, issued_date: string|null, due_date: string|null, amount: number|string, balance_due: number|string|null, package_name: string|null, description: string|null, paid_date?: unknown, notes?: unknown }} CommercialInvoiceRow
+ * @typedef {{ rows?: unknown }} CommercialInvoiceListExpected
+ * @typedef {{ month: string, amount: number|string }} CommercialBillingMonth
+ * @typedef {{ success: true, source: string, currency: string, total: number|string, outstanding: number|string, paid_count: number, pending_count: number, byMonth: CommercialBillingMonth[] }} CommercialBillingSummary
+ * @typedef {{ id: string, date: string, category: string|null, amount: number|string, description: string, currency?: unknown, vendor?: unknown }} AdminExpenseRow
+ * @typedef {{ type: 'invoice'|'expense', id: string }} BookkeepingConfirmState
+ * @typedef {CompanyLicenseUsageView & {billing_cycle?: unknown}} AdminDashboardLicense
+ * @typedef {{id: string, status: string, priority: string}} AdminDashboardSupportTicket
+ * @typedef {{id: string, lodge_id: string|null, lodge_name: string|null, action: string, created_at: string}} AdminDashboardActivityLog
+ * @typedef {DateConstructor & {new(value: string|null): Date}} CompanyDateConstructor
+ */
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+/** @param {unknown} plan */
 function normalizePlanName(plan) {
   return normalizeSubscriptionPlan(plan)
 }
 
+/** @param {unknown} value */
 function lodgeKey(value) {
   return String(value || '').trim().toLowerCase()
 }
 
 const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
 
+/** @param {CompanyLicenseUsageView|null|undefined} license */
 function isAssignedLicense(license) {
   if (!license || !lodgeKey(license.lodge_id) || license.is_active === false) return false
   const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
   return !UNASSIGNED_LICENSE_STATES.has(state)
 }
 
+/** @param {CompanyLicenseUsageView} license */
 function licenseSortTime(license) {
   const value = license?.updated_at || license?.issued_at || license?.created_at || license?.expires_at || license?.next_due_date
   const time = value ? new Date(value).getTime() : 0
   return Number.isFinite(time) ? time : 0
 }
 
+/** @param {CompanyLicenseUsageView|null} current @param {CompanyLicenseUsageView} candidate */
 function pickPreferredLicense(current, candidate) {
   if (!current) return candidate
   const currentPlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(current.subscription_plan))
@@ -110,32 +150,39 @@ function pickPreferredLicense(current, candidate) {
   return licenseSortTime(candidate) >= licenseSortTime(current) ? candidate : current
 }
 
+/** @param {CompanyLicenseUsageView[]} licenses @param {string|null|undefined} lodgeId */
 function getAssignedLicenseForLodge(licenses, lodgeId) {
   const target = lodgeKey(lodgeId)
   return (licenses || []).reduce((best, license) => {
     if (!isAssignedLicense(license) || lodgeKey(license.lodge_id) !== target) return best
     return pickPreferredLicense(best, license)
-  }, null)
+  }, /** @type {CompanyLicenseUsageView|null} */ (null))
 }
 
+/** @param {CompanyLicenseUsageView[]} licenses @param {string|null|undefined} lodgeId */
 function getAssignedPlanForLodge(licenses, lodgeId) {
   const activeLicense = getAssignedLicenseForLodge(licenses, lodgeId)
   return activeLicense ? normalizePlanName(activeLicense.subscription_plan) : null
 }
 
+/** @param {unknown} plan */
 function getPlanFlags(plan) {
-  return { ...(TIER_FLAGS[normalizePlanName(plan)] || TIER_FLAGS[DEFAULT_PLAN]) }
+  // Partial plan lookup preserves the existing direct property read and fallback.
+  return { ...((/** @type {Partial<Record<ReturnType<typeof normalizePlanName>, typeof TIER_FLAGS.Starter>>} */ (TIER_FLAGS))[normalizePlanName(plan)] || TIER_FLAGS[DEFAULT_PLAN]) }
 }
 
+/** @param {CompanyLicenseUsageView[]} licenses @param {string|null|undefined} lodgeId */
 function getLicensePlanForLodge(licenses, lodgeId) {
   const activeLicense = getAssignedLicenseForLodge(licenses, lodgeId)
   return activeLicense ? normalizePlanName(activeLicense.subscription_plan) : null
 }
 
+/** @param {CompanyLicenseUsageView|null|undefined} license */
 function getSubscriptionStatusLabel(license) {
   return String(license?.subscription_state || license?.payment_status || 'active').replace(/_/g, ' ')
 }
 
+/** @param {CompanyLicenseUsageView|null|undefined} license */
 function subscriptionStatusTone(license) {
   const raw = String(license?.subscription_state || license?.payment_status || 'active').toLowerCase()
   if (raw === 'active' || raw === 'licensed') return 'bg-green-500/20 text-green-300'
@@ -145,16 +192,29 @@ function subscriptionStatusTone(license) {
   return 'bg-gray-500/20 text-gray-400'
 }
 
+/** @param {string|null|undefined} dt */
 function fmt(dt) {
   if (!dt) return '—'
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/**
+ * The company normalizer returns a string timestamp or null. JavaScript Date
+ * accepts null (as epoch zero), although the TypeScript lib overload omits it.
+ * @param {string|null} value
+ * @returns {number}
+ */
+function companyTimestamp(value) {
+  return new (/** @type {CompanyDateConstructor} */ (Date))(value).getTime()
+}
+
+/** @param {CompanyUsageStatus} [status] */
 function usageBadgeMeta(status = {}) {
   const presentation = getUsageStatePresentation(status)
   return presentation
 }
 
+/** @param {CompanyUsageStats|null} [stats] @param {CompanyLicenseUsageView[]} [licenses] @param {AdminCompanyRecord|null} [company] */
 function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
   if (!stats?.usage_status) {
     return {
@@ -162,11 +222,11 @@ function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
       cls: 'bg-gray-700 text-gray-300',
       key: 'unknown',
       plan: normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id)),
-      recommendation: {
+      recommendation: /** @type {CompanyUsageRecommendation} */ ({
         label: 'Unknown',
         recommendedPlan: normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id)),
         reason: 'No usage data'
-      }
+      })
     }
   }
   const plan = normalizePlanName(stats?.plan || getLicensePlanForLodge(licenses, company?.lodge_id))
@@ -178,6 +238,7 @@ function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
   const priority = [...allStatuses].sort((a, b) => getUsagePriorityScore(b) - getUsagePriorityScore(a))[0] || allStatuses[0]
   const badge = usageBadgeMeta(priority)
   const usage = stats.usage || {}
+  /** @type {CompanyUsageRecommendation} */
   const recommendation = getPlanRecommendation({
     plan,
     bookingsUsage: usage.monthlyBookings ?? stats.monthly_confirmed_bookings ?? 0,
@@ -225,6 +286,7 @@ function CopyBtn({ text }) {
   )
 }
 
+/** @param {{onClose: () => void}} props */
 function ShortcutsModal({ onClose }) {
   const shortcuts = [
     { keys: ['Ctrl', 'K'], desc: 'Open Global Search' },
@@ -258,6 +320,7 @@ function ShortcutsModal({ onClose }) {
   )
 }
 
+/** @param {{label: string, value: string | number, color?: string, sub?: import('react').ReactNode}} props */
 function StatCard({ label, value, color = 'text-white', sub }) {
   return (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -268,6 +331,7 @@ function StatCard({ label, value, color = 'text-white', sub }) {
   )
 }
 
+/** @param {{title: string, onClose: () => void, children: import('react').ReactNode, wide?: boolean}} props */
 function Modal({ title, onClose, children, wide }) {
   useEffect(() => {
     const handleKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose?.() } }
@@ -291,6 +355,7 @@ function Modal({ title, onClose, children, wide }) {
   )
 }
 
+/** @param {{label: string, children: import('react').ReactNode}} props */
 function Field({ label, children }) {
   return (
     <div>
@@ -308,13 +373,14 @@ const btn = (variant = 'primary') => ({
 }[variant])
 
 // ── Trial status helper ───────────────────────────────────────────────────────
+/** @param {AdminCompanyRecord} company @param {CompanyLicenseUsageView[]} licenses */
 function getTrialInfo(company, licenses) {
   const assignedPlan = normalizePlanName(getAssignedPlanForLodge(licenses, company?.lodge_id))
   if (assignedPlan) return { label: `${assignedPlan} Licensed`, color: 'bg-green-500/20 text-green-300', plan: assignedPlan }
   if (!company?.trial_started_at) return { label: 'In Trial', color: 'bg-blue-500/20 text-blue-300', plan: null }
   const trialEnd = new Date(company.trial_started_at)
   trialEnd.setDate(trialEnd.getDate() + TRIAL_LENGTH_DAYS)
-  const daysLeft = Math.ceil((trialEnd - new Date()) / 864e5)
+  const daysLeft = Math.ceil((trialEnd.getTime() - new Date().getTime()) / 864e5)
   if (daysLeft > 0) return { label: `Trial: ${daysLeft}d left`, color: daysLeft === 1 ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300', plan: null }
   return { label: 'Trial Expired', color: 'bg-red-500/20 text-red-400', plan: null }
 }
@@ -322,10 +388,11 @@ function getTrialInfo(company, licenses) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Dashboard
 // ════════════════════════════════════════════════════════════════════
+/** @param {{companies: AdminCompanyRecord[], licenses: AdminDashboardLicense[], tickets: AdminDashboardSupportTicket[], activityLogs: AdminDashboardActivityLog[], onOpenCompany?: (company: AdminCompanyRecord) => void}} props */
 function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }) {
   const today = localToday()
   const active = licenses.filter(l => l.is_active).length
-  const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at) - new Date()) < 30 * 864e5).length
+  const expiring = licenses.filter(l => l.expires_at && l.is_active && new Date(l.expires_at) > new Date() && (new Date(l.expires_at).getTime() - new Date().getTime()) < 30 * 864e5).length
   const overdue = licenses.filter(l => l.next_due_date && l.next_due_date < today && l.payment_status !== 'free' && l.is_active).length
   const activeFinancial = licenses.filter(l => l.is_active && l.payment_status !== 'free')
   const financialCurrencies = [...new Set(activeFinancial.map((license) => String(license.currency || 'BWP').toUpperCase()))]
@@ -340,7 +407,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
   const trialsExpired = companies.filter(c => getTrialInfo(c, licenses).label === 'Trial Expired').length
   const trialsActive = companies.filter(c => getTrialInfo(c, licenses).label.startsWith('Trial:')).length
   const byType = companies.reduce((a, c) => { const t = c.business_type || 'lodge'; a[t] = (a[t] || 0) + 1; return a }, {})
-  const recent5 = [...companies].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 5)
+  const recent5 = [...companies].sort((a, b) => companyTimestamp(b.updated_at) - companyTimestamp(a.updated_at)).slice(0, 5)
   const recentLogs = activityLogs.slice(0, 8)
 
   const ticketByStatus = tickets.reduce((a, t) => { a[t.status] = (a[t.status] || 0) + 1; return a }, {})
@@ -496,12 +563,12 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
 // ════════════════════════════════════════════════════════════════════
 function Companies({ companies, licenses, loading, onReload }) {
   const toast = useToast()
-  const [selected, setSelected] = useState(null)
+  const [selected, setSelected] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [detailTab, setDetailTab] = useState('overview')
-  const [stats, setStats] = useState(null)
+  const [stats, setStats] = useState(/** @type {CompanyUsageStats|null} */ (null))
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState('')
-  const [usageStatsByLodge, setUsageStatsByLodge] = useState({})
+  const [usageStatsByLodge, setUsageStatsByLodge] = useState(/** @type {Record<string, CompanyUsageStats>} */ ({}))
   const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState({})
   const [usageFilter, setUsageFilter] = useState('all')
   const [companySearch, setCompanySearch] = useState('')
@@ -514,7 +581,7 @@ function Companies({ companies, licenses, loading, onReload }) {
 
   // ─── Lifecycle (Archive/Restore/Delete) ─────────────────────────────────────
   const [lifecycleMode, setLifecycleMode] = useState('archive') // 'archive' | 'restore' | 'delete'
-  const [companyTarget, setCompanyTarget] = useState(null)
+  const [companyTarget, setCompanyTarget] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [confirmName, setConfirmName] = useState('')
   const [lifecycleReason, setLifecycleReason] = useState('')
   const [lifecycleOperationId, setLifecycleOperationId] = useState('')
@@ -522,12 +589,12 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [repairLoading, setRepairLoading] = useState(false)
 
   // ─── reset state ────────────────────────────────────────────────────────────
-  const [resetTarget, setResetTarget] = useState(null)
+  const [resetTarget, setResetTarget] = useState(/** @type {AdminCompanyIdentity|null} */ (null))
   const [newPassword, setNewPassword] = useState('')
   const [resetLoading, setResetLoading] = useState(false)
   const [showResetPassword, setShowResetPassword] = useState(false)
-  const [pwaTarget, setPwaTarget] = useState(null)
-  const [companyUsers, setCompanyUsers] = useState([])
+  const [pwaTarget, setPwaTarget] = useState(/** @type {AdminCompanyIdentity|null} */ (null))
+  const [companyUsers, setCompanyUsers] = useState(/** @type {CompanySecurityUser[]} */ ([]))
   const [pwaUsersLoading, setPwaUsersLoading] = useState(false)
   const [pwaUsersError, setPwaUsersError] = useState('')
   const [pwaSaving, setPwaSaving] = useState(false)
@@ -538,8 +605,8 @@ function Companies({ companies, licenses, loading, onReload }) {
   const [showPwaPassword, setShowPwaPassword] = useState(false)
 
   // ─── staff PIN reset state ────────────────────────────────────────────────
-  const [pinResetTarget, setPinResetTarget] = useState(null)
-  const [pinResetUsers, setPinResetUsers] = useState([])
+  const [pinResetTarget, setPinResetTarget] = useState(/** @type {AdminCompanyIdentity|null} */ (null))
+  const [pinResetUsers, setPinResetUsers] = useState(/** @type {CompanySecurityUser[]} */ ([]))
   const [pinResetUsersLoading, setPinResetUsersLoading] = useState(false)
   const [pinResetUsersError, setPinResetUsersError] = useState('')
   const [pinResetUserId, setPinResetUserId] = useState('')
@@ -557,6 +624,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     [eligibleUsers, selectedCompanyUserId]
   )
 
+  /** @param {CompanySecurityUser|null} user */
   const applyPwaUser = (user) => {
     setSelectedCompanyUserId(user?.id || '')
     setPwaEnabled(user?.pwa_enabled === true)
@@ -565,13 +633,16 @@ function Companies({ companies, licenses, loading, onReload }) {
     setShowPwaPassword(false)
   }
 
+  /** @param {string} targetLodgeId */
   const loadCompanyUsers = useCallback(async (targetLodgeId) => {
     setPwaUsersLoading(true)
     setPwaUsersError('')
     try {
       const rows = await window.api.admin.getCompanyUsers(targetLodgeId)
       if (!Array.isArray(rows)) throw new Error('Company user response was not authoritative')
-      const nextUsers = Array.isArray(rows) ? rows : []
+      // The array guard checks only its container. Its row view follows the
+      // main-process users projection and does not claim row validation.
+      const nextUsers = /** @type {CompanySecurityUser[]} */ (rows)
       setCompanyUsers(nextUsers)
       const nextEligible = nextUsers.filter((user) => user.role === 'manager' || user.role === 'admin')
       if (nextEligible.length === 0) {
@@ -590,6 +661,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     }
   }, [selectedCompanyUserId])
 
+  /** @param {AdminCompanyRecord} company */
   const openDetail = async (company) => {
     setSelected(company)
     setDetailTab('overview')
@@ -597,7 +669,9 @@ function Companies({ companies, licenses, loading, onReload }) {
     setStatsError('')
     setStatsLoading(true)
     try {
-      const s = await window.api.admin.getCompanyStats(company.lodge_id)
+      // Expected projection from main/domains/admin.js:getCompanyStats; this
+      // assertion does not validate the IPC value at runtime.
+      const s = /** @type {CompanyUsageStats} */ (await window.api.admin.getCompanyStats(company.lodge_id))
       setStats(s)
       setUsageStatsByLodge((current) => ({ ...current, [company.lodge_id]: s }))
     } catch (error) {
@@ -676,6 +750,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     ? 'Unlimited'
     : `${selectedPeakBookingPercent}%`
 
+  /** @param {AdminCompanyIdentity} company */
   const openPwaManager = async (company) => {
     setPwaTarget(company)
     setCompanyUsers([])
@@ -688,15 +763,15 @@ function Companies({ companies, licenses, loading, onReload }) {
     setLifecycleLoading(true)
     try {
       if (lifecycleMode === 'archive') {
-        const res = await window.api.admin.applyCompanyLifecycle({
+        const res = /** @type {CompanyLifecycleResultExpected} */ (await window.api.admin.applyCompanyLifecycle({
           operation_id: lifecycleOperationId, lodge_id: companyTarget.lodge_id, action: 'archive', reason: lifecycleReason
-        })
+        }))
         if (res?.success === false) throw new Error(res.error)
         toast.success('Company archived successfully')
       } else if (lifecycleMode === 'restore') {
-        const res = await window.api.admin.applyCompanyLifecycle({
+        const res = /** @type {CompanyLifecycleResultExpected} */ (await window.api.admin.applyCompanyLifecycle({
           operation_id: lifecycleOperationId, lodge_id: companyTarget.lodge_id, action: 'restore', reason: lifecycleReason
-        })
+        }))
         if (res?.success === false) throw new Error(res.error)
         toast.success('Company restored successfully')
       }
@@ -709,12 +784,15 @@ function Companies({ companies, licenses, loading, onReload }) {
       onReload?.()
     } catch (err) {
       console.error(err)
-      toast.error(err.message || 'Action failed')
+      // Local rejections are Errors; the IPC handler either returns its result
+      // union or rejects this promise with the same Electron error message.
+      toast.error((/** @type {{message?: string}} */ (err)).message || 'Action failed')
     } finally {
       setLifecycleLoading(false)
     }
   }
 
+  /** @param {AdminCompanyRecord|null} company */
   const handleRepairDuplicateEvents = async (company) => {
     if (!company || repairLoading) return
     setRepairLoading(true)
@@ -724,9 +802,11 @@ function Companies({ companies, licenses, loading, onReload }) {
         throw new Error('This Tsa Bonno window is still using the old desktop bridge. Fully quit and reopen the app, then try Repair Duplicate Events again.')
       }
 
-      const res = await repairDuplicateEventBookings(company.lodge_id)
+      const res = /** @type {DuplicateEventRepairResultExpected} */ (await repairDuplicateEventBookings(company.lodge_id))
       if (res?.success === false) throw new Error(res.error)
-      const repaired = Array.isArray(res?.repaired) ? res.repaired : []
+      // Main guarantees an array container; SQL supplies the row projection.
+      // This view does not validate individual RPC rows.
+      const repaired = /** @type {DuplicateEventRepairRowExpected[]} */ (Array.isArray(res?.repaired) ? res.repaired : [])
       const removed = repaired.reduce((sum, row) => sum + Number(row.removed_booking_count || 0), 0)
       toast(removed > 0
         ? `Repaired ${repaired.length} event group(s). Removed ${removed} duplicate booking row(s).`
@@ -736,7 +816,7 @@ function Companies({ companies, licenses, loading, onReload }) {
       if (selected?.lodge_id === company.lodge_id) openDetail(company)
     } catch (err) {
       console.error(err)
-      toast.error(err.message || 'Repair failed')
+      toast.error((/** @type {{message?: string}} */ (err)).message || 'Repair failed')
     } finally {
       setRepairLoading(false)
     }
@@ -813,6 +893,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     }
   }
 
+  /** @param {AdminCompanyIdentity} company */
   const openPinReset = async (company) => {
     setPinResetTarget(company)
     setPinResetUsers([])
@@ -825,7 +906,9 @@ function Companies({ companies, licenses, loading, onReload }) {
     try {
       const rows = await window.api.admin.getCompanyUsers(company.lodge_id)
       if (!Array.isArray(rows)) throw new Error('Company user response was not authoritative')
-      const active = rows.filter((user) => String(user.status || 'active').toLowerCase() === 'active')
+      // Preserve the existing row filtering; only the array element view is
+      // supplied from the main-process users projection above.
+      const active = /** @type {CompanySecurityUser[]} */ (rows).filter((user) => String(user.status || 'active').toLowerCase() === 'active')
       setPinResetUsers(active)
       setPinResetUserId(active[0]?.id || '')
       if (active.length === 0) setPinResetUsersError('This company has no active staff accounts.')
@@ -880,14 +963,17 @@ function Companies({ companies, licenses, loading, onReload }) {
     }
     setResetLoading(true)
     try {
-      const users = await window.api.admin.getCompanyUsers(resetTarget.lodge_id)
+      // This handler is rendered only inside the truthy resetTarget modal; the
+      // assertion preserves the existing property access and does no validation.
+      const target = /** @type {AdminCompanyIdentity} */ (resetTarget)
+      const users = /** @type {CompanySecurityUser[]} */ (await window.api.admin.getCompanyUsers(target.lodge_id))
       const admin = users.find(u => u.role === 'admin')
       if (!admin) {
         toast.error('No admin user found for this company')
         setResetLoading(false)
         return
       }
-      const result = await window.api.admin.resetCompanyUserPassword(resetTarget.lodge_id, admin.id, password)
+      const result = await window.api.admin.resetCompanyUserPassword(target.lodge_id, admin.id, password)
       if (result?.success === false) {
         throw new Error(result.error || 'Failed to reset password')
       }
@@ -1711,6 +1797,15 @@ function parseUpgradeRequest(description = '') {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Feature Flags
 // ════════════════════════════════════════════════════════════════════
+/** @typedef {{ feature_name: string, enabled: boolean|null }} FeatureOverrideExpectedRow */
+/** @typedef {AdminCompanyRecord & {business_type: string}} FeatureFlagCompany */
+/** @typedef {'reports'|'expenses'|'staff'|'pwa'|'audit'|'conference'|'pool'|'import'|'pos'|'inventory'|'supplies'} AdminFeatureName */
+/** String-key reads may hit missing or inherited properties; values remain unknown.
+ * @typedef {Record<string, unknown>} FeatureFlagMap
+ */
+/** @typedef {((message: string, options?: {duration?: number}) => number) & {error: (message: string, options?: {duration?: number}) => number, success: (message: string, options?: {duration?: number}) => number}} AdminFeatureToastApi */
+
+/** @param {{companies: FeatureFlagCompany[], selectedLodge: FeatureFlagCompany|null, onSelect: (company: FeatureFlagCompany) => void}} props */
 function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
   const [search, setSearch] = useState('')
   const filtered = search
@@ -1719,7 +1814,7 @@ function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
   return (
     <>
       <div className="px-3 py-2 border-b border-gray-700">
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search companies..."
+        <input type="text" value={search} onChange={(/** @type {import('react').ChangeEvent<HTMLInputElement>} */ e) => setSearch(e.target.value)} placeholder="Search companies..."
           className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500" />
       </div>
       <div className="divide-y divide-gray-700 max-h-[420px] overflow-y-auto">
@@ -1736,36 +1831,44 @@ function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
   )
 }
 
+/** @param {{companies: FeatureFlagCompany[], licenses: CompanyLicenseUsageView[]}} props */
 function FeatureFlags({ companies, licenses }) {
-  const toast = useToast()
-  const [selectedLodge, setSelectedLodge] = useState(null)
-  const [selectedPlan, setSelectedPlan] = useState(DEFAULT_PLAN)
-  const [baseFlags, setBaseFlags] = useState(getPlanFlags(DEFAULT_PLAN))
-  const [flags, setFlags] = useState({})
+  // AdminCentral is rendered under the app's ToastProvider, whose producer
+  // attaches these methods to the callable toast function.
+  const toast = /** @type {AdminFeatureToastApi} */ (useToast())
+  const [selectedLodge, setSelectedLodge] = useState(/** @type {FeatureFlagCompany|null} */ (null))
+  const [selectedPlan, setSelectedPlan] = useState(/** @type {string|null} */ (DEFAULT_PLAN))
+  const [baseFlags, setBaseFlags] = useState(/** @type {FeatureFlagMap} */ (getPlanFlags(DEFAULT_PLAN)))
+  const [flags, setFlags] = useState(/** @type {FeatureFlagMap} */ ({}))
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
 
+  /** @param {string} lodgeId @param {string|null} [planName] */
   const loadFlags = async (lodgeId, planName = DEFAULT_PLAN) => {
     setLoading(true)
     setLoadError('')
     try {
       const data = await window.api.admin.getLodgeFeatures(lodgeId)
       if (!Array.isArray(data)) throw new Error('Feature override response was not authoritative')
+      /** @type {FeatureFlagMap} */
       const map = getPlanFlags(planName)
-      data.forEach(r => { map[r.feature_name] = r.enabled })
+      data.forEach((/** @type {FeatureOverrideExpectedRow} */ r) => { map[r.feature_name] = r.enabled })
       setSelectedPlan(normalizePlanName(planName))
       setBaseFlags(getPlanFlags(planName))
       setFlags(map)
     } catch (error) {
       setFlags({})
-      setLoadError(error?.message || 'Feature overrides are unavailable.')
+      // The main feature loader and the existing array guard throw Error values;
+      // this is an expected IPC error view, not runtime validation of rejection data.
+      setLoadError((/** @type {{message?: string}|null|undefined} */ (error))?.message || 'Feature overrides are unavailable.')
     } finally {
       setLoading(false)
     }
   }
 
+  /** @param {FeatureFlagCompany} c */
   const selectLodge = (c) => {
     const planName = getLicensePlanForLodge(licenses, c.lodge_id)
     setSelectedLodge(c)
@@ -1773,14 +1876,16 @@ function FeatureFlags({ companies, licenses }) {
     setSaved(false)
   }
 
+  /** @param {string} f */
   const toggle = (f) => setFlags(prev => ({ ...prev, [f]: !prev[f] }))
 
   const saveFlags = async () => {
     if (!selectedLodge) return
     if (loadError) { toast.error('Reload authoritative feature overrides before saving'); return }
     setSaving(true)
+    /** @type {string[]} */
     const errors = []
-    await Promise.all(ALL_FEATURES.map(async (featureName) => {
+    await Promise.all(ALL_FEATURES.map(async (/** @type {AdminFeatureName} */ featureName) => {
       try {
         const isBaseValue = flags[featureName] === baseFlags[featureName]
         if (isBaseValue) {
@@ -1876,7 +1981,7 @@ function FeatureFlags({ companies, licenses }) {
               </div>
             </div>
             <div className="space-y-3 pt-2">
-              {ALL_FEATURES.map(f => (
+              {ALL_FEATURES.map((/** @type {AdminFeatureName} */ f) => (
                 <div key={f} className="flex items-center justify-between py-3 border-b border-gray-700">
                   <div>
                     <p className="text-sm font-medium text-white">{FEAT_LABEL[f]}</p>
@@ -2037,16 +2142,30 @@ function Broadcasts() {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Support Tickets
 // ════════════════════════════════════════════════════════════════════
+/**
+ * Expected support ticket projection from admin.js:getSupportTickets and
+ * normalizeSupportTickets. The Array.isArray IPC guard below checks only the
+ * container; ticket rows remain unvalidated expected data.
+ * @typedef {{id: string, lodge_id: string, lodge_name: string|null, title: string, description: string, status: string|null, priority: string|null, category: string|null, created_at: string|null, messages: SupportTicketMessageExpectedView[]}} SupportTicketExpectedView
+ * @typedef {{id: unknown, body: string, sender_type: string, sender_name: string, sender_role: string, sender_user_id: string, sender_surface: string, metadata: unknown, created_at: unknown}} SupportTicketMessageExpectedView
+ * @typedef {{status: string, priority: string, q: string}} SupportTicketFilter
+ * @typedef {{type: 'ticket', item: SupportTicketExpectedView}|null} SupportTicketConfirmState
+ * @typedef {{success: true}|{success: false, error: string}} SupportTicketMutationExpectedResult
+ * @typedef {Record<string, unknown>} SupportTicketLookupView
+ * Nullable status/priority keys are asserted only at their direct object
+ * reads; JavaScript keeps the original null-to-"null" property-key coercion.
+ */
+/** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void}} props */
 function SupportTickets({ companies, onOpenCompany }) {
   const toast = useToast()
-  const [tickets, setTickets] = useState([])
-  const [filter, setFilter] = useState({ status: '', priority: '', q: '' })
-  const [detail, setDetail] = useState(null)
+  const [tickets, setTickets] = useState(/** @type {SupportTicketExpectedView[]} */ ([]))
+  const [filter, setFilter] = useState(/** @type {SupportTicketFilter} */ ({ status: '', priority: '', q: '' }))
+  const [detail, setDetail] = useState(/** @type {SupportTicketExpectedView|null} */ (null))
   const [notes, setNotes] = useState('')
-  const [newStatus, setNewStatus] = useState('')
+  const [newStatus, setNewStatus] = useState(/** @type {string|null} */ (''))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
-  const [confirmState, setConfirmState] = useState(null)
+  const [confirmState, setConfirmState] = useState(/** @type {SupportTicketConfirmState} */ (null))
   const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
@@ -2056,12 +2175,15 @@ function SupportTickets({ companies, onOpenCompany }) {
       if (!Array.isArray(data)) throw new Error('Support ticket response was not authoritative')
       setTickets(data)
     } catch (error) {
-      setLoadError(error?.message || 'Support ticket data is unavailable.')
+      // Main/preload propagate Error rejections; this is an expected IPC error
+      // view and does not inspect or validate the rejected value.
+      setLoadError((/** @type {Error|null|undefined} */ (error))?.message || 'Support ticket data is unavailable.')
     }
   }, [])
 
   useEffect(() => { load() }, [load])
 
+  /** @param {SupportTicketExpectedView} t */
   const openDetail = (t) => { setDetail(t); setNotes(''); setNewStatus(t.status); setSaveError('') }
 
   const updateTicket = async () => {
@@ -2069,22 +2191,23 @@ function SupportTickets({ companies, onOpenCompany }) {
     setSaveError('')
     const body = notes.trim()
     try {
-      const result = body && window.api.admin.addSupportTicketMessage
-        ? await window.api.admin.addSupportTicketMessage(detail.id, {
-          lodge_id: detail.lodge_id,
+      const result = /** @type {SupportTicketMutationExpectedResult} */ (body && window.api.admin.addSupportTicketMessage
+        ? await window.api.admin.addSupportTicketMessage((/** @type {SupportTicketExpectedView} */ (detail)).id, {
+          lodge_id: (/** @type {SupportTicketExpectedView} */ (detail)).lodge_id,
           body,
           status: newStatus,
           metadata: { source: 'command_central_support_tickets' }
         })
-        : await window.api.admin.updateSupportTicket(detail.id, { status: newStatus })
+        : await window.api.admin.updateSupportTicket((/** @type {SupportTicketExpectedView} */ (detail)).id, { status: newStatus }))
       if (result?.success === false) throw new Error(result.error || 'Could not save ticket update')
       setSaving(false); setDetail(null); load()
     } catch (error) {
-      setSaveError(error?.message || 'Could not save ticket update')
+      setSaveError((/** @type {Error|null|undefined} */ (error))?.message || 'Could not save ticket update')
       setSaving(false)
     }
   }
 
+  /** @param {SupportTicketExpectedView} t */
   const del = (t) => setConfirmState({ type: 'ticket', item: t })
   const confirmDeleteTicket = async () => {
     if (!confirmState?.item) return
@@ -2093,7 +2216,7 @@ function SupportTickets({ companies, onOpenCompany }) {
     setConfirmState(null)
   }
 
-  const filtered = tickets.filter(t => {
+  const filtered = tickets.filter((/** @type {SupportTicketExpectedView} */ t) => {
     if (filter.status && t.status !== filter.status) return false
     if (filter.priority && t.priority !== filter.priority) return false
     if (filter.q && !t.title.toLowerCase().includes(filter.q.toLowerCase()) && !(t.lodge_name || '').toLowerCase().includes(filter.q.toLowerCase())) return false
@@ -2210,9 +2333,9 @@ function SupportTickets({ companies, onOpenCompany }) {
                     })()}
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-400">{t.category}</td>
-                  <td className={`px-4 py-3 text-xs font-semibold ${PRIORITY_COLOR[t.priority] || 'text-gray-400'}`}>{t.priority}</td>
+                  <td className={`px-4 py-3 text-xs font-semibold ${/** @type {SupportTicketLookupView} */ (PRIORITY_COLOR)[/** @type {string} */ (t.priority)] || 'text-gray-400'}`}>{t.priority}</td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLOR[t.status] || 'bg-gray-500/20 text-gray-400'}`}>{t.status}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${/** @type {SupportTicketLookupView} */ (STATUS_COLOR)[/** @type {string} */ (t.status)] || 'bg-gray-500/20 text-gray-400'}`}>{t.status}</span>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500">{timeAgo(t.created_at)}</td>
                   <td className="px-4 py-3 text-center">
@@ -2234,8 +2357,8 @@ function SupportTickets({ companies, onOpenCompany }) {
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-2 text-xs">
                   <span className="bg-gray-700 text-gray-300 px-2 py-1 rounded">{detail.category}</span>
-                  <span className={`px-2 py-1 rounded font-semibold ${PRIORITY_COLOR[detail.priority]}`}>{detail.priority} priority</span>
-                  <span className={`px-2 py-1 rounded ${STATUS_COLOR[detail.status]}`}>{detail.status}</span>
+                  <span className={`px-2 py-1 rounded font-semibold ${/** @type {SupportTicketLookupView} */ (PRIORITY_COLOR)[/** @type {string} */ (detail.priority)]}`}>{detail.priority} priority</span>
+                  <span className={`px-2 py-1 rounded ${/** @type {SupportTicketLookupView} */ (STATUS_COLOR)[/** @type {string} */ (detail.status)]}`}>{detail.status}</span>
                 </div>
                 {upgrade && (upgrade.requestedPlan || upgrade.businessNeed || upgrade.blockedFeature) && (
                   <div className="grid gap-3 sm:grid-cols-3">
@@ -2271,7 +2394,7 @@ function SupportTickets({ companies, onOpenCompany }) {
                     </span>
                   </div>
                   <div className="max-h-80 space-y-3 overflow-y-auto pr-1">
-                    {normalizeSupportMessages(detail).map((message) => {
+                    {/** @type {SupportTicketMessageExpectedView[]} */ (normalizeSupportMessages(detail)).map((message) => {
                       const isManager = supportMessageSide(message) === 'manager'
                       return (
                         <div key={message.id} className={`flex ${isManager ? 'justify-start' : 'justify-end'}`}>
@@ -2809,17 +2932,18 @@ const STATUS_COLORS = {
   cancelled: 'bg-gray-700 text-gray-400'
 }
 
+/** @param {{companies: AdminCompanyRecord[]}} props */
 function Bookkeeping({ companies }) {
   const toast = useToast()
   const [subTab, setSubTab] = useState('invoices')
-  const [invoices, setInvoices] = useState([])
+  const [invoices, setInvoices] = useState(/** @type {CommercialInvoiceRow[]} */ ([]))
   const [loading, setLoading] = useState(true)
-  const [summary, setSummary] = useState(null)
+  const [summary, setSummary] = useState(/** @type {CommercialBillingSummary|null} */ (null))
   const [filterLodge, setFilterLodge] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [showCreate, setShowCreate] = useState(false)
-  const [editInvoice, setEditInvoice] = useState(null)
-  const [paymentInvoice, setPaymentInvoice] = useState(null)
+  const [editInvoice, setEditInvoice] = useState(/** @type {CommercialInvoiceRow|null} */ (null))
+  const [paymentInvoice, setPaymentInvoice] = useState(/** @type {CommercialInvoiceRow|null} */ (null))
   const [paymentForm, setPaymentForm] = useState({ amount: '', method: 'bank_transfer', reference: '', reason: '' })
   const [paymentSaving, setPaymentSaving] = useState(false)
   const [paymentError, setPaymentError] = useState('')
@@ -2834,9 +2958,9 @@ function Bookkeeping({ companies }) {
   const [createError, setCreateError] = useState('')
 
   // Expenses state
-  const [expenses, setExpenses] = useState([])
+  const [expenses, setExpenses] = useState(/** @type {AdminExpenseRow[]} */ ([]))
   const [showCreateExpense, setShowCreateExpense] = useState(false)
-  const [editExpense, setEditExpense] = useState(null)
+  const [editExpense, setEditExpense] = useState(/** @type {AdminExpenseRow|null} */ (null))
   const [expenseForm, setExpenseForm] = useState({
     date: localToday(),
     category: 'Infrastructure',
@@ -2846,7 +2970,7 @@ function Bookkeeping({ companies }) {
     vendor: ''
   })
   const [viewingInvoice, setViewingInvoice] = useState(null)
-  const [confirmState, setConfirmState] = useState(null)
+  const [confirmState, setConfirmState] = useState(/** @type {BookkeepingConfirmState|null} */ (null))
   const [loadError, setLoadError] = useState('')
 
   const loadData = useCallback(async () => {
@@ -2858,11 +2982,15 @@ function Bookkeeping({ companies }) {
       window.api.admin.getExpenses()
     ])
     const errors = []
-    if (invoicesResult.status === 'fulfilled' && Array.isArray(invoicesResult.value?.rows)) setInvoices(invoicesResult.value.rows)
+    // Expected view of admin_list_commercial_invoices rows after its existing
+    // container guard; neither IPC nor individual rows are runtime-validated.
+    if (invoicesResult.status === 'fulfilled' && Array.isArray((/** @type {CommercialInvoiceListExpected} */ (invoicesResult.value))?.rows)) setInvoices(/** @type {CommercialInvoiceRow[]} */ ((/** @type {CommercialInvoiceListExpected} */ (invoicesResult.value)).rows))
     else errors.push(`invoices: ${invoicesResult.reason?.message || 'unavailable'}`)
-    if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value)
+    // Expected view of the SQL-backed summary; the IPC value is not validated.
+    if (summaryResult.status === 'fulfilled') setSummary(/** @type {CommercialBillingSummary} */ (summaryResult.value))
     else errors.push(`summary: ${summaryResult.reason?.message || 'unavailable'}`)
-    if (expensesResult.status === 'fulfilled' && Array.isArray(expensesResult.value)) setExpenses(expensesResult.value)
+    // The existing array guard is retained; cache rows are not normalized or validated.
+    if (expensesResult.status === 'fulfilled' && Array.isArray(expensesResult.value)) setExpenses(/** @type {AdminExpenseRow[]} */ (expensesResult.value))
     else errors.push(`expenses: ${expensesResult.reason?.message || 'unavailable'}`)
     setLoadError(errors.length > 0 ? `Authoritative bookkeeping data is unavailable (${errors.join('; ')}).` : '')
     setLoading(false)
@@ -2883,6 +3011,7 @@ function Bookkeeping({ companies }) {
 
   const { page: expPage, setPage: setExpPage, totalPages: expTotalPages, paginated: paginatedExpenses } = usePagination(sortedExpenses)
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleCreateInvoice = async (e) => {
     e.preventDefault(); setCreateError(''); setCreateSaving(true)
     if (!createForm.lodge_id) { setCreateError('Select a company with an active commercial subscription.'); setCreateSaving(false); return }
@@ -2908,6 +3037,7 @@ function Bookkeeping({ companies }) {
     setEditInvoice(null)
   }
 
+  /** @param {CommercialInvoiceRow} invoice */
   const openPayment = (invoice) => {
     const balance = Number(invoice?.balance_due ?? invoice?.amount ?? 0)
     setPaymentInvoice(invoice)
@@ -2920,6 +3050,7 @@ function Bookkeeping({ companies }) {
     })
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleRecordPayment = async (event) => {
     event.preventDefault()
     if (!paymentInvoice) return
@@ -2944,6 +3075,7 @@ function Bookkeeping({ companies }) {
     await loadData()
   }
 
+  /** @param {string} id */
   const handleDelete = (id) => setConfirmState({ type: 'invoice', id })
   const confirmDeleteInvoice = async () => {
     if (!confirmState?.id) return
@@ -2951,6 +3083,7 @@ function Bookkeeping({ companies }) {
     setConfirmState(null)
   }
 
+  /** @param {CommercialInvoiceRow} inv */
   const handleSendEmail = async (inv) => {
     const company = companies.find(c => c.lodge_id === inv.lodge_id)
     const to = company?.email
@@ -2971,6 +3104,7 @@ function Bookkeeping({ companies }) {
   const thisMonthTotal = summary?.byMonth?.find(m => m.month === thisMonth)?.amount || 0
   const pendingCount = invoices.filter(i => ['draft', 'posted'].includes(i.status) || Number(i.balance_due || 0) > 0).length
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleCreateExpense = async (e) => {
     e.preventDefault()
     if (!expenseForm.amount || Number(expenseForm.amount) <= 0) return
@@ -2982,6 +3116,7 @@ function Bookkeeping({ companies }) {
     } catch (e) { console.error('Expense create error:', e); toast.error('Failed to create expense') }
   }
 
+  /** @param {string} id */
   const handleDeleteExpense = (id) => setConfirmState({ type: 'expense', id })
   const confirmDeleteExpense = async () => {
     if (!confirmState?.id) return
@@ -3558,6 +3693,7 @@ const NAV_GROUPS = [
   }
 ]
 
+/** @param {{tabs: Array<{id: string, label: string, icon?: import('lucide-react').LucideIcon}>, active: string, onChange: (id: string) => void}} props */
 function SectionTabs({ tabs, active, onChange }) {
   return (
     <div className="mb-4 flex flex-wrap gap-1 rounded-xl bg-gray-900/80 p-1">
@@ -3578,6 +3714,7 @@ function SectionTabs({ tabs, active, onChange }) {
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], licenses: AdminDashboardLicense[], tickets: AdminDashboardSupportTicket[], activityLogs: AdminDashboardActivityLog[], onOpenCompany?: (company: AdminCompanyRecord) => void, initialTab?: string}} props */
 function DashboardHub({ companies, licenses, tickets, activityLogs, onOpenCompany, initialTab = 'overview' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -4488,7 +4625,7 @@ export default function AdminCentral() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [loadWarnings, setLoadWarnings] = useState(null)
-  const [viewClient360, setViewClient360] = useState(null)
+  const [viewClient360, setViewClient360] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [connected, setConnected] = useState(true)
   const [reauthVerified, setReauthVerified] = useState(false)

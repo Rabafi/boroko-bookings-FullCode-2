@@ -317,7 +317,9 @@ test('recipe costing converts compatible inventory units and Stock Control expos
   assert.match(stock, /Current unit cost/)
   assert.match(stock, /latest_unit_cost/)
   assert.match(recipes, /recipe_unit_cost/)
-  assert.match(recipes, /role="alert"/)
+  const errorNotice = read('src/renderer/src/components/shared/ErrorNotice.jsx')
+  assert.match(recipes, /import \{ ErrorNotice \} from "\.\.\/shared\/ErrorNotice"/)
+  assert.match(errorNotice, /role = 'alert'/)
 })
 
 test('Till keeps an outlet preference on this terminal without making it a server setting', () => {

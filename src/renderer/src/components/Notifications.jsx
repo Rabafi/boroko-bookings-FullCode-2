@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Bell, CheckCheck, Trash2, Info, AlertTriangle, AlertCircle, CheckCircle, Zap, RefreshCw, Play } from 'lucide-react'
 import Pagination, { usePagination } from './shared/Pagination'
@@ -5,6 +6,37 @@ import { useToast } from './shared/Toast'
 import { DarkConfirmDialog } from './shared/DarkConfirmDialog'
 import { ErrorNotice } from './shared/ErrorNotice'
 import { timeAgo as sharedTimeAgo } from '../utils/timeAgo'
+
+/** @param {unknown} value */
+function readAdminNotifications(value) {
+  return value || []
+}
+
+/** @param {unknown} value */
+function readUnreadCount(value) {
+  return value || 0
+}
+
+/** @param {unknown} value */
+function readNotificationRules(value) {
+  return Array.isArray(value) ? /** @type {unknown[]} */ (value) : []
+}
+
+/** @param {unknown} value */
+function readNotificationEvents(value) {
+  return Array.isArray(value) ? /** @type {unknown[]} */ (value) : []
+}
+
+/** @param {unknown} value @param {string} fallback @returns {unknown} */
+function readErrorMessage(value, fallback) {
+  const errorView = /** @type {{message?: unknown} | null | undefined} */ (value)
+  return errorView?.message || fallback
+}
+
+/** @template {object} T @param {T} record @param {string} key @returns {key is keyof T} */
+function hasOwnKey(record, key) {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
 
 const TYPE_CONFIG = {
   info:              { icon: Info,         color: 'text-blue-400',    bg: 'bg-blue-500/10',    border: 'border-blue-500/20' },
@@ -32,12 +64,15 @@ const RULE_LABELS = {
 
 const timeAgo = sharedTimeAgo
 
+/** @typedef {{id: string, lodge_id: string, lodge_name: string}} AdminCompanyReadView */
+
+/** @param {{onOpenCompany: (company: AdminCompanyReadView) => void, companies: AdminCompanyReadView[]}} props */
 function InboxTab({ onOpenCompany, companies }) {
-  const [notifications, setNotifications] = useState([])
-  const [unreadCount, setUnreadCount] = useState(0)
+  const [notifications, setNotifications] = useState(/** @type {unknown} */ ([]))
+  const [unreadCount, setUnreadCount] = useState(/** @type {unknown} */ (0))
   const [filter, setFilter] = useState({ unread_only: false, type: '' })
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {unknown} */ (null))
   const toast = useToast()
   const [confirmCleanup, setConfirmCleanup] = useState(false)
 
@@ -49,9 +84,9 @@ function InboxTab({ onOpenCompany, companies }) {
         window.api.admin.getNotifications({ unread_only: filter.unread_only, type: filter.type || null, limit: 100 }),
         window.api.admin.getUnreadCount()
       ])
-      setNotifications(data || [])
-      setUnreadCount(count || 0)
-    } catch (err) { setError(err?.message || 'Failed to load') }
+      setNotifications(readAdminNotifications(data))
+      setUnreadCount(readUnreadCount(count))
+    } catch (err) { setError(readErrorMessage(err, 'Failed to load')) }
     setLoading(false)
   }, [filter])
 
@@ -59,11 +94,12 @@ function InboxTab({ onOpenCompany, companies }) {
   const { page, setPage, totalPages, paginated } = usePagination(notifications)
 
   const markAllRead = async () => { await window.api.admin.markNotificationsRead(null); load() }
+  /** @param {string[]} ids */
   const markSelectedRead = async (ids) => { await window.api.admin.markNotificationsRead(ids); load() }
   const deleteOld = () => setConfirmCleanup(true)
   const confirmDeleteOld = async () => {
     const result = await window.api.admin.cleanupNotifications(90)
-    toast.success(`Deleted ${result?.count || 0} old notifications`)
+    toast(`Deleted ${result?.count || 0} old notifications`, { type: 'success' })
     setConfirmCleanup(false)
     load()
   }
@@ -91,7 +127,7 @@ function InboxTab({ onOpenCompany, companies }) {
         <button onClick={() => setFilter(f => ({ ...f, unread_only: true }))}
           className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${filter.unread_only ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>Unread ({unreadCount})</button>
         <div className="w-px h-5 bg-gray-700" />
-        {['info', 'warning', 'error', 'success', 'action_required'].map(t => {
+        {/** @type {(keyof typeof TYPE_CONFIG)[]} */ (['info', 'warning', 'error', 'success', 'action_required']).map(t => {
           const cfg = TYPE_CONFIG[t]
           return (
             <button key={t} onClick={() => setFilter(f => ({ ...f, type: f.type === t ? '' : t }))}
@@ -118,7 +154,7 @@ function InboxTab({ onOpenCompany, companies }) {
         ) : (
           <div className="divide-y divide-gray-700">
             {paginated.map(n => {
-              const cfg = TYPE_CONFIG[n.type] || TYPE_CONFIG.info
+              const cfg = hasOwnKey(TYPE_CONFIG, n.type) ? TYPE_CONFIG[n.type] : TYPE_CONFIG.info
               const Icon = cfg.icon
               const isUnread = !n.read_at
               return (
@@ -156,9 +192,9 @@ function InboxTab({ onOpenCompany, companies }) {
 }
 
 function RulesTab() {
-  const [rules, setRules] = useState([])
+  const [rules, setRules] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {unknown} */ (null))
   const [evaluating, setEvaluating] = useState(false)
 
   const load = useCallback(async () => {
@@ -166,8 +202,8 @@ function RulesTab() {
     setError(null)
     try {
       const r = await window.api.admin.getNotificationRules()
-      setRules(Array.isArray(r) ? r : [])
-    } catch (e) { setError(e?.message || 'Failed to load') }
+      setRules(readNotificationRules(r))
+    } catch (e) { setError(readErrorMessage(e, 'Failed to load')) }
     setLoading(false)
   }, [])
 
@@ -179,12 +215,14 @@ function RulesTab() {
     finally { setEvaluating(false) }
   }
 
+  /** @param {string} ruleKey */
   const evaluateOne = async (ruleKey) => {
     setEvaluating(true)
     try { await window.api.admin.evaluateRule(ruleKey); await load() }
     finally { setEvaluating(false) }
   }
 
+  /** @param {unknown} rule */
   const toggleRule = async (rule) => {
     await window.api.admin.upsertNotificationRule({ ...rule, enabled: !rule.enabled })
     await load()
@@ -213,7 +251,7 @@ function RulesTab() {
           <div className="bg-gray-800 rounded-xl p-8 text-center text-gray-500">No rules found.</div>
         ) : (
           rules.map(rule => {
-            const meta = RULE_LABELS[rule.rule_key] || { label: rule.rule_key, desc: '' }
+            const meta = hasOwnKey(RULE_LABELS, rule.rule_key) ? RULE_LABELS[rule.rule_key] : { label: rule.rule_key, desc: '' }
             return (
               <div key={rule.rule_key} className={`bg-gray-800 rounded-xl p-4 flex items-center gap-4 border transition-colors ${rule.enabled ? 'border-gray-700' : 'border-gray-800 opacity-60'}`}>
                 <button onClick={() => toggleRule(rule)}
@@ -242,30 +280,31 @@ function RulesTab() {
 }
 
 function EventsTab() {
-  const [events, setEvents] = useState([])
-  const [rules, setRules] = useState([])
+  const [events, setEvents] = useState(/** @type {unknown[]} */ ([]))
+  const [rules, setRules] = useState(/** @type {unknown[]} */ ([]))
   const [filterRule, setFilterRule] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {unknown} */ (null))
 
   const loadEvents = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const opts = { limit: 100 }
+      const opts = /** @type {{limit: number, ruleKey?: string}} */ ({ limit: 100 })
       if (filterRule) opts.ruleKey = filterRule
       const ev = await window.api.admin.getNotificationEvents(opts)
-      setEvents(Array.isArray(ev) ? ev : [])
-    } catch (e) { setError(e?.message || 'Failed to load events') }
+      setEvents(readNotificationEvents(ev))
+    } catch (e) { setError(readErrorMessage(e, 'Failed to load events')) }
     setLoading(false)
   }, [filterRule])
 
   useEffect(() => {
-    window.api.admin.getNotificationRules().then(r => setRules(Array.isArray(r) ? r : []))
+    window.api.admin.getNotificationRules().then(r => setRules(readNotificationRules(r)))
   }, [])
 
   useEffect(() => { loadEvents() }, [loadEvents])
 
+  /** @param {string[]} ids */
   const markDispatched = async (ids) => { await window.api.admin.markEventsDispatched(ids); await loadEvents() }
 
   return (
@@ -276,7 +315,7 @@ function EventsTab() {
         {rules.map(r => (
           <button key={r.rule_key} onClick={() => setFilterRule(r.rule_key)}
             className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${filterRule === r.rule_key ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-            {RULE_LABELS[r.rule_key]?.label || r.rule_key}
+            {hasOwnKey(RULE_LABELS, r.rule_key) ? RULE_LABELS[r.rule_key].label : r.rule_key}
           </button>
         ))}
       </div>
@@ -306,6 +345,7 @@ function EventsTab() {
   )
 }
 
+/** @param {{onOpenCompany: (company: AdminCompanyReadView) => void, companies?: AdminCompanyReadView[]}} props */
 export default function Notifications({ onOpenCompany, companies = [] }) {
   const [tab, setTab] = useState('inbox')
 

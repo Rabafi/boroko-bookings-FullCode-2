@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.typecheck-renderer.json",
+  "compilerOptions": {
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "typeRoots": ["./manager-pwa/node_modules/@types"],
+    "types": ["react", "react-dom"],
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": ["src/renderer/src/*"],
+      "react": ["manager-pwa/node_modules/@types/react/index.d.ts"],
+      "react/*": ["manager-pwa/node_modules/@types/react/*"],
+      "react-dom": ["manager-pwa/node_modules/@types/react-dom/index.d.ts"],
+      "react-dom/*": ["manager-pwa/node_modules/@types/react-dom/*"]
+    }
+  },
+  "files": [
+    "src/renderer/src/types/desktop-api.d.ts",
+    "tests/typecheck/renderer-desktop-api/valid.ts"
+  ],
+  "include": []
+}

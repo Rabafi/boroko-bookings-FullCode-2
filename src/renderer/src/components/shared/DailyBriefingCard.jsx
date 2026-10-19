@@ -1,20 +1,30 @@
+// @ts-check
 import { useEffect, useState, useCallback } from 'react'
 import { TrendingUp, TrendingDown, RefreshCw, Sparkles, CheckCircle2, AlertTriangle, ArrowRight, ShieldAlert, BarChart3, Clock, DollarSign } from 'lucide-react'
+/** Exact display fields constructed by get_daily_briefing in aiOrchestrator.js. */
+/** Metrics passed through from PostgREST may arrive as numeric strings; this type does not coerce them. */
+/** @typedef {number | string} BriefingNumericValue */
+/** @typedef {{occupancy: BriefingNumericValue, revenue_today: BriefingNumericValue, outstanding: number, check_ins: number, check_outs: number, overdue_checkouts: number, unpaid_bookings: number, maintenance_open: number, fraud_alerts: {critical: BriefingNumericValue, high: BriefingNumericValue}, insights: string[], revenue_change: BriefingNumericValue, occupancy_change: BriefingNumericValue, actions: {type: string, label: string, priority: string}[]}} DailyBriefingResult */
+/** @typedef {{toolResult?: {tool?: string, result: DailyBriefingResult}}} DailyBriefingResponseReadView */
 
+/** @param {unknown} value */
 function formatMoney(value) {
   return `P ${Number(value || 0).toFixed(2)}`
 }
 
+/** @param {{onAction?: (label: string) => void}} props */
 export default function DailyBriefingCard({ onAction }) {
-  const [briefing, setBriefing] = useState(null)
+  const [briefing, setBriefing] = useState(/** @type {DailyBriefingResult | null} */ (null))
   const [busy, setBusy] = useState(false)
 
   const loadBriefing = useCallback(async () => {
     setBusy(true)
     try {
+      // Source-backed compile-time view of the exact tool response constructed by aiOrchestrator.
+      // This is an assumption about the existing producer, not runtime validation.
       const res = await window.api.ai.turn({ message: 'Generate daily briefing', model: 'gemini-2.5-flash' })
-      if (res?.toolResult?.tool === 'get_daily_briefing') {
-        setBriefing(res.toolResult.result)
+      if ((/** @type {DailyBriefingResponseReadView} */ (res))?.toolResult?.tool === 'get_daily_briefing') {
+        setBriefing((/** @type {DailyBriefingResponseReadView} */ (res)).toolResult.result)
       }
     } catch (e) {
       console.error('Failed to load daily briefing:', e)
@@ -44,9 +54,11 @@ export default function DailyBriefingCard({ onAction }) {
     occupancy_change = 0
   } = briefing || {}
 
+  /** @param {BriefingNumericValue} value */
   const renderTrend = (value) => {
-    if (value > 0) return <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md"><TrendingUp size={10}/> +{value}%</span>
-    if (value < 0) return <span className="flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded-md"><TrendingDown size={10}/> {value}%</span>
+    // The assertion only lets TypeScript model JavaScript's existing relational coercion.
+    if ((/** @type {number} */ (value)) > 0) return <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-md"><TrendingUp size={10}/> +{value}%</span>
+    if ((/** @type {number} */ (value)) < 0) return <span className="flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded-md"><TrendingDown size={10}/> {value}%</span>
     return <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded-md">--</span>
   }
 
@@ -95,7 +107,7 @@ export default function DailyBriefingCard({ onAction }) {
       <div className="bg-slate-50 border-b border-slate-100 px-4 py-2.5 flex flex-wrap gap-2 text-xs font-semibold">
         {overdue_checkouts > 0 && <span className="flex items-center gap-1.5 rounded-full bg-rose-100 px-3 py-1 text-rose-700 border border-rose-200"><Clock size={12} /> {overdue_checkouts} Overdue Checkouts</span>}
         {unpaid_bookings > 0 && <span className="flex items-center gap-1.5 rounded-full bg-orange-100 px-3 py-1 text-orange-700 border border-orange-200"><DollarSign size={12} /> {unpaid_bookings} Unpaid Bookings</span>}
-        {(fraud_alerts.critical > 0 || fraud_alerts.high > 0) && <span className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1 text-white shadow-sm border border-rose-700 animate-pulse"><ShieldAlert size={12} /> {fraud_alerts.critical + fraud_alerts.high} Fraud Alerts</span>}
+        {((/** @type {number} */ (fraud_alerts.critical)) > 0 || (/** @type {number} */ (fraud_alerts.high)) > 0) && <span className="flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1 text-white shadow-sm border border-rose-700 animate-pulse"><ShieldAlert size={12} /> {/** @type {number} */ (fraud_alerts.critical) + /** @type {number} */ (fraud_alerts.high)} Fraud Alerts</span>}
         {maintenance_open > 0 && <span className="flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-amber-700 border border-amber-200"><AlertTriangle size={12} /> {maintenance_open} Open Maintenance</span>}
         {overdue_checkouts === 0 && unpaid_bookings === 0 && fraud_alerts.critical === 0 && fraud_alerts.high === 0 && <span className="flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-emerald-700 border border-emerald-200"><CheckCircle2 size={12} /> All clear</span>}
       </div>
@@ -111,7 +123,7 @@ export default function DailyBriefingCard({ onAction }) {
           ))}
         </div>
         
-        {briefing?.actions?.length > 0 && (
+        {briefing != null && (briefing.actions?.length ?? 0) > 0 && (
            <div className="w-full md:w-64 shrink-0 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6 space-y-2 flex flex-col justify-center">
               <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-indigo-500 mb-1 flex items-center gap-2 animate-pulse">⚡ Suggested Actions</p>
               {briefing.actions.map((act, i) => {

@@ -1,13 +1,14 @@
 import sharp from 'sharp'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = path.resolve('docs/bar-manual/assets/screenshots')
+const root = process.env.BAR_GUIDE_CAPTURE_DIR ? path.resolve(process.env.BAR_GUIDE_CAPTURE_DIR) : path.resolve('docs/bar-manual/assets/screenshots')
 const raw = path.join(root, 'raw')
 const annotated = path.join(root, 'annotated')
 fs.mkdirSync(annotated, { recursive: true })
 
-const marks = {
+export const ANNOTATION_MARKS = {
   '00-first-launch-splash.png': [[100,170,'1'],[220,255,'2']],
   '01-bar-workspace-sell.png': [[120,105,'1'],[460,155,'2'],[1160,720,'3']],
   '02-products-catalogue.png': [[130,115,'1'],[540,300,'2'],[1170,250,'3']],
@@ -25,7 +26,8 @@ const marks = {
   '14-transfer-waiter.png': [[530,56,'1',240,56],[530,156,'2',340,156],[530,290,'3',145,290]],
   '15-tab-recovery-inbox.png': [[210,150,'1'],[650,300,'2'],[1130,520,'3']],
   '17-completed-receipt.png': [[420,108,'1',55,108],[420,225,'2',90,225],[420,740,'3',120,740]],
-  '18-sale-detail-reprint.png': [[330,120,'1'],[1110,120,'2'],[1070,440,'3']],
+  '18-sale-detail-reprint.png': [[520,110,'1',165,110],[520,260,'2',90,260],[520,735,'3',235,735]],
+  '29-sales-historical-receipt.png': [[520,110,'1',165,110],[520,260,'2',90,260],[520,735,'3',235,735]],
   '19-sale-correction-request.png': [[300,120,'1'],[1040,420,'2'],[1050,730,'3']],
   '20-product-edit.png': [[270,120,'1'],[560,360,'2'],[1100,820,'3']],
   '21-stock-delivery.png': [[210,255,'1',150,285],[355,330,'2',300,300],[550,420,'3',475,420]],
@@ -36,12 +38,20 @@ const marks = {
   '26-count-all.png': [[350,18,'1',285,55],[505,220,'2',365,220],[545,286,'3',475,286]]
 }
 
-for (const [file, points] of Object.entries(marks)) {
-  const input = path.join(raw, file)
-  if (!fs.existsSync(input)) continue
-  const output = path.join(annotated, file.replace('.png', '-annotated.png'))
+export async function annotateScreenshot(root, file, points) {
+  const input = path.join(root, 'raw', file)
+  if (!fs.existsSync(input)) return null
+  const output = path.join(root, 'annotated', file.replace('.png', '-annotated.png'))
   const metadata = await sharp(input).metadata()
   const svg = '<svg width="' + metadata.width + '" height="' + metadata.height + '" xmlns="http://www.w3.org/2000/svg">' + points.map(([x, y, label, tx, ty]) => { const leader = tx == null ? '' : '<line x1="' + x + '" y1="' + y + '" x2="' + tx + '" y2="' + ty + '" stroke="#a65132" stroke-width="3" stroke-linecap="round" opacity="0.85"/>'; return leader + '<circle cx="' + x + '" cy="' + y + '" r="18" fill="#a65132" stroke="#fff8ef" stroke-width="5"/><text x="' + x + '" y="' + (y + 8) + '" text-anchor="middle" font-family="Arial" font-size="22" font-weight="700" fill="#fff8ef">' + label + '</text>' }).join('') + '</svg>'
   await sharp(input).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toFile(output)
+  return output
 }
-console.log('Annotated screenshots written to', annotated)
+
+const invokedDirectly = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (invokedDirectly) {
+  for (const [file, points] of Object.entries(ANNOTATION_MARKS)) {
+    await annotateScreenshot(root, file, points)
+  }
+  console.log('Annotated screenshots written to', annotated)
+}

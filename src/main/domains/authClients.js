@@ -1,3 +1,4 @@
+// @ts-check
 import { createClient } from '@supabase/supabase-js';
 import { state } from '../state.js';
 
@@ -9,6 +10,7 @@ import.meta.env.VITE_AUTH_REDIRECT_URL ||
 '').
 trim();
 
+/** @param {string} label @param {Record<string, unknown>} [payload] */
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
   try {
@@ -18,6 +20,7 @@ function authTrace(label, payload = {}) {
   }
 }
 
+/** @param {string} key @param {unknown} [sessionToken] */
 export function buildSupabaseClient(key, sessionToken = null) {
   const token = typeof sessionToken === 'string' && sessionToken.trim() ? sessionToken.trim() : null;
   authTrace('buildSupabaseClient', {
@@ -47,10 +50,15 @@ export function getAuthRedirectUrl() {
   return AUTH_REDIRECT_URL || undefined;
 }
 
+/** @typedef {{token?: unknown, expires_at?: unknown, session_type?: unknown} | null | undefined} BackendSessionInput */
+
+/** @param {BackendSessionInput} session */
 export function applyBackendSession(session) {
   authTrace('applyBackendSession', {
     hasIncomingToken: !!session?.token,
-    incomingTokenLength: session?.token ? session.token.length : null,
+    // Read only the existing `.length` property; this type view does not
+    // validate the untrusted cache/backend token value.
+    incomingTokenLength: session?.token ? /** @type {{length?: unknown}} */ (session.token).length : null,
     session_type: session?.session_type || null,
     expires_at: session?.expires_at || null,
     lodgeId: state.lodgeId

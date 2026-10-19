@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict'
-import pg from 'pg'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
+import { connectLedgerDisposableDatabase } from './helpers/ledger-disposable-connection.mjs'
 
-const DB_URL = process.env.RESTAURANT_ACCOUNTING_TEST_DB_URL || 'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
-const client = () => new pg.Client({ connectionString: DB_URL })
+const client = async () => (await connectLedgerDisposableDatabase()).client
 
 async function setActor(connection, actorId, lodgeId) {
   await connection.query(
@@ -37,8 +36,7 @@ async function createSaleLine(connection, { lodgeId, orderId, menuItemId, itemNa
 }
 
 test('recipe depletion is atomic, authoritative and serialized in PostgreSQL', async () => {
-  const connection = client()
-  await connection.connect()
+  const connection = await client()
   const lodgeId = randomUUID()
   const actorId = randomUUID()
   const outletId = randomUUID()
@@ -134,9 +132,7 @@ test('recipe depletion is atomic, authoritative and serialized in PostgreSQL', a
 
     // Two transactions competing for the remaining five units: one succeeds
     // and the other observes the locked, reduced balance and rolls back.
-    const a = client()
-    const b = client()
-    await Promise.all([a.connect(), b.connect()])
+    const [a, b] = await Promise.all([client(), client()])
     await Promise.all([setActor(a, actorId, lodgeId), setActor(b, actorId, lodgeId)])
     const concurrent = await Promise.all([
       createSaleLine(a, { lodgeId, orderId: randomUUID(), menuItemId: concurrentMenuItemId, itemName: 'Concurrent Meal', quantity: 1, outletId }),

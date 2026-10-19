@@ -77,7 +77,7 @@ test('barcode receiving and verified output-path label printing have recovery pa
 
 test('mesh validator accepts the exact batch envelope and rejects unsafe or incomplete variants', () => {
   const start = mesh.indexOf('export function validateSyncQueueItem(item)')
-  const end = mesh.indexOf('function applyImportedBookingCacheEffects', start)
+  const end = mesh.indexOf('\nexport ', start + 1)
   assert.ok(start >= 0 && end > start)
   const validator = new Function('ALLOWED_RPC_TABLES', 'meshState', 'isPlainObject', 'isUuid', 'isFiniteNumber', mesh.slice(start, end).trimEnd().replace('export ', '') + '; return validateSyncQueueItem;')(
     new Set(['post_bar_physical_count', 'post_bar_simple_delivery']),

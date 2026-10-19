@@ -9,6 +9,7 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+/** @param {string} raw @param {unknown} [fallback] @returns {unknown} */
 function safeJsonParse(raw, fallback = null) {
   try {
     return JSON.parse(raw)
@@ -17,6 +18,7 @@ function safeJsonParse(raw, fallback = null) {
   }
 }
 
+/** @param {() => unknown} fn @param {unknown} [fallback] @returns {Promise<unknown>} */
 function safeDbCall(fn, fallback = null) {
   try {
     if (typeof fn !== 'function') return Promise.resolve(fallback)
@@ -26,29 +28,38 @@ function safeDbCall(fn, fallback = null) {
   }
 }
 
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readAiProperty(value, key) {
+  return value === null || value === undefined ? undefined : Reflect.get(Object(value), key, value)
+}
+
+/** @param {unknown} booking @returns {number} */
 function computeBookingBalance(booking) {
-  const total = Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0)
-  const paid = Number(booking?.amount_paid || 0)
+  const total = Number(readAiProperty(booking, 'total_amount') || 0) + Number(readAiProperty(booking, 'charges_total') || 0)
+  const paid = Number(readAiProperty(booking, 'amount_paid') || 0)
   return Math.max(0, total - paid)
 }
 
+/** @param {unknown} [bookings] @param {string} [today] */
 function mapUnpaidRows(bookings = [], today = new Date().toISOString().slice(0, 10)) {
-  return (Array.isArray(bookings) ? bookings : [])
-    .filter((b) => b && (b.status || '') !== 'cancelled')
+  /** @type {unknown[]} */
+  const rows = Array.isArray(bookings) ? bookings : []
+  return rows
+    .filter((b) => b && (readAiProperty(b, 'status') || '') !== 'cancelled')
     .map((b) => {
       const balance = computeBookingBalance(b)
-      const checkOut = String(b.check_out || '').slice(0, 10)
-      const checkIn = String(b.check_in || '').slice(0, 10)
+      const checkOut = String(readAiProperty(b, 'check_out') || '').slice(0, 10)
+      const checkIn = String(readAiProperty(b, 'check_in') || '').slice(0, 10)
       let bucket = 'future'
       if (checkOut && checkOut < today) bucket = 'overdue'
       else if (checkIn && checkIn <= today && checkOut >= today) bucket = 'due_today'
       return {
-        id: b.id,
-        guest: b.customer_name || b.guest_name || 'Guest',
-        room_number: b.room_number || null,
-        status: b.status,
-        check_in: b.check_in,
-        check_out: b.check_out,
+        id: readAiProperty(b, 'id'),
+        guest: readAiProperty(b, 'customer_name') || readAiProperty(b, 'guest_name') || 'Guest',
+        room_number: readAiProperty(b, 'room_number') || null,
+        status: readAiProperty(b, 'status'),
+        check_in: readAiProperty(b, 'check_in'),
+        check_out: readAiProperty(b, 'check_out'),
         balance,
         bucket
       }
@@ -57,6 +68,7 @@ function mapUnpaidRows(bookings = [], today = new Date().toISOString().slice(0, 
     .sort((a, b) => b.balance - a.balance)
 }
 
+/** @param {unknown} [bookings] @param {string} [dateKey] @param {unknown} [totalRooms] */
 function computeBookingSnapshot(bookings = [], dateKey = new Date().toISOString().slice(0, 10), totalRooms = 20) {
   let outstanding = 0
   let unpaidCount = 0
@@ -64,11 +76,13 @@ function computeBookingSnapshot(bookings = [], dateKey = new Date().toISOString(
   let checkIns = 0
   let checkOuts = 0
   let overdueCheckouts = 0
-  for (const booking of Array.isArray(bookings) ? bookings : []) {
-    if (!booking || String(booking.status || '').toLowerCase() === 'cancelled') continue
-    const inDate = String(booking.check_in || '').slice(0, 10)
-    const outDate = String(booking.check_out || '').slice(0, 10)
-    const status = String(booking.status || '').toLowerCase()
+  /** @type {unknown[]} */
+  const rows = Array.isArray(bookings) ? bookings : []
+  for (const booking of rows) {
+    if (!booking || String(readAiProperty(booking, 'status') || '').toLowerCase() === 'cancelled') continue
+    const inDate = String(readAiProperty(booking, 'check_in') || '').slice(0, 10)
+    const outDate = String(readAiProperty(booking, 'check_out') || '').slice(0, 10)
+    const status = String(readAiProperty(booking, 'status') || '').toLowerCase()
     const balance = computeBookingBalance(booking)
     if (balance > 0.01) {
       outstanding += balance
@@ -90,6 +104,7 @@ function computeBookingSnapshot(bookings = [], dateKey = new Date().toISOString(
   }
 }
 
+/** @param {unknown} current @param {unknown} previous */
 function deltaSummary(current, previous) {
   const delta = Number(current || 0) - Number(previous || 0)
   const percent = Number(previous || 0) > 0 ? Math.round((delta / Number(previous || 0)) * 100) : null
@@ -318,6 +333,7 @@ const TOOL_SPEC_MAP = new Map(TOOL_SPECS.map((t) => [t.name, t]))
  * Strict JSON extraction: only accepts exactly ONE ```json fenced block.
  * No fallback loose parsing. No "repair" attempts.
  */
+/** @param {string} text */
 function extractStrictToolCall(text) {
   if (!text) return null
 
@@ -329,7 +345,8 @@ function extractStrictToolCall(text) {
   if (matches.length > 1) return { error: 'multiple_json_blocks', message: 'Response contained multiple JSON blocks. Only one is allowed.' }
 
   const raw = matches[0][1].trim()
-  const parsed = safeJsonParse(raw)
+  // The fenced capture begins with { and JSON.parse accepts only a complete object; fields stay unknown.
+  const parsed = /** @type {Record<string, unknown> | null} */ (safeJsonParse(raw))
   if (!parsed) return { error: 'malformed_json', message: 'The AI returned unparseable JSON.' }
 
   if (!parsed.tool || typeof parsed.tool !== 'string') {
@@ -348,26 +365,27 @@ function extractStrictToolCall(text) {
     if (params === null || typeof params !== 'object' || Array.isArray(params)) {
       return { error: 'invalid_params', message: `Tool "${toolName}" requires a "params" object.` }
     }
+    const paramsRecord = /** @type {Record<string, unknown>} */ (params)
     if (spec.paramsSchema?.required) {
       for (const req of spec.paramsSchema.required) {
-        if (!(req in params) || params[req] === undefined || params[req] === null) {
+        if (!(req in paramsRecord) || paramsRecord[req] === undefined || paramsRecord[req] === null) {
           return { error: 'missing_required_param', message: `Tool "${toolName}" requires parameter "${req}".` }
         }
       }
     }
     if (spec.paramsSchema?.properties) {
       for (const [key, schema] of Object.entries(spec.paramsSchema.properties)) {
-        if (params[key] === undefined || params[key] === null) continue
-        if (schema.type === 'array' && !Array.isArray(params[key])) {
+        if (paramsRecord[key] === undefined || paramsRecord[key] === null) continue
+        if (schema.type === 'array' && !Array.isArray(paramsRecord[key])) {
           return { error: 'invalid_param_type', message: `Tool "${toolName}" parameter "${key}" must be an array.` }
         }
-        if (schema.type === 'number' && typeof params[key] !== 'number') {
+        if (schema.type === 'number' && typeof paramsRecord[key] !== 'number') {
           return { error: 'invalid_param_type', message: `Tool "${toolName}" parameter "${key}" must be a number.` }
         }
-        if (schema.type === 'string' && typeof params[key] !== 'string') {
+        if (schema.type === 'string' && typeof paramsRecord[key] !== 'string') {
           return { error: 'invalid_param_type', message: `Tool "${toolName}" parameter "${key}" must be a string.` }
         }
-        if (schema.enum && !schema.enum.includes(params[key])) {
+        if (schema.enum && !schema.enum.includes(paramsRecord[key])) {
           return { error: 'invalid_param_value', message: `Tool "${toolName}" parameter "${key}" must be one of: ${schema.enum.join(', ')}.` }
         }
       }
@@ -377,6 +395,7 @@ function extractStrictToolCall(text) {
   return { tool: toolName, params }
 }
 
+/** @param {string} text */
 function stripTrailingJson(text) {
   if (!text) return ''
   const str = String(text)
@@ -418,16 +437,24 @@ function readAiApiKey(db) {
 
 const AI_BASE_URL = process.env.BOROKO_AI_BASE_URL || ''
 
+/** @typedef {'local' | 'deepseek' | 'gemini' | 'opencode' | 'zen'} SupportedAiProvider */
+/** @type {Set<SupportedAiProvider>} */
 const SUPPORTED_PROVIDERS = new Set(['local', 'deepseek', 'gemini', 'opencode', 'zen'])
+
+/** @param {string} value @returns {value is SupportedAiProvider} */
+function isSupportedAiProvider(value) {
+  return SUPPORTED_PROVIDERS.has(/** @type {SupportedAiProvider} */ (value))
+}
 
 // If BOROKO_AI_PROVIDER is unset → safe default.
 // If set to a supported provider → use it.
 // If set to an unsupported provider → error (never silently fall back).
+/** @returns {SupportedAiProvider} */
 function resolveProvider() {
   const raw = process.env.BOROKO_AI_PROVIDER
   if (!raw) return 'local'
   const normalized = raw.trim().toLowerCase()
-  if (!SUPPORTED_PROVIDERS.has(normalized)) {
+  if (!isSupportedAiProvider(normalized)) {
     throw new Error(`Unsupported AI provider configured: ${raw.trim()}. Please set BOROKO_AI_PROVIDER to local, deepseek, gemini, opencode, or another supported provider.`)
   }
   return normalized
@@ -452,20 +479,29 @@ export const RECOMMENDATION_ROUTES = {
   bulk_check_out: { route: '/bookings', screen: 'Bookings', label: 'Open Bookings to check out the rooms' }
 }
 
+/** @param {string} tool @param {unknown} [params] */
 export function buildRecommendation(tool, params = {}) {
-  const base = RECOMMENDATION_ROUTES[tool] || { route: '/ai', screen: 'Assistant', label: 'Open the Assistant to continue' }
+  // Reflect preserves the existing ordinary-object lookup, including inherited keys.
+  const base = Reflect.get(RECOMMENDATION_ROUTES, tool) || { route: '/ai', screen: 'Assistant', label: 'Open the Assistant to continue' }
   const safeParams = params && typeof params === 'object' && !Array.isArray(params) ? params : {}
+  /** @type {Record<string, string>} */
   const state = {}
-  const bookingId = typeof safeParams.booking_id === 'string' && safeParams.booking_id ? safeParams.booking_id : null
+  const candidateBookingId = Reflect.get(safeParams, 'booking_id')
+  const bookingId = typeof candidateBookingId === 'string' && candidateBookingId ? candidateBookingId : null
   if (bookingId && (tool === 'check_in' || tool === 'check_out')) state.reviewBookingId = bookingId
   if (bookingId && tool === 'record_payment') state.collectPaymentBookingId = bookingId
   return { tool, params: safeParams, route: base.route, screen: base.screen, label: base.label, state }
 }
 
+/** @param {unknown} recommendation @param {string} [fallback] */
 export function recommendationGuidance(recommendation, fallback = '') {
   const rec = recommendation || {}
-  const where = rec.screen ? ` in ${rec.screen}` : ''
-  const what = rec.label || 'Open the suggested screen to continue'
+  // Keep GetV's original primitive receiver when ordinary property access
+  // boxes a truthy primitive, including for inherited accessor properties.
+  const screen = Reflect.get(Object(rec), 'screen', rec)
+  const label = Reflect.get(Object(rec), 'label', rec)
+  const where = screen ? ` in ${screen}` : ''
+  const what = label || 'Open the suggested screen to continue'
   const base = `${what}${where}. The assistant never runs actions itself — review and confirm on the screen like any normal workflow.`
   return fallback ? `${fallback}\n\n${base}` : base
 }
@@ -531,6 +567,7 @@ function normalizeProviderError(err, statusCode) {
   return 'AI request failed. Please check your connection and try again.'
 }
 
+/** @param {SupportedAiProvider} provider @param {unknown} requestedModel @returns {unknown} */
 function getProviderModel(provider, requestedModel) {
   if (requestedModel) return requestedModel
   // Support BOROKO_AI_MODEL env var or provider defaults

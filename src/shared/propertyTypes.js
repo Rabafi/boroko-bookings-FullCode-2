@@ -1,5 +1,7 @@
+// @ts-check
 import { normalizeTillOperatorPolicy, tillOperatorPolicyToProfileValue } from './tillOperatorPolicy.js'
 
+/** @type {Record<string, unknown>} */
 export const PROPERTY_TYPES = {
   guest_house: 'guest_house',
   bnb: 'bnb',
@@ -27,6 +29,7 @@ export const PROPERTY_TYPE_ORDER = [
   'bar'
 ]
 
+/** @type {Record<string, unknown>} */
 export const PROPERTY_TYPE_LABELS = {
   guest_house: 'Guest House',
   bnb: 'Bed & Breakfast',
@@ -54,6 +57,7 @@ export const PROPERTY_TYPE_DESCRIPTIONS = {
   bar: 'Bar-focused drinks operation'
 }
 
+/** @type {Record<string, unknown>} */
 export const PROPERTY_TYPE_DEFAULTS = {
   guest_house: {
     modules: ['bookings', 'rooms', 'guests', 'invoices', 'housekeeping', 'maintenance', 'supplies'],
@@ -109,6 +113,7 @@ export const OPERATION_STYLE_LABELS = {
   group: 'Group'
 }
 
+/** @param {unknown} propertyType @returns {string} */
 export function normalizePropertyType(propertyType) {
   const raw = String(propertyType || '').trim().toLowerCase()
   // Keep camp and bar as first-class property types so campsite inventory and
@@ -127,41 +132,50 @@ export function normalizePropertyType(propertyType) {
   return 'lodge'
 }
 
+/** @param {unknown} propertyType @returns {unknown} */
 export function getPropertyTypeLabel(propertyType) {
   return PROPERTY_TYPE_LABELS[normalizePropertyType(propertyType)] || 'Lodge'
 }
 
+/** @param {unknown} propertyType @returns {unknown} */
 export function getPropertyTypeDefaults(propertyType) {
   return PROPERTY_TYPE_DEFAULTS[normalizePropertyType(propertyType)] || PROPERTY_TYPE_DEFAULTS.lodge
 }
 
+/** @param {unknown} propertyType */
 export function isHotelPropertyType(propertyType) {
   const normalized = normalizePropertyType(propertyType)
   return ['motel', 'hotel', 'resort'].includes(normalized)
 }
 
+/** @param {unknown} propertyType */
 export function isResortPropertyType(propertyType) {
   const normalized = normalizePropertyType(propertyType)
   return normalized === 'resort'
 }
 
+/** @param {unknown} propertyType */
 export function isRestaurantOnly(propertyType) {
   const normalized = normalizePropertyType(propertyType)
   return normalized === 'restaurant' || normalized === 'bar'
 }
 
+/** @param {unknown} propertyType */
 export function isBarPropertyType(propertyType) {
   return normalizePropertyType(propertyType) === 'bar'
 }
 
+/** @param {unknown} propertyType */
 export function isCampPropertyType(propertyType) {
   return normalizePropertyType(propertyType) === 'camp'
 }
 
+/** @param {unknown} propertyType @param {unknown} [operatingProfile] */
 export function supportsCampsites(propertyType, operatingProfile = null) {
   if (isCampPropertyType(propertyType)) return true
-  const mix = operatingProfile?.accommodation_mix || operatingProfile?.campsite_profile
-  if (mix?.campsites === true || mix?.enabled === true) return true
+  const profile = recordFields(operatingProfile)
+  const mix = recordFields(profile.accommodation_mix || profile.campsite_profile)
+  if (mix.campsites === true || mix.enabled === true) return true
   return false
 }
 
@@ -170,24 +184,27 @@ export const HOSPITALITY_MODES = Object.freeze({
   BAR_ONLY: 'bar_only'
 })
 
+/** @param {unknown} value */
 export function normalizeHospitalityMode(value) {
   const raw = String(value || '').trim().toLowerCase()
   return raw === HOSPITALITY_MODES.BAR_ONLY ? HOSPITALITY_MODES.BAR_ONLY : HOSPITALITY_MODES.RESTAURANT_BAR
 }
 
+/** @param {unknown} settingsOrProfile */
 export function getHospitalityMode(settingsOrProfile) {
-  const root = settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {}
+  const root = recordFields(settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {})
   let nested = root.operating_profile
   if (typeof nested === 'string') {
     try { nested = JSON.parse(nested) } catch { nested = {} }
   }
-  const source = nested && typeof nested === 'object' ? nested : {}
+  const source = recordFields(nested && typeof nested === 'object' ? nested : {})
   const packageKey = String(root.commercial_package_key || root.package_key || source.commercial_package_key || '').trim().toLowerCase()
   if (packageKey === 'bar_pos') return HOSPITALITY_MODES.BAR_ONLY
   const explicit = source.hospitality_mode || root.hospitality_mode || root.operating_mode
   return explicit ? normalizeHospitalityMode(explicit) : HOSPITALITY_MODES.RESTAURANT_BAR
 }
 
+/** @param {unknown} settingsOrProfile */
 export function isBarOnlyMode(settingsOrProfile) {
   return getHospitalityMode(settingsOrProfile) === HOSPITALITY_MODES.BAR_ONLY
 }
@@ -197,13 +214,15 @@ export function isBarOnlyMode(settingsOrProfile) {
  * Once set, restaurant_bar vs bar_only is a priced product choice and must not be
  * operator-switchable in Settings or later profile edits.
  */
+/** @param {unknown} settingsOrProfile */
 export function getExplicitHospitalityMode(settingsOrProfile) {
-  const root = settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {}
+  const root = recordFields(settingsOrProfile && typeof settingsOrProfile === 'object' ? settingsOrProfile : {})
   let source = root.operating_profile || root
   if (typeof source === 'string') {
     try { source = JSON.parse(source) } catch { source = {} }
   }
-  const raw = source.hospitality_mode || root.hospitality_mode || root.operating_mode
+  const fields = recordFields(source)
+  const raw = fields.hospitality_mode || root.hospitality_mode || root.operating_mode
   if (raw == null || String(raw).trim() === '') return null
   return normalizeHospitalityMode(raw)
 }
@@ -212,6 +231,7 @@ export function getExplicitHospitalityMode(settingsOrProfile) {
  * Merge operating_profile patches while locking hospitality_mode after first set.
  * First write may set the mode; subsequent writes always keep the existing mode.
  */
+/** @param {Record<string, unknown>} [nextProfile] @param {Record<string, unknown>} [existingProfile] */
 export function mergeOperatingProfileWithLockedHospitalityMode(nextProfile = {}, existingProfile = {}) {
   const next = nextProfile && typeof nextProfile === 'object' ? { ...nextProfile } : {}
   const existing = existingProfile && typeof existingProfile === 'object' ? existingProfile : {}
@@ -231,6 +251,7 @@ export function mergeOperatingProfileWithLockedHospitalityMode(nextProfile = {},
  * complete, Settings must not reclassify the business (e.g. lodge → hotel).
  * First bootstrap / incomplete setup may still set the type from the payload.
  */
+/** @param {Record<string, unknown>} [incomingSettings] @param {Record<string, unknown>} [existingSettings] */
 export function resolveLockedPropertyType(incomingSettings = {}, existingSettings = {}) {
   const existingRaw = existingSettings?.property_type || existingSettings?.business_type || ''
   const incomingRaw = incomingSettings?.property_type || incomingSettings?.business_type || ''
@@ -242,10 +263,13 @@ export function resolveLockedPropertyType(incomingSettings = {}, existingSetting
   return incoming || existing || 'lodge'
 }
 
+/** @param {unknown} propertyType @param {string} subscriptionPlan @returns {string[]} */
 export function getRelevantModules(propertyType, subscriptionPlan) {
-  const defaults = getPropertyTypeDefaults(propertyType)
-  const baseModules = defaults.modules || []
+  // Retain ordinary property lookup behavior without claiming the lookup validates its key.
+  const defaults = /** @type {Record<string, unknown>} */ (getPropertyTypeDefaults(propertyType))
+  const baseModules = /** @type {string[]} */ (defaults.modules || [])
   
+  /** @type {Record<string, string[]>} */
   const planModules = {
     Starter: [],
     Standard: ['reports', 'expenses', 'staff', 'audit', 'conference', 'pool', 'import'],
@@ -263,6 +287,7 @@ export function getRelevantModules(propertyType, subscriptionPlan) {
   return [...new Set([...baseModules, ...planAdditions])]
 }
 
+/** @param {unknown} propertyType @param {string} subscriptionPlan */
 export function getHiddenModules(propertyType, subscriptionPlan) {
   const hidden = []
   
@@ -281,6 +306,7 @@ export function getHiddenModules(propertyType, subscriptionPlan) {
   return [...new Set(hidden)]
 }
 
+/** @param {unknown} propertyType */
 export function propertyTypeToBusinessType(propertyType) {
   const normalized = normalizePropertyType(propertyType)
   if (normalized === 'restaurant') return 'restaurant'
@@ -288,6 +314,7 @@ export function propertyTypeToBusinessType(propertyType) {
   return 'lodge'
 }
 
+/** @type {Record<string, {rooms: number, users: number, monthlyBookings: number, posOutlets: number, properties: number}>} */
 const CAPACITY_LIMITS_DEFAULTS = {
   hotel:      { rooms: 50,  users: 10, monthlyBookings: 500, posOutlets: 5,  properties: 3 },
   resort:     { rooms: 80,  users: 10, monthlyBookings: 800, posOutlets: 8,  properties: 3 },
@@ -300,9 +327,10 @@ const CAPACITY_LIMITS_DEFAULTS = {
   bar:  { rooms: 0,  users: 10, monthlyBookings: 0,   posOutlets: 3,  properties: 1 },
 }
 
+/** @param {unknown} propertyType @param {string} [subscriptionPlan] @param {string[]} [enterpriseAddons] @param {Record<string, unknown>} [options] */
 export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter', enterpriseAddons = [], options = {}) {
   const normalized = normalizePropertyType(propertyType)
-  const defaults = getPropertyTypeDefaults(normalized)
+  const defaults = /** @type {Record<string, unknown>} */ (getPropertyTypeDefaults(normalized))
   const relevantModules = getRelevantModules(normalized, subscriptionPlan)
   const hiddenModules = getHiddenModules(normalized, subscriptionPlan)
   const enabledModules = relevantModules.filter(m => !hiddenModules.includes(m))
@@ -346,4 +374,11 @@ export function buildOperatingProfile(propertyType, subscriptionPlan = 'Starter'
       properties: CAPACITY_LIMITS_DEFAULTS[normalized]?.properties ?? 1,
     }
   }
+}
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function recordFields(value) {
+  return value !== null && (typeof value === 'object' || typeof value === 'function')
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {}
 }

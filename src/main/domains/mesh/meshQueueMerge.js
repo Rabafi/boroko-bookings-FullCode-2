@@ -1,18 +1,19 @@
+// @ts-check
 import fs from 'fs';
 import path from 'path';
 import { state } from '../../state.js';
 import { meshState } from './meshState.js';
 import { sendSignedMeshRequest } from './meshClient.js';
-import { readSyncQueue, writeSyncQueue } from '../syncStore.js';
+import { appendHealthFault, appendOperationJournalEntry, readSyncQueue, writeSyncQueue } from '../syncStore.js';
 import { detectConflicts } from './meshConflict.js';
 import { computeBodyHash } from './meshSecurity.js';
 import { readCache, writeCache } from '../cacheStore.js';
 import { broadcastSyncStatus } from '../connectivity.js';
-import { appendOperationJournalEntry } from '../syncStore.js';
 
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
   'create_campsite_booking',
+  'create_multi_room_booking',
   'create_booking_invoice_group',
   'create_booking_record',
   'reschedule_booking',
@@ -124,76 +125,93 @@ const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([
   'create_pos_return_v3'
 ]);
 
+/** @param {unknown} value */
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @param {unknown} value @returns {value is string} */
 function hasString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/** @param {unknown} value */
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim())
 }
 
+/** @param {unknown} value @returns {value is string} */
 function isValidDate(value) {
   return hasString(value) && !Number.isNaN(Date.parse(value));
 }
 
+/** @param {unknown} checkIn @param {unknown} checkOut */
 function hasValidDateRange(checkIn, checkOut) {
   return isValidDate(checkIn) && isValidDate(checkOut) && Date.parse(checkOut) > Date.parse(checkIn);
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 function hasValidInclusiveDateRange(startDate, endDate) {
   return isValidDate(startDate) && isValidDate(endDate) && Date.parse(endDate) >= Date.parse(startDate);
 }
 
+/** @param {unknown} value */
 function isFiniteNumber(value) {
   return Number.isFinite(Number(value));
 }
 
+/** @param {unknown} value @param {number} [fallback] */
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+/** @param {unknown} [items] */
 function getPosInventoryUsage(items = []) {
   const usage = new Map();
-  for (const entry of items || []) {
-    const menuItem = entry?.menu_item_id
-      ? readCache('pos-menu-items').find((row) => row?.id === entry.menu_item_id)
+  for (const entry of /** @type {Iterable<unknown>} */ (items || [])) {
+    const entryFields = /** @type {Record<string, unknown>} */ (entry);
+    const menuItem = entryFields?.menu_item_id
+      ? /** @type {{ find(predicate: (row: unknown) => boolean): unknown }} */ (readCache('pos-menu-items'))
+        .find((row) => /** @type {Record<string, unknown> | null | undefined} */ (row)?.id === entryFields.menu_item_id)
       : null;
-    const inventoryItemId = String(entry?.inventory_item_id || menuItem?.inventory_item_id || '').trim();
+    const menuItemFields = /** @type {Record<string, unknown> | null | undefined} */ (menuItem);
+    const inventoryItemId = String(entryFields?.inventory_item_id || menuItemFields?.inventory_item_id || '').trim();
     if (!inventoryItemId) continue;
-    const quantity = Number(entry.quantity || 0);
-    const depletionQty = normalizePositiveQty(entry.depletion_qty ?? menuItem?.depletion_qty, 1);
+    const quantity = Number(entryFields.quantity || 0);
+    const depletionQty = normalizePositiveQty(entryFields.depletion_qty ?? menuItemFields?.depletion_qty, 1);
     if (quantity === 0) continue;
     usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * depletionQty);
   }
   return usage;
 }
 
+/** @param {unknown} [items] */
 export function applyImportedPosInventoryEffects(items = []) {
-  if (!items.length) return;
+  const itemInput = /** @type {{ length: unknown }} */ (items);
+  if (!itemInput.length) return;
   const inventory = readCache('inventory-items');
   if (!Array.isArray(inventory) || inventory.length === 0) return;
 
   let changed = false;
-  let nextInventory = inventory;
+  let nextInventory = /** @type {unknown[]} */ (inventory);
 
-  for (const item of items) {
-    if (!['create_pos_order', 'create_pos_order_v3'].includes(item.table)) continue;
-    const payload = item.data?.payload || {};
+  for (const item of /** @type {Iterable<unknown>} */ (items)) {
+    const itemFields = /** @type {Record<string, unknown>} */ (item);
+    if (!['create_pos_order', 'create_pos_order_v3'].includes(/** @type {string} */ (itemFields.table))) continue;
+    const data = /** @type {Record<string, unknown> | null | undefined} */ (itemFields?.data);
+    const payload = /** @type {Record<string, unknown>} */ (data?.payload || {});
     const usage = getPosInventoryUsage(payload.items || []);
     if (usage.size === 0) continue;
 
     nextInventory = nextInventory.map((row) => {
-      const delta = usage.get(row?.id) || 0;
+      const rowFields = /** @type {Record<string, unknown>} */ (row);
+      const delta = usage.get(rowFields?.id) || 0;
       if (!delta) return row;
       changed = true;
       return {
-        ...row,
-        current_stock: Math.max(0, Number(row.current_stock || 0) - delta),
+        .../** @type {Record<string, unknown>} */ (row),
+        current_stock: Math.max(0, Number(rowFields.current_stock || 0) - delta),
         _pending_sync: true,
         _sync_state: 'pending',
         _mesh_inventory_adjusted_at: new Date().toISOString()
@@ -206,46 +224,80 @@ export function applyImportedPosInventoryEffects(items = []) {
   }
 }
 
+/** @param {unknown} value */
 function containsMachineBoundSecret(value) {
   if (Array.isArray(value)) return value.some(containsMachineBoundSecret);
   if (!value || typeof value !== 'object') return false;
-  if (value._secure_queue_secret === true) return true;
-  return Object.values(value).some(containsMachineBoundSecret);
+  const record = /** @type {Record<string, unknown>} */ (value);
+  if (record._secure_queue_secret === true) return true;
+  return Object.values(record).some(containsMachineBoundSecret);
 }
 
+/** @param {unknown} item */
 export function isMeshShareableQueueItem(item = {}) {
-  if (!item || item.type !== 'rpc') return false;
-  if (!ALLOWED_RPC_TABLES.has(String(item.table || '').trim())) return false;
-  if (ORIGIN_DEVICE_ONLY_RPC_TABLES.has(item.table)) return false;
-  return !containsMachineBoundSecret(item.data);
+  const itemFields = /** @type {Record<string, unknown>} */ (item);
+  if (!item || itemFields.type !== 'rpc') return false;
+  if (!ALLOWED_RPC_TABLES.has(String(itemFields.table || '').trim())) return false;
+  if (ORIGIN_DEVICE_ONLY_RPC_TABLES.has(/** @type {string} */ (itemFields.table))) return false;
+  return !containsMachineBoundSecret(itemFields.data);
 }
 
+/** @param {unknown} item */
 function stripMeshMetadata(item = {}) {
+  const itemFields = /** @type {Record<string, unknown> | null | undefined} */ (item);
   const {
     _mesh_imported,
     _mesh_source_node_id,
     _mesh_imported_at,
     _mesh_body_hash,
     ...rest
-  } = item || {};
+  } = itemFields || {};
   return rest;
 }
 
-export function getQueueItemBodyHash(item = {}) {
-  return item?._mesh_body_hash || computeBodyHash(stripMeshMetadata(item));
+/** @param {unknown} value @returns {string | undefined} */
+function stableMeshJson(value) {
+  if (Array.isArray(value)) return '[' + value.map(stableMeshJson).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stableMeshJson(value[key])).join(',') + '}';
+  }
+  return JSON.stringify(value);
 }
 
+/** @param {unknown} [item] */
+export function getQueueItemOperationHash(item = {}) {
+  const itemFields = /** @type {Record<string, unknown>} */ (item);
+  const data = /** @type {Record<string, unknown> | null | undefined} */ (itemFields.data);
+  const payload = /** @type {Record<string, unknown> | null | undefined} */ (data?.payload);
+  return computeBodyHash(stableMeshJson({
+    type: itemFields.type || null,
+    table: itemFields.table || null,
+    data: itemFields.data || null,
+    dependency: itemFields._depends_on || null,
+    local_booking_ids: Array.isArray(itemFields._local_booking_ids) ? itemFields._local_booking_ids : null,
+    origin_lodge_id: itemFields._origin_lodge_id || data?.p_lodge_id || payload?.lodge_id || null
+  }));
+}
+/** @param {unknown} [item] */
+export function getQueueItemBodyHash(item = {}) {
+  const itemFields = /** @type {Record<string, unknown> | null | undefined} */ (item);
+  return itemFields?._mesh_body_hash || computeBodyHash(stripMeshMetadata(item));
+}
+
+/** @param {unknown} [item] */
 function getQueueItemIntentId(item = {}) {
+  const itemFields = /** @type {Record<string, unknown>} */ (item);
+  const data = /** @type {Record<string, unknown> | null | undefined} */ (itemFields.data);
+  const payload = /** @type {Record<string, unknown> | null | undefined} */ (data?.payload);
   return String(
-    item.intentId ||
-    item.data?.p_idempotency_key ||
-    item.data?.p_adjustment_id ||
-    item.data?.payload?.operation_id ||
-    item.data?.payload?.id ||
-    item.data?.payload?.create_idempotency_key ||
-    item.data?.payload?.return_idempotency_key ||
-    item.data?.payload?.cashup_id ||
-    item.data?.payload?.idempotency_key ||
+    itemFields.intentId ||
+    data?.p_idempotency_key ||
+    data?.p_adjustment_id ||
+    payload?.operation_id ||
+    payload?.create_idempotency_key ||
+    payload?.return_idempotency_key ||
+    payload?.cashup_id ||
+    payload?.idempotency_key ||
     ''
   ).trim();
 }
@@ -295,6 +347,45 @@ export function validateSyncQueueItem(item) {
     if (!hasValidDateRange(data.p_check_in, data.p_check_out)) return { isValid: false, reason: 'create_booking has invalid date range' };
   }
 
+  if (item.table === 'create_multi_room_booking') {
+    const data = item.data;
+    const required = ['p_lodge_id', 'p_customer_id', 'p_check_in', 'p_check_out', 'p_group_key', 'p_idempotency_key', 'p_created_by'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: 'create_multi_room_booking missing ' + missing.join(', ') };
+    if (!hasValidDateRange(data.p_check_in, data.p_check_out)) return { isValid: false, reason: 'create_multi_room_booking has invalid date range' };
+    if (!Array.isArray(data.p_rooms) || data.p_rooms.length < 2 || data.p_rooms.length > 50) {
+      return { isValid: false, reason: 'create_multi_room_booking requires 2 to 50 rooms' };
+    }
+    const roomIds = data.p_rooms.map((room) => String(room?.room_id || '').trim());
+    if (roomIds.some((id) => !isUuid(id)) || new Set(roomIds).size !== roomIds.length) {
+      return { isValid: false, reason: 'create_multi_room_booking has missing or duplicate room IDs' };
+    }
+    for (const room of data.p_rooms) {
+      const adults = Number(room?.adults ?? 1);
+      if (!Number.isInteger(adults) || adults < 1) {
+        return { isValid: false, reason: 'create_multi_room_booking has invalid adults' };
+      }
+      for (const field of ['children', 'tents', 'vehicles']) {
+        if (!Number.isInteger(Number(room?.[field] ?? 0)) || Number(room?.[field] ?? 0) < 0) {
+          return { isValid: false, reason: 'create_multi_room_booking has invalid ' + field };
+        }
+      }
+    }
+    if (data.p_deposit_amount != null && (!isFiniteNumber(data.p_deposit_amount) || Number(data.p_deposit_amount) < 0)) {
+      return { isValid: false, reason: 'create_multi_room_booking has invalid deposit amount' };
+    }
+    if (typeof data.p_idempotency_key !== 'string' || data.p_idempotency_key.trim().length < 16) {
+      return { isValid: false, reason: 'create_multi_room_booking has an invalid idempotency key' };
+    }
+    const childIds = item._local_booking_ids;
+    if (!Array.isArray(childIds) || childIds.length !== data.p_rooms.length ||
+        childIds.some((id) => !isUuid(id)) || new Set(childIds).size !== childIds.length) {
+      return { isValid: false, reason: 'create_multi_room_booking local child mapping does not match its rooms' };
+    }
+    if (item._origin_lodge_id && item._origin_lodge_id !== data.p_lodge_id) {
+      return { isValid: false, reason: 'create_multi_room_booking origin lodge mismatch' };
+    }
+  }
   if (item.table === 'create_booking_record') {
     const payload = item.data.payload;
     if (!isPlainObject(payload)) return { isValid: false, reason: 'create_booking_record missing payload object' };
@@ -1147,7 +1238,7 @@ function applyImportedChecklistEffects(items = []) {
   if (changed) writeCache('pos-checklists', next);
 }
 
-function applyImportedBookingCacheEffects(items = []) {
+export function applyImportedBookingCacheEffects(items = []) {
   const imported = [];
   for (const item of items) {
     if (item.table === 'create_booking') {
@@ -1161,13 +1252,13 @@ function applyImportedBookingCacheEffects(items = []) {
         check_out: data.p_check_out,
         adults: data.p_adults,
         children: data.p_children || 0,
-        total_amount: Number(data.p_total_amount || 0),
-        amount_paid: Number(data.p_deposit_amount || 0),
         notes: data.p_notes || '',
         status: 'pending',
-        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
+        _estimated_total_amount: Number(data.p_total_amount || 0),
+        _estimated_deposit_amount: Number(data.p_deposit_amount || 0),
         created_at: item.timestamp || item.created_at || new Date().toISOString(),
         _pending_sync: true,
+        _financial_estimate: true,
         _sync_state: 'pending',
         _mesh_imported: true,
         _mesh_source_node_id: item._mesh_source_node_id
@@ -1186,48 +1277,62 @@ function applyImportedBookingCacheEffects(items = []) {
         tents: data.p_tents || 0,
         vehicles: data.p_vehicles || 0,
         accommodation_kind: 'campsite',
-        total_amount: Number(data.p_total_amount || 0),
-        amount_paid: Number(data.p_deposit_amount || 0),
         notes: data.p_notes || '',
         status: 'pending',
-        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
+        _estimated_total_amount: Number(data.p_total_amount || 0),
+        _estimated_deposit_amount: Number(data.p_deposit_amount || 0),
         created_at: item.timestamp || item.created_at || new Date().toISOString(),
         _pending_sync: true,
+        _financial_estimate: true,
         _sync_state: 'pending',
         _mesh_imported: true,
         _mesh_source_node_id: item._mesh_source_node_id
       });
-    } else if (item.table === 'create_campsite_booking') {
+    } else if (item.table === 'create_multi_room_booking') {
       const data = item.data || {};
-      imported.push({
-        id: data.p_booking_id,
-        lodge_id: data.p_lodge_id,
-        customer_id: data.p_customer_id,
-        room_id: data.p_room_id,
-        check_in: data.p_check_in,
-        check_out: data.p_check_out,
-        adults: data.p_adults,
-        children: data.p_children || 0,
-        tents: data.p_tents || 0,
-        vehicles: data.p_vehicles || 0,
-        accommodation_kind: 'campsite',
-        total_amount: Number(data.p_total_amount || 0),
-        amount_paid: Number(data.p_deposit_amount || 0),
-        notes: data.p_notes || '',
-        status: 'pending',
-        payment_status: Number(data.p_deposit_amount || 0) > 0 ? 'partial' : 'unpaid',
-        created_at: item.timestamp || item.created_at || new Date().toISOString(),
-        _pending_sync: true,
-        _sync_state: 'pending',
-        _mesh_imported: true,
-        _mesh_source_node_id: item._mesh_source_node_id
+      const rooms = Array.isArray(data.p_rooms) ? data.p_rooms : [];
+      const localIds = Array.isArray(item._local_booking_ids) ? item._local_booking_ids : [];
+      if (rooms.length < 2 || localIds.length !== rooms.length) continue;
+      rooms.forEach((room, index) => {
+        imported.push({
+          id: localIds[index],
+          lodge_id: data.p_lodge_id,
+          customer_id: data.p_customer_id,
+          room_id: room.room_id,
+          check_in: data.p_check_in,
+          check_out: data.p_check_out,
+          adults: Number(room.adults || 0),
+          children: Number(room.children || 0),
+          tents: Number(room.tents || 0),
+          vehicles: Number(room.vehicles || 0),
+          group_key: data.p_group_key,
+          notes: data.p_notes || '',
+          status: 'pending',
+          created_at: item.timestamp || item.created_at || new Date().toISOString(),
+          _financial_estimate: true,
+          _estimated_group_deposit_amount: Number(data.p_deposit_amount || 0),
+          _pending_sync: true,
+          _sync_state: 'pending',
+          _mesh_imported: true,
+          _mesh_source_node_id: item._mesh_source_node_id,
+          _mesh_group_operation_id: item._queue_id
+        });
       });
     } else if (item.table === 'create_booking_record') {
       const payload = item.data?.payload || {};
+      const {
+        total_amount,
+        amount_paid,
+        payment_status,
+        ...safePayload
+      } = payload;
       imported.push({
-        ...payload,
-        status: payload.status || 'pending',
-        created_at: payload.created_at || item.timestamp || new Date().toISOString(),
+        ...safePayload,
+        status: safePayload.status || 'pending',
+        _estimated_total_amount: Number(total_amount || payload._estimated_total_amount || 0),
+        _estimated_deposit_amount: Number(amount_paid || payload._estimated_amount_paid || 0),
+        _financial_estimate: true,
+        created_at: safePayload.created_at || item.timestamp || new Date().toISOString(),
         _pending_sync: true,
         _sync_state: 'pending',
         _mesh_imported: true,
@@ -1243,7 +1348,6 @@ function applyImportedBookingCacheEffects(items = []) {
     ...imported
   ]);
 }
-
 function applyImportedOperationalCacheEffects(items = []) {
   for (const item of items) {
     if (item.table !== 'update_pool_day_use') continue;
@@ -1299,6 +1403,23 @@ export function quarantineInvalidItem(item, reason) {
   }
 }
 
+function quarantineMeshIdentityConflict(item, peerId, reason) {
+  const queueId = String(item?._queue_id || '').slice(0, 160);
+  const message = 'A nearby device sent a queued operation whose ID or financial key is already bound to different contents. The incoming operation was quarantined. A manager must review System Health and include local sync details in a support bundle; do not retry it under a new key.';
+  quarantineInvalidItem(item, 'Mesh queue identity conflict: ' + reason);
+  appendHealthFault({
+    type: 'mesh_queue_identity_conflict',
+    scope: String(meshState.lodgeId || state.lodgeId || 'unknown'),
+    severity: 'error',
+    message,
+    context: { queue_id: queueId || null, peer_id: String(peerId || 'unknown').slice(0, 120) }
+  });
+  appendOperationJournalEntry('mesh_identity_conflict', item, {
+    source_node_id: peerId,
+    includeSnapshot: false,
+    message
+  });
+}
 /**
  * Conducts a full P2P sync queue reconciliation with all discovered local peers.
  */
@@ -1309,6 +1430,8 @@ export async function syncMeshQueues() {
       peerCount: meshState.peers.size,
       importedCount: 0,
       missingCount: 0,
+      conflictCount: 0,
+      conflictSamples: [],
       perPeer: []
     };
     return;
@@ -1318,10 +1441,31 @@ export async function syncMeshQueues() {
   let hasMergedNewItems = false;
   let totalImported = 0;
   let totalMissing = 0;
+  let totalIdentityConflicts = 0;
+  const identityConflictSamples = [];
   const repairPeers = [];
 
   for (const [peerId, peer] of meshState.peers.entries()) {
     try {
+      const localPendingGroups = readSyncQueue().filter((item) => item.table === 'create_multi_room_booking');
+      let peerCapabilities = null;
+      try {
+        peerCapabilities = await sendSignedMeshRequest(peer.address, peer.httpPort, 'GET', '/mesh/capabilities');
+      } catch {
+        peerCapabilities = null;
+      }
+      if (localPendingGroups.length > 0 &&
+          (!peerCapabilities || Number(peerCapabilities.protocolVersion || 0) < 2 ||
+           !Array.isArray(peerCapabilities.queueFeatures) ||
+           !peerCapabilities.queueFeatures.includes('atomic_multi_room_booking_v1'))) {
+        appendHealthFault({
+          type: 'mesh_peer_protocol_incompatible',
+          scope: String(meshState.lodgeId || state.lodgeId || 'unknown'),
+          severity: 'warn',
+          message: 'A nearby device has not confirmed support for atomic multi-room booking sync. Keep the group queued on this device and have a manager update or review the other device; do not split or recreate the group.',
+          context: { peer_id: String(peer.nodeId || peerId), queue_count: localPendingGroups.length }
+        });
+      }
       // 1. Fetch remote queue summary
       const remoteSummary = await sendSignedMeshRequest(peer.address, peer.httpPort, 'GET', '/mesh/queue/summary');
       if (!Array.isArray(remoteSummary)) {
@@ -1329,25 +1473,53 @@ export async function syncMeshQueues() {
         continue;
       }
 
-      // 2. Identify missing local queue operations by queue id, intent id, or body hash.
+      // Compare stable operation fingerprints before treating queue IDs and keys as duplicates.
       const localQueue = readSyncQueue();
-      const localIds = new Set(localQueue.map((item) => item._queue_id));
-      const localIntentIds = new Set(localQueue.map(getQueueItemIntentId).filter(Boolean));
-      const localHashes = new Set(localQueue.map(getQueueItemBodyHash).filter(Boolean));
-      const missingSummaries = remoteSummary.filter((item) => {
-        const queueId = String(item?._queue_id || '').trim();
-        if (!queueId || localIds.has(queueId)) return false;
-        const intentId = String(item?.intentId || '').trim();
-        if (intentId && localIntentIds.has(intentId)) return false;
-        const bodyHash = String(item?.bodyHash || '').trim();
-        if (bodyHash && localHashes.has(bodyHash)) return false;
-        return true;
-      });
-      const missingIds = missingSummaries.map((item) => item._queue_id);
+      const localByQueueId = new Map(localQueue.map((item) => [String(item?._queue_id || ''), item]));
+      const localByIntentId = new Map(localQueue.map((item) => [getQueueItemIntentId(item), item]).filter(([key]) => key));
+      const localBodyHashes = new Set(localQueue.map(getQueueItemBodyHash).filter(Boolean));
+      const localOperationHashes = new Set(localQueue.map(getQueueItemOperationHash));
+      const missingSummaries = [];
+      const identityCandidates = [];
+      for (const summary of remoteSummary) {
+        const queueId = String(summary?._queue_id || '').trim();
+        if (!queueId) continue;
+        const intentId = String(summary?.intentId || '').trim();
+        const localById = localByQueueId.get(queueId);
+        const localByIntent = intentId ? localByIntentId.get(intentId) : null;
+        const localMatch = localById || localByIntent;
+        if (localMatch) {
+          const operationHash = String(summary?.operationHash || '').trim();
+          const bodyHash = String(summary?.bodyHash || '').trim();
+          if ((operationHash && operationHash === getQueueItemOperationHash(localMatch)) ||
+              (bodyHash && bodyHash === getQueueItemBodyHash(localMatch))) continue;
+          identityCandidates.push({ summary, localMatch });
+          continue;
+        }
+        const operationHash = String(summary?.operationHash || '').trim();
+        const bodyHash = String(summary?.bodyHash || '').trim();
+        if ((operationHash && localOperationHashes.has(operationHash)) ||
+            (bodyHash && localBodyHashes.has(bodyHash))) continue;
+        missingSummaries.push(summary);
+      }
+
+      const missingIds = [...new Set([...missingSummaries, ...identityCandidates.map((entry) => entry.summary)]
+        .map((item) => String(item?._queue_id || '').trim()).filter(Boolean))];
       totalMissing += missingIds.length;
+      const summariesById = new Map([...missingSummaries, ...identityCandidates.map((entry) => entry.summary)]
+        .map((item) => [String(item._queue_id), item]));
       const expectedHashesById = new Map(
-        missingSummaries.map((item) => [item._queue_id, String(item.bodyHash || '').trim()]).filter(([, hash]) => hash)
+        [...summariesById.entries()].map(([id, summary]) => [id, String(summary.bodyHash || '').trim()])
       );
+      let peerIdentityConflicts = 0;
+      const recordIdentityConflict = (item, reason) => {
+        quarantineMeshIdentityConflict(item, peer.nodeId || peerId, reason);
+        peerIdentityConflicts += 1;
+        totalIdentityConflicts += 1;
+        if (identityConflictSamples.length < 8) {
+          identityConflictSamples.push({ peer_id: peer.nodeId || peerId, queue_id: item?._queue_id || null, operation: item?.table || null });
+        }
+      };
 
       if (missingIds.length === 0) {
         repairPeers.push({
@@ -1356,19 +1528,16 @@ export async function syncMeshQueues() {
           remoteQueueSize: remoteSummary.length,
           missingCount: 0,
           importedCount: 0,
+          identityConflictCount: 0,
           lastError: ''
         });
-        console.log(`[MeshMerge] Local queue is fully up-to-date with Peer ${peerId}.`);
         continue;
       }
 
-      console.log(`[MeshMerge] Found ${missingIds.length} missing items on Peer ${peerId}. Fetching full payloads...`);
-
-      // Batch missing items request (ids are comma-separated)
-      // Since HTTP GET might hit header constraints, we can batch them in groups of 30 if needed
-      const batchSize = 30;
+      const requestedIds = new Set(missingIds);
       const newValidItems = [];
       let importedFromPeer = 0;
+      const batchSize = 30;
 
       for (let i = 0; i < missingIds.length; i += batchSize) {
         const batchIds = missingIds.slice(i, i + batchSize);
@@ -1381,29 +1550,60 @@ export async function syncMeshQueues() {
         );
 
         if (!Array.isArray(remoteItems)) {
-          console.warn(`[MeshMerge] Peer ${peerId} returned invalid items list for batch request.`);
+          console.warn('[MeshMerge] Peer ' + peerId + ' returned invalid items list for batch request.');
           continue;
         }
 
-        // Validate and stamp incoming items
         for (const item of remoteItems) {
+          const summary = summariesById.get(String(item?._queue_id || ''));
+          if (!requestedIds.has(item?._queue_id) || !summary) {
+            recordIdentityConflict(item, 'Peer returned an item that was not requested in this signed batch');
+            continue;
+          }
           const validation = validateSyncQueueItem(item);
           if (!validation.isValid) {
             quarantineInvalidItem(item, validation.reason);
+            if (item.table === 'create_multi_room_booking') {
+              appendHealthFault({
+                type: 'mesh_peer_protocol_incompatible',
+                scope: String(meshState.lodgeId || state.lodgeId || 'unknown'),
+                severity: 'warn',
+                message: 'A nearby device has a multi-room booking that this version cannot safely import. Keep the source device online and ask a manager to update or contact support; do not recreate the group.',
+                context: { queue_id: item._queue_id || null, peer_id: String(peer.nodeId || peerId) }
+              });
+            }
             continue;
           }
 
           const bodyHash = getQueueItemBodyHash(item);
           const expectedHash = expectedHashesById.get(item._queue_id);
-          if (expectedHash && expectedHash !== bodyHash) {
-            quarantineInvalidItem(item, 'Fetched item body hash did not match queue summary');
+          if ((expectedHash && expectedHash !== bodyHash) ||
+              (summary.operation && summary.operation !== item.table) ||
+              (summary.type && summary.type !== item.type) ||
+              (summary.intentId && summary.intentId !== getQueueItemIntentId(item)) ||
+              (summary.operationHash && summary.operationHash !== getQueueItemOperationHash(item))) {
+            recordIdentityConflict(item, 'Fetched operation did not match the signed queue summary');
             continue;
           }
+
+          const operationHash = getQueueItemOperationHash(item);
+          const currentLocalQueue = readSyncQueue();
+          const sameQueueId = currentLocalQueue.find((localItem) => localItem._queue_id === item._queue_id);
+          const intentId = getQueueItemIntentId(item);
+          const sameIntent = intentId ? currentLocalQueue.find((localItem) => getQueueItemIntentId(localItem) === intentId) : null;
+          const duplicateOperation = currentLocalQueue.some((localItem) => getQueueItemOperationHash(localItem) === operationHash);
+          const identityMatch = sameQueueId || sameIntent;
+          if (identityMatch) {
+            if (getQueueItemOperationHash(identityMatch) === operationHash) continue;
+            recordIdentityConflict(item, 'Queue ID or idempotency key already exists locally with different operation contents');
+            continue;
+          }
+          if (duplicateOperation) continue;
 
           newValidItems.push({
             ...item,
             _mesh_imported: true,
-            _mesh_source_node_id: peer.nodeId,
+            _mesh_source_node_id: peer.nodeId || peerId,
             _mesh_imported_at: new Date().toISOString(),
             _mesh_body_hash: bodyHash
           });
@@ -1411,27 +1611,31 @@ export async function syncMeshQueues() {
       }
 
       if (newValidItems.length > 0) {
-        // Reload local queue to append atomically
         const latestLocalQueue = readSyncQueue();
-        // Avoid duplicate appends just in case of parallel loops.
-        const currentIds = new Set(latestLocalQueue.map((item) => item._queue_id));
-        const currentIntentIds = new Set(latestLocalQueue.map(getQueueItemIntentId).filter(Boolean));
-        const currentHashes = new Set(latestLocalQueue.map(getQueueItemBodyHash).filter(Boolean));
-        const deduplicatedNewItems = newValidItems.filter((item) => {
-          if (currentIds.has(item._queue_id)) return false;
+        const seenIds = new Map(latestLocalQueue.map((item) => [String(item?._queue_id || ''), item]));
+        const seenIntents = new Map(latestLocalQueue.map((item) => [getQueueItemIntentId(item), item]).filter(([key]) => key));
+        const seenOperations = new Set(latestLocalQueue.map(getQueueItemOperationHash));
+        const deduplicatedNewItems = [];
+        for (const item of newValidItems) {
           const intentId = getQueueItemIntentId(item);
-          if (intentId && currentIntentIds.has(intentId)) return false;
-          const bodyHash = getQueueItemBodyHash(item);
-          if (bodyHash && currentHashes.has(bodyHash)) return false;
-          currentIds.add(item._queue_id);
-          if (intentId) currentIntentIds.add(intentId);
-          if (bodyHash) currentHashes.add(bodyHash);
-          return true;
-        });
+          const existing = seenIds.get(String(item._queue_id)) || (intentId ? seenIntents.get(intentId) : null);
+          const operationHash = getQueueItemOperationHash(item);
+          if (existing) {
+            if (getQueueItemOperationHash(existing) !== operationHash) {
+              recordIdentityConflict(item, 'Local queue changed during mesh merge and now binds this identity to different contents');
+            }
+            continue;
+          }
+          if (seenOperations.has(operationHash)) continue;
+          deduplicatedNewItems.push(item);
+          seenIds.set(String(item._queue_id), item);
+          if (intentId) seenIntents.set(intentId, item);
+          seenOperations.add(operationHash);
+        }
 
         if (deduplicatedNewItems.length > 0) {
-          const mergedQueue = [...latestLocalQueue, ...deduplicatedNewItems];
-          writeSyncQueue(mergedQueue);
+          const mergedQueueWithImports = [...latestLocalQueue, ...deduplicatedNewItems];
+          writeSyncQueue(mergedQueueWithImports);
           applyImportedPosInventoryEffects(deduplicatedNewItems);
           applyImportedTabCacheEffects(deduplicatedNewItems);
           applyImportedShiftCacheEffects(deduplicatedNewItems);
@@ -1451,10 +1655,10 @@ export async function syncMeshQueues() {
             });
           }
           meshState.lastQueueMergeAt = new Date();
-          importedFromPeer += deduplicatedNewItems.length;
-          totalImported += deduplicatedNewItems.length;
+          importedFromPeer = deduplicatedNewItems.length;
+          totalImported += importedFromPeer;
           hasMergedNewItems = true;
-          console.log(`[MeshMerge] Successfully imported ${deduplicatedNewItems.length} operations from Peer ${peerId}.`);
+          console.log('[MeshMerge] Successfully imported ' + importedFromPeer + ' operations from Peer ' + peerId + '.');
         }
       }
       repairPeers.push({
@@ -1463,6 +1667,7 @@ export async function syncMeshQueues() {
         remoteQueueSize: remoteSummary.length,
         missingCount: missingIds.length,
         importedCount: importedFromPeer,
+        identityConflictCount: peerIdentityConflicts,
         lastError: ''
       });
     } catch (err) {
@@ -1508,6 +1713,8 @@ export async function syncMeshQueues() {
     peerCount: meshState.peers.size,
     importedCount: totalImported,
     missingCount: totalMissing,
+    conflictCount: totalIdentityConflicts,
+    conflictSamples: identityConflictSamples,
     perPeer: repairPeers.slice(-12)
   };
 
@@ -1518,7 +1725,6 @@ export async function syncMeshQueues() {
     } catch (conflictErr) {
       console.error('[MeshMerge] Error triggering conflict detection post-merge:', conflictErr);
     }
-    // Update local UI immediately
-    broadcastSyncStatus();
   }
+  if (hasMergedNewItems || totalIdentityConflicts > 0) broadcastSyncStatus();
 }

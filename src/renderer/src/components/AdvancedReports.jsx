@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { BarChart3, Download, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useSettings } from '../app-context'

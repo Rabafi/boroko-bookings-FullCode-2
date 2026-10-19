@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Users, Calendar, CheckSquare, BookOpen, BarChart3, Layers, Clock, Plus, Edit3, Trash2, RefreshCw, AlertTriangle, X, CheckCircle } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

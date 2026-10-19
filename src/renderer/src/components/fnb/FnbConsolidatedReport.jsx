@@ -1,3 +1,4 @@
+// @ts-check
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 

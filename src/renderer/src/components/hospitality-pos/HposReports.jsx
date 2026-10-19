@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ErrorNotice } from '../shared/ErrorNotice';
 import {
@@ -22,6 +23,16 @@ import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 import { BAR_PRODUCT_CATEGORIES } from '../../../../shared/barModeProfile';
 import { summarizeWasteMovements } from '../../../../shared/wasteSummary';
 import { calculatePosFinancialTruth, classifyPosTransaction, hasRecordedPosTenderEnvelope, posTenderRows } from '../../../../shared/posFinancialTruth';
+
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readUnknownProperty(value, key) {
+  return value !== null && typeof value === 'object' ? Reflect.get(value, key) : undefined;
+}
 
 const dateKeyInTimeZone = (date, timeZone) => {
   const parts = new Intl.DateTimeFormat('en', {
@@ -71,7 +82,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       : dateKeyInTimeZone(new Date(now.getFullYear(), now.getMonth(), 1), businessTimeZone),
   );
   const [end, setEnd] = useState(dateKeyInTimeZone(now, businessTimeZone));
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(/** @type {Record<string, unknown>[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState('');
   const [notice, setNotice] = useState('');
@@ -138,15 +149,17 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         // A waiter correction screen must never expose the outlet-wide void audit.
         correctionMode ? Promise.resolve([]) : window.api?.pos?.getVoidHistory?.(start, end),
       ]);
-      const loadedOrders = correctionMode ? unpackTransport(history) : unpackTransport(history?.orders);
-      setOrders(loadedOrders || []);
+      const historyRecord = isRecord(history) ? history : null;
+      const loadedOrders = /** @type {unknown} */ (correctionMode ? unpackTransport(history) : unpackTransport(historyRecord?.orders));
+      const orderRows = Array.isArray(loadedOrders) ? loadedOrders.filter(isRecord) : [];
+      setOrders(orderRows);
       setReadCompleteness(correctionMode
-        ? { source: loadedOrders?._source || 'unknown', complete: loadedOrders?._complete === true, tenderComplete: loadedOrders?._tender_complete === true, itemDetailComplete: loadedOrders?._item_detail_complete === true }
-        : { source: history?.source || 'unknown', complete: history?.complete === true, tenderComplete: history?.tender_complete === true, itemDetailComplete: history?.item_detail_complete === true });
-      if (!correctionMode && history?.complete === true && history?.source === 'server' && history?.control_totals) {
-        setServerControls(history.control_totals);
+        ? { source: readUnknownProperty(loadedOrders, '_source') || 'unknown', complete: readUnknownProperty(loadedOrders, '_complete') === true, tenderComplete: readUnknownProperty(loadedOrders, '_tender_complete') === true, itemDetailComplete: readUnknownProperty(loadedOrders, '_item_detail_complete') === true }
+        : { source: historyRecord?.source || 'unknown', complete: historyRecord?.complete === true, tenderComplete: historyRecord?.tender_complete === true, itemDetailComplete: historyRecord?.item_detail_complete === true });
+      if (!correctionMode && historyRecord?.complete === true && historyRecord?.source === 'server' && historyRecord?.control_totals) {
+        setServerControls(historyRecord.control_totals);
       }
-      if (!correctionMode && history?.success === false && history?.error) setNotice(history.error);
+      if (!correctionMode && historyRecord?.success === false && historyRecord?.error) setNotice(String(historyRecord.error));
       setVoidHistory(loadedVoids || []);
     } catch (loadError) {
       setOrders([]);
@@ -174,10 +187,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     window.api?.inventory?.getMovementsWithReadStatus?.({ start_date: start, end_date: end, limit: 500 })
       .then((result) => {
         if (!active) return;
+        const resultRecord = isRecord(result) ? result : null;
         setWaste({
-          rows: Array.isArray(result?.rows) ? result.rows : [],
-          source: result?.source || 'unknown',
-          complete: result?.complete === true,
+          rows: Array.isArray(resultRecord?.rows) ? resultRecord.rows : [],
+          source: typeof resultRecord?.source === 'string' ? resultRecord.source : 'unknown',
+          complete: resultRecord?.complete === true,
         });
       })
       .catch(() => {
@@ -199,10 +213,11 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     ])
       .then(([itemsResult, agingResult]) => {
         if (!active) return;
+        const itemsRecord = isRecord(itemsResult) ? itemsResult : null;
         setSlowStock({
-          items: unpackTransport(itemsResult?.items) || [],
+          items: unpackTransport(itemsRecord?.items) || [],
           aging: Array.isArray(agingResult) ? agingResult : [],
-          itemsComplete: itemsResult?.complete === true,
+          itemsComplete: itemsRecord?.complete === true,
           agingOk: true,
         });
       })
@@ -634,7 +649,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             <header>
               <div><p className="hpos-eyebrow">Receipt & audit trail</p><h2>{receiptLabel(selectedOrder)}</h2><p>{orderLabel(selectedOrder)} · {transactionLabel(selectedOrder)}</p></div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button type="button" onClick={() => setPrintOrder(selectedOrder)} disabled={voiding} aria-label="Print receipt"><Printer size={20} /></button>
+                <button type="button" onClick={() => { setSelectedOrder(null); setPrintOrder(selectedOrder); }} disabled={voiding} aria-label="Print receipt"><Printer size={20} /></button>
                 <button type="button" onClick={closeDetail} disabled={voiding} aria-label="Close receipt details"><X size={20} /></button>
               </div>
             </header>
@@ -649,7 +664,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             </div>
              <div className="hpos-report-detail-items"><h3>Items</h3>{itemDetailReady && (selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => { const lineAmount = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{hasRecordedMoney(lineAmount) ? money(lineAmount, currency) : 'Unavailable'}</strong></p> }) : <p>Item detail is unavailable until the server confirms recorded line amounts.</p>}</div>
             {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(selectedVoid.created_at).toLocaleString()}</span></div>}
-            {!sharedTillHistoryMode && !selectedVoid && ['sale', 'pending'].includes(classifyPosTransaction(selectedOrder)) && canRequestVoid && (
+            {!sharedTillHistoryMode && !selectedVoid && String(selectedOrder.status || '').toLowerCase() !== 'settled' && ['sale', 'pending'].includes(classifyPosTransaction(selectedOrder)) && canRequestVoid && (
               <form onSubmit={submitVoid} className="hpos-report-void-form">
                 <h3><LockKeyhole size={18} /> {correctionMode ? 'Request supervisor correction' : 'Void this sale'}</h3>
                 <p>{correctionMode ? 'You can request a correction for your own sale. A supervisor, manager or admin must enter their PIN; you cannot approve it yourself.' : 'This is irreversible. An authorised supervisor, manager, or admin must supply their PIN.'} Packaged stock is restored only when returned unopened. Food, cocktails and recipe items remain consumed.{classifyPosTransaction(selectedOrder) === 'pending' ? ' This sale has not synced yet: the correction queues behind it and applies on the server in order.' : ''}</p>

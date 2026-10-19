@@ -91,15 +91,35 @@ test('every mapped RPC is SECURITY DEFINER with a hardened search_path', () => {
   assert.deepEqual(offenders, []);
 });
 
-test('no mapped RPC is ever granted to anon', () => {
+test('anon-key RPC grants stay within the staff-session allowlist and use server gates', () => {
+  const allowed = new Set(['getBudgets', 'exportBudgets', 'createAndSubmitManualJournal', 'getManualJournalSubmissionStatus']);
+  const granted = new Set();
   const offenders = [];
   for (const op of ops) {
     const lines = rpcGrantLines(domainRpc[op.domainFn]);
-    if (lines.some((line) => /^grant/i.test(line) && /(^|[\s,])anon([\s,]|$)/i.test(line))) offenders.push(op.operation);
+    if (lines.some((line) => /^grant/i.test(line) && /(^|[\s,])anon([\s,]|$)/i.test(line))) {
+      granted.add(op.operation);
+      if (!allowed.has(op.operation)) offenders.push(op.operation);
+      const body = latestDefBody(domainRpc[op.domainFn]);
+      assert.match(body, /_restaurant_require_capability\s*\(\s*p_lodge_id/i, `${op.operation} resolves a genuine staff session and capability in SQL`);
+      assert.match(body.slice(0, 1200), /security definer/i, `${op.operation} uses a controlled RPC boundary`);
+      assert.match(body.slice(0, 1200), /set\s+search_path\s*=\s*public/i, `${op.operation} has a fixed search path`);
+    }
   }
+  assert.deepEqual([...granted].sort(), [...allowed].sort(), 'only the explicitly reviewed staff-session RPCs are callable using the anon API key');
   assert.deepEqual(offenders, []);
+  const byOperation = Object.fromEntries(ops.map((op) => [op.operation, op.capability]));
+  assert.equal(byOperation.getBudgets, 'accounting.read');
+  assert.equal(byOperation.exportBudgets, 'accounting.export');
+  const budgetExport = latestDefBody(domainRpc[ops.find((op) => op.operation === 'exportBudgets').domainFn]);
+  assert.match(budgetExport, /_restaurant_require_capability\(p_lodge_id,'accounting\.export'\)/);
+  assert.match(budgetExport, /b\.status='approved' and b\.approved_by is not null and b\.approved_by<>b\.created_by/);
+  const budgetGrant = read('supabase/migrations/20261009020000_restaurant_budget_export_restore_staff_rpc_grant.sql');
+  assert.match(budgetGrant, /grant execute on function public\.get_restaurant_budget_export_v3\(uuid,integer,jsonb\) to anon/i);
+  assert.doesNotMatch(budgetGrant, /to public|grant all|grant execute on all/i);
+  assert.equal(byOperation.createAndSubmitManualJournal, 'accounting.manage');
+  assert.equal(byOperation.getManualJournalSubmissionStatus, 'accounting.manage');
 });
-
 test('invoke handler gates every operation on its capability and rejects unknown operations', () => {
   const handlerIdx = indexJs.indexOf("ipcMain.handle('restaurantAccountingV2:invoke'");
   const handler = indexJs.slice(handlerIdx, handlerIdx + 800);

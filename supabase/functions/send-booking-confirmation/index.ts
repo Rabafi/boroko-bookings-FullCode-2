@@ -16,7 +16,8 @@
  *   BOOKING_FUNCTION_SECRET    – optional server-to-server override secret
  */
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import type { SendBookingConfirmationDatabase } from './database.types.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -39,6 +40,11 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
   })
 }
 
+function readOptionalField(value: unknown, key: string): unknown {
+  if (value === null || value === undefined) return undefined
+  return Reflect.get(Object(value), key, value)
+}
+
 function hasFunctionSecret(req: Request) {
   return Boolean(FUNCTION_SECRET && req.headers.get('x-boroko-function-secret') === FUNCTION_SECRET)
 }
@@ -56,7 +62,9 @@ function cleanHeaderValue(value: unknown) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim()
 }
 
-function isUuid(value: unknown) {
+function isUuid(value: string | null | undefined): value is string
+function isUuid(value: unknown): boolean
+function isUuid(value: unknown): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
 }
 
@@ -64,9 +72,16 @@ function safeErrorMessage(value: unknown) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 500) || null
 }
 
+type BookingEmailLogContext = {
+  booking_id?: unknown
+  lodge_id?: string | null
+  reference?: string | null
+  recipient?: string | null
+}
+
 async function recordBookingEmailEvent(
-  supabase: any,
-  context: Record<string, unknown>,
+  supabase: SupabaseClient<SendBookingConfirmationDatabase> | null,
+  context: BookingEmailLogContext,
   status: string,
   details: Record<string, unknown> = {}
 ) {
@@ -74,7 +89,7 @@ async function recordBookingEmailEvent(
   try {
     const metadata = {
       source: 'send-booking-confirmation',
-      ...(details.metadata && typeof details.metadata === 'object' ? details.metadata as Record<string, unknown> : {})
+      ...(details.metadata && typeof details.metadata === 'object' ? details.metadata : {})
     }
     const { error } = await supabase.rpc('record_booking_email_delivery', {
       p_lodge_id: isUuid(context.lodge_id) ? context.lodge_id : null,
@@ -98,8 +113,8 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders })
   }
 
-  let supabase: any = null
-  const logContext: Record<string, unknown> = {}
+  let supabase: SupabaseClient<SendBookingConfirmationDatabase> | null = null
+  const logContext: BookingEmailLogContext = {}
 
   try {
     const { booking_id, guest_email, confirmation_token } = await req.json()
@@ -113,7 +128,7 @@ Deno.serve(async (req) => {
     }
 
     // Fetch booking details using service role (bypasses RLS)
-    supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+    supabase = createClient<SendBookingConfirmationDatabase>(SUPABASE_URL, SUPABASE_KEY)
 
     const { data: booking, error: fetchError } = await supabase
       .from('bookings')
@@ -329,8 +344,8 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error('[send-booking-confirmation] error:', err)
     await recordBookingEmailEvent(supabase, logContext, 'failed', {
-      error_message: (err as Error)?.message || 'Booking confirmation email failed'
+      error_message: readOptionalField(err, 'message') || 'Booking confirmation email failed'
     })
-    return jsonResponse({ error: (err as Error)?.message || 'Booking confirmation email failed' }, 500)
+    return jsonResponse({ error: readOptionalField(err, 'message') || 'Booking confirmation email failed' }, 500)
   }
 })

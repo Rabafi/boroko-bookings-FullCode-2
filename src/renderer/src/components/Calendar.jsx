@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, CreditCard, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router'
@@ -13,6 +14,8 @@ import {
   startOfWeek
 } from 'date-fns'
 import { useSettings } from '../app-context'
+import { normalizePropertyType } from '../../../shared/propertyTypes.js'
+import { getPropertyPresentation, getPresentationUnitName } from '../../../shared/propertyPresentation.js'
 
 const STATUS_STYLES = {
   confirmed: 'bg-blue-100 text-blue-700',
@@ -79,6 +82,20 @@ export default function Calendar() {
   const navigate = useNavigate()
   const { settings } = useSettings()
   const currencySymbol = settings?.currency || 'P'
+  // Display wording only: the 'Full Lodge' grouping marker in booking rows is
+  // a stable internal id and is never renamed — only rendered labels change.
+  const calendarPresentation = useMemo(() => {
+    try {
+      return getPropertyPresentation({
+        propertyType: normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge'),
+        operatingProfile: settings?.operating_profile
+      })
+    } catch {
+      return null
+    }
+  }, [settings?.property_type, settings?.business_type, settings?.operating_profile])
+  const calendarUnits = (calendarPresentation?.unitNounPlural || 'Rooms').toLowerCase()
+  const calendarExclusiveUse = calendarPresentation?.exclusiveUseLabel || 'Full Lodge'
   const [currentMonth, setCurrentMonth] = useState(new Date())
   const [rooms, setRooms] = useState([])
   const [bookings, setBookings] = useState([])
@@ -304,9 +321,9 @@ export default function Calendar() {
           <p className="bb-compact-stat__value text-violet-950">
             {monthMetrics.peakDay ? format(new Date(`${monthMetrics.peakDay.dayKey}T12:00:00`), 'dd MMM') : '—'}
           </p>
-          <p className="mt-1 text-xs font-semibold text-violet-800">
-            {monthMetrics.peakDay ? `${monthMetrics.peakDay.occupiedRooms} occupied room${monthMetrics.peakDay.occupiedRooms === 1 ? '' : 's'}` : 'No bookings yet'}
-          </p>
+            <p className="mt-1 text-xs font-semibold text-violet-800">
+              {monthMetrics.peakDay ? `${monthMetrics.peakDay.occupiedRooms} occupied ${calendarUnits}` : 'No bookings yet'}
+            </p>
         </div>
       </div>
 
@@ -378,12 +395,12 @@ export default function Calendar() {
               Day Plan for {format(new Date(`${selectedDay}T12:00:00`), 'dd MMM yyyy')}
             </h2>
             <p className="mt-1 text-sm text-gray-500">
-              Use this to review expected arrivals, departures, and rooms occupied on that date.
+              Use this to review expected arrivals, departures, and {calendarUnits} occupied on that date.
             </p>
           </div>
           <div className="bb-compact-stat-grid border-b border-gray-100 px-4 py-3">
             <div className="bb-compact-stat bg-slate-50 text-slate-700">
-              <p className="bb-compact-stat__label">Occupied Rooms</p>
+              <p className="bb-compact-stat__label">Occupied {calendarPresentation?.unitNounPlural || 'Rooms'}</p>
               <p className="bb-compact-stat__value text-slate-900">{selectedSummary.occupiedRooms}</p>
             </div>
             <div className="bb-compact-stat bg-blue-50 text-blue-700">
@@ -415,7 +432,7 @@ export default function Calendar() {
                     <div>
                       <p className="font-semibold text-gray-800">{booking.customer_name}</p>
                       <p className="mt-1 text-sm text-gray-500">
-                        {booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number} · ${booking.room_type || 'Room'}`} · {booking.check_in} to {booking.check_out}
+                        {booking._event_group ? `${calendarExclusiveUse} · ${booking.room_count} ${calendarUnits}` : `${getPresentationUnitName(booking)} · ${booking.room_type || 'Room'}`} · {booking.check_in} to {booking.check_out}
                       </p>
                       {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
                         <p className="mt-1 text-sm font-semibold text-rose-700">
@@ -470,7 +487,7 @@ export default function Calendar() {
                   <div key={booking.id} className="flex items-center justify-between gap-3 rounded-xl border border-rose-100 bg-white/80 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-slate-900">{booking.customer_name}</p>
-                      <p className="text-xs text-slate-500">{booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number}`} · {String(booking.status || '').replace('_', ' ')}</p>
+                      <p className="text-xs text-slate-500">{booking._event_group ? `${calendarExclusiveUse} · ${booking.room_count} ${calendarUnits}` : getPresentationUnitName(booking)} · {String(booking.status || '').replace('_', ' ')}</p>
                     </div>
                     <button
                       type="button"
@@ -499,7 +516,7 @@ export default function Calendar() {
                     <div>
                       <p className="font-medium text-gray-800">{booking.customer_name}</p>
                       <p className="mt-1 text-sm text-gray-500">
-                        {booking._event_group ? `Full Lodge · ${booking.room_count} rooms` : `Room ${booking.room_number}`} · Check-in {booking.check_in} · Check-out {booking.check_out}
+                        {booking._event_group ? `${calendarExclusiveUse} · ${booking.room_count} ${calendarUnits}` : getPresentationUnitName(booking)} · Check-in {booking.check_in} · Check-out {booking.check_out}
                       </p>
                       {bookingOutstandingAmount(booking) > 0 && booking.status !== 'cancelled' && (
                         <p className="mt-1 text-xs font-semibold text-rose-700">

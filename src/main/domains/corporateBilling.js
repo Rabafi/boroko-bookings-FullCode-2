@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js';
 import { readCache, writeCache, dedupePromise } from './infrastructure.js';
 
@@ -5,6 +6,7 @@ import { readCache, writeCache, dedupePromise } from './infrastructure.js';
  * Corporate billing financial/status mutations are ONLINE-ONLY (docs/OFFLINE_MATRIX.md).
  * They must never be silently queued — charge, payment, and account status require server locks.
  */
+/** @param {string} operation */
 function requireOnline(operation) {
   if (!state.isOnline) {
     const err = new Error(
@@ -15,6 +17,7 @@ function requireOnline(operation) {
   }
 }
 
+/** @param {string} prefix @param {unknown[]} [parts] @returns {string} */
 function stableIdempotencyKey(prefix, parts = []) {
   return [prefix, state.lodgeId, ...parts]
     .filter((p) => p !== null && p !== undefined && p !== '')
@@ -22,6 +25,15 @@ function stableIdempotencyKey(prefix, parts = []) {
     .slice(0, 180);
 }
 
+/** @param {unknown} error @returns {unknown} */
+function readThrownMessage(error) {
+  if (error === null || error === undefined) return undefined;
+  // This assertion types only the pre-existing `.message` read. It does not
+  // validate thrown values or alter the native property-access outcome.
+  return /** @type {{message?: unknown}} */ (error).message;
+}
+
+/** @returns {Promise<unknown>} */
 async function _getAllCorporateBilling() {
   if (!state.isOnline) return readCache('corporate-invoices');
   try {
@@ -36,21 +48,23 @@ async function _getAllCorporateBilling() {
   } catch (err) {
     const cached = readCache('corporate-invoices');
     if (cached?.length > 0) return cached;
-    throw new Error(err?.message || 'Failed to load corporate billing');
+    throw new Error(readThrownMessage(err) || 'Failed to load corporate billing');
   }
 }
 
+/** @returns {Promise<unknown>} */
 export function getAllCorporateBilling() {
   return dedupePromise('corporateBilling', _getAllCorporateBilling);
 }
 
 /**
  * Charge a booking settlement to a corporate account via authoritative RPC.
- * @param {string} accountId
- * @param {string} bookingId
- * @param {number} amount
- * @param {string} description
+ * @param {unknown} accountId
+ * @param {unknown} bookingId
+ * @param {unknown} amount
+ * @param {unknown} description
  * @param {{ settleBooking?: boolean, idempotencyKey?: string }} [options]
+ * @returns {Promise<unknown>}
  */
 export async function chargeToCorporateAccount(accountId, bookingId, amount, description, options = {}) {
   requireOnline('Charge to corporate account');
@@ -76,6 +90,7 @@ export async function chargeToCorporateAccount(accountId, bookingId, amount, des
   return { ...data, idempotency_key: key };
 }
 
+/** @param {unknown} accountId @returns {Promise<unknown>} */
 export async function getCorporateOutstanding(accountId) {
   if (!state.isOnline) return readCache('corporate-outstanding');
   try {
@@ -89,10 +104,11 @@ export async function getCorporateOutstanding(accountId) {
   } catch (err) {
     const cached = readCache('corporate-outstanding');
     if (cached) return cached;
-    throw new Error(err?.message || 'Failed to get outstanding');
+    throw new Error(readThrownMessage(err) || 'Failed to get outstanding');
   }
 }
 
+/** @param {unknown} accountId @param {unknown} invoiceIds @param {unknown} amount @param {unknown} method @param {unknown} reference @param {{idempotencyKey?: string}} [options] @returns {Promise<unknown>} */
 export async function recordCorporatePayment(accountId, invoiceIds, amount, method, reference, options = {}) {
   requireOnline('Record corporate payment');
   if (!accountId) throw new Error('Corporate account is required');
@@ -114,6 +130,7 @@ export async function recordCorporatePayment(accountId, invoiceIds, amount, meth
   return { ...data, idempotency_key: key };
 }
 
+/** @param {unknown} accountId @param {unknown} periodStart @param {unknown} periodEnd @returns {Promise<unknown>} */
 export async function getCorporateStatement(accountId, periodStart, periodEnd) {
   if (!state.isOnline) return readCache('corporate-statement');
   try {
@@ -129,10 +146,11 @@ export async function getCorporateStatement(accountId, periodStart, periodEnd) {
   } catch (err) {
     const cached = readCache('corporate-statement');
     if (cached) return cached;
-    throw new Error(err?.message || 'Failed to get statement');
+    throw new Error(readThrownMessage(err) || 'Failed to get statement');
   }
 }
 
+/** @param {unknown} accountId @param {unknown} pendingAmount @returns {Promise<unknown>} */
 export async function checkCreditLimitWithPending(accountId, pendingAmount) {
   if (!state.isOnline) {
     // Offline cannot authoritatively check credit — do not invent "within limit".
@@ -153,6 +171,7 @@ export async function checkCreditLimitWithPending(accountId, pendingAmount) {
   return data;
 }
 
+/** @param {unknown} accountId @param {unknown} reason @returns {Promise<unknown>} */
 export async function suspendCorporateAccount(accountId, reason) {
   requireOnline('Suspend corporate account');
   const { data, error } = await state.supabase.rpc('suspend_corporate_account', {
@@ -165,6 +184,7 @@ export async function suspendCorporateAccount(accountId, reason) {
   return data;
 }
 
+/** @param {unknown} accountId @returns {Promise<unknown>} */
 export async function reactivateCorporateAccount(accountId) {
   requireOnline('Reactivate corporate account');
   const { data, error } = await state.supabase.rpc('reactivate_corporate_account', {

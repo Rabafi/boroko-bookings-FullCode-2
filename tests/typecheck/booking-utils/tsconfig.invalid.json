@@ -1,0 +1,8 @@
+{
+  "extends": "../../../booking-site/tsconfig.typecheck.json",
+  "files": [
+    "../../../booking-site/src/lib/utils.js",
+    "./invalid.ts"
+  ],
+  "include": []
+}

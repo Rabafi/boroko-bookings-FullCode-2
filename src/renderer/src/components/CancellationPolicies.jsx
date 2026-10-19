@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Ban, Plus, CheckCircle, XCircle, DollarSign, RotateCcw } from 'lucide-react'
 import { useSettings } from '../app-context'

@@ -1,3 +1,4 @@
+// @ts-check
 import { createRequire } from 'module'
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'

@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { useSettings } from '../../app-context'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'

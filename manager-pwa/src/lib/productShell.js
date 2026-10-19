@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Manager PWA shell presentation derived from server-authoritative product_family.
  * Navigation and labels adapt for display only — never invent financial authority.
@@ -155,6 +156,7 @@ export function getPwaShellConfig(productFamily) {
   return SHELL[family] || SHELL[PRODUCT_FAMILY_IDS.LODGE_CAMP]
 }
 
+/** @param {string|null|undefined} productFamily @param {{inboxEnabled?:boolean}} [options] */
 export function getPwaNavItems(productFamily, { inboxEnabled = true } = {}) {
   const shell = getPwaShellConfig(productFamily)
   return shell.nav.filter((item) => !item.inbox || inboxEnabled)
@@ -164,6 +166,7 @@ export function getPwaNavItems(productFamily, { inboxEnabled = true } = {}) {
  * Product-aware route allowlist for the single Manager PWA. The product family
  * comes from the server-issued session; it is never selected by the client.
  */
+/** @param {string} pathname @param {string|null|undefined} productFamily @param {string|null} [hospitalityMode] @param {Record<string,unknown>|null} [enabledFeatures] */
 export function isPwaRouteAllowed(pathname, productFamily, hospitalityMode = null, enabledFeatures = null) {
   const path = String(pathname || '/').split('?')[0].replace(/\/+$/, '') || '/'
   const shell = getPwaShellConfig(productFamily)
@@ -182,14 +185,17 @@ export function isPwaRouteAllowed(pathname, productFamily, hospitalityMode = nul
   return true
 }
 
+/** @param {string|null|undefined} productFamily */
 export function isAccommodationProductFamily(productFamily) {
   return getPwaShellConfig(productFamily).accommodationModules === true
 }
 
+/** @param {string|null|undefined} productFamily */
 export function isRestaurantProductFamily(productFamily) {
   return getPwaShellConfig(productFamily).restaurantModules === true
 }
 
+/** @param {string|null|undefined} hospitalityMode */
 export function isBarHospitalityMode(hospitalityMode) {
   return String(hospitalityMode || '').trim().toLowerCase() === 'bar_only'
 }

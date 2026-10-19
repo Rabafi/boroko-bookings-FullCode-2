@@ -1,0 +1,8 @@
+{
+  "extends": "../../../tsconfig.typecheck-preload.json",
+  "files": [
+    "../../../src/preload/transport.js",
+    "./invalid.ts"
+  ],
+  "include": []
+}

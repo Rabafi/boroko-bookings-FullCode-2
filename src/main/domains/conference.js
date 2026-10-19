@@ -1,3 +1,4 @@
+// @ts-check
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { state } from '../state.js'
@@ -10,8 +11,14 @@ import {
   writeCache
 } from './infrastructure.js'
 
+// The conference API intentionally consumes caller payloads without adding a
+// runtime schema check. These local views document the fields read while
+// preserving existing property-read errors for malformed inputs.
+/** @typedef {Record<string, unknown>} ConferenceInputView */
+
 // ─── CONFERENCE BOOKINGS ───────────────────────────────────────────────────────
 
+/** @param {unknown} rows @param {string} source @param {unknown} complete */
 function withReadMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : []
   Object.defineProperties(result, {
@@ -21,6 +28,7 @@ function withReadMetadata(rows, source, complete) {
   return result
 }
 
+/** @param {string | undefined} start @param {string | undefined} end */
 export async function getConferenceBookings(start, end) {
   const cached = readCache('conference-bookings');
   if (!state.isOnline) {
@@ -30,7 +38,7 @@ export async function getConferenceBookings(start, end) {
   }
   const rows = [];
   for (let from = 0; from < 100000; from += 500) {
-    let q = state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
+    let q = (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
     if (start) q = q.gte('booking_date', start);
     if (end) q = q.lte('booking_date', end);
     const { data, error } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).range(from, from + 499);
@@ -43,10 +51,11 @@ export async function getConferenceBookings(start, end) {
   return withReadMetadata(rows, 'server', rows.length < 100000);
 }
 
+/** @param {unknown} id */
 export async function getConferenceBookingById(id) {
   if (!id) return null;
   if (!state.isOnline) return readCache('conference-bookings').find((row) => row.id === id) || null;
-  const { data, error } = await state.supabase.
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).
   from('conference_bookings').
   select('*').
   eq('lodge_id', state.lodgeId).
@@ -56,6 +65,7 @@ export async function getConferenceBookingById(id) {
   return data || null;
 }
 
+/** @param {unknown} depositPaid @param {unknown} totalAmount */
 function computeConferencePaymentStatus(depositPaid, totalAmount) {
   const total = Number(totalAmount) || 0;
   const deposit = Number(depositPaid) || 0;
@@ -65,6 +75,7 @@ function computeConferencePaymentStatus(depositPaid, totalAmount) {
   return 'pending';
 }
 
+/** @param {ConferenceInputView} data */
 export async function createConferenceBooking(data) {
   await checkExclusiveEventConflict(data.booking_date, data.booking_date + 'T23:59:59');
   const id = randomUUID();
@@ -91,7 +102,7 @@ export async function createConferenceBooking(data) {
     notes: data.notes || null
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_conference_booking', { payload });
+    const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_conference_booking', { payload });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create conference booking');
     const serverPaymentStatus = result?.payment_status || paymentStatus;
@@ -115,6 +126,7 @@ export async function createConferenceBooking(data) {
   return { id };
 }
 
+/** @param {unknown} id @param {ConferenceInputView} data */
 export async function updateConferenceBooking(id, data) {
   if (!id) throw new Error('Conference booking ID is required');
   if (!state.isOnline) {
@@ -139,7 +151,7 @@ export async function updateConferenceBooking(id, data) {
     }, null, dependsOn ? { _depends_on: dependsOn } : {});
     return { success: true };
   }
-  const { data: result, error } = await state.supabase.rpc('update_conference_booking', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_conference_booking', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     payload: data
@@ -164,6 +176,7 @@ export async function updateConferenceBooking(id, data) {
   return { success: true };
 }
 
+/** @param {unknown} id @param {unknown} paymentAmount @param {unknown} paymentMethod @param {unknown} [type] @param {unknown} [dependsOn] @param {unknown} [idempotencyKey] */
 export async function updateConferenceBookingPayment(id, paymentAmount, paymentMethod, type = 'payment', dependsOn = null, idempotencyKey = null) {
   if (!id) throw new Error('Conference booking ID is required');
   if (!paymentAmount || Number(paymentAmount) <= 0) throw new Error('Payment amount must be greater than zero');
@@ -172,12 +185,12 @@ export async function updateConferenceBookingPayment(id, paymentAmount, paymentM
   const intentKey = idempotencyKey || String(Date.now()) + '-' + crypto.randomUUID();
 
   if (state.isOnline) {
-    const { data: existing } = await state.supabase.
+    const { data: existing } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).
     from('conference_bookings').
     select('deposit_paid, total_amount').
     eq('id', id).eq('lodge_id', state.lodgeId).single();
     if (!existing) throw new Error('Conference booking not found');
-    const { data: result, error } = await state.supabase.rpc('update_conference_booking_payment', {
+    const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_conference_booking_payment', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_amount: numericAmount,
@@ -227,6 +240,7 @@ export async function updateConferenceBookingPayment(id, paymentAmount, paymentM
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {unknown} id */
 export async function deleteConferenceBooking(id) {
   if (!id) throw new Error('Conference booking ID is required');
   if (!state.isOnline) {
@@ -240,7 +254,7 @@ export async function deleteConferenceBooking(id) {
     }, null, dependsOn ? { _depends_on: dependsOn } : {});
     return { success: true };
   }
-  const { data: result, error } = await state.supabase.rpc('delete_conference_booking', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('delete_conference_booking', {
     p_id: id,
     p_lodge_id: state.lodgeId
   });

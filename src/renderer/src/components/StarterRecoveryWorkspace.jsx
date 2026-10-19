@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, FileArchive, Loader2, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react'
 
@@ -18,7 +19,10 @@ function StatusPill({ value }) {
 }
 
 export default function StarterRecoveryWorkspace({ companies = [], unlocked = false }) {
-  const [operations, setOperations] = useState([])
+  // The main recovery list reads persisted JSON and checks only the operation
+  // ID before forwarding rows; the renderer's Array.isArray guard proves only
+  // the outer container, not each operation's fields.
+  const [operations, setOperations] = useState(/** @type {unknown[]} */ ([]))
   const [operation, setOperation] = useState(null)
   const [preview, setPreview] = useState(null)
   const [selectedLodgeId, setSelectedLodgeId] = useState('')

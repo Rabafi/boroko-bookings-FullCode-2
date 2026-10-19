@@ -1,11 +1,12 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, Check, Search, Briefcase, Users, Shield } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function HotelRolesConfig() {
-  const [templates, setTemplates] = useState([])
+  const [templates, setTemplates] = useState(/** @type {unknown[]} */ ([]))
   const [selectedRole, setSelectedRole] = useState(null)
-  const [capabilities, setCapabilities] = useState([])
+  const [capabilities, setCapabilities] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -15,7 +16,7 @@ export default function HotelRolesConfig() {
     setError('')
     try {
       const data = await window.api.hotelRoles.getTemplates()
-      setTemplates(Array.isArray(data) ? data : [])
+      setTemplates(Array.isArray(data) ? /** @type {unknown[]} */ (data) : [])
     } catch (err) {
       setError(err?.message || 'Failed to load role templates')
     } finally {
@@ -29,7 +30,7 @@ export default function HotelRolesConfig() {
     setSelectedRole(roleKey)
     try {
       const caps = await window.api.hotelRoles.getRoleCapabilities(roleKey)
-      setCapabilities(Array.isArray(caps) ? caps : [])
+      setCapabilities(Array.isArray(caps) ? /** @type {unknown[]} */ (caps) : [])
     } catch {
       setCapabilities([])
     }

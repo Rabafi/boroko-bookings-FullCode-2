@@ -1,7 +1,9 @@
+// @ts-check
 import { getPlanFeatureMap, mergeFeatureOverrides } from '../main/domains/subscriptionState.js';
 
+/** @param {Record<string, boolean>} baseFeatureMap @param {string[]} [enabledAddons] @returns {Record<string, boolean>} */
 export function mergeEnterpriseAddons(baseFeatureMap, enabledAddons = []) {
-  const merged = { ...baseFeatureMap };
+  const merged = /** @type {Record<string, boolean>} */ ({ ...baseFeatureMap });
   /**
    * Only optional / premium activation keys map here.
    * Hotel Core features (rate_plans, documents, hotel_roles, room_attributes,
@@ -11,6 +13,7 @@ export function mergeEnterpriseAddons(baseFeatureMap, enabledAddons = []) {
    * Legacy add-on keys for now-core modules still map for historical licences
    * that stored those keys without the updated plan feature set.
    */
+  /** @type {Record<string, string[]>} */
   const addonFeatureMap = {
     // Legacy core keys (harmless if already true on Core)
     corporate_accounts: ['corporate_accounts'],
@@ -52,22 +55,26 @@ export function mergeEnterpriseAddons(baseFeatureMap, enabledAddons = []) {
   return merged;
 }
 
+/** @param {unknown} plan @param {string[]} [enabledAddons] @param {unknown[]} [overrides] @returns {Record<string, boolean>} */
 export function computeEffectiveFeatures(plan, enabledAddons = [], overrides = []) {
   const base = getPlanFeatureMap(plan);
   const withOverrides = mergeFeatureOverrides(base, overrides);
   return mergeEnterpriseAddons(withOverrides, enabledAddons);
 }
 
+/** @param {unknown} plan @param {string[]} [enabledAddons] @param {unknown[]} [overrides] @returns {string[]} */
 export function getLockedFeatures(plan, enabledAddons = [], overrides = []) {
   const effective = computeEffectiveFeatures(plan, enabledAddons, overrides);
   return Object.entries(effective).filter(([, enabled]) => !enabled).map(([key]) => key);
 }
 
+/** @param {unknown} plan @param {string[]} [enabledAddons] @param {unknown[]} [overrides] @returns {string[]} */
 export function getUnlockedFeatures(plan, enabledAddons = [], overrides = []) {
   const effective = computeEffectiveFeatures(plan, enabledAddons, overrides);
   return Object.entries(effective).filter(([, enabled]) => enabled).map(([key]) => key);
 }
 
+/** @param {string} feature @param {unknown} plan @param {string[]} [enabledAddons] @param {unknown[]} [overrides] @returns {boolean} */
 export function canAccessFeature(feature, plan, enabledAddons = [], overrides = []) {
   const effective = computeEffectiveFeatures(plan, enabledAddons, overrides);
   return effective[feature] === true;

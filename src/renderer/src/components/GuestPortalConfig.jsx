@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Save, RefreshCw, Globe, Users, CheckCircle2, XCircle, ExternalLink } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -13,17 +14,17 @@ const ALL_ACTIONS = [
 ]
 
 export default function GuestPortalConfig() {
-  const [config, setConfig] = useState(null)
+  const [config, setConfig] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [pendingRequests, setPendingRequests] = useState([])
+  const [pendingRequests, setPendingRequests] = useState(/** @type {unknown} */ ([]))
 
-  const [portalEnabled, setPortalEnabled] = useState(false)
-  const [allowedActions, setAllowedActions] = useState(['view_booking'])
-  const [branding, setBranding] = useState({ logo_url: '', colors: { primary: '#1e293b', accent: '#059669' }, terms_text: '' })
-  const [requiredUploadFields, setRequiredUploadFields] = useState([])
+  const [portalEnabled, setPortalEnabled] = useState(/** @type {unknown} */ (false))
+  const [allowedActions, setAllowedActions] = useState(/** @type {unknown[]} */ (['view_booking']))
+  const [branding, setBranding] = useState(/** @type {unknown} */ ({ logo_url: '', colors: { primary: '#1e293b', accent: '#059669' }, terms_text: '' }))
+  const [requiredUploadFields, setRequiredUploadFields] = useState(/** @type {unknown[]} */ ([]))
   const [newField, setNewField] = useState('')
 
   const [staleWarning, setStaleWarning] = useState('')

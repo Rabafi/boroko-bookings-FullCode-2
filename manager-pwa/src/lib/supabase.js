@@ -1,8 +1,10 @@
+// @ts-check
 import { createClient } from '@supabase/supabase-js'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
+/** @param {string|null} [sessionToken] */
 function buildClient(sessionToken = null) {
   const token = typeof sessionToken === 'string' && sessionToken.trim() ? sessionToken.trim() : null
   return createClient(url, anonKey, {
@@ -20,6 +22,7 @@ function buildClient(sessionToken = null) {
 
 export let supabase = buildClient()
 
+/** @param {string|null} sessionToken */
 export function setSupabaseSessionToken(sessionToken) {
   supabase = buildClient(sessionToken)
   return supabase
@@ -30,6 +33,7 @@ export function clearSupabaseSessionToken() {
   return supabase
 }
 
+/** @param {string} email @param {string} password */
 export async function signInWithSupabaseAuth(email, password) {
   const client = buildClient()
   const { data, error } = await client.auth.signInWithPassword({ email, password })
@@ -46,6 +50,7 @@ export async function signOutSupabaseAuth() {
   }
 }
 
+/** @param {string} email */
 export async function sendPasswordResetEmail(email) {
   const redirectTo = import.meta.env.VITE_AUTH_REDIRECT_URL || `${window.location.origin}/reset-password`
   const { data, error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
@@ -53,6 +58,7 @@ export async function sendPasswordResetEmail(email) {
   return data
 }
 
+/** @param {string} password */
 export async function updateSupabasePassword(password) {
   const { data, error } = await supabase.auth.updateUser({ password })
   if (error) throw error

@@ -1,35 +1,53 @@
+// @ts-check
 const PREFIX = 'tsa-bonno-pos-cashup-round:'
 // Preserve unresolved rounds written by older Bar builds without retaining
 // their old product identifier in source-visible labels or new keys.
 const LEGACY_PREFIX = String.fromCharCode(98, 111, 114, 111, 107, 111, 45, 112, 111, 115, 45, 99, 97, 115, 104, 117, 112, 45, 114, 111, 117, 110, 100, 58)
 const SUCCESS_STATUSES = new Set(['submitted', 'approved', 'closed'])
 
+/** @typedef {{getItem(key:string):string|null,setItem(key:string,value:string):void,removeItem(key:string):void}} StorageLike */
+/** @typedef {Record<string, unknown>} PersistedRecord */
+/** @typedef {{lodgeId?:string,shiftId?:string,submissionType?:string}} RoundScope */
+
+/** @param {unknown} value @returns {string|undefined} */
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   if (!value || typeof value !== 'object') return JSON.stringify(value)
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  const record = /** @type {PersistedRecord} */ (value)
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
 }
 
+/** @param {unknown} error @returns {unknown} */
+function readErrorMessage(error) {
+  if (error === null || error === undefined) return undefined
+  const boxed = Object(error)
+  return /** @type {PersistedRecord} */ (boxed).message
+}
+
+/** @param {StorageLike|null|undefined} storage @returns {StorageLike|null} */
 function storageOrDefault(storage) {
   if (storage) return storage
   if (typeof window !== 'undefined') return window.localStorage
   return null
 }
 
+/** @param {unknown} value @param {string} label */
 function requiredId(value, label) {
   const normalized = String(value || '').trim()
   if (!normalized || ['current', 'unknown', 'null', 'undefined'].includes(normalized.toLowerCase())) {
-    const error = new Error(`A real ${label} is required before saving a cash-up round.`)
+    const error = /** @type {Error & {code?: string}} */ (new Error(`A real ${label} is required before saving a cash-up round.`))
     error.code = 'cashup_round_scope_required'
     throw error
   }
   return normalized
 }
 
+/** @param {RoundScope} [scope] */
 function contextKey({ lodgeId, shiftId, submissionType = 'cashier' } = {}) {
   return `${PREFIX}${[lodgeId, shiftId, submissionType].map((value) => encodeURIComponent(String(value))).join(':')}`
 }
 
+/** @param {RoundScope} [scope] */
 function legacyContextKey({ lodgeId, shiftId, submissionType = 'cashier' } = {}) {
   return `${LEGACY_PREFIX}${[lodgeId, shiftId, submissionType].map((value) => encodeURIComponent(String(value))).join(':')}`
 }
@@ -39,10 +57,12 @@ function newOperationId() {
   return `cashup-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
 }
 
+/** @param {unknown} payload */
 export function cashupSubmissionFingerprint(payload = {}) {
   return stableStringify(payload)
 }
 
+/** @param {StorageLike|null} storage @param {string} key @returns {PersistedRecord|null} */
 function readRound(storage, key) {
   if (!storage) throw new Error('Durable local storage is unavailable.')
   const raw = storage.getItem(key)
@@ -50,27 +70,30 @@ function readRound(storage, key) {
   try {
     const round = JSON.parse(raw)
     if (!round || typeof round !== 'object' || !round.idempotencyKey || !round.fingerprint) throw new Error('cash-up round is invalid')
-    return round
+    return /** @type {PersistedRecord} */ (round)
   } catch (error) {
-    const wrapped = new Error(`The saved cash-up round could not be read safely: ${error.message}. Do not submit a new count until a manager reviews this device.`)
+    const detail = readErrorMessage(error)
+    const wrapped = /** @type {Error & {code?: string}} */ (new Error(`The saved cash-up round could not be read safely: ${detail}. Do not submit a new count until a manager reviews this device.`))
     wrapped.code = 'cashup_round_unavailable'
     throw wrapped
   }
 }
 
+/** @param {StorageLike|null} storage @param {string} key @param {PersistedRecord} round */
 export function writeRound(storage, key, round) {
   if (!storage) return false
   const serialized = JSON.stringify(round)
   try {
     storage.setItem(key, serialized)
     if (storage.getItem(key) !== serialized) return false
-    const stored = JSON.parse(storage.getItem(key))
+    const stored = JSON.parse(/** @type {string} */ (storage.getItem(key)))
     return stored?.idempotencyKey === round?.idempotencyKey && stored?.fingerprint === round?.fingerprint
   } catch {
     return false
   }
 }
 
+/** @param {StorageLike|null} storage @param {string} key */
 function clearRoundStorage(storage, key) {
   if (!storage) return false
   try {
@@ -81,10 +104,14 @@ function clearRoundStorage(storage, key) {
   }
 }
 
+/** @param {string|null} key @param {unknown} error */
 function invalidRound(key, error) {
-  return { key, round: null, conflict: true, durable: false, error: error?.message || String(error) }
+  return { key, round: null, conflict: true, durable: false, error: readErrorMessage(error) || String(error) }
 }
 
+/**
+ * @param {{lodgeId?:string,shiftId?:string,actorId?:string,operatorId?:string|null,submissionType?:string,payload?:unknown,serverStatus?:string|null,serverIdempotencyKey?:string|null,storage?:StorageLike|null}} [request]
+ */
 export function getCashupSubmissionRound({
   lodgeId,
   shiftId,
@@ -107,7 +134,7 @@ export function getCashupSubmissionRound({
     return invalidRound(null, error)
   }
   const targetStorage = storageOrDefault(storage)
-  let key
+  let key = null
   try {
     key = contextKey({ lodgeId: normalizedLodge, shiftId: normalizedShift, submissionType })
     const fingerprint = cashupSubmissionFingerprint(payload)
@@ -187,6 +214,7 @@ export function getCashupSubmissionRound({
   }
 }
 
+/** @param {{lodgeId?:string,shiftId?:string,submissionType?:string,storage?:StorageLike|null}} [request] */
 export function clearCashupSubmissionRound({ lodgeId, shiftId, submissionType = 'cashier', storage } = {}) {
   try {
     const normalizedLodge = requiredId(lodgeId, 'lodge ID')

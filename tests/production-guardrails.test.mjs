@@ -56,7 +56,10 @@ async function run() {
     'Each migration must have a unique 14-digit UTC-timestamp prefix.')
 
   const preload = await read('src/preload/index.js')
-  assert.match(preload, /const invoke = \(channel, \.\.\.args\) => ipcRenderer\.invoke\(channel, \.\.\.args\)/)
+  const preloadTransport = await read('src/preload/transport.js')
+  assert.match(preload, /import \{ createPreloadTransport \} from '\.\/transport\.js'/)
+  assert.match(preload, /createPreloadTransport\(ipcRenderer\)/)
+  assert.match(preloadTransport, /const invoke = \(channel, \.\.\.args\) => ipcRenderer\.invoke\(channel, \.\.\.args\)/)
   assert.match(preload, /snapshot:\s*\(today\)\s*=>\s*(?:invoke|ipcRenderer\.invoke)\('reports:snapshot', today\)/)
   assert.match(preload, /financialValidationAlerts:\s*\(limit\)\s*=>\s*(?:invoke|ipcRenderer\.invoke)\('reports:financialValidationAlerts', limit\)/)
   assert.match(preload, /criticalErrors:\s*\(limit\)\s*=>\s*(?:invoke|ipcRenderer\.invoke)\('reports:criticalErrors', limit\)/)
@@ -84,7 +87,7 @@ async function run() {
   assert.match(database, /supabase\.rpc\('get_inventory_spend_summary'/)
   assert.match(database, /supabase\.rpc\('get_supply_spend_summary'/)
   assert.match(database, /function isStatementTimeoutError\(error\)/)
-  assert.match(database, /financial\.reconciliation\.timeout/)
+  assert.match(database, /recordCriticalError\('financial\.reconciliation\.rpc'/)
   assert.match(database, /buildFinancialVerificationUnavailable\(error, 'reconciliation'\)/)
   assert.match(database, /function refreshSettingsCacheInBackground\(/)
   assert.match(database, /const cachedSettings = getCachedSettings\(\)[\s\S]{0,120}return cachedSettings/)
@@ -178,11 +181,16 @@ async function run() {
   assert.match(database, /severity:\s*safeSeverity/)
   assert.match(database, /fault\.context && typeof fault\.context === 'object'/)
   assert.match(database, /function valuesEqualForDrift\(/)
-  assert.match(database, /function isReplayContractProbeFailure\(/)
-  assert.match(database, /contract mismatch/)
-  assert.match(database, /probeRpc\('create_booking'/)
-  assert.match(database, /probeRpc\('create_pos_order'/)
-  assert.match(database, /probeRpc\('delete_booking_charge'/)
+  const health = await read('src/main/domains/health.js')
+  assert.match(health, /const mutationProbeNames = \[/)
+  assert.match(health, /skipped: true/)
+  assert.match(health, /Not invoked against an installed operator database/)
+  assert.match(health, /state\.supabase\.rpc\('get_booking_payments'/)
+  assert.doesNotMatch(health, /state\.supabase\.rpc\('(create_booking|create_booking_record|update_booking|update_booking_status|update_booking_payment|create_pos_order|approve_pos_void_with_pin|adjust_inventory_stock|upsert_pos_cashup|add_booking_charge|delete_booking_charge)'/)
+
+
+
+
   assert.match(database, /function getOfflinePosInventoryReservation\(/)
   assert.match(database, /function applyOfflinePosInventoryReservation\(/)
   assert.match(database, /function buildQueuedPosInventoryUsage\(/)
@@ -408,7 +416,7 @@ async function run() {
   assert.match(adminDomain, /entitlement\.source_license_id \|\| entitlement\.license_id \|\| entitlement\.id \|\| `entitlement:\$\{lodgeId\}`/)
   assert.match(maintenanceDomain, /MAINTENANCE_TICKET_LEGACY_SELECT/)
   assert.match(maintenanceDomain, /isMaintenanceTicketSchemaCompatibilityError/)
-  assert.match(maintenanceDomain, /issue: ticket\.issue \|\| ticket\.title \|\| ''/)
+  assert.match(maintenanceDomain, /issue: \w+\.issue \|\| \w+\.title \|\| ''/)
   assert.match(cacheRefreshDomain, /fetchMaintenanceForRefresh/)
   assert.match(cacheRefreshDomain, /MAINTENANCE_TICKET_LEGACY_SELECT/)
   assert.match(cacheRefreshDomain, /issue: row\.issue \|\| row\.title \|\| ''/)
@@ -646,11 +654,11 @@ async function run() {
 
   // 5. Phase 1 UI components show error states (not silent empty catches)
   assert.match(notificationInbox, /setError/)
-  assert.match(notificationInbox, /err\?\.message/)
+  assert.match(notificationInbox, /err\)?\?\.message/)
   assert.match(fleetHealth, /setError/)
-  assert.match(fleetHealth, /err\?\.message/)
+  assert.match(fleetHealth, /err\)?\?\.message/)
   assert.match(releaseControl, /setError/)
-  assert.match(releaseControl, /err\?\.message/)
+  assert.match(releaseControl, /err\)?\?\.message/)
 
   // 6. Fleet Health joins settings (not lodge) for lodge names
   assert.match(fleetSql, /LEFT JOIN public\.settings/)

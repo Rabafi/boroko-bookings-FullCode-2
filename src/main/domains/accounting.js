@@ -1,9 +1,16 @@
+// @ts-check
+
 /**
  * Accounting domain — MRR/ARR, Revenue Summary, Lodge Financial Summary
  * Schema-corrected: uses bookings+payments for financial truth, licenses for MRR
  */
 import { state } from '../state.js'
 
+/**
+ * @param {string} name
+ * @param {Record<string, unknown>} [params]
+ * @returns {PromiseLike<{data: unknown, error: unknown}>}
+ */
 function adminRpc(name, params = {}) {
   return state.adminDb.rpc(name, params)
 }

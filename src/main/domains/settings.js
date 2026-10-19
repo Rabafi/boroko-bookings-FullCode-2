@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import {
   mergeOperatingProfileWithLockedHospitalityMode,
+  normalizePropertyType,
   propertyTypeToBusinessType,
   resolveLockedPropertyType
 } from '../../shared/propertyTypes.js';
@@ -242,6 +243,17 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, dead
 
     const message = result.error.message || '';
     lastErrorMessage = message;
+    // Server classification guard (settings_classification_guard trigger):
+    // a stale device echoing a superseded type is rejected at the database
+    // boundary. Surface it as an actionable reload-and-retry error — never
+    // mask it as a generic save failure.
+    if (/classification_locked/i.test(message)) {
+      const err = new Error(
+        'The property type changed on the server (another device committed a property-type transition, or this device used a stale type). Reload settings to get the current type, then save again without changing the property type — use the Property type section for reclassification.'
+      );
+      err.code = 'classification_locked';
+      throw err;
+    }
     const missingColumn = [...optionalRemoteColumns].find((column) => new RegExp(`'${column}'|\\b${column}\\b`, 'i').test(message));
     if (missingColumn) {
       delete remoteSettings[missingColumn];
@@ -465,6 +477,21 @@ export async function saveSettings(data, options = {}) {
   // Property type is chosen at setup / by product app. After setup_complete,
   // Settings must not reclassify lodge ↔ hotel ↔ restaurant.
   const lockedPropertyType = resolveLockedPropertyType(data, existingSettings);
+  // After setup, an ordinary save that carries a *different* classification
+  // must fail closed and direct the operator to the dedicated atomic,
+  // audited, idempotent transition contract. Identical values still save.
+  if (existingSettings?.setup_complete === true) {
+    const existingType = existingSettings?.property_type || existingSettings?.business_type || '';
+    const incomingType = data?.property_type || data?.business_type || '';
+    if (incomingType && existingType
+      && normalizePropertyType(incomingType) !== normalizePropertyType(existingType)) {
+      throw createAppError(
+        'property_transition_required',
+        'The property type cannot be changed with an ordinary settings save. Preview the change in the Property type section and commit it through the dedicated property-type transition.',
+        { current_property_type: normalizePropertyType(existingType), requested_property_type: normalizePropertyType(incomingType) }
+      );
+    }
+  }
 
   const settings = {
     lodge_name: data.lodge_name || '',
@@ -509,7 +536,23 @@ export async function saveSettings(data, options = {}) {
     // Keep the remote upsert and ancillary trial stamp inside one bounded
     // budget so the renderer never times out after the settings already saved.
     const saveDeadline = Date.now() + SETTINGS_SAVE_TIMEOUT_MS;
-    const saved = await saveRemoteSettingsRecord(settings, { allowBootstrap, deadline: saveDeadline });
+    // After setup, the ordinary save never authors classification: the remote
+    // payload strips property_type/business_type (and nested classification
+    // keys inside operating_profile) so a stale device snapshot cannot
+    // overwrite the committed type — the server classification guard is the
+    // backstop, not the only defense. Setup-incomplete bootstrap still sends
+    // classification so first-time setup keeps working.
+    const setupLocked = existingSettings?.setup_complete === true;
+    const remotePayload = { ...settings };
+    if (setupLocked) {
+      delete remotePayload.property_type;
+      delete remotePayload.business_type;
+      if (remotePayload.operating_profile && typeof remotePayload.operating_profile === 'object') {
+        const { property_type: _droppedType, business_type: _droppedBusiness, ...safeProfile } = remotePayload.operating_profile;
+        remotePayload.operating_profile = safeProfile;
+      }
+    }
+    const saved = await saveRemoteSettingsRecord(remotePayload, { allowBootstrap, deadline: saveDeadline });
     const savedRemote = saved?.data || null;
     const usedBootstrap = saved?.mode === 'rpc_bootstrap' || saved?.mode === 'service_role_bootstrap';
     const skippedColumns = Array.isArray(saved?.skippedColumns) ? saved.skippedColumns : [];
@@ -586,22 +629,47 @@ export async function updateOperatingProfile(profile) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving operating profile.');
 
   const current = getCachedSettings() || getDefaultSettings();
+  // A profile patch must never smuggle a reclassification past the ordinary
+  // save guard: refuse a differing property_type/business_type after setup.
+  if (current?.setup_complete === true && profile && typeof profile === 'object') {
+    const patchType = profile.property_type || profile.business_type || '';
+    const currentType = current.property_type || current.business_type || '';
+    if (patchType && currentType && normalizePropertyType(patchType) !== normalizePropertyType(currentType)) {
+      throw createAppError(
+        'property_transition_required',
+        'The property type cannot be changed with an operating-profile update. Preview the change in the Property type section and commit it through the dedicated property-type transition.',
+        { current_property_type: normalizePropertyType(currentType), requested_property_type: normalizePropertyType(patchType) }
+      );
+    }
+  }
   // First-time setup may set hospitality_mode; later patches cannot switch priced products.
   const lockedProfile = mergeOperatingProfileWithLockedHospitalityMode(
     profile || {},
     current.operating_profile || {}
   );
+  // A profile patch must never carry classification: drop any nested
+  // property_type/business_type keys before sending so a stale snapshot
+  // cannot smuggle a reclassification past the column guard.
+  const { property_type: _droppedProfileType, business_type: _droppedProfileBusiness, ...sendableProfile } = lockedProfile;
   const updated = { ...current, operating_profile: lockedProfile, updated_at: new Date().toISOString() };
 
   writeCache('settings', [updated]);
 
   if (state.isOnline) {
     try {
-      await state.supabase.from('settings').upsert(
-        { lodge_id: state.lodgeId, operating_profile: lockedProfile, updated_at: new Date().toISOString() },
+      const { error } = await state.supabase.from('settings').upsert(
+        { lodge_id: state.lodgeId, operating_profile: sendableProfile, updated_at: new Date().toISOString() },
         { onConflict: 'lodge_id' }
       );
+      if (error && /classification_locked/i.test(error.message || '')) {
+        const err = new Error(
+          'The property type changed on the server. Reload settings to get the current type, then save again — use the Property type section for reclassification.'
+        );
+        err.code = 'classification_locked';
+        throw err;
+      }
     } catch (e) {
+      if (e?.code === 'classification_locked') throw e;
       console.warn('[SETTINGS] Failed to save operating profile to remote:', e.message);
     }
   }

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { AlertTriangle, CalendarClock, CheckCircle2, PackageCheck, Pencil, RefreshCw, ShieldAlert, Trash2, X } from 'lucide-react'
 import { useSettings } from '../../app-context'

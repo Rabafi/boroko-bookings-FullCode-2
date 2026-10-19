@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useRef } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

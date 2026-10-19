@@ -50,7 +50,7 @@ export default function LodgeChooser() {
       navigate(profile.status === 'draft' ? '/setup' : '/login')
     } catch (e) {
       setError(e.message || (IS_LODGE
-        ? 'Could not switch to that lodge on this computer.'
+        ? 'Could not switch to that property on this computer.'
         : `Could not switch to that ${BUSINESS_NOUN} on this computer.`))
     } finally {
       setWorkingId('')
@@ -65,7 +65,7 @@ export default function LodgeChooser() {
       navigate('/setup')
     } catch (e) {
       setError(e.message || (IS_LODGE
-        ? 'Could not create a new lodge on this computer.'
+        ? 'Could not create a new property on this computer.'
         : `Could not create a new ${BUSINESS_NOUN} on this computer.`))
     } finally {
       setWorkingId('')
@@ -80,12 +80,12 @@ export default function LodgeChooser() {
       const result = await removeDraftProfile(lodgeId)
       if (!result?.success) {
         throw new Error(result?.error || (IS_LODGE
-          ? 'Could not remove this draft lodge.'
+          ? 'Could not remove this draft property.'
           : `Could not remove this draft ${BUSINESS_NOUN}.`))
       }
     } catch (e) {
       setError(e.message || (IS_LODGE
-        ? 'Could not remove this draft lodge.'
+        ? 'Could not remove this draft property.'
         : `Could not remove this draft ${BUSINESS_NOUN}.`))
     } finally {
       setWorkingId('')
@@ -101,18 +101,18 @@ export default function LodgeChooser() {
             <div className="mb-4 flex h-24 w-80 max-w-full items-center">
               <img src={productLogoLight} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
             </div>
-            <h1 className="text-2xl font-bold">Choose a Lodge on This Computer</h1>
+            <h1 className="text-2xl font-bold">Choose a Property on This Computer</h1>
             <p className="text-green-200 text-sm mt-1">
-              Each lodge keeps its own local cache, offline access, and setup state on this PC.
+              Each property keeps its own local cache, offline access, and setup state on this PC.
             </p>
           </div>
 
           <div className="px-8 py-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
               <div>
-                <p className="text-sm font-medium text-gray-700">Local lodge profiles</p>
+                <p className="text-sm font-medium text-gray-700">Local property profiles</p>
                 <p className="text-xs text-gray-500">
-                  Select a lodge to sign in, continue setup, or create a new business.
+                  Select a property to sign in, continue setup, or create a new business.
                 </p>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
@@ -123,7 +123,7 @@ export default function LodgeChooser() {
                   className="inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors"
                 >
                   {workingId === 'create' ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                  Add New Lodge
+                  Add New Property
                 </button>
                 <button
                   type="button"
@@ -148,7 +148,7 @@ export default function LodgeChooser() {
                 <div className="mx-auto mb-3 w-14 h-14 rounded-2xl bg-green-100 text-green-700 flex items-center justify-center">
                   <Building2 size={24} />
                 </div>
-                <h2 className="text-lg font-semibold text-gray-800">No lodges on this computer yet</h2>
+                <h2 className="text-lg font-semibold text-gray-800">No properties on this computer yet</h2>
                 <p className="text-sm text-gray-500 mt-2">
                   Create your first business to start setup, or sign in to Command Central if you are a Tsa Bonno admin.
                 </p>
@@ -170,7 +170,7 @@ export default function LodgeChooser() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h2 className="text-lg font-semibold text-gray-800 truncate">
-                              {profile.label || 'Untitled Lodge'}
+                              {profile.label || 'Untitled property'}
                             </h2>
                             <span className={`text-[11px] font-semibold px-2 py-1 rounded-full ${
                               profile.status === 'draft'
@@ -211,8 +211,8 @@ export default function LodgeChooser() {
                       <div className="mt-5 flex items-center justify-between">
                         <p className="text-sm text-gray-600">
                           {profile.status === 'draft'
-                            ? 'Continue setup for this new lodge profile.'
-                            : 'Sign in to this lodge with its own local cache and offline access.'}
+                            ? 'Continue setup for this new property profile.'
+                            : 'Sign in to this property with its own local cache and offline access.'}
                         </p>
                         <button
                           type="button"
@@ -221,7 +221,7 @@ export default function LodgeChooser() {
                           className="inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white font-semibold px-4 py-2 rounded-lg transition-colors ml-3 flex-shrink-0"
                         >
                           {workingId === profile.lodge_id ? <Loader2 size={16} className="animate-spin" /> : null}
-                          {profile.status === 'draft' ? 'Continue Setup' : 'Use Lodge'}
+                          {profile.status === 'draft' ? 'Continue Setup' : 'Use Property'}
                         </button>
                       </div>
                     </div>

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState, useRef } from 'react'
 import { Plus, Search, MoreVertical, FileText, Building2, BedDouble } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -6,6 +7,7 @@ import { ErrorNotice } from './shared/ErrorNotice'
 import { DESKTOP_PAYMENT_METHODS } from '../constants/paymentMethods'
 import { useAuth, useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
+import { isCampsitePriced } from '../../../shared/accommodation.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -456,7 +458,7 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
                     <tr key={`${line.room_id}-${index}`} className={index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
                       <td className="px-4 py-2 text-gray-500 font-medium">Room line {index + 1}</td>
                       <td className="px-4 py-2 text-gray-800">
-                        {line.room_name || `Room ${index + 1}`} · {line.adults || 1} adult{Number(line.adults || 1) !== 1 ? 's' : ''}{Number(line.children || 0) > 0 ? `, ${line.children} child${Number(line.children) !== 1 ? 'ren' : ''}` : ''} · {fmt(line.amount, currency)}
+                        {line.room_name || `Room ${index + 1}`} · {line.adults || 1} adult{Number(line.adults || 1) !== 1 ? 's' : ''}{Number(line.children || 0) > 0 ? `, ${line.children} child${Number(line.children) !== 1 ? 'ren' : ''}` : ''}{Number(line.tents || 0) > 0 ? `, ${line.tents} tent${Number(line.tents) !== 1 ? 's' : ''}` : ''}{Number(line.vehicles || 0) > 0 ? `, ${line.vehicles} vehicle${Number(line.vehicles) !== 1 ? 's' : ''}` : ''} · {fmt(line.amount, currency)}
                       </td>
                     </tr>
                   )
@@ -672,7 +674,7 @@ export default function Quotations() {
       ...f,
       accommodation_lines: [
         ...(Array.isArray(f.accommodation_lines) ? f.accommodation_lines : []),
-        { room_id: '', adults: Number(f.adults || 1), children: Number(f.children || 0), amount: '' }
+        { room_id: '', adults: Number(f.adults || 1), children: Number(f.children || 0), tents: 0, vehicles: 0, amount: '' }
       ]
     }))
   }
@@ -714,6 +716,11 @@ export default function Quotations() {
               room_name: line.room_name || (selectedRoom?.room_number ? `Room ${selectedRoom.room_number}` : ''),
               adults: Math.max(1, Number(line.adults || 1)),
               children: Math.max(0, Number(line.children || 0)),
+              // Campsite occupancy carry: tents/vehicles travel on quotation
+              // lines so conversion can route sites through the campsite
+              // contract. Room lines and legacy rows default to 0.
+              tents: Math.max(0, Number(line.tents || 0)),
+              vehicles: Math.max(0, Number(line.vehicles || 0)),
               amount: Math.max(0, Number(line.amount || 0))
             }
           })
@@ -1287,8 +1294,15 @@ export default function Quotations() {
                     Add Room
                   </button>
                 </div>
-                {(Array.isArray(form.accommodation_lines) && form.accommodation_lines.length > 0 ? form.accommodation_lines : [{ room_id: form.room_id, adults: form.adults, children: form.children, amount: form.total_amount }]).map((line, index) => (
-                  <div key={index} className="grid grid-cols-12 gap-2">
+                {(Array.isArray(form.accommodation_lines) && form.accommodation_lines.length > 0 ? form.accommodation_lines : [{ room_id: form.room_id, adults: form.adults, children: form.children, tents: 0, vehicles: 0, amount: form.total_amount }]).map((line, index) => {
+                  // R7 occupancy carry: priced-family lines (campsite + tent)
+                  // expose tents/vehicles inputs so conversion routes them
+                  // through the campsite contract instead of defaulting to 0.
+                  const lineRoom = rooms.find(r => r.id === line.room_id)
+                  const lineIsPriced = Boolean(lineRoom) && isCampsitePriced(lineRoom)
+                  return (
+                  <div key={index}>
+                  <div className="grid grid-cols-12 gap-2">
                     <select
                       disabled={financialLocked}
                       className={`input col-span-5 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -1339,7 +1353,35 @@ export default function Quotations() {
                       ×
                     </button>
                   </div>
-                ))}
+                  {lineIsPriced && (
+                    <div className="mt-2 grid grid-cols-12 gap-2">
+                      <label className="col-span-6 text-xs font-medium text-gray-500">
+                        Tents
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={financialLocked}
+                          className={`input mt-1 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          value={line.tents ?? 0}
+                          onChange={e => updateRoomLine(index, { tents: Number(e.target.value) })}
+                        />
+                      </label>
+                      <label className="col-span-6 text-xs font-medium text-gray-500">
+                        Vehicles
+                        <input
+                          type="number"
+                          min={0}
+                          disabled={financialLocked}
+                          className={`input mt-1 ${financialLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          value={line.vehicles ?? 0}
+                          onChange={e => updateRoomLine(index, { vehicles: Number(e.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  )}
+                  </div>
+                  )
+                })}
               </div>
             )}
 

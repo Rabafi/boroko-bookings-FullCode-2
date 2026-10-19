@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Keyboard-wedge barcode scanner decoding.
  *
@@ -17,8 +18,13 @@ export const BARCODE_SCANNER_DEFAULTS = Object.freeze({
   acceptTab: true,
 });
 
+/** @typedef {{minLength?: unknown, maxLength?: unknown, interKeyMs?: unknown, idleCompleteMs?: unknown, prefix?: unknown, suffix?: unknown, acceptEnter?: unknown, acceptTab?: unknown}} BarcodeScannerConfig */
+/** @typedef {{success: false, code: string, barcode?: string, characterCount?: number}} BarcodeScanFailure */
+/** @typedef {{success: true, barcode: string, terminator: string, characterCount: number, durationMs: number, averageInterKeyMs: number}} BarcodeScanSuccess */
+
 const CONTROL_CHARACTER_RE = /[\u0000-\u001f\u007f]/;
 
+/** @param {unknown} value @param {BarcodeScannerConfig} [options] @returns {string | null} */
 export function normalizeBarcode(value, options = {}) {
   const maxLength = Math.max(1, Math.min(128, Number(options.maxLength || BARCODE_SCANNER_DEFAULTS.maxLength)));
   const prefix = String(options.prefix || "");
@@ -31,10 +37,12 @@ export function normalizeBarcode(value, options = {}) {
   return barcode;
 }
 
+/** @param {string} code @param {Record<string, unknown>} [extras] @returns {BarcodeScanFailure} */
 function makeFailure(code, extras = {}) {
   return { success: false, code, ...extras };
 }
 
+/** @param {string} raw @param {string} terminator @param {number} startedAt @param {number} completedAt @param {BarcodeScannerConfig} options @returns {BarcodeScanFailure | BarcodeScanSuccess} */
 function makeScanResult(raw, terminator, startedAt, completedAt, options) {
   const barcode = normalizeBarcode(raw, options);
   if (!barcode) return makeFailure("empty_scan");
@@ -59,6 +67,7 @@ function makeScanResult(raw, terminator, startedAt, completedAt, options) {
  * and returns a small event object.  A caller may call flush() after the idle
  * completion timeout when its scanner has no suffix configured.
  */
+/** @param {BarcodeScannerConfig} [config] */
 export function createBarcodeScannerDecoder(config = {}) {
   const configuredMin = Math.max(1, Math.min(128, Number(config.minLength ?? BARCODE_SCANNER_DEFAULTS.minLength) || BARCODE_SCANNER_DEFAULTS.minLength));
   const configuredMax = Math.max(configuredMin, Math.min(128, Number(config.maxLength ?? BARCODE_SCANNER_DEFAULTS.maxLength) || BARCODE_SCANNER_DEFAULTS.maxLength));
@@ -78,8 +87,9 @@ export function createBarcodeScannerDecoder(config = {}) {
     lastAt = 0;
   };
 
+  /** @param {unknown} event @returns {number} */
   const nowFrom = (event) => {
-    const candidate = Number(event?.timeStamp);
+    const candidate = Number((/** @type {Record<string, unknown> | null | undefined} */ (event))?.timeStamp);
     return Number.isFinite(candidate) && candidate >= 0 ? candidate : Date.now();
   };
 
@@ -93,6 +103,7 @@ export function createBarcodeScannerDecoder(config = {}) {
     return { type: "completed", result: { ...result, rawLength } };
   };
 
+  /** @param {Record<string, unknown>} [event] */
   const consumeKey = (event = {}) => {
     const key = String(event.key || "");
     if (event.repeat || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) {
@@ -128,9 +139,11 @@ export function createBarcodeScannerDecoder(config = {}) {
   };
 }
 
+/** @param {unknown} target @param {unknown} [searchElement] @returns {boolean} */
 export function isScannerEditableTarget(target, searchElement = null) {
   if (!target) return false;
   if (searchElement && target === searchElement) return true;
-  const tag = String(target.tagName || "").toLowerCase();
-  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
+  const fields = /** @type {Record<string, unknown>} */ (target)
+  const tag = String(fields.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || fields.isContentEditable === true;
 }

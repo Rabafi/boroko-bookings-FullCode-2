@@ -1,5 +1,17 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { AlertCircle, CalendarClock, CheckCircle2, Copy, Download, Eye, EyeOff, FileCheck2, FileKey2, FolderOpen, Loader2, ShieldCheck } from 'lucide-react'
+
+/**
+ * The main-process success envelope is constructed from getStarterBackupReminder.
+ * Its history rows originate in JSON and are only container-checked, so retain
+ * each row as unknown; the outer view records the source contract without
+ * claiming that persisted fields were validated.
+ * @typedef {{success: true, lastBackupAt: unknown, lastBackupFileName: unknown, lastBackupComplete: boolean | null, ageDays: number | null, state: 'never' | 'incomplete' | 'due' | 'current', reminderDays: 7, history: unknown[]}} StarterBackupHistorySuccess
+ * @typedef {StarterBackupHistorySuccess | {success: false, error: unknown}} StarterBackupHistoryReply
+ * @typedef {{success: true, lodge_id: string, enabled: boolean, config: null | {destination_folder: unknown, destination_label: unknown, retained_copies: unknown, created_at: unknown, updated_at: unknown}, status: {last_success_at: unknown, last_success_sha256: unknown, last_success_destination: unknown, last_verified_at: unknown, next_due_at: unknown, last_failure_at: unknown, last_failure_reason: unknown, snoozed_until: unknown, audit_state: unknown, state: 'disabled' | 'never' | 'snoozed' | 'due' | 'current'}, history: unknown[], latest_history_entry: unknown}} StarterBackupAutomationSuccess
+ * @typedef {StarterBackupAutomationSuccess | {success: false, error: unknown}} StarterBackupAutomationReply
+ */
 
 function hideSensitiveError(value) {
   return String(value || '').replace(
@@ -170,11 +182,11 @@ export default function StarterBackup({ embedded = false }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [notice, setNotice] = useState('')
-  const [history, setHistory] = useState(null)
+  const [history, setHistory] = useState(/** @type {StarterBackupHistorySuccess | null} */ (null))
   const [encrypt, setEncrypt] = useState(true)
   const [passphrase, setPassphrase] = useState('')
   const [showPassphrase, setShowPassphrase] = useState(false)
-  const [automation, setAutomation] = useState(null)
+  const [automation, setAutomation] = useState(/** @type {StarterBackupAutomationSuccess | null} */ (null))
   const [automationBusy, setAutomationBusy] = useState(false)
   const [automationNotice, setAutomationNotice] = useState('')
   const [showAutomationSetup, setShowAutomationSetup] = useState(false)
@@ -186,7 +198,9 @@ export default function StarterBackup({ embedded = false }) {
 
   const refreshHistory = async () => {
     try {
-      const next = await window.api?.backup?.starterHistory?.()
+      // Source-backed reply view only: the main handler constructs this
+      // envelope, while row payloads remain unknown because they come from JSON.
+      const next = /** @type {StarterBackupHistoryReply | null | undefined} */ (await window.api?.backup?.starterHistory?.())
       if (next?.success) setHistory(next)
     } catch {}
   }
@@ -195,7 +209,9 @@ export default function StarterBackup({ embedded = false }) {
 
   const refreshAutomation = async () => {
     try {
-      const next = await window.api?.backup?.automationStatus?.()
+      // The main handler builds the envelope from JSON-backed config/status;
+      // source-defined outer fields are typed, while persisted values stay unknown.
+      const next = /** @type {StarterBackupAutomationReply | null | undefined} */ (await window.api?.backup?.automationStatus?.())
       if (next?.success) {
         setAutomation(next)
         if (next.config?.destination_folder) setAutomationFolder(next.config.destination_folder)

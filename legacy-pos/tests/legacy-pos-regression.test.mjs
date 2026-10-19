@@ -1883,6 +1883,7 @@ test('Legacy POS participates in the authenticated local lodge mesh', () => {
   assert.ok(mesh.includes('boroko_mesh_hello'), 'Legacy POS must use the same LAN discovery beacon');
   assert.ok(mesh.includes('create_pos_order_v3'), 'Legacy mesh must exchange v3 sales');
   assert.ok(mesh.includes('finalize_pos_shift_cashup_v2'), 'Legacy mesh must exchange atomic cash-ups');
+  assert.ok(!mesh.includes("'approve_pos_void_with_pin'"), 'PIN-bearing void operations must remain on their origin device');
   assert.ok(mesh.includes('hasMachineBoundSecret'), 'Machine-bound approval secrets must not leave their origin device');
   assert.ok(mesh.includes('createHmac'), 'Mesh requests must be authenticated');
   assert.ok(mesh.includes('os.networkInterfaces()'), 'Legacy mesh must inspect each network adapter');

@@ -52,6 +52,7 @@ import {
 } from 'lucide-react'
 import { resolveModuleVisibility, MODULE_VISIBILITY_STATES, getModuleByKey } from '../../../shared/moduleCatalog.js'
 import { normalizePropertyType, isBarOnlyMode, isHotelPropertyType } from '../../../shared/propertyTypes.js'
+import { getPropertyPresentation } from '../../../shared/propertyPresentation.js'
 import { normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans.js'
 /**
  * Resolve product id for nav scoping.
@@ -866,7 +867,13 @@ export const ALL_NAV = [
 ]
 export const NAV_GROUPS = ['Home', 'Front Desk', 'Sell', 'Property', 'Stock', 'Team', 'Money', 'Growth', 'Control', 'Finance', 'Hotel']
 
-export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = [], operatingProfile = null, productId = null) {
+/**
+ * @param {unknown} [_accommodationMix] optional loaded inventory (rooms/sites
+ * array or mix shape). When provided, shell wording follows the SAME
+ * actual-mix summary the inventory screens use; when absent, the resolver
+ * falls back to the operating profile (legacy safe room wording).
+ */
+export function getDesktopNavItems(bizType, access, propertyType = null, subscriptionPlan = null, addons = [], operatingProfile = null, productId = null, _accommodationMix = null) {
   const navProductId = resolveNavProductId(productId)
   // LodgingOS must not surface HotelOS enterprise navigation or locked hotel
   // upgrade clutter (including motel, which is hotel-class by property type but
@@ -884,7 +891,7 @@ export function getDesktopNavItems(bizType, access, propertyType = null, subscri
   // A 'bar' business uses the restaurant rail.
   const effectiveBizType = lodgeProductScoped && bizType === 'hotel' ? 'lodge' : (bizType === 'bar' ? 'restaurant' : bizType)
 
-  return ALL_NAV.reduce((acc, item) => {
+  const collected = ALL_NAV.reduce((acc, item) => {
     // Hotel properties inherit lodge navigation plus hotel-only entries.
     const typeMatch = item.types.includes(effectiveBizType)
       || (effectiveBizType === 'hotel' && item.types.includes('lodge'))
@@ -933,6 +940,69 @@ export function getDesktopNavItems(bizType, access, propertyType = null, subscri
     acc.push({ ...item, visibility, isLocked })
     return acc
   }, [])
+
+  // Property presentation (labels/keywords only): visibility, locking,
+  // capability gating and plan enforcement above are untouched. The resolver
+  // derives wording from the real accommodation mix; legacy profiles without
+  // mix data keep safe room wording.
+  return applyPropertyPresentationToNavItems(collected, {
+    propertyType: normalizedPropertyType,
+    accommodationMix: _accommodationMix,
+    operatingProfile,
+    plan: normalizedPlan,
+    addons
+  })
+}
+
+/**
+ * Presentation-only relabeling for accommodation navigation.
+ * Never changes which items are returned, their visibility, locking, groups
+ * or capability gates — only labels and search keywords. Safe to call with
+ * stale/offline inputs: unknown types keep existing labels.
+ * @param {Array<Record<string, any>>} items
+ * @param {{propertyType?: unknown, accommodationMix?: unknown, operatingProfile?: unknown, plan?: unknown, addons?: unknown[], entitledModules?: unknown}} [presentationInput]
+ */
+export function applyPropertyPresentationToNavItems(items, presentationInput = {}) {
+  const list = Array.isArray(items) ? items : []
+  let presentation = null
+  try {
+    presentation = getPropertyPresentation({
+      propertyType: presentationInput.propertyType ?? null,
+      accommodationMix: presentationInput.accommodationMix ?? null,
+      operatingProfile: presentationInput.operatingProfile ?? null,
+      plan: presentationInput.plan ?? null,
+      addons: presentationInput.addons ?? [],
+      entitledModules: presentationInput.entitledModules ?? presentationInput.addons ?? []
+    })
+  } catch {
+    return list
+  }
+  if (!presentation) return list
+  const { roomsLabel, boardLabel, extraKeywords } = presentation.navHints
+  const siteTerms = ['site', 'sites', 'campsite', 'campsites', 'pitch', 'tent', 'camp']
+  const roomTerms = ['room', 'rooms', 'unit', 'cabin', 'chalet']
+  const siteKeywords = presentation.navHints.showSites ? extraKeywords.filter((keyword) => siteTerms.includes(keyword)) : []
+  const roomKeywords = presentation.navHints.showRooms ? roomTerms : []
+  const withKeywords = (item, additions) => {
+    const keywords = Array.isArray(item.keywords) ? [...item.keywords] : []
+    for (const keyword of additions) {
+      if (!keywords.includes(keyword)) keywords.push(keyword)
+    }
+    return keywords
+  }
+  return list.map((item) => {
+    if (!item || typeof item !== 'object') return item
+    if (item.to === '/rooms') {
+      return { ...item, label: roomsLabel, keywords: withKeywords(item, [...roomKeywords, ...siteKeywords]) }
+    }
+    if (item.to === '/roomgrid') {
+      return { ...item, label: boardLabel, keywords: withKeywords(item, [...roomKeywords, ...siteKeywords]) }
+    }
+    if (item.to === '/housekeeping' && presentation.navHints.showSites) {
+      return { ...item, keywords: withKeywords(item, ['site readiness', 'sites', 'facilities', ...siteKeywords]) }
+    }
+    return item
+  })
 }
 
 export function getNavItemVisibility(item, propertyType, subscriptionPlan, addons = []) {

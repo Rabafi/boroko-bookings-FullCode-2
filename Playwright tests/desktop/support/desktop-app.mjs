@@ -12,32 +12,74 @@ const __dirname = path.dirname(__filename)
 export const desktopTestsRoot = path.resolve(__dirname, '..')
 export const repoRoot = path.resolve(desktopTestsRoot, '..', '..')
 
-function readDotEnv(filePath) {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8')
-    return raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
-      .reduce((acc, line) => {
-        const index = line.indexOf('=')
-        if (index <= 0) return acc
-        const key = line.slice(0, index).trim()
-        const value = line.slice(index + 1).trim().replace(/^"|"$/g, '')
-        if (key) acc[key] = value
-        return acc
-      }, {})
-  } catch {
-    return {}
+export function getRealBackendEnv() {
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || ''
+  const key = process.env.VITE_SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || ''
+  let parsed
+  try { parsed = new URL(url) } catch { /* empty is reported by caller */ }
+  if (parsed?.protocol !== 'https:' || parsed?.hostname !== 'repsrmlomedqrmrdsbga.supabase.co') return { SUPABASE_URL: '', SUPABASE_ANON_KEY: '' }
+  return {
+    SUPABASE_URL: url,
+    SUPABASE_ANON_KEY: key
   }
 }
 
-export function getRealBackendEnv() {
-  const rootEnv = readDotEnv(path.join(repoRoot, '.env'))
-  return {
-    SUPABASE_URL: rootEnv.VITE_SUPABASE_URL || process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
-    SUPABASE_ANON_KEY: rootEnv.VITE_SUPABASE_KEY || process.env.VITE_SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || ''
+const ELECTRON_OS_ENV_ALLOWLIST = ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'COMSPEC', 'PATHEXT']
+const ELECTRON_EXTRA_ENV_ALLOWLIST = new Set(['BOROKO_PRODUCT', 'BOROKO_TEST_FORCE_OFFLINE', 'BOROKO_AUTH_TRACE', 'SUPABASE_URL', 'SUPABASE_ANON_KEY'])
+const ACCOUNTING_DISPOSABLE_URL = 'https://repsrmlomedqrmrdsbga.supabase.co'
+
+function isPublicAnonKey(value) {
+  const key = String(value || '')
+  if (/^sb_publishable_[a-z0-9_-]+$/i.test(key)) return true
+  const segments = key.split('.')
+  if (segments.length !== 3) return false
+  try {
+    const payload = JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'))
+    return payload.role === 'anon'
+  } catch {
+    return false
   }
+}
+
+function validateIsolatedTestProfile(userDataDir) {
+  if (!userDataDir || !path.isAbsolute(userDataDir)) throw new Error('Electron tests require an absolute isolated user-data directory.')
+  const resolved = path.resolve(userDataDir)
+  const tempRoot = path.resolve(os.tmpdir())
+  const insideTemp = resolved.toLowerCase().startsWith((tempRoot + path.sep).toLowerCase())
+  if (!insideTemp) throw new Error('Electron test profiles must be created under the task temporary directory.')
+  return resolved
+}
+
+export function buildDesktopLaunchEnvironment({ parentEnv = process.env, userDataDir, extraEnv = {} } = {}) {
+  const profile = validateIsolatedTestProfile(userDataDir)
+  const unknown = Object.keys(extraEnv).filter((name) => !ELECTRON_EXTRA_ENV_ALLOWLIST.has(name))
+  if (unknown.length) throw new Error(`Electron launch rejected unapproved environment names: ${unknown.join(', ')}`)
+  const env = {}
+  for (const name of ELECTRON_OS_ENV_ALLOWLIST) if (parentEnv[name]) env[name] = parentEnv[name]
+  env.BOROKO_TEST_USER_DATA_DIR = profile
+  env.BOROKO_TEST_FORCE_OFFLINE = extraEnv.BOROKO_TEST_FORCE_OFFLINE === 'false' ? 'false' : 'true'
+  env.SUPABASE_URL = 'http://127.0.0.1:65535'
+  env.SUPABASE_ANON_KEY = 'test-anon-key'
+  if (extraEnv.BOROKO_PRODUCT) env.BOROKO_PRODUCT = extraEnv.BOROKO_PRODUCT
+  if (extraEnv.BOROKO_AUTH_TRACE === '1') env.BOROKO_AUTH_TRACE = '1'
+  const explicitUrl = String(extraEnv.SUPABASE_URL || '').trim()
+  const explicitKey = String(extraEnv.SUPABASE_ANON_KEY || '').trim()
+  if (explicitUrl) {
+    let parsed
+    try { parsed = new URL(explicitUrl) } catch { throw new Error('Electron backend URL is invalid; no app was launched.') }
+    const disposable = parsed.protocol === 'https:' && parsed.hostname === 'repsrmlomedqrmrdsbga.supabase.co'
+    const offlineLoopback = env.BOROKO_TEST_FORCE_OFFLINE === 'true' && parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname) && parsed.port === '65535'
+    if (!disposable && !offlineLoopback) throw new Error('Electron backend must be isolated offline or target only approved disposable project repsrmlomedqrmrdsbga.')
+    if (disposable && !isPublicAnonKey(explicitKey)) throw new Error('Electron requires the disposable project public anon/client key; private keys are rejected.')
+    env.SUPABASE_URL = explicitUrl
+    if (explicitKey) env.SUPABASE_ANON_KEY = explicitKey
+  }
+  if (env.BOROKO_TEST_FORCE_OFFLINE === 'false') {
+    if (env.SUPABASE_URL !== ACCOUNTING_DISPOSABLE_URL || !isPublicAnonKey(env.SUPABASE_ANON_KEY)) {
+      throw new Error('Online Electron launch requires the approved disposable project URL and its public anon/client key.')
+    }
+  }
+  return env
 }
 
 function writeJson(filePath, data) {
@@ -563,24 +605,43 @@ export function restoreSeededSessionNonce(userDataDir, seed) {
   writeJson(path.join(profileDir, 'session-nonce.json'), seed.session)
 }
 
-export async function launchDesktopApp({ userDataDir, extraEnv = {} } = {}) {
-  const app = await electron.launch({
-    args: [repoRoot],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      BOROKO_TEST_USER_DATA_DIR: userDataDir,
-      BOROKO_TEST_FORCE_OFFLINE: 'true',
-      SUPABASE_URL: 'http://127.0.0.1:65535',
-      SUPABASE_ANON_KEY: 'test-anon-key',
-      ...extraEnv
-    }
-  })
-
+async function launchWithEnvironment(userDataDir, env) {
+  const app = await electron.launch({ args: [repoRoot], cwd: repoRoot, env })
   await app.firstWindow()
   const window = await waitForMainDesktopWindow(app)
   await window.waitForLoadState('domcontentloaded')
   return { app, window }
+}
+
+export async function launchDesktopApp({ userDataDir, extraEnv = {} } = {}) {
+  const env = buildDesktopLaunchEnvironment({ userDataDir, extraEnv })
+  return launchWithEnvironment(userDataDir, env)
+}
+
+export function createIsolatedAccountingUserDataDir() {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'luna-accounting-electron-'))
+  if (fs.readdirSync(userDataDir).length !== 0) throw new Error('New isolated Accounting profile directory must be empty.')
+  return userDataDir
+}
+
+export function buildAccountingDisposableDesktopEnvironment({ parentEnv = process.env, userDataDir } = {}) {
+  const url = String(parentEnv.VITE_SUPABASE_URL || parentEnv.SUPABASE_URL || '').trim()
+  const key = String(parentEnv.VITE_SUPABASE_KEY || parentEnv.SUPABASE_ANON_KEY || '').trim()
+  if (!url) throw new Error('Missing approved disposable Electron setting: VITE_SUPABASE_URL or SUPABASE_URL.')
+  if (!key) throw new Error('Missing approved public-client Electron setting: VITE_SUPABASE_KEY or SUPABASE_ANON_KEY.')
+  const profile = validateIsolatedTestProfile(userDataDir)
+  if (fs.readdirSync(profile).length !== 0) throw new Error('Accounting acceptance requires a new empty isolated profile; copied/installed profiles are rejected.')
+  return buildDesktopLaunchEnvironment({
+    parentEnv,
+    userDataDir: profile,
+    extraEnv: { BOROKO_PRODUCT: 'hospitality-pos', BOROKO_TEST_FORCE_OFFLINE: 'false', SUPABASE_URL: url, SUPABASE_ANON_KEY: key }
+  })
+}
+
+export async function launchAccountingDisposableDesktop() {
+  const userDataDir = createIsolatedAccountingUserDataDir()
+  const env = buildAccountingDisposableDesktopEnvironment({ userDataDir })
+  return { ...(await launchWithEnvironment(userDataDir, env)), userDataDir }
 }
 
 async function isStartupSplashWindow(page) {

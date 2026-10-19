@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "checkJs": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "files": [
+    "src/lib/buildInfo.js",
+    "src/types/build-info.d.ts",
+    "../tests/typecheck/manager-build-info/valid.ts"
+  ],
+  "include": []
+}

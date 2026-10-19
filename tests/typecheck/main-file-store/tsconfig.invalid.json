@@ -1,0 +1,8 @@
+{
+  "extends": "../../../tsconfig.typecheck-main.json",
+  "files": [
+    "../../../src/main/domains/fileStore.js",
+    "./invalid.ts"
+  ],
+  "include": []
+}

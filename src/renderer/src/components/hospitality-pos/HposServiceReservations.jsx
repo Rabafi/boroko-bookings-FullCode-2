@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Check, Edit3, ListPlus, RefreshCw, Trash2, Users, X } from 'lucide-react'
 import { HposButton, HposNotice, HposPageHero } from './HposUi'

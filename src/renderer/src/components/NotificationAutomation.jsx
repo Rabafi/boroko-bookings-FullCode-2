@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Bell, Play, Pause, RefreshCw, AlertTriangle, CheckCircle, Clock, ChevronRight, Settings, Zap } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'

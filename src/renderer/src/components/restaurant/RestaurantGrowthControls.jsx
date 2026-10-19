@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { Gift, HandCoins, PackageCheck, BellRing, RefreshCw } from 'lucide-react'
 import { unpackTransport } from '../../transportUnpack'

@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "checkJs": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "files": [
+    "src/lib/utils.js",
+    "../tests/typecheck/booking-utils/valid.ts"
+  ],
+  "include": []
+}

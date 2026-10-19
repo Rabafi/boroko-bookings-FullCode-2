@@ -9,29 +9,37 @@ const GS = 0x1d
 const DEFAULT_NETWORK_PORT = 9100
 const DEFAULT_TIMEOUT_MS = 8000
 
+/** @typedef {Record<string, unknown>} HardwareRecord */
+
+/** @param {unknown} value @param {boolean} [fallback] @returns {boolean} */
 function toBool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback
   return value === true || value === 'true' || value === 1 || value === '1'
 }
 
+/** @param {unknown} value @param {number} [fallback] @returns {number} */
 function toNumber(value, fallback = 0) {
   const next = Number(value)
   return Number.isFinite(next) ? next : fallback
 }
 
+/** @param {unknown} value @param {number} fallback @param {number} min @param {number} max @returns {number} */
 function clampNumber(value, fallback, min, max) {
   return Math.max(min, Math.min(max, toNumber(value, fallback)))
 }
 
+/** @param {unknown} value @returns {number} */
 function normalizeMoney(value) {
   const amount = Number(value || 0)
   return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
 }
 
+/** @param {unknown} value @returns {string} */
 function stripControl(value) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
 }
 
+/** @param {unknown} value @returns {string} */
 function normalizeScannerPrefixOrSuffix(value) {
   // Scanner framing is deliberately limited to printable ASCII.  Prefixes
   // and suffixes are configuration, not a place to store arbitrary control
@@ -39,6 +47,7 @@ function normalizeScannerPrefixOrSuffix(value) {
   return stripControl(value).slice(0, 16)
 }
 
+/** @param {unknown} value @returns {string} */
 function sanitizeText(value) {
   return String(value || '')
     .replace(/[–—]/g, '-')
@@ -48,14 +57,17 @@ function sanitizeText(value) {
     .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '?')
 }
 
+/** @param {unknown} [value] @returns {Buffer} */
 function textBuffer(value = '') {
   return Buffer.from(sanitizeText(value), 'latin1')
 }
 
+/** @param {number[]} [values] @returns {Buffer} */
 function commandBuffer(values = []) {
   return Buffer.from(values)
 }
 
+/** @param {unknown} [codepage] @returns {number} */
 function escposCodepageByte(codepage = 'cp437') {
   const normalized = String(codepage || '').toLowerCase()
   if (normalized === 'cp850') return 2
@@ -66,6 +78,7 @@ function escposCodepageByte(codepage = 'cp437') {
   return 0
 }
 
+/** @param {unknown} [width] @returns {number} */
 function paperColumns(width = '80mm') {
   const normalized = String(width || '').toLowerCase()
   if (normalized.includes('58')) return 32
@@ -73,6 +86,7 @@ function paperColumns(width = '80mm') {
   return 42
 }
 
+/** @param {unknown} value @param {number} width @returns {string[]} */
 function wrapText(value, width) {
   const words = sanitizeText(value).split(/\s+/).filter(Boolean)
   const lines = []
@@ -91,6 +105,7 @@ function wrapText(value, width) {
   return lines.length ? lines : ['']
 }
 
+/** @param {unknown} left @param {unknown} right @param {number} width @returns {string[]} */
 function twoColumn(left, right, width) {
   const safeRight = sanitizeText(right)
   const rightWidth = Math.min(width, safeRight.length)
@@ -102,6 +117,7 @@ function twoColumn(left, right, width) {
   })
 }
 
+/** @param {unknown} pathValue @returns {string} */
 function normalizeDevicePath(pathValue) {
   const raw = stripControl(pathValue)
   if (/^(com|lpt)\d+:?$/i.test(raw)) {
@@ -110,6 +126,7 @@ function normalizeDevicePath(pathValue) {
   return raw
 }
 
+/** @param {unknown} pathValue @returns {{ host: string, port: number } | null} */
 function parseNetworkPath(pathValue) {
   const raw = stripControl(pathValue)
   if (!raw) return null
@@ -130,6 +147,7 @@ function parseNetworkPath(pathValue) {
   return null
 }
 
+/** @param {Record<string, unknown>} settings @returns {{ type: 'network', host: string, port: number } | { type: 'path', path: string } | null} */
 function inferRawTarget(settings) {
   const connectionType = String(settings.escpos_connection_type || 'network').toLowerCase()
   const pathTarget = stripControl(settings.escpos_printer_path)
@@ -160,6 +178,7 @@ function inferRawTarget(settings) {
   return null
 }
 
+/** @param {Record<string, unknown>} [settings] */
 export function normalizePosHardwareSettings(settings = {}) {
   const escposEnabled = toBool(settings.escpos_enabled, false)
   const receiptPrintMode = String(settings.receipt_print_mode || (escposEnabled ? 'escpos' : 'windows')).toLowerCase()
@@ -216,6 +235,7 @@ export function normalizePosHardwareSettings(settings = {}) {
   }
 }
 
+/** @param {Record<string, unknown>} [settings] */
 export function buildCashDrawerPulse(settings = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   const pin = normalized.cash_drawer_pin === '1' ? 1 : 0
@@ -224,42 +244,50 @@ export function buildCashDrawerPulse(settings = {}) {
   return commandBuffer([ESC, 0x70, pin, Math.max(1, Math.min(255, on)), Math.max(1, Math.min(255, off))])
 }
 
+/** @param {HardwareRecord} [order] */
 function isCashOrder(order = {}) {
   const payments = Array.isArray(order.payment_breakdown)
     ? order.payment_breakdown
     : typeof order.payment_breakdown === 'string'
       ? (() => { try { return JSON.parse(order.payment_breakdown) } catch { return [] } })()
       : []
-  return payments.some((payment) => String(payment.method || '').toLowerCase() === 'cash' && normalizeMoney(payment.amount) > 0)
+  return payments.some((/** @type {HardwareRecord} */ payment) => String(payment.method || '').toLowerCase() === 'cash' && normalizeMoney(payment.amount) > 0)
 }
 
+/** @param {Buffer[]} buffers @param {unknown} [value] */
 function pushText(buffers, value = '') {
   buffers.push(textBuffer(`${value}\n`))
 }
 
+/** @param {Buffer[]} buffers @param {'left' | 'center' | 'right'} [align] */
 function pushAlign(buffers, align = 'left') {
   const code = align === 'center' ? 1 : align === 'right' ? 2 : 0
   buffers.push(commandBuffer([ESC, 0x61, code]))
 }
 
+/** @param {Buffer[]} buffers @param {boolean} enabled */
 function pushBold(buffers, enabled) {
   buffers.push(commandBuffer([ESC, 0x45, enabled ? 1 : 0]))
 }
 
+/** @param {Buffer[]} buffers @param {number} width @param {string} [value] */
 function pushRule(buffers, width, value = '-') {
   pushText(buffers, value.repeat(width))
 }
 
+/** @param {unknown} currency @param {unknown} value @returns {string} */
 function formatCurrency(currency, value) {
   return `${currency || 'P'} ${normalizeMoney(value).toFixed(2)}`
 }
 
+/** @param {unknown} value @returns {number | null} */
 function recordedMoney(value) {
   if (value === null || value === undefined || value === '') return null
   const amount = Number(value)
   return Number.isFinite(amount) ? amount : null
 }
 
+/** @param {HardwareRecord} [item] */
 function recordedItemAmount(item = {}) {
   for (const key of ['net_subtotal', 'subtotal', 'gross_subtotal']) {
     const amount = recordedMoney(item?.[key])
@@ -268,10 +296,12 @@ function recordedItemAmount(item = {}) {
   return null
 }
 
+/** @param {HardwareRecord} order @returns {HardwareRecord[]} */
 function receiptItems(order) {
   return Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : []
 }
 
+/** @param {HardwareRecord} order @returns {HardwareRecord[]} */
 function receiptPayments(order) {
   if (Array.isArray(order?.payment_breakdown)) return order.payment_breakdown
   if (typeof order?.payment_breakdown === 'string') {
@@ -285,6 +315,14 @@ function receiptPayments(order) {
   return []
 }
 
+/**
+ * The record types describe fields this formatter already reads from POS
+ * results. They are expectation types only; no runtime validation is added.
+ * @param {HardwareRecord} [order]
+ * @param {HardwareRecord} [business]
+ * @param {Record<string, unknown>} [settings]
+ * @param {{openDrawer?: 'before' | 'after' | null}} [options]
+ */
 export function buildEscPosReceipt(order = {}, business = {}, settings = {}, options = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   const width = paperColumns(normalized.receipt_paper_width)
@@ -319,7 +357,9 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
     pushRule(buffers, width)
   }
   pushText(buffers, `Receipt: ${receiptNo}`)
-  pushText(buffers, `Date: ${new Date(order.created_at || Date.now()).toLocaleString('en-GB')}`)
+  // POS rows expose created_at as a timestamp string; retain the original
+  // Date constructor behavior without adding a runtime parse/validity guard.
+  pushText(buffers, `Date: ${new Date(/** @type {string | number} */ (order.created_at) || Date.now()).toLocaleString('en-GB')}`)
   if (order.cashier_name) pushText(buffers, `Cashier: ${order.cashier_name}`)
   if (order.outlet_name) pushText(buffers, `Outlet: ${order.outlet_name}`)
   if (order.table_name) pushText(buffers, `Table: ${order.table_name}`)
@@ -336,7 +376,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
     const amountLabel = total === null ? 'Amount unavailable' : formatCurrency(currency, total)
     pushText(buffers, twoColumn(unitLabel, amountLabel, width)[0])
     const modifierText = [
-      ...(Array.isArray(item.modifiers) ? item.modifiers.map((mod) => mod.name).filter(Boolean) : []),
+      ...(Array.isArray(item.modifiers) ? item.modifiers.map((/** @type {HardwareRecord} */ mod) => mod.name).filter(Boolean) : []),
       item.item_notes
     ].filter(Boolean).join(', ')
     if (modifierText) {
@@ -385,6 +425,7 @@ export function buildEscPosReceipt(order = {}, business = {}, settings = {}, opt
   return Buffer.concat(buffers)
 }
 
+/** @param {Record<string, unknown>} [settings] @param {Buffer | Uint8Array | number[] | string} [payload] */
 export async function sendRawEscPos(settings = {}, payload) {
   const normalized = normalizePosHardwareSettings(settings)
   if (!normalized.escpos_enabled && normalized.receipt_print_mode !== 'escpos') {
@@ -404,14 +445,18 @@ export async function sendRawEscPos(settings = {}, payload) {
     await sendPath(target.path, bytes)
     return { success: true, verified: true, transport: 'path', target: target.path }
   } catch (error) {
-    return { success: false, error: error?.message || 'Could not send ESC/POS command.' }
+    // Both sendTcp and fs.WriteStream reject with Node system Errors.
+    const sendError = /** @type {Error} */ (error)
+    return { success: false, error: sendError?.message || 'Could not send ESC/POS command.' }
   }
 }
 
+/** @param {string} host @param {number} port @param {Buffer} payload @param {number} [timeoutMs] @returns {Promise<void>} */
 function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let settled = false
     const socket = net.createConnection({ host, port })
+    /** @param {Error | null} [error] */
     const finish = (error) => {
       if (settled) return
       settled = true
@@ -421,7 +466,7 @@ function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
     }
     socket.setTimeout(timeoutMs)
     socket.once('connect', () => {
-      socket.write(payload, (error) => {
+      socket.write(payload, (/** @type {Error | null | undefined} */ error) => {
         if (error) finish(error)
         else socket.end()
       })
@@ -432,6 +477,7 @@ function sendTcp(host, port, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
   })
 }
 
+/** @param {string} targetPath @param {Buffer} payload @returns {Promise<void>} */
 function sendPath(targetPath, payload) {
   return new Promise((resolve, reject) => {
     const stream = fs.createWriteStream(targetPath)
@@ -441,6 +487,7 @@ function sendPath(targetPath, payload) {
   })
 }
 
+/** @param {{order?: HardwareRecord, business?: HardwareRecord, settings?: Record<string, unknown>, openDrawer?: boolean}} [input] */
 export async function printEscPosReceipt({ order = {}, business = {}, settings = {}, openDrawer = false } = {}) {
   if (!order?.receipt_number && order?._pending_sync !== true) {
     return { success: false, error: 'Printing is blocked until the server-issued receipt number is available.' }
@@ -461,6 +508,7 @@ export async function printEscPosReceipt({ order = {}, business = {}, settings =
     : result
 }
 
+/** @param {{labels?: HardwareRecord[], settings?: Record<string, unknown>}} [input] */
 export async function printBarcodeLabels({ labels = [], settings = {} } = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   const pathTarget = String(normalized.escpos_printer_path || '').trim()
@@ -500,6 +548,7 @@ export async function printBarcodeLabels({ labels = [], settings = {} } = {}) {
   return result.success ? { ...result, printed: validRows.length, message: 'Barcode labels sent to the verified printer output path.' } : result
 }
 
+/** @param {Record<string, unknown>} [settings] */
 export async function openCashDrawer(settings = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   if (!normalized.cash_drawer_enabled) {
@@ -514,6 +563,7 @@ export async function openCashDrawer(settings = {}) {
     : result
 }
 
+/** @param {string} [kind] @param {Record<string, unknown>} [settings] @param {HardwareRecord} [business] */
 export async function testPosHardwareDevice(kind = 'receipt', settings = {}, business = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   if (kind === 'drawer') return openCashDrawer(normalized)
@@ -546,6 +596,12 @@ export async function testPosHardwareDevice(kind = 'receipt', settings = {}, bus
   }
 }
 
+/**
+ * `data` is supplied by existing POS callers; this expectation type does not
+ * validate provider responses or alter the bridge's existing JSON handling.
+ * @param {Record<string, unknown>} [settings]
+ * @param {{amount?: unknown, test?: unknown, currency?: unknown, reference?: unknown, request_id?: unknown, id?: unknown, metadata?: unknown}} [data]
+ */
 export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   const mode = normalized.payment_terminal_mode
@@ -585,8 +641,12 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
       signal: controller.signal
     })
     const text = await response.text()
+    /** @type {Record<string, unknown>} */
     let body = {}
-    try { body = text ? JSON.parse(text) : {} } catch { body = { raw: text } }
+    // The bridge contract is expected to return an object; JSON.parse itself
+    // does not validate that expectation and this assertion preserves the
+    // existing property access/failure behavior for malformed responses.
+    try { body = text ? /** @type {Record<string, unknown>} */ (JSON.parse(text)) : {} } catch { body = { raw: text } }
     if (!response.ok) {
       return { success: false, error: body.error || body.message || `Terminal bridge returned ${response.status}.` }
     }
@@ -609,11 +669,13 @@ export async function sendPaymentTerminalTotal(settings = {}, data = {}) {
       terminal: body
     }
   } catch (error) {
+    // fetch/Response failures here are native Error or DOMException objects.
+    const requestError = /** @type {Error} */ (error)
     return {
       success: false,
-      error: error?.name === 'AbortError'
+      error: requestError?.name === 'AbortError'
         ? 'Timed out waiting for the payment terminal.'
-        : error?.message || 'Could not reach payment terminal bridge.'
+        : requestError?.message || 'Could not reach payment terminal bridge.'
     }
   } finally {
     clearTimeout(timer)
@@ -639,9 +701,11 @@ function localPrinterSubnet() {
   return null;
 }
 
+/** @param {string} host @param {number} [port] @param {number} [timeoutMs] @returns {Promise<boolean>} */
 function probePrinterPort(host, port = DEFAULT_NETWORK_PORT, timeoutMs = 600) {
   return new Promise((resolve) => {
     let settled = false;
+    /** @param {boolean} open */
     const finish = (open) => {
       if (settled) return;
       settled = true;
@@ -657,6 +721,7 @@ function probePrinterPort(host, port = DEFAULT_NETWORK_PORT, timeoutMs = 600) {
   });
 }
 
+/** @param {{port?: number, timeoutMs?: number, concurrency?: number}} [options] */
 export async function scanNetworkPrinters({ port = DEFAULT_NETWORK_PORT, timeoutMs = 600, concurrency = 48 } = {}) {
   // Connect-only probe: no bytes are ever sent, so tills, routers, and PCs
   // answer (or refuse) without printing anything.

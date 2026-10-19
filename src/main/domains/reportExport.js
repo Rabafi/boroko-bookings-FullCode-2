@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js'
 import { recordCriticalError } from './operationalLog.js'
 import { createHash } from 'node:crypto'
@@ -5,10 +6,42 @@ import { createHash } from 'node:crypto'
 export const EXPORT_VERSION = '2.0'
 export const FINANCIAL_EXPORT_VERSION = 'bar-accounting-financial-truth-v1'
 
+/** @typedef {Record<string, unknown>} ReportRecordView */
+/** @typedef {{reconciliation?: unknown[], asOf?: unknown, [key: string]: unknown}} ReportReconciliationInput */
+/**
+ * Expected SQL RETURNS TABLE projection used by the desktop report renderers.
+ * This is a source-contract view only; it does not validate RPC JSON at runtime.
+ * @typedef {{
+ *   bookings: Array<{booking_number: string | null, invoice_number: string | null, guest_name: string | null, guest_phone: string | null, guest_email: string | null, room_number: string | null, room_type: string | null, booking_type: string | null, booking_source: string | null, quotation_number: string | null, check_in: string | null, check_out: string | null, nights: number | null, adults: number | null, children: number | null, booking_status: string | null, payment_status: string | null, payment_method_summary: string | null, accommodation_amount: number | null, folio_charges: number | null, gross_total: number | null, lifetime_amount_paid: number | null, balance_due: number | null, vat_rate: number | null, vat_amount: number | null, net_excluding_vat: number | null, created_at: string | null, created_by: string | null, notes: string | null}>,
+ *   payments: Array<{payment_id: string | null, paid_at: string | null, booking_number: string | null, invoice_number: string | null, guest_name: string | null, transaction_type: string | null, payment_method: string | null, amount: number | null, recorded_by: string | null, idempotency_key: string | null, notes: string | null}>,
+ *   outstanding: Array<{booking_number: string | null, invoice_number: string | null, guest_name: string | null, room_number: string | null, check_in: string | null, check_out: string | null, gross_total: number | null, amount_paid: number | null, balance_due: number | null, payment_status: string | null, booking_status: string | null, due_date: string | null, days_overdue: number | null, aging_bucket: string | null, last_payment_date: string | null, last_payment_method: string | null}>,
+ *   cancelled: Array<{booking_number: string | null, invoice_number: string | null, guest_name: string | null, room_number: string | null, original_check_in: string | null, original_check_out: string | null, nights: number | null, original_total: number | null, amount_paid_before: number | null, cancelled_at: string | null, cancellation_reason: string | null, cancelled_by: string | null, refund_amount: number | null, retained_amount: number | null, final_state: string | null, booking_source: string | null, notes: string | null}>,
+ *   refunds: Array<{refund_id: string | null, refund_timestamp: string | null, booking_number: string | null, invoice_number: string | null, guest_name: string | null, amount_paid_before: number | null, refund_amount: number | null, retained_amount: number | null, retained_percentage: number | null, refund_method: string | null, requested_by: string | null, approved_by: string | null, proof_reference: string | null, approval_note: string | null, general_notes: string | null, related_payment_id: string | null}>,
+ *   quotations: Array<{quotation_number: string | null, guest_name: string | null, guest_phone: string | null, guest_email: string | null, quotation_type: string | null, event_group_name: string | null, event_daily_rate: number | null, room_number: string | null, check_in: string | null, check_out: string | null, nights: number | null, adults: number | null, children: number | null, subtotal: number | null, tax: number | null, total: number | null, currency: string | null, status: string | null, valid_until: string | null, created_at: string | null, created_by: string | null, parent_quotation_number: string | null, converted_booking_number: string | null, converted_invoice_number: string | null, notes: string | null}>,
+ *   invoices: Array<{invoice_number: string | null, booking_number: string | null, guest_name: string | null, room_number: string | null, check_in: string | null, check_out: string | null, nights: number | null, issued_date: string | null, due_date: string | null, accommodation_amount: number | null, folio_charges: number | null, gross_total: number | null, amount_paid: number | null, balance_due: number | null, payment_status: string | null, booking_status: string | null, payment_count: number | null, last_payment_date: string | null, delivery_status: string | null}>,
+ *   exceptions: Array<{exception_type: string | null, severity: string | null, entity_type: string | null, entity_id: string | null, entity_number: string | null, description: string | null, expected_value: number | null, actual_value: number | null, variance: number | null, detected_at: string | null}>,
+ *   reconciliation: Array<{metric_name: string | null, expected_value: number | null, actual_value: number | null, variance: number | null, status: string | null, notes: string | null}>,
+ *   asOf: string, sources: Record<string, string>
+ * }} DetailedReportRows
+ */
+/**
+ * Successful result constructed after all required report RPCs settle.
+ * Manifest and totals are required here because the loader assigns both before returning.
+ * The SQL row view remains an expected-data assumption; this type adds no runtime validation.
+ * @typedef {DetailedReportRows & {
+ *   exportManifest: ReturnType<typeof buildReportExportManifest>,
+ *   controlTotals: ReturnType<typeof computeReconciliation>['controls']
+ * }} DetailedReportData
+ */
+
+/** @param {unknown} payload @returns {string} */
 export function hashReportPayload(payload) {
-  return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+  // Preserve the existing crypto error when JSON.stringify returns undefined.
+  const serialized = /** @type {string} */ (JSON.stringify(payload))
+  return createHash('sha256').update(serialized).digest('hex')
 }
 
+/** @param {{lodgeId: unknown, startDate: unknown, endDate: unknown, outletSelector?: unknown, sections?: Record<string, unknown>, asOf: unknown, reconciliationStatus?: unknown}} input */
 export function buildReportExportManifest({ lodgeId, startDate, endDate, outletSelector = null, sections = {}, asOf, reconciliationStatus = null }) {
   const sectionManifest = REQUIRED_RPCS.map(({ key, fn, label }) => ({
     key,
@@ -33,6 +66,7 @@ export function buildReportExportManifest({ lodgeId, startDate, endDate, outletS
 }
 
 // ─── Formula Injection Protection ────────────────────────────────────────────
+/** @param {unknown} value @returns {unknown} */
 export function sanitizeCellValue(value) {
   if (value == null) return ''
   if (typeof value !== 'string') return value
@@ -42,27 +76,37 @@ export function sanitizeCellValue(value) {
   return value
 }
 
+/** @param {unknown} row @returns {unknown} */
 export function sanitizeRow(row) {
   if (!Array.isArray(row)) return row
-  return row.map((value) => Array.isArray(value) ? sanitizeRow(value) : sanitizeCellValue(value))
+  const values = /** @type {unknown[]} */ (row)
+  return values.map((value) => Array.isArray(value) ? sanitizeRow(value) : sanitizeCellValue(value))
 }
 
 // ─── Payment Method Summary ──────────────────────────────────────────────────
+/** @param {unknown[]} [payments] @returns {string} */
 export function deriveBookingPaymentMethod(payments = []) {
-  const positive = payments.filter((p) => Number(p.amount || 0) > 0)
+  const positive = payments.filter((rawPayment) => {
+    const payment = /** @type {ReportRecordView} */ (rawPayment)
+    return Number(payment.amount || 0) > 0
+  })
   if (positive.length === 0) return 'None'
-  const methods = [...new Set(positive.map((p) => String(p.method || 'unknown')).filter(Boolean))]
+  const methods = [...new Set(positive.map((rawPayment) => {
+    const payment = /** @type {ReportRecordView} */ (rawPayment)
+    return String(payment.method || 'unknown')
+  }).filter(Boolean))]
   if (methods.length === 0) return 'None'
   if (methods.length === 1) return methods[0]
   return 'Mixed'
 }
 
 // ─── Aging Bucket ────────────────────────────────────────────────────────────
+/** @param {string | number | Date | null | undefined} checkOutDate */
 export function getAgingBucket(checkOutDate) {
   if (!checkOutDate) return 'not_yet_due'
   const today = new Date()
   const due = new Date(checkOutDate)
-  const diffDays = Math.floor((today - due) / 86400000)
+  const diffDays = Math.floor((today.valueOf() - due.valueOf()) / 86400000)
   if (diffDays <= 0) return 'not_yet_due'
   if (diffDays <= 7) return '1-7_days'
   if (diffDays <= 30) return '8-30_days'
@@ -83,24 +127,37 @@ const REQUIRED_RPCS = [
   { key: 'reconciliation', fn: 'get_reconciliation_controls_report', label: 'Reconciliation Controls' }
 ]
 
+/**
+ * @param {unknown} lodgeId
+ * @param {unknown} startDate
+ * @param {unknown} endDate
+ * @param {unknown} [outletSelector]
+ * @returns {Promise<DetailedReportData>}
+ */
 export async function loadDetailedReportData(lodgeId, startDate, endDate, outletSelector = null) {
   if (!lodgeId) throw new Error('loadDetailedReportData: lodgeId is required')
   if (!startDate || !endDate) throw new Error('loadDetailedReportData: date range is required')
 
+  /** @type {Record<string, unknown>} */
   const results = {}
+  /** @type {Array<{key: string, label: string, message: unknown}>} */
   const failures = []
 
   const settled = await Promise.allSettled(
     REQUIRED_RPCS.map(async ({ key, fn, label }) => {
       const params = { p_lodge_id: lodgeId, p_start_date: startDate, p_end_date: endDate }
       try {
-        const { data, error } = await state.supabase.rpc(fn, params)
+        // The assertion exists only to pass the optional-client check; property access still throws
+        // inside this try block if the configured client is absent, as it did before this view.
+        const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(fn, params)
         if (error) throw error
         results[key] = data || []
         return { key, label, success: true }
       } catch (err) {
         recordCriticalError(`reportExport.${fn}`, err, { lodgeId, startDate, endDate }, { level: 'error', limit: 0 })
-        failures.push({ key, label, message: err.message || String(err) })
+        // Read only the existing message property; this is not an error-shape validation.
+        const errorView = /** @type {{message?: unknown}} */ (err)
+        failures.push({ key, label, message: errorView.message || String(err) })
         return { key, label, success: false, error: err }
       }
     })
@@ -116,12 +173,18 @@ export async function loadDetailedReportData(lodgeId, startDate, endDate, outlet
   }
 
   const asOf = new Date().toISOString()
+  /** @type {Record<string, string>} */
   const sources = {}
   for (const { key } of REQUIRED_RPCS) {
     sources[key] = 'server'
   }
 
-  const output = {
+  // This local view follows the SQL RETURNS TABLE projections documented above;
+  // it does not validate, copy, coerce, or otherwise rewrite the raw RPC rows.
+  const output = /** @type {DetailedReportRows & {
+   * exportManifest?: DetailedReportData['exportManifest'],
+   * controlTotals?: DetailedReportData['controlTotals']
+   * }} */ ({
     bookings: results.bookings || [],
     payments: results.payments || [],
     cancelled: results.cancelled || [],
@@ -133,7 +196,7 @@ export async function loadDetailedReportData(lodgeId, startDate, endDate, outlet
     reconciliation: results.reconciliation || [],
     asOf,
     sources
-  }
+  })
   const reconciliation = computeReconciliation(output)
   output.exportManifest = buildReportExportManifest({
     lodgeId,
@@ -145,33 +208,50 @@ export async function loadDetailedReportData(lodgeId, startDate, endDate, outlet
     reconciliationStatus: reconciliation.reconciliationStatus
   })
   output.controlTotals = reconciliation.controls
-  return output
+  // Both required envelope fields have been assigned above; the view is applied
+  // only after the successful loader has completed its construction.
+  return /** @type {DetailedReportData} */ (output)
 }
 
 // ─── Reconciliation (server-authoritative from RPC) ──────────────────────────
+/** @param {ReportReconciliationInput} data */
 export function computeReconciliation(data) {
   const serverRows = data.reconciliation || []
 
-  const findMetric = (name) => serverRows.find((r) => r.metric_name === name) || null
+  /** @param {string} name @returns {unknown} */
+  const findMetric = (name) => serverRows.find((rawRow) => {
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return row.metric_name === name
+  }) || null
+  /** @param {string} name @returns {number} */
   const getVal = (name) => {
-    const row = findMetric(name)
-    return row ? Number(row.expected_value ?? row.actual_value ?? 0) : 0
+    const rawRow = findMetric(name)
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return rawRow ? Number(row.expected_value ?? row.actual_value ?? 0) : 0
   }
+  /** @param {string} name @returns {number} */
   const getExpected = (name) => {
-    const row = findMetric(name)
-    return row ? Number(row.expected_value ?? 0) : 0
+    const rawRow = findMetric(name)
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return rawRow ? Number(row.expected_value ?? 0) : 0
   }
+  /** @param {string} name @returns {number} */
   const getActual = (name) => {
-    const row = findMetric(name)
-    return row ? Number(row.actual_value ?? row.expected_value ?? 0) : 0
+    const rawRow = findMetric(name)
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return rawRow ? Number(row.actual_value ?? row.expected_value ?? 0) : 0
   }
+  /** @param {string} name @returns {unknown} */
   const getStatus = (name) => {
-    const row = findMetric(name)
-    return row ? row.status : 'info'
+    const rawRow = findMetric(name)
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return rawRow ? row.status : 'info'
   }
+  /** @param {string} name @returns {number} */
   const getVariance = (name) => {
-    const row = findMetric(name)
-    return row ? Number(row.variance ?? 0) : 0
+    const rawRow = findMetric(name)
+    const row = /** @type {ReportRecordView} */ (rawRow)
+    return rawRow ? Number(row.variance ?? 0) : 0
   }
 
   const grossBookingValue = getVal('Gross Booking Value')
@@ -218,6 +298,7 @@ export function computeReconciliation(data) {
 }
 
 // ─── Workbook Meta Rows ──────────────────────────────────────────────────────
+/** @param {{lodgeName?: unknown, companyName?: unknown, periodLabel?: unknown, currency?: unknown, outletLabel?: unknown, generatedAt?: unknown, asOf?: unknown, reconciliationStatus?: unknown, exportVersion?: unknown, exportManifest?: unknown}} input */
 export function buildExportMetaRows({ lodgeName, companyName, periodLabel, currency, outletLabel, generatedAt, asOf, reconciliationStatus, exportVersion, exportManifest }) {
   const rows = []
   rows.push(['Lodge', lodgeName || 'Tsa Bonno LodgingOS'])
@@ -230,8 +311,9 @@ export function buildExportMetaRows({ lodgeName, companyName, periodLabel, curre
   if (exportVersion) rows.push(['Export Version', exportVersion])
   if (reconciliationStatus) rows.push(['Reconciliation', reconciliationStatus])
   if (exportManifest) {
-    rows.push(['Completeness', exportManifest.completeness || 'INCOMPLETE'])
-    rows.push(['Source Manifest Hash', exportManifest.data_hash || ''])
+    const manifest = /** @type {ReportRecordView} */ (exportManifest)
+    rows.push(['Completeness', manifest.completeness || 'INCOMPLETE'])
+    rows.push(['Source Manifest Hash', manifest.data_hash || ''])
   }
   rows.push(['Data Source', 'Server-authoritative (RPC)'])
   rows.push([])
@@ -253,6 +335,7 @@ export const DATE_BASIS = {
 }
 
 // ─── Sheet Name Truncation ───────────────────────────────────────────────────
+/** @param {unknown} name @param {number} [maxLength] @returns {string} */
 export function safeSheetName(name, maxLength = 31) {
   const cleaned = String(name || 'Sheet')
     .replace(/[\[\]:*?/\\]/g, ' ')
@@ -262,6 +345,7 @@ export function safeSheetName(name, maxLength = 31) {
 }
 
 // ─── Column Width Estimation ─────────────────────────────────────────────────
+/** @param {unknown[]} headers @param {unknown[]} rows @returns {number[]} */
 export function estimateColumnWidths(headers, rows) {
   const widths = headers.map((h) => String(h).length + 2)
   for (const row of rows.slice(0, 50)) {

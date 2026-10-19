@@ -19,6 +19,18 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: corsHeaders })
 }
 
+function readOptionalField(value: unknown, key: string): unknown {
+  if (value === null || value === undefined) return undefined
+  return Reflect.get(Object(value), key, value)
+}
+
+function readDirectField(value: unknown, key: string): unknown {
+  if (value === null || value === undefined) {
+    throw new TypeError(`Cannot read properties of ${value} (reading '${key}')`)
+  }
+  return Reflect.get(Object(value), key, value)
+}
+
 function requireFunctionSecret(req: Request) {
   if (!FUNCTION_SECRET) {
     return jsonResponse({ error: 'Push function is not configured for secure delivery' }, 503)
@@ -59,7 +71,7 @@ Deno.serve(async (req) => {
     const deadEndpoints: string[] = []
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        const status = (r.reason as any)?.statusCode
+        const status = readOptionalField(r.reason, 'statusCode')
         if (status === 404 || status === 410) deadEndpoints.push(subs[i].endpoint)
       }
     })
@@ -77,6 +89,8 @@ Deno.serve(async (req) => {
     const failed = results.length - sent - pruned
     return jsonResponse({ sent, pruned, failed })
   } catch (e) {
-    return jsonResponse({ error: e.message }, 500)
+    // Preserve the existing direct property lookup (including its behavior
+    // for primitives and nullish thrown values) without claiming Error shape.
+    return jsonResponse({ error: readDirectField(e, 'message') }, 500)
   }
 })

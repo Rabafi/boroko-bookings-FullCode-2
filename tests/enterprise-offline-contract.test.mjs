@@ -34,8 +34,8 @@ for (const fnName of FOLIO_FUNCTIONS) {
     const fnBlock = fnBody.slice(0, closingBrace + 1)
 
     assert.ok(
-      fnBlock.includes('requireOnline(') || fnBlock.includes('state.isOnline'),
-      `${fnName} should enforce online_only via requireOnline / isOnline`
+      fnBlock.includes('submitIntent('),
+      `${fnName} must delegate to the shared immutable intent boundary`
     )
     assert.ok(
       !fnBlock.includes('queueOperation'),
@@ -44,6 +44,17 @@ for (const fnName of FOLIO_FUNCTIONS) {
   })
 }
 
+test('folioLedger.js: shared submitIntent boundary enforces online-only before intent preparation', () => {
+  const fnMarker = 'export async function submitIntent('
+  const idx = folioLedgerSource.indexOf(fnMarker)
+  assert.ok(idx >= 0, 'submitIntent boundary must exist')
+  const fnBlock = folioLedgerSource.slice(idx).match(/export async function submitIntent\(operationKind,[\s\S]*?\n\}/)?.[0]
+  assert.ok(fnBlock, 'submitIntent implementation body must be readable')
+  assert.match(fnBlock, /requireOnline\('Hotel folio '\s*\+\s*operationKind\)/)
+  assert.match(fnBlock, /prepareHotelFolioIntent/)
+  assert.match(fnBlock, /dispatchIntent/)
+  assert.doesNotMatch(folioLedgerSource, /queueOperation/)
+})
 test('folioLedger.js: requireOnline sets onlineOnly and internet connection message', () => {
   assert.ok(folioLedgerSource.includes('function requireOnline'), 'requireOnline helper required')
   assert.ok(folioLedgerSource.includes('onlineOnly = true') || folioLedgerSource.includes('err.onlineOnly = true'))

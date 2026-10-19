@@ -1,32 +1,47 @@
+// @ts-check
 import http from 'http';
 import url from 'url';
 import { validateIncomingRequest } from './meshSecurity.js';
 import { meshState } from './meshState.js';
 import { readSyncQueue } from '../syncStore.js';
 import { registerRemoteLock, releaseRemoteLock } from './meshLocks.js';
-import { getQueueItemBodyHash, isMeshShareableQueueItem } from './meshQueueMerge.js';
+import { getQueueItemBodyHash, getQueueItemOperationHash, isMeshShareableQueueItem } from './meshQueueMerge.js';
 import { buildTeamStateSnapshot } from './meshStateSync.js';
 
 export const MESH_HTTP_PORT_START = 53536;
 export const MESH_HTTP_PORT_END = 53545;
 
+/** @typedef {Omit<typeof meshState, 'server' | 'httpPort' | 'lastError'> & {
+ * server: ReturnType<typeof http.createServer> | null,
+ * httpPort: number | null,
+ * lastError: unknown
+ * }} MeshServerState */
+const serverMeshState = /** @type {MeshServerState} */ (meshState);
+
+/** @param {unknown} error */
+function readDirectThrownMessage(error) {
+  return /** @type {{ message: unknown }} */ (error).message;
+}
+
 /**
  * Starts the P2P dynamic local HTTP server.
  */
+/** @param {string} lodgeMeshSecret */
 export function startMeshServer(lodgeMeshSecret) {
-  if (meshState.server) {
+  if (serverMeshState.server) {
     console.log('[MeshServer] HTTP server already running.');
     return;
   }
 
   const server = http.createServer((req, res) => {
-    const parsedUrl = url.parse(req.url, true);
-    const pathname = parsedUrl.pathname;
+    const parsedUrl = url.parse(/** @type {string} */ (req.url), true);
+    const pathname = /** @type {string} */ (parsedUrl.pathname);
 
     const allowlistedRoutes = new Set([
       '/mesh/hello',
       '/mesh/state',
       '/mesh/state/team',
+      '/mesh/capabilities',
       '/mesh/queue/summary',
       '/mesh/queue/items',
       '/mesh/locks',
@@ -42,6 +57,7 @@ export function startMeshServer(lodgeMeshSecret) {
       return;
     }
 
+    /** @type {Buffer[]} */
     let bodyBuffers = [];
     let bodyLength = 0;
     let limitExceeded = false;
@@ -66,7 +82,7 @@ export function startMeshServer(lodgeMeshSecret) {
 
       // Validate HMAC signature (required on all routes)
       // req.url contains full path + query string exactly as received
-      const validation = validateIncomingRequest(req.method, req.url, req.headers, body, lodgeMeshSecret);
+      const validation = validateIncomingRequest(/** @type {string} */ (req.method), /** @type {string} */ (req.url), req.headers, body, lodgeMeshSecret);
       if (!validation.isValid) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Unauthorized: ${validation.error}` }));
@@ -86,14 +102,17 @@ export function startMeshServer(lodgeMeshSecret) {
         }
 
         if (req.method === 'GET' && pathname === '/mesh/state') {
-          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
+          const queue = /** @type {Array<Record<string, unknown>>} */ (readSyncQueue().filter(isMeshShareableQueueItem));
           let oldestQueuedAt = null;
           if (queue.length > 0) {
             const times = queue
-              .map((item) => item.createdAt || item.timestamp || item.created_at || item.data?.created_at || item.lastAttemptedAt)
+              .map((item) => {
+                const data = /** @type {Record<string, unknown> | null | undefined} */ (item.data);
+                return item.createdAt || item.timestamp || item.created_at || data?.created_at || item.lastAttemptedAt;
+              })
               .filter(Boolean);
             if (times.length > 0) {
-              oldestQueuedAt = new Date(Math.min(...times.map((t) => new Date(t).getTime()))).toISOString();
+              oldestQueuedAt = new Date(Math.min(...times.map((t) => new Date(/** @type {string | number | Date} */ (t)).getTime()))).toISOString();
             }
           }
 
@@ -141,27 +160,41 @@ export function startMeshServer(lodgeMeshSecret) {
           return;
         }
 
+        if (req.method === 'GET' && pathname === '/mesh/capabilities') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            protocolVersion: 2,
+            queueFeatures: ['atomic_multi_room_booking_v1']
+          }));
+          return;
+        }
         if (req.method === 'GET' && pathname === '/mesh/queue/summary') {
-          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
-          const summary = queue.map((item) => ({
+        const queue = /** @type {Array<Record<string, unknown>>} */ (readSyncQueue().filter(isMeshShareableQueueItem));
+          const summary = queue.map((item) => {
+            const data = /** @type {Record<string, unknown> | null | undefined} */ (item.data);
+            const payload = /** @type {Record<string, unknown> | null | undefined} */ (data?.payload);
+            return ({
             _queue_id: item._queue_id,
             operation: item.table || null,
             type: item.type || null,
             createdAt: item.createdAt || item.timestamp || null,
-            intentId: item.intentId || item.data?.p_idempotency_key || item.data?.payload?.create_idempotency_key || null,
-            bodyHash: getQueueItemBodyHash(item)
-          }));
+            intentId: item.intentId || data?.p_idempotency_key || payload?.create_idempotency_key || null,
+            bodyHash: getQueueItemBodyHash(item),
+            operationHash: getQueueItemOperationHash(item),
+            requiredFeatures: item.table === 'create_multi_room_booking' ? ['atomic_multi_room_booking_v1'] : []
+            });
+          });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(summary));
           return;
         }
 
         if (req.method === 'GET' && pathname === '/mesh/queue/items') {
-          const idsParam = parsedUrl.query.ids || '';
+          const idsParam = /** @type {string} */ (parsedUrl.query.ids || '');
           const requestedIds = new Set(idsParam.split(',').map((id) => id.trim()).filter(Boolean));
 
-          const queue = readSyncQueue().filter(isMeshShareableQueueItem);
-          const matchedItems = queue.filter((item) => requestedIds.has(item._queue_id));
+          const queue = /** @type {Array<Record<string, unknown>>} */ (readSyncQueue().filter(isMeshShareableQueueItem));
+          const matchedItems = queue.filter((item) => requestedIds.has(/** @type {string} */ (item._queue_id)));
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(matchedItems));
@@ -174,21 +207,25 @@ export function startMeshServer(lodgeMeshSecret) {
       } catch (err) {
         console.error('[MeshServer] Internal server error handling request:', err);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Internal server error: ${err.message}` }));
+        res.end(JSON.stringify({ error: `Internal server error: ${readDirectThrownMessage(err)}` }));
       }
     });
   });
 
+  /** @param {unknown} err */
   const handleRuntimeError = (err) => {
     console.error('[MeshServer] P2P HTTP Server experienced an error:', err);
-    meshState.lastError = err.message;
+    serverMeshState.lastError = readDirectThrownMessage(err);
     meshState.running = false;
   };
 
+  /** @param {number} port */
   const tryPort = (port) => {
+    /** @param {unknown} error */
     const onBindError = (error) => {
       server.removeListener('listening', onListening);
-      if (error?.code === 'EADDRINUSE' && port < MESH_HTTP_PORT_END) {
+      const errorFields = /** @type {Record<string, unknown> | null | undefined} */ (error);
+      if (errorFields?.code === 'EADDRINUSE' && port < MESH_HTTP_PORT_END) {
         tryPort(port + 1);
         return;
       }
@@ -196,10 +233,10 @@ export function startMeshServer(lodgeMeshSecret) {
     };
     const onListening = () => {
       server.removeListener('error', onBindError);
-      meshState.httpPort = port;
-      meshState.server = server;
+      serverMeshState.httpPort = port;
+      serverMeshState.server = server;
       meshState.running = true;
-      meshState.lastError = null;
+      serverMeshState.lastError = null;
       server.on('error', handleRuntimeError);
       console.log(`[MeshServer] P2P HTTP Server bound to predictable port ${port}`);
     };
@@ -215,15 +252,15 @@ export function startMeshServer(lodgeMeshSecret) {
  * Stops the P2P local HTTP server.
  */
 export function stopMeshServer() {
-  if (meshState.server) {
+  if (serverMeshState.server) {
     try {
-      meshState.server.close();
+      serverMeshState.server.close();
       console.log('[MeshServer] P2P HTTP Server stopped.');
     } catch (err) {
       console.error('[MeshServer] Error stopping HTTP server:', err);
     }
-    meshState.server = null;
-    meshState.httpPort = null;
+    serverMeshState.server = null;
+    serverMeshState.httpPort = null;
     meshState.running = false;
   }
 }

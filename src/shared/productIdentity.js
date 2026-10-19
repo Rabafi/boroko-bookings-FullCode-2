@@ -1,3 +1,5 @@
+/// <reference path="./productIdentity-build.d.ts" />
+// @ts-check
 import { ECOSYSTEM_BRAND, PRODUCT_BRANDS } from './brandIdentity.js'
 
 // LodgingOS is the established client. Keep its legacy compatibility identity
@@ -93,6 +95,7 @@ const RESTAURANT_OPS = Object.freeze([
 const LODGE_FOOD_BEVERAGE = Object.freeze(['food-beverage'])
 
 
+/** @param {...readonly string[]} groups @returns {readonly string[]} */
 function freezeRoutes(...groups) {
   const set = new Set()
   for (const group of groups) {
@@ -184,15 +187,21 @@ export const PRODUCT_DEFINITIONS = Object.freeze({
   })
 })
 
+/** @typedef {typeof PRODUCT_DEFINITIONS[keyof typeof PRODUCT_DEFINITIONS]} ProductDefinition */
+/** @typedef {typeof PRODUCT_FAMILY_IDS[keyof typeof PRODUCT_FAMILY_IDS]} ProductFamilyId */
+
+/** @returns {keyof typeof PRODUCT_DEFINITIONS} */
 export function getRuntimeProductId() {
   if (typeof __TSA_BONNO_PRODUCT__ === 'string' && PRODUCT_DEFINITIONS[__TSA_BONNO_PRODUCT__]) return __TSA_BONNO_PRODUCT__
   return FALLBACK_PRODUCT_ID
 }
 
+/** @param {unknown} [productId] @returns {ProductDefinition} */
 export function getProductDefinition(productId = getRuntimeProductId()) {
-  return PRODUCT_DEFINITIONS[productId] || PRODUCT_DEFINITIONS[FALLBACK_PRODUCT_ID]
+  return PRODUCT_DEFINITIONS[/** @type {keyof typeof PRODUCT_DEFINITIONS} */ (productId)] || PRODUCT_DEFINITIONS[FALLBACK_PRODUCT_ID]
 }
 
+/** @param {unknown} propertyType @returns {string} */
 export function normalizePropertyTypeForProduct(propertyType) {
   const raw = String(propertyType || '').trim().toLowerCase()
   if (raw === 'pos_only') return 'restaurant'
@@ -224,6 +233,7 @@ export const PRODUCT_FAMILY_LABELS = Object.freeze({
  * - restaurant / pos_only -> hospitality-pos
  * - hotel / resort -> hotel
  */
+/** @param {unknown} propertyTypeOrFamily @returns {ProductFamilyId} */
 export function resolveProductFamily(propertyTypeOrFamily) {
   const raw = String(propertyTypeOrFamily || '').trim().toLowerCase()
   if (raw === PRODUCT_FAMILY_IDS.LODGE_CAMP || raw === PRODUCT_FAMILY_IDS.HOTEL || raw === PRODUCT_FAMILY_IDS.HOSPITALITY_POS) {
@@ -238,19 +248,23 @@ export function resolveProductFamily(propertyTypeOrFamily) {
   return PRODUCT_FAMILY_IDS.LODGE_CAMP
 }
 
+/** @param {unknown} productFamily @returns {string} */
 export function getProductFamilyLabel(productFamily) {
   const family = resolveProductFamily(productFamily)
   return PRODUCT_FAMILY_LABELS[family] || PRODUCT_FAMILY_LABELS['lodge-camp']
 }
 
+/** @param {unknown} productFamily @returns {boolean} */
 export function isLodgeCampProductFamily(productFamily) {
   return resolveProductFamily(productFamily) === PRODUCT_FAMILY_IDS.LODGE_CAMP
 }
 
+/** @param {unknown} productFamily @returns {boolean} */
 export function isHotelProductFamily(productFamily) {
   return resolveProductFamily(productFamily) === PRODUCT_FAMILY_IDS.HOTEL
 }
 
+/** @param {unknown} productFamily @returns {boolean} */
 export function isHospitalityPosProductFamily(productFamily) {
   return resolveProductFamily(productFamily) === PRODUCT_FAMILY_IDS.HOSPITALITY_POS
 }
@@ -258,6 +272,7 @@ export function isHospitalityPosProductFamily(productFamily) {
 // Product identity is a hard boundary.  The shared runtime may contain all
 // modules, but a Restaurant profile must never make the Hotel or Lodge app
 // present itself as the POS product (and vice versa).
+/** @param {unknown} productId @param {unknown} propertyType @returns {boolean} */
 export function isProductCompatiblePropertyType(productId, propertyType) {
   const product = getProductDefinition(productId)
   const normalized = normalizePropertyTypeForProduct(propertyType)
@@ -266,6 +281,7 @@ export function isProductCompatiblePropertyType(productId, propertyType) {
   return allowed.includes(normalized)
 }
 
+/** @param {unknown} [productId] @param {unknown} [propertyType] @returns {string} */
 export function getProductMismatchMessage(productId = getRuntimeProductId(), propertyType = '') {
   const product = getProductDefinition(productId)
   const normalized = normalizePropertyTypeForProduct(propertyType)
@@ -278,8 +294,9 @@ export function getProductMismatchMessage(productId = getRuntimeProductId(), pro
   return `This account belongs to a ${actualLabel} business, not ${product.name}. Use the matching ${ECOSYSTEM_BRAND.name} app or sign in with an account assigned to a ${product.name} business.`
 }
 
+/** @param {unknown} [productId] @param {unknown} [propertyType] @returns {Error & {code: string}} */
 export function createProductMismatchError(productId = getRuntimeProductId(), propertyType = '') {
-  const error = new Error(getProductMismatchMessage(productId, propertyType))
+  const error = /** @type {Error & {code: string}} */ (new Error(getProductMismatchMessage(productId, propertyType)))
   error.code = 'product_profile_mismatch'
   return error
 }
@@ -288,6 +305,7 @@ export function createProductMismatchError(productId = getRuntimeProductId(), pr
  * Normalize a hash path or route path to the first segment used in product allowlists.
  * Examples: "/bookings" -> "bookings", "/hpos/floor" -> "hpos", "/" -> ""
  */
+/** @param {unknown} [pathname] @returns {string} */
 export function getRoutePrefix(pathname = '') {
   const cleaned = String(pathname || '').replace(/^#/, '').split('?')[0].trim()
   if (!cleaned || cleaned === '/') return ''
@@ -295,6 +313,7 @@ export function getRoutePrefix(pathname = '') {
   return parts[0] || ''
 }
 
+/** @param {unknown} pathname @param {unknown} [productId] @returns {boolean} */
 export function isProductRouteAllowed(pathname, productId = getRuntimeProductId()) {
   const product = getProductDefinition(productId)
   const prefix = getRoutePrefix(pathname)
@@ -302,6 +321,7 @@ export function isProductRouteAllowed(pathname, productId = getRuntimeProductId(
   return allowed.includes(prefix)
 }
 
+/** @param {unknown} propertyType @param {unknown} [productId] @returns {true} */
 export function assertPropertyTypeMatchesProduct(propertyType, productId = getRuntimeProductId()) {
   if (isProductCompatiblePropertyType(productId, propertyType)) return true
   throw createProductMismatchError(productId, propertyType)

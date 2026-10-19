@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import {

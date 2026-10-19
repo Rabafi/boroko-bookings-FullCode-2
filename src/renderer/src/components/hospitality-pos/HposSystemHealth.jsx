@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -29,23 +30,32 @@ import {
   HposStatusBadge,
 } from './HposUi';
 
-const queueId = (row) => row?._queue_id || row?.id || null;
-const eventName = (row) => String(row?.action || row?.event_type || row?.type || 'POS event').replaceAll('_', ' ');
-const issueLabel = (entry) => String(entry?.scope || entry?.operation || 'system')
+/** Expected UI projection only; the assertion does not validate persisted row content. Selected leaves remain unknown. */
+/** @typedef {Record<string, unknown> & {_queue_id?: unknown, id?: unknown, action?: unknown, event_type?: unknown, type?: unknown, scope?: unknown, operation?: unknown, severity?: unknown, level?: unknown}} PosHealthRowProjection */
+/** @param {unknown} row */
+const queueId = (row) => /** @type {PosHealthRowProjection | null | undefined} */ (row)?._queue_id || /** @type {PosHealthRowProjection | null | undefined} */ (row)?.id || null;
+/** @param {unknown} row */
+const eventName = (row) => String(/** @type {PosHealthRowProjection | null | undefined} */ (row)?.action || /** @type {PosHealthRowProjection | null | undefined} */ (row)?.event_type || /** @type {PosHealthRowProjection | null | undefined} */ (row)?.type || 'POS event').replaceAll('_', ' ');
+/** @param {unknown} entry */
+const issueLabel = (entry) => String(/** @type {PosHealthRowProjection | null | undefined} */ (entry)?.scope || /** @type {PosHealthRowProjection | null | undefined} */ (entry)?.operation || 'system')
   .replaceAll('_', ' ')
   .replace(/\bpos\b/gi, 'sale')
   .replace(/\brpc\b/gi, '')
   .replace(/\s+/g, ' ')
   .trim()
   .replace(/\b\w/g, (ch) => ch.toUpperCase()) || 'System';
+/** @param {unknown} entry */
 const issueTone = (entry) => {
-  const scope = String(entry?.scope || entry?.operation || '').toLowerCase();
-  const level = String(entry?.severity || entry?.level || '').toLowerCase();
+  const scope = String(/** @type {PosHealthRowProjection | null | undefined} */ (entry)?.scope || /** @type {PosHealthRowProjection | null | undefined} */ (entry)?.operation || '').toLowerCase();
+  const level = String(/** @type {PosHealthRowProjection | null | undefined} */ (entry)?.severity || /** @type {PosHealthRowProjection | null | undefined} */ (entry)?.level || '').toLowerCase();
   return scope.includes('financial') || scope.includes('db_init') || level === 'error' ? 'danger' : 'warning';
 };
+/** @param {unknown} ts */
 const issueTime = (ts) => {
   if (!ts) return 'Time unknown';
-  try { return new Date(ts).toLocaleString('en-GB'); } catch { return ts; }
+  // The existing producer convention is a timestamp scalar; this assertion
+  // leaves the persisted value unvalidated and preserves the fallback value.
+  try { return new Date(/** @type {string | number} */ (ts)).toLocaleString('en-GB'); } catch { return ts; }
 };
 
 export default function HposSystemHealth() {
@@ -58,43 +68,50 @@ export default function HposSystemHealth() {
   const canAudit = canAccessCapability(access, 'audit.view');
   const canClearIssues = canAccessCapability(access, 'system.health');
   const requestedTab = searchParams.get('tab');
-  const initialTab = ['sync', 'issues', 'devices', 'checks'].includes(requestedTab) || (requestedTab === 'audit' && canAudit)
+  const initialTab = requestedTab !== null && (['sync', 'issues', 'devices', 'checks'].includes(requestedTab) || (requestedTab === 'audit' && canAudit))
     ? requestedTab
     : 'sync';
   const [activeTab, setActiveTab] = useState(initialTab);
-  const [status, setStatus] = useState(null);
-  const [details, setDetails] = useState(null);
-  const [hardware, setHardware] = useState({});
-  const [displays, setDisplays] = useState([]);
-  const [audit, setAudit] = useState([]);
+  // These IPC/cache results are not validated as records. Keep their actual
+  // transport values visible to the compiler instead of inferring from null.
+  // The component intentionally replaces a failed read with {} before storing it.
+  const [status, setStatus] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot> | null} */ (null));
+  // Failed IPC reads become {}; summary fields remain partial and queue rows unknown.
+  const [details, setDetails] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').SyncDetailsSnapshot> | null} */ (null));
+  // The IPC producer constructs the settings projection, while this component
+  // also keeps an empty local fallback and applies partial UI edits.
+  const [hardware, setHardware] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').PosHardwareSettings>} */ ({}));
+  // Existing Array.isArray checks establish only the outer container.
+  const [displays, setDisplays] = useState(/** @type {unknown[]} */ ([]));
+  const [audit, setAudit] = useState(/** @type {unknown[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [scannerVerifying, setScannerVerifying] = useState(false);
   const [scannerCaptureCount, setScannerCaptureCount] = useState(0);
-  const [pendingScannerVerification, setPendingScannerVerification] = useState(null);
-  const [criticalErrors, setCriticalErrors] = useState([]);
-  const [unsyncedVoids, setUnsyncedVoids] = useState([]);
-  const [rendererErrors, setRendererErrors] = useState([]);
-  const [printers, setPrinters] = useState([]);
+  const [pendingScannerVerification, setPendingScannerVerification] = useState(/** @type {import('../../../../shared/barcodeScanner.js').BarcodeScanSuccess | null} */ (null));
+  const [criticalErrors, setCriticalErrors] = useState(/** @type {unknown[]} */ ([]));
+  const [unsyncedVoids, setUnsyncedVoids] = useState(/** @type {unknown[]} */ ([]));
+  const [rendererErrors, setRendererErrors] = useState(/** @type {unknown[]} */ ([]));
+  const [printers, setPrinters] = useState(/** @type {unknown[]} */ ([]));
   const [showAdvancedScanner, setShowAdvancedScanner] = useState(false);
   const [displayFullScreen, setDisplayFullScreen] = useState(true);
   const [testingAll, setTestingAll] = useState(false);
-  const [scanResults, setScanResults] = useState(null);
+  const [scanResults, setScanResults] = useState(/** @type {unknown} */ (null));
   const [scanning, setScanning] = useState(false);
   const [drawerReason, setDrawerReason] = useState('');
   const [scanProductName, setScanProductName] = useState('');
-  const [morningCheck, setMorningCheck] = useState(null);
+  const [morningCheck, setMorningCheck] = useState(/** @type {Array<{label: string, ok: boolean, detail: string}> | null} */ (null));
   const [checkingMorning, setCheckingMorning] = useState(false);
   const [helpBusy, setHelpBusy] = useState(false);
-  const [mesh, setMesh] = useState(null);
+  const [mesh, setMesh] = useState(/** @type {unknown} */ (null));
   const [meshBusy, setMeshBusy] = useState(false);
   const [peerAddress, setPeerAddress] = useState('');
   const [peerPort, setPeerPort] = useState('');
   const canCashup = canAccessCapability(access, 'pos.cashup');
   const dailyChecksKey = `hpos-daily-checks:${new Date().toLocaleDateString('en-CA')}`;
-  const [dailyChecks, setDailyChecks] = useState(() => {
+  const [dailyChecks, setDailyChecks] = useState(/** @type {() => unknown} */ (() => {
     try {
       const raw = window.localStorage?.getItem(`hpos-daily-checks:${new Date().toLocaleDateString('en-CA')}`);
       const parsed = raw ? JSON.parse(raw) : null;
@@ -102,9 +119,9 @@ export default function HposSystemHealth() {
     } catch {
       return { open: {}, close: {}, cardMachineTotal: '', tillCardTotal: '' };
     }
-  });
+  }));
 
-  const scannerVerification = useCallback(async (result) => {
+  const scannerVerification = useCallback(/** @param {import('../../../../shared/barcodeScanner.js').BarcodeScanFailure | import('../../../../shared/barcodeScanner.js').BarcodeScanSuccess} result */ async (result) => {
     setScannerVerifying(false);
     setScannerCaptureCount(0);
     if (!result?.success) {
@@ -158,6 +175,7 @@ export default function HposSystemHealth() {
 
   useEffect(() => {
     if (!scannerVerifying) return undefined;
+    /** @type {number | null} */
     let idleTimer = null;
     const decoder = createBarcodeScannerDecoder({
       minLength: Number(hardware.barcode_scanner_min_length) || 4,

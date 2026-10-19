@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Presentation-only booking money helpers.
  *
@@ -6,6 +7,9 @@
  * explicit wherever a booking amount or payment status is shown to an
  * operator.
  */
+/** @typedef {Record<string, unknown> | undefined} BookingFinancialInput */
+
+/** @param {BookingFinancialInput | null} [booking] @returns {boolean} */
 export function isPendingBookingFinancial(booking = {}) {
   return booking?._financial_estimate === true
     || booking?._pending_payment === true
@@ -16,11 +20,13 @@ export function isPendingBookingFinancial(booking = {}) {
     || booking?._sync_state === 'sync_failed'
 }
 
+/** @param {unknown} value @returns {number} */
 function amount(value) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+/** @param {BookingFinancialInput} [booking] @returns {{pending: boolean, authoritative: boolean, total: number, charges: number, grandTotal: number, amountPaid: number, outstanding: number, paymentStatus: unknown, statusLabel: unknown}} */
 export function getBookingFinancialView(booking = {}) {
   const pending = isPendingBookingFinancial(booking)
   const total = Math.max(0, amount(pending && booking._estimated_total_amount != null
@@ -47,6 +53,7 @@ export function getBookingFinancialView(booking = {}) {
   }
 }
 
+/** @param {BookingFinancialInput} [booking] @returns {string} */
 export function bookingPaymentStatusLabel(booking = {}) {
   const view = getBookingFinancialView(booking)
   if (view.pending) return 'Pending confirmation'
@@ -54,4 +61,3 @@ export function bookingPaymentStatusLabel(booking = {}) {
   if (view.paymentStatus === 'partial') return 'Part paid'
   return 'Unpaid'
 }
-

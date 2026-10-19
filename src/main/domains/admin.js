@@ -34,6 +34,7 @@ import { inferLicenseProductId } from './licenseAssignmentCompatibility.js'
 
 const masterAdminLoginLimiter = createLoginFailureLimiter()
 
+/** @param {string} email @param {string} password */
 export async function checkMasterAdmin(email, password) {
   await checkOnline();
   if (!state.isOnline) {
@@ -633,10 +634,24 @@ export async function getCompanyStats(targetLodgeId) {
 
 // ─── ADMIN: Licenses ───────────────────────────────────────────────────────────
 
+/**
+ * These views describe the fields selected by the license readers and returned
+ * by the entitlement RPC. They are expected-data views, not runtime validation
+ * of PostgREST JSON or compatibility-schema rows.
+ * @typedef {{id: unknown, lodge_id: unknown, lodge_name: unknown, business_type: unknown, subscription_plan: unknown, payment_status: unknown, monthly_fee: unknown, currency: unknown, issued_at: unknown, expires_at: unknown, next_due_date: unknown, last_payment_date: unknown, notes: unknown, is_active: unknown, subscription_state?: unknown, license_key?: unknown, created_at?: unknown, updated_at?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown, grace_period_days?: unknown, offline_lease_days?: unknown, _product_inferred?: unknown, _source?: unknown}} AdminLicenseExpectedData
+ * @typedef {{status: unknown, payment_status: unknown, subscription_state?: unknown, access_allowed?: unknown, allowed?: unknown, lodge_id?: unknown, source_license_id?: unknown, license_id?: unknown, id?: unknown, lodge_name?: unknown, plan?: unknown, subscription_plan?: unknown, license_key?: unknown, source_license_key?: unknown, monthly_fee?: unknown, currency?: unknown, issued_at?: unknown, expires_at?: unknown, next_due_date?: unknown, last_payment_date?: unknown, notes?: unknown, created_at?: unknown, updated_at?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown}} AdminEntitlementExpectedData
+ * @typedef {{entitlement?: unknown}} AdminEntitlementEnvelopeExpectedData
+ * @typedef {{lodge_id: string|null, lodge_name: string, company_name: string, business_type: string, property_type: string}} AdminCompanyLicenseExpectedData
+ * @typedef {{lodge_id?: unknown, lodge_name?: unknown, business_type?: unknown, expires_at?: unknown, notes?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, next_due_date?: unknown, last_payment_date?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown}} AdminCreateLicenseExpectedData
+ * @typedef {{operation_id: unknown, lodge_id: unknown, product_id: unknown, activation_reason: unknown, actor_id: unknown, actor_email: unknown, activated_by: unknown, license_id?: unknown, lodge_name?: unknown, business_type?: unknown, commercial_package_key?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, selected_addon_keys?: unknown, expires_at?: unknown, next_due_date?: unknown, notes?: unknown}} AdminCommercialSubscriptionAssignmentExpectedData
+ * @typedef {{license?: AdminCreateLicenseExpectedData, invoice?: unknown}} AdminSubscriptionContractExpectedData
+ */
+
 const LICENSE_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, subscription_state, payment_status, license_key, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, updated_at, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot';
 const LICENSE_PRODUCT_COMPAT_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, subscription_state, payment_status, license_key, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active, created_at, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot';
 const LICENSE_LEGACY_SELECT = 'id, lodge_id, lodge_name, business_type, subscription_plan, payment_status, monthly_fee, currency, issued_at, expires_at, next_due_date, last_payment_date, notes, is_active';
 
+/** @param {{message?: unknown}|null|undefined} error */
 function isLicenseSchemaCompatibilityError(error) {
   return /column licenses\.(subscription_state|license_key|created_at|updated_at) does not exist/i.test(String(error?.message || ''));
 }
@@ -644,20 +659,26 @@ function isLicenseSchemaCompatibilityError(error) {
 function generateLicenseKey() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const bytes = crypto.randomBytes(12);
+  /** @param {number} offset */
   const seg = (offset) => Array.from(bytes.slice(offset, offset + 4), (value) => chars[value % chars.length]).join('');
   return `BB-${seg(0)}-${seg(4)}-${seg(8)}`;
 }
 
+/** @param {unknown} data @returns {AdminEntitlementExpectedData|null} */
 function coerceEntitlementPayload(data) {
-  const row = Array.isArray(data) ? data[0] : data;
+  const row = /** @type {AdminEntitlementEnvelopeExpectedData|null|undefined} */ (Array.isArray(data) ? data[0] : data);
   if (!row || typeof row !== 'object') return null;
-  return row.entitlement && typeof row.entitlement === 'object' ? row.entitlement : row;
+  return row.entitlement && typeof row.entitlement === 'object' ?
+    /** @type {AdminEntitlementExpectedData} */ (row.entitlement) :
+    /** @type {AdminEntitlementExpectedData} */ (row);
 }
 
+/** @param {unknown} value @returns {string|null} */
 function normalizeLicenseLodgeId(value) {
   return normalizeLodgeId(value) || null;
 }
 
+/** @param {ReturnType<typeof requireAdmin>} db @param {string|null} targetLodgeId @returns {Promise<AdminEntitlementExpectedData|null>} */
 async function getAdminEntitlement(db, targetLodgeId) {
   if (!targetLodgeId) return null;
   const { data, error } = await db.rpc('get_lodge_entitlement', { p_lodge_id: targetLodgeId });
@@ -665,6 +686,7 @@ async function getAdminEntitlement(db, targetLodgeId) {
   return coerceEntitlementPayload(data);
 }
 
+/** @param {AdminLicenseExpectedData} license @returns {AdminLicenseExpectedData} */
 function normalizeLicenseRow(license) {
   const paymentStatus = license.payment_status || 'active';
   const computedState = computeSubscriptionState({
@@ -685,6 +707,7 @@ function normalizeLicenseRow(license) {
   };
 }
 
+/** @param {AdminEntitlementExpectedData|null} entitlement @param {AdminCompanyLicenseExpectedData|null|undefined} company @returns {AdminLicenseExpectedData|null} */
 function licenseFromEntitlement(entitlement, company) {
   if (!entitlement) return null;
   const status = String(entitlement.status || '').toLowerCase();
@@ -728,15 +751,16 @@ function licenseFromEntitlement(entitlement, company) {
   });
 }
 
+/** @param {ReturnType<typeof requireAdmin>} db @param {AdminLicenseExpectedData[]} licenses @returns {Promise<AdminLicenseExpectedData[]>} */
 async function fillMissingLicensesFromEntitlements(db, licenses) {
-  const companies = await getAllCompanies().catch(async () => {
+  const companies = /** @type {AdminCompanyLicenseExpectedData[]} */ (await getAllCompanies().catch(async () => {
     const { data, error } = await db.
       from('settings').
       select(COMPANY_SETTINGS_MINIMAL_SELECT).
       limit(500);
     if (error) throw new Error(error.message);
     return (data || []).map(normalizeCompanySettingsRow).filter((company) => company.lodge_id);
-  });
+  }));
 
   const companyByLodge = new Map((companies || []).map((company) => [normalizeLicenseLodgeId(company.lodge_id), company]));
   const merged = (licenses || []).map((license) => {
@@ -767,7 +791,9 @@ async function fillMissingLicensesFromEntitlements(db, licenses) {
   }));
   const synthesized = entitlementRows.
     filter((result) => result.status === 'fulfilled' && result.value).
-    map((result) => result.value);
+    map((result) => /** @type {AdminLicenseExpectedData} */ (
+      /** @type {PromiseFulfilledResult<AdminLicenseExpectedData|null>} */ (result).value
+    ));
   synthesized.forEach((license) => {
     const lodgeId = normalizeLicenseLodgeId(license.lodge_id);
     const company = companyByLodge.get(lodgeId);
@@ -784,11 +810,11 @@ async function fillMissingLicensesFromEntitlements(db, licenses) {
 export async function getLicenses() {
   if (!state.isOnline) throw new Error('Command Central licenses require an online connection');
   const db = requireAdmin();
-  let { data, error } = await db.
+  let { data, error } = /** @type {{data: AdminLicenseExpectedData[]|null, error: {message: string}|null}} */ (await db.
     from('licenses').
     select(LICENSE_SELECT).
     order('issued_at', { ascending: false }).
-    limit(500);
+    limit(500));
   if (error && isLicenseSchemaCompatibilityError(error)) {
     const productCompat = await db.
       from('licenses').
@@ -807,7 +833,7 @@ export async function getLicenses() {
     data = (fallback.data || []).map((row) => ({
       ...row,
       subscription_state: row.payment_status || 'active',
-      license_key: row.license_key || null,
+      license_key: /** @type {{license_key?: unknown}} */ (row).license_key || null,
       created_at: null,
       updated_at: null
     }));
@@ -818,6 +844,7 @@ export async function getLicenses() {
   return fillMissingLicensesFromEntitlements(db, normalized);
 }
 
+/** @param {AdminCreateLicenseExpectedData} input */
 export async function createLicense({ lodge_id, lodge_name, business_type, expires_at, notes, subscription_plan, payment_status, monthly_fee, currency, next_due_date, last_payment_date, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot }) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (!lodge_id) throw new Error('createLicense requires a valid lodge_id');
@@ -852,6 +879,7 @@ export async function createLicense({ lodge_id, lodge_name, business_type, expir
   throw new Error('Could not generate a unique license key. Please try again.');
 }
 
+/** @param {ReturnType<typeof requireAdmin>} db @param {unknown} licenseId @param {{product_id?: unknown, commercial_package_key?: unknown}} [source] */
 async function persistCommercialIdentity(db, licenseId, source = {}) {
   if (!licenseId || !source.product_id || !source.commercial_package_key) return;
   const { error } = await db.from('licenses').update({
@@ -861,6 +889,7 @@ async function persistCommercialIdentity(db, licenseId, source = {}) {
   if (error) throw new Error(error.message);
 }
 
+/** @param {AdminCommercialSubscriptionAssignmentExpectedData} [payload] */
 export async function assignCommercialSubscription(payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection')
   if (!String(payload.operation_id || '').trim()) throw new Error('A stable operation ID is required for subscription assignment')
@@ -874,6 +903,7 @@ export async function assignCommercialSubscription(payload = {}) {
   return data
 }
 
+/** @param {AdminSubscriptionContractExpectedData} [input] */
 export async function issueSubscriptionContract({ license = {}, invoice = null } = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const normalizedPlan = normalizePlanName(license.subscription_plan);

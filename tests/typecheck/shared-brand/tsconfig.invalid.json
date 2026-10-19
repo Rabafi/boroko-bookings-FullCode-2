@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tsconfig.typecheck-shared.json",
+  "files": [
+    "../../../packages/product-config/index.js",
+    "../../../src/shared/brandIdentity.js",
+    "./invalid.ts"
+  ],
+  "include": []
+}

@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './cacheStore.js'
 import {
@@ -11,12 +12,31 @@ import {
 
 const CACHE_KEY = 'channel-manager'
 
+/** @typedef {Record<string, unknown>} ChannelPropertyReadView */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptional(value, key) {
+  return /** @type {ChannelPropertyReadView | null | undefined} */ (value)?.[key]
+}
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readDirect(value, key) {
+  return /** @type {ChannelPropertyReadView} */ (value)[key]
+}
+
+/** @param {unknown} value @returns {object} */
+function spreadView(value) {
+  return /** @type {object} */ (value)
+}
+
+/** @param {string} subKey */
 function cacheKey(subKey) {
   return `${CACHE_KEY}:${subKey}`
 }
 
+/** @param {string} fn @param {Record<string, unknown>} args */
 async function callChannelRpc(fn, args) {
-  const { data, error } = await state.supabase.rpc(fn, args)
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(fn, args)
   if (error) throw error
   if (data?.success === false) throw new Error(data.error || 'Channel manager operation failed')
   return data
@@ -45,6 +65,7 @@ export function getAllMappings() {
   return dedupePromise('channelMappings:getAll', () => _getAllMappings())
 }
 
+/** @param {unknown} channelKey @param {unknown} sourceType @param {unknown} localId @param {unknown} [channelCode] @param {unknown} [channelName] */
 export async function createMapping(channelKey, sourceType, localId, channelCode = null, channelName = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -60,6 +81,7 @@ export async function createMapping(channelKey, sourceType, localId, channelCode
   return result
 }
 
+/** @param {unknown} mappingId @param {unknown} [channelCode] @param {unknown} [channelName] */
 export async function updateMapping(mappingId, channelCode = null, channelName = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -73,6 +95,7 @@ export async function updateMapping(mappingId, channelCode = null, channelName =
   return result
 }
 
+/** @param {unknown} mappingId */
 export async function deleteMapping(mappingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -102,6 +125,7 @@ export function getAllConfigs() {
   return dedupePromise('channelConfigs:getAll', () => _getAllConfigs())
 }
 
+/** @param {unknown} channelKey @param {unknown} [channelLabel] @param {boolean} [enabled] @param {boolean} [syncAvailability] @param {boolean} [syncRates] @param {boolean} [importReservations] @param {unknown} [credentials] @param {unknown} [settings] */
 export async function createConfig(channelKey, channelLabel = null, enabled = true, syncAvailability = true, syncRates = false, importReservations = false, credentials = {}, settings = {}) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -120,6 +144,7 @@ export async function createConfig(channelKey, channelLabel = null, enabled = tr
   return result
 }
 
+/** @param {unknown} configId @param {unknown} payload */
 export async function updateConfig(configId, payload) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -132,6 +157,7 @@ export async function updateConfig(configId, payload) {
   return result
 }
 
+/** @param {unknown} channelKey */
 export async function enableChannel(channelKey) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -143,6 +169,7 @@ export async function enableChannel(channelKey) {
   return result
 }
 
+/** @param {unknown} channelKey */
 export async function disableChannel(channelKey) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -171,9 +198,10 @@ export function getChannelDashboard() {
   return dedupePromise('channelDashboard:get', () => _getChannelDashboard())
 }
 
+/** @param {unknown[]} configs @param {unknown} channelKey @returns {unknown|null} */
 function configByChannel(configs, channelKey) {
   const key = String(channelKey || '').toLowerCase()
-  return (configs || []).find((c) => String(c.channel_key || '').toLowerCase() === key) || null
+  return (configs || []).find((config) => String(readDirect(config, 'channel_key') || '').toLowerCase() === key) || null
 }
 
 /**
@@ -182,11 +210,14 @@ function configByChannel(configs, channelKey) {
  * - Live OTA: adapter fails closed; server RPC (when online) keeps items in manual review.
  * Never reports provider_connected:true for uncertified live OTAs.
  */
+/** @param {unknown} [channelKey] */
 export async function processSyncQueue(channelKey = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
 
+  /** @type {unknown[]} */
   let configs = []
+  /** @type {unknown[]} */
   let pendingItems = []
   try {
     const dashboard = await _getChannelDashboard()
@@ -198,7 +229,7 @@ export async function processSyncQueue(channelKey = null) {
 
   if (channelKey) {
     pendingItems = pendingItems.filter(
-      (item) => String(item.channel_key || '').toLowerCase() === String(channelKey).toLowerCase()
+      (item) => String(readDirect(item, 'channel_key') || '').toLowerCase() === String(channelKey).toLowerCase()
     )
   }
 
@@ -212,7 +243,7 @@ export async function processSyncQueue(channelKey = null) {
   // requested channel so UI/tests see honest not-connected / manual export status.
   const probeKeys = channelKey
     ? [channelKey]
-    : [...new Set((configs || []).map((c) => c.channel_key).filter(Boolean))]
+    : [...new Set((configs || []).map((config) => readDirect(config, 'channel_key')).filter(Boolean))]
 
   if (pendingItems.length === 0 && probeKeys.length > 0) {
     for (const key of probeKeys) {
@@ -234,20 +265,20 @@ export async function processSyncQueue(channelKey = null) {
   }
 
   for (const item of pendingItems) {
-    const cfg = configByChannel(configs, item.channel_key)
+    const cfg = configByChannel(configs, readDirect(item, 'channel_key'))
     const result = await processSyncItem(item, cfg)
-    const retryCount = Number(item.retry_count ?? item.retries ?? 0)
-    const maxRetries = Number(item.max_retries ?? 3)
+    const retryCount = Number(readOptional(item, 'retry_count') ?? readOptional(item, 'retries') ?? 0)
+    const maxRetries = Number(readOptional(item, 'max_retries') ?? 3)
     const isDeadLetter =
-      item.status === 'dead_letter' ||
-      item.dead_lettered === true ||
+      readOptional(item, 'status') === 'dead_letter' ||
+      readOptional(item, 'dead_lettered') === true ||
       (retryCount >= maxRetries && !result.success)
 
     if (isDeadLetter) {
       deadLettered += 1
       adapterResults.push({
-        item_id: item.id,
-        channel_key: item.channel_key,
+        item_id: readOptional(item, 'id'),
+        channel_key: readOptional(item, 'channel_key'),
         dead_letter: true,
         retry_count: retryCount,
         ...result
@@ -258,8 +289,8 @@ export async function processSyncQueue(channelKey = null) {
     if (retryCount > 0) retried += 1
 
     adapterResults.push({
-      item_id: item.id,
-      channel_key: item.channel_key,
+      item_id: readOptional(item, 'id'),
+      channel_key: readOptional(item, 'channel_key'),
       retry_count: retryCount,
       ...result
     })
@@ -283,7 +314,7 @@ export async function processSyncQueue(channelKey = null) {
     } catch (err) {
       serverResult = {
         success: false,
-        error: err?.message || 'process_channel_sync_queue failed',
+        error: readOptional(err, 'message') || 'process_channel_sync_queue failed',
         provider_connected: false
       }
     }
@@ -315,29 +346,33 @@ export async function processSyncQueue(channelKey = null) {
 }
 
 /** Push availability for a channel via the adapter boundary. */
+/** @param {unknown} channelKey @param {unknown} [payload] */
 export async function pushChannelAvailability(channelKey, payload = {}) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   if (isManualChannel(channelKey)) {
-    return pushAvailability(channelKey, { ...payload, lodge_id: state.lodgeId })
+    return pushAvailability(channelKey, { ...spreadView(payload), lodge_id: state.lodgeId })
   }
   return pushAvailability(channelKey, payload)
 }
 
 /** Push rates for a channel via the adapter boundary. */
+/** @param {unknown} channelKey @param {unknown} [payload] */
 export async function pushChannelRates(channelKey, payload = {}) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   if (isManualChannel(channelKey)) {
-    return pushRates(channelKey, { ...payload, lodge_id: state.lodgeId })
+    return pushRates(channelKey, { ...spreadView(payload), lodge_id: state.lodgeId })
   }
   return pushRates(channelKey, payload)
 }
 
 /** Fetch reservations for a channel via the adapter boundary. */
+/** @param {unknown} channelKey @param {unknown} [since] */
 export async function fetchChannelReservations(channelKey, since = null) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   return fetchReservations(channelKey, since)
 }
 
+/** @param {unknown} payload */
 export async function importReservation(payload) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -347,6 +382,7 @@ export async function importReservation(payload) {
   })
 }
 
+/** @param {unknown} importId */
 export async function confirmImport(importId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -356,6 +392,7 @@ export async function confirmImport(importId) {
   })
 }
 
+/** @param {unknown} importId @param {unknown} [reason] */
 export async function rejectImport(importId, reason = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')

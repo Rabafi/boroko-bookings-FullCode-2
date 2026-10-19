@@ -1,15 +1,41 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Bell, CheckCheck, Trash2, Filter, Info, AlertTriangle, AlertCircle, CheckCircle, Zap, RefreshCw } from 'lucide-react'
 import Pagination, { usePagination } from './shared/Pagination'
 
-const TYPE_CONFIG = {
+/** @param {unknown} value @returns {value is import('../types/desktop-api.js').AdminNotificationRecord} */
+function isAdminNotificationRecord(value) {
+  if (!value || typeof value !== 'object') return false
+  const row = /** @type {Record<string, unknown>} */ (value)
+  return typeof row.id === 'string' && typeof row.type === 'string' && typeof row.title === 'string' &&
+    ['body', 'entity_type', 'entity_id', 'lodge_id', 'lodge_name', 'action_url', 'actor_email', 'read_at'].every((key) => row[key] === null || typeof row[key] === 'string') &&
+    typeof row.created_at === 'string'
+}
+
+/** @param {unknown} value */
+function readAdminNotifications(value) {
+  return Array.isArray(value) ? value.filter(isAdminNotificationRecord) : []
+}
+
+/** @param {unknown} value */
+function readUnreadCount(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/** @template {object} T @param {T} record @param {string} key @returns {key is keyof T} */
+function hasOwnKey(record, key) {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+const TYPE_CONFIG = /** @type {const} */ ({
   info:              { icon: Info,         color: 'text-blue-400',    bg: 'bg-blue-500/10',    border: 'border-blue-500/20' },
   warning:           { icon: AlertTriangle, color: 'text-amber-400',  bg: 'bg-amber-500/10',   border: 'border-amber-500/20' },
   error:             { icon: AlertCircle,  color: 'text-red-400',     bg: 'bg-red-500/10',     border: 'border-red-500/20' },
   success:           { icon: CheckCircle,  color: 'text-green-400',   bg: 'bg-green-500/10',   border: 'border-green-500/20' },
   action_required:   { icon: Zap,          color: 'text-purple-400',  bg: 'bg-purple-500/10',  border: 'border-purple-500/20' }
-}
+})
 
+/** @param {string | null | undefined} dateStr */
 function timeAgo(dateStr) {
   if (!dateStr) return ''
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -23,11 +49,11 @@ function timeAgo(dateStr) {
 }
 
 export default function NotificationInbox() {
-  const [notifications, setNotifications] = useState([])
+  const [notifications, setNotifications] = useState(/** @type {import('../types/desktop-api.js').AdminNotificationRecord[]} */ ([]))
   const [unreadCount, setUnreadCount] = useState(0)
   const [filter, setFilter] = useState({ unread_only: false, type: '' })
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string | null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -41,10 +67,11 @@ export default function NotificationInbox() {
         }),
         window.api.admin.getUnreadCount()
       ])
-      setNotifications(data || [])
-      setUnreadCount(count || 0)
+      setNotifications(readAdminNotifications(data))
+      setUnreadCount(readUnreadCount(count))
     } catch (err) {
-      setError(err?.message || 'Failed to load notifications')
+      // admin:getNotifications rethrows failures as Error instances in main.
+      setError(/** @type {Error} */ (err)?.message || 'Failed to load notifications')
     } finally {
       setLoading(false)
     }
@@ -59,6 +86,7 @@ export default function NotificationInbox() {
     load()
   }
 
+  /** @param {string[]} ids */
   const markSelectedRead = async (ids) => {
     await window.api.admin.markNotificationsRead(ids)
     load()
@@ -114,7 +142,7 @@ export default function NotificationInbox() {
           Unread ({unreadCount})
         </button>
         <div className="w-px h-5 bg-gray-700" />
-        {['info', 'warning', 'error', 'success', 'action_required'].map(t => {
+        {/** @type {(keyof typeof TYPE_CONFIG)[]} */ (['info', 'warning', 'error', 'success', 'action_required']).map(t => {
           const cfg = TYPE_CONFIG[t]
           return (
             <button
@@ -150,8 +178,8 @@ export default function NotificationInbox() {
           </div>
         ) : (
           <div className="divide-y divide-gray-700">
-            {paginated.map(n => {
-              const cfg = TYPE_CONFIG[n.type] || TYPE_CONFIG.info
+            {paginated.map((/** @type {import('../types/desktop-api.js').AdminNotificationRecord} */ n) => {
+              const cfg = hasOwnKey(TYPE_CONFIG, n.type) ? TYPE_CONFIG[n.type] : TYPE_CONFIG.info
               const Icon = cfg.icon
               const isUnread = !n.read_at
               return (

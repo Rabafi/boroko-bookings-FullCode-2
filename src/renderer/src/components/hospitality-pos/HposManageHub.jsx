@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import {
@@ -30,7 +31,6 @@ import {
   PiggyBank,
   Scale,
   Coins,
-  RefreshCw,
 } from 'lucide-react';
 import { useAccess, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
@@ -257,22 +257,30 @@ export default function HposManageHub() {
   // for reasons unrelated to role. Distinguish that below.
   const hasCommercialPackageKey = Boolean(String(access?.entitlement?.commercial_package_key || '').trim());
   const refreshEntitlement = access?.refreshEntitlement;
-  const [accessRefreshing, setAccessRefreshing] = useState(false);
-  const [accessRefreshError, setAccessRefreshError] = useState('');
+  // Silent self-refresh: no manual bar. Refreshes on open, every 60s while
+  // open, and when returning to the tab, so a Command Central package change
+  // lands on its own. Failures stay silent here; the global access refresh
+  // (App.jsx) owns loud errors.
   const refreshAccess = useCallback(async () => {
     if (!refreshEntitlement) return;
-    setAccessRefreshing(true);
-    setAccessRefreshError('');
     try {
-      const result = await refreshEntitlement({ forceFresh: true });
-      if (!result) throw new Error('Access could not be refreshed. Reconnect and try again.');
-    } catch (error) {
-      setAccessRefreshError(error?.message || 'Access could not be refreshed. Reconnect and try again.');
-    } finally {
-      setAccessRefreshing(false);
+      await refreshEntitlement({ forceFresh: true });
+    } catch {
+      /* silent: next interval or reopen retries */
     }
   }, [refreshEntitlement]);
-  useEffect(() => { refreshAccess(); }, [refreshAccess]);
+  useEffect(() => {
+    refreshAccess();
+    const interval = window.setInterval(() => { refreshAccess().catch(() => {}); }, 60_000);
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') refreshAccess().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', handleVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
+  }, [refreshAccess]);
   const [dailyOpening, setDailyOpening] = useState(null);
   const [dailyLoading, setDailyLoading] = useState(canManagePos);
   const [setupComplete, setSetupComplete] = useState(false);
@@ -388,16 +396,6 @@ export default function HposManageHub() {
         <div className="hpos-manage-heading-stat"><LayoutDashboard size={20} /><span><strong>{items.length}</strong> available workspaces</span></div>
       </header>
 
-      {refreshEntitlement && (
-        <div className="hpos-manage-readiness">
-          <button type="button" onClick={refreshAccess} disabled={accessRefreshing}>
-            <RefreshCw size={16} /> {accessRefreshing ? 'Refreshing access…' : 'Refresh package access'}
-          </button>
-          <small>After a Command Central change, refresh to update your available workspaces.</small>
-          {accessRefreshError && <span role="alert">{accessRefreshError}</span>}
-        </div>
-      )}
-
       {canManagePos && !dailyLoading && (setupComplete ? (
         <section className="hpos-manage-readiness is-ready" aria-label="Setup completion">
           <span><CheckCircle2 size={20} /></span>
@@ -495,7 +493,7 @@ export default function HposManageHub() {
           {barOnly && !hasCommercialPackageKey ? (
             <>
               <strong>Activating your Bar package…</strong>
-              <span>Your workspaces are empty because no Bar package is attached to this device yet. If Command Central just activated it, press “Refresh package access” above, reconnect, and refresh again.</span>
+              <span>Your workspaces are empty because no Bar package is attached to this device yet. If Command Central just activated it, wait a moment or reopen Manage — access refreshes on its own.</span>
             </>
           ) : (
             'Your role does not include manager workspaces.'

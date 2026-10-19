@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { FileText, DollarSign, Ban, CheckCircle, AlertTriangle, RefreshCw, CreditCard } from 'lucide-react'
 import { Modal } from './shared/Modal'

@@ -1,91 +1,94 @@
-# QA report - Tsa Bonno Bar customer manual
+# Candidate v2 QA report — Tsa Bonno Bar customer manual and quick-start
 
-Review date: 09 September 2026
-Documented version: 1.5.7
-Product: hospitality-pos desktop product
-Operating mode: Bar
-Operating system documented: Windows desktop
-Included packages assumed for customer use: Stock & Purchasing Pro, Accounting & Workforce, Growth & Multi-outlet
-Example outlet: Main Bar with fictional data
+Review date: 06 October 2026  
+Product: hospitality-pos 1.5.7  
+Operating mode: Bar  
+Candidate state: **awaiting content and visual approval; not promoted**
 
-## Final completion pass
+## Exact candidate pair
 
-The earlier finished status was rejected and the focused repair was completed without preserving a page-count target.
+| Document | Candidate revision | Pages | SHA-256 |
+|---|---|---:|---|
+| Bar customer manual | bar-manual-2026.10.06-candidate.2 | 56 | BCBF6AF4589E679F4571D6F8FC6054153262E349ED861C0427195689E08D7058 |
+| Bar quick-start | bar-quick-start-2026.10.06-candidate.2 | 5 | 20D8FE253D12489713DA196A060D9F0EA8BA84E1200A804DD4413F779707C435 |
 
-- The manual is 55 A4 pages and the quick-start is 4 A4 pages.
-- The printed contents page matches the final chapter starts: A 4, B 5, C 13, D 21, E 33, F 38, G 44 and H 51.
-- Immediate receipt printing is separate from historical sale lookup. Page 18 contains the print procedure and the real completed POS Receipt overlay with Receipt No, items, totals and Print receipt. Page 19 contains the historical receipt-detail screen and states that it has no separate reprint button.
-- Stock tasks are paired with their own images: delivery p. 34, individual count p. 35 and Count All p. 36. The stock count image is an honest task-focused crop; it does not rewrite application copy.
-- Split, transfer and settlement recovery are documented as separate actions. The manager correction task is coherent across pp. 31-32, and operator and manager cash-up tasks are paired with their own screens on pp. 39-40.
-- The unnecessary default-styled permission capture is absent. Screenshot text, including text embedded in images, was reviewed for internal implementation language.
-- The signed-product assumption and included Accounting & Workforce package are recorded for customer use. Internal activation and deployment mechanics remain outside the customer PDFs.
+The adjacent candidate manifest records the same hashes, revision/date metadata, page counts and awaiting-content-and-visual-approval state. Candidate v1 remains unchanged at manual 0CA570448B39C26795F036910D8B47E07F32FD2EED3CF728A467E41A65DC1BE5 and quick-start 51797905D69DD5D46C57E99C61D712340E03E5F583835C666D029FDFDB9423C4.
 
-## Reproducible build and structure checks
+## Corrections and evidence
+
+- **GUIDE-01:** Manual p. 56 and quick-start p. 5 now distinguish signed-peer identity quarantine from ordinary replay failure. Actual isolated signed-peer merge/store/diagnostic output feeds S27/S28. The original remains under Waiting for confirmation, the changed incoming peer copy is quarantined, a Network note persists, and this path creates no Failed operations row or quarantine Retry/Clear controls. The guide states that normal sync/replay is not automatically paused. Ordinary replay failures retain the distinct Failed operations manager Retry/Clear procedure. Manager investigation is Manage > System Health > Sync & queue > Other tills on this network; App issues > Send problem to support sends a device status summary.
+- **GUIDE-02:** Manual pp. 19 and 42 describe the current cashier My sales and authorized manager/finance Sales row/detail printing routes. S18/S29 show the saved POS Receipt overlay reached through those respective paths. Behavioral tests invoke the print bridge for row and detail from both paths and observe no sale, payment, void, return/refund or inventory mutation. These component tests do not certify physical printer acceptance. If printing fails, the guides direct staff to use the same saved receipt and never collect payment again.
+- **GUIDE-03:** Cover and embedded metadata use review date 06 October 2026 and candidate revision .candidate.2; quick-start is five pages. Manual contents point to current chapter starts A4/B5/C13/D21/E33/F38/G44/H51 and identity recovery p. 56. Manual p. 55 and quick-start p. 4 link to the dedicated p. 56/p. 5 procedures. Both recovery headings are bookmarked. Visual QA found and fixed a stranded “Customer display” heading at the foot of p. 19; it now starts p. 20.
+
+Both exact final-hash PDFs were rendered with Poppler at 120 DPI into the non-overwriting `rendered/adversarial-v2/` directory: all 56 manual and 5 quick-start pages. The 14 manual contact sheets and one quick-start contact sheet in `contact-sheets/adversarial-v2/` were surveyed. Full-size checks covered manual pp. 19–20, 42 and 55–56, quick-start pp. 1, 4–5, and raw S18/S27/S28/S29. The receipt overlays show the saved receipt and print control; the mesh captures show one original pending operation and a separate persistent Network note. The verifier counts the actual render/contact-sheet files and checks A4 page dimensions, searchable non-empty pages, exact candidate hashes, visible and embedded date/revision metadata, page counts, contents references, bookmark destinations, and raw/annotated screenshot inventories (29 each). It also hashes the official manifest, v1, canonical and packaged copies against their preserved values.
+
+## Test and build results
+
+| Command / check | Result |
+|---|---|
+| npm run test:bar-guide-behavior | **PASS** 5/5 final; covers signed-peer vs ordinary replay UI states, cashier/manager row and detail receipt paths with no business mutation, live candidate-builder regeneration, and candidate PDF structure/refs/bookmarks |
+| Red-before-fix regressions | **Expected FAIL** with the exact stale urgent-recovery manuscript paragraph restored temporarily; a finally block restored the corrected manuscript. A separate pre-rebuild artifact regression also caught the p. 19 orphan (3 pass, 1 fail), which was fixed before candidate v2 render. |
+| npm run test:mesh-multi-room | **PASS** 6/6; final re-review run |
+| npm run build:hospitality-pos | **PASS**; product build completed |
+| npm run test:bar-guides | **FAIL** 11/12: canonical manual actual 91BFD9812685939F780B60C273231515A91EE13930C8E08C9E9EE9D725437308 differs from unchanged official manifest 682AB70A868C706B9AB0DDE18A1272F40791B968B91963F62D481B6FD79C3356. No approved assets were changed. |
+| npm run test:bar | **FAIL** 695 pass, 2 fail, 5 skipped (702 total), final review run. The official manifest assertion reports the manual checksum mismatch first; direct hash verification also finds the canonical quick-start mismatch. The other failure is the missing configured Playwright Chromium headless-shell executable. Five skips remain skips. |
+| Targeted screenshot captures | **PASS** for real S27/S28 identity evidence and current cashier/manager receipt captures. The separate full sequence capture timed out at its Sell-screen wait; it is not reported as passing. |
+| PDF structure, metadata, hashes, contents, bookmarks and fresh render inventory | **PASS**, recorded in evidence/pdf-structure-check.json and candidate-v2-structure-final.log; actual inventory is 56/5 rendered pages and 15 contact sheets |
+
+The raw logs are in docs/bar-manual/build/remediation-candidate-2026-10-06-v2/evidence/, including the exact red-before-fix manuscript regression, the red stale-builder regression and final 5/5 green behavior run, candidate-v2-structure-final.log, and builder-reproducibility-after-fix.log. The scratch builder run reproduces both documents’ full extracted page text, bookmarks and date/revision subject; its creation timestamps vary, so scratch byte hashes differ while the reviewed candidate files and manifest hashes remain unchanged. The verifier additionally confirms v1 (0CA57044…1BE5 / 51797905…23C4), canonical/package (91BFD981…7308 / 1ADB0A01…2D73), and official-manifest SHA (1BD37B47…15E8) are preserved. The verifier confirms the candidate PDF hashes and freshly rendered 56/5 page and 15 contact-sheet inventory. The unrelated duplicate lost_found.manage bundler warning appears in UI capture/build/test output; it did not fail the affected product build or focused mesh test.
+
+## Manual impact and release boundary
+
+Manual update is **required** for the Bar recovery and receipt workflows. The approved manifest still identifies the 09 September 2026 pair. Existing canonical output/pdf and local unpacked package files retain their pre-candidate hashes; candidate v2 has not been copied to either location and the package has not been rebuilt with the candidate. Content/visual approval and ordinary authenticated cashier offline open/save acceptance remain pending. Physical printer acceptance is not claimed. Disposable SQL proof and runtime advisory review remain separate release gates. No production deployment, publication or customer communication occurred.
+
+## 2026-10-08 Accounting export completeness candidate v6
 
 | Check | Result |
 |---|---|
-| Python source compile | PASS - build_manual.py compiles |
-| PDF build | PASS - both PDFs generated by the shared ReportLab layout engine |
-| Customer manual | PASS - 55 A4 pages |
-| Quick-start | PASS - 4 A4 pages |
-| Text extraction | PASS - searchable text in both PDFs; no replacement glyphs |
-| Customer-language scan | PASS - pdf_check.py reports no forbidden internal product, route or implementation terms |
-| PDF bookmarks | PASS - manual 21 outline entries; quick-start 8 |
-| Contents links | PASS - 8 internal link annotations; printed chapter pages match the final PDF |
-| Page raster render | PASS - fresh rendered-release-check contains exactly 55 manual PNGs and 4 quick-start PNGs at 120 DPI |
-| Blank-page check | PASS - no unintended blank page |
-| Page size | PASS - A4 portrait for both documents |
-| Fonts | PASS - Arial and Arial-Bold embedded subsets; Helvetica is only a PDF resource fallback |
-| PDF security | PASS - not encrypted and no JavaScript |
-| Tagged accessibility | NOT CLAIMED - searchable/bookmarked, but not tagged or accessibility-certified |
+| Candidate pair hashes and page counts | PASS — manual 69 pages, 0f3616fd570116a35f0b8ecf2c1e5a7a0508e10f19cec12bae446d66149cff43; Quick Start 5 pages, 541f64c32d3abe46dca13747e3c21fc85d8e7b336307c674e29d5938c297c880 |
+| Candidate task and contents placement | PASS — BAR-DOC-123 appears in contents and continues across pages 56–57; continuation has one contextual S30 screenshot and an explicit incomplete sample caption |
+| Quick Start references | PASS — Part 11 manual pages 62–65; task refs 20, 24, 64, 63, 65. Procedure body unchanged. |
+| Full final-hash render inventory | PASS — 69 manual pages, 5 Quick Start pages, 7 contact sheets; all candidate pages A4 |
+| Visual review | PASS for candidate page 57 and Quick Start page 5; contact sheets and changed/downstream page flow reviewed |
+| Candidate structural/content validator | PASS — see docs/audits/2026-10-07/accounting-remediation/evidence/bar-guide-candidate-qa.json |
+| npm run test:bar-guide-behavior | PASS — 7/7 |
+| npm run test:bar-guides | FAIL — 11/12; sole failure is canonical manual SHA 91BFD981…7308 vs official manifest 682AB70A…C3356. The existing Quick Start canonical/package SHA 1ADB0A01…2D73 also differs from manifest DE66637B…C350B. |
+| Ordinary cashier packaged offline guide flow | PARTIAL — direct real package/preload IPC opened and saved both candidate PDFs offline and verified hashes; Help & guides menu did not render in the fixture, and the pair is not the currently approved pair. |
 
-Final artifact evidence:
+Candidate v6 is isolated and awaiting content/visual approval. The official manifest and canonical PDFs remain unchanged. No signed installer, publication, or customer distribution was produced.
 
-- Manual: output/pdf/Tsa-Bonno-Bar-Customer-Manual.pdf
-  SHA-256 682AB70A868C706B9AB0DDE18A1272F40791B968B91963F62D481B6FD79C3356
-- Quick-start: output/pdf/Tsa-Bonno-Bar-Quick-Start.pdf
-  SHA-256 DE66637B4C8D2E1A44F1F8E2943D9A88C3784838F317B0C55E2F6434AE0C350B
-- Source and packaged copies have matching hashes. The final directory package was rebuilt after the last PDF change.
+## 2026-10-09 S00 splash refresh for per-product splash themes
 
-## Required final-quality checklist
-
-| Requirement | Result |
+| Check | Result |
 |---|---|
-| Zero unintended blank pages | PASS |
-| Every screenshot matches its caption and task | PASS - final contact sheets and task pages reviewed |
-| Every annotation points to the intended control | PASS - split, transfer, delivery and count markers reviewed |
-| No incomplete or default-styled interface captures | PASS - obsolete permission capture removed |
-| No internal technical explanation remains in operational screenshot crops | PASS - count crop is task-focused; split crop shows only needed controls |
-| No short task split unnecessarily across pages | PASS - receipt, historical lookup, delivery, counts, correction and cash-up tasks reflowed |
-| Cashier instructions work with cashier permissions | PASS - cashier fixtures cover shift, Till, sale, receipt, correction request and cash-up |
-| Recovery paths verified per operation | PASS - split and transfer use saved-operation recovery; settlement has its own route |
-| Core correction workflow complete | PASS - request, reason/detail, approver control, status and not-a-refund consequence |
-| Operator cash-up workflow complete | PASS - submission, awaiting review, returned/resubmit and manager distinction |
-| All final pages inspected at readable size | PASS - 55 manual pages and 4 quick-start pages rendered; seven manual contact sheets and one quick-start contact sheet reviewed, with focused task-page checks |
+| S00 source-asset refresh | PASS - `assets/screenshots/raw/00-first-launch-splash.png` and `00-first-launch-splash-annotated.png` recaptured from the real `buildSplashHtml('hospitality-pos')` template via `docs/bar-manual/build/capture_splash_s00.mjs`; plum `#2f222a → #211920` background with terracotta progress, packaged light logo bytes verified embedded, 444x420 preserved, badges 1/2 on the same wordmark/title elements |
+| Recapture determinism | PASS - two consecutive runs byte-identical (pinned entrance end-state, pinned sweep/dots phase, compositor settle) |
+| Regression tests | PASS - `tests/product-splash-themes.test.mjs` 2/2, `tests/production-guardrails.test.mjs` ok |
+| Adjacent-asset isolation | PASS - only the two S00 files differ; an import side effect that rewrote every annotated file was reverted and the annotator CLI loop is now import-safe |
+| Manifest / PDFs / packaging | UNCHANGED - `document-manifest.json` checksums PDFs only, so `test:bar-guides` is unaffected; no candidate PDF was rebuilt, approved, or repackaged — S00 flows into the next manual candidate build |
 
-## Runtime, crash and handler checks
+Scope note: S00 is the only manual asset depicting the splash. `screenshots.csv` (build 1.5.7, color-neutral caption), `evidence.md`, `coverage.csv`, and the manuscript carry no stale color claims, so no text changes were needed.
 
-- The isolated capture harness passed for current Sell, Products, Stock, Cash & close, Open tabs, Manage, Sales, My sales, sale-correction, shift, Till, split, transfer, product edit, delivery, count, operator cash-up and manager cash-up states.
-- The full Bar regression suite (`npm run test:bar`) passed 395/395, including the guide tests, Hpos navigation, cash-up, recovery and Till crash-regression coverage.
-- The prior Save defect was reproduced as an undefined title variable. It is fixed by using the guide label, and the actual handlers are exercised by tests rather than only source assertions.
-- The prior Bar crash was traced to selectedOutlet being read by effects before its state declaration in HposTerminal. The state is now initialized before those effects; build:hospitality-pos passed.
-- Raw and annotated assets are retained for S00-S15 and S17-S26. S16 was removed because the default-styled permission screen was not needed for customer guidance.
-- Demonstration data is fictional: Main Bar, River Lager, Savanna Cider, Classic Gin & Tonic, Thabo, Mpho K., Naledi M. and Ice delivery. No real credentials, PINs, payment details, payroll or support data are included.
 
-## Packaging and offline guide delivery
+## 2026-10-12 — General ledger replay and trial-balance follow-up
 
-- Repository implementation: PASS. HposLayout renders HposNav; HposNav exposes the top-right Bar-only profile-menu entry Help & guides; the panel offers Open manual, Open quick-start and Save PDF to ordinary authenticated Bar users.
-- Packaging: PASS. apps/hospitality-pos/electron-builder.json packages the approved pair and manifest at resources/bar-guides/.
-- Contract tests: PASS - npm run test:bar-guides passes 12/12, including both document IDs, successful open/save, cancellation, copy failure, open failure, missing resources, path rejection and the actual HposLayout/HposNav navigation wiring.
-- Local directory package: PASS - both packaged PDFs and document-manifest.json exist, and source/package hashes match.
-- Packaged-app UI smoke: NOT COMPLETED. The Windows Computer Use helper failed before exposing a window with helper_unknown_error: apply deny-read ACLs. A direct Playwright launch of the win-unpacked executable also failed with Process failed to launch. Therefore this report does not claim that an ordinary cashier opened and saved both PDFs through the packaged UI while offline.
-- Release publication: NOT PERFORMED - no signed published installer, release-feed upload or installed-artifact smoke is claimed here.
+Manual impact is Required. The replay notice now uses the actual raw RPC response as well as legacy envelopes. The paged journal response supplies no trial balance; the renderer now reads authoritative balances separately and refuses to describe missing totals as zero. The customer wording and exact remaining candidate/release work are in remediation-impact-2026-10-12-ledger-verification.md. Candidate v10, canonical PDFs, manifest and packaged guide pair are preserved. The attempt10 replay screenshot is diagnostic evidence only because it still shows the old zero-balance bug; final corrected captures are being verified in attempt11. No human guide acceptance, PDF promotion or offline packaged-menu acceptance is implied.
 
-## Evidence boundary
+### Final 2026-10-12 ledger evidence
 
-This package contains source inspection, current Bar component rendering, isolated recovery/permission harness evidence, executable IPC tests and local packaged-resource verification. It does not claim physical printer, drawer, scanner or display certification, live two-terminal concurrency, a real outage/restart/restore drill, provider installer distribution or a provider telephone number. Those remain customer/provider acceptance items. Accounting is assumed ready for customer use as requested, but no internal Accounting activation was performed while preparing the manual.
+Attempt11 passed and its raw screenshots were visually inspected: electron-pos-to-gl-posted-journal-20261012-attempt11.png shows the retained receipt R-0001 journal with BWP 12.34 cash debit / revenue credit; electron-pos-to-gl-post-retry-20261012-attempt11.png shows the duplicate notice in the viewport and verified BWP 2,833.68 trial-balance totals. Both live in docs/audits/2026-10-08/accounting-independent-review/evidence/. Maintained rendered gate passed; focused checks passed 50/50. Final customer wording is authored in remediation-impact-2026-10-12-ledger-verification.md. Incorporation/annotation/rebuild/review and existing human approval/package/offline guide gates remain pending; no approved PDF, manifest or package was changed.
 
-## Handoff
+## 2026-10-12 — candidate v11 exact-pair review and maintained behavior result
 
-Editable sources, raw and annotated screenshots, artwork prompts, capture scripts, layout source, manifest, coverage/evidence registers and maintenance instructions are under docs/bar-manual/. Final PDFs are under output/pdf/. Packaging and release checks are recorded in docs/BAR_RELEASE_ACCEPTANCE.md and docs/SHIP_READY_RUNBOOK.md.
+BAR-DOC-082 now incorporates the verified attempt11 replay/Trial balance guidance. The final unapproved candidate pair is Manual (84 pages, SHA-256 E8EEA0C2295DEC9AF57621E6AECFEC18CF7E90DB7E8CF0CA2B4F1527EBBCA145) and Quick Start (5 pages, SHA-256 58917A6F0AFAF2518DB12F24CF6A460EE6F3BC562F1047B260F075ADE092BA0B). Exact structural and page-count evidence is in docs/bar-manual/build/remediation-candidate-2026-10-12-v11/evidence/pdf-verification-v11-final.json. Internal visual review of all pages is in evidence/visual-review-20261012.md. The first v11 cover's revision-10 label was corrected before this final pair was rebuilt.
 
+The maintained npm run test:bar-guide-behavior result is 38 total, 34 passed, 4 failed, 0 skipped, exit 1. The failures are: a simulated journal recovery test stopped because its mock account list was empty; two scratch-document assertions saw a six-page Quick Start where that separate draft expects five; and a modifier component fixture observed NaN for one price and omitted a second option. Exact details are in evidence/test-bar-guide-behavior-20261012-result.md. This is a failed mocked/component-and-PDF gate, not real operator acceptance.
+
+Approval remains open. V8R2-03, V10-SCOPE-01, V9-02 owner/cashier/bartender usability, four behavior failures, official manifest approval, package parity, released-binary applicability, and ordinary cashier visible offline open/save for both approved PDFs remain open. No official guide, manifest, package or installer was changed; no candidate was approved or promoted. Universal ledger source coverage remains unknown and fail-closed.
+
+
+## 2026-10-12 - candidate v11 maintained behavior follow-up
+
+Superseding the earlier candidate v11 failure status: npm run test:bar-guide-behavior passes 39 tests, 0 failures, 0 skipped, exit 0. The prior 34/38 report and red journal mock reproduction remain preserved. Repairs are limited to the test fixture/mock and candidate-only scratch PDF builder guard; no Bar runtime behavior changed in this follow-up. Exact v11 hashes and BAR-DOC-082 screenshot/coverage rows remain unchanged.
+
+Classification: mocked renderer/component plus generated scratch-PDF regression. Not real Electron, RPC, released binary, cashier usability or offline package evidence. V8R2-03, V10-SCOPE-01, V9-02, independent approval, official manifest/package parity and ordinary cashier offline Help & guides remain open.

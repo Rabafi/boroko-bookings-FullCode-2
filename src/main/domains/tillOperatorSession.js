@@ -1,4 +1,10 @@
+// @ts-check
 import { TILL_OPERATOR_MODES } from '../../shared/tillOperatorPolicy.js'
+
+/** @typedef {'strict' | 'shift'} TillOperatorMode */
+/** @typedef {{ staffId: string, staffName: unknown, outletId: string | null, shiftId: string | null, mode: TillOperatorMode, inactivityMinutes: number, operatorProof: string | null, lastActivityAt: number, expiresAt: number }} InternalTillOperatorSession */
+/** @typedef {Omit<InternalTillOperatorSession, 'operatorProof'>} PublicTillOperatorSession */
+/** @typedef {Omit<InternalTillOperatorSession, 'operatorProof'> & { operatorProof?: string | null }} CloneableTillOperatorSession */
 
 export const TILL_OPERATOR_SESSION_CODES = Object.freeze({
   REQUIRED: 'till_operator_session_required',
@@ -9,18 +15,24 @@ export const TILL_OPERATOR_SESSION_CODES = Object.freeze({
   STRICT: 'till_operator_strict'
 })
 
+/** @param {unknown} value @returns {string | null} */
 function asId(value) {
   const text = String(value || '').trim()
   return text || null
 }
 
+/** @param {CloneableTillOperatorSession | null | undefined} session @returns {PublicTillOperatorSession | null} */
 function cloneSession(session) {
   if (!session) return null
   const { operatorProof, ...publicSession } = session
   return { ...publicSession }
 }
 
+/**
+ * @param {{ clock?: () => number }} [options]
+ */
 export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}) {
+  /** @type {Map<number, InternalTillOperatorSession>} */
   const sessions = new Map()
 
   const now = () => {
@@ -28,10 +40,12 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return Number.isFinite(value) ? value : Date.now()
   }
 
+  /** @param {number | null | undefined} webContentsId */
   function clear(webContentsId) {
     if (webContentsId !== null && webContentsId !== undefined) sessions.delete(webContentsId)
   }
 
+  /** @param {number} webContentsId @returns {PublicTillOperatorSession | null} */
   function get(webContentsId) {
     const session = sessions.get(webContentsId)
     if (!session) return null
@@ -42,6 +56,7 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return cloneSession(session)
   }
 
+  /** @param {number} webContentsId @returns {string | null} */
   function getOperatorProof(webContentsId) {
     const session = sessions.get(webContentsId)
     if (!session) return null
@@ -52,6 +67,10 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return session.operatorProof || null
   }
 
+  /**
+   * @param {{ webContentsId?: number | null, staffId?: unknown, staffName?: unknown, outletId?: unknown, shiftId?: unknown, mode?: unknown, inactivityMinutes?: unknown, operatorProof?: unknown }} [input]
+   * @returns {PublicTillOperatorSession | null}
+   */
   function create({ webContentsId, staffId, staffName, outletId, shiftId, mode, inactivityMinutes, operatorProof } = {}) {
     const normalizedStaffId = asId(staffId)
     if (webContentsId === null || webContentsId === undefined || !normalizedStaffId) return null
@@ -72,11 +91,16 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return cloneSession(session)
   }
 
+  /** @param {number} webContentsId @param {string} code @param {string} error */
   function reject(webContentsId, code, error) {
     clear(webContentsId)
     return { success: false, code, error, session: null }
   }
 
+  /**
+   * @param {number} webContentsId
+   * @param {{ outletId?: unknown, operatorId?: unknown, shiftId?: unknown, renew?: boolean }} [input]
+   */
   function authorize(webContentsId, { outletId, operatorId, shiftId, renew = true } = {}) {
     const session = get(webContentsId)
     if (!session) return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.REQUIRED, 'Unlock Till with the Staff PIN before continuing.')
@@ -102,6 +126,10 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return { success: true, code: null, error: null, session: cloneSession(session) }
   }
 
+  /**
+   * @param {number} webContentsId
+   * @param {{ outletId?: unknown, operatorId?: unknown, shiftId?: unknown }} [input]
+   */
   function touch(webContentsId, { outletId, operatorId, shiftId } = {}) {
     const session = get(webContentsId)
     if (!session) return reject(webContentsId, TILL_OPERATOR_SESSION_CODES.EXPIRED, 'Till has locked. Verify the operator PIN to continue.')
@@ -123,12 +151,14 @@ export function createTillOperatorSessionStore({ clock = () => Date.now() } = {}
     return { success: true, code: null, error: null, session: cloneSession(session) }
   }
 
+  /** @param {number} webContentsId @returns {PublicTillOperatorSession | null} */
   function consumeStrict(webContentsId) {
     const session = get(webContentsId)
     if (session?.mode === TILL_OPERATOR_MODES.STRICT) clear(webContentsId)
     return session
   }
 
+  /** @param {{ staffId?: unknown, outletId?: unknown, shiftId?: unknown }} [input] */
   function clearMatching({ staffId, outletId, shiftId } = {}) {
     const expectedStaff = asId(staffId)
     const expectedOutlet = asId(outletId)

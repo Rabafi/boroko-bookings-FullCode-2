@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Activation-state reconciliation (pure, testable).
  *
@@ -23,11 +24,16 @@
  *   coerced into evidence with String().
  */
 
+/** @typedef {Record<string, unknown>} UnknownRecord */
+/** @typedef {{present: boolean, value: string | null | undefined, malformed: boolean}} TextEvidence */
+
+/** @param {unknown} value @returns {string | null} */
 function cleanText(value) {
   const text = String(value || '').trim()
   return text || null
 }
 
+/** @param {{lodgeId?: unknown, effectiveFrom?: unknown, configurationVersion?: unknown, policyVersion?: unknown, cutoverBatchId?: unknown}} [input] */
 export function snapshotActivationRequest({
   lodgeId = null,
   effectiveFrom = null,
@@ -49,6 +55,7 @@ export function snapshotActivationRequest({
 // non-null value are MALFORMED (undefined) — never coerced, and never an
 // implicit null match. This keeps explicit null distinct from blank or
 // malformed identity everywhere below.
+/** @param {unknown} value @returns {TextEvidence} */
 function strictText(value) {
   if (value === null) return { present: true, value: null, malformed: false }
   if (typeof value !== 'string') return { present: value !== undefined, value: undefined, malformed: value !== undefined }
@@ -56,6 +63,7 @@ function strictText(value) {
   return { present: true, value: value.trim(), malformed: false }
 }
 
+/** @param {UnknownRecord} authoritative @returns {TextEvidence} */
 function readLodge(authoritative) {
   if (!authoritative || typeof authoritative !== 'object' || Array.isArray(authoritative)) {
     return { present: false, value: undefined, malformed: true }
@@ -68,6 +76,7 @@ function readLodge(authoritative) {
 // Blank strings are malformed evidence, never an implicit null.
 const CUTOVER_ALIASES = ['historical_cutover_batch_id', 'cutover_batch_id', 'cutoverBatchId']
 
+/** @param {UnknownRecord} authoritative @returns {TextEvidence & {conflict: boolean}} */
 function readCutover(authoritative) {
   const seen = []
   for (const name of CUTOVER_ALIASES) {
@@ -85,6 +94,7 @@ function readCutover(authoritative) {
   return { present: true, value: first, conflict, malformed: false }
 }
 
+/** @param {UnknownRecord} authoritative @param {string[]} names @returns {TextEvidence} */
 function readScalar(authoritative, names) {
   for (const name of names) {
     const raw = authoritative[name]
@@ -108,12 +118,15 @@ function readScalar(authoritative, names) {
  * - blank string / wrong type: malformed — never normalized to null.
  * - both keys present with different normalized values: conflict.
  */
+/** @param {unknown} record @returns {{present: boolean, value: string | null | undefined, malformed: boolean, conflict: boolean}} */
 export function readSourceEvidence(record = null) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     return { present: false, value: undefined, malformed: true, conflict: false }
   }
-  const canonical = record.source_manifest_hash
-  const alias = record.sourceManifestHash
+  const source = /** @type {UnknownRecord} */ (record)
+  const canonical = source.source_manifest_hash
+  const alias = source.sourceManifestHash
+  /** @param {unknown} raw @returns {{defined: boolean, value: string | null | undefined, malformed: boolean}} */
   const normalize = (raw) => {
     if (raw === undefined) return { defined: false, value: undefined, malformed: false }
     if (raw === null) return { defined: true, value: null, malformed: false }
@@ -143,6 +156,7 @@ export function readSourceEvidence(record = null) {
  *   scheduled future-effective state; see `scheduled`).
  * - 'unreadable': state missing, malformed, or missing required identity.
  */
+/** @param {UnknownRecord} [requested] @param {unknown} [authoritative] */
 export function compareActivationState(requested = {}, authoritative = {}) {
   const wanted = {
     lodgeId: cleanText(requested.lodgeId),
@@ -151,15 +165,17 @@ export function compareActivationState(requested = {}, authoritative = {}) {
     policyVersion: cleanText(requested.policyVersion),
     cutoverBatchId: cleanText(requested.cutoverBatchId)
   }
+  /** @param {string[]} mismatches */
   const unreadable = (mismatches) => ({ verdict: 'unreadable', mismatches, readable: false, scheduled: false })
   if (!authoritative || typeof authoritative !== 'object' || Array.isArray(authoritative)) {
     return unreadable(['activation state is missing or malformed'])
   }
-  const lodge = readLodge(authoritative)
+  const state = /** @type {UnknownRecord} */ (authoritative)
+  const lodge = readLodge(state)
   if (lodge.malformed || !wanted.lodgeId || lodge.value === undefined || !lodge.value) {
     return unreadable(['lodge identity is unavailable evidence'])
   }
-  const cutover = readCutover(authoritative)
+  const cutover = readCutover(state)
   if (cutover.malformed) return unreadable(['cutover batch identity is malformed evidence'])
   if (cutover.conflict) return unreadable(['cutover batch identity aliases disagree'])
   if (wanted.cutoverBatchId && !cutover.value) {
@@ -170,24 +186,26 @@ export function compareActivationState(requested = {}, authoritative = {}) {
   if (!wanted.cutoverBatchId && !cutover.present) {
     return unreadable(['cutover batch identity is unavailable evidence'])
   }
-  const effectiveFrom = readScalar(authoritative, ['effective_from', 'effectiveFrom'])
-  const configurationVersion = readScalar(authoritative, ['configuration_version', 'configurationVersion'])
-  const policyVersion = readScalar(authoritative, ['policy_version', 'policyVersion'])
-  for (const [label, field] of [
+  const effectiveFrom = readScalar(state, ['effective_from', 'effectiveFrom'])
+  const configurationVersion = readScalar(state, ['configuration_version', 'configurationVersion'])
+  const policyVersion = readScalar(state, ['policy_version', 'policyVersion'])
+  /** @type {Array<[string, TextEvidence]>} */
+  const identityEvidence = [
     ['effective date', effectiveFrom],
     ['configuration version', configurationVersion],
     ['policy version', policyVersion]
-  ]) {
+  ]
+  for (const [label, field] of identityEvidence) {
     if (field.malformed) return unreadable([`${label} is malformed evidence`])
   }
   // Active must be an explicit boolean. Anything else is unreadable unless
   // a separately documented, equally authoritative contract establishes
   // activation — none exists here, so status alone never confirms.
-  if (typeof authoritative.active !== 'boolean') {
+  if (typeof state.active !== 'boolean') {
     return unreadable(['activation flag is unavailable evidence'])
   }
-  const isActive = authoritative.active === true
-  const statusText = typeof authoritative.status === 'string' ? authoritative.status.trim().toLowerCase() : ''
+  const isActive = state.active === true
+  const statusText = typeof state.status === 'string' ? state.status.trim().toLowerCase() : ''
   // Future-effective SQL state: the row reads status:active while active is
   // explicitly false. That is scheduled/not-yet-active, never proof of a
   // current activation and never an error proving no commit happened.
@@ -222,25 +240,29 @@ export function compareActivationState(requested = {}, authoritative = {}) {
  * null-safely server-side, never treated as equality with a later value.
  * Notes alone never imply review of later data.
  */
+/** @param {unknown} detail @param {unknown} scope */
 export function snapshotReviewedEvidence(detail = null, scope = null) {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
+  const detailRecord = /** @type {UnknownRecord} */ (detail)
+  /** @param {unknown} value */
   const nonBlank = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null)
-  const id = nonBlank(detail.id)
-  const status = nonBlank(detail.status)
-  const lodgeId = nonBlank(detail.lodge_id) || nonBlank(detail.lodgeId)
-  const preparedBy = nonBlank(detail.prepared_by) || nonBlank(detail.preparedBy)
-  const openingPayloadHash = nonBlank(detail.opening_payload_hash) || nonBlank(detail.openingPayloadHash)
+  const id = nonBlank(detailRecord.id)
+  const status = nonBlank(detailRecord.status)
+  const lodgeId = nonBlank(detailRecord.lodge_id) || nonBlank(detailRecord.lodgeId)
+  const preparedBy = nonBlank(detailRecord.prepared_by) || nonBlank(detailRecord.preparedBy)
+  const openingPayloadHash = nonBlank(detailRecord.opening_payload_hash) || nonBlank(detailRecord.openingPayloadHash)
   if (!id || !status || !lodgeId || !preparedBy || !openingPayloadHash) return null
   // Scope is mandatory: review is only ever recorded against the current
   // tenant and selected batch. A missing scope refuses, never assumes.
   if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return null
-  const scopeLodge = scope.lodgeId === undefined || scope.lodgeId === null ? '' : String(scope.lodgeId).trim()
-  const scopeBatch = scope.batchId === undefined || scope.batchId === null ? '' : String(scope.batchId).trim()
+  const scopeRecord = /** @type {UnknownRecord} */ (scope)
+  const scopeLodge = scopeRecord.lodgeId === undefined || scopeRecord.lodgeId === null ? '' : String(scopeRecord.lodgeId).trim()
+  const scopeBatch = scopeRecord.batchId === undefined || scopeRecord.batchId === null ? '' : String(scopeRecord.batchId).trim()
   if (!scopeLodge || !scopeBatch || scopeLodge !== lodgeId || scopeBatch !== id) return null
   // Source identity uses the shared strict reader: an absent property is
   // unavailable evidence (NOT an implicit reviewed null); only an explicit
   // null records reviewed-absent for later null-safe server binding.
-  const source = readSourceEvidence(detail)
+  const source = readSourceEvidence(detailRecord)
   if (!source.present || source.malformed || source.conflict) return null
   return Object.freeze({
     lodgeId,
@@ -260,49 +282,54 @@ export function snapshotReviewedEvidence(detail = null, scope = null) {
  * explicit reasons. The caller must clear the confirmation, show the
  * refreshed evidence, and require a new explicit review.
  */
+/** @param {unknown} snapshot @param {unknown} fresh */
 export function reviewMatchesFresh(snapshot = null, fresh = null) {
+  /** @param {string[]} reasons */
   const mismatch = (reasons) => ({ ok: false, reasons })
   if (!snapshot || typeof snapshot !== 'object') {
     return mismatch(['No reviewed evidence is recorded. Confirm review of the displayed batch first.'])
   }
-  if (!fresh || typeof fresh !== 'object' || Array.isArray(fresh) || !fresh.id) {
+  if (!fresh || typeof fresh !== 'object' || Array.isArray(fresh) || !(/** @type {UnknownRecord} */ (fresh)).id) {
     return mismatch(['The cutover batch could not be reloaded. Review the refreshed batch before approving.'])
   }
+  const reviewed = /** @type {UnknownRecord} */ (snapshot)
+  const current = /** @type {UnknownRecord} */ (fresh)
   const reasons = []
+  /** @param {unknown} value */
   const text = (value) => (typeof value === 'string' ? value.trim() : null)
-  if (String(fresh.id) !== String(snapshot.batchId)) reasons.push('batch identity changed since review')
-  const freshLodge = text(fresh.lodge_id) || text(fresh.lodgeId)
+  if (String(current.id) !== String(reviewed.batchId)) reasons.push('batch identity changed since review')
+  const freshLodge = text(current.lodge_id) || text(current.lodgeId)
   if (!freshLodge) {
     reasons.push('batch tenant evidence is unavailable')
-  } else if (freshLodge !== snapshot.lodgeId) {
+  } else if (freshLodge !== reviewed.lodgeId) {
     reasons.push('batch tenant changed since review')
   }
-  const freshStatus = text(fresh.status)
+  const freshStatus = text(current.status)
   if (!freshStatus) {
     reasons.push('batch status evidence is unavailable')
-  } else if (freshStatus !== snapshot.status) {
+  } else if (freshStatus !== reviewed.status) {
     reasons.push(`batch status changed since review (now ${freshStatus})`)
   }
-  const freshPreparer = text(fresh.prepared_by) || text(fresh.preparedBy)
+  const freshPreparer = text(current.prepared_by) || text(current.preparedBy)
   if (!freshPreparer) {
     reasons.push('batch preparer evidence is unavailable')
-  } else if (freshPreparer !== snapshot.preparedBy) {
+  } else if (freshPreparer !== reviewed.preparedBy) {
     reasons.push('batch preparer changed since review')
   }
-  const freshHash = text(fresh.opening_payload_hash) || text(fresh.openingPayloadHash)
+  const freshHash = text(current.opening_payload_hash) || text(current.openingPayloadHash)
   if (!freshHash) {
     reasons.push('reviewed opening evidence is no longer available')
-  } else if (freshHash !== snapshot.openingPayloadHash) {
+  } else if (freshHash !== reviewed.openingPayloadHash) {
     reasons.push('opening-balance hash changed since review; the new evidence needs its own review')
   }
-  const rawSource = readSourceEvidence(fresh)
+  const rawSource = readSourceEvidence(current)
   if (!rawSource.present) {
     reasons.push('source-manifest evidence is unavailable')
   } else if (rawSource.malformed) {
     reasons.push('source-manifest evidence is malformed')
   } else if (rawSource.conflict) {
     reasons.push('source-manifest evidence aliases disagree')
-  } else if (rawSource.value !== (snapshot.sourceManifestHash || null)) {
+  } else if (rawSource.value !== (reviewed.sourceManifestHash || null)) {
     reasons.push('source-manifest evidence changed since review; the new evidence needs its own review')
   }
   if (reasons.length > 0) return mismatch(reasons)
@@ -317,19 +344,27 @@ export function reviewMatchesFresh(snapshot = null, fresh = null) {
  * retained for same-batch retry. Direct RPC evidence is never accepted
  * during a readback failure.
  */
+/** @param {{batchId?: unknown, rpcResult?: unknown, detail?: unknown}} [input] */
 export function resolveApplyOutcome({ batchId = '', rpcResult = null, detail = null } = {}) {
   const id = String(batchId || '').trim()
+  /** @param {string} reason */
   const unconfirmed = (reason) => ({ confirmed: false, batchId: id, postings: [], evidence: null, reason })
-  const applied = detail && typeof detail === 'object' && !Array.isArray(detail) && detail.status === 'applied'
-    && String(detail.id || '') === id && id !== ''
+  const detailRecord = detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? /** @type {UnknownRecord} */ (detail)
+    : null
+  const rpcRecord = rpcResult && typeof rpcResult === 'object' && !Array.isArray(rpcResult)
+    ? /** @type {UnknownRecord} */ (rpcResult)
+    : null
+  const applied = detailRecord && detailRecord.status === 'applied'
+    && String(detailRecord.id || '') === id && id !== ''
   if (!applied) {
-    if (!rpcResult || typeof rpcResult !== 'object' || Array.isArray(rpcResult) || rpcResult.success !== true) {
+    if (!rpcRecord || rpcRecord.success !== true) {
       return unconfirmed('apply response was not a confirmed success')
     }
     return unconfirmed('applied state could not be verified from authoritative batch detail')
   }
-  const postings = Array.isArray(detail.opening_postings) ? detail.opening_postings : []
-  const rpcOk = rpcResult && typeof rpcResult === 'object' && !Array.isArray(rpcResult) && rpcResult.success === true
+  const postings = Array.isArray(detailRecord?.opening_postings) ? detailRecord.opening_postings : []
+  const rpcOk = rpcRecord !== null && rpcRecord.success === true
   return {
     confirmed: true,
     batchId: id,
@@ -350,28 +385,38 @@ export function resolveApplyOutcome({ batchId = '', rpcResult = null, detail = n
  * batch retained for refresh or same-batch retry; the caller must never
  * mint a new batch or automatically reapprove.
  */
+/** @param {{batchId?: unknown, lodgeId?: unknown, reviewed?: unknown, rpcResult?: unknown, detail?: unknown}} [input] */
 export function resolveApproveOutcome({ batchId = '', lodgeId = '', reviewed = null, rpcResult = null, detail = null } = {}) {
   const id = String(batchId || '').trim()
   const lodge = String(lodgeId || '').trim()
+  /** @param {string} reason */
   const unconfirmed = (reason) => ({ confirmed: false, batchId: id, evidence: null, reason })
-  const snapshot = reviewed && typeof reviewed === 'object' && !Array.isArray(reviewed) ? reviewed : null
+  const snapshot = reviewed && typeof reviewed === 'object' && !Array.isArray(reviewed)
+    ? /** @type {UnknownRecord} */ (reviewed)
+    : null
   if (!snapshot || !id) return unconfirmed('no reviewed evidence is recorded for this batch')
   // The snapshot itself must belong to the requested batch and tenant:
   // scope drift between confirmation and reconciliation never confirms.
   if (snapshot.batchId !== id || snapshot.lodgeId !== lodge || lodge === '') {
     return unconfirmed('reviewed evidence belongs to another batch or tenant')
   }
-  const same = detail && typeof detail === 'object' && !Array.isArray(detail)
-    && String(detail.id || '') === id
-    && String(detail.lodge_id || detail.lodgeId || '') === lodge && lodge !== ''
-    && detail.status === 'approved'
+  const detailRecord = detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? /** @type {UnknownRecord} */ (detail)
+    : null
+  const rpcRecord = rpcResult && typeof rpcResult === 'object' && !Array.isArray(rpcResult)
+    ? /** @type {UnknownRecord} */ (rpcResult)
+    : null
+  const same = detailRecord !== null
+    && String(detailRecord.id || '') === id
+    && String(detailRecord.lodge_id || detailRecord.lodgeId || '') === lodge && lodge !== ''
+    && detailRecord.status === 'approved'
   const approver = same
-    ? (typeof detail.approved_by === 'string' ? detail.approved_by.trim()
-      : (typeof detail.approvedBy === 'string' ? detail.approvedBy.trim() : ''))
+    ? (typeof detailRecord.approved_by === 'string' ? detailRecord.approved_by.trim()
+      : (typeof detailRecord.approvedBy === 'string' ? detailRecord.approvedBy.trim() : ''))
     : ''
   const detailPreparer = same
-    ? (typeof detail.prepared_by === 'string' ? detail.prepared_by.trim()
-      : (typeof detail.preparedBy === 'string' ? detail.preparedBy.trim() : ''))
+    ? (typeof detailRecord.prepared_by === 'string' ? detailRecord.prepared_by.trim()
+      : (typeof detailRecord.preparedBy === 'string' ? detailRecord.preparedBy.trim() : ''))
     : ''
   // Independent approval: an approver must be recorded and must differ
   // from the preparer. The current operator is deliberately NOT required
@@ -380,7 +425,7 @@ export function resolveApproveOutcome({ batchId = '', lodgeId = '', reviewed = n
   // that this request caused it.
   const independent = same && approver !== '' && detailPreparer !== '' && approver !== detailPreparer
   if (!independent) {
-    if (!rpcResult || typeof rpcResult !== 'object' || Array.isArray(rpcResult) || rpcResult.success !== true) {
+    if (!rpcRecord || rpcRecord.success !== true) {
       return unconfirmed('approval response was not a confirmed success')
     }
     return unconfirmed('approved state could not be verified from authoritative batch detail')
@@ -391,12 +436,12 @@ export function resolveApproveOutcome({ batchId = '', lodgeId = '', reviewed = n
   if (!snapshot.preparedBy || detailPreparer !== snapshot.preparedBy) {
     return unconfirmed('authoritative evidence does not match the reviewed preparation identity')
   }
-  const detailHash = typeof detail.opening_payload_hash === 'string' ? detail.opening_payload_hash.trim()
-    : (typeof detail.openingPayloadHash === 'string' ? detail.openingPayloadHash.trim() : '')
+  const detailHash = typeof detailRecord?.opening_payload_hash === 'string' ? detailRecord.opening_payload_hash.trim()
+    : (typeof detailRecord?.openingPayloadHash === 'string' ? detailRecord.openingPayloadHash.trim() : '')
   // Strict source presence: the readback must carry the canonical property.
   // Explicit null is allowed by the documented contract; missing, blank,
   // wrong-type, or conflicting values are unavailable/malformed evidence.
-  const detailSource = readSourceEvidence(detail)
+  const detailSource = readSourceEvidence(detailRecord)
   if (!detailHash || detailHash !== snapshot.openingPayloadHash) {
     return unconfirmed('authoritative evidence does not match the reviewed opening hash')
   }
@@ -406,7 +451,7 @@ export function resolveApproveOutcome({ batchId = '', lodgeId = '', reviewed = n
   if (detailSource.value !== (snapshot.sourceManifestHash || null)) {
     return unconfirmed('authoritative evidence does not match the reviewed source identity')
   }
-  const rpcOk = rpcResult && typeof rpcResult === 'object' && !Array.isArray(rpcResult) && rpcResult.success === true
+  const rpcOk = rpcRecord !== null && rpcRecord.success === true
   return {
     confirmed: true,
     batchId: id,
@@ -428,7 +473,10 @@ export function validateSafetyConfig({ flag = '', url = '', ack = '' } = {}) {
   }
   let host = null
   try {
-    host = new URL(String(url)).host || null
+    // The shared ES-only profile excludes DOM declarations; desktop/PWA
+    // runtimes provide the standard global URL constructor used here.
+    const URLConstructor = /** @type {typeof globalThis & {URL: new (value: string) => {host: string}}} */ (globalThis).URL
+    host = new URLConstructor(String(url)).host || null
   } catch {
     host = null
   }

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { logActivity, queueOperation, readCache, writeCache, dedupePromise } from './infrastructure.js';
 
+/** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 async function _getRateCalendar(roomTypeId, startDate, endDate) {
   const cacheKey = `rate-calendar:${roomTypeId}:${startDate}:${endDate}`;
   if (!state.isOnline) return readCache(cacheKey) || { entries: [], restrictions: [] };
@@ -23,6 +24,7 @@ async function _getRateCalendar(roomTypeId, startDate, endDate) {
   }
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date @param {unknown} amount @param {unknown} currency */
 async function _setRateCalendarEntry(roomTypeId, date, amount, currency) {
   if (state.isOnline) {
     const { data, error } = await state.supabase.rpc('set_rate_calendar_entry', {
@@ -48,6 +50,7 @@ async function _setRateCalendarEntry(roomTypeId, date, amount, currency) {
   }
 }
 
+/** @param {unknown} entries */
 async function _setRateCalendarBulk(entries) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('Entries array is required');
   if (state.isOnline) {
@@ -68,6 +71,7 @@ async function _setRateCalendarBulk(entries) {
   }
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date @param {unknown} restrictions */
 async function _setRateRestriction(roomTypeId, date, restrictions) {
   if (state.isOnline) {
     const { data, error } = await state.supabase.rpc('set_rate_restriction', {
@@ -91,6 +95,7 @@ async function _setRateRestriction(roomTypeId, date, restrictions) {
   }
 }
 
+/** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 async function _getRateConflicts(roomTypeId, startDate, endDate) {
   if (!state.isOnline) return { multiple_entries_per_day: [], days_without_restrictions: [] };
   try {
@@ -107,6 +112,7 @@ async function _getRateConflicts(roomTypeId, startDate, endDate) {
   }
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date */
 async function _getApplicableRate(roomTypeId, date) {
   if (!state.isOnline) {
     return {
@@ -142,6 +148,7 @@ async function _getApplicableRate(roomTypeId, date) {
  * Prefer server quote_room_stay for multi-night stay totals.
  * Falls back to per-day get_applicable_rate labelled as estimate when offline.
  */
+/** @param {unknown} roomId @param {unknown} checkIn @param {unknown} checkOut @param {unknown} [corporateAccountId] */
 async function _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = null) {
   if (!state.lodgeId) throw new Error('No lodge selected');
   if (!roomId || !checkIn || !checkOut) throw new Error('roomId, checkIn, and checkOut are required');
@@ -562,30 +569,37 @@ async function _getOccupancyForecast(startDate, endDate) {
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
+/** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 export function getRateCalendar(roomTypeId, startDate, endDate) {
   return dedupePromise(`rateCalendar:${roomTypeId}:${startDate}:${endDate}`, () => _getRateCalendar(roomTypeId, startDate, endDate));
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date @param {unknown} amount @param {unknown} currency */
 export function setRateCalendarEntry(roomTypeId, date, amount, currency) {
   return _setRateCalendarEntry(roomTypeId, date, amount, currency);
 }
 
+/** @param {unknown} entries */
 export function setRateCalendarBulk(entries) {
   return _setRateCalendarBulk(entries);
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date @param {unknown} restrictions */
 export function setRateRestriction(roomTypeId, date, restrictions) {
   return _setRateRestriction(roomTypeId, date, restrictions);
 }
 
+/** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 export function getRateConflicts(roomTypeId, startDate, endDate) {
   return _getRateConflicts(roomTypeId, startDate, endDate);
 }
 
+/** @param {unknown} roomTypeId @param {unknown} date */
 export function getApplicableRate(roomTypeId, date) {
   return _getApplicableRate(roomTypeId, date);
 }
 
+/** @param {unknown} roomId @param {unknown} checkIn @param {unknown} checkOut @param {unknown} [corporateAccountId] */
 export function quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = null) {
   return _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId);
 }

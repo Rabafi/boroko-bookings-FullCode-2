@@ -66,11 +66,11 @@ async function run() {
   })
 
   test('Preload exposes exportDetailedExcel', () => {
-    assert.match(preload, /exportDetailedExcel:\s*\(payload\)\s*=>\s*ipcRenderer\.invoke\('reports:exportDetailedExcel',\s*payload\)/)
+    assert.match(preload, /exportDetailedExcel:\s*\(payload\)\s*=>\s*(?:invoke|ipcRenderer\.invoke)\('reports:exportDetailedExcel',\s*payload\)/)
   })
 
   test('Preload exposes exportDetailedPDF', () => {
-    assert.match(preload, /exportDetailedPDF:\s*\(payload\)\s*=>\s*ipcRenderer\.invoke\('reports:exportDetailedPDF',\s*payload\)/)
+    assert.match(preload, /exportDetailedPDF:\s*\(payload\)\s*=>\s*(?:invoke|ipcRenderer\.invoke)\('reports:exportDetailedPDF',\s*payload\)/)
   })
 
   test('Reports.jsx uses exportDetailedExcel instead of saveExcel', () => {

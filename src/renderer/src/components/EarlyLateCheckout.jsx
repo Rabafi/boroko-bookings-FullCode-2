@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Clock, Sun, Moon, Plus, CheckCircle, XCircle, DollarSign } from 'lucide-react'
 import { useSettings } from '../app-context'
@@ -115,8 +116,10 @@ export default function EarlyLateCheckout() {
   const currency = settings?.currency || 'P'
   const [type, setType] = useState('early')
   const [tab, setTab] = useState('policies')
-  const [policies, setPolicies] = useState([])
-  const [requests, setRequests] = useState([])
+  // IPC returns raw RPC/cache envelopes. These state values remain unknown because
+  // the existing `|| []` fallback does not verify the container or row shapes.
+  const [policies, setPolicies] = useState(/** @type {unknown} */ ([]))
+  const [requests, setRequests] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Banknote, CircleDollarSign, CreditCard, HandCoins, RefreshCw, WalletCards } from 'lucide-react'
 import { useNavigate } from 'react-router'

@@ -1,3 +1,4 @@
+// @ts-check
 import {
   getCommercialAddonOffers,
   getCommercialOffers,
@@ -23,9 +24,18 @@ import {
 
 export const TRIAL_IMPACT_VERSION = 1
 
+/** @typedef {Record<string, unknown>} UnknownRecord */
+/** @typedef {'lodge-camp' | 'hotel' | 'hospitality-pos'} ProductId */
+/** @typedef {{key: string, commercialPackageKey: string | null, name: unknown, displayName: unknown, plan: string, internalPlan: string, activated: boolean, hasUsageLimits: boolean, limits: Record<string, number | null>, effectiveLimits: Record<string, number | null>, effectiveFeatures: Record<string, boolean>, includedFeatures: string[], excludedFeatures: string[], offer: unknown}} TrialTarget */
+/** @typedef {[string, boolean]} FeatureEntry */
+/** @typedef {{users: number, rooms: number, checkInMonthBookings: number, usersProvided: boolean, roomsProvided: boolean, checkInMonthBookingsProvided: boolean}} TrialUsage */
+/** @typedef {{provided: true, count: number, records: unknown[] | null} | {provided: false, count: null, records: null}} PwaSessionCount */
+/** @typedef {{productId?: unknown, product_id?: unknown, trialEntitlement?: unknown, trial_entitlement?: unknown, selectedTargetPackage?: unknown, selected_target_package?: unknown, targetPackage?: unknown, target_package?: unknown, effectiveFeatures?: unknown, effective_features?: unknown, effectiveLimits?: unknown, effective_limits?: unknown, limits?: unknown, paidPackageActivated?: unknown, targetPackageActivated?: unknown, usage?: UnknownRecord, users?: unknown, propertyType?: string | null, property_type?: string | null, activePwaSessions?: unknown, active_pwa_sessions?: unknown, offlineQueueCounts?: unknown, offline_queue_counts?: unknown}} TrialImpactInput */
+
 const PWA_FEATURE_KEY = 'pwa'
 const CANONICAL_FEATURE_KEY = /^[a-z][a-z0-9_.-]{0,119}$/
 
+/** @type {Record<string, string[]>} */
 const LIMIT_ALIASES = Object.freeze({
   users: ['users', 'userLimit', 'maxUsers', 'user_limit', 'max_users'],
   rooms: ['rooms', 'roomLimit', 'maxRooms', 'room_limit', 'max_rooms'],
@@ -60,24 +70,29 @@ const INACTIVE_TRIAL_STATUSES = new Set([
   'grace_period'
 ])
 
+/** @param {unknown} value @returns {UnknownRecord} */
 function asObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return value && typeof value === 'object' && !Array.isArray(value) ? /** @type {UnknownRecord} */ (value) : {}
 }
 
+/** @param {unknown} value @returns {unknown[]} */
 function asArray(value) {
-  return Array.isArray(value) ? value : []
+  return Array.isArray(value) ? /** @type {unknown[]} */ (value) : []
 }
 
+/** @param {unknown} value @returns {number | null} */
 function finiteNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
 
+/** @param {unknown} value @returns {number | null} */
 function nonNegativeCount(value) {
   const number = finiteNumber(value)
   return number == null ? null : Math.max(0, Math.floor(number))
 }
 
+/** @param {unknown[]} [values] @param {unknown} [fallback] @returns {number} */
 function firstFiniteCount(values = [], fallback = 0) {
   for (const value of values) {
     const number = nonNegativeCount(value)
@@ -86,6 +101,7 @@ function firstFiniteCount(values = [], fallback = 0) {
   return nonNegativeCount(fallback) ?? 0
 }
 
+/** @param {unknown[]} [values] @returns {unknown} */
 function firstPresent(values = []) {
   for (const value of values) {
     if (value !== undefined && value !== null) return value
@@ -93,11 +109,13 @@ function firstPresent(values = []) {
   return undefined
 }
 
+/** @param {unknown} value @returns {string} */
 function normaliseStatus(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
 /** Return true only when the caller explicitly describes an active trial. */
+/** @param {unknown} entitlement @returns {boolean} */
 export function isActiveTrialEntitlement(entitlement = {}) {
   const source = asObject(entitlement)
   if (source.expired === true || source.is_expired === true || source.trial_expired === true) return false
@@ -116,6 +134,7 @@ export function isActiveTrialEntitlement(entitlement = {}) {
   return source.trial === true || source.isTrial === true || source.is_trial === true
 }
 
+/** @param {unknown} productId @returns {ProductId} */
 function resolveProductId(productId) {
   const raw = String(productId ?? '').trim()
   if (raw === COMMERCIAL_PRODUCT_IDS.HOTEL) return COMMERCIAL_PRODUCT_IDS.HOTEL
@@ -126,6 +145,7 @@ function resolveProductId(productId) {
   return COMMERCIAL_PRODUCT_IDS.LODGE_CAMP
 }
 
+/** @param {ProductId} productId @param {unknown} key */
 function caseInsensitiveOffer(productId, key) {
   const rawKey = String(key ?? '').trim().toLowerCase()
   if (!rawKey) return null
@@ -136,21 +156,26 @@ function caseInsensitiveOffer(productId, key) {
   )) || null
 }
 
+/** @param {ProductId} productId @param {unknown} plan */
 function resolveOfferForPlan(productId, plan) {
   const normalizedPlan = normalizeSubscriptionPlan(plan)
   const matches = getCommercialOffers(productId).filter((offer) => offer.internalPlan === normalizedPlan)
   return matches.length === 1 ? matches[0] : null
 }
 
+/** @param {unknown} value @returns {Record<string, boolean>} */
 function normaliseFeatureMap(value) {
   if (Array.isArray(value)) {
-    return Object.fromEntries(value
+    const entries = /** @type {unknown[]} */ (value)
+    const pairs = entries
       .map((entry) => {
         if (typeof entry === 'string') return [entry.trim(), true]
-        const key = String(entry?.feature_name || entry?.featureName || entry?.key || '').trim()
-        return key ? [key, entry?.enabled !== false] : null
+        const record = /** @type {UnknownRecord | null | undefined} */ (entry)
+        const key = String(record?.feature_name || record?.featureName || record?.key || '').trim()
+        return key ? [key, record?.enabled !== false] : null
       })
-      .filter(Boolean))
+      .filter(Boolean)
+    return Object.fromEntries(/** @type {FeatureEntry[]} */ (pairs))
   }
 
   const object = asObject(value)
@@ -159,8 +184,10 @@ function normaliseFeatureMap(value) {
     .filter(([key]) => Boolean(key)))
 }
 
+/** @param {unknown} value @returns {Record<string, number | null>} */
 function normaliseLimits(value) {
   const source = asObject(value)
+  /** @type {Record<string, number | null>} */
   const output = {}
   for (const [canonicalKey, aliases] of Object.entries(LIMIT_ALIASES)) {
     const candidate = firstPresent(aliases.map((alias) => source[alias]))
@@ -174,6 +201,7 @@ function normaliseLimits(value) {
   return output
 }
 
+/** @param {UnknownRecord} [source] @param {UnknownRecord} [topLevel] @returns {boolean} */
 function packageActivationWasExplicitlyConfirmed(source = {}, topLevel = {}) {
   const values = [
     topLevel.paidPackageActivated,
@@ -195,6 +223,7 @@ function packageActivationWasExplicitlyConfirmed(source = {}, topLevel = {}) {
  * caller's behalf. A plan-only selection is accepted only when that product
  * has one unambiguous commercial offer for that plan.
  */
+/** @param {UnknownRecord} [options] @returns {TrialTarget | null} */
 export function resolveTrialImpactTargetPackage({
   productId,
   targetPackage = null,
@@ -238,7 +267,7 @@ export function resolveTrialImpactTargetPackage({
   const packageOverrides = normaliseFeatureMap(firstPresent([
     source.feature_overrides,
     source.featureOverrides,
-    source.overrides?.features
+    (/** @type {UnknownRecord | null | undefined} */ (source.overrides))?.features
   ]))
   const includedFeatures = asArray(firstPresent([
     source.includedFeatures,
@@ -255,7 +284,7 @@ export function resolveTrialImpactTargetPackage({
     ...normaliseLimits(source.limits),
     ...normaliseLimits(source.effective_limits),
     ...normaliseLimits(source.effectiveLimits),
-    ...normaliseLimits(source.overrides?.limits),
+    ...normaliseLimits((/** @type {UnknownRecord | null | undefined} */ (source.overrides))?.limits),
     ...normaliseLimits(effectiveLimits),
     ...normaliseLimits(effective_limits),
     ...normaliseLimits(limits)
@@ -304,6 +333,7 @@ export function resolveTrialImpactTargetPackage({
   }
 }
 
+/** @param {ProductId} productId @param {string | null} [propertyType] @returns {Set<string>} */
 function productFeatureKeys(productId, propertyType = null) {
   const property = propertyType ? normalizePropertyTypeForProduct(propertyType) : null
   const keys = new Set()
@@ -337,10 +367,12 @@ function productFeatureKeys(productId, propertyType = null) {
 }
 
 /** Exposed for UI catalogues that need the same product boundary as the engine. */
+/** @param {unknown} productId @param {{propertyType?: string | null}} [options] @returns {string[]} */
 export function getTrialImpactApplicableFeatureKeys(productId, { propertyType = null } = {}) {
   return [...productFeatureKeys(resolveProductId(productId), propertyType)]
 }
 
+/** @param {string} featureKey */
 function featureLabel(featureKey) {
   const module = getModuleByKey(featureKey)
   if (module) return { label: module.label, description: module.description, requiredPlan: module.requiredPlan || null }
@@ -358,6 +390,7 @@ function buildPreservationFields() {
   }
 }
 
+/** @param {string} type @param {string} title @param {string} message */
 function notEvaluatedImpact(type, title, message) {
   return {
     type,
@@ -369,9 +402,11 @@ function notEvaluatedImpact(type, title, message) {
   }
 }
 
+/** @param {UnknownRecord} [input] @param {unknown} [users] @returns {TrialUsage} */
 function resolveUsage(input = {}, users = null) {
   const usage = asObject(input)
   const userSource = asObject(users)
+  /** @type {unknown[] | null} */
   let userRecords = null
   if (Array.isArray(users)) userRecords = users
   else if (Array.isArray(userSource.records)) userRecords = userSource.records
@@ -380,8 +415,9 @@ function resolveUsage(input = {}, users = null) {
   else if (Array.isArray(usage.userRecords)) userRecords = usage.userRecords
   const activeUserCount = userRecords
     ? userRecords.filter((user) => {
-      const status = normaliseStatus(user?.status)
-      return user?.active !== false && user?.is_active !== false && !['disabled', 'suspended', 'inactive', 'revoked'].includes(status)
+      const userRecord = /** @type {UnknownRecord | null | undefined} */ (user)
+      const status = normaliseStatus(userRecord?.status)
+      return userRecord?.active !== false && userRecord?.is_active !== false && !['disabled', 'suspended', 'inactive', 'revoked'].includes(status)
     }).length
     : null
   const userCount = firstFiniteCount([
@@ -445,6 +481,7 @@ function resolveUsage(input = {}, users = null) {
   }
 }
 
+/** @param {TrialTarget | null} target @param {TrialUsage} usage @param {unknown} users */
 function buildUserImpact(target, usage, users) {
   if (!target) return notEvaluatedImpact('users', 'Active users', 'Select a paid package to preview active-user capacity.')
   const limit = target.effectiveLimits.users
@@ -461,7 +498,10 @@ function buildUserImpact(target, usage, users) {
       accountsToKeep: null,
       copy: `${target.displayName} has no active-user limit. Your ${used} active user${used === 1 ? '' : 's'} fit.`,
       action: null,
-      userIds: Array.isArray(users) ? users.map((user) => user?.id || user?.user_id).filter(Boolean) : [],
+      userIds: Array.isArray(users) ? users.map((user) => {
+        const userRecord = /** @type {UnknownRecord | null | undefined} */ (user)
+        return userRecord?.id || userRecord?.user_id
+      }).filter(Boolean) : [],
       ...buildPreservationFields()
     }
   }
@@ -502,6 +542,7 @@ function buildUserImpact(target, usage, users) {
   }
 }
 
+/** @param {TrialTarget | null} target @param {TrialUsage} usage */
 function buildRoomImpact(target, usage) {
   if (!target) return notEvaluatedImpact('rooms', 'Rooms', 'Select a paid package to preview room capacity.')
   const limit = target.effectiveLimits.rooms
@@ -539,6 +580,7 @@ function buildRoomImpact(target, usage) {
   }
 }
 
+/** @param {TrialTarget | null} target @param {TrialUsage} usage */
 function buildBookingImpact(target, usage) {
   if (!target) return notEvaluatedImpact('check_in_month_bookings', 'Check-in-month bookings', 'Select a paid package to preview check-in-month booking capacity.')
   const limit = target.effectiveLimits.monthlyBookings
@@ -596,13 +638,15 @@ function buildBookingImpact(target, usage) {
   }
 }
 
+/** @param {ProductId} productId @param {TrialTarget | null} target @param {unknown} trialEntitlement @param {string | null} [propertyType] */
 function buildFeatureImpact(productId, target, trialEntitlement, propertyType = null) {
   if (!target) return notEvaluatedImpact('feature_loss', 'Features', 'Select a paid package to preview which features would be locked after the trial.')
   const keys = productFeatureKeys(productId, propertyType)
+  const trial = /** @type {UnknownRecord | null | undefined} */ (trialEntitlement)
   const trialFeatures = normaliseFeatureMap(firstPresent([
-    trialEntitlement?.effective_features,
-    trialEntitlement?.effectiveFeatures,
-    trialEntitlement?.features
+    trial?.effective_features,
+    trial?.effectiveFeatures,
+    trial?.features
   ]))
   const trialFeatureMap = Object.fromEntries([...keys].map((key) => [key, trialFeatures[key] !== false]))
   const targetFeatureMap = target.effectiveFeatures
@@ -638,22 +682,26 @@ function buildFeatureImpact(productId, target, trialEntitlement, propertyType = 
   }
 }
 
+/** @param {unknown} value @returns {PwaSessionCount} */
 function countActivePwaSessions(value) {
   if (typeof value === 'number') return { provided: true, count: nonNegativeCount(value) ?? 0, records: null }
   if (Array.isArray(value)) {
     const records = value.filter((session) => {
-      const status = normaliseStatus(session?.status)
-      return session?.revoked !== true && session?.revoked_at == null && !['revoked', 'inactive', 'expired'].includes(status)
+      const sessionRecord = /** @type {UnknownRecord | null | undefined} */ (session)
+      const status = normaliseStatus(sessionRecord?.status)
+      return sessionRecord?.revoked !== true && sessionRecord?.revoked_at == null && !['revoked', 'inactive', 'expired'].includes(status)
     })
     return { provided: true, count: records.length, records }
   }
   if (value && typeof value === 'object') {
-    const count = firstPresent([value.active, value.activeCount, value.active_count, value.count, value.total])
+    const record = /** @type {UnknownRecord} */ (value)
+    const count = firstPresent([record.active, record.activeCount, record.active_count, record.count, record.total])
     if (count !== undefined) return { provided: true, count: nonNegativeCount(count) ?? 0, records: null }
   }
   return { provided: false, count: null, records: null }
 }
 
+/** @param {TrialTarget | null} target @param {unknown} activePwaSessions */
 function buildPwaImpact(target, activePwaSessions) {
   const sessions = countActivePwaSessions(activePwaSessions)
   if (!target) return notEvaluatedImpact('pwa_session_loss', 'Manager Mobile App sessions', 'Select a paid package to preview Manager Mobile App access.')
@@ -706,15 +754,17 @@ function buildPwaImpact(target, activePwaSessions) {
   }
 }
 
+/** @param {unknown} value */
 function normaliseQueueCounts(value) {
   if (typeof value === 'number') {
     const pending = nonNegativeCount(value) ?? 0
     return { provided: true, pending, failed: 0, unresolved: 0, total: pending }
   }
   if (Array.isArray(value)) {
-    const pending = value.filter((entry) => !['failed', 'resolved', 'completed'].includes(normaliseStatus(entry?.status))).length
-    const failed = value.filter((entry) => normaliseStatus(entry?.status) === 'failed').length
-    return { provided: true, pending, failed, unresolved: pending, total: value.length }
+    const rows = /** @type {unknown[]} */ (value)
+    const pending = rows.filter((entry) => !['failed', 'resolved', 'completed'].includes(normaliseStatus((/** @type {UnknownRecord | null | undefined} */ (entry))?.status))).length
+    const failed = rows.filter((entry) => normaliseStatus((/** @type {UnknownRecord | null | undefined} */ (entry))?.status) === 'failed').length
+    return { provided: true, pending, failed, unresolved: pending, total: rows.length }
   }
   const source = asObject(value)
   const pending = firstFiniteCount([source.pending, source.pendingCount, source.pending_count, source.queued, source.count], 0)
@@ -734,6 +784,7 @@ function normaliseQueueCounts(value) {
   }
 }
 
+/** @param {unknown} offlineQueueCounts */
 function buildOfflineQueueImpact(offlineQueueCounts) {
   const queue = normaliseQueueCounts(offlineQueueCounts)
   if (!queue.provided) {
@@ -773,6 +824,7 @@ function buildOfflineQueueImpact(offlineQueueCounts) {
   }
 }
 
+/** @param {TrialTarget | null} target @param {Record<string, UnknownRecord>} impacts @param {boolean} selected */
 function buildRemediation(target, impacts, selected) {
   const required = []
   if (!selected) {
@@ -814,7 +866,7 @@ function buildRemediation(target, impacts, selected) {
   const operationalNotes = []
   if (impacts.rooms.status === 'above_limit') operationalNotes.push({ code: 'rooms_above_limit', action: impacts.rooms.action, copy: impacts.rooms.copy })
   if (impacts.checkInMonthBookings.status === 'above_limit') operationalNotes.push({ code: 'bookings_above_limit', action: impacts.checkInMonthBookings.action, copy: impacts.checkInMonthBookings.copy })
-  if (impacts.featureLoss.count > 0) operationalNotes.push({ code: 'features_locked', action: 'show_feature_upgrade_guidance', copy: impacts.featureLoss.copy })
+  if (/** @type {number} */ (impacts.featureLoss.count) > 0) operationalNotes.push({ code: 'features_locked', action: 'show_feature_upgrade_guidance', copy: impacts.featureLoss.copy })
 
   const blockingItems = required.filter((item) => item.blocking === true)
   const status = !target
@@ -839,19 +891,21 @@ function buildRemediation(target, impacts, selected) {
   }
 }
 
+/** @param {ProductId} productId @param {unknown} entitlement */
 function inactiveResult(productId, entitlement) {
+  const source = /** @type {UnknownRecord | null | undefined} */ (entitlement)
   const status = normaliseStatus(firstPresent([
-    entitlement?.status,
-    entitlement?.subscription_state,
-    entitlement?.subscriptionState,
-    entitlement?.state
-  ])) || (entitlement?.expired === true ? 'expired' : 'inactive')
+    source?.status,
+    source?.subscription_state,
+    source?.subscriptionState,
+    source?.state
+  ])) || (source?.expired === true ? 'expired' : 'inactive')
   return {
     version: TRIAL_IMPACT_VERSION,
     productId,
     trialImpactActive: false,
     active: false,
-    trial: { active: false, status, expired: entitlement?.expired === true },
+    trial: { active: false, status, expired: source?.expired === true },
     targetPackage: null,
     access: { outcome: 'not_applicable', message: 'Trial-only impact guidance is hidden outside an active trial.' },
     impactItems: [],
@@ -865,6 +919,7 @@ function inactiveResult(productId, entitlement) {
  * Calculate all known post-trial effects for the explicitly selected package.
  * The return value is serialisable and safe to pass to a renderer or PWA.
  */
+/** @param {TrialImpactInput} [input] */
 export function calculateTrialToPaidImpact({
   productId = null,
   product_id = null,
@@ -891,7 +946,7 @@ export function calculateTrialToPaidImpact({
   offline_queue_counts = undefined
 } = {}) {
   const resolvedProductId = resolveProductId(productId ?? product_id)
-  const entitlement = trialEntitlement ?? trial_entitlement ?? {}
+  const entitlement = /** @type {{daysLeft?: unknown, days_left?: unknown, trial_ends_at?: unknown, trialEndsAt?: unknown, expires_at?: unknown} | null | undefined} */ (trialEntitlement ?? trial_entitlement ?? {})
   if (!isActiveTrialEntitlement(entitlement)) return inactiveResult(resolvedProductId, entitlement)
 
   const selected = selectedTargetPackage ?? selected_target_package ?? targetPackage ?? target_package
@@ -911,21 +966,21 @@ export function calculateTrialToPaidImpact({
     ? offlineQueueCounts
     : offline_queue_counts !== undefined
       ? offline_queue_counts
-      : usage?.offlineQueueCounts ?? usage?.offline_queue_counts ?? usage?.offlineQueue
+      : (/** @type {UnknownRecord | null | undefined} */ (usage))?.offlineQueueCounts ?? (/** @type {UnknownRecord | null | undefined} */ (usage))?.offline_queue_counts ?? (/** @type {UnknownRecord | null | undefined} */ (usage))?.offlineQueue
   const sessionInput = activePwaSessions !== undefined
     ? activePwaSessions
     : active_pwa_sessions !== undefined
       ? active_pwa_sessions
-      : usage?.activePwaSessions ?? usage?.active_pwa_sessions ?? usage?.pwaSessions
+      : (/** @type {UnknownRecord | null | undefined} */ (usage))?.activePwaSessions ?? (/** @type {UnknownRecord | null | undefined} */ (usage))?.active_pwa_sessions ?? (/** @type {UnknownRecord | null | undefined} */ (usage))?.pwaSessions
 
-  const impacts = {
+  const impacts = /** @type {Record<string, UnknownRecord>} */ ({
     users: buildUserImpact(target, usageSnapshot, Array.isArray(users) ? users : null),
     rooms: buildRoomImpact(target, usageSnapshot),
     checkInMonthBookings: buildBookingImpact(target, usageSnapshot),
     featureLoss: buildFeatureImpact(resolvedProductId, target, entitlement, propertyType ?? property_type),
     pwaSessions: buildPwaImpact(target, sessionInput),
     offlineQueue: buildOfflineQueueImpact(queueInput)
-  }
+  })
   const remediation = buildRemediation(target, impacts, selected !== null && selected !== undefined && selected !== '')
   // Keep canonical names above while exposing terminology used by the desktop
   // and PWA surfaces as aliases. All aliases point to the same immutable-by-

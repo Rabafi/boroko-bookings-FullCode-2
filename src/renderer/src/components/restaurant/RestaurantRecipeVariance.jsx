@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { AlertTriangle, CheckCircle2, TrendingUp, Search } from 'lucide-react'
 import { useSettings } from '../../app-context'

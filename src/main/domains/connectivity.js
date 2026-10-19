@@ -1,3 +1,4 @@
+// @ts-check
 import { BrowserWindow } from 'electron';
 import { state } from '../state.js';
 import { buildSyncStatusSnapshot } from './syncStatus.js';
@@ -18,11 +19,13 @@ export const NETWORK_READ_TIMEOUT_MS = 12000;
  * fails fast to the caller's cache fallback instead of hanging the Till.
  * The underlying promise is left to settle; only the waiter moves on.
  */
+/** @param {unknown} promise @param {number} [ms] @param {string} [label] @returns {Promise<unknown>} */
 export function withNetworkTimeout(promise, ms = NETWORK_READ_TIMEOUT_MS, label = 'network read') {
+  /** @type {ReturnType<typeof setTimeout> | null} */
   let timer = null;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      const error = new Error(`${label} timed out after ${ms}ms. Showing last saved data.`);
+      const error = /** @type {Error & {code: string}} */ (new Error(`${label} timed out after ${ms}ms. Showing last saved data.`));
       error.code = 'network_read_timeout';
       reject(error);
     }, ms);
@@ -45,6 +48,7 @@ export function broadcastSyncStatus() {
 }
 
 /** True when the Supabase project is reachable over the network (not whether RLS allows reading rooms). */
+/** @param {{timeoutMs?: unknown}} [options] @returns {Promise<boolean>} */
 export async function checkOnline(options = {}) {
   if (process.env.BOROKO_TEST_FORCE_OFFLINE === 'true') {
     const wasOnline = state.isOnline;
@@ -56,8 +60,10 @@ export async function checkOnline(options = {}) {
   const timeoutMs = Number(options?.timeoutMs) > 0 ? Number(options.timeoutMs) : CONNECTIVITY_PROBE_TIMEOUT_MS;
   const wasOnline = state.isOnline;
   const base = SUPABASE_URL.replace(/\/$/, '');
+  /** @param {Response} res */
   const reachable = (res) => res && res.status > 0 && res.status < 500;
 
+  /** @param {string} url @returns {Promise<boolean>} */
   const probeNoAuth = async (url) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);

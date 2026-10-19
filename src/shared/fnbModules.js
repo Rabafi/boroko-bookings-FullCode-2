@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * LodgingOS Food & Beverage progressive module registry.
  *
@@ -159,18 +160,22 @@ export const FNB_OPTIONAL_MODULE_KEYS = Object.freeze(FNB_OPTIONAL_MODULES.map((
 
 export const FNB_ALL_MODULE_KEYS = Object.freeze([...FNB_CORE_MODULE_KEYS, ...FNB_OPTIONAL_MODULE_KEYS])
 
+/** @param {unknown} value */
 export function isFnbModuleKey(value) {
   return FNB_ALL_MODULE_KEYS.includes(String(value || ''))
 }
 
+/** @param {unknown} value */
 export function isFnbOptionalModuleKey(value) {
   return FNB_OPTIONAL_MODULE_KEYS.includes(String(value || ''))
 }
 
+/** @param {unknown} key */
 export function getFnbOptionalModule(key) {
   return FNB_OPTIONAL_MODULES.find((m) => m.key === String(key || '')) || null
 }
 
+/** @param {unknown} key */
 export function getFnbModuleDefaultEnabled(key) {
   if (FNB_CORE_MODULE_KEYS.includes(String(key || ''))) return true
   return false
@@ -181,7 +186,11 @@ export function getFnbModuleDefaultEnabled(key) {
  * Server rows carry { module_key, enabled, entitled, can_manage, reason, version }.
  * Missing optional modules resolve to disabled-by-default, entitled unknown.
  */
+/** @typedef {{key: string, enabled: boolean, entitled: boolean, canManage: boolean, reason: string, version: number, isCore: false, definition: (typeof FNB_OPTIONAL_MODULES)[number] | null}} FnbModulePreference */
+
+/** @param {unknown} rows @returns {Map<string, FnbModulePreference>} */
 export function normalizeFnbPreferences(rows) {
+  /** @type {Map<string, FnbModulePreference>} */
   const map = new Map()
   for (const def of FNB_OPTIONAL_MODULES) {
     // Fail closed before the server responds: never claim entitlement or a
@@ -198,20 +207,25 @@ export function normalizeFnbPreferences(rows) {
       definition: def
     })
   }
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const key = String(row?.module_key || row?.key || '')
+  for (const row of /** @type {unknown[]} */ (Array.isArray(rows) ? rows : [])) {
+    // Server rows are unknown until consumed; this projection preserves the
+    // existing optional field reads and leaves their values unknown.
+    const fields = row && (typeof row === 'object' || typeof row === 'function')
+      ? /** @type {Record<string, unknown>} */ (row)
+      : {}
+    const key = String(fields.module_key || fields.key || '')
     if (!isFnbOptionalModuleKey(key)) continue
-    const reason = String(row?.reason || '')
+    const reason = String(fields.reason || '')
     map.set(key, {
       key,
       // A module counts as enabled only when the server says so AND the
       // verified entitlement still holds (the server already masks enabled
       // when entitlement lapses; double-guard here against stale caches).
-      enabled: row?.enabled === true && row?.entitled === true,
-      entitled: row?.entitled === true,
-      canManage: row?.can_manage === true || row?.canManage === true,
+      enabled: fields.enabled === true && fields.entitled === true,
+      entitled: fields.entitled === true,
+      canManage: fields.can_manage === true || fields.canManage === true,
       reason,
-      version: Number.isFinite(Number(row?.version)) ? Number(row.version) : 0,
+      version: Number.isFinite(Number(fields.version)) ? Number(fields.version) : 0,
       isCore: false,
       definition: getFnbOptionalModule(key)
     })
@@ -223,6 +237,7 @@ export function normalizeFnbPreferences(rows) {
  * Resolve the operator-facing display state for one module preference.
  * The renderer must not infer entitlement from the toggle.
  */
+/** @param {FnbModulePreference | null | undefined} entry */
 export function resolveFnbModuleDisplayState(entry) {
   if (!entry) {
     return { state: 'unknown', actionLabel: '', message: '' }
@@ -240,6 +255,7 @@ export function resolveFnbModuleDisplayState(entry) {
   return { state: 'disabled', actionLabel: 'Enable', message: '' }
 }
 
+/** @param {Map<string, FnbModulePreference> | null | undefined} preferenceMap */
 export function getFnbEnabledWorkspaceKeys(preferenceMap) {
   const enabled = new Set(FNB_CORE_MODULE_KEYS)
   for (const [key, entry] of preferenceMap || []) {

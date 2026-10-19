@@ -1,3 +1,5 @@
+// @ts-check
+/** @param {unknown} notes @returns {string} */
 export function normalizeReleaseNotes(notes) {
   if (!notes) return ''
 
@@ -18,12 +20,14 @@ export function normalizeReleaseNotes(notes) {
   }
 
   if (typeof notes === 'object') {
-    return String(notes.note || notes.text || notes.name || '').trim()
+    const record = /** @type {{note?: unknown, text?: unknown, name?: unknown}} */ (notes)
+    return String(record.note || record.text || record.name || '').trim()
   }
 
   return String(notes).trim()
 }
 
+/** @param {string} line */
 function sanitizeReleaseLine(line) {
   return String(line || '')
     .replace(/^[-*•]\s*/, '')
@@ -40,6 +44,7 @@ function sanitizeReleaseLine(line) {
     .trim()
 }
 
+/** @param {unknown} notes @param {number} [limit] @returns {string[]} */
 export function extractReleaseHighlights(notes, limit = 4) {
   const normalized = normalizeReleaseNotes(notes)
   if (!normalized) return []
@@ -55,12 +60,15 @@ export function extractReleaseHighlights(notes, limit = 4) {
     .slice(0, limit)
 }
 
+/** @param {unknown} notes @returns {Array<{title:string,items:string[]}>} */
 export function toReleaseSections(notes) {
   const normalized = normalizeReleaseNotes(notes)
   if (!normalized) return []
 
   const lines = normalized.split(/\r?\n/)
+  /** @type {Array<{title:string,items:string[]}>} */
   const sections = []
+  /** @type {{title:string,items:string[]}} */
   let current = { title: 'Overview', items: [] }
 
   const pushCurrent = () => {
@@ -104,6 +112,7 @@ export function toReleaseSections(notes) {
   }))
 }
 
+/** @param {string|number|null|undefined} value */
 export function formatReleaseDate(value) {
   if (!value) return ''
   const parsed = new Date(value)

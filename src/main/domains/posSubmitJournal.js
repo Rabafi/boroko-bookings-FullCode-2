@@ -1,3 +1,4 @@
+// @ts-check
 import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
@@ -9,14 +10,29 @@ const COMMITTED_RETENTION_MS = 24 * 60 * 60 * 1000
 const MAX_COMMITTED_ATTEMPTS = 200
 const journalRecoveryBlocks = new Map()
 
+/** @typedef {Record<string, unknown>} AttemptReadView */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptional(value, key) {
+  return /** @type {AttemptReadView | null | undefined} */ (value)?.[key]
+}
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readDirect(value, key) {
+  return /** @type {AttemptReadView} */ (value)[key]
+}
+
+/** @param {unknown} value @returns {string | undefined} */
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   if (!value || typeof value !== 'object') return JSON.stringify(value)
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  const fields = /** @type {AttemptReadView} */ (value)
+  return `{${Object.keys(fields).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(fields[key])}`).join(',')}}`
 }
 
+/** @param {unknown} value */
 function hashPayload(value) {
-  return createHash('sha256').update(stableStringify(value || {})).digest('hex')
+  return createHash('sha256').update(/** @type {string} */ (stableStringify(value || {}))).digest('hex')
 }
 
 function attemptFilePath() {
@@ -29,15 +45,18 @@ function blockedFilePath() {
   return path.join(state.cacheDir, POS_SUBMIT_JOURNAL_BLOCKED_FILE)
 }
 
+/** @returns {Error & { code: string; requiresRecovery: boolean }} */
 function journalRecoveryError(reason = 'the journal could not be read') {
   const error = new Error(
     `POS sale recovery is unavailable because ${reason}. Do not create a new sale; contact a manager or support to reconcile the original submission journal.`
   )
-  error.code = 'pos_submit_journal_unavailable'
-  error.requiresRecovery = true
-  return error
+  const fields = /** @type {Error & { code: string; requiresRecovery: boolean }} */ (error)
+  fields.code = 'pos_submit_journal_unavailable'
+  fields.requiresRecovery = true
+  return fields
 }
 
+/** @param {string} filePath @param {string} quarantinePath @param {unknown} [reason] */
 function quarantineBadFile(filePath, quarantinePath, reason = 'corrupt JSON') {
   if (!filePath || !fs.existsSync(filePath)) return null
   try {
@@ -50,11 +69,12 @@ function quarantineBadFile(filePath, quarantinePath, reason = 'corrupt JSON') {
   }
 }
 
+/** @param {string} filePath @param {unknown} value */
 function writeDurable(filePath, value) {
   const tmpPath = `${filePath}.tmp`
   const tmpFd = fs.openSync(tmpPath, 'w')
   try {
-    fs.writeFileSync(tmpFd, JSON.stringify(value, null, 2), 'utf-8')
+    fs.writeFileSync(tmpFd, /** @type {string} */ (JSON.stringify(value, null, 2)), 'utf-8')
     fs.fsyncSync(tmpFd)
   } finally {
     fs.closeSync(tmpFd)
@@ -72,11 +92,12 @@ function writeDurable(filePath, value) {
       }
       try { fs.unlinkSync(tmpPath) } catch { /* keep recovery copy if unlink is blocked */ }
     } catch (copyError) {
-      throw new Error(`POS submit attempt journal write failed: ${copyError?.message || renameError?.message || 'unknown error'}`)
+      throw new Error(`POS submit attempt journal write failed: ${readOptional(copyError, 'message') || readOptional(renameError, 'message') || 'unknown error'}`)
     }
   }
 }
 
+/** @param {string} filePath @param {unknown} reason @param {string | null} [corruptPath] */
 function blockJournal(filePath, reason, corruptPath = null) {
   const block = {
     reason: String(reason || 'corrupt journal'),
@@ -91,6 +112,7 @@ function blockJournal(filePath, reason, corruptPath = null) {
   return block
 }
 
+/** @param {string} filePath @param {unknown} reason @returns {never} */
 function rejectCorruptJournal(filePath, reason) {
   const quarantinePath = `${filePath}.corrupt.${Date.now()}.bak`
   try {
@@ -99,13 +121,14 @@ function rejectCorruptJournal(filePath, reason) {
     // encounters it again and fails closed.
     blockJournal(filePath, reason, quarantinePath)
   } catch (error) {
-    console.error('[POS Submit Journal] Failed to persist recovery block:', error?.message || error)
+    console.error('[POS Submit Journal] Failed to persist recovery block:', readOptional(error, 'message') || error)
     throw journalRecoveryError('the corrupt local submission journal could not be durably blocked; its original evidence was retained')
   }
   quarantineBadFile(filePath, quarantinePath, reason)
   throw journalRecoveryError('the local submission journal is corrupt')
 }
 
+/** @returns {unknown[]} */
 function readAttempts() {
   const filePath = attemptFilePath()
   if (fs.existsSync(blockedFilePath())) {
@@ -117,52 +140,56 @@ function readAttempts() {
   }
   if (!fs.existsSync(filePath)) return []
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    const parsed = /** @type {unknown} */ (JSON.parse(fs.readFileSync(filePath, 'utf-8')))
     if (!Array.isArray(parsed)) {
       rejectCorruptJournal(filePath, 'the journal root was not an array')
     }
-    const malformed = parsed.some((entry) => (
-      !entry ||
-      typeof entry !== 'object' ||
-      !asId(entry.submitIntentId) ||
-      !asId(entry.orderId) ||
-      !['pending', 'provisional', 'committed'].includes(String(entry.status || '')) ||
-      !entry.payload ||
-      !entry.digest
-    ))
+    const parsedRows = /** @type {unknown[]} */ (parsed)
+    const malformed = parsedRows.some((entry) => {
+      if (!entry || typeof entry !== 'object') return true
+      const fields = /** @type {AttemptReadView} */ (entry)
+      return !asId(fields.submitIntentId) ||
+        !asId(fields.orderId) ||
+        !['pending', 'provisional', 'committed'].includes(String(fields.status || '')) ||
+        !fields.payload ||
+        !fields.digest
+    })
     if (malformed) {
       rejectCorruptJournal(filePath, 'the journal contains an incomplete financial attempt')
     }
-    return parsed
+    return parsedRows
   } catch (error) {
-    if (error?.code === 'pos_submit_journal_unavailable') throw error
-    console.error('[POS Submit Journal] Read failed:', error?.message || error)
-    rejectCorruptJournal(filePath, error?.message || 'invalid JSON')
+    if (readOptional(error, 'code') === 'pos_submit_journal_unavailable') throw error
+    console.error('[POS Submit Journal] Read failed:', readOptional(error, 'message') || error)
+    rejectCorruptJournal(filePath, readOptional(error, 'message') || 'invalid JSON')
   }
 }
 
+/** @param {unknown[]} attempts @returns {unknown[]} */
 function writeAttempts(attempts) {
   const now = Date.now()
-  const pending = attempts.filter((attempt) => attempt?.status !== 'committed')
+  const pending = attempts.filter((attempt) => readOptional(attempt, 'status') !== 'committed')
   const committed = attempts
-    .filter((attempt) => attempt?.status === 'committed')
+    .filter((attempt) => readOptional(attempt, 'status') === 'committed')
     .filter((attempt) => {
-      const age = now - Date.parse(attempt?.lastAttemptAt || attempt?.committedAt || attempt?.firstAttemptAt || '')
+      const age = now - Date.parse(/** @type {string} */ (readOptional(attempt, 'lastAttemptAt') || readOptional(attempt, 'committedAt') || readOptional(attempt, 'firstAttemptAt') || ''))
       // An invalid timestamp is retained fail-closed. It is safer to keep an
       // old settled record than to make its original operation unrecoverable.
       return !Number.isFinite(age) || age < COMMITTED_RETENTION_MS
     })
-    .sort((left, right) => String(right.lastAttemptAt || right.committedAt || right.firstAttemptAt || '').localeCompare(String(left.lastAttemptAt || left.committedAt || left.firstAttemptAt || '')))
+    .sort((left, right) => String(readDirect(right, 'lastAttemptAt') || readDirect(right, 'committedAt') || readDirect(right, 'firstAttemptAt') || '').localeCompare(String(readDirect(left, 'lastAttemptAt') || readDirect(left, 'committedAt') || readDirect(left, 'firstAttemptAt') || '')))
     .slice(0, MAX_COMMITTED_ATTEMPTS)
   const pruned = [...pending, ...committed]
   writeDurable(attemptFilePath(), pruned)
   return pruned
 }
 
+/** @param {unknown[]} attempts @param {unknown} submitIntentId @returns {unknown | null} */
 function findAttempt(attempts, submitIntentId) {
-  return attempts.find((attempt) => String(attempt?.submitIntentId || '') === String(submitIntentId || '')) || null
+  return attempts.find((attempt) => String(readOptional(attempt, 'submitIntentId') || '') === String(submitIntentId || '')) || null
 }
 
+/** @param {unknown} value @returns {string | null} */
 function asId(value) {
   const text = String(value || '').trim()
   return text || null
@@ -172,6 +199,7 @@ function asId(value) {
 // Retries must reuse the exact same envelope (same submitIntentId, order id and
 // client_created_at) so the server idempotency contract returns the original
 // result instead of creating a second sale.
+/** @param {{ submitIntentId: unknown; orderId: unknown; lodgeId: unknown; userId: unknown; payload: unknown }} input */
 export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, userId, payload }) {
   const normalizedIntentId = asId(submitIntentId)
   const normalizedOrderId = asId(orderId)
@@ -183,7 +211,7 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
   const attempts = readAttempts()
   const existing = findAttempt(attempts, normalizedIntentId)
   if (existing) {
-    if (existing.digest !== digest) {
+    if (readDirect(existing, 'digest') !== digest) {
       return {
         conflict: true,
         reused: false,
@@ -194,26 +222,26 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
       ...existing,
       lastAttemptAt: nowIso
     }
-    const updated = attempts.map((attempt) => attempt.submitIntentId === normalizedIntentId ? reused : attempt)
+    const updated = attempts.map((attempt) => readDirect(attempt, 'submitIntentId') === normalizedIntentId ? reused : attempt)
     writeAttempts(updated)
     return { attempt: reused, reused: true, conflict: false, error: null }
   }
   const normalizedLodgeId = asId(lodgeId) || state.lodgeId || null
   const normalizedUserId = asId(userId) || state.currentUser?.id || null
   const unresolvedAttempt = attempts.find((attempt) =>
-    attempt?.status === 'pending' &&
+    readOptional(attempt, 'status') === 'pending' &&
     // Older journals may not contain both scope fields. They cannot be
     // proven to belong to a different operator/company, so keep the Till
     // fail-closed instead of permitting a potentially duplicate intent.
-    (!attempt.lodgeId || !normalizedLodgeId || attempt.lodgeId === normalizedLodgeId) &&
-    (!attempt.userId || !normalizedUserId || attempt.userId === normalizedUserId)
+    (!readDirect(attempt, 'lodgeId') || !normalizedLodgeId || readDirect(attempt, 'lodgeId') === normalizedLodgeId) &&
+    (!readDirect(attempt, 'userId') || !normalizedUserId || readDirect(attempt, 'userId') === normalizedUserId)
   )
   if (unresolvedAttempt) {
     return {
       conflict: true,
       reused: false,
       code: 'pos_submit_recovery_required',
-      error: `Sale attempt ${unresolvedAttempt.submitIntentId} is still unresolved. Reconcile or retry that exact attempt before starting a new sale.`
+      error: `Sale attempt ${readDirect(unresolvedAttempt, 'submitIntentId')} is still unresolved. Reconcile or retry that exact attempt before starting a new sale.`
     }
   }
   const attempt = {
@@ -221,7 +249,7 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
     orderId: normalizedOrderId,
     lodgeId: normalizedLodgeId,
     userId: normalizedUserId,
-    createdAtClient: payload?.created_at_client || payload?.client_created_at || null,
+    createdAtClient: readOptional(payload, 'created_at_client') || readOptional(payload, 'client_created_at') || null,
     digest,
     payload,
     status: 'pending',
@@ -232,6 +260,7 @@ export function resolvePosSubmitAttempt({ submitIntentId, orderId, lodgeId, user
   return { attempt, reused: false, conflict: false, error: null }
 }
 
+/** @param {unknown} submitIntentId */
 export function hasPosSubmitAttempt(submitIntentId) {
     const normalizedIntentId = asId(submitIntentId);
     if (!normalizedIntentId) return false;
@@ -241,71 +270,76 @@ export function hasPosSubmitAttempt(submitIntentId) {
   // Read-only accessor for retry paths: a same-intent retry must reuse the
   // originally journalled bytes instead of digesting a rebuilt envelope
   // (fresh catalog snapshot, recomputed totals) that can never hash equal.
+  /** @param {unknown} submitIntentId */
   export function getPosSubmitAttempt(submitIntentId) {
     const normalizedIntentId = asId(submitIntentId);
     if (!normalizedIntentId) return null;
     return findAttempt(readAttempts(), normalizedIntentId);
   }
 
+/** @param {unknown} submitIntentId */
 export function commitPosSubmitAttempt(submitIntentId) {  const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return null
   const attempts = readAttempts()
   const existing = findAttempt(attempts, normalizedIntentId)
   if (!existing) return null
   const updated = attempts.map((attempt) =>
-    attempt.submitIntentId === normalizedIntentId
-      ? { ...attempt, status: 'committed', lastAttemptAt: new Date().toISOString() }
+    readDirect(attempt, 'submitIntentId') === normalizedIntentId
+      ? { .../** @type {AttemptReadView} */ (attempt), status: 'committed', lastAttemptAt: new Date().toISOString() }
       : attempt
   )
   writeAttempts(updated)
-  return updated.find((attempt) => attempt.submitIntentId === normalizedIntentId) || null
+  return updated.find((attempt) => readDirect(attempt, 'submitIntentId') === normalizedIntentId) || null
 }
 
 // Offline success records the sale locally and queues the server replay.
 // The outcome is no longer unknown, so the attempt leaves 'pending' for
 // 'provisional': recovery banners and new-sale blocks ignore it while the
 // queue owns it. Replay success commits it; dead-letter reopens it.
+/** @param {unknown} submitIntentId @param {unknown} [queueId] */
 export function markPosSubmitAttemptProvisional(submitIntentId, queueId = null) {
   const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return null
   const attempts = readAttempts()
   const existing = findAttempt(attempts, normalizedIntentId)
-  if (!existing || existing.status !== 'pending') return existing || null
+  if (!existing || readDirect(existing, 'status') !== 'pending') return existing || null
   const updated = attempts.map((attempt) =>
-    attempt.submitIntentId === normalizedIntentId
-      ? { ...attempt, status: 'provisional', queueId: queueId || attempt.queueId || null, lastAttemptAt: new Date().toISOString() }
+    readDirect(attempt, 'submitIntentId') === normalizedIntentId
+      ? { .../** @type {AttemptReadView} */ (attempt), status: 'provisional', queueId: queueId || readDirect(attempt, 'queueId') || null, lastAttemptAt: new Date().toISOString() }
       : attempt
   )
   writeAttempts(updated)
-  return updated.find((attempt) => attempt.submitIntentId === normalizedIntentId) || null
+  return updated.find((attempt) => readDirect(attempt, 'submitIntentId') === normalizedIntentId) || null
 }
 
 // A provisional attempt whose queue replay reached a dead end returns to
 // 'pending' so manager recovery surfaces it again instead of losing it.
+/** @param {unknown} submitIntentId @param {unknown} [reason] */
 export function reopenPosSubmitAttempt(submitIntentId, reason = null) {
   const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return null
   const attempts = readAttempts()
   const existing = findAttempt(attempts, normalizedIntentId)
-  if (!existing || existing.status !== 'provisional') return existing || null
+  if (!existing || readDirect(existing, 'status') !== 'provisional') return existing || null
   const updated = attempts.map((attempt) =>
-    attempt.submitIntentId === normalizedIntentId
-      ? { ...attempt, status: 'pending', reopenReason: reason || attempt.reopenReason || null, lastAttemptAt: new Date().toISOString() }
+    readDirect(attempt, 'submitIntentId') === normalizedIntentId
+      ? { .../** @type {AttemptReadView} */ (attempt), status: 'pending', reopenReason: reason || readDirect(attempt, 'reopenReason') || null, lastAttemptAt: new Date().toISOString() }
       : attempt
   )
   writeAttempts(updated)
-  return updated.find((attempt) => attempt.submitIntentId === normalizedIntentId) || null
+  return updated.find((attempt) => readDirect(attempt, 'submitIntentId') === normalizedIntentId) || null
 }
 
 // Used when an order was already created server-side (for example by an
 // earlier queue replay) so a retried attempt resolves to the original result.
+/** @param {{ submitIntentId: unknown; orderId: unknown }} input */
 export function findCommittedPosSubmitAttempt({ submitIntentId, orderId }) {
   const attempts = readAttempts()
   const byIntent = findAttempt(attempts, submitIntentId)
-  if (byIntent && byIntent.status === 'committed') return byIntent
+  if (byIntent && readDirect(byIntent, 'status') === 'committed') return byIntent
   if (orderId) {
     const byOrder = attempts.find((attempt) =>
-      attempt.orderId === asId(orderId) && attempt.status === 'committed'
+      readDirect(attempt, 'orderId') === asId(orderId) && readDirect(attempt, 'status') === 'committed'
     )
     if (byOrder) return byOrder
   }
@@ -315,29 +349,32 @@ export function findCommittedPosSubmitAttempt({ submitIntentId, orderId }) {
 // Renderer reload recovery: the newest unresolved attempt for this lodge/user
 // is returned so the renderer can offer to retry the original sale instead of
 // silently starting a second one.
+/** @param {{ lodgeId?: unknown; userId?: unknown }} [scope] */
 export function countPendingPosSubmitAttempts({ lodgeId, userId } = {}) {
   return readAttempts().filter((attempt) =>
-    attempt.status === 'pending' &&
-    (!lodgeId || attempt.lodgeId === asId(lodgeId)) &&
-    (!userId || attempt.userId === asId(userId))
+    readDirect(attempt, 'status') === 'pending' &&
+    (!lodgeId || readDirect(attempt, 'lodgeId') === asId(lodgeId)) &&
+    (!userId || readDirect(attempt, 'userId') === asId(userId))
   ).length;
 }
 
+/** @param {{ lodgeId?: unknown; userId?: unknown }} scope */
 export function getPendingPosSubmitAttempt({ lodgeId, userId }) {
   const attempts = readAttempts()
   const candidates = attempts.filter((attempt) =>
-    attempt.status === 'pending' &&
-    (!lodgeId || attempt.lodgeId === asId(lodgeId)) &&
-    (!userId || attempt.userId === asId(userId))
+    readDirect(attempt, 'status') === 'pending' &&
+    (!lodgeId || readDirect(attempt, 'lodgeId') === asId(lodgeId)) &&
+    (!userId || readDirect(attempt, 'userId') === asId(userId))
   )
-  candidates.sort((a, b) => String(b.lastAttemptAt || '').localeCompare(String(a.lastAttemptAt || '')))
+  candidates.sort((a, b) => String(readDirect(b, 'lastAttemptAt') || '').localeCompare(String(readDirect(a, 'lastAttemptAt') || '')))
   return candidates[0] || null
 }
 
+/** @param {unknown} submitIntentId */
 export function clearPosSubmitAttempt(submitIntentId) {
   const normalizedIntentId = asId(submitIntentId)
   if (!normalizedIntentId) return
-  const attempts = readAttempts().filter((attempt) => attempt.submitIntentId !== normalizedIntentId)
+  const attempts = readAttempts().filter((attempt) => readDirect(attempt, 'submitIntentId') !== normalizedIntentId)
   writeAttempts(attempts)
 }
 

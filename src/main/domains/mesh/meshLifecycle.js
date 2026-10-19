@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../../state.js';
 import { meshState, getOrCreateLocalNodeId } from './meshState.js';
 import { startMeshServer, stopMeshServer } from './meshServer.js';
@@ -7,8 +8,29 @@ import path from 'path';
 import { readCache } from '../cacheStore.js';
 
 // Register clean exit handler if Electron environment is present
+/** @type {ReturnType<typeof setInterval> | null} */
 let meshSyncIntervalId = null;
 let meshSecretColumnWarningShown = false;
+
+/** @typedef {Omit<typeof meshState, 'lodgeId' | 'lodgeMeshSecret' | 'lastError'> & {
+ * lodgeId: string | null,
+ * lodgeMeshSecret: string | null,
+ * lastError: unknown,
+ * _failedLodgeId?: string,
+ * _lastFailureAt?: number,
+ * _failureLogged?: boolean
+ * }} LifecycleMeshState */
+const lifecycleMeshState = /** @type {LifecycleMeshState} */ (meshState);
+/** @param {unknown} error */
+function readThrownMessage(error) {
+  const errorFields = /** @type {Record<string, unknown> | null | undefined} */ (error);
+  return errorFields?.message;
+}
+
+/** @param {unknown} error */
+function readDirectThrownMessage(error) {
+  return /** @type {{ message: unknown }} */ (error).message;
+}
 
 if (app) {
   app.on('will-quit', () => {
@@ -33,7 +55,7 @@ async function loadLodgeMeshSecret() {
       const remoteSecret = String(data?.lodge_mesh_secret || '').trim();
       if (remoteSecret) return remoteSecret;
     } catch (error) {
-      const message = String(error?.message || error || '');
+      const message = String(readThrownMessage(error) || error || '');
       if (/column settings\.lodge_mesh_secret does not exist/i.test(message)) {
         if (!meshSecretColumnWarningShown) {
           meshSecretColumnWarningShown = true;
@@ -67,13 +89,13 @@ export async function initializeMesh() {
   if (meshState.running) return;
 
   const RETRY_INTERVAL_MS = 120_000;
-  const lastFailureAt = meshState._failedLodgeId === state.lodgeId ? (meshState._lastFailureAt || 0) : 0;
+  const lastFailureAt = lifecycleMeshState._failedLodgeId === state.lodgeId ? (lifecycleMeshState._lastFailureAt || 0) : 0;
   if (lastFailureAt && Date.now() - lastFailureAt < RETRY_INTERVAL_MS) return;
 
   try {
     // 1. Initialize node identity
     const nodeId = getOrCreateLocalNodeId();
-    meshState.lodgeId = state.lodgeId;
+    lifecycleMeshState.lodgeId = state.lodgeId;
     meshState.enabled = true;
 
     // 2. Load the lodge mesh secret from the authenticated settings cache.
@@ -81,18 +103,18 @@ export async function initializeMesh() {
     const secret = await loadLodgeMeshSecret();
     if (!secret) {
       meshState.enabled = false;
-      meshState.lodgeId = null;
-      meshState._failedLodgeId = state.lodgeId;
-      meshState._lastFailureAt = Date.now();
-      meshState.lastError = 'Mesh disabled: missing lodge_mesh_secret in cached settings.';
-      if (!meshState._failureLogged) {
-        meshState._failureLogged = true;
+      lifecycleMeshState.lodgeId = null;
+      lifecycleMeshState._failedLodgeId = state.lodgeId;
+      lifecycleMeshState._lastFailureAt = Date.now();
+      lifecycleMeshState.lastError = 'Mesh disabled: missing lodge_mesh_secret in cached settings.';
+      if (!lifecycleMeshState._failureLogged) {
+        lifecycleMeshState._failureLogged = true;
         console.warn('[MeshLifecycle] Mesh disabled: missing lodge_mesh_secret in cached settings.');
       }
       return;
     }
 
-    meshState.lodgeMeshSecret = secret;
+    lifecycleMeshState.lodgeMeshSecret = secret;
 
     // 3. Start the dynamic HTTP/TCP server
     startMeshServer(secret);
@@ -103,7 +125,7 @@ export async function initializeMesh() {
       const { startMeshDiscovery } = await import('./meshDiscovery.js');
       startMeshDiscovery();
     } catch (err) {
-      console.warn('[MeshLifecycle] Discovery module not yet implemented or loaded:', err.message);
+      console.warn('[MeshLifecycle] Discovery module not yet implemented or loaded:', readDirectThrownMessage(err));
     }
 
     // 5. Start periodic sync queue reconciliation (every 15 seconds)
@@ -117,13 +139,13 @@ export async function initializeMesh() {
     }, 15000);
 
   } catch (err) {
-    meshState._failedLodgeId = state.lodgeId;
-    meshState._lastFailureAt = Date.now();
-    if (!meshState._failureLogged) {
-      meshState._failureLogged = true;
+    lifecycleMeshState._failedLodgeId = state.lodgeId;
+    lifecycleMeshState._lastFailureAt = Date.now();
+    if (!lifecycleMeshState._failureLogged) {
+      lifecycleMeshState._failureLogged = true;
       console.error('[MeshLifecycle] Failed to initialize P2P mesh services:', err);
     }
-    meshState.lastError = err.message;
+    lifecycleMeshState.lastError = readDirectThrownMessage(err);
   }
 }
 
@@ -157,8 +179,8 @@ export function shutdownMesh() {
   meshState.running = false;
   meshState.peers.clear();
   meshState.activeLocks = [];
-  meshState.lodgeMeshSecret = null;
-  meshState.lodgeId = null;
+  lifecycleMeshState.lodgeMeshSecret = null;
+  lifecycleMeshState.lodgeId = null;
 
   console.log('[MeshLifecycle] Mesh services fully stopped and cleaned.');
 }

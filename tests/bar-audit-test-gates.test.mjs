@@ -3,13 +3,19 @@ import assert from 'node:assert/strict'
 import { childProcessExitCode } from '../scripts/test-run-result.mjs'
 import { collectBarTests, runBarSuite } from './run-bar-suite.mjs'
 import { rejectsSqlState } from './helpers/sql-state.mjs'
-import { runRestaurantSuite } from './run-restaurant-suite.mjs'
+import { discoverRestaurantSuites, runRestaurantSuite, selectRestaurantSuites } from './run-restaurant-suite.mjs'
 const log = { log() {}, error() {} }
 
 test('restaurant keep-going collects later failures without declaring success', () => {
   let count = 0
   assert.equal(runRestaurantSuite({ files:['restaurant-a.test.mjs','restaurant-b.test.mjs'], keepGoing:true, log, run:()=>({status:++count}) }),1)
   assert.equal(count,2)
+})
+test('Restaurant suite filter must select only a file discovered by the maintained release gate', () => {
+  const discovered = discoverRestaurantSuites()
+  assert.ok(discovered.includes('restaurant-accounting-remediation-regressions.test.mjs'))
+  assert.deepEqual(selectRestaurantSuites(discovered, 'restaurant-accounting-remediation-regressions.test.mjs'), ['restaurant-accounting-remediation-regressions.test.mjs'])
+  assert.throws(() => selectRestaurantSuites(discovered, '../accounting-remediation-regressions.test.mjs'), /not found by maintained discovery/)
 })
 test('restaurant default remains fail-fast and an empty suite fails', () => {
   let count = 0

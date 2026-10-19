@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { LogIn, LogOut, UserCheck, Gift, RefreshCw, AlertTriangle, Users, ArrowLeft } from 'lucide-react'
 import { ConfirmDialog } from './shared/ConfirmDialog'

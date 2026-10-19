@@ -1,1 +1,11 @@
-<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'><rect width='512' height='512' rx='100' fill='%2314532d'/><text x='96' y='380' font-size='300' text-anchor='middle' font-family='system-ui'>🏕️</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="tsa bonno hospitalityos logo"><defs><mask id="tb-knockout" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M126 116 H326 C394 116 414 172 374 214
+    C360 230 340 240 318 243
+    C360 245 390 260 401 288 C423 342 389 396 337 396
+    H204 V183 L132 226 Q116 236 116 255 V350"
+    fill="none" stroke="#000000" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/></mask></defs><g mask="url(#tb-knockout)">
+  <path d="M90 0 H422 Q512 0 512 90 V422 Q512 512 422 512 H260
+    Q254 512 250 508 L4 262 Q0 258 0 252 V90 Q0 0 90 0 Z" fill="#123D28"/>
+  <path d="M0 341 Q0 332 7 339 L166 498 Q180 512 160 512 H90
+    Q0 512 0 422 Z" fill="#123D28"/>
+  
+</g></svg>

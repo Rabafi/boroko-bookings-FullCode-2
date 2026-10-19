@@ -8,10 +8,13 @@ import sharp from 'sharp'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(dir, '..', '..', '..')
-const outDir = path.join(root, 'docs', 'bar-manual', 'assets', 'screenshots', 'raw')
+const captureRoot = process.env.BAR_GUIDE_CAPTURE_DIR ? path.resolve(process.env.BAR_GUIDE_CAPTURE_DIR) : path.join(root, 'docs', 'bar-manual', 'assets', 'screenshots')
+const outDir = path.join(captureRoot, 'raw')
 mkdirSync(outDir, { recursive: true })
-const bundle = path.join(dir, 'capture-harness.bundle.js')
-const css = path.join(dir, 'capture-harness.bundle.css')
+const buildDir = path.join(captureRoot, '.build')
+mkdirSync(buildDir, { recursive: true })
+const bundle = path.join(buildDir, 'capture-harness.bundle.js')
+const css = path.join(buildDir, 'capture-harness.bundle.css')
 await build({ entryPoints: [path.join(dir, 'capture-harness.jsx')], bundle: true, outfile: bundle, jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], loader: { '.png': 'dataurl', '.svg': 'dataurl', '.css': 'css' }, logLevel: 'warning' })
 const server = createServer((req, res) => {
   if (req.url.startsWith('/capture-harness.bundle.js')) { res.setHeader('content-type', 'text/javascript'); res.end(readFileSync(bundle)); return }
@@ -20,17 +23,30 @@ const server = createServer((req, res) => {
 })
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${server.address().port}`
-const browser = await chromium.launch({ headless: true })
+const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' })
 async function open(page, url, readyText) {
   page.setDefaultTimeout(15000)
   page.on('pageerror', (error) => console.log('PAGEERROR', url, error.stack || error.message))
   page.on('console', (message) => { if (message.type() === 'error') console.log('BROWSER-ERROR', url, message.text()) })
   await page.goto(`${base}/${url}`)
   await page.evaluate(() => document.fonts?.ready)
+  if (new URL(url, base).searchParams.get('page') === 'reports') await unlockManageIfPresent(page)
   await page.getByText(readyText, { exact: false }).first().waitFor({ state: 'visible' })
   await page.waitForFunction(() => document.fonts?.status === 'loaded' && !document.body.innerText.includes('Loading…'))
   const bad = await page.evaluate(() => /Loading failed|could not be loaded|No items found/.test(document.body.innerText))
   if (bad) throw new Error(`Capture validation failed for ${url}`)
+}
+async function unlockManageIfPresent(page) {
+  const pin = page.getByLabel('Manager PIN', { exact: true })
+  if (!(await pin.isVisible().catch(() => false))) {
+    const unlock = page.getByRole('button', { name: 'Unlock with manager PIN', exact: true })
+    if (await unlock.isVisible().catch(() => false)) await unlock.click()
+  }
+  if (await pin.isVisible().catch(() => false)) {
+    await pin.fill('1234')
+    await page.getByRole('button', { name: 'Unlock Manage', exact: true }).click()
+    await pin.waitFor({ state: 'hidden', timeout: 5000 })
+  }
 }
 async function closeUnlockIfPresent(page) {
   const backdrop = page.locator('.hpos-till-unlock-backdrop')
@@ -84,6 +100,33 @@ async function cropStockCountTask(file) {
   renameSync(focused, file)
 }
 
+async function captureHistoricalReceipts() {
+  for (const [pageName, fileName, title] of [
+    ['my-sales', '18-sale-detail-reprint.png', 'My sales'],
+    ['reports', '29-sales-historical-receipt.png', 'Bar sales & control report'],
+  ]) {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
+    const page = await context.newPage()
+    await open(page, `?page=${pageName}`, title)
+    const dateFilters = page.locator('input[type="date"]')
+    await dateFilters.nth(0).fill('2026-09-08')
+    await dateFilters.nth(1).fill('2026-09-08')
+    await page.getByRole('button', { name: 'Print receipt R-2026-0018', exact: true }).click()
+    const receiptHeading = page.getByRole('heading', { name: 'POS Receipt', exact: true })
+    await receiptHeading.waitFor({ state: 'visible' })
+    const receiptDialog = receiptHeading.locator('xpath=../../..')
+    const receiptPath = path.join(outDir, fileName)
+    await receiptDialog.screenshot({ path: receiptPath })
+    await cropPng(receiptPath, 0, 999, 560)
+    await context.close()
+  }
+}
+if (process.env.BAR_GUIDE_CAPTURE_ONLY === 'historical-receipts') {
+  await captureHistoricalReceipts()
+  await browser.close()
+  await new Promise((resolve) => server.close(resolve))
+  console.log('Captured cashier and manager historical receipt paths with real components')
+} else {
 let context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
 let page = await context.newPage()
 await open(page, '?page=sell', 'Sell')
@@ -123,6 +166,11 @@ for (const [file, pageName, ready] of simple) {
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
   page = await context.newPage()
   await open(page, `?page=${pageName}`, ready)
+  if (pageName === 'reports') {
+    const dateFilters = page.locator('input[type="date"]')
+    await dateFilters.nth(0).fill('2026-09-08')
+    await dateFilters.nth(1).fill('2026-09-08')
+  }
   if (pageName === 'stock') await page.getByRole('row', { name: /River Lager 330ml/ }).waitFor({ state: 'visible' })
   if (pageName === 'reports') await page.getByText('R-2026-0018', { exact: false }).first().waitFor({ state: 'visible' })
   if (pageName === 'customers') await page.getByText('Naledi M.', { exact: false }).first().waitFor({ state: 'visible' })
@@ -167,9 +215,27 @@ await context.close()
 context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
 page = await context.newPage()
 await open(page, '?page=my-sales', 'My sales')
-await page.getByRole('button', { name: /R-2026-0018/ }).click()
-await page.getByRole('dialog', { name: /My sale receipt details/ }).waitFor({ state: 'visible' })
-await page.screenshot({ path: path.join(outDir, '18-sale-detail-reprint.png'), fullPage: true })
+const cashierDateFilters = page.locator('input[type="date"]')
+await cashierDateFilters.nth(0).fill('2026-09-08')
+await cashierDateFilters.nth(1).fill('2026-09-08')
+await page.getByRole('button', { name: 'Print receipt R-2026-0018', exact: true }).click()
+const cashierHistoricalReceipt = page.getByRole('heading', { name: 'POS Receipt', exact: true })
+await cashierHistoricalReceipt.waitFor({ state: 'visible' })
+const cashierHistoricalDialog = cashierHistoricalReceipt.locator('xpath=../../..')
+await cashierHistoricalDialog.screenshot({ path: path.join(outDir, '18-sale-detail-reprint.png') })
+await context.close()
+
+context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
+page = await context.newPage()
+await open(page, '?page=reports', 'Bar sales & control report')
+const managerDateFilters = page.locator('input[type="date"]')
+await managerDateFilters.nth(0).fill('2026-09-08')
+await managerDateFilters.nth(1).fill('2026-09-08')
+await page.getByRole('button', { name: 'Print receipt R-2026-0018', exact: true }).click()
+const managerHistoricalReceipt = page.getByRole('heading', { name: 'POS Receipt', exact: true })
+await managerHistoricalReceipt.waitFor({ state: 'visible' })
+const managerHistoricalDialog = managerHistoricalReceipt.locator('xpath=../../..')
+await managerHistoricalDialog.screenshot({ path: path.join(outDir, '29-sales-historical-receipt.png') })
 await context.close()
 
 context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 })
@@ -238,3 +304,4 @@ await context.close()
 await browser.close()
 await new Promise((resolve) => server.close(resolve))
 console.log('Captured validated, populated Bar screens with real components')
+}

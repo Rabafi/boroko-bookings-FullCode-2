@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ArrowRightLeft, AlertTriangle, RefreshCw, Search } from 'lucide-react'

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Plus, ReceiptText, RefreshCw, Wallet, Split, ArrowRightLeft, Lock, Unlock, XCircle, DollarSign } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -5,11 +6,14 @@ import { StatusBadge } from './shared/StatusBadge'
 import { useSettings } from '../app-context'
 import { ErrorNotice } from './shared/ErrorNotice'
 
-const emptyCharge = {
-  description: '',
-  category: 'folio',
-  quantity: '1',
-  unit_price: ''
+function createEmptyCharge() {
+  return {
+    description: '',
+    category: 'folio',
+    quantity: '1',
+    unit_price: '',
+    idempotency_key: crypto.randomUUID()
+  }
 }
 
 function formatCurrency(amount, currency = 'P') {
@@ -32,7 +36,7 @@ export default function Folios() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [showChargeModal, setShowChargeModal] = useState(false)
-  const [chargeForm, setChargeForm] = useState(emptyCharge)
+  const [chargeForm, setChargeForm] = useState(createEmptyCharge())
   const [chargeError, setChargeError] = useState('')
   const [posting, setPosting] = useState(false)
 
@@ -50,6 +54,8 @@ export default function Folios() {
   const [transferForm, setTransferForm] = useState({ targetFolioId: '', amount: '', description: '' })
   const [ledgerChargeForm, setLedgerChargeForm] = useState({ amount: '', description: '' })
   const [ledgerPaymentForm, setLedgerPaymentForm] = useState({ amount: '', description: '' })
+  const [pendingFolioIntents, setPendingFolioIntents] = useState([])
+  const [recoveringFolioIntentId, setRecoveringFolioIntentId] = useState(null)
 
   const selectedFolio = useMemo(
     () => folios.find((folio) => folio.booking_id === selectedId) || folios[0] || null,
@@ -126,7 +132,33 @@ export default function Folios() {
 
   useEffect(() => { loadFolios() }, [loadFolios])
   useEffect(() => { loadEntries(selectedFolio?.booking_id) }, [loadEntries, selectedFolio?.booking_id])
+  const loadPendingFolioIntents = useCallback(async () => {
+    try {
+      const rows = await window.api.folioLedger.getPendingIntentRecovery()
+      setPendingFolioIntents(Array.isArray(rows) ? rows : [])
+    } catch (err) {
+      setError(err?.message || 'Hotel folio recovery could not be read. Do not submit another payment until the saved intent is checked.')
+    }
+  }, [])
+  const retryPendingFolioIntent = async (intentId) => {
+    setRecoveringFolioIntentId(intentId)
+    try {
+      const result = await window.api.folioLedger.retryIntent(intentId)
+      if (result?.status === 'confirmed') {
+        setSuccess('The original folio operation was confirmed.')
+        await Promise.all([loadLedgerFolios(), loadPendingFolioIntents()])
+      } else {
+        setError(result?.error || 'The original folio operation is still unresolved. Keep this intent and retry it after checking the connection.')
+        await loadPendingFolioIntents()
+      }
+    } catch (err) {
+      setError(err?.message || 'The original folio operation could not be recovered.')
+    } finally {
+      setRecoveringFolioIntentId(null)
+    }
+  }
   useEffect(() => { loadLedgerFolios() }, [loadLedgerFolios])
+  useEffect(() => { loadPendingFolioIntents() }, [loadPendingFolioIntents])
   useEffect(() => { loadLedgerLineItems(selectedLedgerFolio?.id) }, [loadLedgerLineItems, selectedLedgerFolio?.id])
 
   useEffect(() => {
@@ -136,13 +168,14 @@ export default function Folios() {
   }, [success])
 
   const openChargeModal = () => {
-    setChargeForm(emptyCharge)
+    setChargeForm(createEmptyCharge())
     setChargeError('')
     setShowChargeModal(true)
   }
 
   const postCharge = async (event) => {
     event.preventDefault()
+    if (pendingFolioIntents.length) { setChargeError('Recover the unresolved folio operation before submitting another charge or payment.'); return }
     if (!selectedFolio?.booking_id) return
     if (!chargeForm.description.trim()) {
       setChargeError('Description is required')
@@ -160,8 +193,10 @@ export default function Folios() {
         ...chargeForm,
         description: chargeForm.description.trim(),
         quantity: Number(chargeForm.quantity) || 1,
-        unit_price: Number(chargeForm.unit_price) || 0
+        unit_price: Number(chargeForm.unit_price) || 0,
+        idempotency_key: chargeForm.idempotency_key
       })
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setChargeError(result.error || 'Failed to post charge')
       } else {
@@ -179,6 +214,7 @@ export default function Folios() {
 
   const handleLedgerSplit = async (event) => {
     event.preventDefault()
+    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio) return
     try {
       const intentId = crypto.randomUUID()
@@ -190,6 +226,7 @@ export default function Folios() {
         splitForm.label,
         intentId
       )
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Split failed')
       } else {
@@ -205,6 +242,7 @@ export default function Folios() {
 
   const handleLedgerTransfer = async (event) => {
     event.preventDefault()
+    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio || !transferForm.targetFolioId) return
     try {
       const intentId = crypto.randomUUID()
@@ -215,6 +253,7 @@ export default function Folios() {
         transferForm.description,
         intentId
       )
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Transfer failed')
       } else {
@@ -231,6 +270,7 @@ export default function Folios() {
 
   const handleLedgerCharge = async (event) => {
     event.preventDefault()
+    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio) return
     if (!ledgerChargeForm.description.trim() || Number(ledgerChargeForm.amount) <= 0) {
       setError('Description and positive amount required')
@@ -246,6 +286,7 @@ export default function Folios() {
         null,
         intentId
       )
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Add charge failed')
       } else {
@@ -262,6 +303,7 @@ export default function Folios() {
 
   const handleLedgerPayment = async (event) => {
     event.preventDefault()
+    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio) return
     if (Number(ledgerPaymentForm.amount) <= 0) {
       setError('Payment amount must be greater than zero')
@@ -275,6 +317,7 @@ export default function Folios() {
         ledgerPaymentForm.description.trim() || 'Payment',
         intentId
       )
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Add payment failed')
       } else {
@@ -290,6 +333,7 @@ export default function Folios() {
   }
 
   const handleLedgerAction = async (action, folioId) => {
+    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before changing folio status.'); return }
     try {
       const intentId = crypto.randomUUID()
       const actions = {
@@ -298,17 +342,17 @@ export default function Folios() {
         lock: () => window.api.folioLedger.lockFolio(folioId, intentId)
       }
       const result = await actions[action]()
+      if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
-        setError(result.error || `${action} failed`)
+        setError(result.error || (action + ' failed'))
       } else {
         await loadLedgerFolios()
-        setSuccess(`Folio ${action}ed successfully`)
+        setSuccess('Folio ' + action + 'ed successfully')
       }
     } catch (err) {
-      setError(err?.message || `Failed to ${action} folio`)
+      setError(err?.message || ('Failed to ' + action + ' folio'))
     }
   }
-
   return (
     <div className="bb-page">
       <div className="bb-page-header">
@@ -323,6 +367,22 @@ export default function Folios() {
       </div>
 
       {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{success}</div>}
+      {pendingFolioIntents.length > 0 && (
+        <section role="alert" className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <h2 className="font-bold">Folio operations need confirmation</h2>
+          <p className="mt-1">A server response was lost or could not be verified. Retry the saved operation to check the same intent; do not enter the payment or charge again.</p>
+          <ul className="mt-3 space-y-2">
+            {pendingFolioIntents.map((intent) => (
+              <li key={intent.intentId} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-white p-3">
+                <span><strong>{capitalize(intent.operationKind)}</strong> · {intent.status} · {new Date(intent.createdAt).toLocaleString()}</span>
+                <button type="button" disabled={recoveringFolioIntentId === intent.intentId} onClick={() => retryPendingFolioIntent(intent.intentId)} className="rounded-lg bg-amber-900 px-3 py-2 font-semibold text-white disabled:opacity-60">
+                  {recoveringFolioIntentId === intent.intentId ? 'Checking…' : 'Retry same intent'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {error && <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</ErrorNotice>}
 
       <div className="mb-4 flex gap-1 border-b border-slate-200">
@@ -635,7 +695,7 @@ export default function Folios() {
                                 'bg-slate-50 text-slate-700'
                               }`}>{capitalize(item.line_type)}</span>
                             </td>
-                            <td className="px-4 py-3 font-medium text-slate-700">{item.description}</td>
+                            <td className="px-4 py-3 font-medium text-slate-700">{item.description}{item.is_reversed && <span className="mt-1 block text-xs font-semibold text-red-700">Corrected · {item.reversal?.description || 'see reversal record'}</span>}</td>
                             <td className={`px-4 py-3 text-right font-semibold ${
                               ['charge', 'transfer_in'].includes(item.line_type) ? 'text-amber-600' :
                               ['payment', 'transfer_out'].includes(item.line_type) ? 'text-emerald-600' :
@@ -644,14 +704,17 @@ export default function Folios() {
                               {['charge', 'transfer_in'].includes(item.line_type) ? '+' : ''}{formatCurrency(item.amount, currency)}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {item.line_type !== 'void' && (
+                              {!['void', 'adjustment'].includes(item.line_type) && !item.is_reversed && (
                                 <button
                                   onClick={() => {
+                                    if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before correcting another line.'); return }
                                     if (!window.confirm('Void this line item?')) return
                                     const intentId = crypto.randomUUID()
                                     window.api.folioLedger.voidLineItem(item.id, 'User requested void', intentId)
-                                      .then(() => {
-                                        setSuccess('Line item voided')
+                                      .then(async (result) => {
+                                        if (result?.pendingRecovery) { await loadPendingFolioIntents(); setError(result.error); return }
+                                        if (result?.success === false) { setError(result.error || 'Failed to correct the line item'); return }
+                                        setSuccess('Line item correction recorded')
                                         loadLedgerFolios()
                                         loadLedgerLineItems(selectedLedgerFolio?.id)
                                       })

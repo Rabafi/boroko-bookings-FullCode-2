@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useMemo, useRef } from "react";
 import { ErrorNotice } from "../shared/ErrorNotice";
 import { useLocation, useNavigate } from "react-router";
@@ -493,6 +494,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
   const loadMenu = async () => {
     try {
       const menuData = (await window.api?.pos?.getMenuItems?.()) ?? [];
+      if (menuData?._available === false) throw new Error(menuData._error || 'The product catalogue could not be verified. Refresh before selling.');
       const rows = Array.isArray(menuData) ? menuData : [];
       setItems(rows);
       // Stock counts refresh with the catalogue so out-of-stock badges never
@@ -521,6 +523,7 @@ export default function HposMenu({ recipeRoute = '/restaurant/menu-production' }
             window.api?.outlets?.getAll?.() ?? [],
           ]);
         if (!active) return;
+        if (menuData?._available === false) throw new Error(menuData._error || 'The product catalogue could not be verified. Refresh before selling.');
         setItems(Array.isArray(menuData) ? menuData : []);
         // Delisted stock (product deleted, nothing else references it) stays
         // out of link/edit pickers; its rows and history remain server-side.

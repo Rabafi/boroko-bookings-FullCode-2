@@ -1,9 +1,11 @@
+// @ts-check
 // Optional till sound (default off). Shared by the top-bar icon toggle
 // (HposNav, next to date/time) and the Till beep (HposTerminal). One
 // AudioContext is armed only after a user gesture enables the sound.
 
 const STORAGE_KEY = "hpos-till-sound";
 
+/** @type {AudioContext | null} */
 let audioContext = null;
 const listeners = new Set();
 
@@ -15,6 +17,7 @@ export function isTillSoundEnabled() {
   }
 }
 
+/** @param {(enabled: boolean) => void} listener */
 export function subscribeTillSound(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -32,7 +35,10 @@ function notify() {
 }
 
 export async function ensureTillAudio() {
-  const AudioCtor = window.AudioContext || window.webkitAudioContext;
+  // The fallback is the WebKit-prefixed implementation used by older supported browsers.
+  const AudioCtor =
+    /** @type {typeof window & { webkitAudioContext?: typeof AudioContext }} */ (window).AudioContext ||
+    /** @type {typeof window & { webkitAudioContext?: typeof AudioContext }} */ (window).webkitAudioContext;
   if (!AudioCtor) return null;
   const context = audioContext || new AudioCtor();
   audioContext = context;
@@ -70,6 +76,7 @@ export async function toggleTillSound() {
   return false;
 }
 
+/** @param {number} frequency @param {number} [durationMs] @param {OscillatorType} [type] @param {number} [delayMs] */
 function playTone(frequency, durationMs = 160, type = "sine", delayMs = 0) {
   if (!isTillSoundEnabled()) return;
   const context = audioContext;
@@ -94,6 +101,7 @@ function playTone(frequency, durationMs = 160, type = "sine", delayMs = 0) {
 
 // Scanner earcon: happy high double-beep for a good scan, low buzz for a
 // bad one. Gated on the same till-sound toggle — silence stays silent.
+/** @param {boolean} [ok] */
 export function playScanBeep(ok = true) {
   if (ok) {
     playTone(988, 110);

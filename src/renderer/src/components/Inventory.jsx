@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useSearchParams } from 'react-router'
 import { Plus, Pencil, Trash2, AlertTriangle, TrendingUp, Package, ClipboardCheck, RefreshCw, History, Upload, ArrowLeft } from 'lucide-react'

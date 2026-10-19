@@ -1,3 +1,4 @@
+// @ts-check
 export const ENTERPRISE_WORKFLOW_STATUS = {
   foundation: 'foundation',
   operational: 'operational',
@@ -199,6 +200,7 @@ export const ENTERPRISE_WORKFLOWS = [
   }
 ]
 
+/** @param {string} key */
 export function getEnterpriseWorkflow(key) {
   return ENTERPRISE_WORKFLOWS.find((workflow) => workflow.key === key) || null
 }

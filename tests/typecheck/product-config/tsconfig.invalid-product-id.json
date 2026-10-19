@@ -1,0 +1,8 @@
+{
+  "extends": "../../../tsconfig.typecheck-pilot.json",
+  "files": [
+    "../../../packages/product-config/index.js",
+    "./invalid-product-id.ts"
+  ],
+  "include": []
+}

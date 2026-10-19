@@ -10,6 +10,7 @@ const STOP_WORDS = new Set([
 
 const NEGATION_WORDS = /\b(don'?t|do not|not yet|cancel|undo|didn'?t|never|stop|wrong|instead)\b/
 
+/** @type {Array<[RegExp, string]>} */
 const SPELLING_REPLACEMENTS = [
   [/\bfunc+t?i?o?ns?\b/g, 'function'],
   [/\binst?r?u?c?t?u?r?e?s?\b/g, 'instructions'],
@@ -163,6 +164,7 @@ const SYNONYM_MAP = {
 // If a guard pattern matches anywhere in the message, that synonym is
 // skipped so the discriminating token survives ("purchase order" is
 // inventory, not POS; "electricity bill" is an expense, not an invoice).
+/** @type {Partial<Record<string, RegExp>>} */
 const GUARDED_SYNONYM_CONTEXTS = {
   order: /\b(void|cancel\w*|revers\w*|purchas\w*|reorder|stocks?|suppl\w*|inventor\w*|supplier|buy\w*|goods|quot\w*)\b/,
   sale: /\b(void|cancel\w*|revers\w*|reports?|refund|trend|revenu\w*|forecast|weeks?|today|yesterday|month)\b/,
@@ -216,7 +218,7 @@ const SCENARIO_PLAYBOOKS = [
     id: 'start-of-shift',
     title: 'Start of shift checklist',
     summary: 'Use this at the start of a front-desk shift to get your bearings quickly.',
-    match: (text) => /\b(start of shift|begin shift|opening shift|start shift|morning routine)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(start of shift|begin shift|opening shift|start shift|morning routine)\b/.test(text),
     steps: [
       'Ask for what needs attention right now.',
       'Review today arrivals, departures, and any overdue checkouts.',
@@ -229,7 +231,7 @@ const SCENARIO_PLAYBOOKS = [
     id: 'end-of-shift',
     title: 'End of shift handover',
     summary: 'Use this before handing over to the next team or closing the desk.',
-    match: (text) => /\b(end of shift|close shift|shift handover|handover|closing routine)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(end of shift|close shift|shift handover|handover|closing routine)\b/.test(text),
     steps: [
       'Generate the shift handover report.',
       'Review any overdue checkouts, unpaid balances, and sync failures still open.',
@@ -242,7 +244,7 @@ const SCENARIO_PLAYBOOKS = [
     id: 'internet-down',
     title: 'Internet down',
     summary: 'Use this when the connection is unstable or the lodge is temporarily offline.',
-    match: (text) => /\b(internet( is)? down|no internet|offline mode|network( is)? down|cannot sync|sync offline)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(internet( is)? down|no internet|offline mode|network( is)? down|cannot sync|sync offline)\b/.test(text),
     steps: [
       'Keep working locally, but treat remote totals as delayed until sync catches up.',
       'Check sync impact so you know which items are waiting or failing.',
@@ -255,7 +257,7 @@ const SCENARIO_PLAYBOOKS = [
     id: 'guest-refuses-payment',
     title: 'Guest refuses to pay',
     summary: 'Use this when a guest is checking out or disputing the balance.',
-    match: (text) => /\b(refuses? to pay|guest wont pay|guest won.t pay|payments? disputes?|disputing balances?)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(refuses? to pay|guest wont pay|guest won.t pay|payments? disputes?|disputing balances?)\b/.test(text),
     steps: [
       'Look up the booking and confirm the current balance, charges, and payments already recorded.',
       'Review unpaid bookings or the booking payment history before discussing the bill.',
@@ -270,7 +272,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'deposit-vs-payment',
     title: 'Deposit and payment rules',
-    match: (text) => /\b(deposits?|amount paid|amount_paid|paid totals?|type over paid|payment status|balances? due|outstanding)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(deposits?|amount paid|amount_paid|paid totals?|type over paid|payment status|balances? due|outstanding)\b/.test(text),
     assistantText: [
       'Deposits and payments should be recorded through the payment flow, not by typing over paid totals.',
       'Never edit `amount_paid` directly. Use Record payment so Tsa Bonno applies the normal payment flow safely.',
@@ -282,7 +284,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'checkout-balance-rule',
     title: 'Checkout balance rule',
-    match: (text) => /\b(can i check ?outs?|checkouts? (is |are )?blocked|check outs? (is |are )?blocked|80%|part paid|partially paid|not fully paid)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(can i check ?outs?|checkouts? (is |are )?blocked|check outs? (is |are )?blocked|80%|part paid|partially paid|not fully paid)\b/.test(text),
     assistantText: [
       'A guest should not be checked out while a balance is still outstanding.',
       'If checkout is blocked, review the booking balance first, confirm any missing payments, then use the check-out action after the booking is fully settled.'
@@ -292,7 +294,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'offline-sync-financials',
     title: 'Offline sync and financial safety',
-    match: (text) => /\b(offline syncs?|internet down|no internet|failed sync|sync warnings?|sync financial|queues?|pending sync)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(offline syncs?|internet down|no internet|failed sync|sync warnings?|sync financial|queues?|pending sync)\b/.test(text),
     assistantText: [
       'When the internet is down, Tsa Bonno can still capture local work, but remote reporting may lag behind until sync catches up.',
       'If sync warnings involve financial records, treat totals carefully until System Health shows the queue is healthy again.',
@@ -303,7 +305,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'refund-guidance',
     title: 'Refund guidance',
-    match: (text) => /\b(refunds?|void (a |the )?payments?|revers\w*( a| the)? payments?|cancel\w* (a |the )?payments?)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(refunds?|void (a |the )?payments?|revers\w*( a| the)? payments?|cancel\w* (a |the )?payments?)\b/.test(text),
     assistantText: [
       'Refunds and reversals should be reviewed carefully from the booking or invoice context.',
       'Use the booking and payment history to confirm what was charged, what was paid, and whether the guest is still checked in before changing anything.'
@@ -313,7 +315,7 @@ const FINANCIAL_FAQ = [
   {
     id: 'role-permissions',
     title: 'Roles and permissions',
-    match: (text) => /\b(roles?|permissions?|who can|access|staff rights|user rights)\b/.test(text),
+    match: (/** @type {string} */ text) => /\b(roles?|permissions?|who can|access|staff rights|user rights)\b/.test(text),
     assistantText: [
       'User access is controlled from Staff and role settings.',
       'If you are checking whether someone can perform an action, open Staff, review the user role, and confirm the required module access before testing the workflow.'
@@ -322,6 +324,8 @@ const FINANCIAL_FAQ = [
   }
 ]
 
+/** @typedef {{id: string, title: string, category: string, screen: string, summary: string, route: string, state?: string | {activeTab: string}, steps?: string[], tips?: string[], keywords?: string[]}} WorkflowEntry */
+/** @type {WorkflowEntry[]} */
 const APP_WORKFLOWS = [
   {
     id: 'assistant-overview',
@@ -1096,6 +1100,7 @@ const LOCAL_TOOL_INTENTS = [
 ]
 
 // ─── Screen → relevant workflow IDs mapping (for dynamic fallback suggestions) ─
+/** @type {Partial<Record<string, string[]>>} */
 const ROUTE_WORKFLOW_HINTS = {
   '/': ['dashboard-overview', 'create-booking', 'check-in', 'check-out', 'record-payment'],
   '/bookings': ['create-booking', 'check-in', 'check-out', 'record-payment', 'online-booking-requests'],
@@ -1127,6 +1132,7 @@ const PLAYBOOK_CORPUS = buildCorpusDocuments(SCENARIO_PLAYBOOKS, (entry) => [ent
 
 // ─── Text processing ──────────────────────────────────────────────────────
 
+/** @param {string} text @returns {string} */
 function applySynonyms(text) {
   let result = text
   for (const [from, to] of Object.entries(SYNONYM_MAP)) {
@@ -1149,6 +1155,7 @@ function applySynonyms(text) {
 // expansion — expansion erases the very tokens those gates look for
 // ("refund" -> "payment" killed the refund FAQ; "pay" -> "payment" killed
 // the guest-refuses-payment playbook).
+/** @param {unknown} value @returns {string} */
 function lightNormalize(value) {
   return String(value || '').toLowerCase()
     .replace(/&/g, ' and ')
@@ -1157,6 +1164,7 @@ function lightNormalize(value) {
     .replace(/\s+/g, ' ').trim()
 }
 
+/** @param {unknown} value @returns {string} */
 function normalizeText(value) {
   let text = String(value || '').toLowerCase()
     .replace(/&/g, ' and ')
@@ -1172,6 +1180,7 @@ function normalizeText(value) {
   return text.replace(/\s+/g, ' ').trim()
 }
 
+/** @param {unknown} value @returns {string[]} */
 function tokenize(value) {
   const normalized = normalizeText(value)
   if (!normalized) return []
@@ -1182,6 +1191,7 @@ function tokenize(value) {
     .map(stemToken)
 }
 
+/** @param {string} token @returns {string} */
 function stemToken(token) {
   if (token.length > 5 && token.endsWith('ing')) return token.slice(0, -3)
   if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`
@@ -1190,10 +1200,17 @@ function stemToken(token) {
   return token
 }
 
+/** @param {string[]} values @returns {string[]} */
 function unique(values) {
   return [...new Set(values.filter(Boolean))]
 }
 
+/**
+ * Fields are the workflow catalog's authored search text; secondary arrays
+ * are absent on entries that do not have those details.
+ * @param {{title: string, category: string, screen: string, summary: string, steps?: string[], tips?: string[], keywords?: string[]}} entry
+ * @returns {string}
+ */
 function entrySearchText(entry) {
   return [
     entry.title,
@@ -1206,6 +1223,7 @@ function entrySearchText(entry) {
   ].join(' ')
 }
 
+/** @template T @param {T[]} entries @param {(entry: T) => unknown} toText @returns {{corpus: string[][], idf: Map<string, number>, docCount: number}} */
 function buildCorpusDocuments(entries, toText) {
   const corpus = entries.map((entry) => unique(tokenize(toText(entry))))
   const docCount = corpus.length || 1
@@ -1222,6 +1240,7 @@ function buildCorpusDocuments(entries, toText) {
   return { corpus, idf, docCount }
 }
 
+/** @param {unknown} query @param {string[]} docTokens @param {Map<string, number>} idf @returns {number} */
 function semanticSimilarity(query, docTokens, idf) {
   const queryTokens = unique(tokenize(query))
   if (!queryTokens.length || !docTokens.length) return 0
@@ -1243,6 +1262,7 @@ function semanticSimilarity(query, docTokens, idf) {
   return intersection / (Math.sqrt(queryNorm) * Math.sqrt(docNorm))
 }
 
+/** @param {string} queryToken @param {string} targetToken @returns {number} */
 function fuzzyTokenScore(queryToken, targetToken) {
   if (!queryToken || !targetToken) return 0
   if (queryToken === targetToken) return 1
@@ -1254,6 +1274,7 @@ function fuzzyTokenScore(queryToken, targetToken) {
   return Math.max(lev, dice)
 }
 
+/** @param {unknown} query @param {unknown} documentText @param {unknown} [title] @param {string[]} [keywords] */
 function fuzzySearchScore(query, documentText, title = '', keywords = []) {
   const queryTokens = unique(tokenize(query))
   const docTokens = unique(tokenize(documentText))
@@ -1296,6 +1317,7 @@ function fuzzySearchScore(query, documentText, title = '', keywords = []) {
  * Returns a bonus score for phrase-level matches. Checked BEFORE token scoring
  * to prevent "check in" and "check out" from bleeding into each other.
  */
+/** @param {unknown} query @param {unknown} documentText @param {unknown} [title] @returns {number} */
 function phraseBonusScore(query, documentText, title = '') {
   const nq = normalizeText(query)
   const nd = normalizeText(documentText)
@@ -1312,6 +1334,7 @@ function phraseBonusScore(query, documentText, title = '') {
 
 // ─── Edit distance & dice similarity ─────────────────────────────────────
 
+/** @param {string} a @param {string} b @param {number} [limit] @returns {number} */
 function editDistance(a, b, limit = 3) {
   a = String(a || '')
   b = String(b || '')
@@ -1341,6 +1364,7 @@ function editDistance(a, b, limit = 3) {
   return prev[b.length]
 }
 
+/** @param {string} a @param {string} b @returns {number} */
 function diceSimilarity(a, b) {
   if (a === b) return 1
   if (a.length < 2 || b.length < 2) return 0
@@ -1361,6 +1385,7 @@ function diceSimilarity(a, b) {
   return (2 * hits) / (a.length + b.length - 2)
 }
 
+/** @param {string} queryToken @param {string} targetToken @returns {number} */
 function tokenMatchScore(queryToken, targetToken) {
   if (!queryToken || !targetToken) return 0
   if (queryToken === targetToken) return 4
@@ -1376,6 +1401,7 @@ function tokenMatchScore(queryToken, targetToken) {
   return 0
 }
 
+/** @param {unknown} query @param {unknown} documentText @param {unknown} [title] @param {string[]} [keywords] */
 function scoreDocument(query, documentText, title = '', keywords = []) {
   const normalizedQuery = normalizeText(query)
   const normalizedDoc = normalizeText(documentText)
@@ -1442,6 +1468,7 @@ function scoreDocument(query, documentText, title = '', keywords = []) {
   return { score, matchedTerms: unique(matchedTerms).slice(0, 8) }
 }
 
+/** @param {WorkflowEntry} entry @param {number} [score] @param {string[]} [matchedTerms] */
 function publicWorkflow(entry, score = 0, matchedTerms = []) {
   return {
     id: entry.id,
@@ -1459,8 +1486,10 @@ function publicWorkflow(entry, score = 0, matchedTerms = []) {
   }
 }
 
+/** @type {import('fuse.js/basic').default<WorkflowEntry> | null} */
 let topicFuse = null
 
+/** @returns {import('fuse.js/basic').default<WorkflowEntry>} */
 function getTopicFuse() {
   if (!topicFuse) {
     topicFuse = new Fuse(APP_WORKFLOWS, {
@@ -1482,6 +1511,7 @@ function getTopicFuse() {
 // Typo-tolerant "did you mean" over app workflows. Used by the UI fallback
 // layer only — the core intent pipeline above is unchanged, so existing
 // matching behavior and its tests are unaffected.
+/** @param {unknown} query @param {number} [limit] */
 export function findClosestTopics(query, limit = 3) {
   const text = String(query || '').trim()
   if (!text) return []
@@ -1494,6 +1524,7 @@ export function findClosestTopics(query, limit = 3) {
   }
 }
 
+/** @param {unknown} query @param {{route?: unknown, limit?: number}} [options] */
 export function searchLocalAppHelp(query, { route = null, limit = 5 } = {}) {
   const normalizedQuery = normalizeText(query)
   const routeBoost = route ? String(route) : ''
@@ -1512,21 +1543,25 @@ export function searchLocalAppHelp(query, { route = null, limit = 5 } = {}) {
   return scored.slice(0, limit).map((item) => publicWorkflow(item.entry, item.score, item.matchedTerms))
 }
 
+/** @param {string} message */
 function wantsCurrentScreenHelp(message) {
   const text = normalizeText(message)
   return /\b(this screen|current screen|where am i|what can i do here|on this page|this page|here)\b/.test(text)
 }
 
+/** @param {string} message */
 function looksInstructional(message) {
   const text = normalizeText(message)
   return /\b(how|where|guide|instruction|steps|learn|find|locate|help|show me how|what can i do)\b/.test(text)
 }
 
+/** @param {string} message */
 function looksLikeLiveDataQuestion(message) {
   const text = normalizeText(message)
   return /\b(show|list|what|give|run|check|today|now|summary|briefing|attention|revenue|unpaid|overdue|anomal|fraud|owed|owing)\b/.test(text)
 }
 
+/** @param {string} message */
 function hasNegation(message) {
   return NEGATION_WORDS.test(normalizeText(message))
 }
@@ -1534,26 +1569,32 @@ function hasNegation(message) {
 // Void/refund/cancel-sale phrasing contains negation words ("cancel", "void")
 // but names a real workflow, so it must not take the stopping/correcting
 // clarify path. Matched on light text so synonym expansion cannot hide it.
+/** @param {string} message */
 function negatedActionWord(message) {
   return /\b(voids?|refund|revers\w+ payments?|cancel\w* (a |the )?(sales?|payments?|orders?))\b/.test(lightNormalize(message))
 }
 
+/** @param {string} text */
 function isGreeting(text) {
   return /^(hi|hello|hey|good morning|good afternoon|good evening|howzit|dumela)\b/.test(text)
 }
 
+/** @param {string} text */
 function isThanks(text) {
   return /^(thanks|thank you|cheers)\b/.test(text)
 }
 
+/** @param {string} text */
 function isClosing(text) {
   return /^(bye|goodbye|goodnight|done|done for now|that'?s all|close|exit)\b/.test(text)
 }
 
+/** @param {string} text */
 function isCapabilitiesQuestion(text) {
   return /^(help|what can you do|what do you know|capabilities|features|commands)\b/.test(text)
 }
 
+/** @param {string} message */
 function extractRoomHint(message) {
   const raw = String(message || '')
   const digitMatch = raw.match(/\b(?:room|rm)\s*(\d+[a-z]?)\b/i)
@@ -1570,13 +1611,16 @@ function extractRoomHint(message) {
 
 // Small number-word resolver for room numbers (one .. thirty). Pure lookup,
 // no stemming — avoids "thirteen" becoming "thirteen" minus suffix bugs.
+/** @type {Partial<Record<string, number>>} */
 const NUMBER_WORDS = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
   eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
   seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30
 }
+/** @type {Partial<Record<string, number>>} */
 const TENS_WORDS = { twenty: 20, thirty: 30 }
 
+/** @param {string} text */
 function resolveNumberWords(text) {
   const parts = String(text || '').toLowerCase().replace(/-/g, ' ').split(/\s+/).filter(Boolean)
   if (!parts.length) return null
@@ -1596,6 +1640,7 @@ function resolveNumberWords(text) {
 
 export { extractRoomHint, resolveNumberWords }
 
+/** @param {string} message */
 function extractDayWindow(message) {
   const text = normalizeText(message)
   if (/\btonight\b|\btoday\b/.test(text)) return 1
@@ -1642,6 +1687,7 @@ function extractDayWindow(message) {
 
 export { extractDayWindow }
 
+/** @param {string} message */
 function extractGuestHint(message) {
   const direct = String(message || '').match(/\b(?:guest|customer|invoice)\s+(?:named\s+)?([a-z][a-z\s.'-]{1,40})$/i)
   if (direct) return direct[1].trim()
@@ -1656,6 +1702,7 @@ function extractGuestHint(message) {
   return cleaned.length >= 3 ? cleaned : null
 }
 
+/** @param {string} message */
 function extractBookingHint(message) {
   const raw = String(message || '')
   const bookingId = raw.match(/\b(?:booking|reservation|invoice)\s*(?:number|id|#)?\s*([a-z0-9-]{4,})\b/i)
@@ -1667,6 +1714,7 @@ function extractBookingHint(message) {
   }
 }
 
+/** @returns {string} */
 function buildCapabilitiesSummary() {
   return [
     'I can help in five main ways:',
@@ -1682,6 +1730,7 @@ function buildCapabilitiesSummary() {
 // testable without mocking the clock. Periods follow front-desk rhythm:
 // early checks face yesterday's close, mornings brief, midday triages,
 // afternoons clear departures, evenings hand over, nights verify backups.
+/** @param {number} [hour] */
 export function getTimeAwareSuggestions(hour = new Date().getHours()) {
   const h = Math.max(0, Math.min(23, Number(hour) || 0))
   if (h < 6) return { period: 'early_morning', boost: 'get_backup_status', suggestion: 'When was the last backup?' }
@@ -1692,10 +1741,12 @@ export function getTimeAwareSuggestions(hour = new Date().getHours()) {
   return { period: 'night', boost: 'get_backup_status', suggestion: 'When was the last backup?' }
 }
 
+/** @returns {ReturnType<typeof getTimeAwareSuggestions>} */
 function getTimeContext() {
   return getTimeAwareSuggestions(new Date().getHours())
 }
 
+/** @param {string} message */
 function extractRoomRateHint(message) {
   const room_number = extractRoomHint(message)
   const text = normalizeText(message)
@@ -1706,6 +1757,7 @@ function extractRoomRateHint(message) {
   }
 }
 
+/** @param {string} message */
 function findFinancialFaq(message) {
   // Identity matching on light (unexpanded) text — see lightNormalize.
   const text = lightNormalize(message)
@@ -1723,6 +1775,7 @@ function findFinancialFaq(message) {
   return scored[0]?.score >= 34 ? scored[0].entry : null
 }
 
+/** @param {string} message */
 function findScenarioPlaybook(message) {
   // Identity matching on light (unexpanded) text — see lightNormalize.
   const text = lightNormalize(message)
@@ -1737,6 +1790,7 @@ function findScenarioPlaybook(message) {
   return scored[0]?.score >= 80 ? scored[0].entry : null
 }
 
+/** @param {string} message */
 function buildClarifier(message) {
   const text = normalizeText(message)
   if (/\binvoice details?\b/.test(text)) {
@@ -1754,6 +1808,7 @@ function buildClarifier(message) {
   return null
 }
 
+/** @param {string} message */
 function resolveToolIntent(message) {
   const text = normalizeText(message)
   const instructional = looksInstructional(message)
@@ -2013,6 +2068,7 @@ function resolveToolIntent(message) {
   }
 }
 
+/** @param {string} tool @param {string} message */
 function buildToolParams(tool, message) {
   const room = extractRoomHint(message)
   const guest = extractGuestHint(message)
@@ -2026,6 +2082,7 @@ function buildToolParams(tool, message) {
   return {}
 }
 
+/** @param {string} tool @param {{guest_query?: unknown, booking_query?: unknown, room_number?: unknown, rate_query?: unknown}} [params] @returns {Array<'guest_query' | 'booking_or_room' | 'room_or_type'>} */
 function missingSlotsForTool(tool, params = {}) {
   if (tool === 'search_guest' && !params.guest_query) return ['guest_query']
   if (tool === 'lookup_booking' && !params.booking_query && !params.room_number && !params.guest_query) return ['booking_or_room']
@@ -2033,6 +2090,7 @@ function missingSlotsForTool(tool, params = {}) {
   return []
 }
 
+/** @param {string} tool @param {'guest_query' | 'booking_or_room' | 'room_or_type'} slot */
 function slotPrompt(tool, slot) {
   if (slot === 'guest_query') return 'I can search guest records. What guest name, phone number, or email should I look for?'
   if (slot === 'booking_or_room') return 'I can look that up. What is the booking number, invoice number, guest name, or room number?'
@@ -2041,6 +2099,7 @@ function slotPrompt(tool, slot) {
   return 'What detail should I use for that?'
 }
 
+/** @param {string} tool @param {string} message */
 function buildDialogueClarifier(tool, message) {
   if (!tool) return null
   const params = buildToolParams(tool, message)
@@ -2061,10 +2120,12 @@ function buildDialogueClarifier(tool, message) {
   }
 }
 
+/** @param {string} intent @param {Record<string, unknown> | undefined} existing @param {string} message */
 function mergeDialogueParams(intent, existing = {}, message) {
   return { ...(existing || {}), ...buildToolParams(intent, message) }
 }
 
+/** @param {{intent?: unknown} | null | undefined} dialogue @param {string} message */
 function enrichFromDialogue(dialogue, message) {
   if (!dialogue?.intent) return message
   if (dialogue.intent === 'search_guest') return `find guest ${message}`
@@ -2095,6 +2156,7 @@ function summarizeToolResult(toolName, result) {
   }
 }
 
+/** @param {number} score */
 function confidenceFromScore(score) {
   if (score >= 34) return 'high'
   if (score >= 18) return 'medium'
@@ -2198,6 +2260,7 @@ function buildUiContextSnippet(uiContext) {
 
 // ─── Help text builders ───────────────────────────────────────────────────
 
+/** @param {ReturnType<typeof publicWorkflow> | null} match @param {ReturnType<typeof publicWorkflow>[]} matches @param {string} confidence */
 function buildHelpText(match, matches, confidence, liveContext = null, uiContext = null) {
   if (!match) {
     const fallbackNote = buildProactiveFallbackNote(liveContext)
@@ -2235,6 +2298,7 @@ function buildHelpText(match, matches, confidence, liveContext = null, uiContext
   return lines.join('\n')
 }
 
+/** @param {Array<{tool: string, title: string, response: string, prompt: string, score: number}>} options */
 function buildDisambiguationText(options) {
   const lines = ['I found two possible matches — which one did you mean?']
   options.forEach((opt, i) => {
@@ -2245,6 +2309,7 @@ function buildDisambiguationText(options) {
 
 // ─── Route helpers ────────────────────────────────────────────────────────
 
+/** @param {string | null | undefined} route */
 function routeWorkflow(route) {
   if (!route) return null
   const exact = APP_WORKFLOWS.find((entry) => entry.route === route)
@@ -2276,9 +2341,12 @@ function buildOverviewHelp(route, liveContext = null, uiContext = null) {
 
 // ─── Screen-aware dynamic suggestions ────────────────────────────────────
 
+/** @param {unknown} route */
 function buildDynamicFallbackMatches(route) {
   const routeStr = route ? String(route) : null
-  const hintIds = routeStr ? (ROUTE_WORKFLOW_HINTS[routeStr] || ROUTE_WORKFLOW_HINTS['/']) : ['create-booking', 'record-payment', 'system-health', 'inventory-stock', 'reports']
+  // '/' is a literal catalog entry above, so the existing fallback is always
+  // present; this expectation does not add a runtime fallback or validation.
+  const hintIds = routeStr ? (ROUTE_WORKFLOW_HINTS[routeStr] || /** @type {string[]} */ (ROUTE_WORKFLOW_HINTS['/'])) : ['create-booking', 'record-payment', 'system-health', 'inventory-stock', 'reports']
   return APP_WORKFLOWS
     .filter((entry) => hintIds.includes(entry.id))
     .sort((a, b) => hintIds.indexOf(a.id) - hintIds.indexOf(b.id))
@@ -2293,6 +2361,7 @@ function buildDynamicFallbackMatches(route) {
  *   Turn 1: "how do I check in?"  → returns check-in workflow
  *   Turn 2: "and the payment?"    → understands this is about the same booking flow
  */
+/** @param {{maxTurns?: number}} [options] */
 export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
   const history = [] // { query, workflowId, toolName, toolResult }
   let pendingDialogue = null
@@ -2510,6 +2579,11 @@ export function resolveLocalAssistantTurn({ message, route = null, liveContext =
   }
 }
 
+/**
+ * @param {ReturnType<typeof publicWorkflow> | null} best
+ * @param {Array<ReturnType<typeof publicWorkflow>>} matches
+ * @param {unknown} [route]
+ */
 function buildSuggestions(best, matches, route = null) {
   const suggestions = []
   if (best?.id === 'check-in') return ['Where do I record a payment?', 'How do I check out a guest?', 'What needs my attention right now?']
@@ -2525,6 +2599,7 @@ function buildSuggestions(best, matches, route = null) {
   return unique(suggestions).slice(0, 4)
 }
 
+/** @param {unknown} route */
 function buildDynamicSuggestions(route) {
   const timeContext = getTimeContext()
   const routeStr = route ? String(route) : null
@@ -2534,7 +2609,9 @@ function buildDynamicSuggestions(route) {
   const routeSuggestions = hintIds
     .map(id => APP_WORKFLOWS.find(w => w.id === id))
     .filter(Boolean)
-    .map(w => `How do I ${w.title.toLowerCase()}?`)
+    // The preceding Boolean filter excludes the undefined result of find;
+    // retain that runtime filter while exposing its existing guarantee.
+    .map((/** @type {WorkflowEntry | undefined} */ w) => `How do I ${/** @type {WorkflowEntry} */ (w).title.toLowerCase()}?`)
     .slice(0, 4)
 
   if (routeSuggestions.length) return unique([...routeSuggestions, timeContext.suggestion]).slice(0, 4)

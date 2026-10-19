@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildApprovedDisposableRestaurantRunnerEnvironment } from '../scripts/approved-disposable-restaurant-runner-env.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
@@ -35,11 +36,42 @@ describe('Bar and Accounting financial-truth remediation evidence', () => {
 
   it('provides an explicit disposable PostgreSQL behavioral-test harness', () => {
     assert.match(packageJson, /"test:restaurant:disposable"\s*:/)
-    assert.match(disposableHarness, /disposableFlag !== '1'/)
-    assert.match(disposableHarness, /\['db', 'reset', '--local', '--yes'\]/)
+    assert.match(disposableHarness, /buildApprovedDisposableRestaurantRunnerEnvironment/)
     assert.match(disposableHarness, /run-restaurant-suite\.mjs/)
-    assert.match(disposableHarness, /\['stop', '--no-backup'\]/)
-    assert.match(disposableHarness, /RESTAURANT_ACCOUNTING_KEEP_DB !== '1'/)
+    // The harness must fail closed before starting any child process or
+    // database connection when the approved target is not configured.
+    assert.match(disposableHarness, /no child process or database connection was started/)
+  })
+
+  it('fails the disposal guard closed for unapproved or incomplete targets without contacting a database', () => {
+    // A marker that does not identify the approved disposable target is rejected.
+    assert.throws(
+      () => buildApprovedDisposableRestaurantRunnerEnvironment({ LUNA_REMEDIATION_TARGET_MARKER: 'not-the-approved-marker' }),
+      /does not match the approved disposable target/
+    )
+    // Missing connection material blocks before any child process/DB connection.
+    assert.throws(() => buildApprovedDisposableRestaurantRunnerEnvironment({}), /LUNA_REMEDIATION_TEST_DB_URL/)
+    // A connection string naming the linked production project is explicitly denied.
+    assert.throws(
+      () => buildApprovedDisposableRestaurantRunnerEnvironment({
+        LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://postgres.oicgpknsmtvcsjacymum:secret@aws-0-eu-west-1.pooler.supabase.co:5432/postgres',
+        LUNA_REMEDIATION_LEDGER_STAFF_SESSION: 'session'
+      }),
+      /explicitly denied/
+    )
+    // An approved-shaped environment resolves the fixed guards and forwards
+    // only allow-listed variables into the child environment.
+    const { env, target } = buildApprovedDisposableRestaurantRunnerEnvironment({
+      PATH: 'path-value',
+      LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://postgres.repsrmlomedqrmrdsbga:secret@aws-0-eu-west-1.pooler.supabase.co:5432/postgres',
+      LUNA_REMEDIATION_LEDGER_STAFF_SESSION: 'session-value',
+      UNRELATED_SECRET: 'must-not-pass-through'
+    })
+    assert.equal(target.project_ref, 'repsrmlomedqrmrdsbga')
+    assert.equal(target.database, 'postgres')
+    assert.equal(env.PATH, 'path-value')
+    assert.equal(env.LUNA_REMEDIATION_LEDGER_STAFF_SESSION, 'session-value')
+    assert.equal(env.UNRELATED_SECRET, undefined)
   })
 
   it('has complete accounting export coverage and an authoritative manifest hash', () => {

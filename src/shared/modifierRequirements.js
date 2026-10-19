@@ -1,3 +1,5 @@
+// @ts-check
+/** @typedef {Record<string, unknown> | null | undefined} ModifierRecord */
 /**
  * Shared modifier-requirement helpers: which groups apply to a sale line and
  * which required choices are unmet. Used by the Till (Hold/Pay validation),
@@ -6,10 +8,13 @@
  * whose categories are empty, "all", or the line category (case-insensitive).
  */
 
+/** @param {unknown} group @param {unknown} category @returns {boolean} */
 export function isModifierGroupApplicable(group, category) {
-  if (!group || group.active === false) return false;
-  const categories = Array.isArray(group.applies_to_categories)
-    ? group.applies_to_categories
+  if (!group) return false;
+  const groupFields = /** @type {Record<string, unknown>} */ (group)
+  if (groupFields.active === false) return false;
+  const categories = Array.isArray(groupFields.applies_to_categories)
+    ? /** @type {unknown[]} */ (groupFields.applies_to_categories)
     : [];
   if (categories.length === 0) return true;
   const line = String(category || "").toLowerCase();
@@ -19,25 +24,33 @@ export function isModifierGroupApplicable(group, category) {
   });
 }
 
+/** @param {ModifierRecord} group @returns {Set<string>} */
 function groupOptionIds(group) {
-  const options = Array.isArray(group?.options) ? group.options : [];
-  return new Set(options.map((option) => String(option?.id ?? option?.name ?? "")));
+  const groupFields = /** @type {Record<string, unknown> | null | undefined} */ (group)
+  const options = Array.isArray(groupFields?.options) ? /** @type {unknown[]} */ (groupFields.options) : [];
+  return new Set(options.map((option) => {
+    const fields = /** @type {Record<string, unknown> | null | undefined} */ (option)
+    return String(fields?.id ?? fields?.name ?? "")
+  }));
 }
 
 /**
  * Selections attributed to a group: by explicit group_id when present,
  * otherwise by matching option ids. Returns the matching selections.
  */
+/** @param {unknown} selections @param {unknown} group @returns {unknown[]} */
 export function selectionsInModifierGroup(selections, group) {
-  const selected = Array.isArray(selections) ? selections : [];
+  const selected = Array.isArray(selections) ? /** @type {unknown[]} */ (selections) : [];
   if (!group) return [];
-  const optionIds = groupOptionIds(group);
+  const groupFields = /** @type {Record<string, unknown>} */ (group)
+  const optionIds = groupOptionIds(groupFields);
   return selected.filter((selection) => {
     if (!selection) return false;
-    if (selection.group_id != null && group.id != null) {
-      return String(selection.group_id) === String(group.id);
+    const selectionFields = /** @type {Record<string, unknown>} */ (selection)
+    if (selectionFields.group_id != null && groupFields.id != null) {
+      return String(selectionFields.group_id) === String(groupFields.id);
     }
-    return optionIds.has(String(selection.id ?? selection.name ?? ""));
+    return optionIds.has(String(selectionFields.id ?? selectionFields.name ?? ""));
   });
 }
 
@@ -45,18 +58,21 @@ export function selectionsInModifierGroup(selections, group) {
  * Required groups for a line with fewer selections than their minimum.
  * Returns [{ id, name, min, count }]. Empty means the line may proceed.
  */
+/** @param {unknown} line @param {unknown} groups */
 export function findUnmetModifierGroups(line, groups) {
-  const selected = Array.isArray(line?.modifiers) ? line.modifiers : [];
+  const lineFields = /** @type {Record<string, unknown> | null | undefined} */ (line)
+  const selected = Array.isArray(lineFields?.modifiers) ? /** @type {unknown[]} */ (lineFields.modifiers) : [];
   const unmet = [];
-  for (const group of Array.isArray(groups) ? groups : []) {
-    const min = Number(group?.min_selections || 0);
+  for (const group of Array.isArray(groups) ? /** @type {unknown[]} */ (groups) : []) {
+    const groupFields = /** @type {Record<string, unknown> | null | undefined} */ (group)
+    const min = Number(groupFields?.min_selections || 0);
     if (!(min > 0)) continue;
-    if (!isModifierGroupApplicable(group, line?.category)) continue;
-    const count = selectionsInModifierGroup(selected, group).length;
+    if (!isModifierGroupApplicable(group, lineFields?.category)) continue;
+    const count = selectionsInModifierGroup(selected, groupFields).length;
     if (count < min) {
       unmet.push({
-        id: group?.id || null,
-        name: group?.name || "Required choices",
+        id: groupFields?.id || null,
+        name: groupFields?.name || "Required choices",
         min,
         count,
       });
@@ -70,8 +86,9 @@ export function findUnmetModifierGroups(line, groups) {
  * Unknown applicability (groups not loaded) is NOT ok: callers must block
  * progression until requirements are verified, never guess.
  */
+/** @param {unknown} lines @param {unknown} groups @param {unknown} groupsKnown */
 export function validateSaleModifierRequirements(lines, groups, groupsKnown) {
-  const items = Array.isArray(lines) ? lines : [];
+  const items = Array.isArray(lines) ? /** @type {unknown[]} */ (lines) : [];
   if (groupsKnown !== true) {
     return {
       ok: false,
@@ -84,8 +101,9 @@ export function validateSaleModifierRequirements(lines, groups, groupsKnown) {
   for (const line of items) {
     const missing = findUnmetModifierGroups(line, groups);
     if (missing.length > 0) {
+      const lineFields = /** @type {Record<string, unknown> | null | undefined} */ (line)
       unmet.push({
-        lineName: line?.item_name || line?.name || "Item",
+        lineName: lineFields?.item_name || lineFields?.name || "Item",
         groups: missing,
       });
     }

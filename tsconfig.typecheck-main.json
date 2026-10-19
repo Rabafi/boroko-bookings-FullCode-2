@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "files": [
+    "src/main/domains/fileStore.js",
+    "tests/typecheck/main-file-store/valid.ts"
+  ],
+  "include": []
+}

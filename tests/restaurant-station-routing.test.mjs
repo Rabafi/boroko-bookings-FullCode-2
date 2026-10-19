@@ -317,9 +317,10 @@ describe('Restaurant Station Routing', () => {
 
     it('pos.js offline order includes kitchen_station_id in items', () => {
       const js = read(POS_JS)
-      const offlineIdx = js.indexOf('_sync_created_offline: true')
-      const nearby = js.slice(offlineIdx, offlineIdx + 1000)
-      assert.ok(nearby.includes('kitchen_station_id'), 'offline order items include station')
+      const offlineIdx = js.indexOf('pos_order_items: items.map((item) => {')
+      const nearby = js.slice(offlineIdx, offlineIdx + 1600)
+      assert.ok(offlineIdx >= 0, 'offline order item projection exists')
+      assert.ok(nearby.includes('kitchen_station_id: item.kitchen_station_id || null'), 'offline order items preserve the selected station')
     })
 
     it('database.js exports station functions', () => {
@@ -366,18 +367,23 @@ describe('Restaurant Station Routing', () => {
       assert.ok(comp.includes('Last saved'), 'shows last saved text')
     })
 
-    it('pos.js _getPosMenuItems select includes kitchen_station_id', () => {
+    it('pos.js _getPosMenuItems uses the staff RPC whose row contract retains kitchen_station_id', () => {
       const js = read(POS_JS)
       const fnIdx = js.indexOf('async function _getPosMenuItems')
-      const fnBody = js.slice(fnIdx, fnIdx + 600)
-      assert.ok(fnBody.includes('kitchen_station_id'), 'menu item select includes kitchen_station_id')
+      const fnBody = js.slice(fnIdx, fnIdx + 900)
+      const rpcMigration = read('supabase/migrations/20261010020000_pos_menu_read_app_session_contract.sql')
+      const stationMigration = read(STATION_ROUTING_MIGRATION)
+      assert.ok(fnBody.includes("'get_pos_menu_items_for_staff_v1'"), 'online menu read uses the staff-scoped RPC')
+      assert.ok(rpcMigration.includes('returns setof public.pos_menu_items'), 'staff RPC returns the complete menu row contract')
+      assert.ok(stationMigration.includes('add column if not exists kitchen_station_id'), 'menu row schema includes the station assignment')
     })
 
     it('pos.js offline order items include kitchen_station_id', () => {
       const js = read(POS_JS)
-      const offlineIdx = js.indexOf('_sync_created_offline: true')
-      const nearby = js.slice(offlineIdx, offlineIdx + 1000)
-      assert.ok(nearby.includes('kitchen_station_id'), 'offline order items include station')
+      const offlineIdx = js.indexOf('pos_order_items: items.map((item) => {')
+      const nearby = js.slice(offlineIdx, offlineIdx + 1600)
+      assert.ok(offlineIdx >= 0, 'offline order item projection exists')
+      assert.ok(nearby.includes('kitchen_station_id: item.kitchen_station_id || null'), 'offline order items preserve the selected station')
     })
 
     it('pos.js updatePosTicketStatus blocks offline updates', () => {

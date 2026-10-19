@@ -1,3 +1,4 @@
+// @ts-check
 import { useState } from 'react'
 import { RefreshCw, TrendingUp, ShoppingCart, Users, AlertTriangle, Package, ClipboardCheck, Wallet } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

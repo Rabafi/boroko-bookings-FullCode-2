@@ -1,3 +1,4 @@
+// @ts-check
 import { randomUUID } from 'crypto'
 import { state } from '../state.js'
 import { queueOperation, readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js'
@@ -7,8 +8,9 @@ import { queueOperation, readCache, refreshCache, writeCache, dedupePromise } fr
 const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)';
 const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
 
+/** @param {unknown} rows @param {string} source @param {boolean} complete */
 function withReadMetadata(rows, source, complete) {
-  const result = Array.isArray(rows) ? rows : []
+  const result = /** @type {unknown[]} */ (Array.isArray(rows) ? rows : [])
   Object.defineProperties(result, {
     _source: { value: source, enumerable: true, configurable: true },
     _complete: { value: complete === true, enumerable: true, configurable: true }
@@ -16,29 +18,35 @@ function withReadMetadata(rows, source, complete) {
   return result
 }
 
+/** @param {unknown} error */
 function isMaintenanceTicketSchemaCompatibilityError(error) {
-  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(error?.message || ''));
+  const errorView = /** @type {Record<string, unknown> | null | undefined} */ (error)
+  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(errorView?.message || ''));
 }
 
+/** @param {unknown} ticket */
 function normalizeMaintenanceTicketRow(ticket = {}) {
   if (!ticket || typeof ticket !== 'object') return ticket;
+  // The existing object guard proves an object; this view adds no row validation.
+  const ticketView = /** @type {Record<string, unknown>} */ (ticket)
   return {
-    ...ticket,
-    title: ticket.title || ticket.issue || '',
-    issue: ticket.issue || ticket.title || '',
-    description: ticket.description || ticket.notes || '',
-    completed_at: ticket.completed_at || null,
-    updated_at: ticket.updated_at || ticket.created_at || null,
-    room_number: ticket.rooms?.room_number,
-    room_type: ticket.rooms?.room_type,
-    labour_cost: Number(ticket.labour_cost || 0),
-    parts_cost: Number(ticket.parts_cost || 0),
-    total_cost: Number(ticket.total_cost || 0)
+    ...ticketView,
+    title: ticketView.title || ticketView.issue || '',
+    issue: ticketView.issue || ticketView.title || '',
+    description: ticketView.description || ticketView.notes || '',
+    completed_at: ticketView.completed_at || null,
+    updated_at: ticketView.updated_at || ticketView.created_at || null,
+    room_number: /** @type {Record<string, unknown> | null | undefined} */ (ticketView.rooms)?.room_number,
+    room_type: /** @type {Record<string, unknown> | null | undefined} */ (ticketView.rooms)?.room_type,
+    labour_cost: Number(ticketView.labour_cost || 0),
+    parts_cost: Number(ticketView.parts_cost || 0),
+    total_cost: Number(ticketView.total_cost || 0)
   };
 }
 
 async function fetchMaintenanceTickets() {
-  const primary = await state.supabase.
+  const client = /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
+  const primary = await client.
     from('maintenance_tickets').
     select(MAINTENANCE_TICKET_SELECT).
     eq('lodge_id', state.lodgeId).
@@ -47,7 +55,7 @@ async function fetchMaintenanceTickets() {
   if (!primary.error || !isMaintenanceTicketSchemaCompatibilityError(primary.error)) {
     return primary;
   }
-  return state.supabase.
+  return client.
     from('maintenance_tickets').
     select(MAINTENANCE_TICKET_LEGACY_SELECT).
     eq('lodge_id', state.lodgeId).
@@ -70,10 +78,11 @@ export function getMaintenanceTickets() {
   return dedupePromise('getMaintenanceTickets', _getMaintenanceTickets);
 }
 
+/** @param {unknown} id */
 export async function getMaintenanceTicketById(id) {
   if (!id) return null;
   if (!state.isOnline) return readCache('maintenance').map(normalizeMaintenanceTicketRow).find((ticket) => ticket?.id === id) || null;
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('maintenance_tickets').
   select('*').
   eq('lodge_id', state.lodgeId).
@@ -83,24 +92,26 @@ export async function getMaintenanceTicketById(id) {
   return data || null;
 }
 
+/** @param {unknown} data */
 export async function createMaintenanceTicket(data) {
+  const input = /** @type {Record<string, unknown>} */ (data)
   const ticket = {
     lodge_id: state.lodgeId,
-    room_id: data.room_id || null,
-    title: data.title || data.issue || '',
-    issue: data.issue || data.title || '',
-    description: data.description || '',
+    room_id: input.room_id || null,
+    title: input.title || input.issue || '',
+    issue: input.issue || input.title || '',
+    description: input.description || '',
     status: 'open',
-    priority: data.priority || 'medium',
-    reported_date: data.reported_date || new Date().toISOString().slice(0, 10),
-    labour_cost: Number(data.labour_cost || 0),
-    parts_cost: Number(data.parts_cost || 0),
-    total_cost: Number(data.total_cost || Number(data.labour_cost || 0) + Number(data.parts_cost || 0)),
-    vendor_name: data.vendor_name || '',
-    cost_notes: data.cost_notes || ''
+    priority: input.priority || 'medium',
+    reported_date: input.reported_date || new Date().toISOString().slice(0, 10),
+    labour_cost: Number(input.labour_cost || 0),
+    parts_cost: Number(input.parts_cost || 0),
+    total_cost: Number(input.total_cost || Number(input.labour_cost || 0) + Number(input.parts_cost || 0)),
+    vendor_name: input.vendor_name || '',
+    cost_notes: input.cost_notes || ''
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_maintenance_ticket', { payload: ticket });
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_maintenance_ticket', { payload: ticket });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create maintenance ticket');
     await refreshCache('rooms');
@@ -115,9 +126,9 @@ export async function createMaintenanceTicket(data) {
     _pending_sync: true
   };
   writeCache('maintenance', [queuedTicket, ...readCache('maintenance')]);
-  if (data.room_id) {
+  if (input.room_id) {
     const rooms = readCache('rooms');
-    const roomIndex = rooms.findIndex((room) => String(room.id) === String(data.room_id));
+    const roomIndex = rooms.findIndex((room) => String(room.id) === String(input.room_id));
     if (roomIndex >= 0) rooms[roomIndex] = { ...rooms[roomIndex], status: 'maintenance' };
     writeCache('rooms', rooms);
   }
@@ -127,22 +138,24 @@ export async function createMaintenanceTicket(data) {
   return { success: true, id, queued: true };
 }
 
+/** @param {unknown} id @param {unknown} data */
 export async function updateMaintenanceTicket(id, data) {
+  const input = /** @type {Record<string, unknown>} */ (data)
   const update = {
-    title: data.title,
-    issue: data.issue || data.title,
-    description: data.description,
-    notes: data.notes,
-    priority: data.priority,
-    status: data.status,
-    labour_cost: data.labour_cost,
-    parts_cost: data.parts_cost,
-    total_cost: data.total_cost,
-    vendor_name: data.vendor_name,
-    cost_notes: data.cost_notes
+    title: input.title,
+    issue: input.issue || input.title,
+    description: input.description,
+    notes: input.notes,
+    priority: input.priority,
+    status: input.status,
+    labour_cost: input.labour_cost,
+    parts_cost: input.parts_cost,
+    total_cost: input.total_cost,
+    vendor_name: input.vendor_name,
+    cost_notes: input.cost_notes
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_maintenance_ticket', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_maintenance_ticket', {
       p_id: String(id),
       p_lodge_id: String(state.lodgeId),
       payload: update
@@ -178,9 +191,10 @@ export async function updateMaintenanceTicket(id, data) {
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {unknown} id @param {unknown} roomId */
 export async function resolveMaintenanceTicket(id, roomId) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('resolve_maintenance_ticket', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('resolve_maintenance_ticket', {
       p_id: String(id),
       p_lodge_id: String(state.lodgeId)
     });
@@ -225,6 +239,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
 }
 
 
+/** @param {unknown} startDate @param {unknown} endDate */
 export async function getMaintenanceRowsForPeriod(startDate, endDate) {
   const cachedRows = readCache('maintenance').
   filter((row) => (!startDate || String(row.reported_date || '').slice(0, 10) >= startDate) && (!endDate || String(row.reported_date || '').slice(0, 10) <= endDate)).
@@ -244,7 +259,7 @@ export async function getMaintenanceRowsForPeriod(startDate, endDate) {
   if (!startDate || !endDate || !state.lodgeId || !state.isOnline) return withReadMetadata(cachedRows, state.isOnline ? 'cache' : 'offline-cache', false);
 
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
     from('maintenance_tickets').
     select('*, rooms(room_number, room_type)').
     eq('lodge_id', state.lodgeId).

@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useMemo } from 'react'
 import {
   Upload,

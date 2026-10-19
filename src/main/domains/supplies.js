@@ -8,24 +8,44 @@ import {
   dedupePromise
 } from './infrastructure.js'
 
+/** @typedef {import('../../shared/desktopIpcContracts.js').ReadMetadataRows} ReadMetadataRows */
+/**
+ * These expected views describe the concrete supplies tables and the existing cache projections below; JSON cache values are not validated here.
+ * @typedef {{id: string, name: string, category: string, unit: string, lodge_id?: string | null, current_stock?: number | string | null, reorder_level?: number | string | null, latest_unit_cost?: number | string | null, is_active?: boolean, _deleted_offline?: boolean, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null, created_at?: string | null, updated_at?: string | null}} SupplyItemExpectedData
+ * @typedef {{id: string, room_number?: string | null, room_type?: string | null}} SupplyRoomExpectedData
+ * @typedef {Pick<SupplyItemExpectedData, 'name' | 'unit' | 'category' | 'latest_unit_cost'> | Record<string, undefined>} SupplyItemLookupView
+ * @typedef {Pick<SupplyRoomExpectedData, 'room_number' | 'room_type'> | Record<string, undefined>} SupplyRoomLookupView
+ * @typedef {{id?: string, item_id: string, room_id?: string | null, movement_type: string, quantity: number | string, unit_cost?: number | string | null, total_cost?: number | string | null, notes?: string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, created_at?: string, _pending_sync?: boolean, _sync_state?: string}} SupplyMovementInput
+ * @typedef {{id: string, item_id: string, room_id: string | null, movement_type: string, quantity: number, unit_cost: number, total_cost: number, notes: string | null, room_number: string | null, room_type: string | null, supply_name: string, supply_unit: string, supply_category: string, created_at: string, _pending_sync: boolean, _sync_state: string}} SupplyMovementExpectedData
+ * @typedef {{id: string, room_id: string, supply_item_id: string, item_id?: string, quantity_on_hand: number | string, reorder_level?: number | string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, updated_at?: string, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null}} RoomSupplyStockExpectedData
+ * @typedef {{id: string, status: string, _pending_sync?: boolean, _sync_state?: string, [key: string]: unknown}} SupplyStocktakeHeaderExpectedData
+ * @typedef {{id: string, stocktake_id: string, item_id?: string, room_stock_id?: string, room_id?: string, supply_item_id?: string, expected_qty?: number | string, counted_qty?: number | string | null, variance_qty?: number | string | null, notes?: string | null, line_key?: string, [key: string]: unknown}} SupplyStocktakeLineExpectedData
+ * Payload leaves remain unvalidated; the handlers retain their existing projection/defaulting expressions.
+ * @typedef {{item_id: unknown, counted_qty: unknown, notes: unknown}} SupplyStocktakeCountExpectedData
+ * @typedef {{room_stock_id: unknown, counted_qty: unknown, notes: unknown}} RoomSupplyStocktakeCountExpectedData
+ */
+
 // ─── ROOM SUPPLIES ────────────────────────────────────────────────────────────
 
+/** @param {unknown} rows @param {unknown} source @param {unknown} complete @returns {ReadMetadataRows} */
 function withReadMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : []
   Object.defineProperties(result, {
     _source: { value: source, enumerable: true, configurable: true },
     _complete: { value: complete === true, enumerable: true, configurable: true }
   })
-  return result
+  return /** @type {ReadMetadataRows} */ (result)
 }
 
+/** @param {string} prefix @param {unknown} id */
 function supplyQueueId(prefix, id) {
   return `${prefix}-${id}-${Date.now()}`
 }
 
+/** @param {SupplyMovementInput | Record<string, undefined>} [entry] @returns {SupplyMovementExpectedData} */
 function upsertSupplyMovement(entry = {}) {
-  const item = readCache('supply-items').find((row) => row?.id === entry.item_id) || {}
-  const room = readCache('rooms').find((row) => row?.id === entry.room_id) || {}
+  const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === entry.item_id) || /** @type {SupplyItemLookupView} */ ({})
+  const room = /** @type {SupplyRoomExpectedData[]} */ (readCache('rooms')).find((row) => row?.id === entry.room_id) || /** @type {SupplyRoomLookupView} */ ({})
   const row = {
     id: entry.id || randomUUID(),
     lodge_id: state.lodgeId,
@@ -46,15 +66,16 @@ function upsertSupplyMovement(entry = {}) {
     _pending_sync: entry._pending_sync === true,
     _sync_state: entry._sync_state || (entry._pending_sync ? 'pending' : 'synced')
   }
-  writeCache('room-supply-movements', [
+  writeCache('room-supply-movements', /** @type {SupplyMovementExpectedData[]} */ ([
     row,
-    ...readCache('room-supply-movements').filter((existing) => existing?.id !== row.id)
-  ].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))))
+    .../** @type {SupplyMovementExpectedData[]} */ (readCache('room-supply-movements')).filter((existing) => existing?.id !== row.id)
+  ]).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))))
   return row
 }
 
+/** @param {string} itemId @param {(current: SupplyItemExpectedData) => SupplyItemExpectedData} patcher @returns {SupplyItemExpectedData | null} */
 function patchSupplyItemStock(itemId, patcher) {
-  const rows = readCache('supply-items')
+  const rows = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'))
   const current = rows.find((row) => row?.id === itemId)
   if (!current) return null
   const next = patcher(current)
@@ -68,10 +89,11 @@ function patchSupplyItemStock(itemId, patcher) {
   return next
 }
 
+/** @param {{itemId: string, roomId: string, delta: number, reorderLevel?: number | string | null}} input */
 function patchRoomSupplyStock({ itemId, roomId, delta, reorderLevel = 0 }) {
-  const rows = readCache('room-supply-stock')
-  const item = readCache('supply-items').find((row) => row?.id === itemId) || {}
-  const room = readCache('rooms').find((row) => row?.id === roomId) || {}
+  const rows = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock'))
+  const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === itemId) || /** @type {SupplyItemLookupView} */ ({})
+  const room = /** @type {SupplyRoomExpectedData[]} */ (readCache('rooms')).find((row) => row?.id === roomId) || /** @type {SupplyRoomLookupView} */ ({})
   const idx = rows.findIndex((row) => row?.supply_item_id === itemId && row?.room_id === roomId)
   const now = new Date().toISOString()
   if (idx < 0) {
@@ -112,16 +134,19 @@ function patchRoomSupplyStock({ itemId, roomId, delta, reorderLevel = 0 }) {
   return next
 }
 
+/** @param {string} cacheName @returns {SupplyStocktakeHeaderExpectedData[]} */
 function readSupplyStocktakeHeaders(cacheName) {
-  return readCache(cacheName)
+  return /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache(cacheName))
 }
 
+/** @param {string} cacheName @returns {SupplyStocktakeLineExpectedData[]} */
 function readSupplyStocktakeLines(cacheName) {
-  return readCache(cacheName)
+  return /** @type {SupplyStocktakeLineExpectedData[]} */ (readCache(cacheName))
 }
 
+/** @param {string} stocktakeId @returns {SupplyStocktakeLineExpectedData[]} */
 function buildStoreSupplyStocktakeLines(stocktakeId) {
-  return readCache('supply-items')
+  return /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'))
     .filter((item) => item?._deleted_offline !== true)
     .map((item) => ({
       id: randomUUID(),
@@ -142,8 +167,9 @@ function buildStoreSupplyStocktakeLines(stocktakeId) {
     }))
 }
 
+/** @param {string} stocktakeId @returns {SupplyStocktakeLineExpectedData[]} */
 function buildRoomSupplyStocktakeLines(stocktakeId) {
-  return readCache('room-supply-stock')
+  return /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock'))
     .filter((row) => row?.supply_item_id && row?.room_id)
     .map((row) => ({
       id: randomUUID(),
@@ -169,13 +195,15 @@ function buildRoomSupplyStocktakeLines(stocktakeId) {
     }))
 }
 
+/** @param {{export_all?: boolean, exportAll?: boolean}} [options] */
 async function _getSupplyItems(options = {}) {
   const exportAll = options?.export_all === true || options?.exportAll === true;
   const pageSize = exportAll ? 1000 : 500;
   const maxRows = exportAll ? 100000 : pageSize;
-  if (!state.isOnline) return withReadMetadata(readCache('supply-items').filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
+  if (!state.isOnline) return withReadMetadata(/** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
   try {
-    const rows = [];
+      /** @type {SupplyItemExpectedData[]} */
+      const rows = [];
     for (let from = 0; from < maxRows; from += pageSize) {
       const { data, error } = await state.supabase.
       from('supply_items').
@@ -189,7 +217,7 @@ async function _getSupplyItems(options = {}) {
       rows.push(...page);
       if (!exportAll || page.length < pageSize) break;
     }
-    const cached = readCache('supply-items');
+    const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
     if (rows.length === 0 && cached.length > 0) {
       console.warn('getSupplyItems received empty live result; using cached supply items instead');
       return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
@@ -197,7 +225,7 @@ async function _getSupplyItems(options = {}) {
     writeCache('supply-items', rows);
     return withReadMetadata(rows, 'server', rows.length < maxRows);
   } catch (error) {
-    const cached = readCache('supply-items');
+    const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
     if (cached.length > 0) {
       console.warn('getSupplyItems falling back to cache:', error?.message || error);
       return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
@@ -223,7 +251,7 @@ export async function getSupplyItemById(id) {
     if (error) throw error;
     return data || null;
   } catch {
-    return readCache('supply-items').find((item) => item.id === id) || null;
+    return /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((item) => item.id === id) || null;
   }
 }
 
@@ -243,7 +271,7 @@ export async function createSupplyItem(data) {
     const { data: result, error } = await state.supabase.rpc('create_supply_item', { payload: item });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create supply item');
-    const cached = readCache('supply-items');
+    const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
     writeCache('supply-items', [...cached, { ...item, id: result?.id }]);
     return { success: true, id: result?.id };
   }
@@ -255,7 +283,7 @@ export async function createSupplyItem(data) {
     _sync_state: 'pending',
     _sync_error: null
   }
-  writeCache('supply-items', [...readCache('supply-items').filter((row) => row?.id !== id), offlineItem])
+  writeCache('supply-items', [.../** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).filter((row) => row?.id !== id), offlineItem])
   if (Number(item.current_stock || 0) > 0) {
     upsertSupplyMovement({
       id,
@@ -290,11 +318,11 @@ export async function updateSupplyItem(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update supply item');
-    const cached = readCache('supply-items');
+    const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
     writeCache('supply-items', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
   }
-  const cached = readCache('supply-items')
+  const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'))
   const existing = cached.find((row) => row?.id === id)
   if (!existing) return { success: false, error: 'Supply item not found in offline cache' }
   writeCache('supply-items', cached.map((row) => row.id === id ? {
@@ -318,7 +346,7 @@ export async function updateSupplyItem(id, data) {
 
 export async function deleteSupplyItem(id) {
   if (!state.isOnline) {
-    const cached = readCache('supply-items')
+    const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'))
     const existing = cached.find((row) => row?.id === id)
     if (!existing) return { success: false, error: 'Supply item not found in offline cache' }
     writeCache('supply-items', cached.map((row) => row.id === id ? {
@@ -344,9 +372,9 @@ export async function deleteSupplyItem(id) {
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete supply item');
-  writeCache('supply-items', readCache('supply-items').filter((row) => row.id !== id));
+  writeCache('supply-items', /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).filter((row) => row.id !== id));
   writeCache('supply-purchases', readCache('supply-purchases').filter((row) => row.item_id !== id));
-  writeCache('room-supply-stock', readCache('room-supply-stock').filter((row) => row.supply_item_id !== id));
+  writeCache('room-supply-stock', /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).filter((row) => row.supply_item_id !== id));
   writeCache('room-supply-movements', readCache('room-supply-movements').filter((row) => row.supply_item_id !== id));
   return { success: true };
 }
@@ -368,7 +396,7 @@ export async function addSupplyPurchase(data) {
     notes: data.notes || null
   };
   if (!state.isOnline) {
-    const existingItem = readCache('supply-items').find((row) => row?.id === data.item_id)
+    const existingItem = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === data.item_id)
     const updatedItem = patchSupplyItemStock(data.item_id, (row) => ({
       ...row,
       latest_unit_cost: unitCost,
@@ -399,7 +427,7 @@ export async function addSupplyPurchase(data) {
   const { data: result, error } = await state.supabase.rpc('add_supply_purchase', { payload: purchase });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not record supply purchase');
-  const supplyItems = readCache('supply-items');
+  const supplyItems = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
   writeCache('supply-items', supplyItems.map((row) => row.id === data.item_id ?
   {
     ...row,
@@ -490,7 +518,7 @@ export async function saveRoomSupplyAllocations(weekStart, allocations) {
   if (!state.isOnline) {
     const existing = readCache('room-supply-allocations').filter((row) => row.week_start !== weekStart)
     const cachedRows = rows.map((row) => {
-      const item = readCache('supply-items').find((entry) => entry?.id === row.supply_item_id) || {}
+      const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((entry) => entry?.id === row.supply_item_id) || {}
       const room = readCache('rooms').find((entry) => entry?.id === row.room_id) || {}
       return {
         ...row,
@@ -611,7 +639,7 @@ export async function adjustSupplyStock(itemId, delta, notes) {
   if (!state.isOnline) {
     const numericDelta = Number(delta)
     if (!Number.isFinite(numericDelta) || numericDelta === 0) return { success: false, error: 'Enter a non-zero stock adjustment.' }
-    const before = readCache('supply-items').find((row) => row?.id === itemId)
+    const before = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === itemId)
     const updated = patchSupplyItemStock(itemId, (row) => ({
       ...row,
       current_stock: Math.max(0, Number(row.current_stock || 0) + numericDelta)
@@ -649,7 +677,7 @@ export async function adjustSupplyStock(itemId, delta, notes) {
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not adjust supply stock');
-  const cached = readCache('supply-items');
+  const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
   writeCache('supply-items', cached.map((row) => row.id === itemId ?
   { ...row, current_stock: result?.new_stock ?? row.current_stock } :
   row
@@ -676,7 +704,7 @@ export async function getRoomSupplyStock() {
     writeCache('room-supply-stock', rows);
     return rows;
   } catch (error) {
-    const cached = readCache('room-supply-stock');
+    const cached = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock'));
     if (cached.length > 0) {
       console.warn('getRoomSupplyStock falling back to cache:', error?.message || error);
       return cached;
@@ -698,7 +726,7 @@ export async function loadSupplyToRoom(data) {
     notes: data.notes || null
   };
   if (!state.isOnline) {
-    const item = readCache('supply-items').find((row) => row?.id === data.item_id)
+    const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === data.item_id)
     if (!item) return { success: false, error: 'Supply item not found in offline cache' }
     const qty = Number(data.quantity)
     if (qty <= 0) return { success: false, error: 'Quantity must be greater than zero' }
@@ -748,7 +776,7 @@ export async function useSupplyInRoom(data) {
   if (!state.isOnline) {
     const qty = Number(data.quantity)
     if (qty <= 0) return { success: false, error: 'Quantity must be greater than zero' }
-    const currentRoom = readCache('room-supply-stock').find((row) => row?.supply_item_id === data.item_id && row?.room_id === data.room_id)
+    const currentRoom = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).find((row) => row?.supply_item_id === data.item_id && row?.room_id === data.room_id)
     if (!currentRoom || Number(currentRoom.quantity_on_hand || 0) < qty) {
       return { success: false, error: 'Not enough room stock available' }
     }
@@ -791,7 +819,7 @@ export async function returnSupplyFromRoom(data) {
   if (!state.isOnline) {
     const qty = Number(data.quantity)
     if (qty <= 0) return { success: false, error: 'Quantity must be greater than zero' }
-    const currentRoom = readCache('room-supply-stock').find((row) => row?.supply_item_id === data.item_id && row?.room_id === data.room_id)
+    const currentRoom = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).find((row) => row?.supply_item_id === data.item_id && row?.room_id === data.room_id)
     if (!currentRoom || Number(currentRoom.quantity_on_hand || 0) < qty) {
       return { success: false, error: 'Not enough room stock available to return' }
     }
@@ -1050,19 +1078,20 @@ export async function getRoomSupplyStocktakeById(stocktakeId) {
   }
 }
 
+/** @param {unknown} stocktakeId @param {unknown} lines */
 export async function saveSupplyStocktakeCounts(stocktakeId, lines) {
-  const payload = (Array.isArray(lines) ? lines : []).map((line) => ({
+  const payload = /** @type {SupplyStocktakeCountExpectedData[]} */ (Array.isArray(lines) ? lines : []).map((line) => ({
     item_id: line.item_id,
     counted_qty: line.counted_qty,
     notes: line.notes || null
   }));
   if (!state.isOnline) {
-    const header = readCache('supply-stocktakes').find((row) => row?.id === stocktakeId)
+    const header = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('supply-stocktakes')).find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Supply stocktake not found in offline cache' }
     const counts = new Map(payload.map((line) => [line.item_id, line]))
-    writeCache('supply-stocktake-lines', readCache('supply-stocktake-lines').map((line) => {
+    writeCache('supply-stocktake-lines', /** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('supply-stocktake-lines')).map((line) => {
       if (line.stocktake_id !== stocktakeId || !counts.has(line.item_id)) return line
-      const count = counts.get(line.item_id)
+      const count = /** @type {SupplyStocktakeCountExpectedData} */ (counts.get(line.item_id))
       const counted = Number(count.counted_qty || 0)
       return { ...line, counted_qty: counted, variance_qty: counted - Number(line.expected_qty || 0), notes: count.notes || null, _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString() }
     }))
@@ -1076,7 +1105,8 @@ export async function saveSupplyStocktakeCounts(stocktakeId, lines) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('save_supply_stocktake_counts', {
+  // initDatabase assigns the client before establishing online state; main awaits it before registering IPC.
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('save_supply_stocktake_counts', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_lines: payload
@@ -1086,19 +1116,20 @@ export async function saveSupplyStocktakeCounts(stocktakeId, lines) {
   return result;
 }
 
+/** @param {unknown} stocktakeId @param {unknown} lines */
 export async function saveRoomSupplyStocktakeCounts(stocktakeId, lines) {
-  const payload = (Array.isArray(lines) ? lines : []).map((line) => ({
+  const payload = /** @type {RoomSupplyStocktakeCountExpectedData[]} */ (Array.isArray(lines) ? lines : []).map((line) => ({
     room_stock_id: line.room_stock_id,
     counted_qty: line.counted_qty,
     notes: line.notes || null
   }));
   if (!state.isOnline) {
-    const header = readCache('room-supply-stocktakes').find((row) => row?.id === stocktakeId)
+    const header = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes')).find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Room supply stocktake not found in offline cache' }
     const counts = new Map(payload.map((line) => [line.room_stock_id, line]))
-    writeCache('room-supply-stocktake-lines', readCache('room-supply-stocktake-lines').map((line) => {
+    writeCache('room-supply-stocktake-lines', /** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('room-supply-stocktake-lines')).map((line) => {
       if (line.stocktake_id !== stocktakeId || !counts.has(line.room_stock_id)) return line
-      const count = counts.get(line.room_stock_id)
+      const count = /** @type {RoomSupplyStocktakeCountExpectedData} */ (counts.get(line.room_stock_id))
       const counted = Number(count.counted_qty || 0)
       return { ...line, counted_qty: counted, variance_qty: counted - Number(line.expected_qty || 0), notes: count.notes || null, _pending_sync: true, _sync_state: 'pending', updated_at: new Date().toISOString() }
     }))
@@ -1112,7 +1143,8 @@ export async function saveRoomSupplyStocktakeCounts(stocktakeId, lines) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('save_room_supply_stocktake_counts', {
+  // initDatabase assigns the client before establishing online state; main awaits it before registering IPC.
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('save_room_supply_stocktake_counts', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_lines: payload
@@ -1129,7 +1161,7 @@ export async function postSupplyStocktakeSession(stocktakeId, notes) {
     if (!header) return { success: false, error: 'Supply stocktake not found in offline cache' }
     const lines = readCache('supply-stocktake-lines').filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
     const counts = new Map(lines.map((line) => [line.item_id, line]))
-    writeCache('supply-items', readCache('supply-items').map((item) => {
+    writeCache('supply-items', /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).map((item) => {
       const line = counts.get(item.id)
       if (!line) return item
       return { ...item, current_stock: Number(line.counted_qty || 0), _pending_sync: true, _sync_state: 'pending', _sync_error: null, updated_at: new Date().toISOString() }
@@ -1174,7 +1206,7 @@ export async function postRoomSupplyStocktakeSession(stocktakeId, notes) {
     if (!header) return { success: false, error: 'Room supply stocktake not found in offline cache' }
     const lines = readCache('room-supply-stocktake-lines').filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
     const counts = new Map(lines.map((line) => [line.room_stock_id, line]))
-    writeCache('room-supply-stock', readCache('room-supply-stock').map((stock) => {
+    writeCache('room-supply-stock', /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).map((stock) => {
       const key = stock.id || `${stock.room_id}:${stock.supply_item_id}`
       const line = counts.get(key)
       if (!line) return stock
@@ -1220,7 +1252,7 @@ export async function addRoomSupplyStocktakeLine(stocktakeId, data = {}) {
     const header = readCache('room-supply-stocktakes').find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Room supply stocktake not found in offline cache' }
     const room = readCache('rooms').find((row) => row?.id === data.room_id) || {}
-    const item = readCache('supply-items').find((row) => row?.id === data.item_id) || {}
+    const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === data.item_id) || {}
     const lineId = randomUUID()
     const line = {
       id: lineId,
@@ -1301,7 +1333,7 @@ export async function getSupplySpend(startDate, endDate) {
     }
   }
 
-  const supplyMap = new Map(readCache('supply-items').map((item) => [item.id, item]));
+  const supplyMap = new Map(/** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).map((item) => [item.id, item]));
   const cachedPurchases = readCache('supply-purchases').
   filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate)).
   map((row) => ({

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "checkJs": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "files": [
+    "src/renderer/src/utils/localDate.js",
+    "tests/typecheck/renderer-local-date/valid.ts"
+  ],
+  "include": []
+}

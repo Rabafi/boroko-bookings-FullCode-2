@@ -1,3 +1,4 @@
+// @ts-check
 export {
   getPoolDayUse as getDayUseEntries,
   getPoolDayUseById as getDayUseEntryById,

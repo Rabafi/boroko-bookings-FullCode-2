@@ -1,8 +1,22 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { Printer, X, Download, CreditCard } from 'lucide-react'
 import { useSettings } from '../../app-context'
 import { getBookingFinancialView, bookingPaymentStatusLabel } from '../../../../shared/bookingFinancials.js'
 
+/** @typedef {string | null | undefined} ReceiptDateValue */
+/** Expected booking row fields used by this display; the API/cache record is not validated here. */
+/** @typedef {Record<string, unknown> & {id?: string | null, booking_id?: string | null, check_in?: ReceiptDateValue, check_out?: ReceiptDateValue, is_exclusive_event?: unknown, _event_group?: unknown, notes?: string | null, rate_per_night?: number | string | null, status?: string | null, invoice_number?: string | null, _pending_sync?: boolean, customer_name?: string | null, room_count?: number, created_at?: ReceiptDateValue, updated_at?: ReceiptDateValue, room_number?: string | number | null, room_type?: string | null, adults?: number | null, children?: number, customer_phone?: string | null}} ReceiptBooking */
+/** Expected fields read from the existing booking-charge query/cache, without runtime validation. */
+/** @typedef {{id?: string | number | null, description?: string | null, created_at?: ReceiptDateValue, date?: ReceiptDateValue, amount?: number | string | null, category?: string | null, quantity?: number | string | null}} ReceiptCharge */
+/** Expected fields returned by get_booking_payments; numeric values may be PostgREST strings. */
+/** @typedef {{id?: string | null, amount?: number | string | null, type?: string | null, method?: string | null, created_at?: ReceiptDateValue, paid_at?: ReceiptDateValue}} ReceiptPayment */
+/** @typedef {{key: string, at: ReceiptDateValue, tone: string, title: string, detail: string}} ReceiptTimelineEvent */
+/** @typedef {{currency?: string | null, logo?: string | null, lodge_name?: string | null, company_name?: string | null, address?: string | null, city?: string | null, country?: string | null, phone?: string | null, email?: string | null, website?: string | null, vat_number?: string | null}} ReceiptSettingsReadView */
+/** @typedef {{unavailable?: unknown}} ChargeAvailabilityReadView */
+/** @typedef {{success?: unknown, error?: string | null}} PrintResultReadView */
+
+/** @param {ReceiptDateValue} value */
 function formatEventDate(value) {
   if (!value) return 'Time not recorded'
   const date = new Date(value)
@@ -16,16 +30,20 @@ function formatEventDate(value) {
   })
 }
 
+/** @param {string | null | undefined} notes */
 function stripGroupTag(notes) {
   if (!notes) return ''
   return notes.replace(/\[GROUP:[^\]]+\]/g, '').trim()
 }
 
+/** @param {{booking: ReceiptBooking, onClose: () => void, onCollectPayment?: ((booking: ReceiptBooking) => unknown) | null}} props */
 export function Receipt({ booking, onClose, onCollectPayment = null }) {
-  const { settings } = useSettings()
-  const [charges, setCharges] = useState([])
+  const { settings: settingsValue } = useSettings()
+  // SettingsContext starts with null and receives the existing settings object from App.
+  const settings = /** @type {ReceiptSettingsReadView | null | undefined} */ (settingsValue)
+  const [charges, setCharges] = useState(/** @type {ReceiptCharge[]} */ ([]))
   const [chargesUnavailable, setChargesUnavailable] = useState(false)
-  const [payments, setPayments] = useState([])
+  const [payments, setPayments] = useState(/** @type {ReceiptPayment[]} */ ([]))
   const [saving, setSaving] = useState(false)
   const bookingId = booking.id || booking.booking_id
 
@@ -33,11 +51,12 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
     if (!bookingId) return
     window.api.charges.getByBooking(bookingId).then((result) => {
       if (Array.isArray(result)) {
-        setCharges(result)
+        // The array guard is preexisting; the row view records the query/cache fields used below.
+        setCharges(/** @type {ReceiptCharge[]} */ (result))
         setChargesUnavailable(false)
         return
       }
-      if (result?.unavailable) {
+      if ((/** @type {ChargeAvailabilityReadView | null | undefined} */ (result))?.unavailable) {
         setCharges([])
         setChargesUnavailable(true)
         return
@@ -48,13 +67,13 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
       setCharges([])
       setChargesUnavailable(true)
     })
-    window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
+    window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? /** @type {ReceiptPayment[]} */ (data) : [])).catch(() => {})
   }, [bookingId])
 
   const d1 = booking.check_in ? new Date(booking.check_in) : null
   const d2 = booking.check_out ? new Date(booking.check_out) : null
   const nights = (d1 && d2 && !Number.isNaN(d1.getTime()) && !Number.isNaN(d2.getTime()))
-    ? Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)))
+    ? Math.max(1, Math.round((d2.valueOf() - d1.valueOf()) / (1000 * 60 * 60 * 24)))
     : 0
 
   const isEvent = booking.is_exclusive_event || booking._event_group || booking.notes?.includes('[GROUP:')
@@ -100,7 +119,7 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
       }
     }).catch(() => {})
     const result = await window.api.receipts.printCurrent?.({ silent: false }).catch((err) => ({ success: false, error: err?.message }))
-    if (!result?.success) window.alert?.(result?.error || 'Print could not be started.')
+    if (!(/** @type {PrintResultReadView | null | undefined} */ (result))?.success) window.alert?.((/** @type {PrintResultReadView | null | undefined} */ (result))?.error || 'Print could not be started.')
   }
 
   const handleSavePDF = async () => {
@@ -118,6 +137,7 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
   }
 
   const timelineEvents = useMemo(() => {
+    /** @type {ReceiptTimelineEvent[]} */
     const events = []
 
     if (booking.created_at) {
@@ -323,7 +343,7 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
                   {isEvent ? (
                     <>
                       <p className="font-semibold text-gray-800">Full Lodge Booking</p>
-                      {booking.room_count > 0 && (
+                      {(/** @type {number} */ (booking.room_count)) > 0 && (
                         <p className="text-xs text-gray-500">{booking.room_count} rooms · Exclusive use</p>
                       )}
                     </>
@@ -338,7 +358,7 @@ export function Receipt({ booking, onClose, onCollectPayment = null }) {
                   <p className="text-xs text-gray-400">Guests</p>
                   <p className="font-medium text-gray-700">
                     {booking.adults} Adult{booking.adults !== 1 ? 's' : ''}
-                    {booking.children > 0
+                    {(/** @type {number} */ (booking.children)) > 0
                       ? `, ${booking.children} Child${booking.children !== 1 ? 'ren' : ''}`
                       : ''}
                   </p>

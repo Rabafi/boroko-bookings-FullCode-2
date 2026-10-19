@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { AlertTriangle, Boxes, ClipboardCheck, History, PackageCheck, Plus, Printer, RefreshCw, ScanLine, Search, X } from 'lucide-react'
@@ -15,9 +16,15 @@ import { WASTE_MOVEMENT_PREFIX } from '../../../../shared/wasteSummary'
 import { transportErrorMessage } from '../../../../shared/transportErrors'
 import { isArchivedOnlyStockItem } from '../../../../shared/archivedStock'
 
+/** @typedef {{rows: unknown[], source: unknown, complete: boolean, loading: boolean, error: string}} StockHistoryReadState */
+
+/** @param {unknown} item */
 const stockNumber = (item) => Number(item.current_stock || 0)
+/** @param {unknown} item */
 const reorderNumber = (item) => Number(item.reorder_level || 0)
+/** @param {unknown} item */
 const isLow = (item) => reorderNumber(item) > 0 && stockNumber(item) <= reorderNumber(item)
+/** @param {unknown} value */
 const isOutletId = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''))
 
 const BAR_CATEGORY_SUGGESTIONS = BAR_PRODUCT_CATEGORIES
@@ -47,12 +54,14 @@ const STOCK_ACTION_REASONS = {
 
 const actionReasonLabel = (mode, code) => STOCK_ACTION_REASONS[mode]?.find((entry) => entry.value === code)?.label || code
 
+/** @param {string | null | undefined} value */
 const formatAgeDate = (value) => {
   if (!value) return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString()
 }
 
+/** @param {import('../../types/desktop-api').BarStockAgingRow | null | undefined} row */
 const ageDescription = (row) => {
   if (!row) return 'Aging unavailable'
   if (row.days_since_receipt == null) return 'No receipt history'
@@ -74,11 +83,11 @@ export default function HposStock() {
     ? access.allowedOutletIds.map((id) => String(id))
     : null
   const outletScoped = Array.isArray(allowedOutletIds)
-  const [items, setItems] = useState([])
+  const [items, setItems] = useState(/** @type {unknown[]} */ ([]))
   const [itemsRead, setItemsRead] = useState({ source: 'unknown', complete: false })
   const [menuItems, setMenuItems] = useState([])
   const [showArchived, setShowArchived] = useState(false)
-  const [aging, setAging] = useState([])
+  const [aging, setAging] = useState(/** @type {unknown[]} */ ([]))
   const [outlets, setOutlets] = useState([])
   const [outletId, setOutletId] = useState('')
   const [search, setSearch] = useState('')
@@ -95,9 +104,9 @@ export default function HposStock() {
   const [stockAction, setStockAction] = useState(null)
   const [lowOnly, setLowOnly] = useState(false)
   const [historyItemId, setHistoryItemId] = useState(null)
-  const [movementHistory, setMovementHistory] = useState({})
+  const [movementHistory, setMovementHistory] = useState(/** @type {Record<string, StockHistoryReadState>} */ ({}))
   const [allHistoryOpen, setAllHistoryOpen] = useState(false)
-  const [allHistory, setAllHistory] = useState({ rows: [], source: 'unknown', complete: false, loading: false, error: '' })
+  const [allHistory, setAllHistory] = useState(/** @type {StockHistoryReadState} */ ({ rows: [], source: 'unknown', complete: false, loading: false, error: '' }))
   const [printSheet, setPrintSheet] = useState(false)
   const [countAllOpen, setCountAllOpen] = useState(false)
   const [countOperationId, setCountOperationId] = useState(null)

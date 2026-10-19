@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // Mounted tests that import the production renderer must share the same
+    // React instance with this app's DOM renderer.
+    dedupe: ['react', 'react-dom']
+  },
   build: {
     rollupOptions: {
       output: {

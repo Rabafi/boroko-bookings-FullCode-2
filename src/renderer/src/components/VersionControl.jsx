@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Server, AlertTriangle, RefreshCw, Send, Wifi, WifiOff, X, Clock, CheckCircle, AlertCircle } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
@@ -114,7 +115,8 @@ function DeviceDrawer({ device, onClose }) {
 }
 
 export default function VersionControl() {
-  const [syncStatus, setSyncStatus] = useState(null)
+  // The main handler forwards the database result without validating its shape.
+  const [syncStatus, setSyncStatus] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [pushVersion, setPushVersion] = useState('')

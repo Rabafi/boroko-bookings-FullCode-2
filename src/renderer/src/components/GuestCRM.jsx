@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Search, Star, Ban, Eye, ThumbsUp, ThumbsDown, Crown, StickyNote } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -25,15 +26,15 @@ export default function GuestCRM() {
   const canBlacklist = canAccessCapability(access, 'guest_crm.blacklist')
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [results, setResults] = useState([])
+  const [results, setResults] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  const [selectedProfile, setSelectedProfile] = useState(null)
-  const [profileData, setProfileData] = useState(null)
-  const [stayHistory, setStayHistory] = useState([])
-  const [notes, setNotes] = useState([])
+  const [selectedProfile, setSelectedProfile] = useState(/** @type {unknown} */ (null))
+  const [profileData, setProfileData] = useState(/** @type {unknown} */ (null))
+  const [stayHistory, setStayHistory] = useState(/** @type {unknown[]} */ ([]))
+  const [notes, setNotes] = useState(/** @type {unknown[]} */ ([]))
   const [notesError, setNotesError] = useState('')
   const [loadingProfile, setLoadingProfile] = useState(false)
 
@@ -51,7 +52,7 @@ export default function GuestCRM() {
   const [showNoteModal, setShowNoteModal] = useState(false)
   const [noteText, setNoteText] = useState('')
 
-  const [vipList, setVipList] = useState([])
+  const [vipList, setVipList] = useState(/** @type {unknown[]} */ ([]))
   const [showVipList, setShowVipList] = useState(false)
   const [loadingVipList, setLoadingVipList] = useState(false)
 

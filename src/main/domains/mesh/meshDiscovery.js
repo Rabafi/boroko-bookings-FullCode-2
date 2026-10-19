@@ -1,3 +1,4 @@
+// @ts-check
 import dgram from 'dgram';
 import os from 'os';
 import { state } from '../../state.js';
@@ -14,19 +15,40 @@ const MULTICAST_ADDR = '239.255.0.1';
 const BEACON_INTERVAL_MS = 30000;
 const REMEMBERED_PROBE_INTERVAL_MS = 45000;
 const HANDSHAKE_COOLDOWN_MS = 15000;
+/** @type {ReturnType<typeof setInterval> | null} */
 let beaconIntervalId = null;
+/** @type {ReturnType<typeof setInterval> | null} */
 let rememberedProbeIntervalId = null;
+/** @type {ReturnType<typeof setTimeout>[]} */
 let startupBeaconTimeouts = [];
 const handshakeCooldowns = new Map();
 
+/** @typedef {{ name: string, address: string, netmask: string, network: string, broadcast: string, cidr: string | null, private: boolean }} MeshInterface */
+/** @typedef {Omit<typeof meshState, 'localInterfaces' | 'discoveryTargets' | 'discoverySocket' | 'lastDiscoveryError' | 'lastBeaconAt'> & {
+ * localInterfaces: MeshInterface[],
+ * discoveryTargets: string[],
+ * discoverySocket: ReturnType<typeof dgram.createSocket> | null,
+ * lastDiscoveryError: string | null,
+ * lastBeaconAt: string | null
+ * }} DiscoveryMeshState */
+const discoveryMeshState = /** @type {DiscoveryMeshState} */ (meshState);
+
+/** @param {unknown} error */
+function readDirectThrownMessage(error) {
+  return /** @type {{ message: unknown }} */ (error).message;
+}
+
+/** @param {string} address */
 function ipv4ToInt(address) {
   return address.split('.').reduce((value, part) => ((value << 8) | Number(part)) >>> 0, 0);
 }
 
+/** @param {number} value */
 function intToIpv4(value) {
   return [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join('.');
 }
 
+/** @param {unknown} address */
 function isPrivateIpv4(address) {
   const parts = String(address || '').split('.').map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
@@ -59,14 +81,16 @@ export function getLocalMeshInterfaces() {
   return rows.filter((entry) => entry.private);
 }
 
+/** @param {string} address */
 function isAddressOnLocalSubnet(address) {
   if (!isPrivateIpv4(address)) return false;
   const target = ipv4ToInt(address);
-  return meshState.localInterfaces.some((entry) =>
+  return discoveryMeshState.localInterfaces.some((entry) =>
     (target & ipv4ToInt(entry.netmask)) === ipv4ToInt(entry.network)
   );
 }
 
+/** @param {unknown} value */
 function normalizeAddress(value) {
   const address = String(value || '').trim();
   if (!isPrivateIpv4(address)) {
@@ -75,6 +99,7 @@ function normalizeAddress(value) {
   return address;
 }
 
+/** @param {unknown} nodeId @param {string} address @param {number | string} httpPort @param {Record<string, unknown>} [metadata] */
 async function handshakeCandidate(nodeId, address, httpPort, metadata = {}) {
   const key = `${nodeId || address}:${httpPort}`;
   const lastAttempt = handshakeCooldowns.get(key);
@@ -86,6 +111,7 @@ async function handshakeCandidate(nodeId, address, httpPort, metadata = {}) {
   });
 }
 
+/** @param {string} address @param {Record<string, unknown>} [metadata] */
 async function scanAddress(address, metadata = {}) {
   const ports = [];
   for (let port = MESH_HTTP_PORT_START; port <= MESH_HTTP_PORT_END; port += 1) ports.push(port);
@@ -96,8 +122,9 @@ async function scanAddress(address, metadata = {}) {
   try {
     return await Promise.any(attempts);
   } catch (error) {
-    const messages = Array.isArray(error?.errors)
-      ? error.errors.map((entry) => String(entry?.message || entry || ''))
+    const errorFields = /** @type {Record<string, unknown> | null | undefined} */ (error);
+    const messages = Array.isArray(errorFields?.errors)
+      ? errorFields.errors.map((entry) => String((/** @type {Record<string, unknown> | null | undefined} */ (entry))?.message || entry || ''))
       : [];
     if (messages.some((message) => /timestamp drift|clock/i.test(message))) {
       throw new Error(`The clock on ${address} differs too much. Correct the date and time on both computers, then try again.`);
@@ -106,6 +133,7 @@ async function scanAddress(address, metadata = {}) {
   }
 }
 
+/** @param {string} address @param {number | string | null} [port] */
 export async function connectManualMeshPeer(address, port = null) {
   const normalizedAddress = normalizeAddress(address);
   const requestedPort = Number(port);
@@ -154,25 +182,25 @@ export async function probeRememberedMeshPeers() {
 }
 
 export function startMeshDiscovery() {
-  if (meshState.discoverySocket) {
+  if (discoveryMeshState.discoverySocket) {
     console.log('[MeshDiscovery] UDP discovery socket already running.');
     return;
   }
 
-  meshState.localInterfaces = getLocalMeshInterfaces();
-  meshState.discoveryTargets = [
+  discoveryMeshState.localInterfaces = getLocalMeshInterfaces();
+  discoveryMeshState.discoveryTargets = [
     MULTICAST_ADDR,
     '255.255.255.255',
-    ...new Set(meshState.localInterfaces.map((entry) => entry.broadcast))
+    ...new Set(discoveryMeshState.localInterfaces.map((entry) => entry.broadcast))
   ];
 
   const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
   socket.on('error', (err) => {
     console.error('[MeshDiscovery] UDP Socket Error:', err);
-    meshState.lastDiscoveryError = `Discovery socket: ${err.message}`;
+    discoveryMeshState.lastDiscoveryError = `Discovery socket: ${readDirectThrownMessage(err)}`;
     try { socket.close(); } catch {}
-    if (meshState.discoverySocket === socket) meshState.discoverySocket = null;
+    if (discoveryMeshState.discoverySocket === socket) discoveryMeshState.discoverySocket = null;
   });
 
   socket.on('message', (msg, rinfo) => {
@@ -196,7 +224,7 @@ export function startMeshDiscovery() {
       handshakeCandidate(nodeId, peerAddress, Number(httpPort), {
         discoverySource: 'broadcast'
       }).catch((err) => {
-        meshState.lastDiscoveryError = `Could not reach ${peerAddress}:${httpPort}: ${err.message}`;
+        discoveryMeshState.lastDiscoveryError = `Could not reach ${peerAddress}:${httpPort}: ${readDirectThrownMessage(err)}`;
       });
     } catch {
       // Malformed unauthenticated discovery packets are ignored.
@@ -208,15 +236,15 @@ export function startMeshDiscovery() {
       socket.setBroadcast(true);
       socket.setMulticastTTL(4);
       socket.setMulticastLoopback(true);
-      for (const entry of meshState.localInterfaces) {
+      for (const entry of discoveryMeshState.localInterfaces) {
         try { socket.addMembership(MULTICAST_ADDR, entry.address); } catch {}
       }
-      if (meshState.localInterfaces.length === 0) {
+      if (discoveryMeshState.localInterfaces.length === 0) {
         try { socket.addMembership(MULTICAST_ADDR); } catch {}
       }
-      meshState.discoverySocket = socket;
-      meshState.lastDiscoveryError = null;
-      console.log(`[MeshDiscovery] Listening on UDP ${DISCOVERY_PORT}; targets: ${meshState.discoveryTargets.join(', ')}`);
+      discoveryMeshState.discoverySocket = socket;
+      discoveryMeshState.lastDiscoveryError = null;
+      console.log(`[MeshDiscovery] Listening on UDP ${DISCOVERY_PORT}; targets: ${discoveryMeshState.discoveryTargets.join(', ')}`);
       beaconIntervalId = setInterval(broadcastHelloBeacon, BEACON_INTERVAL_MS);
       rememberedProbeIntervalId = setInterval(probeRememberedMeshPeers, REMEMBERED_PROBE_INTERVAL_MS);
       broadcastHelloBeacon();
@@ -226,26 +254,26 @@ export function startMeshDiscovery() {
       probeRememberedMeshPeers().catch(() => {});
     } catch (err) {
       console.error('[MeshDiscovery] Failed to initialize discovery:', err);
-      meshState.lastDiscoveryError = `Discovery init: ${err.message}`;
+      discoveryMeshState.lastDiscoveryError = `Discovery init: ${readDirectThrownMessage(err)}`;
     }
   });
 }
 
 export function stopMeshDiscovery() {
-  clearInterval(beaconIntervalId);
-  clearInterval(rememberedProbeIntervalId);
-  startupBeaconTimeouts.forEach(clearTimeout);
+  clearInterval(/** @type {ReturnType<typeof setInterval>} */ (beaconIntervalId));
+  clearInterval(/** @type {ReturnType<typeof setInterval>} */ (rememberedProbeIntervalId));
+  startupBeaconTimeouts.forEach((timeout) => clearTimeout(timeout));
   startupBeaconTimeouts = [];
   beaconIntervalId = null;
   rememberedProbeIntervalId = null;
-  if (meshState.discoverySocket) {
-    try { meshState.discoverySocket.close(); } catch {}
-    meshState.discoverySocket = null;
+  if (discoveryMeshState.discoverySocket) {
+    try { discoveryMeshState.discoverySocket.close(); } catch {}
+    discoveryMeshState.discoverySocket = null;
   }
 }
 
 export function broadcastHelloBeacon() {
-  const socket = meshState.discoverySocket;
+  const socket = discoveryMeshState.discoverySocket;
   if (!socket || !meshState.running || !state.lodgeId || !meshState.httpPort) return;
 
   const payload = Buffer.from(JSON.stringify({
@@ -256,29 +284,29 @@ export function broadcastHelloBeacon() {
     sentAt: new Date().toISOString()
   }));
 
-  for (const target of meshState.discoveryTargets) {
+  for (const target of discoveryMeshState.discoveryTargets) {
     socket.send(payload, 0, payload.length, DISCOVERY_PORT, target, (err) => {
       if (err && target === MULTICAST_ADDR) {
-        meshState.lastDiscoveryError = `Multicast send failed: ${err.message}`;
+        discoveryMeshState.lastDiscoveryError = `Multicast send failed: ${readDirectThrownMessage(err)}`;
       }
     });
   }
-  meshState.lastBeaconAt = new Date().toISOString();
+  discoveryMeshState.lastBeaconAt = new Date().toISOString();
 }
 
 export async function refreshMeshDiscovery() {
-  meshState.localInterfaces = getLocalMeshInterfaces();
-  meshState.discoveryTargets = [
+  discoveryMeshState.localInterfaces = getLocalMeshInterfaces();
+  discoveryMeshState.discoveryTargets = [
     MULTICAST_ADDR,
     '255.255.255.255',
-    ...new Set(meshState.localInterfaces.map((entry) => entry.broadcast))
+    ...new Set(discoveryMeshState.localInterfaces.map((entry) => entry.broadcast))
   ];
   broadcastHelloBeacon();
   const remembered = await probeRememberedMeshPeers();
   return {
     success: true,
     remembered,
-    localInterfaces: meshState.localInterfaces,
-    discoveryTargets: meshState.discoveryTargets
+    localInterfaces: discoveryMeshState.localInterfaces,
+    discoveryTargets: discoveryMeshState.discoveryTargets
   };
 }

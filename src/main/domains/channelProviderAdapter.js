@@ -1,3 +1,4 @@
+// @ts-check
 // Channel Manager Provider Adapter Boundary
 // Live OTA providers fail closed until real credentials and a certified adapter exist.
 // ManualExportProvider performs real local export-queue work — it must never claim live OTA delivery.
@@ -6,6 +7,11 @@ import { createHash, randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { state } from '../state.js'
+
+/**
+ * @typedef {{export_id: string, operation: string, channel_key: string, provider_kind: 'manual_export', created_at: string, lodge_id: string|null, payload: object, delivery: string, note: string, checksum?: string, file_path?: string|null, queued_at?: string}} ExportArtifact
+ */
+/** @typedef {Record<string, unknown>} ProviderRecordView */
 
 export const MANUAL_CHANNEL_KEYS = new Set(['manual', 'manual_export', 'file_export', 'csv_export'])
 
@@ -24,8 +30,10 @@ const LIVE_OTA_KEYS = new Set([
 ])
 
 /** In-memory export queue for tests and session-local inspection. */
+/** @type {Array<ExportArtifact & {file_path: string|null, queued_at: string}>} */
 const exportQueue = []
 
+/** @param {unknown} operation @param {unknown} [provider] */
 function notConnected(operation, provider = null) {
   return {
     success: false,
@@ -39,11 +47,13 @@ function notConnected(operation, provider = null) {
   }
 }
 
+/** @param {unknown} channelKeyOrProvider */
 export function isManualChannel(channelKeyOrProvider) {
   const key = String(channelKeyOrProvider || '').trim().toLowerCase()
   return MANUAL_CHANNEL_KEYS.has(key)
 }
 
+/** @param {unknown} channelKeyOrProvider */
 export function isLiveOtaChannel(channelKeyOrProvider) {
   const key = String(channelKeyOrProvider || '').trim().toLowerCase()
   if (!key || isManualChannel(key)) return false
@@ -56,8 +66,10 @@ export function isLiveOtaChannel(channelKeyOrProvider) {
  * Resolve which adapter implementation handles a channel key / config.
  * Live providers stay "not connected" until credentials + a real adapter exist.
  */
+/** @param {unknown} channelKey @param {unknown} [config] */
 export function resolveProvider(channelKey, config = null) {
-  const key = String(channelKey || config?.channel_key || '').trim().toLowerCase()
+  const configFields = /** @type {ProviderRecordView|null|undefined} */ (config)
+  const key = String(channelKey || configFields?.channel_key || '').trim().toLowerCase()
   if (isManualChannel(key)) {
     return {
       kind: 'manual_export',
@@ -68,7 +80,11 @@ export function resolveProvider(channelKey, config = null) {
     }
   }
 
-  const credentials = config?.credentials && typeof config.credentials === 'object' ? config.credentials : {}
+  // Keep each getter/proxy read in its original position: configuration may
+  // be a stateful object, and this view must not cache or normalize it.
+  const credentials = configFields?.credentials && typeof configFields.credentials === 'object'
+    ? /** @type {ProviderRecordView} */ (configFields.credentials)
+    : {}
   const hasCredentials = Boolean(
     credentials.api_key ||
     credentials.apiKey ||
@@ -106,10 +122,11 @@ function ensureExportDir() {
   return dir
 }
 
+/** @param {string} operation @param {string} channelKey @param {unknown} [payload] @returns {ExportArtifact} */
 function buildExportArtifact(operation, channelKey, payload = {}) {
   const id = randomUUID()
   const createdAt = new Date().toISOString()
-  const body = {
+  const body = /** @type {ExportArtifact} */ ({
     export_id: id,
     operation,
     channel_key: channelKey || 'manual',
@@ -119,12 +136,13 @@ function buildExportArtifact(operation, channelKey, payload = {}) {
     payload: payload && typeof payload === 'object' ? payload : { value: payload },
     delivery: 'local_file_or_queue',
     note: 'Manual export artifact for operator delivery. Not transmitted to any OTA.'
-  }
+  })
   const checksum = createHash('sha256').update(JSON.stringify(body.payload)).digest('hex').slice(0, 32)
   body.checksum = checksum
   return body
 }
 
+/** @param {ExportArtifact} artifact */
 function writeExportArtifact(artifact) {
   const dir = ensureExportDir()
   let filePath = null
@@ -152,6 +170,7 @@ function writeExportArtifact(artifact) {
 export const ManualExportProvider = {
   kind: 'manual_export',
 
+  /** @param {unknown} [payload] */
   async pushAvailability(payload = {}) {
     const artifact = buildExportArtifact('push_availability', 'manual', payload)
     const written = writeExportArtifact(artifact)
@@ -166,6 +185,7 @@ export const ManualExportProvider = {
     }
   },
 
+  /** @param {unknown} [payload] */
   async pushRates(payload = {}) {
     const artifact = buildExportArtifact('push_rates', 'manual', payload)
     const written = writeExportArtifact(artifact)
@@ -180,6 +200,7 @@ export const ManualExportProvider = {
     }
   },
 
+  /** @param {unknown} [since] */
   async fetchReservations(since = null) {
     // Manual channel does not pull OTA reservations; operators import files separately.
     return {
@@ -193,6 +214,7 @@ export const ManualExportProvider = {
     }
   },
 
+  /** @param {unknown} reservationId */
   async acknowledgeReservation(reservationId) {
     const artifact = buildExportArtifact('acknowledge_reservation', 'manual', { reservation_id: reservationId })
     const written = writeExportArtifact(artifact)
@@ -215,6 +237,7 @@ export function clearManualExportQueue() {
   exportQueue.length = 0
 }
 
+/** @param {unknown} provider @param {unknown} payload */
 export async function pushAvailability(provider, payload) {
   if (isManualChannel(provider)) {
     return ManualExportProvider.pushAvailability(payload)
@@ -222,6 +245,7 @@ export async function pushAvailability(provider, payload) {
   return notConnected('availability sync', provider)
 }
 
+/** @param {unknown} provider @param {unknown} payload */
 export async function pushRates(provider, payload) {
   if (isManualChannel(provider)) {
     return ManualExportProvider.pushRates(payload)
@@ -229,6 +253,7 @@ export async function pushRates(provider, payload) {
   return notConnected('rate sync', provider)
 }
 
+/** @param {unknown} provider @param {unknown} since */
 export async function fetchReservations(provider, since) {
   if (isManualChannel(provider)) {
     return ManualExportProvider.fetchReservations(since)
@@ -239,6 +264,7 @@ export async function fetchReservations(provider, since) {
   }
 }
 
+/** @param {unknown} provider @param {unknown} reservationId */
 export async function acknowledgeReservation(provider, reservationId) {
   if (isManualChannel(provider)) {
     return ManualExportProvider.acknowledgeReservation(reservationId)
@@ -250,21 +276,24 @@ export async function acknowledgeReservation(provider, reservationId) {
  * Process a single sync-queue item through the correct provider.
  * Never marks live OTA work as completed without a certified adapter.
  */
+/** @param {unknown} [item] @param {unknown} [config] */
 export async function processSyncItem(item = {}, config = null) {
-  const channelKey = item.channel_key || config?.channel_key || null
+  const itemFields = /** @type {ProviderRecordView} */ (item)
+  const configFields = /** @type {ProviderRecordView|null|undefined} */ (config)
+  const channelKey = itemFields.channel_key || configFields?.channel_key || null
   const resolved = resolveProvider(channelKey, config)
-  const syncType = String(item.sync_type || item.operation || 'availability').toLowerCase()
-  const payload = item.payload || item
+  const syncType = String(itemFields.sync_type || itemFields.operation || 'availability').toLowerCase()
+  const payload = itemFields.payload || item
 
   if (resolved.kind === 'manual_export') {
     if (syncType.includes('rate')) {
       return ManualExportProvider.pushRates(payload)
     }
     if (syncType.includes('reserv') || syncType.includes('fetch') || syncType.includes('import')) {
-      return ManualExportProvider.fetchReservations(payload?.since || null)
+      return ManualExportProvider.fetchReservations((/** @type {ProviderRecordView|null|undefined} */ (payload))?.since || null)
     }
     if (syncType.includes('ack')) {
-      return ManualExportProvider.acknowledgeReservation(payload?.reservation_id || item.source_key)
+      return ManualExportProvider.acknowledgeReservation((/** @type {ProviderRecordView|null|undefined} */ (payload))?.reservation_id || itemFields.source_key)
     }
     return ManualExportProvider.pushAvailability(payload)
   }

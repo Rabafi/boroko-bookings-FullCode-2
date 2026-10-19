@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Banknote, CheckCircle2, Clock3, LogIn, LogOut, RefreshCw, ShieldCheck, Users, WalletCards } from 'lucide-react'
 import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'

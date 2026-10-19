@@ -1,3 +1,4 @@
+// @ts-check
 export const ENTERPRISE_ADDON_CATEGORIES = {
   booking_engine: 'booking_engine',
   revenue: 'revenue',
@@ -327,18 +328,22 @@ export const ENTERPRISE_ADDON_CATALOG = [
   }
 ]
 
+/** @param {string} key */
 export function getEnterpriseAddonByKey(key) {
   return ENTERPRISE_ADDON_CATALOG.find((addon) => addon.key === key) || null
 }
 
+/** @param {string} status */
 export function getEnterpriseAddonsByStatus(status) {
   return ENTERPRISE_ADDON_CATALOG.filter((addon) => addon.status === status)
 }
 
+/** @param {string} propertyType */
 export function getEligibleEnterpriseAddons(propertyType) {
   return ENTERPRISE_ADDON_CATALOG.filter((addon) => addon.eligiblePropertyTypes.includes(propertyType))
 }
 
+/** @param {string} propertyType @param {string[]} [enabledAddons] */
 export function getRequestableEnterpriseAddons(propertyType, enabledAddons = []) {
   return getEligibleEnterpriseAddons(propertyType)
     .filter((addon) => addon.status === ENTERPRISE_ADDON_STATUS.requestable && addon.advertise === true)
@@ -348,6 +353,7 @@ export function getRequestableEnterpriseAddons(propertyType, enabledAddons = [])
     }))
 }
 
+/** @param {string} addonKey @param {string[]} [enabledAddons] */
 export function isEnterpriseAddonEnabled(addonKey, enabledAddons = []) {
   return Array.isArray(enabledAddons) && enabledAddons.includes(addonKey)
 }

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useAccess, useAuth, useSettings } from '../../app-context'
@@ -667,7 +668,7 @@ export default function RestaurantAccountingActivation() {
           <label className={labelClass}>Mapping type<select value={mapping.mappingType} onChange={(event) => setMapping({ ...mapping, mappingType: event.target.value })} className={inputClass}>{['tender', 'category', 'discount', 'tax', 'tips'].map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
           <label className={labelClass}>Source key<input required value={mapping.sourceKey} onChange={(event) => setMapping({ ...mapping, sourceKey: event.target.value })} className={inputClass} placeholder="e.g. cash, Beer" /></label>
           <label className={labelClass}>Ledger account<select required value={mapping.accountId} onChange={(event) => setMapping({ ...mapping, accountId: event.target.value })} className={inputClass}><option value="">Select</option>{accounts.filter((row) => row.is_active !== false).map((row) => <option key={row.id} value={row.id}>{row.code} — {row.name}</option>)}</select></label>
-          <AccountingButton busy={busy === 'mapping'} disabled={!canManage || actionDisabled('mapping')}>Save mapping</AccountingButton>
+          <AccountingButton busy={busy === 'mapping'} disabled={!canManage || actionDisabled('mapping')} type="submit">Save mapping</AccountingButton>
         </form>
         <p className="mt-2 text-xs text-slate-500">Readiness needs at minimum: a <strong>cash</strong> tender mapping to an asset account, and one category mapping to a revenue account.</p>
       </AccountingPanel>

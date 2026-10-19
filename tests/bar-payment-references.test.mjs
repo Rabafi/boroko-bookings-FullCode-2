@@ -27,7 +27,7 @@ test('Bar Till captures references for card and mobile-money tenders', () => {
 test('payment references remain visible on receipts and transaction detail', () => {
   const receipt = read('src/renderer/src/components/shared/POSReceipt.jsx')
   const report = read('src/renderer/src/components/hospitality-pos/HposReports.jsx')
-  assert.match(receipt, /payment\.reference/)
+  assert.match(receipt, /row\.reference/)
   assert.match(report, /selectedPaymentBreakdown/)
   assert.match(report, /reference &&/)
 })

@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js'
 import { requireAdmin } from './infrastructure.js'
 import { getRuntimeProductId } from '../../shared/productIdentity.js'
@@ -6,20 +7,28 @@ function requireOnline() {
   if (!state.isOnline) throw new Error('Commercial billing requires an online connection')
 }
 
+/** @param {unknown} payload @param {string} action */
 function assertBillingPayload(payload, action) {
   if (!payload || typeof payload !== 'object') throw new Error(`${action} payload is required`)
-  if (!String(payload.operation_id || '').trim()) throw new Error('A stable operation ID is required for retry-safe billing')
-  if (String(payload.reason || '').trim().length < 8) throw new Error('Provide a reason of at least 8 characters')
+  // This view names only the two properties this existing validator reads;
+  // missing values still follow the same validation failures below.
+  const fields = /** @type {{operation_id?: unknown, reason?: unknown}} */ (payload)
+  if (!String(fields.operation_id || '').trim()) throw new Error('A stable operation ID is required for retry-safe billing')
+  if (String(fields.reason || '').trim().length < 8) throw new Error('Provide a reason of at least 8 characters')
 }
 
+/** @param {string} name @param {unknown} payload @returns {Promise<unknown>} */
 async function callBillingRpc(name, payload) {
   const { data, error } = await requireAdmin().rpc(name, { p_payload: payload })
   if (error) throw new Error(error.message)
+  // Supabase's rpc data is upstream SDK `any`; preserve the existing result
+  // reads without declaring that remote JSON has been validated.
   if (!data?.success) throw new Error(data?.error || 'Commercial billing operation failed')
   return data
 }
 
 /** Posts a subscription invoice from the canonical license price snapshot. */
+/** @param {unknown} payload @returns {Promise<unknown>} */
 export async function generateCommercialInvoice(payload) {
   requireOnline()
   assertBillingPayload(payload, 'Commercial invoice')
@@ -27,12 +36,14 @@ export async function generateCommercialInvoice(payload) {
 }
 
 /** Records one allocation against one posted commercial invoice. */
+/** @param {unknown} payload @returns {Promise<unknown>} */
 export async function recordCommercialPayment(payload) {
   requireOnline()
   assertBillingPayload(payload, 'Commercial payment')
   return callBillingRpc('admin_record_commercial_payment', payload)
 }
 
+/** @param {{lodgeId?: unknown, productId?: unknown, status?: unknown, limit?: unknown, offset?: unknown}} [filters] @returns {Promise<unknown>} */
 export async function listCommercialInvoices({ lodgeId = null, productId = null, status = null, limit = 200, offset = 0 } = {}) {
   requireOnline()
   const { data, error } = await requireAdmin().rpc('admin_list_commercial_invoices', {
@@ -54,12 +65,14 @@ export async function listCommercialInvoices({ lodgeId = null, productId = null,
  * availability/source metadata so a caller can distinguish an empty ledger
  * from an unavailable authoritative read.
  */
+/** @param {unknown} [lodgeId] @param {{lodgeId?: unknown, limit?: unknown, offset?: unknown}} [options] @returns {Promise<unknown>} */
 export async function getClientCommercialInvoices(lodgeId = state.lodgeId, options = {}) {
   requireOnline()
   // Accept both the positional lodge-id form used by the IPC facade and the
   // object form used by newer domain callers.
   if (lodgeId && typeof lodgeId === 'object') {
-    options = lodgeId
+    // Type-only view of the existing object overload; do not treat it as input validation.
+    options = /** @type {{lodgeId?: unknown, limit?: unknown, offset?: unknown}} */ (lodgeId)
     lodgeId = options.lodgeId || state.lodgeId
   }
   const { limit = 100, offset = 0 } = options || {}
@@ -87,6 +100,7 @@ export async function getClientCommercialInvoices(lodgeId = state.lodgeId, optio
   return data
 }
 
+/** @returns {Promise<unknown>} */
 export async function getCommercialBillingSummary() {
   requireOnline()
   const { data, error } = await requireAdmin().rpc('admin_get_commercial_billing_summary')

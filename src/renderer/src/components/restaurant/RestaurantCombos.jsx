@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Plus, Pencil, Trash2, X, Package } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

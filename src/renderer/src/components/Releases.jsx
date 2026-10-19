@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Rocket, Clock, CheckCircle, AlertTriangle, AlertCircle, RefreshCw, Calendar, Plus, Pause, Play, ArrowUp, X } from 'lucide-react'
 import Pagination, { usePagination } from './shared/Pagination'
@@ -39,8 +40,9 @@ const CHANNEL_COLORS = {
 }
 
 function FeaturesTab() {
-  const [confirmRelease, setConfirmRelease] = useState(null)
-  const [releases, setReleases] = useState([])
+  const [confirmRelease, setConfirmRelease] = useState(/** @type {unknown} */ (null))
+  // Scheduled release RPC values are forwarded without array/row validation.
+  const [releases, setReleases] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expiring, setExpiring] = useState(false)
@@ -151,20 +153,21 @@ function FeaturesTab() {
 }
 
 function AppVersionsTab() {
-  const [releases, setReleases] = useState([])
+  // Array.isArray below checks only the container, not the RPC row shapes.
+  const [releases, setReleases] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [productId, setProductId] = useState('lodge-camp')
   const [newRelease, setNewRelease] = useState({ version: '', release_notes: '', channel: 'stable', force_update: false, min_version: '', product_id: 'lodge-camp' })
   const [creating, setCreating] = useState(false)
-  const [editingVersion, setEditingVersion] = useState(null)
-  const [rolloutPct, setRolloutPct] = useState(0)
+  const [editingVersion, setEditingVersion] = useState(/** @type {unknown} */ (null))
+  const [rolloutPct, setRolloutPct] = useState(/** @type {unknown} */ (0))
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    try { const r = await window.api.admin.getReleases(productId); setReleases(Array.isArray(r) ? r : []) }
+    try { const r = await window.api.admin.getReleases(productId); setReleases(Array.isArray(r) ? /** @type {unknown[]} */ (r) : []) }
     catch (e) { setError(e?.message || 'Failed to load') }
     setLoading(false)
   }, [productId])

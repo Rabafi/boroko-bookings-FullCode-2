@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Till operator verification policy.
  *
@@ -15,24 +16,35 @@ export const DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES = 30
 export const MIN_TILL_OPERATOR_INACTIVITY_MINUTES = 5
 export const MAX_TILL_OPERATOR_INACTIVITY_MINUTES = 240
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
 function asObject(value) {
   if (typeof value === 'string') {
     try {
+      /** @type {unknown} */
       const parsed = JSON.parse(value)
-      return parsed && typeof parsed === 'object' ? parsed : {}
+      return parsed && typeof parsed === 'object'
+        // The existing guard excludes null and leaves a property-readable object;
+        // every named field below is still unknown and normalized independently.
+        ? /** @type {Record<string, unknown>} */ (parsed)
+        : {}
     } catch {
       return {}
     }
   }
-  return value && typeof value === 'object' ? value : {}
+  return value && typeof value === 'object'
+    // Property reads remain unknown; this only describes access through string keys.
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {}
 }
 
+/** @param {unknown} value @returns {'shift' | 'strict'} */
 export function normalizeTillOperatorMode(value) {
   return String(value || '').trim().toLowerCase() === TILL_OPERATOR_MODES.SHIFT
     ? TILL_OPERATOR_MODES.SHIFT
     : DEFAULT_TILL_OPERATOR_MODE
 }
 
+/** @param {unknown} value @returns {number} */
 export function normalizeTillOperatorInactivityMinutes(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES
@@ -42,6 +54,7 @@ export function normalizeTillOperatorInactivityMinutes(value) {
   )
 }
 
+/** @param {unknown} [policy] @returns {{mode: 'shift' | 'strict', inactivityMinutes: number}} */
 export function normalizeTillOperatorPolicy(policy = {}) {
   const source = asObject(policy)
   return {
@@ -56,6 +69,7 @@ export function normalizeTillOperatorPolicy(policy = {}) {
  * Read policy from either the settings row or an operating_profile object.
  * Missing/invalid values deliberately resolve to strict mode.
  */
+/** @param {unknown} [settingsOrProfile] @returns {{mode: 'shift' | 'strict', inactivityMinutes: number}} */
 export function getTillOperatorPolicy(settingsOrProfile = {}) {
   const root = asObject(settingsOrProfile)
   const profile = asObject(root.operating_profile || root)
@@ -64,6 +78,7 @@ export function getTillOperatorPolicy(settingsOrProfile = {}) {
   )
 }
 
+/** @param {unknown} [policy] @returns {{mode: 'shift' | 'strict', inactivity_minutes: number}} */
 export function tillOperatorPolicyToProfileValue(policy = {}) {
   const normalized = normalizeTillOperatorPolicy(policy)
   return {

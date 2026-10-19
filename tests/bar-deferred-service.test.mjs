@@ -77,6 +77,6 @@ test('cash-up proof uses the session-bound Storage client and fails closed witho
   assert.match(myCashup, /HposCashupProofs/)
   assert.match(migration, /if v_lodge is distinct from public\.app_current_lodge_id\(\) then return false/)
   assert.match(migration, /exception when others then\s*return false/)
-  assert.match(close, /deployed Storage policy is unavailable/)
+  assert.match(proofs, /Durable cash-up proof storage is unavailable\. No cash-up record was changed\./)
   assert.doesNotMatch(proofs, /file_base64|local_path|createObjectURL|data:/i)
 })

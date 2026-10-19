@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Support-bundle scrubbing (shared, dependency-free).
  *
@@ -44,6 +45,9 @@ const FREE_TEXT_PATTERNS = [
 const MAX_STRING_LENGTH = 8192;
 const MAX_DEPTH = 12;
 
+/** @overload @param {string} value @returns {string} */
+/** @overload @param {unknown} value @returns {unknown} */
+/** @param {unknown} value @returns {unknown} */
 export function sanitizeSupportText(value) {
   if (typeof value !== 'string') return value;
   let next = value;
@@ -64,6 +68,7 @@ function patternReset() {
   for (const pattern of FREE_TEXT_PATTERNS) pattern.lastIndex = 0;
 }
 
+/** @param {unknown} value @returns {boolean} */
 function isBinary(value) {
   return (
     (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) ||
@@ -72,6 +77,7 @@ function isBinary(value) {
   );
 }
 
+/** @param {unknown} value @param {number} [depth] @param {string | null} [context] @param {WeakSet<object> | null} [seen] @returns {unknown} */
 export function scrubSupportBundleValue(value, depth = 0, context = null, seen = null) {
   const active = seen || new WeakSet();
   if (depth > MAX_DEPTH) return '[TRUNCATED]';
@@ -113,6 +119,7 @@ const RETAINED_STRING_KEYS = new Set([
 ]);
 const MAX_RETAINED_STRING = 280;
 
+/** @param {unknown} value @param {number} [depth] @param {WeakSet<object> | null} [seen] @param {string | null} [context] @returns {unknown} */
 function shapeRecord(value, depth = 0, seen = null, context = null) {
   const active = seen || new WeakSet();
   if (value === null || value === undefined) return value;
@@ -128,6 +135,7 @@ function shapeRecord(value, depth = 0, seen = null, context = null) {
   if (Array.isArray(value)) return value.slice(0, 50).map((entry) => shapeRecord(entry, depth + 1, active, context));
   if (typeof value !== 'object') return '[OMITTED]';
   active.add(value);
+  /** @type {Record<string, unknown>} */
   const out = {};
   for (const [key, entry] of Object.entries(value)) {
     if (SECRET_KEY_PATTERN.test(key) || PAYROLL_KEY_PATTERN.test(key) || CUSTOMER_KEY_PATTERN.test(key)) {
@@ -169,6 +177,7 @@ function shapeRecord(value, depth = 0, seen = null, context = null) {
   return out;
 }
 
+/** @param {unknown} value @returns {number} */
 function shapeCount(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : 0;
@@ -190,17 +199,24 @@ function shapeCount(value) {
  * Operator user_name is retained (staff identity support needs to contact
  * the right operator); customer identity is never retained.
  */
+/** @param {unknown} [raw] @returns {Record<string, unknown>} */
 export function shapeSupportBundle(raw = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { generated_at: new Date().toISOString(), shape: 'empty' };
-  const pending = raw.pending_operations && typeof raw.pending_operations === 'object' ? raw.pending_operations : {};
+  // These projections preserve the existing field allowlist; values remain untrusted.
+  const fields = /** @type {Record<string, unknown>} */ (raw)
+  const pendingValue = fields.pending_operations
+  const pending = pendingValue && typeof pendingValue === 'object'
+    ? /** @type {Record<string, unknown>} */ (pendingValue)
+    : {}
+  /** @type {Record<string, unknown>} */
   const shaped = {
-    generated_at: typeof raw.generated_at === 'string' ? raw.generated_at : new Date().toISOString(),
-    product: typeof raw.product === 'string' ? raw.product : 'unknown',
-    app_version: typeof raw.app_version === 'string' ? raw.app_version : 'unknown',
-    lodge_id: raw.lodge_id || null,
-    user_id: raw.user_id || null,
-    user_name: typeof raw.user_name === 'string' ? sanitizeSupportText(raw.user_name).slice(0, 120) : null,
-    app_online: raw.app_online === true,
+    generated_at: typeof fields.generated_at === 'string' ? fields.generated_at : new Date().toISOString(),
+    product: typeof fields.product === 'string' ? fields.product : 'unknown',
+    app_version: typeof fields.app_version === 'string' ? fields.app_version : 'unknown',
+    lodge_id: fields.lodge_id || null,
+    user_id: fields.user_id || null,
+    user_name: typeof fields.user_name === 'string' ? sanitizeSupportText(fields.user_name).slice(0, 120) : null,
+    app_online: fields.app_online === true,
     pending_operations: {
       pending: shapeCount(pending.pending),
       failed: shapeCount(pending.failed)
@@ -212,8 +228,8 @@ export function shapeSupportBundle(raw = {}) {
     'financial_validation_runs', 'financial_validation_alerts', 'critical_errors'
   ];
   for (const section of sections) {
-    if (raw[section] === undefined) continue;
-    shaped[section] = shapeRecord(raw[section]);
+    if (fields[section] === undefined) continue;
+    shaped[section] = shapeRecord(fields[section]);
   }
   return shaped;
 }

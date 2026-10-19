@@ -1,9 +1,13 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, CreditCard, DoorClosed, DoorOpen, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { useSettings } from '../app-context'
 import { formatLocalDate, localToday } from '../utils/localDate'
 import { getBookingFinancialView, bookingPaymentStatusLabel } from '../../../shared/bookingFinancials.js'
+import { getAccommodationKindLabel } from '../../../shared/accommodation.js'
+import { normalizePropertyType } from '../../../shared/propertyTypes.js'
+import { getPropertyPresentation, getPresentationUnitName } from '../../../shared/propertyPresentation.js'
 
 const DAYS_SHOWN = 14
 
@@ -86,7 +90,7 @@ function RoomRow({ room, bookings, locks, days, today, currency, onSelect }) {
   return (
     <div className="flex border-b border-gray-100 transition-colors hover:bg-gray-50/40">
       <div className="w-52 flex-shrink-0 border-r border-gray-100 px-4 py-2">
-        <p className="text-sm font-semibold text-gray-800">Room {room.room_number}</p>
+        <p className="text-sm font-semibold text-gray-800">{getPresentationUnitName(room)}</p>
         <p className="text-xs text-gray-400">{room.room_type}</p>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${housekeeping.badge}`}>
@@ -207,13 +211,13 @@ function BookingPopup({ booking, currency, today, actionLoading, onClose, onOpen
         </div>
 
         <div className="space-y-2 text-sm">
-          <Row label="Room" value={`${booking.room_number} — ${booking.room_type}`} />
+          <Row label={getAccommodationKindLabel(booking.accommodation_kind)} value={`${getPresentationUnitName(booking)} — ${booking.room_type}`} />
           <Row label="Check-in" value={booking.check_in} />
           <Row label="Check-out" value={`${booking.check_out} (${nights} night${nights !== 1 ? 's' : ''})`} />
           <Row label="Guests" value={`${booking.adults} adult${booking.adults !== 1 ? 's' : ''}${booking.children > 0 ? `, ${booking.children} child${booking.children !== 1 ? 'ren' : ''}` : ''}`} />
           <Row label="Status" value={statusLabels[booking.status] || booking.status} />
           <Row label="Ready" value={housekeeping.label} />
-          <Row label="Room Total" value={formatMoney(currency, total)} />
+          <Row label={`${getAccommodationKindLabel(booking.accommodation_kind)} Total`} value={formatMoney(currency, total)} />
           <Row label="Extras" value={formatMoney(currency, charges)} />
           <Row label="Paid" value={formatMoney(currency, paid)} />
           <Row label="Balance" value={formatMoney(currency, outstanding)} valueClassName={outstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} />
@@ -288,6 +292,19 @@ export default function RoomGrid() {
   const [warning, setWarning] = useState('')
   const [statusActionLoading, setStatusActionLoading] = useState(false)
   const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
+  const boardPresentation = useMemo(() => {
+    try {
+      return getPropertyPresentation({
+        propertyType: normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge'),
+        accommodationMix: rooms,
+        operatingProfile: settings?.operating_profile
+      })
+    } catch {
+      return null
+    }
+  }, [settings?.property_type, settings?.business_type, settings?.operating_profile, rooms])
+  const boardTitle = boardPresentation?.navHints?.boardTitle || 'Live Room Board'
+  const boardUnits = (boardPresentation?.unitNounPlural || 'Rooms').toLowerCase()
 
   const viewEnd = addDays(viewStart, DAYS_SHOWN)
   const days = Array.from({ length: DAYS_SHOWN }, (_, index) => addDays(viewStart, index))
@@ -333,7 +350,7 @@ export default function RoomGrid() {
       }
     } catch (error) {
       if (!cancelSignal?.cancelled) {
-        setWarning(error?.message || 'Could not refresh the live room board.')
+        setWarning(error?.message || `Could not refresh the live ${boardUnits} board.`)
       }
     } finally {
       if (!cancelSignal?.cancelled) {
@@ -441,9 +458,9 @@ export default function RoomGrid() {
     <div className="p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Live Room Board</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{boardTitle}</h1>
           <p className="mt-0.5 text-sm text-gray-500">
-            Front-desk view for room assignment, arrivals, departures, and live availability. {rangeLabel}
+            Front-desk view for {boardUnits} assignment, arrivals, departures, and live availability. {rangeLabel}
           </p>
         </div>
         <div className="flex items-center gap-2">

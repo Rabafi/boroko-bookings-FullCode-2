@@ -1,7 +1,10 @@
+// @ts-check
+/** @param {unknown} value @param {string} [currency] */
 export function money(value, currency = 'P') {
   return `${currency} ${Number(value || 0).toLocaleString()}`
 }
 
+/** @param {string|number|null|undefined} value */
 export function shortDate(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -13,6 +16,7 @@ export function shortDate(value) {
   })
 }
 
+/** @param {string|number|null|undefined} value */
 export function shortDateTime(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -25,10 +29,12 @@ export function shortDateTime(value) {
   })
 }
 
+/** @param {Date} [value] */
 export function businessDate(value = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Gaborone' }).format(value)
 }
 
+/** @param {string} status */
 export function bookingStatusClass(status) {
   return {
     confirmed: 'bg-blue-900/40 text-blue-300',
@@ -39,6 +45,7 @@ export function bookingStatusClass(status) {
   }[status] || 'bg-gray-800 text-gray-300'
 }
 
+/** @param {string} status */
 export function paymentStatusClass(status) {
   return {
     paid: 'bg-green-900/40 text-green-300',
@@ -47,6 +54,7 @@ export function paymentStatusClass(status) {
   }[status] || 'bg-gray-800 text-gray-300'
 }
 
+/** @param {unknown} value */
 export function titleCase(value = '') {
   return String(value)
     .replace(/_/g, ' ')

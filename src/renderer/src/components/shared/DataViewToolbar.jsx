@@ -1,5 +1,18 @@
+// @ts-check
 import { Columns3, Rows3, SlidersHorizontal } from 'lucide-react'
 
+/**
+ * @param {{
+ *   title?: string;
+ *   subtitle?: string;
+ *   density?: 'compact' | 'comfortable';
+ *   onDensityChange?: (density: 'compact' | 'comfortable') => void;
+ *   views?: Array<{ value: string; label: string }>;
+ *   activeView?: string;
+ *   onViewChange?: (value: string) => void;
+ *   rightSlot?: import('react').ReactNode;
+ * }} props
+ */
 export function DataViewToolbar({
   title,
   subtitle,

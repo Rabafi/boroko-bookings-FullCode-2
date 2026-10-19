@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import pg from 'pg'
 import { randomUUID } from 'node:crypto'
+import { connectLedgerDisposableDatabase } from './helpers/ledger-disposable-connection.mjs'
 import { rejectsSqlState as rejectsCode } from './helpers/sql-state.mjs'
 
-const DB_URL=process.env.RESTAURANT_ACCOUNTING_TEST_DB_URL||'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
-const client=()=>new pg.Client({connectionString:DB_URL})
+const openClients=new Set()
+const client=async()=>{const {client:c}=await connectLedgerDisposableDatabase();openClients.add(c);return c}
 const one=async(c,text,params=[])=>(await c.query(text,params)).rows[0]
 const result=async(c,text,params=[])=>(await one(c,`select ${text} result`,params)).result
 async function actor(c,{id,lodge,role='admin',jwt='service_role'}){
@@ -13,7 +13,8 @@ async function actor(c,{id,lodge,role='admin',jwt='service_role'}){
 }
 
 test('Restaurant Accounting disposable database behavioral suite',async t=>{
- const c=client();await c.connect()
+ t.after(async()=>{await Promise.allSettled([...openClients].map(c=>c.end()))})
+ const c=await client()
  const lodge=randomUUID(),otherLodge=randomUUID()
  const users={maker:randomUUID(),checker:randomUUID(),finance:randomUUID(),employee:randomUUID()}
  await c.query("insert into public.settings(lodge_id,lodge_name,company_name,business_type,property_type,currency)values($1,'Accounting Test','Accounting Test','restaurant','restaurant','BWP')",[lodge])
@@ -65,7 +66,7 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   await result(c,'public.submit_restaurant_bill($1,$2)',[lodge,billId])
   await rejectsCode(()=>result(c,'public.approve_restaurant_bill($1,$2,$3)',[lodge,billId,'bill-approve-001']),'42501')
   await actor(c,{id:users.checker,lodge});await result(c,'public.approve_restaurant_bill($1,$2,$3)',[lodge,billId,'bill-approve-001'])
-  const a=client(),b=client();await Promise.all([a.connect(),b.connect()]);await actor(a,{id:users.checker,lodge});await actor(b,{id:users.finance,lodge,role:'finance'})
+  const [a,b]=await Promise.all([client(),client()]);await actor(a,{id:users.checker,lodge});await actor(b,{id:users.finance,lodge,role:'finance'})
   const attempts=await Promise.allSettled([
    result(a,'public.record_restaurant_bill_payment_v2($1,$2,$3,$4,$5,$6,null,$7)',[lodge,billId,'2026-07-15',100,ids['1000'],'PAY-A','pay-a']),
    result(b,'public.record_restaurant_bill_payment_v2($1,$2,$3,$4,$5,$6,null,$7)',[lodge,billId,'2026-07-15',100,ids['1000'],'PAY-B','pay-b'])
@@ -154,8 +155,8 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
 
  await t.test('matches bank evidence independently, reconciles to zero, and closes the period through the close workflow',async()=>{
   const bank=(await result(c,'public.save_restaurant_bank_account_v2($1,null,$2,$3,$4,$5,$6,true)',[lodge,ids['1000'],'Operating bank','Test Bank','001','checking'])).data.id
-  const imported=await result(c,'public.import_bank_statement_v2($1,$2,$3::jsonb,$4,$5)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001'])
-  const replay=await result(c,'public.import_bank_statement_v2($1,$2,$3::jsonb,$4,$5)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001']);assert.equal(replay.data.replayed,true)
+  const imported=await result(c,'public.import_bank_statement_v3($1,$2,$3::jsonb,$4,$5,$6,$7)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001',360,260])
+  const replay=await result(c,'public.import_bank_statement_v3($1,$2,$3::jsonb,$4,$5,$6,$7)',[lodge,bank,JSON.stringify([{transaction_date:'2026-07-15',description:'Supplier payment',debit:100,credit:0,balance_after:260,reference_number:'PAY-A'}]),'statement.csv','statement-001',360,260]);assert.equal(replay.data.replayed,true)
   await result(c,'public.propose_bank_matches_v2($1,$2)',[lodge,bank])
   const proposal=await one(c,'select id,bank_transaction_id from public.restaurant_match_proposals where bank_account_id=$1 and status=$2',[bank,'pending']);assert.ok(proposal)
   await actor(c,{id:users.checker,lodge});await result(c,'public.review_bank_match_v2($1,$2,true)',[lodge,proposal.id])
@@ -170,6 +171,5 @@ test('Restaurant Accounting disposable database behavioral suite',async t=>{
   const reopenedJournal=await result(c,'public.create_restaurant_journal_entry($1,$2,$3,$4,null,null,$5::jsonb,$6)',[lodge,'2026-07-14','Reopened correction','manual',JSON.stringify([{account_id:ids['1000'],debit:1,credit:0},{account_id:ids['3000'],debit:0,credit:1}]),'after-reopen']);assert.ok(reopenedJournal.data.entry_id)
  })
 
- await c.end()
 })
 

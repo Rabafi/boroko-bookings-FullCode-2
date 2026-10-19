@@ -1,10 +1,32 @@
+// @ts-check
 const PROVIDER_METHODS = new Set(['card', 'mobile_money']);
 const DIRECT_METHODS = new Set(['cash', 'card', 'mobile_money']);
 
+/** @typedef {{ok: false, code: string, error: string, breakdown: never[]}} TenderError */
+/** @typedef {{method: string, amount: number, reference: string | null, code?: string, customer_id?: unknown}} TenderRow */
+/** @typedef {{ok: true, total: number, breakdown: TenderRow[]}} TenderSuccess */
+/** @typedef {TenderSuccess | TenderError} TenderResult */
+
+/** @param {string} code @param {string} message @returns {TenderError} */
 function error(code, message) {
   return { ok: false, code, error: message, breakdown: [] };
 }
 
+/**
+ * @overload
+ * @param {unknown} value
+ * @param {string} field
+ * @param {{blank: number}} options
+ * @returns {number | TenderError}
+ */
+/**
+ * @overload
+ * @param {unknown} value
+ * @param {string} field
+ * @param {{blank?: null}} [options]
+ * @returns {number | null | TenderError}
+ */
+/** @param {unknown} value @param {string} field @param {{blank?: number | null}} [options] @returns {number | null | TenderError} */
 function readCents(value, field, { blank = null } = {}) {
   if (value === null || value === undefined) return blank;
   if (typeof value === 'string' && value.trim() === '') return blank;
@@ -27,13 +49,18 @@ function readCents(value, field, { blank = null } = {}) {
   return cents;
 }
 
+/** @param {number} cents @returns {number} */
 function amount(cents) {
   return cents / 100;
 }
 
+/** @param {unknown} references @param {string} method @returns {{ok: true, value: string | null} | TenderError} */
 function normalizeReference(references, method) {
   if (!PROVIDER_METHODS.has(method)) return { ok: true, value: null };
-  const raw = references && typeof references === 'object' ? references[method] : null;
+  const raw = references && typeof references === 'object'
+    // Preserve the existing property read without claiming reference data is validated.
+    ? /** @type {Record<string, unknown>} */ (references)[method]
+    : null;
   const value = String(raw || '').trim();
   if (value.length > 120) {
     const label = method === 'mobile_money' ? 'mobile money' : 'card';
@@ -45,6 +72,7 @@ function normalizeReference(references, method) {
   return { ok: true, value: value || null };
 }
 
+/** @param {TenderRow[]} rows @param {string} method @param {number} cents @param {unknown} references @param {Record<string, unknown>} [extra] @returns {TenderError | null} */
 function pushTender(rows, method, cents, references, extra = {}) {
   if (cents <= 0) return null;
   const reference = normalizeReference(references, method);
@@ -62,6 +90,8 @@ function pushTender(rows, method, cents, references, extra = {}) {
  * balance is assigned to the selected direct tender. A split must retain a
  * positive non-cash remainder; a full-voucher sale is the explicit exception
  * and contains only its voucher row. No zero-valued tender is submitted.
+ * @param {{total?: unknown, chargeToAccount?: unknown, customerId?: unknown, selectedCustomerId?: unknown, paymentMethod?: unknown, splitCashAmount?: unknown, splitRemainderMethod?: unknown, voucherCode?: unknown, voucherAmount?: unknown, paymentReferences?: unknown}} [options]
+ * @returns {TenderResult}
  */
 export function buildBarTenderBreakdown({
   total,
@@ -76,7 +106,7 @@ export function buildBarTenderBreakdown({
   paymentReferences = {},
 } = {}) {
   const totalCents = readCents(total, 'Order total', { blank: null });
-  if (totalCents && totalCents.ok === false) return totalCents;
+  if (typeof totalCents === 'object' && totalCents !== null) return totalCents;
   if (totalCents === null || totalCents <= 0) {
     return error('invalid_total', 'Order total must be a positive finite amount in cents.');
   }
@@ -108,7 +138,7 @@ export function buildBarTenderBreakdown({
 
   const normalizedVoucherCode = String(voucherCode || '').trim().toUpperCase();
   const voucherCents = readCents(voucherAmount, 'Voucher amount', { blank: 0 });
-  if (voucherCents && voucherCents.ok === false) return voucherCents;
+  if (typeof voucherCents === 'object' && voucherCents !== null) return voucherCents;
   if (voucherCents < 0) return error('negative_voucher', 'Voucher amount cannot be negative.');
   if (normalizedVoucherCode && voucherCents <= 0) {
     return error('voucher_amount_required', 'Enter a positive voucher amount for the voucher code.');
@@ -120,6 +150,7 @@ export function buildBarTenderBreakdown({
     return error('voucher_over_allocation', 'Voucher amount cannot exceed the order total.');
   }
 
+  /** @type {TenderRow[]} */
   const rows = [];
   if (voucherCents > 0) {
     rows.push({
@@ -133,7 +164,7 @@ export function buildBarTenderBreakdown({
   let remainingCents = totalCents - voucherCents;
   if (method === 'split') {
     const splitCashCents = readCents(splitCashAmount, 'Cash split amount', { blank: null });
-    if (splitCashCents && splitCashCents.ok === false) return splitCashCents;
+    if (typeof splitCashCents === 'object' && splitCashCents !== null) return splitCashCents;
     if (splitCashCents === null) {
       // A full voucher is a complete tender envelope; do not invent a zero
       // cash or card row just because the payment control is still set to
@@ -168,16 +199,32 @@ export function buildBarTenderBreakdown({
   if (rows.length === 0) {
     return error('zero_remainder', 'The tender breakdown must contain a positive recorded amount.');
   }
-  const allocatedCents = rows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0);
+  const allocatedCents = rows.reduce(
+    /** @param {number} sum @param {TenderRow} row @returns {number} */
+    (sum, row) => sum + Math.round(Number(row.amount) * 100),
+    0,
+  );
   if (allocatedCents !== totalCents) {
     return error('tender_total_mismatch', 'Tender amounts must add up exactly to the order total.');
   }
   return { ok: true, total: amount(totalCents), breakdown: rows };
 }
 
+/** @param {unknown} [breakdown] @returns {number} */
 export function tenderBreakdownTotal(breakdown = []) {
-  const total = (Array.isArray(breakdown) ? breakdown : [])
-    .reduce((sum, row) => sum + Number(row?.amount || 0), 0);
+  /** @type {unknown[]} */
+  const rows = Array.isArray(breakdown) ? breakdown : [];
+  /** @type {number} */
+  const total = rows
+    .reduce(
+      /** @param {number} sum @param {unknown} candidate @returns {number} */
+      (sum, candidate) => {
+      // Rows may be arbitrary; this retains the existing optional amount read.
+      const row = /** @type {{amount?: unknown} | null | undefined} */ (candidate);
+      return sum + Number(row?.amount || 0);
+      },
+      0,
+    );
   return Math.round((total + Number.EPSILON) * 100) / 100;
 }
 

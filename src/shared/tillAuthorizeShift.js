@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Pre-authorize shift resolution for Till-gated mutations.
  *
@@ -13,14 +14,17 @@
  * bytes (its digest is computed downstream on the unmodified payload), and
  * any doubt keeps the original shift (fail closed to the previous behavior).
  */
+/** @param {{requestedShiftId?: unknown, outletId?: unknown, openShift?: unknown}} [options] */
 export function resolveAuthorizeShiftId({ requestedShiftId = null, outletId = null, openShift = null } = {}) {
   const requested = String(requestedShiftId || '').trim()
   if (!requested) return requestedShiftId
   if (!openShift || typeof openShift !== 'object') return requestedShiftId
-  const openId = String(openShift.id || openShift.shift_id || '').trim()
+  // This projection mirrors the existing property reads; no row validation is implied.
+  const openShiftFields = /** @type {Record<string, unknown>} */ (openShift)
+  const openId = String(openShiftFields.id || openShiftFields.shift_id || '').trim()
   if (!openId || openId === requested) return requestedShiftId
-  if (String(openShift.status || 'open').toLowerCase() !== 'open') return requestedShiftId
-  const openOutlet = openShift.outlet_id ?? openShift.outletId ?? null
+  if (String(openShiftFields.status || 'open').toLowerCase() !== 'open') return requestedShiftId
+  const openOutlet = openShiftFields.outlet_id ?? openShiftFields.outletId ?? null
   if (outletId && openOutlet && String(outletId) !== String(openOutlet)) return requestedShiftId
   return openId
 }

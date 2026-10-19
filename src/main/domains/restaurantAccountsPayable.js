@@ -1,9 +1,11 @@
+// @ts-check
 import { state } from '../state.js';
 import { dedupePromise } from './infrastructure.js';
 
+/** @param {unknown} status @param {unknown} startDate @param {unknown} endDate @returns {Promise<unknown>} */
 async function _getBills(status, startDate, endDate) {
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('get_restaurant_bills', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_restaurant_bills', {
       p_lodge_id: state.lodgeId,
       p_status: status || null,
       p_start_date: startDate || null,
@@ -15,19 +17,23 @@ async function _getBills(status, startDate, endDate) {
   throw new Error('Accounts Payable requires an online connection');
 }
 
+/** @param {unknown} [status] @param {unknown} [startDate] @param {unknown} [endDate] @returns {Promise<unknown>} */
 export function getBills(status, startDate, endDate) {
   const key = `getBills:${status || ''}:${startDate || ''}:${endDate || ''}`;
   return dedupePromise(key, () => _getBills(status, startDate, endDate));
 }
 
+/** @param {unknown} id @returns {Promise<unknown>} */
 export async function getBillById(id) {
   if (!id) return null;
-  const bills = await getBills();
-  return bills.find((b) => b.id === id) || null;
+  // Preserve the existing .find call and its failure for non-array RPC data.
+  const bills = /** @type {unknown[]} */ (await getBills());
+  return bills.find((b) => /** @type {Record<string, unknown>} */ (b).id === id) || null;
 }
 
+/** @param {Record<string, unknown>} data @returns {Promise<unknown>} */
 export async function createBill(data) {
-  const { data: result, error } = await state.supabase.rpc('create_restaurant_bill', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_restaurant_bill', {
     p_lodge_id: state.lodgeId,
     p_supplier_id: data.supplier_id || null,
     p_supplier_name: data.supplier_name,
@@ -42,8 +48,9 @@ export async function createBill(data) {
   return result;
 }
 
+/** @param {unknown} id @param {Record<string, unknown>} data @returns {Promise<unknown>} */
 export async function updateBill(id, data) {
-  const { data: result, error } = await state.supabase.rpc('update_restaurant_bill', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_restaurant_bill', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     p_supplier_name: data.supplier_name || null,
@@ -57,8 +64,9 @@ export async function updateBill(id, data) {
   return result;
 }
 
+/** @param {unknown} billId @param {unknown} items @returns {Promise<unknown>} */
 export async function updateBillItems(billId, items) {
-  const { data: result, error } = await state.supabase.rpc('update_bill_items', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_bill_items', {
     p_bill_id: billId,
     p_lodge_id: state.lodgeId,
     p_items: items,
@@ -68,8 +76,9 @@ export async function updateBillItems(billId, items) {
   return result;
 }
 
+/** @param {unknown} id @param {unknown} status @returns {Promise<unknown>} */
 export async function updateBillStatus(id, status) {
-  const { data: result, error } = await state.supabase.rpc('update_bill_status', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_bill_status', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     p_status: status,
@@ -79,8 +88,9 @@ export async function updateBillStatus(id, status) {
   return result;
 }
 
+/** @param {unknown} billId @param {Record<string, unknown>} paymentData @returns {Promise<unknown>} */
 export async function recordBillPayment(billId, paymentData) {
-  const { data: result, error } = await state.supabase.rpc('record_bill_payment', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('record_bill_payment', {
     p_bill_id: billId,
     p_lodge_id: state.lodgeId,
     p_payment_date: paymentData.payment_date,
@@ -95,8 +105,9 @@ export async function recordBillPayment(billId, paymentData) {
   return result;
 }
 
+/** @param {unknown} billId @returns {Promise<unknown>} */
 export async function getBillPayments(billId) {
-  const { data, error } = await state.supabase.rpc('get_bill_payments', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_bill_payments', {
     p_bill_id: billId,
     p_lodge_id: state.lodgeId,
   });
@@ -104,16 +115,18 @@ export async function getBillPayments(billId) {
   return data || [];
 }
 
+/**  @returns {Promise<unknown>} */
 export async function getApAging() {
-  const { data, error } = await state.supabase.rpc('get_ap_aging', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_ap_aging', {
     p_lodge_id: state.lodgeId,
   });
   if (error) throw new Error(error.message);
   return data || {};
 }
 
+/**  @returns {Promise<unknown>} */
 export async function getApSummary() {
-  const { data, error } = await state.supabase.rpc('get_ap_summary', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_ap_summary', {
     p_lodge_id: state.lodgeId,
   });
   if (error) throw new Error(error.message);

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 
 /**
@@ -7,7 +8,7 @@ import { useEffect, useState } from 'react'
  * filter context survives navigation back to F&B.
  */
 export default function FnbOutletContext({ value, onChange }) {
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -15,7 +16,7 @@ export default function FnbOutletContext({ value, onChange }) {
     ;(async () => {
       try {
         const rows = await window.api?.outlets?.getAll?.().catch(() => []) || []
-        if (!cancelled) setOutlets(Array.isArray(rows) ? rows : [])
+        if (!cancelled) setOutlets(Array.isArray(rows) ? /** @type {unknown[]} */ (rows) : [])
       } catch {
         if (!cancelled) setOutlets([])
       } finally {

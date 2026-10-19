@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Clock, AlertTriangle, ChefHat } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

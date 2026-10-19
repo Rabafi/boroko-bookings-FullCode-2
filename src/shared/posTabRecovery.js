@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Durable split/transfer recovery envelope (Bar Open Tabs).
  * Client-side companion to the server idempotency contracts:
@@ -12,6 +13,20 @@
  * - rejected: proven terminal server rejection, no side effects (corrected attempt gets a new key)
  * - needs_review: conflicting/inaccessible/corrupt evidence (keep record, support path)
  */
+
+/** @typedef {'split' | 'transfer'} RecoveryKind */
+/** @typedef {'not_sent' | 'in_flight' | 'unknown' | 'committed' | 'rejected' | 'needs_review'} RecoveryOutcome */
+/** @typedef {{operationId: string | null, kind: RecoveryKind, tenantId: string | null, outletId: string | null, sourceTabId: string | null, actorId: string | null, expectedVersion: unknown, payload: Record<string, unknown>, payloadFingerprint: string | undefined, request: Record<string, unknown> | null, createdAt: unknown, lastCheckedAt: unknown, outcome: unknown, authoritativeResult: unknown, lastCode: unknown, [field: string]: unknown}} RecoveryEnvelope */
+/** @typedef {{tenantId?: string | null, sourceTabId?: string}} RecoveryScope */
+/** @typedef {{length: number, getItem(key: string): string | null, setItem(key: string, value: string): void, removeItem(key: string): void, key(index: number): string | null}} RecoveryStorage */
+/** @typedef {{outcome: RecoveryOutcome, code: unknown, terminal: boolean}} RecoveryClassification */
+/** @typedef {{envelope: RecoveryEnvelope | null, corrupt: boolean, key: string | null, storageError?: boolean, raw?: string}} RecoveryReadResult */
+/** @typedef {{ok: true, key: string} | {ok: false, key: string, error: string}} RecoveryWriteResult */
+/** @typedef {{envelope?: RecoveryEnvelope | null, actorId?: unknown, actorRole?: unknown}} ReplayAuthOptions */
+/** @typedef {{kind: RecoveryKind, tenantId?: unknown, sourceTabId?: unknown, outletId?: unknown, actorId?: unknown, expectedVersion?: unknown, payload?: Record<string, unknown>, operationId?: unknown, request?: Record<string, unknown> | null}} NewRecoveryEnvelopeInput */
+/** @typedef {{kind?: RecoveryKind, tenantId?: string | null, sourceTabId?: string, actorId?: unknown, actorRole?: unknown, canReplay?: (options: ReplayAuthOptions) => boolean, dispatch?: (args: Record<string, unknown>) => unknown, storageKey?: string | null}} ReplayOperationOptions */
+/** @typedef {{kind?: RecoveryKind, tenantId?: string | null, sourceTabId?: string, outletId?: string | null, actorId?: string | null, expectedVersion?: unknown, payload?: Record<string, unknown>, request?: Record<string, unknown>, corrected?: boolean, dispatch?: (args: Record<string, unknown>) => unknown}} SubmitOperationOptions */
+/** @typedef {{key: string, kind: RecoveryKind, corrupt: true, raw: string} | {key: string, kind: RecoveryKind, corrupt: false, legacy: boolean, envelope: RecoveryEnvelope}} RecoveryListItem */
 
 export const TAB_RECOVERY_SCHEMA_VERSION = 1
 
@@ -72,23 +87,28 @@ const REVIEW_CODES = new Set([
 
 const CONFLICT_TEXT_PATTERN = /already used for different|different payload/i
 
+/** @param {unknown} value @returns {string | null} */
 function asId(value) {
   const text = String(value || '').trim()
   return text || null
 }
 
+/** @returns {RecoveryStorage | null} */
 function storage() {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage
+    const browser = /** @type {typeof globalThis & {window?: {localStorage?: RecoveryStorage}}} */ (globalThis)
+    if (typeof browser.window !== 'undefined' && browser.window.localStorage) return browser.window.localStorage
   } catch {}
-  if (typeof globalThis.localStorage !== 'undefined') {
+  const globalStorage = /** @type {typeof globalThis & {localStorage?: RecoveryStorage}} */ (globalThis)
+  if (typeof globalStorage.localStorage !== 'undefined') {
     try {
-      return globalThis.localStorage
+      return globalStorage.localStorage
     } catch {}
   }
   return null
 }
 
+/** @param {RecoveryKind} kind @param {RecoveryScope} [scope] @returns {string} */
 export function scopedRecoveryKey(kind, { tenantId = null, sourceTabId = '' } = {}) {
   const tabId = asId(sourceTabId) || 'unknown-tab'
   const tenant = asId(tenantId)
@@ -97,21 +117,25 @@ export function scopedRecoveryKey(kind, { tenantId = null, sourceTabId = '' } = 
   return `hpos:pending-tab-op:${kind}:${tabId}`
 }
 
+/** @param {RecoveryKind} kind @param {string} [sourceTabId] @returns {string} */
 export function legacyRecoveryKey(kind, sourceTabId = '') {
   const tabId = asId(sourceTabId) || 'unknown-tab'
   if (kind === 'split') return `hpos:pending-split:${tabId}`
   return `hpos:pending-waiter-transfer:${tabId}`
 }
 
+/** @param {RecoveryKind} kind @param {string} [sourceTabId] @returns {string} */
 export function quarantineKey(kind, sourceTabId = '') {
   const tabId = asId(sourceTabId) || 'unknown-tab'
   return `hpos:quarantine-tab-op:${kind}:${tabId}:${new Date().toISOString().replace(/[:.]/g, '-')}`
 }
 
+/** @param {unknown} [payload] @returns {string | undefined} */
 export function stableFingerprint(payload = {}) {
   return JSON.stringify(payload)
 }
 
+/** @param {{splitCount: unknown, sourceTabVersion: unknown}} input */
 export function buildSplitPayload({ splitCount, sourceTabVersion }) {
   return {
     split_count: Number(splitCount),
@@ -119,6 +143,7 @@ export function buildSplitPayload({ splitCount, sourceTabVersion }) {
   }
 }
 
+/** @param {{targetWaiterId: unknown, targetShiftId: unknown, expectedTabVersion: unknown, notes: unknown}} input */
 export function buildTransferPayload({ targetWaiterId, targetShiftId, expectedTabVersion, notes }) {
   return {
     target_waiter_id: asId(targetWaiterId),
@@ -128,11 +153,13 @@ export function buildTransferPayload({ targetWaiterId, targetShiftId, expectedTa
   }
 }
 
+/** @param {{kind: RecoveryKind, tenantId?: unknown, outletId?: unknown, sourceTabId: unknown, actorId?: unknown, expectedVersion?: unknown, payload?: Record<string, unknown>, operationId?: unknown, request?: Record<string, unknown> | null}} input @returns {RecoveryEnvelope} */
 export function newRecoveryEnvelope({ kind, tenantId = null, outletId = null, sourceTabId, actorId = null, expectedVersion = null, payload = {}, operationId = null, request = null }) {
   const now = new Date().toISOString()
+  const runtime = /** @type {typeof globalThis & {crypto?: {randomUUID?: () => string}}} */ (globalThis)
   return {
     schemaVersion: TAB_RECOVERY_SCHEMA_VERSION,
-    operationId: asId(operationId) || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    operationId: asId(operationId) || (typeof runtime.crypto !== 'undefined' && runtime.crypto.randomUUID ? runtime.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
     kind,
     tenantId: asId(tenantId),
     outletId: asId(outletId),
@@ -144,7 +171,7 @@ export function newRecoveryEnvelope({ kind, tenantId = null, outletId = null, so
     // The exact dispatch arguments, stored verbatim at submit time. Replays
     // resubmit THIS object plus the operation key: never rebuilt from
     // current form state, tab cache, or shift listings.
-    request: request && typeof request === 'object' ? { ...request } : null,
+    request: request && typeof request === 'object' ? /** @type {Record<string, unknown>} */ ({ ...request }) : null,
     createdAt: now,
     lastCheckedAt: null,
     outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN,
@@ -153,10 +180,14 @@ export function newRecoveryEnvelope({ kind, tenantId = null, outletId = null, so
   }
 }
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isEnvelope(value) {
-  return Boolean(value && typeof value === 'object' && (value.operationId || value.operationKey || value.operation_id) && value.payloadFingerprint)
+  if (!value || typeof value !== 'object') return false
+  const record = /** @type {Record<string, unknown>} */ (value)
+  return Boolean((record.operationId || record.operationKey || record.operation_id) && record.payloadFingerprint)
 }
 
+/** @param {unknown} raw @returns {RecoveryEnvelope | null} */
 function normalizeEnvelope(raw) {
   if (!isEnvelope(raw)) return null
   return {
@@ -168,9 +199,9 @@ function normalizeEnvelope(raw) {
     sourceTabId: asId(raw.sourceTabId),
     actorId: asId(raw.actorId),
     expectedVersion: raw.expectedVersion ?? null,
-    payload: raw.payload && typeof raw.payload === 'object' ? raw.payload : {},
+    payload: raw.payload && typeof raw.payload === 'object' ? /** @type {Record<string, unknown>} */ (raw.payload) : {},
     payloadFingerprint: String(raw.payloadFingerprint || ''),
-    request: raw.request && typeof raw.request === 'object' ? { ...raw.request } : null,
+    request: raw.request && typeof raw.request === 'object' ? /** @type {Record<string, unknown>} */ ({ ...raw.request }) : null,
     createdAt: raw.createdAt || null,
     lastCheckedAt: raw.lastCheckedAt || null,
     outcome: raw.outcome || TAB_RECOVERY_OUTCOMES.UNKNOWN,
@@ -179,6 +210,7 @@ function normalizeEnvelope(raw) {
   }
 }
 
+/** @param {RecoveryKind} kind @param {RecoveryScope} [scope] @returns {RecoveryReadResult} */
 export function readRecoveryEnvelope(kind, { tenantId = null, sourceTabId = '' } = {}) {
   const store = storage()
   if (!store) return { envelope: null, corrupt: false, key: null }
@@ -203,6 +235,7 @@ export function readRecoveryEnvelope(kind, { tenantId = null, sourceTabId = '' }
   return { envelope: null, corrupt: false, key: keys[0] }
 }
 
+/** @param {RecoveryKind} kind @param {RecoveryEnvelope} envelope @param {RecoveryScope} [scope] @returns {RecoveryWriteResult} */
 export function writeRecoveryEnvelope(kind, envelope, { tenantId = null, sourceTabId = '' } = {}) {
   const store = storage()
   const key = scopedRecoveryKey(kind, { tenantId: envelope?.tenantId || tenantId, sourceTabId: envelope?.sourceTabId || sourceTabId })
@@ -211,7 +244,7 @@ export function writeRecoveryEnvelope(kind, envelope, { tenantId = null, sourceT
     store.setItem(key, JSON.stringify(envelope))
     return { ok: true, key }
   } catch (error) {
-    const detail = error?.message || 'Local recovery storage is full or unavailable.'
+    const detail = /** @type {{message?: unknown} | null | undefined} */ (error)?.message || 'Local recovery storage is full or unavailable.'
     return { ok: false, key, error: `Local recovery storage failed (${detail}).` }
   }
 }
@@ -224,6 +257,7 @@ export function writeRecoveryEnvelope(kind, envelope, { tenantId = null, sourceT
  * "no saved operation". Reading and writing back the exact listed key keeps
  * one record, never duplicates, and lets the server answer truthfully.
  */
+/** @param {string} key @returns {RecoveryReadResult} */
 export function readRecoveryEnvelopeByKey(key) {
   const store = storage()
   if (!store) return { envelope: null, corrupt: false, key, storageError: true }
@@ -243,6 +277,7 @@ export function readRecoveryEnvelopeByKey(key) {
   }
 }
 
+/** @param {string} key @param {RecoveryEnvelope} envelope @returns {RecoveryWriteResult} */
 export function writeRecoveryEnvelopeByKey(key, envelope) {
   const store = storage()
   if (!store) return { ok: false, key, error: 'Local recovery storage is unavailable.' }
@@ -250,11 +285,12 @@ export function writeRecoveryEnvelopeByKey(key, envelope) {
     store.setItem(key, JSON.stringify(envelope))
     return { ok: true, key }
   } catch (error) {
-    const detail = error?.message || 'Local recovery storage is full or unavailable.'
+    const detail = /** @type {{message?: unknown} | null | undefined} */ (error)?.message || 'Local recovery storage is full or unavailable.'
     return { ok: false, key, error: `Local recovery storage failed (${detail}).` }
   }
 }
 
+/** @param {string} key */
 export function removeRecoveryKey(key) {
   const store = storage()
   if (!store) return
@@ -263,6 +299,7 @@ export function removeRecoveryKey(key) {
   } catch {}
 }
 
+/** @param {RecoveryKind} kind @param {RecoveryScope} [scope] */
 export function clearRecoveryEnvelope(kind, { tenantId = null, sourceTabId = '' } = {}) {
   const store = storage()
   if (!store) return
@@ -273,6 +310,7 @@ export function clearRecoveryEnvelope(kind, { tenantId = null, sourceTabId = '' 
   }
 }
 
+/** @param {RecoveryKind} kind @param {{sourceTabId?: string, raw?: unknown}} [options] @returns {string | null} */
 export function quarantineRecoveryRecord(kind, { sourceTabId = '', raw = null } = {}) {
   const store = storage()
   if (!store) return null
@@ -285,11 +323,13 @@ export function quarantineRecoveryRecord(kind, { sourceTabId = '', raw = null } 
   }
 }
 
+/** @param {unknown} result @returns {boolean} */
 function hasServerEvidence(result) {
   if (!result || typeof result !== 'object') return false
+  const evidence = /** @type {Record<string, unknown>} */ (result)
   return Boolean(
-    result.tab || result.source_tab || result.new_tabs ||
-    result.replayed === true || result.already_applied === true
+    evidence.tab || evidence.source_tab || evidence.new_tabs ||
+    evidence.replayed === true || evidence.already_applied === true
   )
 }
 
@@ -316,32 +356,36 @@ function hasServerEvidence(result) {
  *   cannot be excluded.
  * - Generic `success: false` without a verified code is unknown.
  *
- * @param {object|null} result domain/IPC envelope (may carry outcome/code/provenance)
- * @param {Error|unknown} error thrown transport error, if any
- * @param {object} context `{ keyPreviouslySent: boolean }`
+ * @param {unknown} [result] domain/IPC envelope (may carry outcome/code/provenance)
+ * @param {unknown} [error] thrown transport error, if any
+ * @param {{keyPreviouslySent?: boolean}} [context] `{ keyPreviouslySent: boolean }`
+ * @returns {RecoveryClassification}
  */
 export function classifyTabOperationOutcome(result = null, error = null, context = {}) {
   const { keyPreviouslySent = false } = context || {}
   if (error != null || result == null) {
-    const message = String(error?.message || error || '')
+    const message = String(/** @type {{message?: unknown} | null | undefined} */ (error)?.message || error || '')
     if (CONFLICT_TEXT_PATTERN.test(message)) {
       return { outcome: TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW, code: 'idempotency_conflict', terminal: false }
     }
     return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: null, terminal: false }
   }
-  if (result.outcome === TAB_RECOVERY_OUTCOMES.UNKNOWN) {
-    return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: result.code || null, terminal: false }
+  // The result may be a primitive or partial RPC envelope; direct property reads are retained and values stay unknown.
+  const response = /** @type {Record<string, unknown>} */ (result)
+  if (response.outcome === TAB_RECOVERY_OUTCOMES.UNKNOWN) {
+    return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: response.code || null, terminal: false }
   }
-  if (result.success === true) {
+  if (response.success === true) {
     if (!hasServerEvidence(result)) {
-      return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: result.code || null, terminal: false }
+      return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: response.code || null, terminal: false }
     }
-    return { outcome: TAB_RECOVERY_OUTCOMES.COMMITTED, code: result.code || null, terminal: true }
+    return { outcome: TAB_RECOVERY_OUTCOMES.COMMITTED, code: response.code || null, terminal: true }
   }
-  if (result.success === false) {
-    const code = String(result.code || result.error_code || '').trim() || null
-    const sqlState = String(result.sqlState || result.sqlstate || result?.error?.code || '').trim() || null
-    const message = String(result.error || '')
+  if (response.success === false) {
+    const code = String(response.code || response.error_code || '').trim() || null
+    const errorRecord = /** @type {{code?: unknown} | null | undefined} */ (response.error)
+    const sqlState = String(response.sqlState || response.sqlstate || errorRecord?.code || '').trim() || null
+    const message = String(response.error || '')
     if ((code && REVIEW_CODES.has(code)) || (sqlState === '22000' && CONFLICT_TEXT_PATTERN.test(message))) {
       return { outcome: TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW, code: code || 'idempotency_conflict', terminal: false }
     }
@@ -355,13 +399,14 @@ export function classifyTabOperationOutcome(result = null, error = null, context
   return { outcome: TAB_RECOVERY_OUTCOMES.UNKNOWN, code: null, terminal: false }
 }
 
+/** @param {RecoveryEnvelope | null | undefined} envelope @returns {string | null} */
 export function describeRecoveryEnvelope(envelope) {
   if (!envelope) return null
   const shortKey = String(envelope.operationId || '').slice(0, 8)
   if (envelope.kind === 'split') {
-    return `Split ${envelope.payload?.split_count || '?'} ways (key ${shortKey}…, ${envelope.createdAt ? new Date(envelope.createdAt).toLocaleString() : 'unknown time'})`
+    return `Split ${envelope.payload?.split_count || '?'} ways (key ${shortKey}…, ${envelope.createdAt ? new Date(/** @type {string | number} */ (envelope.createdAt)).toLocaleString() : 'unknown time'})`
   }
-  return `Waiter transfer (key ${shortKey}…, ${envelope.createdAt ? new Date(envelope.createdAt).toLocaleString() : 'unknown time'})`
+  return `Waiter transfer (key ${shortKey}…, ${envelope.createdAt ? new Date(/** @type {string | number} */ (envelope.createdAt)).toLocaleString() : 'unknown time'})`
 }
 
 const OFFLINE_REUSABLE_CODES = new Set(['offline_split_blocked', 'offline_transfer_blocked'])
@@ -371,16 +416,17 @@ const OFFLINE_REUSABLE_CODES = new Set(['offline_split_blocked', 'offline_transf
  * state that nothing was posted; every uncertain outcome states uncertainty
  * explicitly and never offers a corrected key.
  */
+/** @param {RecoveryKind} kind @param {Partial<RecoveryClassification>} [classification] @param {unknown} [result] @param {string | null} [operationId] @returns {string | null} */
 export function recoveryResultMessage(kind, classification = {}, result = null, operationId = null) {
   const noun = kind === 'split' ? 'split' : 'transfer'
-  const serverError = String(result?.error || '').trim()
+  const serverError = String(/** @type {{error?: unknown} | null | undefined} */ (result)?.error || '').trim()
   const shortKey = operationId ? String(operationId).slice(0, 8) : null
   if (classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) return null
   if (classification.outcome === TAB_RECOVERY_OUTCOMES.NEEDS_REVIEW) {
     return `This ${noun} key conflicts with different details (${classification.code || 'idempotency_conflict'}). Outcome not confirmed: keep this record and ask support to inspect operation ${shortKey || 'unknown'}… before posting a correction.`
   }
   if (classification.outcome === TAB_RECOVERY_OUTCOMES.REJECTED) {
-    if (classification.code && OFFLINE_REUSABLE_CODES.has(classification.code)) {
+    if (typeof classification.code === 'string' && OFFLINE_REUSABLE_CODES.has(classification.code)) {
       return 'The server could not be reached, so nothing was sent. Retry the original when back online.'
     }
     const prefix = serverError ? `${serverError} ` : `The server rejected this ${noun}. `
@@ -396,6 +442,7 @@ export function recoveryResultMessage(kind, classification = {}, result = null, 
 // The component never rebuilds a replay from editable fields.
 // ---------------------------------------------------------------------------
 
+/** @param {RecoveryKind} kind @param {RecoveryScope} [scope] @returns {string} */
 export function resolvedRecoveryKey(kind, { tenantId = null, sourceTabId = '' } = {}) {
   const tabId = asId(sourceTabId) || 'unknown-tab'
   const tenant = asId(tenantId) || 'unknown-tenant'
@@ -408,6 +455,7 @@ export function resolvedRecoveryKey(kind, { tenantId = null, sourceTabId = '' } 
  * latest-resolved slot instead of deleting it. Never call removeItem an
  * archive.
  */
+/** @param {RecoveryKind} kind @param {RecoveryEnvelope | null | undefined} envelope @param {RecoveryScope} [scope] @returns {{archived: Record<string, unknown>, key: string}} */
 export function archiveRecoveryEnvelope(kind, envelope, { tenantId = null, sourceTabId = '' } = {}) {
   const store = storage()
   const resolved = {
@@ -424,6 +472,7 @@ export function archiveRecoveryEnvelope(kind, envelope, { tenantId = null, sourc
   return { archived: resolved, key }
 }
 
+/** @returns {string[]} */
 function storageKeys() {
   const store = storage()
   if (!store) return []
@@ -440,6 +489,7 @@ function storageKeys() {
   return keys
 }
 
+/** @param {string} key @returns {RecoveryKind | null} */
 function kindFromKey(key) {
   if (!key.startsWith('hpos:pending-tab-op:') && !key.startsWith('hpos:pending-split:') && !key.startsWith('hpos:pending-waiter-transfer:')) {
     // Resolved archives and quarantine records are evidence, not pending work.
@@ -455,10 +505,12 @@ function kindFromKey(key) {
  * ownership, and editable form state. Returns normalized envelopes (plus
  * corrupt markers) for the tenant scope.
  */
+/** @param {{tenantId?: unknown}} [options] @returns {{envelopes: Array<{key: string, kind: RecoveryKind, corrupt: true, raw: string} | {key: string, kind: RecoveryKind, corrupt: false, legacy: boolean, envelope: RecoveryEnvelope}>, storageError: boolean}} */
 export function listRecoveryEnvelopes({ tenantId = null } = {}) {
   const store = storage()
   if (!store) return { envelopes: [], storageError: true }
   const tenant = asId(tenantId)
+  /** @type {RecoveryListItem[]} */
   const envelopes = []
   for (const key of storageKeys()) {
     const kind = kindFromKey(key)
@@ -491,6 +543,7 @@ export function listRecoveryEnvelopes({ tenantId = null } = {}) {
   return { envelopes, storageError: false }
 }
 
+/** @type {Set<string>} */
 export const REPLAY_MANAGER_ROLES = new Set(['manager', 'admin', 'super_admin', 'owner'])
 
 /**
@@ -499,6 +552,7 @@ export const REPLAY_MANAGER_ROLES = new Set(['manager', 'admin', 'super_admin', 
  * plus the originating actor or a manager-role operator. The server still
  * enforces ownership, proof, version, and shift on every replay.
  */
+/** @param {ReplayAuthOptions} [options] @returns {boolean} */
 export function defaultCanReplayOperation({ envelope, actorId = null, actorRole = null } = {}) {
   if (!envelope?.operationId) return false
   if (actorId && envelope.actorId && String(actorId).trim() === String(envelope.actorId).trim()) return true
@@ -506,10 +560,12 @@ export function defaultCanReplayOperation({ envelope, actorId = null, actorRole 
   return false
 }
 
+/** @param {string} code @param {string} message @returns {Error & {recoveryCode: string}} */
 function recoveryError(code, message) {
-  const error = new Error(message)
-  error.recoveryCode = code
-  return error
+  const failure = /** @type {Error & {recoveryCode: string}} */ (new Error(message))
+  // The existing custom field is attached to Error instances at runtime.
+  failure.recoveryCode = code
+  return failure
 }
 
 /**
@@ -517,6 +573,7 @@ function recoveryError(code, message) {
  * Current envelopes always carry `request`; this path exists only for
  * legacy migration and is never preferred over the verbatim request.
  */
+/** @param {RecoveryKind} kind @param {RecoveryEnvelope | null | undefined} envelope @returns {Record<string, unknown>} */
 export function buildReplayArgs(kind, envelope) {
   if (envelope?.request && typeof envelope.request === 'object') return { ...envelope.request }
   const tabId = envelope?.sourceTabId
@@ -540,22 +597,27 @@ export function buildReplayArgs(kind, envelope) {
 // Serializes concurrent executions of the same operation key: a second
 // caller awaits the first attempt's promise instead of dispatching again,
 // so two concurrent replay calls yield exactly one effect.
+/** @type {Map<string, Promise<unknown>>} */
 const activeExecutions = new Map()
 
+/** @param {string} key @param {() => Promise<unknown>} fn @returns {{promise: Promise<unknown>, duplicate: boolean}} */
 function withSingleExecution(key, fn) {
   const running = activeExecutions.get(key)
   if (running) return { promise: running, duplicate: true }
+  const holder = /** @type {{promise: Promise<unknown> | null}} */ ({ promise: null })
   const promise = (async () => {
     try {
       return await fn()
     } finally {
-      if (activeExecutions.get(key) === promise) activeExecutions.delete(key)
+      if (activeExecutions.get(key) === holder.promise) activeExecutions.delete(key)
     }
   })()
+  holder.promise = promise
   activeExecutions.set(key, promise)
   return { promise, duplicate: false }
 }
 
+/** @param {RecoveryKind} kind @param {RecoveryEnvelope | null} envelope @param {RecoveryScope} [scope] @returns {{ok: true} | {ok: false, code: string, message: string}} */
 function validateReplayScope(kind, envelope, { tenantId = null, sourceTabId = '' } = {}) {
   if (!envelope) return { ok: false, code: 'no_saved_operation', message: 'There is no saved operation to replay. Submit it from the form first.' }
   if (envelope.kind !== kind) {
@@ -571,13 +633,15 @@ function validateReplayScope(kind, envelope, { tenantId = null, sourceTabId = ''
   return { ok: true }
 }
 
+/** @param {{kind: RecoveryKind, envelope: RecoveryEnvelope, tenantId: string | null, sourceTabId: string, result: unknown, error: unknown, keyPreviouslySent: boolean, storageKey?: string | null}} input @returns {Promise<{classification: RecoveryClassification, result: unknown, envelope: RecoveryEnvelope, archivedKey?: string, outcome: unknown}>} */
 async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent, storageKey = null }) {
   const classification = classifyTabOperationOutcome(result, error, { keyPreviouslySent })
   const stored = {
     ...envelope,
     outcome: classification.outcome,
     lastCheckedAt: new Date().toISOString(),
-    lastCode: classification.code || result?.code || null,
+    // Preserve the existing direct optional property lookup on dispatch results.
+    lastCode: classification.code || /** @type {{code?: unknown} | null} */ (result)?.code || null,
     authoritativeResult: result && typeof result === 'object' ? result : null
   }
   if (classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
@@ -608,24 +672,27 @@ async function finishExecution({ kind, envelope, tenantId, sourceTabId, result, 
  * result for a committed key without duplicating, or executes the
  * never-received intent exactly once under its key.
  */
+/** @param {ReplayOperationOptions} [options] @returns {Promise<unknown>} */
 export async function replaySavedTabOperation({
   kind, tenantId = null, sourceTabId = '', actorId = null, actorRole = null,
   canReplay = defaultCanReplayOperation, dispatch, storageKey = null
 } = {}) {
+  // Callers supply a supported operation kind; retain the historic empty-object fallback at runtime.
+  const operationKind = /** @type {RecoveryKind} */ (kind)
   if (typeof dispatch !== 'function') throw recoveryError('missing_dispatch', 'No dispatch channel was provided for the replay.')
   // Inbox replays pass the exact listed storage key: records stored under
   // any other key shape must still replay instead of reporting no record.
-  const read = storageKey ? readRecoveryEnvelopeByKey(storageKey) : readRecoveryEnvelope(kind, { tenantId, sourceTabId })
+  const read = storageKey ? readRecoveryEnvelopeByKey(storageKey) : readRecoveryEnvelope(operationKind, { tenantId, sourceTabId })
   if (read.storageError) {
     throw recoveryError('storage_read_failed', 'Local recovery storage could not be read, so no dispatch was attempted. Free device storage and retry Check status.')
   }
   if (read.corrupt) {
-    quarantineRecoveryRecord(kind, { sourceTabId, raw: read.raw })
+    quarantineRecoveryRecord(operationKind, { sourceTabId, raw: read.raw })
     throw recoveryError('corrupt_record', 'A previous record is unreadable, so it was quarantined for support review. Outcome not confirmed: do not retry until support confirms whether the operation committed.')
   }
-  const scope = validateReplayScope(kind, read.envelope, { tenantId, sourceTabId })
+  const scope = validateReplayScope(operationKind, read.envelope, { tenantId, sourceTabId })
   if (!scope.ok) throw recoveryError(scope.code, scope.message)
-  const envelope = read.envelope
+  const envelope = /** @type {RecoveryEnvelope} */ (read.envelope)
   if (!canReplay({ envelope, actorId, actorRole })) {
     throw recoveryError('replay_forbidden', 'Only the originating operator (or a manager) can inspect or replay this saved operation.')
   }
@@ -642,7 +709,7 @@ export async function replaySavedTabOperation({
     }
     const persisted = storageKey
       ? writeRecoveryEnvelopeByKey(storageKey, stored)
-      : writeRecoveryEnvelope(kind, stored, { tenantId, sourceTabId })
+      : writeRecoveryEnvelope(operationKind, stored, { tenantId, sourceTabId })
     if (!persisted.ok) {
       throw recoveryError(
         'storage_write_failed',
@@ -655,15 +722,15 @@ export async function replaySavedTabOperation({
     )
   }
   const args = {
-    ...buildReplayArgs(kind, envelope),
-    ...(kind === 'split' ? { idempotency_key: envelope.operationId } : { operation_id: envelope.operationId }),
+    ...buildReplayArgs(operationKind, envelope),
+    ...(operationKind === 'split' ? { idempotency_key: envelope.operationId } : { operation_id: envelope.operationId }),
     is_replay: true
   }
-  const execKey = `${kind}:${envelope.operationId}`
+  const execKey = `${operationKind}:${envelope.operationId}`
   const { promise } = withSingleExecution(execKey, async () => {
     const persisted = storageKey
       ? writeRecoveryEnvelopeByKey(storageKey, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT })
-      : writeRecoveryEnvelope(kind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
+      : writeRecoveryEnvelope(operationKind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
     if (!persisted.ok) {
       throw recoveryError(
         'storage_write_failed',
@@ -677,7 +744,7 @@ export async function replaySavedTabOperation({
     } catch (dispatchError) {
       error = dispatchError
     }
-    return finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: true, storageKey })
+    return finishExecution({ kind: operationKind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: true, storageKey })
   })
   return promise
 }
@@ -689,18 +756,21 @@ export async function replaySavedTabOperation({
  * saved operation to be a proven terminal rejection. Never mints a key
  * when blocked.
  */
+/** @param {SubmitOperationOptions} [options] @returns {Promise<unknown>} */
 export async function submitNewTabOperation({
   kind, tenantId = null, sourceTabId = '', outletId = null, actorId = null,
   expectedVersion = null, payload = {}, request = {}, corrected = false, dispatch
 } = {}) {
+  // Callers supply a supported operation kind; retain the historic empty-object fallback at runtime.
+  const operationKind = /** @type {RecoveryKind} */ (kind)
   if (typeof dispatch !== 'function') throw recoveryError('missing_dispatch', 'No dispatch channel was provided.')
   const fingerprint = stableFingerprint(payload || {})
-  const read = readRecoveryEnvelope(kind, { tenantId, sourceTabId })
+  const read = readRecoveryEnvelope(operationKind, { tenantId, sourceTabId })
   if (read.storageError) {
     throw recoveryError('storage_read_failed', 'Local recovery storage could not be read, so no dispatch was attempted. Free device storage and try again.')
   }
   if (read.corrupt) {
-    quarantineRecoveryRecord(kind, { sourceTabId, raw: read.raw })
+    quarantineRecoveryRecord(operationKind, { sourceTabId, raw: read.raw })
     throw recoveryError('corrupt_record', 'A previous record is unreadable, so it was quarantined for support review. Outcome not confirmed: do not retry until support confirms whether the operation committed.')
   }
   const saved = read.envelope
@@ -727,22 +797,22 @@ export async function submitNewTabOperation({
   }
   let envelope
   if (corrected) {
-    archiveRecoveryEnvelope(kind, saved, { tenantId, sourceTabId })
+    archiveRecoveryEnvelope(operationKind, saved, { tenantId, sourceTabId })
     envelope = newRecoveryEnvelope({
-      kind, tenantId, outletId, sourceTabId, actorId, expectedVersion,
+      kind: operationKind, tenantId, outletId, sourceTabId, actorId, expectedVersion,
       payload, request, operationId: null
     })
   } else if (saved && saved.payloadFingerprint === fingerprint) {
     envelope = saved
   } else {
     envelope = newRecoveryEnvelope({
-      kind, tenantId, outletId, sourceTabId, actorId, expectedVersion,
+      kind: operationKind, tenantId, outletId, sourceTabId, actorId, expectedVersion,
       payload, request, operationId: null
     })
   }
-  const execKey = `${kind}:${envelope.operationId}`
+  const execKey = `${operationKind}:${envelope.operationId}`
   const { promise } = withSingleExecution(execKey, async () => {
-    const persisted = writeRecoveryEnvelope(kind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
+    const persisted = writeRecoveryEnvelope(operationKind, { ...envelope, outcome: TAB_RECOVERY_OUTCOMES.IN_FLIGHT }, { tenantId, sourceTabId })
     if (!persisted.ok) {
       throw recoveryError(
         'storage_write_failed',
@@ -751,7 +821,7 @@ export async function submitNewTabOperation({
     }
     const args = {
       ...(request || {}),
-      ...(kind === 'split' ? { idempotency_key: envelope.operationId } : { operation_id: envelope.operationId }),
+      ...(operationKind === 'split' ? { idempotency_key: envelope.operationId } : { operation_id: envelope.operationId }),
       is_replay: false
     }
     let result = null
@@ -761,7 +831,7 @@ export async function submitNewTabOperation({
     } catch (dispatchError) {
       error = dispatchError
     }
-    return finishExecution({ kind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: false })
+    return finishExecution({ kind: operationKind, envelope, tenantId, sourceTabId, result, error, keyPreviouslySent: false })
   })
   return promise
 }

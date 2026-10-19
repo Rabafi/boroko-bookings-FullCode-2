@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { BarChart3, CircleAlert, Clock3, Download, Printer, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useSettings } from '../app-context'

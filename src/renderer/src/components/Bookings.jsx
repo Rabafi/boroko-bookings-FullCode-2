@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import {
   Plus,
@@ -35,6 +36,18 @@ import { canCreateBooking, countMonthlyCreatedBookings, countMonthlyUsageBooking
 import { formatLocalDate, localToday } from '../utils/localDate'
 import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
 import { getBookingFinancialView, isPendingBookingFinancial, bookingPaymentStatusLabel } from '../../../shared/bookingFinancials.js'
+import {
+  buildGroupRoomLines,
+  computeStayTotal,
+  describeRateMode,
+  findFinancialAuthorshipKeys,
+  getCampsiteOccupancyDefaults,
+  getUnitDisplayName,
+  isCampsitePriced,
+  isCampsiteUnit,
+  restoreBookingOccupancy,
+  validateAccommodationOccupancy
+} from '../../../shared/accommodation.js'
 
 const CheckinWorkflow = lazy(() => import('./CheckinWorkflow'))
 const EarlyLateCheckout = lazy(() => import('./EarlyLateCheckout'))
@@ -45,6 +58,7 @@ const STATUS_OPTIONS = ['confirmed', 'checked_in', 'checked_out', 'cancelled']
 const PAYMENT_METHODS = DESKTOP_PAYMENT_METHODS
 const METHOD_LABEL = PAYMENT_METHOD_LABELS
 
+/** @param {string | null | undefined} createdAt */
 function getOnlineRequestAgeMeta(createdAt) {
   const time = createdAt ? new Date(createdAt).getTime() : NaN
   if (!Number.isFinite(time)) {
@@ -79,6 +93,7 @@ function getOnlineRequestAgeMeta(createdAt) {
   }
 }
 
+/** @param {string | null | undefined} phone */
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
   let p = phone.replace(/\D/g, '')
@@ -87,6 +102,13 @@ function formatWhatsAppPhone(phone) {
   return p
 }
 
+/**
+ * Expected joined row fields from bookings:getAll and settings from app context.
+ * IPC values are not runtime-validated; this describes the existing consumer
+ * contract only.
+ * @param {{customer_name: string | null, room_number: string | null, room_type: string | null, check_in: string, check_out: string, adults: number, children: number, total_amount: number | string | null}} b
+ * @param {Record<string, unknown> | null | undefined} settings
+ */
 function buildWhatsAppMessage(b, settings) {
   const vocab = getUiVocabulary({ settings })
   const lodge = getBusinessDisplayName(settings, vocab)
@@ -172,6 +194,13 @@ function sanitizeSyncError(raw) {
 }
 
 const emptyCustomer = { name: '', email: '', phone: '', id_number: '', nationality: '' }
+/** @typedef {{adults: number | string, children: number | string, tents: number | string, vehicles: number | string}} BookingRoomGuestFormExpectedView */
+/** @typedef {{customer_id: string, room_id: string, room_ids: string[], room_guests: Record<string, BookingRoomGuestFormExpectedView>, check_in: string, check_out: string, adults: number | string, children: number | string, tents: number | string, vehicles: number | string, deposit_amount?: string, payment_method?: string, notes: string}} BookingFormExpectedView */
+/**
+ * Existing form state shape. The annotation preserves its current values while
+ * allowing the room-selection inputs to index the established per-room map.
+ * @type {BookingFormExpectedView}
+ */
 const emptyBooking = {
   customer_id: '',
   room_id: '',
@@ -181,6 +210,8 @@ const emptyBooking = {
   check_out: '',
   adults: 1,
   children: 0,
+  tents: 0,
+  vehicles: 0,
   deposit_amount: '',
   notes: ''
 }
@@ -199,6 +230,18 @@ function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localN
   ))
 }
 
+/**
+ * Expected fields consumed by the booking-list grouping and derived counters.
+ * `bookings:getAll` returns the query projection merged with persisted cache;
+ * this is a read-site view only and does not validate IPC or cached rows.
+ * Monetary values retain number/string forms until the existing Number calls.
+ * @typedef {{id: string, is_exclusive_event?: boolean | null, notes?: string | null, check_in?: string | null, total_amount?: number | string | null, amount_paid?: number | string | null, source?: string | null, status?: string | null, _pending_sync?: boolean, created_at?: string | null}} BookingListRowExpectedView
+ * @typedef {BookingListRowExpectedView & {room_count: number, total_amount: number, amount_paid: number, _event_group: true, room_number: string}} EventBookingGroupExpectedView
+ * `rooms:getAll` returns the database room projection or persisted cache array; row values are not runtime-validated here.
+ * @typedef {{id: string, name?: string | null, room_number?: string | null, room_type?: string | null, status?: string | null, rate_per_night?: number | string | null, max_occupancy?: number | string | null, max_tents?: number | string | null, max_vehicles?: number | string | null, accommodation_kind?: string | null, rate_mode?: string | null, rate_per_person?: number | string | null, rate_per_tent?: number | string | null, rate_per_vehicle?: number | string | null, capacity_adults?: number | string | null, capacity_children?: number | string | null}} BookingRoomDerivedExpectedView
+ * @typedef {{rate: unknown, name?: string | null}} BookingApplicableRateReadExpectedView
+ * @typedef {{rate_per_night: number, name: string}} BookingApplicableRateExpectedView
+ */
 export default function Bookings() {
   const { user, logout } = useAuth()
   const access = useAccess()
@@ -209,7 +252,7 @@ export default function Bookings() {
 
   const [openMenuId, setOpenMenuId] = useState(null)
   const [bookings, setBookings] = useState([])
-  const [rooms, setRooms] = useState([])
+  const [rooms, setRooms] = useState(/** @type {BookingRoomDerivedExpectedView[]} */ ([]))
   const [customers, setCustomers] = useState([])
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
@@ -233,7 +276,7 @@ export default function Bookings() {
   const [loading, setLoading] = useState(false)
   const [statusLoadingId, setStatusLoadingId] = useState(null)
   const [statusLoadingAction, setStatusLoadingAction] = useState('')
-  const [applicableRate, setApplicableRate] = useState(null)
+  const [applicableRate, setApplicableRate] = useState(/** @type {BookingApplicableRateExpectedView | null} */ (null))
   const [receiptBooking, setReceiptBooking] = useState(null)
   const [failedSyncIds, setFailedSyncIds] = useState(new Set())
   const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
@@ -433,7 +476,7 @@ export default function Bookings() {
       window.api.customers.getAll()
     ])
     setBookings(b)
-    setRooms(r)
+    setRooms(/** @type {BookingRoomDerivedExpectedView[]} */ (r))
     setCustomers(c)
     setListLoading(false)
   }, [])
@@ -595,10 +638,10 @@ export default function Bookings() {
       try {
         const result = await window.api.rateOverrides.getApplicable(form.room_id, form.check_in, form.check_out)
         if (cancelled) return
-        if (result && Number.isFinite(Number(result.rate))) {
+        if (result && Number.isFinite(Number((/** @type {BookingApplicableRateReadExpectedView} */ (result)).rate))) {
           setApplicableRate({
-            rate_per_night: Number(result.rate),
-            name: result.name || ''
+            rate_per_night: Number((/** @type {BookingApplicableRateReadExpectedView} */ (result)).rate),
+            name: (/** @type {BookingApplicableRateReadExpectedView} */ (result)).name || ''
           })
         } else {
           setApplicableRate(null)
@@ -657,7 +700,10 @@ export default function Bookings() {
     const groupId = groupMatch ? groupMatch[0] : null
     setEditingGroupId(groupId)
     const displayNotes = b.notes ? b.notes.replace(/\[GROUP:[^\]]+\]/g, '').trim() : ''
-    
+    // Restore authoritative saved occupancy: never reset saved counts to zero
+    // and never silently reprice — the server quote on save is authoritative.
+    const savedOccupancy = restoreBookingOccupancy(b)
+
     setForm({
       customer_id: b.customer_id,
       room_id: b.room_id,
@@ -665,8 +711,10 @@ export default function Bookings() {
       room_guests: {},
       check_in: b.check_in,
       check_out: b.check_out,
-      adults: b.adults,
-      children: b.children,
+      adults: savedOccupancy.adults,
+      children: savedOccupancy.children,
+      tents: savedOccupancy.tents,
+      vehicles: savedOccupancy.vehicles,
       notes: displayNotes
     })
     setApplicableRate(null)
@@ -774,15 +822,47 @@ export default function Bookings() {
       }
 
       if (!editingId && selectedRooms.length > 0) {
-        const totalGuests = parseInt(form.adults) + parseInt(form.children)
-        const overCapacityRoom = selectedRooms.find((room) => {
-          const perRoom = form.room_guests?.[room.id] || {}
-          const adults = isMultiRoomDraft ? Number(perRoom.adults || 1) : totalGuests
-          const children = isMultiRoomDraft ? Number(perRoom.children || 0) : 0
-          return adults + children > (room.max_occupancy || 2)
+        // Per-line occupancy: tents/vehicles travel only on campsite lines.
+        // Field names match the desktop domain readers (line.tents,
+        // line.vehicles, data.tents, data.vehicles); queue format unchanged.
+        const groupLines = buildGroupRoomLines(selectedRooms, form.room_guests, {
+          adults: form.adults,
+          children: form.children,
+          tents: form.tents,
+          vehicles: form.vehicles
         })
-        if (overCapacityRoom) {
-          setError(`Room ${overCapacityRoom.room_number || ''} exceeds maximum occupancy (${overCapacityRoom.max_occupancy || 2})`)
+        for (const line of groupLines) {
+          const room = selectedRooms.find((entry) => String(entry.id) === String(line.room_id))
+          if (!room) continue
+          // Priced family (campsite + tent) validates against the independent
+          // caps via the shared contract; room/unit lines keep the generic
+          // gate. Mirrors the main-domain pre-check order.
+          if (isCampsitePriced(room)) {
+            const check = validateAccommodationOccupancy(room, line)
+            if (!check.ok) {
+              setError(check.errors[0] || 'Check campsite occupancy before saving.')
+              setLoading(false)
+              return
+            }
+          // rooms.max_occupancy is integer in the baseline schema. This expected-data
+          // assertion keeps the existing relational comparison and runtime coercion.
+          } else if (line.adults + line.children > /** @type {number} */ (room.max_occupancy || 2)) {
+            setError(`Room ${room.room_number || ''} exceeds maximum occupancy (${room.max_occupancy || 2})`)
+            setLoading(false)
+            return
+          }
+        }
+      }
+
+      if (editingId && selectedRoom && isCampsitePriced(selectedRoom)) {
+        const check = validateAccommodationOccupancy(selectedRoom, {
+          adults: form.adults,
+          children: form.children,
+          tents: form.tents,
+          vehicles: form.vehicles
+        })
+        if (!check.ok) {
+          setError(check.errors[0] || 'Check campsite occupancy before saving.')
           setLoading(false)
           return
         }
@@ -793,10 +873,20 @@ export default function Bookings() {
         customer_id: customerId,
         room_id: form.room_id,
         notes: editingGroupId ? `${form.notes} ${editingGroupId}`.trim() : form.notes,
-        adults: parseInt(form.adults),
-        children: parseInt(form.children),
+        // Native parseInt applies ToString to these existing number|string form values.
+        adults: /** @type {(value: string | number) => number} */ (parseInt)(form.adults),
+        children: /** @type {(value: string | number) => number} */ (parseInt)(form.children),
         created_by: user.id,
         ...(editingId && editingBaseUpdatedAt ? { expected_updated_at: editingBaseUpdatedAt } : {})
+      }
+
+      // Fail closed: the client must never author persisted financial truth.
+      // Authoritative totals, paid amounts and statuses come from the server.
+      const authoredFinancialKeys = findFinancialAuthorshipKeys(data)
+      if (authoredFinancialKeys.length > 0) {
+        setError(`Booking payload must not set ${authoredFinancialKeys.join(', ')}. Totals and payment status come from the server.`)
+        setLoading(false)
+        return
       }
 
       let res
@@ -806,13 +896,11 @@ export default function Bookings() {
         if (isMultiRoomDraft) {
           res = await window.api.bookings.createMultiRoom({
             ...data,
-            rooms: selectedRooms.map((room) => {
-              const perRoom = form.room_guests?.[room.id] || {}
-              return {
-                room_id: room.id,
-                adults: Number(perRoom.adults || 1),
-                children: Number(perRoom.children || 0)
-              }
+            rooms: buildGroupRoomLines(selectedRooms, form.room_guests, {
+              adults: form.adults,
+              children: form.children,
+              tents: form.tents,
+              vehicles: form.vehicles
             })
           })
         } else {
@@ -1129,9 +1217,14 @@ export default function Bookings() {
     })
   }, [sortBy])
 
-  const groupEventBookings = useCallback((list) => {
+  // The current array originates at bookings:getAll. This is not runtime
+  // validation; failed IPC still supplies the producer's existing empty array.
+  const groupEventBookings = useCallback(
+    /** @param {BookingListRowExpectedView[]} list */
+    (list) => {
     const regular   = list.filter(b => !b.is_exclusive_event)
     const eventRows = list.filter(b => b.is_exclusive_event)
+    /** @type {Record<string, EventBookingGroupExpectedView>} */
     const groupMap  = {}
     eventRows.forEach(b => {
       if (!b) return
@@ -1157,31 +1250,31 @@ export default function Bookings() {
   }, [])
 
   const groupedFilteredBookings = useMemo(
-    () => sortBookings(groupEventBookings(filtered)),
+    () => sortBookings(groupEventBookings(/** @type {BookingListRowExpectedView[]} */ (filtered))),
     [filtered, groupEventBookings, sortBookings]
   )
   const pendingOnlineCount = useMemo(
-    () => bookings.filter((b) => b.source === 'online' && b.status === 'pending').length,
+    () => /** @type {BookingListRowExpectedView[]} */ (bookings).filter((b) => b.source === 'online' && b.status === 'pending').length,
     [bookings]
   )
   const pendingSyncCount = useMemo(
-    () => bookings.filter((b) => b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds)).length,
+    () => /** @type {BookingListRowExpectedView[]} */ (bookings).filter((b) => b._pending_sync && !bookingHasSyncFailure(b, failedSyncIds)).length,
     [bookings, failedSyncIds]
   )
   const reviewCount = useMemo(
-    () => bookings.filter((b) => bookingHasSyncFailure(b, failedSyncIds)).length,
+    () => /** @type {BookingListRowExpectedView[]} */ (bookings).filter((b) => bookingHasSyncFailure(b, failedSyncIds)).length,
     [bookings, failedSyncIds]
   )
   const attentionCount = useMemo(
-    () => bookings.filter((b) => bookingHasAttentionState(b) || financialFailedIds.has(b.id) || bookingNeedsAttention(b)).length,
+    () => /** @type {BookingListRowExpectedView[]} */ (bookings).filter((b) => bookingHasAttentionState(b) || financialFailedIds.has(b.id) || bookingNeedsAttention(b)).length,
     [bookings, financialFailedIds]
   )
   const oldestPendingOnlineCreatedAt = useMemo(() => {
-    const pendingOnline = bookings.filter((b) => b.source === 'online' && b.status === 'pending' && b.created_at)
+    const pendingOnline = /** @type {BookingListRowExpectedView[]} */ (bookings).filter((b) => b.source === 'online' && b.status === 'pending' && b.created_at)
     if (!pendingOnline.length) return null
-    return pendingOnline.reduce((oldest, booking) => (
+    return pendingOnline.reduce(/** @type {(oldest: string | null | undefined, booking: BookingListRowExpectedView) => string | null | undefined} */ ((oldest, booking) => (
       !oldest || String(booking.created_at) < String(oldest) ? booking.created_at : oldest
-    ), null)
+    )), /** @type {string|null|undefined} */ (null))
   }, [bookings])
   const selectedRoom = useMemo(
     () => rooms.find((r) => r.id === form.room_id),
@@ -1212,13 +1305,49 @@ export default function Bookings() {
   ), [activeMeshLocks, form.check_in, form.check_out, meshStatus?.nodeId])
 
   const selectedNightlyRate = applicableRate?.rate_per_night ?? selectedRoom?.rate_per_night ?? 0
-  const estimatedTotal = selectedRoom
-    ? selectedNightlyRate * nights(form.check_in, form.check_out)
-    : 0
-  const multiRoomEstimatedTotal = selectedRooms.reduce((sum, room) => (
-    sum + Number(room?.rate_per_night || 0) * nights(form.check_in, form.check_out)
-  ), 0)
+  const stayNights = nights(form.check_in, form.check_out)
+  // Unit-aware stay estimate. Campsite-priced units (campsite + tent kinds)
+  // flow into computeStayTotal for every rate mode — including group lines
+  // and edit repricing; room/unit kinds keep the nightly-rate path. Always
+  // an estimate: the authoritative RPC total wins.
+  /** @param {BookingRoomDerivedExpectedView | null | undefined} room @param {Record<string, unknown>} counts */
+  const estimateRoomStay = (room, counts) => {
+    if (!room) return 0
+    if (isCampsitePriced(room)) {
+      return computeStayTotal(room, {
+        nights: stayNights,
+        adults: counts?.adults,
+        children: counts?.children,
+        tents: counts?.tents,
+        vehicles: counts?.vehicles
+      })
+    }
+    const nightly = room?.id === selectedRoom?.id
+      ? (applicableRate?.rate_per_night ?? room?.rate_per_night ?? 0)
+      : (room?.rate_per_night ?? 0)
+    return Number(nightly || 0) * stayNights
+  }
+  const singleStayCounts = {
+    adults: form.adults,
+    children: form.children,
+    tents: form.tents,
+    vehicles: form.vehicles
+  }
+  const estimatedTotal = estimateRoomStay(selectedRoom, singleStayCounts)
+  const groupStayLines = buildGroupRoomLines(selectedRooms, form.room_guests, singleStayCounts)
+  const multiRoomEstimatedTotal = selectedRooms.reduce((sum, room) => {
+    const line = groupStayLines.find((entry) => String(entry.room_id) === String(room?.id))
+    return sum + estimateRoomStay(room, line || singleStayCounts)
+  }, 0)
   const activeEstimatedTotal = isMultiRoomDraft ? multiRoomEstimatedTotal : estimatedTotal
+  const activeStayHasCampsite = isMultiRoomDraft
+    ? selectedRooms.some((room) => isCampsitePriced(room))
+    : Boolean(selectedRoom && isCampsitePriced(selectedRoom))
+  // Single-stay site inputs appear for the whole priced family (campsite +
+  // tent). Values always flow to the estimate; the authoritative RPC decides
+  // the persisted total (non-priced kinds persist guest counts only).
+  const singleStayUnit = editingId ? selectedRoom : (!isMultiRoomDraft ? selectedRooms[0] || null : null)
+  const showSingleStaySiteInputs = Boolean(singleStayUnit) && isCampsitePriced(singleStayUnit)
   const bookingGrandTotal = paymentBooking
     ? Number(paymentBooking.total_amount || 0) + Number(paymentBooking.charges_total || 0)
     : 0
@@ -2480,11 +2609,11 @@ export default function Bookings() {
             <div>
               <div className="mb-3">
                 <p className="text-sm font-semibold text-slate-800">Stay Details</p>
-                <p className="mt-1 text-xs text-slate-500">Select the room and stay dates first so the estimated total and deposit guidance stay accurate.</p>
+                <p className="mt-1 text-xs text-slate-500">Select the site or room and stay dates first so the estimated total and deposit guidance stay accurate.</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
               {editingId ? (
-                <F label="Room *">
+                <F label={`${selectedRoom && isCampsiteUnit(selectedRoom) ? 'Site' : 'Room'} *`}>
                   <select
                     className="input"
                     value={form.room_id}
@@ -2492,22 +2621,26 @@ export default function Bookings() {
                     data-testid="booking-room-select"
                     required
                   >
-                    <option value="">-- Select room --</option>
+                    <option value="">-- Select site / room --</option>
                     {selectableRooms.map((r) => (
                         <option key={r.id} value={r.id} disabled={r.status === 'maintenance'}>
-                          Room {r.room_number} — {r.room_type} ({currency}{r.rate_per_night}/night) {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : ''}
+                          {getUnitDisplayName(r)} — {r.room_type} ({currency}{Number(r.rate_per_night || 0).toFixed(2)}/night){isCampsitePriced(r) ? ` · ${describeRateMode(r)}` : ''} {r.status === 'maintenance' ? ' (UNDER MAINTENANCE)' : ''}
                         </option>
                       ))}
                   </select>
                 </F>
               ) : (
                 <div className="col-span-2">
-                  <p className="mb-1.5 text-sm font-medium text-slate-700">Room(s) *</p>
+                  <p className="mb-1.5 text-sm font-medium text-slate-700">Site / Room(s) *</p>
                   <div className="max-h-64 overflow-auto rounded-2xl border border-slate-200 bg-white">
                     {selectableRooms.map((r) => {
                       const checked = selectedRoomIds.includes(r.id)
                       const disabled = r.status === 'maintenance' || meshLockedRoomIds.has(String(r.id))
-                      const perRoom = form.room_guests?.[r.id] || { adults: 1, children: 0 }
+                      const perRoom = form.room_guests?.[r.id] || { adults: 1, children: 0, tents: 0, vehicles: 0 }
+                      // Priced-family rows (campsite + tent) expose tent/vehicle
+                      // inputs and rate-mode hints; display names still come
+                      // from getUnitDisplayName (Permanent tent is not relabeled).
+                      const rowIsCampsite = isCampsitePriced(r)
                       return (
                         <div key={r.id} className="border-b border-slate-100 px-3 py-3 last:border-b-0">
                           <label className={`flex items-start gap-3 ${disabled ? 'opacity-50' : ''}`}>
@@ -2521,25 +2654,39 @@ export default function Bookings() {
                                   ? [...selectedRoomIds, r.id]
                                   : selectedRoomIds.filter((id) => id !== r.id)
                                 const nextGuests = { ...(form.room_guests || {}) }
-                                if (e.target.checked && !nextGuests[r.id]) nextGuests[r.id] = { adults: 1, children: 0 }
+                                if (e.target.checked && !nextGuests[r.id]) {
+                                  const siteDefaults = getCampsiteOccupancyDefaults(r)
+                                  nextGuests[r.id] = {
+                                    adults: 1,
+                                    children: 0,
+                                    tents: rowIsCampsite ? siteDefaults.tents : 0,
+                                    vehicles: rowIsCampsite ? siteDefaults.vehicles : 0
+                                  }
+                                }
                                 if (!e.target.checked) delete nextGuests[r.id]
+                                const singleRoom = nextIds.length === 1 ? nextGuests[nextIds[0]] : null
                                 setForm({
                                   ...form,
                                   room_ids: nextIds,
                                   room_id: nextIds[0] || '',
                                   room_guests: nextGuests,
-                                  adults: nextIds.length > 1 ? form.adults : (nextGuests[nextIds[0]]?.adults || form.adults),
-                                  children: nextIds.length > 1 ? form.children : (nextGuests[nextIds[0]]?.children || form.children)
+                                  adults: nextIds.length > 1 ? form.adults : (singleRoom?.adults ?? form.adults),
+                                  children: nextIds.length > 1 ? form.children : (singleRoom?.children ?? form.children),
+                                  tents: nextIds.length > 1 ? form.tents : (singleRoom?.tents ?? form.tents),
+                                  vehicles: nextIds.length > 1 ? form.vehicles : (singleRoom?.vehicles ?? form.vehicles)
                                 })
                               }}
                             />
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center justify-between gap-2">
-                                <p className="font-semibold text-slate-800">Room {r.room_number} — {r.room_type}</p>
-                                <p className="text-sm font-semibold text-green-700">{currency} {Number(r.rate_per_night || 0).toFixed(2)}/night</p>
+                                <p className="font-semibold text-slate-800">{getUnitDisplayName(r)} — {r.room_type}</p>
+                                <p className="text-sm font-semibold text-green-700">{currency} {Number(r.rate_per_night || 0).toFixed(2)}/night{rowIsCampsite ? ` · ${describeRateMode(r)}` : ''}</p>
                               </div>
                               <p className="mt-1 text-xs text-slate-500">
                                 Max {r.max_occupancy || 2} guest{Number(r.max_occupancy || 2) === 1 ? '' : 's'}
+                                {rowIsCampsite && (r.max_tents != null || r.max_vehicles != null)
+                                  ? ` · max ${r.max_tents ?? '—'} tent(s), ${r.max_vehicles ?? '—'} vehicle(s)`
+                                  : ''}
                                 {r.status === 'maintenance' ? ' · under maintenance' : meshLockedRoomIds.has(String(r.id)) ? ' · held by another front desk' : ''}
                               </p>
                               {checked && selectedRoomIds.length > 1 && (
@@ -2578,6 +2725,44 @@ export default function Bookings() {
                                       })}
                                     />
                                   </label>
+                                  {rowIsCampsite && (
+                                    <>
+                                      <label className="text-xs font-medium text-slate-600">
+                                        Tents
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max={r.max_tents ?? 20}
+                                          className="input mt-1"
+                                          value={perRoom.tents ?? 0}
+                                          onChange={(event) => setForm({
+                                            ...form,
+                                            room_guests: {
+                                              ...(form.room_guests || {}),
+                                              [r.id]: { ...perRoom, tents: event.target.value }
+                                            }
+                                          })}
+                                        />
+                                      </label>
+                                      <label className="text-xs font-medium text-slate-600">
+                                        Vehicles
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max={r.max_vehicles ?? 20}
+                                          className="input mt-1"
+                                          value={perRoom.vehicles ?? 0}
+                                          onChange={(event) => setForm({
+                                            ...form,
+                                            room_guests: {
+                                              ...(form.room_guests || {}),
+                                              [r.id]: { ...perRoom, vehicles: event.target.value }
+                                            }
+                                          })}
+                                        />
+                                      </label>
+                                    </>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -2631,6 +2816,37 @@ export default function Bookings() {
                   disabled={isMultiRoomDraft}
                 />
               </F>
+              {showSingleStaySiteInputs && singleStayUnit && (
+                <>
+                  <F label="Tents">
+                    <input
+                      type="number"
+                      min="0"
+                      max={singleStayUnit?.max_tents ?? 20}
+                      className="input"
+                      value={form.tents ?? 0}
+                      onChange={(e) => setForm({ ...form, tents: e.target.value })}
+                      disabled={isMultiRoomDraft}
+                      data-testid="booking-tents-input"
+                    />
+                  </F>
+                  <F label="Vehicles">
+                    <input
+                      type="number"
+                      min="0"
+                      max={singleStayUnit?.max_vehicles ?? 20}
+                      className="input"
+                      value={form.vehicles ?? 0}
+                      onChange={(e) => setForm({ ...form, vehicles: e.target.value })}
+                      disabled={isMultiRoomDraft}
+                      data-testid="booking-vehicles-input"
+                    />
+                  </F>
+                  <p className="-mt-2 col-span-2 text-xs text-slate-500">
+                    {describeRateMode(singleStayUnit)} · limits mirrored from the server stay definition; the server total is authoritative.
+                  </p>
+                </>
+              )}
               </div>
             </div>
 
@@ -2643,16 +2859,19 @@ export default function Bookings() {
               </div>
             )}
 
-            {/* Estimated Total */}
+            {/* Estimated Total — never financial truth; the authoritative RPC total wins */}
             {activeEstimatedTotal > 0 && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm">
                 <span className="text-slate-600">
                   {isMultiRoomDraft
-                    ? `${selectedRooms.length} rooms × ${nights(form.check_in, form.check_out)} night(s)`
-                    : `${nights(form.check_in, form.check_out)} night(s) × ${currency} ${Number(selectedNightlyRate || 0).toFixed(2)}`} ={' '}
+                    ? `${selectedRooms.length} stay units × ${nights(form.check_in, form.check_out)} night(s)`
+                    : activeStayHasCampsite && selectedRoom
+                      ? `${nights(form.check_in, form.check_out)} night(s) · ${describeRateMode(selectedRoom)}`
+                      : `${nights(form.check_in, form.check_out)} night(s) × ${currency} ${Number(selectedNightlyRate || 0).toFixed(2)}`} ={' '}
                 </span>
                 <span className="font-bold text-green-700">{currency} {activeEstimatedTotal.toFixed(2)}</span>
-                {!isMultiRoomDraft && applicableRate && selectedRoom && Number(applicableRate.rate_per_night) !== Number(selectedRoom.rate_per_night) && (
+                <p className="mt-1 text-xs font-semibold text-emerald-800">Estimate — authoritative total comes from the server.</p>
+                {!isMultiRoomDraft && !activeStayHasCampsite && applicableRate && selectedRoom && Number(applicableRate.rate_per_night) !== Number(selectedRoom.rate_per_night) && (
                   <p className="mt-1 text-xs font-medium text-emerald-700">
                     Seasonal/Event pricing applied: {applicableRate.name || 'Override'} instead of the standard {currency} {Number(selectedRoom.rate_per_night || 0).toFixed(2)}/night.
                   </p>

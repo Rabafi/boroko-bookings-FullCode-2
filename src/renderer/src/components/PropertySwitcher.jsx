@@ -1,12 +1,13 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Building2, ChevronDown, Check, AlertTriangle } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
 
 export default function PropertySwitcher({ currentLodgeId, onSwitch }) {
-  const [groups, setGroups] = useState([])
+  const [groups, setGroups] = useState(/** @type {unknown[]} */ ([]))
   const [open, setOpen] = useState(false)
-  const [properties, setProperties] = useState([])
-  const [selectedGroup, setSelectedGroup] = useState(null)
+  const [properties, setProperties] = useState(/** @type {unknown} */ ([]))
+  const [selectedGroup, setSelectedGroup] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [switching, setSwitching] = useState(false)
@@ -17,7 +18,7 @@ export default function PropertySwitcher({ currentLodgeId, onSwitch }) {
     try {
       if (window.api.multiProperty?.getAllGroups) {
         const groupData = await window.api.multiProperty.getAllGroups()
-        const gs = Array.isArray(groupData) ? groupData : []
+        const gs = Array.isArray(groupData) ? /** @type {unknown[]} */ (groupData) : []
         setGroups(gs)
         if (gs.length > 0) {
           setSelectedGroup(gs[0])

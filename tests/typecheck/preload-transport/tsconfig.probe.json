@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tsconfig.typecheck-preload.json",
+  "files": [
+    "../../../src/preload/transport.js",
+    "./__probe-a__.ts",
+    "./__probe-b__.ts"
+  ],
+  "include": []
+}

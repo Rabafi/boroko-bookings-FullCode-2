@@ -1,35 +1,42 @@
+// @ts-check
 import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { dedupePromise, logActivity, readCache, writeCache } from './infrastructure.js';
 
 const APPROVAL_CACHE = 'revenue-recommendation-approvals';
 
+/** @param {unknown} payload */
 function labelRecommendations(payload) {
-  const recommendations = Array.isArray(payload?.recommendations)
-    ? payload.recommendations.map((rec, index) => ({
-      ...rec,
-      id: rec.id || rec.recommendation_id || `rec-${index}-${String(rec.action || 'action').slice(0, 24)}`,
-      status: rec.status || 'pending_approval',
+  const payloadFields = /** @type {Record<string, unknown>} */ (payload)
+  // Keep the second property read: an RPC object may expose a stateful getter.
+  const recommendations = Array.isArray(payloadFields.recommendations)
+    ? /** @type {unknown[]} */ (payloadFields.recommendations).map((rec, index) => {
+      const fields = /** @type {Record<string, unknown>} */ (rec)
+      return {
+      ...fields,
+      id: fields.id || fields.recommendation_id || `rec-${index}-${String(fields.action || 'action').slice(0, 24)}`,
+      status: fields.status || 'pending_approval',
       requires_approval: true,
       auto_applied: false,
       applied: false
-    }))
+    }})
     : [];
 
   return {
-    ...payload,
+    ...payloadFields,
     recommendations,
     requires_approval: true,
     auto_applied: false,
     silent_apply: false,
-    message: payload?.message || 'Recommendations require explicit manager approval and are never applied silently.'
+    message: payloadFields.message || 'Recommendations require explicit manager approval and are never applied silently.'
   };
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 async function _getRevenueForecast(startDate, endDate) {
   if (!state.isOnline) return { entries: [], is_estimate: true, source: 'offline' };
   try {
-    const { data, error } = await state.supabase.rpc('get_revenue_forecast', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_revenue_forecast', {
       p_lodge_id: state.lodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -37,13 +44,15 @@ async function _getRevenueForecast(startDate, endDate) {
     if (error) throw error;
     return data || { entries: [] };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to load revenue forecast');
+    const caught = /** @type {Record<string, unknown>|null|undefined} */ (err)
+    throw new Error(/** @type {string} */ (caught?.message || 'Failed to load revenue forecast'));
   }
 }
 
+/** @param {unknown} date @param {unknown} forecastOccupancyPct @param {unknown} forecastAdr @param {unknown} notes */
 async function _upsertForecastEntry(date, forecastOccupancyPct, forecastAdr, notes) {
   if (!state.isOnline) throw new Error('Cannot update forecast offline');
-  const { data, error } = await state.supabase.rpc('upsert_forecast_entry', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('upsert_forecast_entry', {
     p_lodge_id: state.lodgeId,
     p_date: date,
     p_forecast_occupancy_pct: Number(forecastOccupancyPct) || null,
@@ -58,19 +67,21 @@ async function _upsertForecastEntry(date, forecastOccupancyPct, forecastAdr, not
 async function _getCompetitorNotes() {
   if (!state.isOnline) return { notes: [] };
   try {
-    const { data, error } = await state.supabase.rpc('get_competitor_notes', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_competitor_notes', {
       p_lodge_id: state.lodgeId
     });
     if (error) throw error;
     return data || { notes: [] };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to load competitor notes');
+    const caught = /** @type {Record<string, unknown>|null|undefined} */ (err)
+    throw new Error(/** @type {string} */ (caught?.message || 'Failed to load competitor notes'));
   }
 }
 
+/** @param {unknown} competitorName @param {unknown} roomTypeId @param {unknown} notedRate @param {unknown} notes */
 async function _createCompetitorNote(competitorName, roomTypeId, notedRate, notes) {
   if (!state.isOnline) throw new Error('Cannot create competitor note offline');
-  const { data, error } = await state.supabase.rpc('create_competitor_note', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_competitor_note', {
     p_lodge_id: state.lodgeId,
     p_competitor_name: competitorName,
     p_room_type_id: roomTypeId,
@@ -82,10 +93,11 @@ async function _createCompetitorNote(competitorName, roomTypeId, notedRate, note
   return data;
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 async function _getDemandEvents(startDate, endDate) {
   if (!state.isOnline) return { events: [] };
   try {
-    const { data, error } = await state.supabase.rpc('get_demand_events', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_demand_events', {
       p_lodge_id: state.lodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -93,13 +105,15 @@ async function _getDemandEvents(startDate, endDate) {
     if (error) throw error;
     return data || { events: [] };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to load demand events');
+    const caught = /** @type {Record<string, unknown>|null|undefined} */ (err)
+    throw new Error(/** @type {string} */ (caught?.message || 'Failed to load demand events'));
   }
 }
 
+/** @param {unknown} eventName @param {unknown} eventDate @param {unknown} expectedImpact @param {unknown} notes */
 async function _createDemandEvent(eventName, eventDate, expectedImpact, notes) {
   if (!state.isOnline) throw new Error('Cannot create demand event offline');
-  const { data, error } = await state.supabase.rpc('create_demand_event', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_demand_event', {
     p_lodge_id: state.lodgeId,
     p_event_name: eventName,
     p_event_date: eventDate,
@@ -116,16 +130,18 @@ async function _getRevenueRecommendations() {
     return labelRecommendations({ recommendations: [], current_occupancy: 0, offline: true });
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_revenue_recommendations', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_revenue_recommendations', {
       p_lodge_id: state.lodgeId
     });
     if (error) throw error;
     return labelRecommendations(data || { recommendations: [], current_occupancy: 0 });
   } catch (err) {
-    throw new Error(err?.message || 'Failed to get revenue recommendations');
+    const caught = /** @type {Record<string, unknown>|null|undefined} */ (err)
+    throw new Error(/** @type {string} */ (caught?.message || 'Failed to get revenue recommendations'));
   }
 }
 
+/** @param {Record<string, unknown>} entry */
 function recordApprovalLocally(entry) {
   const cached = readCache(APPROVAL_CACHE) || [];
   const list = Array.isArray(cached) ? cached : [];
@@ -138,20 +154,22 @@ function recordApprovalLocally(entry) {
  * Approve a revenue recommendation for operator action.
  * Does NOT apply rates, yield rules, or calendar changes.
  */
+/** @param {unknown} recommendation @param {unknown} [notes] */
 export async function approveRevenueRecommendation(recommendation, notes = null) {
   if (!state.lodgeId) throw new Error('No lodge selected');
   if (!recommendation || typeof recommendation !== 'object') {
     throw new Error('Recommendation payload is required');
   }
+  const recommendationFields = /** @type {Record<string, unknown>} */ (recommendation)
 
   const approvalId = randomUUID();
   const approvedAt = new Date().toISOString();
   const payload = {
     approval_id: approvalId,
     lodge_id: state.lodgeId,
-    recommendation_id: recommendation.id || recommendation.recommendation_id || null,
-    action: recommendation.action || null,
-    reason: recommendation.reason || null,
+    recommendation_id: recommendationFields.id || recommendationFields.recommendation_id || null,
+    action: recommendationFields.action || null,
+    reason: recommendationFields.reason || null,
     status: 'approved',
     applied: false,
     auto_applied: false,
@@ -169,12 +187,12 @@ export async function approveRevenueRecommendation(recommendation, notes = null)
         .insert({
           id: approvalId,
           lodge_id: state.lodgeId,
-          room_type_id: recommendation.room_type_id || null,
-          rate_plan_id: recommendation.rate_plan_id || null,
-          recommendation_date: recommendation.recommendation_date || new Date().toISOString().slice(0, 10),
+          room_type_id: recommendationFields.room_type_id || null,
+          rate_plan_id: recommendationFields.rate_plan_id || null,
+          recommendation_date: recommendationFields.recommendation_date || new Date().toISOString().slice(0, 10),
           status: 'approved',
           payload: {
-            ...recommendation,
+            ...recommendationFields,
             notes,
             applied: false,
             auto_applied: false
@@ -185,7 +203,7 @@ export async function approveRevenueRecommendation(recommendation, notes = null)
         .select('id')
         .maybeSingle();
       if (error) throw error;
-      logActivity('revenue_recommendation_approved', `Recommendation approved · ${recommendation.action || approvalId}`);
+      logActivity('revenue_recommendation_approved', `Recommendation approved · ${recommendationFields.action || approvalId}`);
       return {
         success: true,
         approval_id: data?.id || approvalId,
@@ -200,7 +218,7 @@ export async function approveRevenueRecommendation(recommendation, notes = null)
   }
 
   recordApprovalLocally(payload);
-  logActivity('revenue_recommendation_approved', `Recommendation approved (local) · ${recommendation.action || approvalId}`);
+  logActivity('revenue_recommendation_approved', `Recommendation approved (local) · ${recommendationFields.action || approvalId}`);
   return {
     success: true,
     approval_id: approvalId,
@@ -215,19 +233,21 @@ export async function approveRevenueRecommendation(recommendation, notes = null)
 /**
  * Reject a revenue recommendation. No rate changes.
  */
+/** @param {unknown} recommendation @param {unknown} [reason] */
 export async function rejectRevenueRecommendation(recommendation, reason = null) {
   if (!state.lodgeId) throw new Error('No lodge selected');
   if (!recommendation || typeof recommendation !== 'object') {
     throw new Error('Recommendation payload is required');
   }
+  const recommendationFields = /** @type {Record<string, unknown>} */ (recommendation)
 
   const rejectionId = randomUUID();
   const rejectedAt = new Date().toISOString();
   const entry = {
     approval_id: rejectionId,
     lodge_id: state.lodgeId,
-    recommendation_id: recommendation.id || recommendation.recommendation_id || null,
-    action: recommendation.action || null,
+    recommendation_id: recommendationFields.id || recommendationFields.recommendation_id || null,
+    action: recommendationFields.action || null,
     status: 'rejected',
     applied: false,
     auto_applied: false,
@@ -242,11 +262,11 @@ export async function rejectRevenueRecommendation(recommendation, reason = null)
       await state.supabase.from('enterprise_revenue_recommendations').insert({
         id: rejectionId,
         lodge_id: state.lodgeId,
-        room_type_id: recommendation.room_type_id || null,
-        rate_plan_id: recommendation.rate_plan_id || null,
-        recommendation_date: recommendation.recommendation_date || new Date().toISOString().slice(0, 10),
+        room_type_id: recommendationFields.room_type_id || null,
+        rate_plan_id: recommendationFields.rate_plan_id || null,
+        recommendation_date: recommendationFields.recommendation_date || new Date().toISOString().slice(0, 10),
         status: 'rejected',
-        payload: { ...recommendation, reject_reason: reason, applied: false },
+        payload: { ...recommendationFields, reject_reason: reason, applied: false },
         approved_by: state.currentUser?.id || null,
         approved_at: rejectedAt
       });
@@ -257,7 +277,7 @@ export async function rejectRevenueRecommendation(recommendation, reason = null)
     recordApprovalLocally(entry);
   }
 
-  logActivity('revenue_recommendation_rejected', `Recommendation rejected · ${recommendation.action || rejectionId}`);
+  logActivity('revenue_recommendation_rejected', `Recommendation rejected · ${recommendationFields.action || rejectionId}`);
   return {
     success: true,
     approval_id: rejectionId,
@@ -282,10 +302,12 @@ export async function applyRevenueRecommendation() {
   };
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 export function getRevenueForecast(startDate, endDate) {
   return dedupePromise(`revenueForecast:${startDate}:${endDate}`, () => _getRevenueForecast(startDate, endDate));
 }
 
+/** @param {unknown} date @param {unknown} forecastOccupancyPct @param {unknown} forecastAdr @param {unknown} notes */
 export function upsertForecastEntry(date, forecastOccupancyPct, forecastAdr, notes) {
   return _upsertForecastEntry(date, forecastOccupancyPct, forecastAdr, notes);
 }
@@ -294,14 +316,17 @@ export function getCompetitorNotes() {
   return dedupePromise('competitorNotes', _getCompetitorNotes);
 }
 
+/** @param {unknown} competitorName @param {unknown} roomTypeId @param {unknown} notedRate @param {unknown} notes */
 export function createCompetitorNote(competitorName, roomTypeId, notedRate, notes) {
   return _createCompetitorNote(competitorName, roomTypeId, notedRate, notes);
 }
 
+/** @param {unknown} startDate @param {unknown} endDate */
 export function getDemandEvents(startDate, endDate) {
   return dedupePromise(`demandEvents:${startDate}:${endDate}`, () => _getDemandEvents(startDate, endDate));
 }
 
+/** @param {unknown} eventName @param {unknown} eventDate @param {unknown} expectedImpact @param {unknown} notes */
 export function createDemandEvent(eventName, eventDate, expectedImpact, notes) {
   return _createDemandEvent(eventName, eventDate, expectedImpact, notes);
 }

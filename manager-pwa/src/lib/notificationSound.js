@@ -1,19 +1,23 @@
+// @ts-check
 const DEFAULT_BEEP_FREQUENCY = 880
 const DEFAULT_BEEP_DURATION_MS = 120
 const DEFAULT_VOLUME = 0.3
 
+/** @type {AudioContext|null} */
 let sharedAudioContext = null
 
 function getAudioContext() {
   if (sharedAudioContext && sharedAudioContext.state !== 'closed') return sharedAudioContext
   try {
-    sharedAudioContext = new (window.AudioContext || window.webkitAudioContext)()
+    const AudioContextConstructor = window.AudioContext || /** @type {Window & {webkitAudioContext?: typeof AudioContext}} */ (window).webkitAudioContext
+    sharedAudioContext = new AudioContextConstructor()
   } catch {
     sharedAudioContext = null
   }
   return sharedAudioContext
 }
 
+/** @param {AudioContext} context */
 function scheduleBeep(context) {
   const oscillator = context.createOscillator()
   const gain = context.createGain()
@@ -27,6 +31,7 @@ function scheduleBeep(context) {
   oscillator.stop(context.currentTime + DEFAULT_BEEP_DURATION_MS / 1000)
 }
 
+/** @param {{sound?:boolean}|null|undefined} prefs */
 export function playNotificationSound(prefs) {
   if (!prefs?.sound) return
   try {
@@ -44,6 +49,7 @@ export function playNotificationSound(prefs) {
   }
 }
 
+/** @param {{sound?:boolean}|null|undefined} prefs */
 export function playTestSound(prefs) {
   if (!prefs?.sound) return
   try {
@@ -59,6 +65,7 @@ export function playTestSound(prefs) {
   }
 }
 
+/** @param {'reply'|'urgent'|'ordinary'} [type] @param {{vibration?:boolean}|null|undefined} [prefs] */
 export function vibratePulse(type = 'reply', prefs) {
   if (!prefs?.vibration) return
   if (!('vibrate' in navigator)) return

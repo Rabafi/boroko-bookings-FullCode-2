@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { Users, TrendingUp, AlertTriangle, Clock, Award } from 'lucide-react'
 import { unpackTransport } from '../../transportUnpack'

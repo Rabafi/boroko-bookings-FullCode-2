@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Building2, Plus, Pencil, Trash2, LayoutDashboard, BarChart3, DollarSign, RefreshCw, Users, BedDouble } from 'lucide-react'
 import { Modal } from './shared/Modal'

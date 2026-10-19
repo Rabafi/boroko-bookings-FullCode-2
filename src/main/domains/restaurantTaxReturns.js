@@ -1,12 +1,15 @@
+// @ts-check
 import { state } from '../state.js';
 import { dedupePromise } from './infrastructure.js';
 
+/** @param {unknown} periodStart @param {unknown} periodEnd @param {unknown} [taxRate] @returns {Promise<unknown>} */
 export function generateTaxReturn(periodStart, periodEnd, taxRate = 14) {
   return dedupePromise(
     `generateTaxReturn:${periodStart}:${periodEnd}:${taxRate}`,
     async () => {
       if (!state.isOnline) throw new Error('Tax returns require an online connection');
-      const { data, error } = await state.supabase.rpc('generate_tax_return', {
+      // Existing unconditional property access is represented by a type-only view; no new guard changes failure behavior.
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('generate_tax_return', {
         p_lodge_id: state.lodgeId,
         p_period_start: periodStart,
         p_period_end: periodEnd,
@@ -19,10 +22,12 @@ export function generateTaxReturn(periodStart, periodEnd, taxRate = 14) {
   );
 }
 
+/** @returns {Promise<unknown>} */
 export function getTaxReturns() {
   return dedupePromise('getTaxReturns', async () => {
     if (!state.isOnline) throw new Error('Tax returns require an online connection');
-    const { data, error } = await state.supabase.rpc('get_restaurant_tax_returns', {
+    // Keep RPC data unknown beyond the existing property access.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_restaurant_tax_returns', {
       p_lodge_id: state.lodgeId,
     });
     if (error) throw new Error(error.message);
@@ -30,9 +35,10 @@ export function getTaxReturns() {
   });
 }
 
+/** @param {unknown} id @param {{status?: unknown, notes?: unknown}} updates @returns {Promise<unknown>} */
 export async function updateTaxReturn(id, updates) {
   if (!state.isOnline) throw new Error('Tax returns require an online connection');
-  const { data, error } = await state.supabase.rpc('update_tax_return', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_tax_return', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     p_status: updates.status || null,
@@ -43,12 +49,13 @@ export async function updateTaxReturn(id, updates) {
   return data;
 }
 
+/** @param {unknown} periodStart @param {unknown} periodEnd @returns {Promise<unknown>} */
 export function getTaxReturnSummary(periodStart, periodEnd) {
   return dedupePromise(
     `getTaxReturnSummary:${periodStart}:${periodEnd}`,
     async () => {
       if (!state.isOnline) throw new Error('Tax returns require an online connection');
-      const { data, error } = await state.supabase.rpc('get_tax_return_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_tax_return_summary', {
         p_lodge_id: state.lodgeId,
         p_period_start: periodStart,
         p_period_end: periodEnd,

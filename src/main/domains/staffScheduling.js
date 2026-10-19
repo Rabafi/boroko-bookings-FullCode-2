@@ -1,9 +1,11 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
+/** @returns {void} */
 function requireOnline() {
   if (!state.isOnline) {
-    const err = new Error('Staff scheduling requires an internet connection')
+    const err = /** @type {Error & { onlineOnly?: boolean }} */ (new Error('Staff scheduling requires an internet connection'))
     err.onlineOnly = true
     throw err
   }
@@ -14,11 +16,12 @@ const ATTENDANCE_CACHE = 'staff-attendance'
 const LEAVE_CACHE = 'staff-leave'
 
 // ── Schedule ─────────────────────────────────────────────────────────────────
+/** @param {unknown} date */
 async function _getStaffSchedule(date) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_schedule', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_schedule', {
       p_lodge_id: currentLodgeId,
       p_date: date || new Date().toISOString().slice(0, 10)
     })
@@ -29,13 +32,15 @@ async function _getStaffSchedule(date) {
     return readCache(SCHEDULE_CACHE) || []
   }
 }
-export const getStaffSchedule = (...args) => dedupePromise('getStaffSchedule', () => _getStaffSchedule(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffSchedule>} */
+export const getStaffSchedule = (...args) => dedupePromise('getStaffSchedule', () => _getStaffSchedule(args[0]))
 
+/** @param {unknown} startDate @param {unknown} endDate */
 async function _getStaffScheduleRange(startDate, endDate) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_schedule_range', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_schedule_range', {
       p_lodge_id: currentLodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -47,13 +52,15 @@ async function _getStaffScheduleRange(startDate, endDate) {
     return readCache(SCHEDULE_CACHE) || []
   }
 }
-export const getStaffScheduleRange = (...args) => dedupePromise('getStaffScheduleRange', () => _getStaffScheduleRange(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffScheduleRange>} */
+export const getStaffScheduleRange = (...args) => dedupePromise('getStaffScheduleRange', () => _getStaffScheduleRange(args[0], args[1]))
 
+/** @param {unknown} staffId @param {unknown} scheduleDate @param {unknown} shiftLabel @param {unknown} startTime @param {unknown} endTime @param {unknown} roleAtShift @param {unknown} notes */
 export async function upsertStaffSchedule(staffId, scheduleDate, shiftLabel, startTime, endTime, roleAtShift, notes) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('upsert_staff_schedule', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('upsert_staff_schedule', {
     p_lodge_id: currentLodgeId,
     p_staff_id: staffId,
     p_schedule_date: scheduleDate,
@@ -67,11 +74,12 @@ export async function upsertStaffSchedule(staffId, scheduleDate, shiftLabel, sta
   return data
 }
 
+/** @param {unknown} id */
 export async function deleteStaffScheduleEntry(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('delete_staff_schedule_entry', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('delete_staff_schedule_entry', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -84,7 +92,7 @@ async function _getStaffAttendanceToday() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_attendance_today', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_attendance_today', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
@@ -94,13 +102,15 @@ async function _getStaffAttendanceToday() {
     return readCache(ATTENDANCE_CACHE) || []
   }
 }
-export const getStaffAttendanceToday = (...args) => dedupePromise('getStaffAttendanceToday', () => _getStaffAttendanceToday(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffAttendanceToday>} */
+export const getStaffAttendanceToday = (...args) => dedupePromise('getStaffAttendanceToday', () => _getStaffAttendanceToday())
 
+/** @param {unknown} startDate @param {unknown} endDate @param {unknown} staffId */
 async function _getStaffAttendanceRange(startDate, endDate, staffId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_attendance_range', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_attendance_range', {
       p_lodge_id: currentLodgeId,
       p_start_date: startDate,
       p_end_date: endDate,
@@ -112,13 +122,14 @@ async function _getStaffAttendanceRange(startDate, endDate, staffId) {
     return []
   }
 }
-export const getStaffAttendanceRange = (...args) => dedupePromise('getStaffAttendanceRange', () => _getStaffAttendanceRange(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffAttendanceRange>} */
+export const getStaffAttendanceRange = (...args) => dedupePromise('getStaffAttendanceRange', () => _getStaffAttendanceRange(args[0], args[1], args[2]))
 
 async function _getStaffAttendanceDashboard() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return null
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_attendance_dashboard', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_attendance_dashboard', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
@@ -127,13 +138,16 @@ async function _getStaffAttendanceDashboard() {
     return null
   }
 }
-export const getStaffAttendanceDashboard = (...args) => dedupePromise('getStaffAttendanceDashboard', () => _getStaffAttendanceDashboard(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffAttendanceDashboard>} */
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffAttendanceDashboard>} */
+export const getStaffAttendanceDashboard = (...args) => dedupePromise('getStaffAttendanceDashboard', () => _getStaffAttendanceDashboard())
 
+/** @param {unknown} staffId @param {unknown} shiftLabel @param {unknown} notes */
 export async function clockInStaffHotel(staffId, shiftLabel, notes) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('clock_in_staff_hotel', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('clock_in_staff_hotel', {
     p_lodge_id: currentLodgeId,
     p_staff_id: staffId,
     p_shift_label: shiftLabel || null,
@@ -143,11 +157,12 @@ export async function clockInStaffHotel(staffId, shiftLabel, notes) {
   return data
 }
 
+/** @param {unknown} attendanceId @param {unknown} notes */
 export async function clockOutStaffHotel(attendanceId, notes) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('clock_out_staff_hotel', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('clock_out_staff_hotel', {
     p_attendance_id: attendanceId,
     p_lodge_id: currentLodgeId,
     p_notes: notes || null
@@ -157,11 +172,12 @@ export async function clockOutStaffHotel(attendanceId, notes) {
 }
 
 // ── Leave ────────────────────────────────────────────────────────────────────
+/** @param {unknown} status @param {unknown} staffId */
 async function _getStaffLeaveRequests(status, staffId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_leave_requests', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_staff_leave_requests', {
       p_lodge_id: currentLodgeId,
       p_status: status || null,
       p_staff_id: staffId || null
@@ -173,13 +189,15 @@ async function _getStaffLeaveRequests(status, staffId) {
     return readCache(LEAVE_CACHE) || []
   }
 }
-export const getStaffLeaveRequests = (...args) => dedupePromise('getStaffLeaveRequests', () => _getStaffLeaveRequests(...args))
+/** @type {(...args: unknown[]) => ReturnType<typeof _getStaffLeaveRequests>} */
+export const getStaffLeaveRequests = (...args) => dedupePromise('getStaffLeaveRequests', () => _getStaffLeaveRequests(args[0], args[1]))
 
+/** @param {unknown} staffId @param {unknown} leaveType @param {unknown} startDate @param {unknown} endDate @param {unknown} reason */
 export async function requestStaffLeave(staffId, leaveType, startDate, endDate, reason) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('request_staff_leave', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('request_staff_leave', {
     p_lodge_id: currentLodgeId,
     p_staff_id: staffId,
     p_leave_type: leaveType,
@@ -191,11 +209,12 @@ export async function requestStaffLeave(staffId, leaveType, startDate, endDate, 
   return data
 }
 
+/** @param {unknown} id @param {unknown} status @param {unknown} rejectionReason */
 export async function approveStaffLeave(id, status, rejectionReason) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('approve_staff_leave', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('approve_staff_leave', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_status: status,

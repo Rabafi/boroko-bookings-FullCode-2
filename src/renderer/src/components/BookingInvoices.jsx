@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import { CreditCard, Download, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router'
@@ -27,10 +28,23 @@ const PAYMENT_METHODS = [
   { value: 'refund', label: 'Refund Adjustment' }
 ]
 
+/** @typedef {{id: string, booking_id: string, lodge_id: string, amount: number, method: string, type: string, paid_at: string, recorded_by: string | null, notes: string, created_at: string, refund_base_amount: number | null, refund_retained_percent: number | null, refund_retained_amount: number | null}} BookingPaymentHistoryRow */
+/** @typedef {BookingPaymentHistoryRow[] & {success?: boolean; error?: string} | {success: false; error?: string}} BookingPaymentHistoryResult */
+/** @typedef {{payment_method?: string | null, payment_type?: string | null, amount_paid?: number | null, payment_status?: string | null, charges_total?: number | null, description?: string | null, category?: string | null, amount?: number | null, void_reason?: string | null, payment_id?: string | null, notes?: string | null, total_amount?: number | null}} FinancialAuditSnapshotDisplay */
+/** @typedef {{id: string, action: string, created_at: string, amount_delta: number | null, before_snapshot: FinancialAuditSnapshotDisplay | null, after_snapshot: FinancialAuditSnapshotDisplay | null}} FinancialAuditRow */
+/**
+ * Consumer expectation for invoice rows constructed by getBookingInvoices.
+ * Fields used only for accommodation/event variants are optional; these
+ * values may also come from the existing cache path and are not validated.
+ * @typedef {{booking_id: string, invoice_number?: string | null, customer_name?: string | null, customer_email?: string | null, customer_phone?: string | null, total_amount: number, amount_paid: number, charges_total: number, balance_due: number, check_in?: string | null, check_out?: string | null, nights?: number, room_type?: string | null, room_number?: string | null, room_count?: number, status?: string, payment_status?: string, issued_at?: string | null, booking_type?: string, invoice_notes?: string | null, notes?: string | null, refund_settled?: boolean, refund_request_pending?: boolean, accommodation_group_id?: string, _accommodation_group?: boolean, _event_group?: boolean, _booking_ids?: string[], _room_lines?: Array<{booking_id: string; room_number?: string | null; room_type?: string | null; check_in?: string | null; check_out?: string | null; nights?: number; total_amount?: number; amount_paid?: number}>, _pending_refund_request?: {id?: string; status?: string; settlement_mode?: string; method?: string; retained_percent?: number; notes?: string; proof_reference?: string; approval_note?: string; approver_pin?: string; refund_amount?: number; updated_at?: string; created_at?: string} | null}} BookingInvoiceDisplay
+ */
+
+/** @param {string} currency @param {unknown} value */
 function fmtMoney(currency, value) {
   return `${currency} ${Number(value || 0).toFixed(2)}`
 }
 
+/** @param {string | number | null | undefined} value */
 function fmtDate(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -42,6 +56,7 @@ function fmtDate(value) {
   })
 }
 
+/** @param {string | number | null | undefined} value */
 function fmtDateTime(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -55,7 +70,9 @@ function fmtDateTime(value) {
   })
 }
 
+/** @param {string} action */
 function formatAuditAction(action) {
+  /** @type {Record<string, string | undefined>} */
   const labels = {
     payment_recorded: 'Payment recorded',
     refund_recorded: 'Refund recorded',
@@ -67,16 +84,19 @@ function formatAuditAction(action) {
   return labels[action] || String(action || 'Audit event').replace(/_/g, ' ')
 }
 
+/** @param {string} label @param {string} currency @param {unknown} value */
 function moneyLine(label, currency, value) {
   if (value == null || value === '') return null
   return `${label}: ${fmtMoney(currency, value)}`
 }
 
+/** @param {string} label @param {unknown} value */
 function textLine(label, value) {
   if (value == null || value === '') return null
   return `${label}: ${String(value).replace(/_/g, ' ')}`
 }
 
+/** @param {FinancialAuditRow} row @param {string} currency */
 function buildAuditSummary(row, currency) {
   const before = row.before_snapshot || {}
   const after = row.after_snapshot || {}
@@ -109,6 +129,7 @@ function buildAuditSummary(row, currency) {
   return lines.filter(Boolean)
 }
 
+/** @param {BookingInvoiceDisplay} invoice */
 function formatStay(invoice) {
   if (invoice._accommodation_group) {
     const checkIn = fmtDate(invoice.check_in)
@@ -131,20 +152,24 @@ function formatStay(invoice) {
   return `${room} · ${checkIn} - ${checkOut} · ${nights}N`
 }
 
+/** @param {BookingInvoiceDisplay} invoice */
 function canRefundBooking(invoice) {
   const status = String(invoice?.status || '').toLowerCase()
   return ['pending', 'confirmed', 'cancelled'].includes(status)
 }
 
+/** @param {BookingInvoiceDisplay} invoice */
 function invoiceRefundPending(invoice) {
   if (invoice?._accommodation_group) return false
   return invoice?.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.refund_settled !== true
 }
 
+/** @param {BookingInvoiceDisplay & {_pending_refund_request?: {status?: string} | null; refund_request_pending?: boolean}} invoice */
 function refundRequestPending(invoice) {
   return invoice?._pending_refund_request?.status === 'pending_approval' || invoice?.refund_request_pending === true
 }
 
+/** @param {BookingInvoiceDisplay} invoice */
 function invoiceNeedsAttention(invoice) {
   const total = Math.max(0, Number(invoice.total_amount || 0) + Number(invoice.charges_total || 0))
   const paid = Math.max(0, Number(invoice.amount_paid || 0))
@@ -156,6 +181,7 @@ function invoiceNeedsAttention(invoice) {
   return false
 }
 
+/** @param {{value: string | null | undefined; styles: Record<string, string>}} props */
 function Badge({ value, styles }) {
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${styles[value] || 'bg-gray-100 text-gray-600'}`}>
@@ -164,8 +190,9 @@ function Badge({ value, styles }) {
   )
 }
 
+/** @param {{invoice: BookingInvoiceDisplay; currency: string; onClose: () => void}} props */
 function LedgerModal({ invoice, currency, onClose }) {
-  const [payments, setPayments] = useState([])
+  const [payments, setPayments] = useState(/** @type {BookingPaymentHistoryRow[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -174,7 +201,9 @@ function LedgerModal({ invoice, currency, onClose }) {
     async function loadPayments() {
       setLoading(true)
       setError('')
-      const result = await window.api.bookings.getPayments(invoice.booking_id).catch((e) => ({ success: false, error: e.message }))
+      // getPayments returns SQL rows from get_booking_payments, or the main
+      // handler's failure object. RPC row contents are not runtime-validated.
+      const result = /** @type {BookingPaymentHistoryResult} */ (await window.api.bookings.getPayments(invoice.booking_id).catch((e) => ({ success: false, error: e.message })))
       if (cancelled) return
       if (result?.success === false) {
         setPayments([])
@@ -256,8 +285,9 @@ function LedgerModal({ invoice, currency, onClose }) {
   )
 }
 
+/** @param {{invoice: BookingInvoiceDisplay; currency: string; onClose: () => void}} props */
 function AuditModal({ invoice, currency, onClose }) {
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState(/** @type {FinancialAuditRow[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -272,11 +302,13 @@ function AuditModal({ invoice, currency, onClose }) {
         offset: 0
       }).catch((e) => ({ success: false, error: e.message }))
       if (cancelled) return
-      if (result?.success === false) {
+      // This consumer expectation follows the report handler's array-or-error
+      // envelope; audit row contents are not runtime-validated here.
+      if ((/** @type {(FinancialAuditRow[] & {success?: boolean; error?: string}) | {success: false; error?: string} | null} */ (result))?.success === false) {
         setRows([])
-        setError(result.error || 'Could not load financial audit history')
+        setError((/** @type {{error?: string}} */ (result)).error || 'Could not load financial audit history')
       } else {
-        setRows(Array.isArray(result) ? result : [])
+        setRows(Array.isArray(result) ? /** @type {FinancialAuditRow[]} */ (result) : [])
       }
       setLoading(false)
     }
@@ -355,8 +387,11 @@ function AuditModal({ invoice, currency, onClose }) {
   )
 }
 
+/** @typedef {{entry_hash?: string | null, id?: string | null, delivery_type?: string | null, delivery_status?: string | null, recipient?: string | null, file_path?: string | null, created_at?: string | null, initiated_by_name?: string | null, local_only?: boolean, previous_hash?: string | null}} InvoiceDeliveryDisplay */
+
+/** @param {{invoice: BookingInvoiceDisplay; onClose: () => void}} props */
 function DeliveryHistoryModal({ invoice, onClose }) {
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState(/** @type {InvoiceDeliveryDisplay[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -368,10 +403,14 @@ function DeliveryHistoryModal({ invoice, onClose }) {
       try {
         const data = await window.api.reports.invoiceDeliveryHistory({ bookingId: invoice.booking_id, limit: 50 })
         if (cancelled) return
-        setRows(Array.isArray(data) ? data : [])
+        // The handler combines local append-only entries with RPC rows but does
+        // not validate each persisted or returned row before this display use.
+        setRows(Array.isArray(data) ? /** @type {InvoiceDeliveryDisplay[]} */ (data) : [])
       } catch (err) {
         if (cancelled) return
-        setError(err.message || 'Could not load delivery history.')
+        // Preserve the existing error.message read; the thrown value is not
+        // normalized by the IPC handler.
+        setError((/** @type {{message?: string}} */ (err)).message || 'Could not load delivery history.')
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -432,6 +471,14 @@ function DeliveryHistoryModal({ invoice, onClose }) {
   )
 }
 
+/** @typedef {{retained_percent: number | string, settlement_mode: string, method: string, notes: string, proof_reference: string, approval_note: string, approver_pin: string}} RefundForm */
+/** @typedef {{id: string; booking_id: string; status: string; refund_amount: number; retained_amount: number; retained_percent: number; method: string; proof_reference: string; notes: string; updated_at?: string; created_at?: string}} PendingRefundRequestDisplay */
+/** @typedef {{success: false; error?: string} | {success: true; offline: true; pending_approval: true; booking_id: string; request: PendingRefundRequestDisplay; request_id: string; refund_amount: number; retained_amount: number; retained_percent: number; method: string; proof_reference: string; notes: string} | {success: true; booking_id: string; refund_amount: number; retained_amount: number; retained_percent: number; approved_by: string | null; approved_by_name: string | null; credit_transfer: boolean; credit_entry_id: string | null; credit_balance: number | null; pending_approval?: false} | {success: true; group_id: string; invoice_number: string | undefined; refund_amount: number; retained_amount: number; results: Array<{booking_id: string; refund_amount: number; retained_amount: number; result: object}>; credit_transfer?: never; credit_entry_id?: never; credit_balance?: never; approved_by_name?: never; pending_approval?: never}} BookingRefundResult */
+/** @typedef {Exclude<BookingRefundResult, {success: false}> & {settlement_mode: string; proof_reference: string; notes: string}} BookingRefundSavedResult */
+/** @typedef {{success: false; error?: string} | {success: true; offline: boolean; allocations: unknown[]}} GroupPaymentIpcResult */
+/** @typedef {{success?: boolean; error?: string}} InvoiceEmailIpcResult */
+
+/** @param {{invoice: BookingInvoiceDisplay; currency: string; isOffline?: boolean; onClose: () => void; onSaved?: (receipt: BookingRefundSavedResult) => void}} props */
 function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved }) {
   const pendingRequest = invoice?._pending_refund_request || null
   const pendingSettlementMode = pendingRequest?.settlement_mode ||
@@ -439,7 +486,7 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
   const pendingMethod = pendingRequest?.method && pendingRequest.method !== 'customer_credit_transfer'
     ? pendingRequest.method
     : 'bank_transfer'
-  const [form, setForm] = useState(() => ({
+  const [form, setForm] = useState(() => /** @type {RefundForm} */ ({
     retained_percent: pendingRequest?.retained_percent ?? 0,
     settlement_mode: pendingSettlementMode,
     method: pendingMethod,
@@ -458,6 +505,7 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
   const transferToCredit = form.settlement_mode === 'customer_credit'
   const actionLabel = isOffline ? 'Save Refund Request' : transferToCredit ? 'Approve Credit Transfer' : 'Approve Refund'
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleSubmit = async (event) => {
     event.preventDefault()
     setSaving(true)
@@ -472,9 +520,11 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
       request_id: pendingRequest?.id || undefined,
       intentId: crypto.randomUUID()
     }
-    const result = invoice?._accommodation_group
-      ? await window.api.bookings.refundGroup(invoice.accommodation_group_id, payload).catch((e) => ({ success: false, error: e.message }))
-      : await window.api.bookings.refund(invoice.booking_id, payload).catch((e) => ({ success: false, error: e.message }))
+    const result = /** @type {BookingRefundResult} */ (invoice?._accommodation_group
+      ? await window.api.bookings.refundGroup(/** @type {string} */ (invoice.accommodation_group_id), payload).catch((e) => ({ success: false, error: e.message }))
+      : await window.api.bookings.refund(invoice.booking_id, payload).catch((e) => ({ success: false, error: e.message })))
+    // The main domain constructs these offline/online envelopes around its
+    // RPC path; the nested raw RPC result is not runtime-validated here.
 
     if (result?.success === false) {
       setError(result.error || 'Refund failed')
@@ -652,6 +702,9 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
   )
 }
 
+/** @typedef {{amount: string; method: string}} GroupPaymentForm */
+
+/** @param {{invoice: BookingInvoiceDisplay; currency: string; form: GroupPaymentForm; setForm: import('react').Dispatch<import('react').SetStateAction<GroupPaymentForm>>; saving: boolean; error: string; onClose: () => void; onSubmit: import('react').FormEventHandler<HTMLFormElement>}} props */
 function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, onClose, onSubmit }) {
   return (
     <Modal title={`Collect Payment · ${invoice.invoice_number}`} onClose={onClose} size="md">
@@ -708,6 +761,10 @@ function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, on
   )
 }
 
+/** @typedef {{receipt_number?: string | null; id?: string | null; booking_id?: string; customerName: string; invoiceNumber?: string | null; amount: number; balance: number; reference?: string; notes?: string; created_at: string}} CreditTransferReceiptDisplay */
+/** @typedef {{lodge_name?: string; company_name?: string; address?: string; phone?: string; email?: string; website?: string; logo?: string}} ReceiptSettingsDisplay */
+
+/** @param {{receipt: CreditTransferReceiptDisplay; currency: string; settings: ReceiptSettingsDisplay | null | undefined; onClose: () => void}} props */
 function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
   const receiptNumber = receipt.receipt_number || `CREDIT-${String(receipt.id || receipt.booking_id || Date.now()).slice(0, 8).toUpperCase()}`
   const print = () => window.api.receipts.printCurrent({ silent: false }).catch(() => null)
@@ -771,31 +828,32 @@ function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
 export default function BookingInvoices() {
   const { settings } = useSettings()
   const { user } = useAuth()
-  const currency = settings?.currency || 'P'
+  const currency = (/** @type {(ReceiptSettingsDisplay & {currency?: string}) | null} */ (settings))?.currency || 'P'
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [invoices, setInvoices] = useState([])
+  // RPC/cache rows and conference rows are not shape-validated before display.
+  const [invoices, setInvoices] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [isOffline, setIsOffline] = useState(false)
   const [search, setSearch] = useState('')
   const [paymentFilter, setPaymentFilter] = useState('all')
   const [bookingFilter, setBookingFilter] = useState('all')
   const [sortBy, setSortBy] = useState('issued_desc')
-  const [density, setDensity] = useState('comfortable')
-  const [selectedInvoice, setSelectedInvoice] = useState(null)
-  const [receiptInvoice, setReceiptInvoice] = useState(null)
-  const [ledgerInvoice, setLedgerInvoice] = useState(null)
-  const [auditInvoice, setAuditInvoice] = useState(null)
-  const [deliveryInvoice, setDeliveryInvoice] = useState(null)
-  const [refundInvoice, setRefundInvoice] = useState(null)
-  const [groupPaymentInvoice, setGroupPaymentInvoice] = useState(null)
+  const [density, setDensity] = useState(/** @type {'compact' | 'comfortable'} */ ('comfortable'))
+  const [selectedInvoice, setSelectedInvoice] = useState(/** @type {unknown} */ (null))
+  const [receiptInvoice, setReceiptInvoice] = useState(/** @type {unknown} */ (null))
+  const [ledgerInvoice, setLedgerInvoice] = useState(/** @type {unknown} */ (null))
+  const [auditInvoice, setAuditInvoice] = useState(/** @type {unknown} */ (null))
+  const [deliveryInvoice, setDeliveryInvoice] = useState(/** @type {unknown} */ (null))
+  const [refundInvoice, setRefundInvoice] = useState(/** @type {unknown} */ (null))
+  const [groupPaymentInvoice, setGroupPaymentInvoice] = useState(/** @type {unknown} */ (null))
   const [groupPaymentForm, setGroupPaymentForm] = useState({ amount: '', method: 'cash' })
   const [groupPaymentError, setGroupPaymentError] = useState('')
   const [groupPaymentSaving, setGroupPaymentSaving] = useState(false)
-  const [creditReceipt, setCreditReceipt] = useState(null)
-  const [flash, setFlash] = useState(null)
-  const [emailingId, setEmailingId] = useState(null)
+  const [creditReceipt, setCreditReceipt] = useState(/** @type {CreditTransferReceiptDisplay | null} */ (null))
+  const [flash, setFlash] = useState(/** @type {{type: 'success' | 'error'; text: string} | null} */ (null))
+  const [emailingId, setEmailingId] = useState(/** @type {string | null} */ (null))
   const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
   const [financialFailedIds, setFinancialFailedIds] = useState(new Set())
   const [financialCacheStale, setFinancialCacheStale] = useState(false)
@@ -808,8 +866,10 @@ export default function BookingInvoices() {
       window.api.invoices.getBookingInvoices().catch(() => []),
       window.api.conference.getAll().catch(() => [])
     ])
-    const fresh = Array.isArray(data) ? data : []
-    const confInvoices = (Array.isArray(confData) ? confData : [])
+    // getBookingInvoices returns constructed SQL rows or the existing cache
+    // value; neither source validates each row before this display consumer.
+    const fresh = Array.isArray(data) ? /** @type {unknown[]} */ (data) : []
+    const confInvoices = (Array.isArray(confData) ? /** @type {unknown[]} */ (confData) : [])
       .filter((cb) => Number(cb.total_amount || 0) > 0 && Number(cb.deposit_paid || 0) < Number(cb.total_amount || 0))
       .map((cb) => ({
         booking_id: cb.id,
@@ -872,9 +932,11 @@ export default function BookingInvoices() {
       try {
         const status = await window.api.sync.getStatus()
         if (cancelled) return
-        setFinancialPendingIds(new Set(status?.financialPendingBookingIds || []))
-        setFinancialFailedIds(new Set(status?.financialFailedBookingIds || []))
-        setFinancialCacheStale(status?.cacheStale?.active === true)
+      // getStatus can return the main handler's minimal offline fallback; these
+      // extra fields are absent there and remain undefined, as before.
+      setFinancialPendingIds(new Set((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {financialPendingBookingIds?: unknown[]}} */ (status))?.financialPendingBookingIds || []))
+      setFinancialFailedIds(new Set((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {financialFailedBookingIds?: unknown[]}} */ (status))?.financialFailedBookingIds || []))
+      setFinancialCacheStale((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {cacheStale?: {active?: boolean}}} */ (status))?.cacheStale?.active === true)
       } catch {
         if (cancelled) return
         setFinancialPendingIds(new Set())
@@ -890,14 +952,17 @@ export default function BookingInvoices() {
     }
   }, [])
 
+  /** @param {string} bookingId */
   const isFinanciallySyncBlocked = (bookingId) => (
     financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
 
+  /** @param {string} bookingId */
   const isRefundActionBlocked = (bookingId) => (
     financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId) || (!isOffline && financialCacheStale)
   )
 
+  /** @param {BookingInvoiceDisplay} invoice */
   const isInvoiceRefundBlocked = (invoice) => {
     if (invoice?._accommodation_group) {
       return (invoice._booking_ids || []).some((bookingId) => isRefundActionBlocked(bookingId))
@@ -905,11 +970,13 @@ export default function BookingInvoices() {
     return isRefundActionBlocked(invoice?.booking_id)
   }
 
+  /** @param {'success' | 'error'} type @param {string} text */
   const pushFlash = (type, text) => {
     setFlash({ type, text })
     setTimeout(() => setFlash(null), 3500)
   }
 
+  /** @param {BookingInvoiceDisplay} invoice */
   const openCollectionFlow = (invoice) => {
     if (invoice?._accommodation_group) {
       if ((invoice._booking_ids || []).some((bookingId) => isFinanciallySyncBlocked(bookingId))) {
@@ -950,17 +1017,20 @@ export default function BookingInvoices() {
     })
   }
 
+  /** @param {BookingInvoiceDisplay} invoice */
   const handleSendEmail = async (invoice) => {
     if (!invoice?.customer_email) {
       pushFlash('error', 'This guest does not have an email address on file.')
       return
     }
     setEmailingId(invoice.booking_id)
-    const result = await window.api.invoices.sendBookingInvoiceEmail({
+    const result = /** @type {InvoiceEmailIpcResult} */ (await window.api.invoices.sendBookingInvoiceEmail({
       ...invoice,
-      lodge_name: settings?.lodge_name || '',
+      lodge_name: (/** @type {ReceiptSettingsDisplay | null} */ (settings))?.lodge_name || '',
       currency
-    }).catch((e) => ({ success: false, error: e.message }))
+    }).catch((e) => ({ success: false, error: e.message })))
+    // The IPC handler forwards the mail helper result or constructs its
+    // {success:false,error} failure envelope; the helper data is unvalidated.
     setEmailingId(null)
     if (result?.success === false) {
       pushFlash('error', result.error || 'Could not send invoice email.')
@@ -969,6 +1039,7 @@ export default function BookingInvoices() {
     pushFlash('success', `Invoice sent to ${invoice.customer_email}`)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleGroupPaymentSubmit = async (event) => {
     event.preventDefault()
     if (!groupPaymentInvoice?.accommodation_group_id) return
@@ -980,12 +1051,14 @@ export default function BookingInvoices() {
       setGroupPaymentSaving(false)
       return
     }
-    const result = await window.api.bookings.updateGroupPayment(
-      groupPaymentInvoice.accommodation_group_id,
+    const result = /** @type {GroupPaymentIpcResult} */ (await window.api.bookings.updateGroupPayment(
+      /** @type {string} */ (groupPaymentInvoice.accommodation_group_id),
       amount,
       groupPaymentForm.method,
       crypto.randomUUID()
-    ).catch((error) => ({ success: false, error: error?.message }))
+    ).catch((error) => ({ success: false, error: error?.message })))
+    // The domain constructs these outer fields; per-booking allocation results
+    // remain unvalidated and are only counted by this caller.
     if (result?.success === false) {
       setGroupPaymentError(result.error || 'Payment could not be recorded.')
       setGroupPaymentSaving(false)
@@ -1061,6 +1134,7 @@ export default function BookingInvoices() {
       })
       .slice(0, 4)
   ), [filteredInvoices])
+  /** @type {Array<{value: string; label: string}>} */
   const invoiceViews = [
     { value: 'all', label: 'All' },
     { value: 'unpaid', label: 'Unpaid' },
@@ -1752,7 +1826,7 @@ export default function BookingInvoices() {
         <CreditTransferReceipt
           receipt={creditReceipt}
           currency={currency}
-          settings={settings}
+          settings={/** @type {ReceiptSettingsDisplay | null} */ (settings)}
           onClose={() => setCreditReceipt(null)}
         />
       )}

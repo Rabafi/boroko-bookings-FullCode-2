@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, RefreshCw, Check, X, AlertTriangle, Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -12,6 +13,14 @@ const PROVIDERS = [
   { key: 'manual_adapter', label: 'Manual / Cash' }
 ]
 
+/** @typedef {{provider: string, label: string, mode: string, public_key: string, secret_key: string, webhook_secret: string, merchant_account_id: string, country: string, currency: string, default_currency: string, supported_currencies: string[], allowed_payment_methods: string[]}} PaymentProviderConfigForm */
+/** @typedef {{id: string, provider: string, label: string | null, mode: string, country: string, currency: string, default_currency: string | null, public_key: string | null, merchant_account_id: string | null, is_active: boolean, supported_currencies: unknown, allowed_payment_methods: unknown}} PaymentProviderConfigRow */
+/** @typedef {{id: string, provider: string, amount: number, currency: string, status: string, payment_method: string | null, created_at: string}} RecentPaymentTransaction */
+/** @typedef {{id: string, provider: string, amount: number, currency: string, created_at: string}} PendingPaymentTransaction */
+/** @typedef {{id: string, provider: string, amount: number, currency: string, error_message: string | null, created_at: string}} FailedPaymentTransaction */
+/** @typedef {{recent_transactions: RecentPaymentTransaction[], pending_transactions: PendingPaymentTransaction[], failed_transactions: FailedPaymentTransaction[]}} PaymentGatewayDashboard */
+
+/** @type {PaymentProviderConfigForm} */
 const emptyForm = {
   provider: '',
   label: '',
@@ -27,18 +36,21 @@ const emptyForm = {
   allowed_payment_methods: ['card', 'mobile_money']
 }
 
+/** @param {{lodgeId?: string | null}} props */
 export default function PaymentGatewayConfig({ lodgeId = null }) {
-  const [configs, setConfigs] = useState([])
-  const [dashboard, setDashboard] = useState({ recent_transactions: [], pending_transactions: [], failed_transactions: [] })
+  const [configs, setConfigs] = useState(/** @type {unknown[]} */ ([]))
+  const [dashboard, setDashboard] = useState(/** @type {unknown} */ ({ recent_transactions: [], pending_transactions: [], failed_transactions: [] }))
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {PaymentProviderConfigRow['id'] | null} */ (null))
+  /** @type {[PaymentProviderConfigForm, import('react').Dispatch<import('react').SetStateAction<PaymentProviderConfigForm>>]} */
   const [form, setForm] = useState(emptyForm)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [saving, setSaving] = useState(false)
+  /** @type {[Record<string, boolean>, import('react').Dispatch<import('react').SetStateAction<Record<string, boolean>>>]} */
   const [showSecrets, setShowSecrets] = useState({})
-  const [testResult, setTestResult] = useState(null)
+  const [testResult, setTestResult] = useState(/** @type {unknown} */ (null))
   const [signatureTest, setSignatureTest] = useState({
     provider: '',
     signature: '',
@@ -54,14 +66,20 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
         window.api.payments.getProviderConfig(null, lodgeId),
         window.api.payments.getPaymentDashboard(lodgeId)
       ])
-      const configData = Array.isArray(configResult) ? configResult : configResult?.data
+      // The main handler returns the `{ data, error }` wrapper and the domain
+      // helper array-checks RPC data. Cached row contents remain unvalidated.
+      const providerResult = configResult
+      const configData = Array.isArray(providerResult) ? /** @type {unknown[]} */ (providerResult) : providerResult?.data
       setConfigs(Array.isArray(configData) ? configData : [])
       if (Array.isArray(configData) && configData.length > 0) {
         setSignatureTest((current) => current.provider ? current : ({ ...current, provider: configData[0].provider || '' }))
       }
-      setDashboard(dashData || { recent_transactions: [], pending_transactions: [], failed_transactions: [] })
+      // RPC/cache JSON is not validated here; this local shape mirrors the
+      // get_payment_dashboard SQL object consumed by the existing UI.
+      const dashboardExpectation = dashData
+      setDashboard(dashboardExpectation || { recent_transactions: [], pending_transactions: [], failed_transactions: [] })
     } catch (err) {
-      setError(err?.message || 'Failed to load payment config')
+      setError(/** @type {Error} */ (err)?.message || 'Failed to load payment config')
     } finally {
       setLoading(false)
     }
@@ -76,6 +94,7 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
   }, [success])
 
   const openAdd = () => { setEditing(null); setForm(emptyForm); setError(''); setShowModal(true) }
+  /** @param {PaymentProviderConfigRow} c */
   const openEdit = (c) => {
     setEditing(c.id)
     setForm({
@@ -96,6 +115,7 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
     setShowModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleSave = async (e) => {
     e.preventDefault()
     if (!form.provider) { setError('Provider is required'); return }
@@ -107,7 +127,7 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
       setSuccess('Payment config saved')
       load()
     } catch (err) {
-      setError(err?.message || 'Failed to save config')
+      setError(/** @type {Error} */ (err)?.message || 'Failed to save config')
     } finally {
       setSaving(false)
     }
@@ -119,6 +139,8 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
     if (!signatureTest.provider) { setError('Provider is required'); return }
     if (!signatureTest.signature.trim()) { setError('Webhook signature is required'); return }
     try {
+      // SQL returns a JSON object with `verified` and a `reason` or `provider`;
+      // the RPC payload is not runtime-validated by this consumer.
       const result = await window.api.payments.verifyWebhookSignature(
         signatureTest.provider,
         signatureTest.signature.trim(),
@@ -128,7 +150,7 @@ export default function PaymentGatewayConfig({ lodgeId = null }) {
       setTestResult(result)
       if (result?.verified) setSuccess('Webhook signature verified')
     } catch (err) {
-      setError(err?.message || 'Signature verification failed')
+      setError(/** @type {Error} */ (err)?.message || 'Signature verification failed')
     }
   }
 

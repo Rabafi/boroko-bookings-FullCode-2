@@ -1,16 +1,19 @@
+// @ts-check
 import { state } from '../state.js'
 import { dedupePromise } from './infrastructure.js'
 
 function requireOnline() {
   if (!state.isOnline) throw new Error('Restaurant Accounting requires an online connection')
 }
+/** @param {string} name @param {Record<string, unknown>} [payload] */
 async function rpc(name, payload = {}) {
   requireOnline()
-  const { data, error } = await state.supabase.rpc(name, { p_lodge_id: state.lodgeId, ...payload })
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(name, { p_lodge_id: state.lodgeId, ...payload })
   if (error) throw new Error(error.message)
   if (data?.success === false) throw new Error(data.error || `${name} failed`)
   return data
 }
+/** @param {unknown} key */
 function requireKey(key) {
   if (!key || !String(key).trim()) throw new Error('A stable operation key is required')
   return String(key).trim()
@@ -32,6 +35,8 @@ export const getRestaurantLedgerReportExportV2 = (filters={}) => rpc('get_restau
 export const getRestaurantLedgerExportV3 = (filters = {}) => rpc('get_restaurant_ledger_export_v3', { p_start_date: filters.startDate || null, p_end_date: filters.endDate || null, p_account_id: filters.accountId || null, p_filters: filters })
 export const createRestaurantJournalV2 = (data) => rpc('create_restaurant_journal_entry',{p_entry_date:data.entryDate,p_description:data.description,p_source_type:data.sourceType||'manual',p_source_id:data.sourceId||null,p_reference_number:data.referenceNumber||null,p_idempotency_key:requireKey(data.operationKey),p_lines:data.lines})
 export const createRestaurantManualJournalDraftV2 = (data) => rpc('create_restaurant_manual_journal_draft',{p_entry_date:data.entryDate,p_description:data.description,p_reference_number:data.referenceNumber||null,p_lines:data.lines,p_evidence_ref:data.evidenceRef,p_operation_id:requireKey(data.operationKey)})
+export const createAndSubmitRestaurantManualJournalV2 = (data) => rpc('create_and_submit_restaurant_manual_journal_v2',{p_entry_date:data.payload.entry_date,p_description:data.payload.description,p_reference_number:data.payload.reference_number,p_lines:data.payload.lines,p_evidence_ref:data.payload.evidence_ref,p_operation_id:requireKey(data.operationId)})
+export const getRestaurantManualJournalSubmissionStatusV2 = (operationId) => rpc('get_restaurant_manual_journal_submission_status_v2',{p_operation_id:requireKey(operationId)})
 export const submitRestaurantManualJournalV2 = (id) => rpc('submit_restaurant_manual_journal',{p_draft_id:id})
 export const approveRestaurantManualJournalV2 = (id) => rpc('approve_restaurant_manual_journal',{p_draft_id:id})
 export const postRestaurantManualJournalV2 = (id) => rpc('post_restaurant_manual_journal',{p_draft_id:id})

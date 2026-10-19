@@ -1,15 +1,25 @@
+// @ts-check
 import { buildPwaNotificationSourceKey, getPwaNotificationSeenVersion, removePwaNotification, setPwaNotificationSeenVersion, upsertPwaNotification } from './runtime'
 import { normalizeSupportMessages, supportMessageSide } from '@shared/supportThreads'
 
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readField(value, key) {
+  if (value === null || value === undefined) return undefined
+  return Reflect.get(Object(value), key, value)
+}
+
+/** @param {{category?: unknown}} request */
 export function isFrontDeskConversation(request) {
   return String(request?.category || '').trim().toLowerCase() === 'front desk request'
 }
 
+/** @param {Record<string, unknown>} request */
 export function getFrontDeskNotificationSourceKey(request) {
   if (request?.id) return `frontdesk-request:${request.id}`
   return getLegacyFrontDeskNotificationSourceKey(request)
 }
 
+/** @param {Record<string, unknown>} request */
 function getLegacyFrontDeskNotificationSourceKey(request) {
   return buildPwaNotificationSourceKey(
     'frontdesk-request',
@@ -20,6 +30,7 @@ function getLegacyFrontDeskNotificationSourceKey(request) {
   )
 }
 
+/** @param {Record<string, unknown>} request @param {Record<string, unknown>|null} [latestDeskMessage] */
 export function getFrontDeskNotificationVersion(request, latestDeskMessage = null) {
   const desk = latestDeskMessage || null
   return [
@@ -32,6 +43,7 @@ export function getFrontDeskNotificationVersion(request, latestDeskMessage = nul
   ].map((part) => String(part ?? '').trim()).join('|')
 }
 
+/** @param {string} lodgeId @param {Record<string, unknown>} request @param {{quiet?: boolean}} [options] */
 export function upsertFrontDeskNotification(lodgeId, request, { quiet = false } = {}) {
   if (!lodgeId || !isFrontDeskConversation(request)) return null
   const sourceKey = getFrontDeskNotificationSourceKey(request)
@@ -55,7 +67,7 @@ export function upsertFrontDeskNotification(lodgeId, request, { quiet = false } 
   if (legacySourceKey !== sourceKey) removePwaNotification(lodgeId, legacySourceKey)
   const version = getFrontDeskNotificationVersion(request, latestDeskMessage)
   const seen = getPwaNotificationSeenVersion(lodgeId, sourceKey)
-  const alreadySeen = serverUnread === true ? false : seen?.version === version
+  const alreadySeen = serverUnread === true ? false : readField(seen, 'version') === version
   const now = new Date().toISOString()
   const notification = upsertPwaNotification(lodgeId, {
     sourceKey,
@@ -64,7 +76,7 @@ export function upsertFrontDeskNotification(lodgeId, request, { quiet = false } 
     tone: request.status === 'resolved' || request.status === 'closed' ? 'info' : 'warn',
     category: 'frontDeskRequest',
     href: '/control',
-    readAt: quiet || alreadySeen ? (seen?.seenAt || now) : null,
+    readAt: quiet || alreadySeen ? (readField(seen, 'seenAt') || now) : null,
     meta: {
       requestId: request.id || null,
       requestTitle: request.title || '',
@@ -80,7 +92,7 @@ export function upsertFrontDeskNotification(lodgeId, request, { quiet = false } 
     }
   })
 
-  if (quiet || notification?.readAt) {
+  if (quiet || readField(notification, 'readAt')) {
     setPwaNotificationSeenVersion(lodgeId, sourceKey, version)
   }
   return notification

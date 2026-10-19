@@ -14,6 +14,20 @@ import { ECOSYSTEM_BRAND } from '../shared/brandIdentity.js'
 const EMAIL_BRAND_NAME = ECOSYSTEM_BRAND.name
 const EMAIL_LEGAL_OWNER = ECOSYSTEM_BRAND.legalOwner
 
+/** @typedef {{to: string, subject: string, html: string, text?: string, from?: string, replyTo?: string, attachments?: import('nodemailer').SendMailOptions['attachments']}} StoredConfigEmailInput */
+/** @typedef {Record<string, unknown>} EmailConfigRecord */
+/** @typedef {{provider: unknown, host: unknown, port: number, user: unknown, pass: unknown, from: unknown, to: unknown, reply_to: unknown, allow_insecure_tls: boolean, auto_send_quotations: boolean, auto_send_booking_invoice: boolean, auto_send_booking_confirmation: boolean, auto_send_booking_cancellation: boolean}} NormalizedEmailConfig */
+/** @typedef {NormalizedEmailConfig & {pass_encrypted?: unknown, pass_encryption?: string}} PersistedEmailConfig */
+/** @typedef {Record<string, unknown> & {status?: string, issued_date?: string | number, due_date?: string | number, paid_date?: string | number, issued_at?: string | number, created_at?: string | number, check_in?: string | number, check_out?: string | number, valid_until?: string | number}} EmailTemplateRecord */
+/** @typedef {EmailTemplateRecord & {status: string}} InvoiceEmailTemplateRecord */
+/** @typedef {{to: string, purchaseOrder: EmailTemplateRecord & {supplier?: {name?: unknown}}, businessName: unknown, currency?: unknown, pdfBuffer?: Buffer | null, filename?: string}} PurchaseOrderEmailInput */
+/** @typedef {{to: string, licenseKey: unknown, lodgeName: unknown, plan: unknown, expiresAt?: string | number | null, lodgeId: unknown, notes?: unknown, invoice: EmailTemplateRecord}} LicenseEmailInput */
+/** @typedef {{to: string, invoice: InvoiceEmailTemplateRecord, lodgeName: unknown}} InvoiceEmailInput */
+/** @typedef {{to: string, invoice: EmailTemplateRecord, lodgeName: unknown, currency?: unknown}} BookingInvoiceEmailInput */
+/** @typedef {{to: string, quotation: EmailTemplateRecord, lodgeName: unknown, settings?: EmailTemplateRecord}} QuotationEmailInput */
+/** @typedef {{to: string, booking: EmailTemplateRecord, lodgeName: unknown, settings?: EmailTemplateRecord, currency?: unknown}} BookingLifecycleEmailInput */
+
+/** @param {unknown} value @returns {string} */
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -27,6 +41,7 @@ function configPath() {
   return path.join(app.getPath('userData'), 'email-config.json')
 }
 
+/** @param {EmailConfigRecord} [config] */
 function decryptStoredPassword(config = {}) {
   if (config?.pass_encrypted && safeStorage?.isEncryptionAvailable?.()) {
     try {
@@ -38,6 +53,12 @@ function decryptStoredPassword(config = {}) {
   return config?.pass || ''
 }
 
+/**
+ * Config values come from disk or an IPC form and remain unvalidated here.
+ * This record view only describes the property reads already performed.
+ * @param {EmailConfigRecord} [config]
+ */
+/** @param {EmailConfigRecord} [config] @returns {NormalizedEmailConfig} */
 function normalizeEmailConfig(config = {}) {
   return {
     provider: config?.provider || 'custom',
@@ -57,6 +78,7 @@ function normalizeEmailConfig(config = {}) {
 }
 
 /** Load config from disk; returns null if not configured yet */
+/** @returns {Record<string, unknown> | null} Normalized settings object; field values from JSON remain unvalidated. */
 export function getEmailConfig() {
   try {
     const raw = fs.readFileSync(configPath(), 'utf8')
@@ -68,9 +90,11 @@ export function getEmailConfig() {
 }
 
 /** Persist config to disk */
+/** @param {EmailConfigRecord} config */
 export function saveEmailConfig(config) {
   try {
     const normalized = normalizeEmailConfig(config)
+    /** @type {PersistedEmailConfig} */
     const persisted = { ...normalized }
     if (persisted.pass && safeStorage?.isEncryptionAvailable?.()) {
       persisted.pass_encrypted = safeStorage.encryptString(persisted.pass).toString('base64')
@@ -80,11 +104,13 @@ export function saveEmailConfig(config) {
     fs.writeFileSync(configPath(), JSON.stringify(persisted, null, 2), 'utf8')
     return { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    // Electron safeStorage and Node filesystem operations throw Error objects.
+    return { success: false, error: /** @type {Error} */ (e).message }
   }
 }
 
 /** Build a Nodemailer transporter from the stored config */
+/** @param {EmailConfigRecord} config */
 function createTransporter(config) {
   const normalized = normalizeEmailConfig(config)
   const allowInsecureTls = normalized.allow_insecure_tls === true
@@ -102,6 +128,7 @@ function createTransporter(config) {
   })
 }
 
+/** @param {StoredConfigEmailInput} input */
 async function sendStoredConfigEmail({ to, subject, html, text, from, replyTo, attachments }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
@@ -122,10 +149,12 @@ async function sendStoredConfigEmail({ to, subject, html, text, from, replyTo, a
     })
     return { success: true, subject }
   } catch (e) {
-    return { success: false, error: e.message }
+    // Nodemailer's sendMail rejection is an Error from its transport API.
+    return { success: false, error: /** @type {Error} */ (e).message }
   }
 }
 
+/** @param {PurchaseOrderEmailInput} input */
 export async function sendPurchaseOrderEmail({ to, purchaseOrder, businessName, currency = 'P', pdfBuffer, filename }) {
   if (!pdfBuffer) return { success: false, error: 'Purchase order PDF could not be generated.' }
   const supplierName = escapeHtml(purchaseOrder?.supplier?.name || 'Supplier')
@@ -166,14 +195,17 @@ export async function sendNotificationEmail(subject, html, text) {
     })
     return { success: true }
   } catch (e) {
-    console.error('[Email] Failed to send:', e.message)
-    return { success: false, error: e.message }
+    // Nodemailer's sendMail rejection is an Error from its transport API.
+    const sendError = /** @type {Error} */ (e)
+    console.error('[Email] Failed to send:', sendError.message)
+    return { success: false, error: sendError.message }
   }
 }
 
 /**
  * Send a test email to verify the configuration works.
  */
+/** @param {EmailConfigRecord} config */
 export async function testEmailConfig(config) {
   if (!config || !config.host || !config.user || !config.pass || !config.to) {
     return { success: false, error: 'Please fill in all fields before testing.' }
@@ -201,13 +233,15 @@ export async function testEmailConfig(config) {
     })
     return { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    // Nodemailer's verify/sendMail failures are Error objects.
+    return { success: false, error: /** @type {Error} */ (e).message }
   }
 }
 
 /**
  * Send a license key email directly to the customer's registered email.
  */
+/** @param {LicenseEmailInput} input */
 export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expiresAt, lodgeId, notes, invoice }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
@@ -378,13 +412,15 @@ export async function sendLicenseEmail({ to, licenseKey, lodgeName, plan, expire
     })
     return { success: true }
   } catch (e) {
-    return { success: false, error: e.message }
+    // Nodemailer's sendMail rejection is an Error from its transport API.
+    return { success: false, error: /** @type {Error} */ (e).message }
   }
 }
 
 /**
  * Send a standalone invoice email directly to a client.
  */
+/** @param {InvoiceEmailInput} input */
 export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
@@ -393,7 +429,9 @@ export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
   if (!to?.trim()) return { success: false, error: 'No recipient email.' }
 
   const year = new Date().getFullYear()
+  /** @param {string | number | null | undefined} d @returns {string} */
   const fmtD = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'
+  /** @type {Record<string, string>} */
   const statusColor = { paid: '#16a34a', draft: '#6b7280', sent: '#2563eb', overdue: '#dc2626', cancelled: '#9ca3af' }
   const sc = statusColor[invoice.status] || '#6b7280'
   const safeLodgeName = escapeHtml(lodgeName || invoice.lodge_name || '—')
@@ -491,6 +529,7 @@ export async function sendInvoiceEmail({ to, invoice, lodgeName }) {
   })
 }
 
+/** @param {BookingInvoiceEmailInput} input */
 export async function sendBookingInvoiceEmail({ to, invoice, lodgeName, currency = 'P' }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
@@ -499,6 +538,7 @@ export async function sendBookingInvoiceEmail({ to, invoice, lodgeName, currency
   if (!to?.trim()) return { success: false, error: 'No recipient email.' }
 
   const year = new Date().getFullYear()
+  /** @param {string | number | null | undefined} d @returns {string} */
   const fmtD = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'
   const totalAmount = Number(invoice?.total_amount || 0)
   const amountPaid = Number(invoice?.amount_paid || 0)
@@ -604,6 +644,7 @@ export async function sendBookingInvoiceEmail({ to, invoice, lodgeName, currency
   })
 }
 
+/** @param {QuotationEmailInput} input */
 export async function sendQuotationEmail({ to, quotation, lodgeName, settings = {} }) {
   const config = getEmailConfig()
   if (!config?.host || !config?.user || !config?.pass) {
@@ -692,6 +733,7 @@ export async function sendQuotationEmail({ to, quotation, lodgeName, settings = 
   })
 }
 
+/** @param {BookingLifecycleEmailInput} input */
 export async function sendBookingConfirmationEmail({ to, booking, lodgeName, settings = {}, currency = 'P' }) {
   const safeLodgeName = escapeHtml(lodgeName || settings?.lodge_name || 'Your lodge')
   const safeGuestName = escapeHtml(booking?.customer_name || 'Guest')
@@ -734,6 +776,7 @@ export async function sendBookingConfirmationEmail({ to, booking, lodgeName, set
   })
 }
 
+/** @param {BookingLifecycleEmailInput} input */
 export async function sendBookingCancellationEmail({ to, booking, lodgeName, settings = {} }) {
   const safeLodgeName = escapeHtml(lodgeName || settings?.lodge_name || 'Your lodge')
   const safeGuestName = escapeHtml(booking?.customer_name || 'Guest')
@@ -774,7 +817,9 @@ export async function sendBookingCancellationEmail({ to, booking, lodgeName, set
 
 // ── HTML builders ────────────────────────────────────────────────────────────
 
+/** @param {Record<string, unknown> & {priority: string}} input */
 export function buildSupportTicketEmail({ lodge_name, lodge_id, title, description, category, priority }) {
+  /** @type {Record<string, string>} */
   const priorityColor = { Urgent: '#dc2626', High: '#ea580c', Normal: '#2563eb', Low: '#6b7280' }
   const pc = priorityColor[priority] || '#2563eb'
   const safeLodgeName = escapeHtml(lodge_name || 'Unknown Lodge')
@@ -801,6 +846,7 @@ export function buildSupportTicketEmail({ lodge_name, lodge_id, title, descripti
   }
 }
 
+/** @param {Record<string, unknown>} input */
 export function buildUpgradeRequestEmail({ lodge_name, lodge_id, title, description }) {
   const safeLodgeName = escapeHtml(lodge_name || 'Unknown Lodge')
   const safeLodgeId = escapeHtml(lodge_id || '')

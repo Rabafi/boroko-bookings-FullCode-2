@@ -1,16 +1,21 @@
+// @ts-check
+/** @typedef {Record<string, unknown> | null | undefined} SupportRecord */
+/** @typedef {{id: unknown, ticket_id: unknown, lodge_id: unknown, body: string, sender_type: string, sender_name: string, sender_role: string, sender_user_id: string, sender_surface: string, metadata: unknown, created_at: unknown}} SupportMessage */
 const MANAGER_SENDER_TYPES = new Set(['manager', 'manager_pwa', 'pwa', 'mobile', 'mobile_manager'])
 
+/** @param {unknown} value @returns {string} */
 function clean(value) {
   return String(value || '').trim()
 }
 
+/** @param {unknown} value @returns {unknown[]} */
 function parseMessages(value) {
-  if (Array.isArray(value)) return value
+  if (Array.isArray(value)) return /** @type {unknown[]} */ (value)
   if (!value) return []
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value)
-      return Array.isArray(parsed) ? parsed : []
+      return Array.isArray(parsed) ? /** @type {unknown[]} */ (parsed) : []
     } catch {
       return []
     }
@@ -18,6 +23,7 @@ function parseMessages(value) {
   return []
 }
 
+/** @param {unknown} value @returns {string} */
 export function normalizeSupportSenderType(value) {
   const raw = clean(value).toLowerCase().replace(/[\s-]+/g, '_')
   if (!raw) return 'system'
@@ -26,10 +32,12 @@ export function normalizeSupportSenderType(value) {
   return raw
 }
 
+/** @param {SupportRecord} message @returns {'manager' | 'desk'} */
 export function supportMessageSide(message) {
   return MANAGER_SENDER_TYPES.has(normalizeSupportSenderType(message?.sender_type)) ? 'manager' : 'desk'
 }
 
+/** @param {SupportRecord} message @param {string} [fallback] @returns {string} */
 export function supportSenderName(message, fallback = 'Tsa Bonno user') {
   const type = normalizeSupportSenderType(message?.sender_type)
   const name = clean(message?.sender_name || message?.author_name || message?.name)
@@ -40,6 +48,7 @@ export function supportSenderName(message, fallback = 'Tsa Bonno user') {
   return fallback
 }
 
+/** @param {SupportRecord} message @returns {string} */
 export function supportSenderMeta(message) {
   const role = clean(message?.sender_role || message?.role)
   const surface = clean(message?.sender_surface || message?.surface)
@@ -53,6 +62,7 @@ export function supportSenderMeta(message) {
   return ''
 }
 
+/** @param {SupportRecord} message @param {SupportRecord} ticket @param {number} index @returns {SupportMessage | null} */
 function normalizeMessage(message, ticket, index) {
   const body = clean(message?.body || message?.message || message?.text)
   if (!body) return null
@@ -72,53 +82,57 @@ function normalizeMessage(message, ticket, index) {
   }
 }
 
+/** @param {SupportRecord} ticket @returns {SupportMessage[]} */
 function fallbackMessages(ticket) {
+  const ticketFields = /** @type {Record<string, unknown> | null | undefined} */ (ticket)
   const messages = []
-  const requesterName = clean(ticket?.requester_name || ticket?.sender_name || ticket?.created_by_name) || 'Manager Mobile App'
-  const requesterRole = clean(ticket?.requester_role || ticket?.sender_role) || 'manager'
-  const requesterId = clean(ticket?.requester_user_id || ticket?.sender_user_id)
-  if (clean(ticket?.description)) {
+  const requesterName = clean(ticketFields?.requester_name || ticketFields?.sender_name || ticketFields?.created_by_name) || 'Manager Mobile App'
+  const requesterRole = clean(ticketFields?.requester_role || ticketFields?.sender_role) || 'manager'
+  const requesterId = clean(ticketFields?.requester_user_id || ticketFields?.sender_user_id)
+  if (clean(ticketFields?.description)) {
     messages.push({
-      id: `${ticket?.id || 'ticket'}-request`,
-      ticket_id: ticket?.id || null,
-      lodge_id: ticket?.lodge_id || null,
-      body: clean(ticket.description),
-      sender_type: normalizeSupportSenderType(ticket?.requester_surface || 'manager_pwa'),
+      id: `${ticketFields?.id || 'ticket'}-request`,
+      ticket_id: ticketFields?.id || null,
+      lodge_id: ticketFields?.lodge_id || null,
+      body: clean(ticketFields?.description),
+      sender_type: normalizeSupportSenderType(ticketFields?.requester_surface || 'manager_pwa'),
       sender_name: requesterName,
       sender_role: requesterRole,
       sender_user_id: requesterId,
-      sender_surface: clean(ticket?.requester_surface) || 'manager_pwa',
+      sender_surface: clean(ticketFields?.requester_surface) || 'manager_pwa',
       metadata: { fallback: true },
-      created_at: ticket?.created_at || ticket?.updated_at || new Date().toISOString()
+      created_at: ticketFields?.created_at || ticketFields?.updated_at || new Date().toISOString()
     })
   }
-  if (clean(ticket?.admin_notes)) {
+  if (clean(ticketFields?.admin_notes)) {
     messages.push({
-      id: `${ticket?.id || 'ticket'}-desk`,
-      ticket_id: ticket?.id || null,
-      lodge_id: ticket?.lodge_id || null,
-      body: clean(ticket.admin_notes),
+      id: `${ticketFields?.id || 'ticket'}-desk`,
+      ticket_id: ticketFields?.id || null,
+      lodge_id: ticketFields?.lodge_id || null,
+      body: clean(ticketFields?.admin_notes),
       sender_type: 'desktop',
-      sender_name: clean(ticket?.admin_name) || 'Front desk',
-      sender_role: clean(ticket?.admin_role) || 'front desk',
-      sender_user_id: clean(ticket?.admin_user_id),
+      sender_name: clean(ticketFields?.admin_name) || 'Front desk',
+      sender_role: clean(ticketFields?.admin_role) || 'front desk',
+      sender_user_id: clean(ticketFields?.admin_user_id),
       sender_surface: 'desktop',
       metadata: { fallback: true },
-      created_at: ticket?.updated_at || ticket?.resolved_at || ticket?.created_at || new Date().toISOString()
+      created_at: ticketFields?.updated_at || ticketFields?.resolved_at || ticketFields?.created_at || new Date().toISOString()
     })
   }
   return messages
 }
 
+/** @param {SupportRecord} ticket @returns {SupportMessage[]} */
 export function normalizeSupportMessages(ticket) {
-  const normalized = parseMessages(ticket?.messages)
-    .map((message, index) => normalizeMessage(message, ticket, index))
+  const ticketFields = /** @type {Record<string, unknown> | null | undefined} */ (ticket)
+  const normalized = parseMessages(ticketFields?.messages)
+    .map((message, index) => normalizeMessage(/** @type {SupportRecord} */ (message), ticket, index))
     .filter(Boolean)
 
-  const messages = normalized.length > 0 ? normalized : fallbackMessages(ticket)
+  const messages = /** @type {SupportMessage[]} */ (normalized.length > 0 ? normalized : fallbackMessages(ticket))
   return messages.sort((left, right) => {
-    const leftTime = new Date(left.created_at || 0).getTime()
-    const rightTime = new Date(right.created_at || 0).getTime()
+    const leftTime = new Date(/** @type {string | number} */ (left.created_at || 0)).getTime()
+    const rightTime = new Date(/** @type {string | number} */ (right.created_at || 0)).getTime()
     if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
       return leftTime - rightTime
     }
@@ -126,6 +140,7 @@ export function normalizeSupportMessages(ticket) {
   })
 }
 
+/** @param {SupportRecord} ticket @returns {Record<string, unknown>} */
 export function normalizeSupportTicket(ticket) {
   const messages = normalizeSupportMessages(ticket)
   const firstManager = messages.find((message) => supportMessageSide(message) === 'manager')
@@ -143,10 +158,12 @@ export function normalizeSupportTicket(ticket) {
   }
 }
 
+/** @param {unknown} rows @returns {Record<string, unknown>[]} */
 export function normalizeSupportTickets(rows) {
-  return (Array.isArray(rows) ? rows : []).map(normalizeSupportTicket)
+  return (Array.isArray(rows) ? /** @type {unknown[]} */ (rows) : []).map((row) => normalizeSupportTicket(/** @type {SupportRecord} */ (row)))
 }
 
+/** @param {SupportRecord} user @param {string} [surface] @returns {Record<string, string>} */
 export function buildSupportAuthorFromUser(user, surface = 'manager_pwa') {
   const normalizedSurface = normalizeSupportSenderType(surface)
   return {

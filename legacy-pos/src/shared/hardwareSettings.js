@@ -1,25 +1,81 @@
+// @ts-check
+/** @param {unknown} value @param {boolean} [fallback] @returns {boolean} */
 function toBool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+/** @param {unknown} value @param {number} [fallback] @returns {number} */
 function toNumber(value, fallback = 0) {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
 }
 
+/** @param {unknown} value @param {number} fallback @param {number} min @param {number} max @returns {number} */
 function clampNumber(value, fallback, min, max) {
   return Math.max(min, Math.min(max, toNumber(value, fallback)));
 }
 
+/** @param {unknown} value @returns {string} */
 function stripControl(value) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
 }
 
+/** @param {unknown} value @returns {string} */
 function normalizeScannerFraming(value) {
   return stripControl(value).slice(0, 16);
 }
 
+/** @param {string} value @returns {value is 'manual' | 'local_bridge' | 'provider_api'} */
+function isPaymentTerminalMode(value) {
+  return ['manual', 'local_bridge', 'provider_api'].includes(value);
+}
+
+/**
+ * @typedef {object} NormalizedPosHardwareSettings
+ * @property {string} receipt_printer_name
+ * @property {unknown} receipt_paper_width
+ * @property {'escpos' | 'windows'} receipt_print_mode
+ * @property {boolean} auto_print_receipts
+ * @property {boolean} receipt_cut_enabled
+ * @property {boolean} cash_drawer_enabled
+ * @property {unknown} cash_drawer_command
+ * @property {boolean} cash_drawer_open_on_cash
+ * @property {'before_receipt' | 'after_payment'} cash_drawer_open_timing
+ * @property {'1' | '0'} cash_drawer_pin
+ * @property {number} cash_drawer_pulse_on_ms
+ * @property {number} cash_drawer_pulse_off_ms
+ * @property {boolean} escpos_enabled
+ * @property {string} escpos_connection_type
+ * @property {string} escpos_network_host
+ * @property {number} escpos_network_port
+ * @property {string} escpos_printer_path
+ * @property {unknown} escpos_codepage
+ * @property {number} escpos_timeout_ms
+ * @property {string} payment_terminal_provider
+ * @property {string} payment_terminal_name
+ * @property {'manual' | 'local_bridge' | 'provider_api'} payment_terminal_mode
+ * @property {string} payment_terminal_bridge_url
+ * @property {number} payment_terminal_timeout_ms
+ * @property {boolean} barcode_scanner_enabled
+ * @property {number} barcode_scanner_min_length
+ * @property {number} barcode_scanner_max_length
+ * @property {number} barcode_scanner_inter_key_ms
+ * @property {number} barcode_scanner_idle_complete_ms
+ * @property {boolean} barcode_scanner_accept_enter
+ * @property {boolean} barcode_scanner_accept_tab
+ * @property {string} barcode_scanner_prefix
+ * @property {string} barcode_scanner_suffix
+ * @property {boolean} barcode_scanner_sound_enabled
+ * @property {unknown} scanner_last_verified_at
+ * @property {string} scanner_last_terminator
+ * @property {number | null} scanner_last_character_count
+ * @property {number | null} scanner_last_average_inter_key_ms
+ * @property {boolean} customer_display_enabled
+ * @property {unknown} updated_at
+ */
+
+/** @param {Record<string, unknown>} [settings] @returns {NormalizedPosHardwareSettings} */
 export function normalizePosHardwareSettings(settings = {}) {
   const escposEnabled = toBool(settings.escpos_enabled, false);
   const receiptPrintMode = String(
@@ -52,7 +108,7 @@ export function normalizePosHardwareSettings(settings = {}) {
     escpos_timeout_ms: clampNumber(settings.escpos_timeout_ms, 8000, 1500, 60000),
     payment_terminal_provider: stripControl(settings.payment_terminal_provider),
     payment_terminal_name: stripControl(settings.payment_terminal_name),
-    payment_terminal_mode: ['manual', 'local_bridge', 'provider_api'].includes(paymentMode)
+    payment_terminal_mode: isPaymentTerminalMode(paymentMode)
       ? paymentMode
       : 'manual',
     payment_terminal_bridge_url: stripControl(settings.payment_terminal_bridge_url),

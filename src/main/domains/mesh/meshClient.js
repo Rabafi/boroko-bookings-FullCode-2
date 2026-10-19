@@ -1,3 +1,4 @@
+// @ts-check
 import crypto from 'crypto';
 import { meshState, registerPeer, removePeer } from './meshState.js';
 import { generateMeshSignature } from './meshSecurity.js';
@@ -5,6 +6,13 @@ import { generateMeshSignature } from './meshSecurity.js';
 /**
  * Sends an authenticated, signed HTTP request to a peer node in the local mesh.
  * Automatically injects required legacy mesh protocol headers and computes HMAC.
+ * @param {string} peerAddress
+ * @param {number} peerPort
+ * @param {string} method
+ * @param {string} pathname
+ * @param {Record<string, string> | null} [queryObj]
+ * @param {unknown} [body]
+ * @returns {Promise<unknown>}
  */
 export async function sendSignedMeshRequest(peerAddress, peerPort, method, pathname, queryObj = null, body = null) {
   if (!meshState.lodgeMeshSecret) {
@@ -66,18 +74,28 @@ export async function sendSignedMeshRequest(peerAddress, peerPort, method, pathn
 /**
  * Performs a P2P security handshake with a newly discovered peer.
  * Sends a signed GET /mesh/hello request, validates response, and measures clock drift.
+ * @param {unknown} nodeId
+ * @param {string} address
+ * @param {number} httpPort
+ * @param {Record<string, unknown>} [metadata]
+ * @returns {Promise<{success: true, nodeId: unknown, address: string, httpPort: number, clockOffsetMs: number}>}
  */
 export async function performPeerHandshake(nodeId, address, httpPort, metadata = {}) {
   try {
     const result = await sendSignedMeshRequest(address, httpPort, 'GET', '/mesh/hello');
-    
-    if (!result || result.nodeId === meshState.nodeId || (nodeId && result.nodeId !== nodeId) || result.lodgeId !== meshState.lodgeId) {
+    if (!result) {
       throw new Error('Handshake details mismatch or unauthorized');
     }
-    const resolvedNodeId = result.nodeId;
+    // Read-only property view: the remote JSON remains unvalidated, and ordinary
+    // inherited/primitive property-read behavior is unchanged.
+    const resultFields = /** @type {Record<string, unknown>} */ (result);
+    if (resultFields.nodeId === meshState.nodeId || (nodeId && resultFields.nodeId !== nodeId) || resultFields.lodgeId !== meshState.lodgeId) {
+      throw new Error('Handshake details mismatch or unauthorized');
+    }
+    const resolvedNodeId = resultFields.nodeId;
 
     // Calculate clock offset to coordinate lock durations and timestamps accurately
-    const remoteTime = new Date(result.serverTime).getTime();
+    const remoteTime = new Date(resultFields.serverTime).getTime();
     const clockOffsetMs = remoteTime - Date.now();
 
     console.log(`[MeshClient] Handshake completed successfully with Peer ${resolvedNodeId}. Clock Offset: ${clockOffsetMs}ms`);
@@ -93,7 +111,8 @@ export async function performPeerHandshake(nodeId, address, httpPort, metadata =
     return { success: true, nodeId: resolvedNodeId, address, httpPort, clockOffsetMs };
   } catch (err) {
     if (metadata.silent !== true) {
-      console.warn(`[MeshClient] Handshake failed for peer candidate ${nodeId || 'unknown'} at ${address}:${httpPort}:`, err.message);
+      const errorFields = /** @type {{message: unknown}} */ (err);
+      console.warn(`[MeshClient] Handshake failed for peer candidate ${nodeId || 'unknown'} at ${address}:${httpPort}:`, errorFields.message);
     }
     if (nodeId) removePeer(nodeId);
     throw err;
@@ -102,6 +121,10 @@ export async function performPeerHandshake(nodeId, address, httpPort, metadata =
 
 /**
  * Broadcasts a request to all currently connected peers in the mesh.
+ * @param {string} method
+ * @param {string} pathname
+ * @param {Record<string, string> | null} [queryObj]
+ * @param {unknown} [body]
  */
 export async function broadcastToMesh(method, pathname, queryObj = null, body = null) {
   const promises = [];

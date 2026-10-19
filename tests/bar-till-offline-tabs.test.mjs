@@ -40,11 +40,19 @@ test('offline tab sales queue behind their tab with a pinned version', () => {
   assert.doesNotMatch(source, /Bar tab sales require a live connection/)
 })
 
-test('replay reattributes weeks-old tab work to the current open shift', () => {
+test('replay reattributes tab saves but never sales to the current open shift', () => {
   const source = sync()
-  assert.match(source, /item\.table === 'upsert_pos_tab' \|\| item\.table === 'create_pos_order_v3'/)
+  // Tab saves still need an OPEN shift server-side; that rewrite stays scoped
+  // to upsert_pos_tab only.
+  assert.match(source, /item\.table === 'upsert_pos_tab'\)/)
   assert.match(source, /replay_shift_rewritten|Replay attributed to current open shift/)
   assert.match(source, /delete replayData\.payload\._operator_proof/)
+  // Sales preserve the original shift/operator/business date and route through
+  // the reviewed historical contract instead of moving revenue.
+  assert.doesNotMatch(source, /item\.table === 'upsert_pos_tab' \|\| item\.table === 'create_pos_order_v3'/)
+  assert.match(source, /classifySaleReplayRoute\(readCache\('pos-shifts'\), replayData\.payload\) === 'historical'/)
+  assert.match(source, /POS_HISTORICAL_REPLAY_RPC/)
+  assert.match(source, /buildHistoricalReplayRequest\(item, replayData\.payload\)/)
 })
 
 test('tab version conflicts go straight to manager review', () => {

@@ -1,8 +1,19 @@
+// @ts-check
 /**
  * Shared utilities for the booking site.
  * These functions are pure, stateless, and safe to import anywhere.
  */
-
+/**
+ * Build a wa.me URL from a phone number with an optional country-code prefix.
+ * Unknown input passes through the existing String conversion, which can
+ * still throw for exotic conversion hooks. No international numbering,
+ * identity or ownership validation is performed; null country code disables
+ * prefixing. Options/default handling is preserved exactly as implemented.
+ *
+ * @param {unknown} number
+ * @param {{defaultCountryCode?: string | null}} [options]
+ * @returns {string | null}
+ */
 export function buildWhatsAppUrl(number, { defaultCountryCode = '267' } = {}) {
   let digits = String(number || '').replace(/[^\d]/g, '')
   if (!digits) return null
@@ -19,6 +30,14 @@ export function buildWhatsAppUrl(number, { defaultCountryCode = '267' } = {}) {
   return `https://wa.me/${digits}`
 }
 
+/**
+ * Normalize a website URL when it uses an allowed scheme. This is a scheme
+ * allowlist (http/https), not proof of trust, same-origin or absence of
+ * credentials. No base URL is added and no extra data is stripped.
+ *
+ * @param {string | URL | null | undefined} [value]
+ * @returns {string | null}
+ */
 export function sanitizeWebsiteUrl(value) {
   if (!value) return null
   try {
@@ -29,6 +48,17 @@ export function sanitizeWebsiteUrl(value) {
   }
 }
 
+/**
+ * Build a Google Calendar template URL from a caller-owned booking object.
+ * No schema validation is performed: dates, timezone, availability,
+ * confirmed-booking status and ownership are not verified, and missing
+ * metadata renders as undefined in the output. Null/undefined bookings or
+ * unsupported field conversions may throw; no new catch or validator is added.
+ *
+ * @typedef {{check_in?: string | null, check_out?: string | null, lodge_name?: unknown, reference?: unknown, room_number?: unknown}} CalendarBooking
+ * @param {CalendarBooking} booking
+ * @returns {string | null}
+ */
 export function buildCalendarUrl(booking) {
   const start = booking.check_in?.replace(/-/g, '')
   const end = booking.check_out?.replace(/-/g, '')
@@ -42,6 +72,13 @@ export function buildCalendarUrl(booking) {
 
 export const SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
+/**
+ * Plain boolean slug check against the existing length limits and regexp.
+ * No branded identifier, type predicate or server authorization is claimed.
+ *
+ * @param {unknown} value
+ * @returns {value is string}
+ */
 export function isValidSlug(value) {
   return (
     typeof value === 'string' && value.length >= 2 && value.length <= 64 && SLUG_REGEX.test(value)

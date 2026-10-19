@@ -47,3 +47,17 @@ test('settings save timeout is bounded and gives an actionable recovery message'
   assert.match(settingsDomain, /const saveDeadline = Date\.now\(\) \+ SETTINGS_SAVE_TIMEOUT_MS/)
   assert.match(settingsDomain, /const remainingMs = saveDeadline - Date\.now\(\)/)
 })
+
+test('Settings runs every hook before the loading early-return (no recovery-screen crash)', () => {
+  // 2026-09-24: outlet-setup useState/useEffect sat below `if (!form)`,
+  // so opening ?tab=outlets threw "Rendered more hooks than during the
+  // previous render" once the form loaded. Hooks must stay unconditional.
+  const guardAt = settingsUi.indexOf('if (!form) return (')
+  assert.ok(guardAt > 0, 'loading guard must exist')
+  const afterGuard = settingsUi.slice(guardAt)
+  for (const hook of ['useState(', 'useEffect(', 'useMemo(', 'useCallback(', 'useRef(', 'useContext(']) {
+    assert.equal(afterGuard.includes(hook), false, `no ${hook} may run after the loading early-return`)
+  }
+  assert.match(settingsUi, /outletSetupOutlets, setOutletSetupOutlets/)
+  assert.ok(settingsUi.indexOf('outletSetupOutlets, setOutletSetupOutlets') < guardAt, 'outlet-setup hooks must run before the loading guard')
+})

@@ -30,13 +30,18 @@ test('Till reads the same active-filtered tabs as Open Tabs, never an unfiltered
   )
 })
 
-test('Till count, brief and suggestions share Open Tabs’ closed-status predicate', () => {
+test('Till count, brief and suggestions share Open Tabs’ active-status predicate', () => {
   const till = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
   const openChecks = read('src/renderer/src/components/hospitality-pos/HposOpenChecks.jsx')
   const layout = read('src/renderer/src/components/hospitality-pos/HposLayout.jsx')
 
+  // Till now uses the explicit server active set (open/running/ready/
+  // delivered) so rows with a missing/unknown status can never resurrect the
+  // stale "10 tabs" pill. Open Tabs keeps the equivalent closed-exclusion.
+  for (const status of ['open', 'running', 'ready', 'delivered']) {
+    assert.ok(till.includes(`"${status}"`), `Till predicate must include ${status}`)
+  }
   for (const status of CLOSED_STATUSES) {
-    assert.ok(till.includes(`"${status}"`), `Till predicate must exclude ${status}`)
     assert.ok(openChecks.includes(`"${status}"`), `Open Tabs predicate must exclude ${status}`)
   }
   assert.match(
@@ -45,7 +50,7 @@ test('Till count, brief and suggestions share Open Tabs’ closed-status predica
     'Rail badge must keep the same closed-status predicate',
   )
   // The refresh path must reuse the identical predicate, not a second list.
-  const predicateOccurrences = (till.match(/closed", "paid", "cancelled", "voided/g) || []).length
+  const predicateOccurrences = (till.match(/"open", "running", "ready", "delivered"/g) || []).length
   assert.ok(
     predicateOccurrences >= 3,
     `Till initial load, refresh and brief must all share one predicate (found ${predicateOccurrences})`,
@@ -71,6 +76,13 @@ test('Domain active-tab reads merge pending estimates only, never every local or
     posDomain,
     /if \(String\(filters\.status \|\| ''\)\.trim\(\)\.toLowerCase\(\) === 'active'\)/,
     'The pending-only merge must stay scoped to the active contract',
+  )
+  // 2026-09-24 stale-10 fix: retained history must drop every active row, not
+  // just table-attached rows, or offline reads resurrect settled tabs.
+  assert.match(
+    posDomain,
+    /!isActivePosTab\(row\)/,
+    'Stale active rows must be purged from cache instead of retained as history',
   )
 })
 

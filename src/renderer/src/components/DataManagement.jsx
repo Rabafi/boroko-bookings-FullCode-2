@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router'
 import { Database, Upload, Download, FileSpreadsheet, Users, BedDouble, Receipt, ShoppingCart, CheckCircle2, AlertCircle, Loader2, HardDrive, ShieldCheck, Clock, Wallet, ClipboardCheck, AlertTriangle } from 'lucide-react'
@@ -54,12 +55,14 @@ const RESTAURANT_EXPORT_SECTIONS = [
 
 function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
   const [loading, setLoading] = useState(false)
-  const [result, setResult]   = useState(null) // { success, filePath, error, canceled }
+  // The main handler returns raw workbook-export helper results and multiple outcome variants.
+  const [result, setResult]   = useState(/** @type {unknown} */ (null))
   const [preset, setPreset] = useState(restaurantMode ? 'restaurant_full' : 'full')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [privacyMode, setPrivacyMode] = useState(false)
-  const [progress, setProgress] = useState(null)
+  // Progress events are forwarded from the workbook writer without renderer validation.
+  const [progress, setProgress] = useState(/** @type {unknown} */ (null))
   const dataNoun = restaurantMode ? 'restaurant' : 'property'
 
   useEffect(() => {

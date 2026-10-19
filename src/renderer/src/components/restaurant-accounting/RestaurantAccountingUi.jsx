@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router'
 import { AlertTriangle, Download, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
@@ -123,7 +124,7 @@ export function AccountingPage({ eyebrow, title, description, actions, children 
   </div>
 }
 
-export function AccountingButton({ children, tone = 'primary', busy = false, disabled = false, ...props }) {
+export function AccountingButton({ children, tone = 'primary', busy = false, disabled = false, type = 'button', ...props }) {
   const tones = { primary: 'bg-emerald-700 text-white hover:bg-emerald-800', secondary: 'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50', danger: 'bg-rose-700 text-white hover:bg-rose-800', amber: 'bg-amber-600 text-white hover:bg-amber-700' }
   const { settings } = useSettings()
   const barOnly = isBarOnlyMode(settings)
@@ -132,9 +133,9 @@ export function AccountingButton({ children, tone = 'primary', busy = false, dis
   // keep their explicit Tailwind tones so destructive intent stays obvious.
   if (barOnly && (tone === 'primary' || tone === 'secondary')) {
     const barClass = tone === 'primary' ? 'hpos-primary-action' : 'hpos-secondary-action'
-    return <button type="button" disabled={disabled || busy} className={`${barClass} inline-flex items-center justify-center gap-2`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
+    return <button type={type} disabled={disabled || busy} className={`${barClass} inline-flex items-center justify-center gap-2`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
   }
-  return <button type="button" disabled={disabled || busy} className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${tones[tone] || tones.primary}`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
+  return <button type={type} disabled={disabled || busy} className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${tones[tone] || tones.primary}`} {...props}>{busy && <Loader2 size={15} className="animate-spin" />}{children}</button>
 }
 
 export function AccountingPanel({ title, description, actions, children, className = '' }) {

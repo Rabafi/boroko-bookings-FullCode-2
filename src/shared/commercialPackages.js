@@ -1,3 +1,4 @@
+// @ts-check
 import { ENTERPRISE_ADDON_CATALOG } from './enterpriseAddons.js'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from './subscriptionPlans.js'
 import { getRuntimeProductId } from './productIdentity.js'
@@ -12,6 +13,16 @@ import {
   getHotelAddon
 } from './commercialEntitlements.js'
 
+/** @typedef {'lodge-camp' | 'hotel' | 'hospitality-pos'} ProductId */
+/** @typedef {'Starter' | 'Standard' | 'Pro' | 'Enterprise'} PlanName */
+/** @typedef {{productId: ProductId, commercialPackageKey: string, displayName: string, name: string, internalPlan: PlanName, billingBasis: string, priceBwp: number, salesCopy: string, includedFeatures: readonly string[], excludedFeatures: readonly string[], upgradeTarget: string | null, eligibleOperatingProfiles?: readonly string[] | null}} PackageOffer */
+/** @typedef {{annual: number | null, monthly: number | null, setup: number | null, pricingModel?: string}} PlanPrice */
+/** @typedef {{plan?: unknown, addons?: string[], roomCount?: unknown, userCount?: unknown, trialEligible?: unknown, trialAlreadyUsed?: unknown, productId?: ProductId}} LegacyPricingOptions */
+/** @typedef {{productId?: ProductId, commercialPackageKey?: string, addonKeys?: string[], operatingProfile?: string | null, propertyType?: string | null, trialAlreadyUsed?: unknown, trialEligible?: unknown}} CommercialSnapshotOptions */
+/** @typedef {{line_type: 'package' | 'addon', key: string, label: string, billing_basis: string, one_time_amount: number, recurring_amount: number, amount_due_now: number}} CommercialLine */
+/** @typedef {{product_id?: ProductId, pricing_snapshot?: unknown, canonical_pricing_snapshot?: unknown, requested_plan?: unknown, requested_addons?: string[], room_count?: unknown, user_count?: unknown, trial_eligible?: unknown, trial_already_used?: unknown, commercial_package_key?: unknown, operating_profile?: unknown, current_plan?: unknown, expected_monthly_bookings?: unknown, quote_number?: unknown, company_name?: unknown, property_name?: unknown, contact_name?: unknown, contact_email?: unknown, contact_phone?: unknown, country?: unknown}} SubscriptionQuoteRequest */
+/** @typedef {{pricing_snapshot?: unknown, document_number?: unknown, issued_at?: unknown, valid_until?: unknown, notes?: unknown, payment_instructions?: unknown}} CommercialDocumentInput */
+
 export const COMMERCIAL_CURRENCY = 'BWP'
 export const COMMERCIAL_CURRENCY_SYMBOL = 'P'
 
@@ -24,10 +35,12 @@ export const PLAN_PRICE_CATALOG = {
   Enterprise: { annual: 37998, monthly: null, setup: 0 }
 }
 
+/** @type {Partial<Record<PlanName, string>>} */
 const POS_PACKAGE_BY_PLAN = {
   Pro: 'restaurant_growth'
 }
 
+/** @param {PackageOffer} offer */
 function enrichOffer(offer) {
   const plan = getSubscriptionPlan(offer.internalPlan) || {}
   const annual = offer.billingBasis === COMMERCIAL_BILLING_BASIS.ANNUAL_LICENSE ? offer.priceBwp : null
@@ -58,19 +71,23 @@ function enrichOffer(offer) {
   }
 }
 
+/** @param {ProductId} [productId] */
 export function getCommercialPackageCatalog(productId = getRuntimeProductId()) {
   return getCommercialOffers(productId).map(enrichOffer)
 }
 
+/** @param {ProductId} [productId] */
 export function getCommercialPackagePlanNames(productId = getRuntimeProductId()) {
   return getCommercialPackageCatalog(productId).map((entry) => entry.internalPlan)
 }
 
+/** @param {unknown} commercialPackageKey @param {ProductId} [productId] */
 export function getCommercialPackageForKey(commercialPackageKey, productId = getRuntimeProductId()) {
   const offer = getCommercialOffer(productId, commercialPackageKey)
   return offer ? enrichOffer(offer) : null
 }
 
+/** @param {unknown} plan @param {ProductId} [productId] */
 export function getCommercialPackageForPlan(plan, productId = getRuntimeProductId()) {
   const internalPlan = normalizeSubscriptionPlan(plan)
   const commercialKey = productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS
@@ -82,6 +99,7 @@ export function getCommercialPackageForPlan(plan, productId = getRuntimeProductI
     || (internalPlan === 'Enterprise' ? { ...getSubscriptionPlan('Enterprise'), internalPlan } : getCommercialPackageCatalog(productId)[0])
 }
 
+/** @param {unknown} plan @param {ProductId} [productId] */
 export function getCommercialPackageLabel(plan, productId = getRuntimeProductId()) {
   const internalPlan = normalizeSubscriptionPlan(plan)
   // Keep the old label stable for existing Hotel UI and licences. New quote
@@ -90,9 +108,10 @@ export function getCommercialPackageLabel(plan, productId = getRuntimeProductId(
   return getCommercialPackageForPlan(internalPlan, productId)?.name || internalPlan
 }
 
+/** @param {{productId?: ProductId, commercialPackageKey?: unknown, plan?: unknown}} [options] */
 export function getCommercialPackageDisplayName({ productId = getRuntimeProductId(), commercialPackageKey, plan } = {}) {
   return getCommercialPackageForKey(commercialPackageKey, productId)?.displayName
-    || getCommercialPackageForPlan(plan, productId)?.displayName
+    || (/** @type {{displayName?: string} | null | undefined} */ (getCommercialPackageForPlan(plan, productId)))?.displayName
     || getCommercialPackageLabel(plan, productId)
 }
 
@@ -102,6 +121,7 @@ export const TRIAL_POLICY = {
   copy: 'One 30-day free trial is available once per property. If this property has already used its trial, the quoted paid package applies immediately after approval.'
 }
 
+/** @param {unknown} plan @param {ProductId} [productId] @returns {PlanPrice} */
 export function getPlanPrice(plan, productId = getRuntimeProductId()) {
   if (productId === COMMERCIAL_PRODUCT_IDS.HOTEL) {
     return { annual: null, monthly: null, setup: null, pricingModel: 'quote_confirmed' }
@@ -109,15 +129,16 @@ export function getPlanPrice(plan, productId = getRuntimeProductId()) {
   if (productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS) {
     const offer = getCommercialPackageForPlan(plan, productId)
     return {
-      annual: offer?.priceBwp ?? null,
+      annual: /** @type {{priceBwp?: number} | null | undefined} */ (offer)?.priceBwp ?? null,
       monthly: null,
       setup: 0,
       pricingModel: 'annual_license'
     }
   }
-  return PLAN_PRICE_CATALOG[normalizeSubscriptionPlan(plan)] || PLAN_PRICE_CATALOG.Starter
+  return /** @type {Record<PlanName, PlanPrice>} */ (PLAN_PRICE_CATALOG)[normalizeSubscriptionPlan(plan)] || PLAN_PRICE_CATALOG.Starter
 }
 
+/** @param {unknown} value @param {string} [fallback] @returns {string} */
 export function formatCommercialMoney(value, fallback = 'To be confirmed') {
   if (value === null || value === undefined || value === '') return fallback
   const n = Number(value)
@@ -125,6 +146,7 @@ export function formatCommercialMoney(value, fallback = 'To be confirmed') {
   return `${COMMERCIAL_CURRENCY_SYMBOL}${n.toLocaleString('en-BW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {string} [propertyType] @param {ProductId | null} [productId] */
 export function getAdvertisedEnterpriseAddons(propertyType = 'lodge', productId = null) {
   const resolvedProductId = productId || (['hotel', 'resort'].includes(propertyType) ? 'hotel' : getRuntimeProductId())
   if (resolvedProductId !== COMMERCIAL_PRODUCT_IDS.HOTEL) return []
@@ -133,6 +155,7 @@ export function getAdvertisedEnterpriseAddons(propertyType = 'lodge', productId 
     .filter((addon) => !Array.isArray(addon.eligiblePropertyTypes) || addon.eligiblePropertyTypes.includes(propertyType))
 }
 
+/** @param {LegacyPricingOptions} [options] */
 function buildLegacyPricingSnapshot({
   plan = 'Starter',
   addons = [],
@@ -146,6 +169,7 @@ function buildLegacyPricingSnapshot({
   const selectedAddons = Array.isArray(addons) ? addons : []
   const planPrice = getPlanPrice(normalizedPlan, productId)
   const packageLabel = getCommercialPackageLabel(normalizedPlan, productId)
+  /** @type {Record<string, {label: string, annual: number | null, monthly: number | null, setup: number | null, pricing_model: string}>} */
   const addonRows = {}
 
   for (const key of selectedAddons) {
@@ -153,8 +177,8 @@ function buildLegacyPricingSnapshot({
     if (!addon) continue
     addonRows[key] = {
       label: addon.label,
-      annual: addon.price?.annual ?? null,
-      monthly: addon.price?.monthly ?? null,
+      annual: /** @type {{annual?: number | null} | null | undefined} */ (addon.price)?.annual ?? null,
+      monthly: /** @type {{monthly?: number | null} | null | undefined} */ (addon.price)?.monthly ?? null,
       setup: addon.price?.setup ?? null,
       pricing_model: addon.price?.pricingModel || 'quote_confirmed'
     }
@@ -202,6 +226,7 @@ function buildLegacyPricingSnapshot({
   }
 }
 
+/** @param {CommercialSnapshotOptions} [options] */
 export function buildCommercialOfferSnapshot({
   productId = getRuntimeProductId(),
   commercialPackageKey,
@@ -213,14 +238,15 @@ export function buildCommercialOfferSnapshot({
 } = {}) {
   const selected = getCommercialOffer(productId, commercialPackageKey)
   if (!selected) throw new Error(`Unknown commercial package: ${productId}/${commercialPackageKey}`)
-  if (selected.eligibleOperatingProfiles?.length && !selected.eligibleOperatingProfiles.includes(operatingProfile)) {
+  if (selected.eligibleOperatingProfiles?.length && !selected.eligibleOperatingProfiles.includes(/** @type {string} */ (operatingProfile))) {
     throw new Error(`${selected.displayName} is not available for operating profile ${operatingProfile || 'unknown'}`)
   }
   const resolvedTrialEligible = trialEligible === null || trialEligible === undefined
     ? (TRIAL_POLICY.appliesToPlans.includes(selected.internalPlan) && trialAlreadyUsed !== true)
     : Boolean(trialEligible)
 
-  const lines = [{
+  /** @type {CommercialLine[]} */
+  const lines = /** @type {CommercialLine[]} */ ([{
     line_type: 'package',
     key: selected.commercialPackageKey,
     label: selected.displayName,
@@ -228,7 +254,7 @@ export function buildCommercialOfferSnapshot({
     one_time_amount: selected.billingBasis === COMMERCIAL_BILLING_BASIS.INITIAL_PURCHASE ? selected.priceBwp : 0,
     recurring_amount: selected.billingBasis === COMMERCIAL_BILLING_BASIS.ANNUAL_LICENSE ? selected.priceBwp : 0,
     amount_due_now: selected.priceBwp
-  }]
+  }])
   const eligibleAddons = getCommercialAddonOffers(productId, propertyType)
     .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(selected.commercialPackageKey))
   for (const key of [...new Set(Array.isArray(addonKeys) ? addonKeys : [])]) {
@@ -287,6 +313,7 @@ export function buildCommercialOfferSnapshot({
   }
 }
 
+/** @param {LegacyPricingOptions & CommercialSnapshotOptions} [options] */
 export function buildCommercialPricingSnapshot(options = {}) {
   if (options.commercialPackageKey) {
     return buildCommercialOfferSnapshot({
@@ -302,6 +329,7 @@ export function buildCommercialPricingSnapshot(options = {}) {
   return buildLegacyPricingSnapshot(options)
 }
 
+/** @param {SubscriptionQuoteRequest} [request] @param {string} [type] @param {CommercialDocumentInput} [input] */
 export function buildSubscriptionCommercialDocument(request = {}, type = 'quote', input = {}) {
   const documentType = type === 'invoice' ? 'invoice' : 'quote'
   const pricing = input.pricing_snapshot || request.canonical_pricing_snapshot || request.pricing_snapshot || buildLegacyPricingSnapshot({
@@ -313,12 +341,15 @@ export function buildSubscriptionCommercialDocument(request = {}, type = 'quote'
     trialAlreadyUsed: request.trial_already_used,
     productId: request.product_id
   })
-  const totals = pricing.totals || {}
-  const legacyAnnual = pricing.annual_subtotal === null || pricing.annual_subtotal === undefined ? null : Number(pricing.annual_subtotal)
-  const legacySetup = pricing.setup_total === null || pricing.setup_total === undefined ? null : Number(pricing.setup_total)
-  const totalDueNow = totals.total_due_now ?? (pricing.total_due_now === null || pricing.total_due_now === undefined ? null : Number(pricing.total_due_now))
+  // Snapshot payloads may come from persisted request data; these typed views
+  // preserve direct property reads without claiming that the payload validates.
+  const pricingRecord = /** @type {{totals?: unknown, annual_subtotal?: unknown, setup_total?: unknown, total_due_now?: unknown, package_label?: unknown, product_id?: unknown, commercial_package_key?: unknown, operating_profile?: unknown, internal_plan?: unknown, requested_plan?: unknown, currency?: unknown, one_time_total?: unknown, note?: unknown, trial?: unknown}} */ (pricing)
+  const totals = /** @type {{total_due_now?: unknown, recurring_annual?: unknown, one_time_total?: unknown}} */ (pricingRecord.totals || {})
+  const legacyAnnual = pricingRecord.annual_subtotal === null || pricingRecord.annual_subtotal === undefined ? null : Number(pricingRecord.annual_subtotal)
+  const legacySetup = pricingRecord.setup_total === null || pricingRecord.setup_total === undefined ? null : Number(pricingRecord.setup_total)
+  const totalDueNow = totals.total_due_now ?? (pricingRecord.total_due_now === null || pricingRecord.total_due_now === undefined ? null : Number(pricingRecord.total_due_now))
   const recurringAmount = totals.recurring_annual ?? (Number.isFinite(legacyAnnual) ? legacyAnnual : null)
-  const packageName = pricing.package_label || getCommercialPackageDisplayName({
+  const packageName = pricingRecord.package_label || getCommercialPackageDisplayName({
     productId: request.product_id,
     commercialPackageKey: request.commercial_package_key,
     plan: request.requested_plan
@@ -339,13 +370,13 @@ export function buildSubscriptionCommercialDocument(request = {}, type = 'quote'
       country: request.country || ''
     },
     product: {
-      product_id: request.product_id || pricing.product_id || null,
-      package_key: request.commercial_package_key || pricing.commercial_package_key || null,
-      operating_profile: request.operating_profile || pricing.operating_profile || null
+      product_id: request.product_id || pricingRecord.product_id || null,
+      package_key: request.commercial_package_key || pricingRecord.commercial_package_key || null,
+      operating_profile: request.operating_profile || pricingRecord.operating_profile || null
     },
     package: {
       current_plan: request.current_plan || null,
-      requested_plan: request.requested_plan || pricing.internal_plan || 'Starter',
+      requested_plan: request.requested_plan || pricingRecord.internal_plan || 'Starter',
       package_name: packageName,
       requested_addons: Array.isArray(request.requested_addons) ? request.requested_addons : [],
       room_count: request.room_count || null,
@@ -354,14 +385,14 @@ export function buildSubscriptionCommercialDocument(request = {}, type = 'quote'
     },
     pricing,
     totals: {
-      currency: pricing.currency || COMMERCIAL_CURRENCY,
+      currency: pricingRecord.currency || COMMERCIAL_CURRENCY,
       recurring_amount: Number.isFinite(Number(recurringAmount)) ? Number(recurringAmount) : null,
       setup_amount: Number.isFinite(Number(legacySetup)) ? Number(legacySetup) : (Number.isFinite(Number(totals.one_time_total)) ? Number(totals.one_time_total) : null),
       total_due_now: Number.isFinite(Number(totalDueNow)) ? Number(totalDueNow) : null
     },
-    notes: input.notes || pricing.note,
+    notes: input.notes || pricingRecord.note,
     payment_instructions: input.payment_instructions || 'Manual payment only. Pay by bank transfer or mobile money using the quote number as reference, then send proof of payment to Tsa Bonno for review.',
-    trial_policy: pricing.trial || null
+    trial_policy: pricingRecord.trial || null
   }
 }
 

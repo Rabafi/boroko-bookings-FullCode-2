@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { BarChart3, TrendingUp, Calendar, Edit3, Plus, Star, ChevronDown, ChevronUp } from 'lucide-react'
 import { useSettings } from '../app-context'

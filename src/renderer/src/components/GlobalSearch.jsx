@@ -1,6 +1,9 @@
+// @ts-check
 import { useState, useCallback } from 'react'
 import { Search, Building2, Home, Receipt, LifeBuoy, Users, Server, X } from 'lucide-react'
 import { ErrorNotice } from './shared/ErrorNotice'
+
+/** @typedef {Record<string, unknown>} AdminCompanyReadView */
 
 const TYPE_ICONS = {
   company: Building2,
@@ -29,11 +32,12 @@ const TYPE_NAV_MAP = {
   invoice: 'finance'
 }
 
+/** @param {{onNavigate?: (section: string) => void, onOpenCompany?: (company: AdminCompanyReadView) => void, companies?: AdminCompanyReadView[]}} props */
 export default function GlobalSearch({ onNavigate, onOpenCompany, companies = [] }) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
+  const [results, setResults] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {unknown} */ (null))
   const [searched, setSearched] = useState(false)
 
   const search = useCallback(async () => {
@@ -43,11 +47,18 @@ export default function GlobalSearch({ onNavigate, onOpenCompany, companies = []
     setSearched(true)
     try {
       const res = await window.api.admin.globalSearch(query.trim())
-      setResults(res?.results || [])
-    } catch (e) { setError(e?.message || 'Search failed'); setResults([]) }
+      // Keep the RPC envelope and its JSON projection unvalidated.
+      const responseView = /** @type {{results?: unknown} | null | undefined} */ (res)
+      setResults(responseView?.results || [])
+    } catch (e) {
+      const errorView = /** @type {{message?: unknown} | null | undefined} */ (e)
+      setError(errorView?.message || 'Search failed')
+      setResults([])
+    }
     setLoading(false)
   }, [query])
 
+  /** @param {import('react').KeyboardEvent<HTMLInputElement>} e */
   const onKeyDown = (e) => { if (e.key === 'Enter') search() }
 
   const grouped = results.reduce((acc, r) => {

@@ -1,101 +1,130 @@
+// @ts-check
 import { getLocalDateKey, LOCAL_TIME_ZONE } from './operationalLog.js';
 import { dedupePromise } from './infrastructure.js';
 import { getAllRooms } from './rooms.js';
 import { getAllBookings } from './bookings.js';
 
+/** @typedef {Record<string, unknown>} PropertyReadView */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readOptional(value, key) {
+  return /** @type {PropertyReadView | null | undefined} */ (value)?.[key];
+}
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readDirect(value, key) {
+  return /** @type {PropertyReadView} */ (value)[key];
+}
+
 function todayKey() {
   return getLocalDateKey(new Date(), LOCAL_TIME_ZONE);
 }
 
+/** @param {Date} date @param {number} days */
 function addDays(date, days) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
   return next;
 }
 
+/** @param {number} [offsetDays] */
 function dateKeyFor(offsetDays = 0) {
   return getLocalDateKey(addDays(new Date(), offsetDays), LOCAL_TIME_ZONE);
 }
 
+/** @param {unknown} booking @param {string} dateKey */
 function overlapsDate(booking, dateKey) {
-  return String(booking?.check_in || '') <= dateKey && String(booking?.check_out || '') > dateKey;
+  return String(readOptional(booking, 'check_in') || '') <= dateKey && String(readOptional(booking, 'check_out') || '') > dateKey;
 }
 
+/** @param {unknown} checkIn @param {unknown} checkOut */
 function nightsBetween(checkIn, checkOut) {
-  const start = new Date(`${checkIn}T00:00:00`);
-  const end = new Date(`${checkOut}T00:00:00`);
-  const nights = Math.round((end - start) / 86400000);
+  const start = new Date(`${/** @type {string} */ (checkIn)}T00:00:00`);
+  const end = new Date(`${/** @type {string} */ (checkOut)}T00:00:00`);
+  const nights = Math.round((Number(end) - Number(start)) / 86400000);
   return Number.isFinite(nights) && nights > 0 ? nights : 1;
 }
 
+/** @param {unknown} row @returns {PropertyReadView | null} */
 function annotateBooking(row) {
   if (!row) return null;
+  const fields = /** @type {PropertyReadView} */ (row);
   return {
-    ...row,
-    customer_name: row.customers?.name,
-    customer_phone: row.customers?.phone,
-    customer_email: row.customers?.email,
-    room_number: row.rooms?.room_number,
-    room_type: row.rooms?.room_type,
-    rate_per_night: row.rooms?.rate_per_night,
-    room_status: row.rooms?.status
+    ...fields,
+    customer_name: readOptional(readOptional(fields, 'customers'), 'name'),
+    customer_phone: readOptional(readOptional(fields, 'customers'), 'phone'),
+    customer_email: readOptional(readOptional(fields, 'customers'), 'email'),
+    room_number: readOptional(readOptional(fields, 'rooms'), 'room_number'),
+    room_type: readOptional(readOptional(fields, 'rooms'), 'room_type'),
+    rate_per_night: readOptional(readOptional(fields, 'rooms'), 'rate_per_night'),
+    room_status: readOptional(readOptional(fields, 'rooms'), 'status')
   };
 }
 
+/** @param {(booking: unknown) => boolean} filterFn */
 async function fetchBookingsByDateFilter(filterFn) {
-  const bookings = await getAllBookings();
-  return bookings.filter(filterFn).map(annotateBooking).filter(Boolean);
+  // getAllBookings always returns withReadMetadata's array; individual rows remain unvalidated.
+  const bookings = /** @type {unknown[]} */ (await getAllBookings());
+  return bookings.filter(filterFn).map(annotateBooking).filter((row) => row !== null);
 }
 
+/** @param {unknown} b */
 function bookingStatus(b) {
-  return String(b?.status || '').toLowerCase();
+  return String(readOptional(b, 'status') || '').toLowerCase();
 }
 
+/** @param {unknown} b */
 function isCancelled(b) {
   return bookingStatus(b) === 'cancelled';
 }
 
+/** @param {unknown} b */
 function isCheckedIn(b) {
   const s = bookingStatus(b);
   return s === 'checked_in' || s === 'in_house' || s === 'staying';
 }
 
+/** @param {unknown} b */
 function isCheckedOut(b) {
   return bookingStatus(b) === 'checked_out';
 }
 
+/** @param {unknown} b */
 function balanceOutstanding(b) {
   return Math.max(
     0,
-    Number(b?.total_amount || 0) + Number(b?.charges_total || 0) - Number(b?.amount_paid || 0)
+    Number(readOptional(b, 'total_amount') || 0) + Number(readOptional(b, 'charges_total') || 0) - Number(readOptional(b, 'amount_paid') || 0)
   );
 }
 
+/** @param {unknown} b */
 function isVip(b) {
   return Boolean(
-    b?.is_vip
-    || b?.vip
-    || b?.customers?.is_vip
-    || b?.customers?.vip
-    || String(b?.special_requests || '').toLowerCase().includes('vip')
-    || String(b?.notes || '').toLowerCase().includes('vip')
+    readOptional(b, 'is_vip')
+    || readOptional(b, 'vip')
+    || readOptional(readOptional(b, 'customers'), 'is_vip')
+    || readOptional(readOptional(b, 'customers'), 'vip')
+    || String(readOptional(b, 'special_requests') || '').toLowerCase().includes('vip')
+    || String(readOptional(b, 'notes') || '').toLowerCase().includes('vip')
   );
 }
 
+/** @param {unknown} b */
 function isUnassignedRoom(b) {
-  return !b?.room_id && !b?.rooms?.id && !b?.room_number && !b?.rooms?.room_number;
+  return !readOptional(b, 'room_id') && !readOptional(readOptional(b, 'rooms'), 'id') && !readOptional(b, 'room_number') && !readOptional(readOptional(b, 'rooms'), 'room_number');
 }
 
+/** @param {unknown} b */
 function roomStatusOf(b) {
-  return String(b?.room_status || b?.rooms?.status || '').toLowerCase();
+  return String(readOptional(b, 'room_status') || readOptional(readOptional(b, 'rooms'), 'status') || '').toLowerCase();
 }
 
 /** Expected arrivals today that have not checked in yet. */
 function _getArrivals() {
   const today = todayKey();
-  return fetchBookingsByDateFilter((b) => {
+  return fetchBookingsByDateFilter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b) || isCheckedOut(b)) return false;
-    if (String(b.check_in || '') !== today) return false;
+    if (String(readDirect(b, 'check_in') || '') !== today) return false;
     // Still show checked-in arrivals so the board can mark them complete.
     return true;
   });
@@ -104,67 +133,70 @@ function _getArrivals() {
 /** Expected departures today (checked-in or still marked in-house). */
 function _getDepartures() {
   const today = todayKey();
-  return fetchBookingsByDateFilter((b) => {
+  return fetchBookingsByDateFilter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b)) return false;
-    if (String(b.check_out || '') !== today) return false;
+    if (String(readDirect(b, 'check_out') || '') !== today) return false;
     return true;
   });
 }
 
 function _getInHouse() {
   const today = todayKey();
-  return fetchBookingsByDateFilter((b) => {
+  return fetchBookingsByDateFilter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b) || isCheckedOut(b)) return false;
     if (isCheckedIn(b)) return true;
-    return String(b.check_in || '') <= today && String(b.check_out || '') > today;
+    return String(readDirect(b, 'check_in') || '') <= today && String(readDirect(b, 'check_out') || '') > today;
   });
 }
 
 function _getNoShows() {
   const today = todayKey();
-  return fetchBookingsByDateFilter((b) => {
+  return fetchBookingsByDateFilter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b) || isCheckedIn(b) || isCheckedOut(b)) return false;
     const status = bookingStatus(b);
     if (status === 'no_show' || status === 'no-show') return true;
     // Overdue arrival not yet checked in / no-showed
-    return String(b.check_in || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
+    return String(readDirect(b, 'check_in') || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
   });
 }
 
 async function _getDashboardStats() {
-  const rooms = await getAllRooms();
-  const allBookings = await getAllBookings();
+  // These domain producers return arrays; the rows retain their unknown cache/RPC values.
+  const rooms = /** @type {unknown[]} */ (await getAllRooms());
+  const allBookings = /** @type {unknown[]} */ (await getAllBookings());
   const today = todayKey();
 
-  const roomCounts = { available: 0, occupied: 0, dirty: 0, maintenance: 0, reserved: 0, ooo: 0, total: 0 };
+  const roomCounts = /** @type {Record<string, unknown> & { available: number; occupied: number; dirty: number; maintenance: number; reserved: number; ooo: number; total: number }} */ ({ available: 0, occupied: 0, dirty: 0, maintenance: 0, reserved: 0, ooo: 0, total: 0 });
   for (const room of rooms) {
-    const status = String(room.status || 'available').toLowerCase();
+    const status = String(readDirect(room, 'status') || 'available').toLowerCase();
     if (status === 'out_of_order' || status === 'ooo' || status === 'out_of_service') {
       roomCounts.ooo += 1;
       roomCounts.maintenance += 1;
     } else if (roomCounts[status] !== undefined) {
-      roomCounts[status] += 1;
+      // Preserve dynamic and inherited-key lookup behavior; only the operator is viewed as numeric.
+      roomCounts[status] = /** @type {number} */ (roomCounts[status]) + 1;
     } else {
       roomCounts.available += 1;
     }
     roomCounts.total += 1;
   }
 
-  const arrivalsRaw = allBookings.filter((b) => b && !isCancelled(b) && !isCheckedOut(b) && String(b.check_in || '') === today);
-  const departuresRaw = allBookings.filter((b) => b && !isCancelled(b) && String(b.check_out || '') === today);
-  const inHouseRaw = allBookings.filter((b) => {
+  const arrivalsRaw = allBookings.filter((/** @type {unknown} */ b) => b && !isCancelled(b) && !isCheckedOut(b) && String(readDirect(b, 'check_in') || '') === today);
+  const departuresRaw = allBookings.filter((/** @type {unknown} */ b) => b && !isCancelled(b) && String(readDirect(b, 'check_out') || '') === today);
+  const inHouseRaw = allBookings.filter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b) || isCheckedOut(b)) return false;
     if (isCheckedIn(b)) return true;
-    return String(b.check_in || '') <= today && String(b.check_out || '') > today;
+    return String(readDirect(b, 'check_in') || '') <= today && String(readDirect(b, 'check_out') || '') > today;
   });
-  const noShowsRaw = allBookings.filter((b) => {
+  const noShowsRaw = allBookings.filter((/** @type {unknown} */ b) => {
     if (!b || isCancelled(b) || isCheckedIn(b) || isCheckedOut(b)) return false;
     const status = bookingStatus(b);
     if (status === 'no_show' || status === 'no-show') return true;
-    return String(b.check_in || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
+    return String(readDirect(b, 'check_in') || '') < today && (status === 'confirmed' || status === 'booked' || status === 'reserved' || status === 'pending' || !status);
   });
 
-  const annotate = (rows) => rows.map(annotateBooking).filter(Boolean);
+  /** @param {unknown[]} rows */
+  const annotate = (rows) => rows.map(annotateBooking).filter((row) => row !== null);
   const arrivals = annotate(arrivalsRaw);
   const departures = annotate(departuresRaw);
   const inHouse = annotate(inHouseRaw);
@@ -186,15 +218,15 @@ async function _getDashboardStats() {
     .filter((b) => b._balance > 0.009)
     .sort((a, b) => b._balance - a._balance);
   const vipArrivals = arrivals.filter(isVip);
-  const specialRequests = [...pendingArrivals, ...inHouse].filter((b) =>
-    String(b.special_requests || b.notes || '').trim().length > 0
+  const specialRequests = [...pendingArrivals, ...inHouse].filter((/** @type {unknown} */ b) =>
+    String(readDirect(b, 'special_requests') || readDirect(b, 'notes') || '').trim().length > 0
   );
 
   const occupancyPercent = roomCounts.total > 0
     ? Math.round(((roomCounts.occupied + roomCounts.reserved) / roomCounts.total) * 100)
     : 0;
 
-  const outstandingTotal = outstandingBalances.reduce((sum, b) => sum + b._balance, 0);
+  const outstandingTotal = outstandingBalances.reduce((/** @type {number} */ sum, /** @type {PropertyReadView & { _balance: number }} */ b) => sum + b._balance, 0);
 
   return {
     rooms: roomCounts,
@@ -233,16 +265,17 @@ async function _getDashboardStats() {
   };
 }
 
+/** @param {unknown} [days] */
 async function _getHotelKpis(days = 7) {
   const windowDays = Math.min(Math.max(Number(days) || 7, 1), 31);
-  const rooms = await getAllRooms();
-  const bookings = await getAllBookings();
+  const rooms = /** @type {unknown[]} */ (await getAllRooms());
+  const bookings = /** @type {unknown[]} */ (await getAllBookings());
   const totalRooms = rooms.length;
-  const roomStatus = rooms.reduce((acc, room) => {
-    const status = String(room.status || 'available').toLowerCase();
+  const roomStatus = rooms.reduce((/** @type {Record<string, number>} */ acc, /** @type {unknown} */ room) => {
+    const status = String(readDirect(room, 'status') || 'available').toLowerCase();
     acc[status] = (acc[status] || 0) + 1;
     return acc;
-  }, {});
+  }, /** @type {Record<string, number>} */ ({}));
 
   const daily = [];
   let occupiedRoomNights = 0;
@@ -254,21 +287,21 @@ async function _getHotelKpis(days = 7) {
 
   for (let offset = 0; offset < windowDays; offset++) {
     const date = dateKeyFor(offset);
-    const active = bookings.filter((booking) => booking && booking.status !== 'cancelled' && overlapsDate(booking, date));
-    const dayArrivals = bookings.filter((booking) => booking && booking.status !== 'cancelled' && String(booking.check_in || '') === date);
-    const dayDepartures = bookings.filter((booking) => booking && booking.status !== 'cancelled' && String(booking.check_out || '') === date);
-    const dayNoShows = bookings.filter((booking) => {
-      const status = String(booking?.status || '').toLowerCase();
-      return String(booking?.check_in || '') === date && (status === 'no_show' || status === 'no-show');
+    const active = bookings.filter((/** @type {unknown} */ booking) => booking && readDirect(booking, 'status') !== 'cancelled' && overlapsDate(booking, date));
+    const dayArrivals = bookings.filter((/** @type {unknown} */ booking) => booking && readDirect(booking, 'status') !== 'cancelled' && String(readDirect(booking, 'check_in') || '') === date);
+    const dayDepartures = bookings.filter((/** @type {unknown} */ booking) => booking && readDirect(booking, 'status') !== 'cancelled' && String(readDirect(booking, 'check_out') || '') === date);
+    const dayNoShows = bookings.filter((/** @type {unknown} */ booking) => {
+      const status = String(readOptional(booking, 'status') || '').toLowerCase();
+      return String(readOptional(booking, 'check_in') || '') === date && (status === 'no_show' || status === 'no-show');
     });
 
-    const dayRevenue = active.reduce((sum, booking) => {
-      const nights = nightsBetween(booking.check_in, booking.check_out);
-      return sum + (Number(booking.total_amount || 0) / nights);
+    const dayRevenue = active.reduce((/** @type {number} */ sum, /** @type {unknown} */ booking) => {
+      const nights = nightsBetween(readDirect(booking, 'check_in'), readDirect(booking, 'check_out'));
+      return sum + (Number(readDirect(booking, 'total_amount') || 0) / nights);
     }, 0);
 
     occupiedRoomNights += active.length;
-    soldRoomNights += active.filter((booking) => String(booking.status || '').toLowerCase() !== 'no_show').length;
+    soldRoomNights += active.filter((/** @type {unknown} */ booking) => String(readDirect(booking, 'status') || '').toLowerCase() !== 'no_show').length;
     estimatedRoomRevenue += dayRevenue;
     arrivals += dayArrivals.length;
     departures += dayDepartures.length;

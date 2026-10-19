@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
+// @ts-check
+import { useEffect, useLayoutEffect, useState, useRef, useContext, useMemo, lazy, Suspense } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, Save, Upload, X, Image, Moon, RefreshCw, CheckCircle2, AlertTriangle, Key, ShieldCheck, Clock, CreditCard, Copy, TrendingUp, ArrowUpCircle, Settings as SettingsIcon, MessageCircle, FileText, Info, Send, Sparkles, Download, RotateCcw, Sun, Monitor, Store } from 'lucide-react'
-import { useAccess, useSettings, UnsavedChangesContext } from '../app-context'
+import { useAccess, useAuth, useSettings, UnsavedChangesContext } from '../app-context'
 import { Modal } from './shared/Modal'
 import { ErrorNotice } from './shared/ErrorNotice'
 import { extractReleaseHighlights, formatReleaseDate, normalizeReleaseNotes, toReleaseSections } from '../utils/updatePresentation'
@@ -17,7 +18,28 @@ import {
   PROPERTY_TYPE_LABELS
 } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import {
+  getLodgingTypeOptions,
+  getPropertyPresentation,
+  isSameProductTransition,
+  describePresentationDiff,
+  mapPropertyTransitionError,
+  summarizeAccommodationMix,
+  toSupportedLodgingType
+} from '../../../shared/propertyPresentation'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
+import {
+  OPERATION_STORAGE_VERSION,
+  TransitionStorageError,
+  buildStorageKey,
+  canEditDuringPending,
+  createTransitionController,
+  describeArchivedTerminal,
+  isSameOperation,
+  listArchivedTransitionOps,
+  loadStoredTransitionOp,
+  shortOperationKey
+} from '../../../shared/propertyTransitionOperation'
 import { canAccessCapability } from '../../../shared/accessControl'
 import {
   DEFAULT_TILL_OPERATOR_INACTIVITY_MINUTES,
@@ -45,6 +67,8 @@ const PUBLIC_OFFER_DEFAULT_TRUE = new Set(['public_offer_rooms', 'public_offer_m
 // The main process has a 15-second end-to-end budget; keep a small IPC slack
 // so the renderer does not report failure just as the main process resolves.
 const SETTINGS_SAVE_TIMEOUT_MS = 20000
+/** @typedef {Pick<import('../types/desktop-api.js').DesktopUpdateStateReadView, 'version' | 'releaseName' | 'releaseDate' | 'releaseNotes'> & {progress?: import('../types/desktop-api.js').DesktopUpdateProgressReadView | null}} SettingsUpdateMetadataReadView */
+/** @typedef {SettingsUpdateMetadataReadView | {version?: undefined, releaseName?: undefined, releaseDate?: undefined, releaseNotes?: undefined, progress: import('../types/desktop-api.js').DesktopUpdateProgressReadView}} SettingsUpdateMetaReadView */
 const EMAIL_PROVIDER_PRESETS = {
   gmail: {
     label: 'Gmail',
@@ -122,6 +146,1148 @@ function withSettingsSaveTimeout(promise, timeoutMs = SETTINGS_SAVE_TIMEOUT_MS) 
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
+function newTransitionUuid() {
+  try {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+  } catch {}
+  const hex = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).slice(1)
+  return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-a${hex().slice(1)}-${hex()}${hex()}${hex()}`.toLowerCase()
+}
+
+function readTransitionResult(res) {
+  if (res && typeof res === 'object' && res.success === true) return { ok: true, result: res }
+  const error = new Error(res?.error || res?.message || 'The property-type service rejected this request.')
+  error.code = res?.code || 'property_transition_rejected'
+  return { ok: false, error }
+}
+
+// Scoped local persistence for the pending property-transition operation.
+// Only identifiers are stored (lodge, user scope, target, expected state,
+// reason, key) — never credentials or tokens.
+//
+// Durability is fail-closed (R4): the shared storage helpers throw a
+// TransitionStorageError when storage is missing, blocked or failing, and no
+// mutation is ever submitted unless the operation is verifiably durable
+// (write + re-read match). Terminal operations are never permanently deleted:
+// they retire into the append-only per-scope archive and stay recoverable by
+// key. Another scope's record is read-only here — counted, never opened,
+// submitted, modified or deleted.
+function scopeKeyForTransition(lodgeId, userId) {
+  try {
+    return buildStorageKey({ lodgeId, userId })
+  } catch {
+    return null
+  }
+}
+
+function readTransitionStorage() {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+// Fail-closed scoped load. Returns `{ op, storageError }`: a blocked store
+// surfaces an actionable TransitionStorageError instead of silently
+// orphaning the operation key.
+function loadScopedTransitionOp(storageKey) {
+  const storage = readTransitionStorage()
+  try {
+    if (!storageKey || !storage) {
+      throw new TransitionStorageError(
+        'Local recovery storage is unavailable, so a pending property-type operation cannot be recovered on this device right now. Nothing was submitted — enable local storage, then use “Check outcome” with the original operation key before retrying.',
+        { scope: null, key: typeof storageKey === 'string' ? storageKey : null, cause: 'missing-or-blocked-storage' }
+      )
+    }
+    return { op: loadStoredTransitionOp(storage, storageKey), storageError: null }
+  } catch (error) {
+    if (error instanceof TransitionStorageError) return { op: null, storageError: error }
+    return { op: null, storageError: null }
+  }
+}
+
+// Pending records filed under a different scope key (another lodge/user on
+// this device). Presence only: details are never read for display, and
+// nothing here is ever submitted, modified or deleted from this scope.
+function findForeignTransitionKeys(currentKey) {
+  try {
+    const storage = readTransitionStorage()
+    if (!storage) return []
+    const prefix = `${OPERATION_STORAGE_VERSION}::`
+    const out = []
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i)
+      if (!key || !key.startsWith(prefix) || key === currentKey) continue
+      try {
+        if (loadStoredTransitionOp(storage, key)) out.push(key)
+      } catch {
+        // A blocked store yields no foreign list rather than a crash; the
+        // scoped load above already reports the storage failure truthfully.
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+// Append-only terminal-operation history for this scope (archived instead of
+// deleted). Read-only here: entries are listed for recovery by their ORIGINAL
+// keys and are never edited, resubmitted or deleted. Listing is scoped to the
+// current lodge/user — switching scope shows only that scope's history.
+function listScopedArchivedOps(lodgeId, userId) {
+  try {
+    const storage = readTransitionStorage()
+    if (!storage || !lodgeId) return []
+    const entries = listArchivedTransitionOps(storage, { lodgeId, userId })
+    return Array.isArray(entries) ? entries : []
+  } catch {
+    return []
+  }
+}
+
+function transitionTargetLabel(targetType) {
+  try {
+    return getLodgingTypeOptions().find((option) => option.value === targetType)?.label || String(targetType || '')
+  } catch {
+    return String(targetType || '')
+  }
+}
+
+/**
+ * Controlled same-product property-type change (LodgingOS only).
+ * Ordinary settings save never touches classification: this section keeps its
+ * own target/preview/confirm state and commits only through the dedicated
+ * atomic, audited, idempotent server contract. Enforcement (capability, lodge
+ * scope, same-product, expected version, key binding) is server-side; this UI
+ * only previews, confirms explicitly, and recovers.
+ */
+export function PropertyTypeSection({ globalSettings, access, canManage, onCommitted }) {
+  const { user } = useAuth() || {}
+  const lodgeId = globalSettings?.lodge_id || null
+  const userScopeId = user?.id || user?.email || null
+  const scopeKey = scopeKeyForTransition(lodgeId, userScopeId)
+  const currentType = normalizePropertyType(globalSettings?.property_type || globalSettings?.business_type || 'lodge')
+  const currentSupported = toSupportedLodgingType(globalSettings?.property_type || globalSettings?.business_type || '')
+  const settingsIdentity = `${globalSettings?.lodge_id || ''}::${currentType}::${globalSettings?.updated_at || ''}`
+  const [target, setTarget] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [commitBusy, setCommitBusy] = useState(false)
+  const [statusBusy, setStatusBusy] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
+  const [ackPreserved, setAckPreserved] = useState(false)
+  const [reason, setReason] = useState('')
+  // The pending operation is the source of truth; operationKey mirrors it.
+  // Both initialize from the scoped stored record (reopen/restart recovery),
+  // never from an empty default that would orphan a stored key. The shared
+  // transition controller (`createTransitionController`) owns durability,
+  // submission, status recovery, fencing and archiving; this React state only
+  // mirrors it for rendering.
+  const [pendingOp, setPendingOp] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.op || null)
+  const [operationKey, setOperationKey] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.op?.idempotencyKey || '')
+  const [foreignKeys, setForeignKeys] = useState(() => findForeignTransitionKeys(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null)))
+  const [archiveEntries, setArchiveEntries] = useState(() => listScopedArchivedOps(globalSettings?.lodge_id || null, user?.id || user?.email || null))
+  // Scoped archive/history recovery selection: which archived entry the
+  // operator chose to check, its latest read-only lookup, and in-flight flag.
+  const [selectedArchivedKey, setSelectedArchivedKey] = useState(null)
+  const [archivedLookups, setArchivedLookups] = useState({})
+  const [archivedBusy, setArchivedBusy] = useState(false)
+  const [storageBlocked, setStorageBlocked] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.storageError || null)
+  const [discardArmed, setDiscardArmed] = useState(false)
+  const [refreshWarning, setRefreshWarning] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const [failure, setFailure] = useState(null)
+  const [statusReport, setStatusReport] = useState(null)
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false))
+  // Live scope mirror for fenced async callbacks: late results for a previous
+  // scope or superseded key are ignored and can never clear a newer operation.
+  const scopeRef = useRef({ lodgeId, userId: userScopeId, scopeKey })
+  scopeRef.current = { lodgeId, userId: userScopeId, scopeKey }
+  // A key-only comparison misses A → B → A while an archived status request
+  // is in flight. A layout effect increments the epoch before promise
+  // callbacks can publish a result for the newly committed scope.
+  const scopeEpochRef = useRef(0)
+  const previousScopeKeyRef = useRef(scopeKey)
+  const archivedLookupTicketRef = useRef(0)
+  const controllerRef = useRef(null)
+  // Records the latest outcome check per operation key ('NOT_FOUND …',
+  // 'stored outcome not yet completed', 'authoritative outcome found') so the
+  // archive-and-supersede reason can state what the operator ACTUALLY did.
+  const statusCheckRef = useRef({})
+  // Set when the server confirmed a mutation but the on-device archive write
+  // failed: the outcome stays visible and the op stays checkable by key.
+  const archiveFailedRef = useRef(false)
+
+  useLayoutEffect(() => {
+    if (previousScopeKeyRef.current !== scopeKey) {
+      previousScopeKeyRef.current = scopeKey
+      scopeEpochRef.current += 1
+    }
+  }, [scopeKey])
+
+  useEffect(() => {
+    const goOnline = () => setOnline(true)
+    const goOffline = () => setOnline(false)
+    window.addEventListener?.('online', goOnline)
+    window.addEventListener?.('offline', goOffline)
+    return () => {
+      window.removeEventListener?.('online', goOnline)
+      window.removeEventListener?.('offline', goOffline)
+    }
+  }, [])
+
+  // Mount + scope recovery: whenever the lodge/user scope changes, adopt the
+  // operation stored under that scope WITHOUT submitting anything. A stored
+  // record restores the exact draft (target/reason) so retries stay
+  // byte-identical; records from other scopes are only counted, never opened,
+  // submitted, modified or deleted. In-memory key state always clears on scope
+  // change; storage is left for a switch-back. A blocked store surfaces an
+  // actionable error instead of silently orphaning the key.
+  useEffect(() => {
+    archivedLookupTicketRef.current += 1
+    const controller = controllerRef.current
+    if (controller) {
+      try {
+        controller.setScope({ lodgeId, userId: userScopeId })
+      } catch {
+        // Scope shape is validated when an operation starts; recovery keeps
+        // whatever is already held rather than crashing Settings.
+      }
+      try {
+        controller.recover()
+        setStorageBlocked(null)
+      } catch (error) {
+        setStorageBlocked(error instanceof TransitionStorageError ? error : null)
+      }
+    }
+    const stored = controller?.getStored() || loadScopedTransitionOp(scopeKey)?.op || null
+    setPendingOp(stored)
+    setOperationKey(stored?.idempotencyKey || '')
+    setForeignKeys(findForeignTransitionKeys(scopeKey))
+    // Scope isolation: show only this scope's history; drop any previous
+    // scope's selection/lookup so it can never render under the new scope.
+    setArchiveEntries(listScopedArchivedOps(lodgeId, userScopeId))
+    setSelectedArchivedKey(null)
+    setArchivedLookups({})
+    setArchivedBusy(false)
+    setDiscardArmed(false)
+    if (stored) {
+      setTarget(stored.targetType)
+      setReason(stored.reason || '')
+      setNotice({
+        tone: 'info',
+        message: `Resumed pending operation ${shortOperationKey(stored.idempotencyKey)} for ${transitionTargetLabel(stored.targetType)} — check outcome before retrying. Target and reason are locked until it is resolved or archived-and-superseded.`
+      })
+    }
+  }, [scopeKey])
+
+  // A new target, or reloaded settings underneath, invalidates any preview.
+  useEffect(() => {
+    setPreview(null)
+    setConfirmText('')
+    setAckPreserved(false)
+    setStatusReport(null)
+  }, [target, settingsIdentity])
+
+  const api = window.api?.settings || {}
+  const previewAvailable = typeof api.previewPropertyTypeChange === 'function'
+  const commitAvailable = typeof api.commitPropertyTypeChange === 'function'
+  const statusAvailable = typeof api.getPropertyTypeTransitionStatus === 'function'
+  const contractAvailable = previewAvailable && commitAvailable && statusAvailable
+
+  const mixSummary = summarizeAccommodationMix(
+    globalSettings?.operating_profile?.accommodation_mix,
+    globalSettings?.operating_profile
+  )
+  let currentWording = null
+  try {
+    currentWording = getPropertyPresentation({ propertyType: currentType, operatingProfile: globalSettings?.operating_profile })
+  } catch {
+    currentWording = null
+  }
+  const targetOption = getLodgingTypeOptions().find((option) => option.value === target) || null
+  const previewForTarget = preview && preview.targetType === target ? preview : null
+  const previewFresh = Boolean(
+    previewForTarget
+    && previewForTarget.expectedPropertyType === currentType
+    && (previewForTarget.expectedUpdatedAt || null) === (globalSettings?.updated_at || null)
+  )
+  const confirmReady = Boolean(
+    previewFresh && targetOption && canManage && online
+    && confirmText.trim().toLowerCase() === targetOption.label.toLowerCase()
+    && ackPreserved
+  )
+  const previewBlockers = Array.isArray(previewForTarget?.data?.blockers) ? previewForTarget.data.blockers : []
+  const previewNotes = Array.isArray(previewForTarget?.data?.navigation?.notes) ? previewForTarget.data.navigation.notes : []
+  // While a same-scope operation is pending, target/reason are immutable
+  // (canEditDuringPending() is always false). Changing them requires an
+  // explicit discard of the pending operation first.
+  const pendingLock = Boolean(pendingOp && !canEditDuringPending())
+  const pendingLabel = pendingOp ? transitionTargetLabel(pendingOp.targetType) : null
+  const retryReady = Boolean(
+    pendingOp && pendingLabel && canManage && online && !commitBusy && !statusBusy
+    && confirmText.trim().toLowerCase() === pendingLabel.toLowerCase()
+    && ackPreserved
+  )
+
+  const runPreview = async () => {
+    if (!target || previewBusy || commitBusy) return
+    if (!isSameProductTransition(currentType, target)) {
+      setFailure({ kind: 'conflict', message: 'Property type changes stay inside LodgingOS (guest house, B&B, lodge, camp, motel).', retryable: false })
+      return
+    }
+    setFailure(null)
+    setNotice(null)
+    setStatusReport(null)
+    if (!online) {
+      setFailure(mapPropertyTransitionError({ code: 'property_transition_offline' }))
+      return
+    }
+    if (!previewAvailable) {
+      // Advisory local wording diff only; server blockers stay unknown.
+      setPreview({
+        advisory: true,
+        targetType: target,
+        expectedPropertyType: currentType,
+        expectedUpdatedAt: globalSettings?.updated_at || null,
+        diff: describePresentationDiff(currentType, target),
+        at: new Date().toISOString()
+      })
+      setNotice({ tone: 'warning', message: 'Server preview is unavailable in this build, so blockers could not be checked. Update the desktop app before committing a property-type change.' })
+      return
+    }
+    setPreviewBusy(true)
+    try {
+      const res = await api.previewPropertyTypeChange(target)
+      const read = readTransitionResult(res)
+      if (!read.ok) throw read.error
+      setPreview({
+        advisory: false,
+        targetType: target,
+        expectedPropertyType: currentType,
+        expectedUpdatedAt: globalSettings?.updated_at || null,
+        data: read.result.data || null,
+        at: new Date().toISOString()
+      })
+      if (read.result.data?.expected_match === false) {
+        setNotice({ tone: 'warning', message: 'Settings changed since this preview was requested. Reload settings, then preview again before committing.' })
+      }
+    } catch (error) {
+      setPreview(null)
+      setFailure(mapPropertyTransitionError(error))
+    } finally {
+      setPreviewBusy(false)
+    }
+  }
+
+  // Mirror the controller (single source of truth for the operation) into
+  // React state for rendering.
+  const syncFromController = () => {
+    const controller = controllerRef.current
+    const stored = controller?.getStored() || null
+    setPendingOp(stored)
+    setOperationKey(stored?.idempotencyKey || '')
+    setArchiveEntries(listScopedArchivedOps(scopeRef.current.lodgeId, scopeRef.current.userId))
+    return stored
+  }
+
+  const clearTransitionForm = () => {
+    setTarget('')
+    setPreview(null)
+    setConfirmText('')
+    setAckPreserved(false)
+    setReason('')
+    setStatusReport(null)
+  }
+
+  const storageFailureOf = (error) => (error instanceof TransitionStorageError
+    ? { kind: 'storage', message: error.message, retryable: true }
+    : mapPropertyTransitionError(error))
+
+  // Authoritative post-commit reconciliation (R5): the controller already ran
+  // the awaited server read (`refreshSettingsFromServer`, never a cache-first
+  // get) and reported it truthfully. Only when that read succeeded do we sync
+  // the open form from the now-fresh cache; a stale cache must never be
+  // reapplied after the server committed. Entitlement/access refresh failure
+  // is reported truthfully too. The completed mutation is retained in every
+  // path and is NEVER resubmitted to repair a refresh failure.
+  const settleRefreshPending = async (serverRefresh) => {
+    if (!serverRefresh || serverRefresh.ok !== true) {
+      const reason = serverRefresh ? (serverRefresh.reason || 'refresh-failed') : 'refresh-unavailable'
+      const detail = serverRefresh?.detail ? ` (${serverRefresh.detail})` : ''
+      setRefreshWarning(`Change saved on server, but local refresh failed (${reason}${detail}) — use “Retry refresh only” below. No new submission will be made.`)
+      return false
+    }
+    try {
+      await onCommitted?.()
+    } catch {
+      // Form sync is best-effort; the authoritative server read above is the
+      // truth and the cache it wrote is already fresh.
+    }
+    try {
+      await access?.refreshEntitlement?.({ forceFresh: true })
+    } catch (error) {
+      const reason = error?.message || String(error)
+      setRefreshWarning(`Change saved on server, but access/entitlement refresh failed (${reason}) — use “Retry refresh only” below. No new submission will be made.`)
+      return false
+    }
+    setRefreshWarning(null)
+    return true
+  }
+
+  // Refresh-only recovery: re-runs the authoritative settings read without
+  // submitting any mutation. The controller asserts by construction that no
+  // commit happens on this path.
+  const retryRefreshOnly = async () => {
+    const controller = controllerRef.current
+    if (!controller) return
+    setFailure(null)
+    try {
+      const res = await controller.retryRefreshOnly()
+      if (res && res.ok === true) {
+        const ok = await settleRefreshPending({ ok: true })
+        if (ok) {
+          setNotice({ tone: 'success', message: 'Settings and access refreshed from the server — no new submission was made.' })
+        }
+      } else {
+        setRefreshWarning(`Local refresh still failing (${res?.reason || 'refresh-failed'}) — use “Retry refresh only” again later. No new submission will be made.`)
+      }
+    } catch (error) {
+      setFailure(storageFailureOf(error))
+    }
+    syncFromController()
+  }
+
+  // Background controller events (late completions after a timeout UI was
+  // already shown, scope-fenced stale callbacks, recovery). User-clicked
+  // submit/check flows settle inline after their await; this handler only
+  // reconciles completions that arrive outside those flows. late-retired and
+  // refresh-pending are idempotent with the inline paths.
+  const handleControllerEvent = (name, detail) => {
+    const controller = controllerRef.current
+    if (!controller) return
+    if (name === 'late-retired') {
+      const op = detail?.op || null
+      syncFromController()
+      clearTransitionForm()
+      setFailure(null)
+      const label = op ? transitionTargetLabel(op.targetType) : 'The property type'
+      setNotice({ tone: 'success', message: `The earlier request finished on the server after the timeout — ${label} is now recorded. No duplicate was submitted.` })
+      const rs = controller.getRefreshState()
+      void settleRefreshPending(rs && rs.ok === true ? { ok: true } : (rs || { ok: false, reason: 'refresh-failed' }))
+    } else if (name === 'refresh-pending') {
+      syncFromController()
+      const rs = controller.getRefreshState()
+      const reason = rs ? (rs.reason || 'refresh-failed') : 'refresh-failed'
+      setRefreshWarning(`Change saved on server, but local refresh failed (${reason}) — use “Retry refresh only” below. No new submission will be made.`)
+    } else if (name === 'archive-failed') {
+      // The server outcome is already retired in memory (never resubmitted);
+      // only the on-device archive write failed. Flag it so the inline path
+      // keeps the outcome visible instead of clearing it.
+      archiveFailedRef.current = true
+    } else if (name === 'recovered' || name === 'superseded') {
+      syncFromController()
+    }
+    // 'stale-ignored': a late/stale callback for a previous scope or a
+    // superseded key — intentionally no UI change, never clears a newer op.
+  }
+
+  // The REAL production operation controller for this section: durable
+  // write-verify-submit discipline end to end. ensureDurable/beginNew persist
+  // + verify by re-read and throw TransitionStorageError BEFORE any submit;
+  // submitCurrent builds the payload via buildCommitPayload(storedOp) once per
+  // in-flight request and never mints a replacement key after an ambiguous
+  // timeout; checkOutcome retires + archives only on an authoritative
+  // completed outcome; archiveAndSupersede is the only way to abandon an op.
+  if (!controllerRef.current) {
+    controllerRef.current = createTransitionController({
+      storage: readTransitionStorage(),
+      api: {
+        commit: (payload) => {
+          if (typeof window !== 'undefined' && typeof window.api?.settings?.commitPropertyTypeChange === 'function') {
+            return window.api.settings.commitPropertyTypeChange(payload)
+          }
+          const error = new Error('The property-type commit service is unavailable in this build.')
+          error.code = 'unavailable'
+          return Promise.reject(error)
+        },
+        status: (idempotencyKey) => {
+          if (typeof window !== 'undefined' && typeof window.api?.settings?.getPropertyTypeTransitionStatus === 'function') {
+            return window.api.settings.getPropertyTypeTransitionStatus(idempotencyKey)
+          }
+          const error = new Error('The property-type status service is unavailable in this build.')
+          error.code = 'unavailable'
+          return Promise.reject(error)
+        },
+        refresh: () => {
+          if (typeof window !== 'undefined' && typeof window.api?.settings?.refreshSettingsFromServer === 'function') {
+            return window.api.settings.refreshSettingsFromServer()
+          }
+          return Promise.resolve({ ok: false, reason: 'refresh-unavailable' })
+        }
+      },
+      timers: { commitTimeoutMs: SETTINGS_SAVE_TIMEOUT_MS },
+      scope: { lodgeId, userId: userScopeId },
+      generateKey: () => newTransitionUuid(),
+      onEvent: handleControllerEvent
+    })
+  }
+
+  // Submit the CURRENT stored operation through the shared controller. The
+  // payload comes from buildCommitPayload(storedOp), computed once per
+  // in-flight request and reused byte-identically on retry. At most one
+  // request is in flight; an ambiguous timeout keeps the op
+  // (awaiting-outcome) instead of minting a replacement key, and a late
+  // completion retires exactly once via the controller event above.
+  const submitStoredOp = async (op) => {
+    const controller = controllerRef.current
+    if (!controller || !op) {
+      setFailure({ kind: 'unknown', message: 'No pending property-type operation to submit.', retryable: false })
+      return
+    }
+    // Fence: submit only the operation the controller currently holds. A
+    // superseded key or a scope switch between render and click never submits.
+    const held = controller.getStored()
+    if (!held || !isSameOperation(held, op)) {
+      syncFromController()
+      setFailure({
+        kind: 'conflict',
+        message: 'This is no longer the current pending operation (scope changed or it was superseded). The current operation is shown above — use “Check outcome” with its values.',
+        retryable: false
+      })
+      return
+    }
+    setCommitBusy(true)
+    try {
+      const res = await controller.submitCurrent()
+      if (res?.stale) {
+        // A scope switch or supersede landed mid-flight: nothing changed.
+        syncFromController()
+        return
+      }
+      if (res?.retired) {
+        const label = transitionTargetLabel(op.targetType)
+        const changed = res?.result?.data?.changed !== false
+        const replayed = res?.result?.replayed === true
+        const archived = archiveFailedRef.current
+        archiveFailedRef.current = false
+        syncFromController()
+        clearTransitionForm()
+        setDiscardArmed(false)
+        setFailure(null)
+        setNotice({
+          tone: 'success',
+          message: replayed
+            ? `Recorded already (same operation key). Showing the authoritative stored outcome for ${label}.`
+            : (changed
+              ? `Property type is now ${label}. Settings and access are refreshing.`
+              : `Already ${label} — recorded as a checked no-op.`)
+        })
+        if (archived) {
+          setNotice({ tone: 'warning', message: `Property type is now ${label}, but the on-device archive write failed — the outcome stays visible above and remains checkable by its key. No duplicate was submitted.` })
+        }
+        await settleRefreshPending(res?.refresh)
+        return
+      }
+      // A non-retiring response keeps the op checkable; never invent success.
+      syncFromController()
+      setNotice({ tone: 'info', message: 'The server response was not a completed change. The operation is kept — use “Check outcome” before retrying.' })
+    } catch (error) {
+      syncFromController()
+      const mapped = storageFailureOf(error)
+      if (mapped.kind === 'stale') {
+        // Stale-version rejection: force a fresh preview, keep the stored
+        // operation locked so the original values stay checkable.
+        setPreview(null)
+        setFailure(mapped)
+      } else if (mapped.kind === 'conflict') {
+        setFailure({ ...mapped, message: `${mapped.message} Showing the original values for “Check outcome” below — no new key was created.` })
+      } else {
+        setFailure(mapped)
+      }
+      // Ambiguous timeout (or unknown outcome): the controller preserved the
+      // stored op (awaiting-outcome) and reconciles a late success without
+      // resubmitting — nothing further to do here.
+    } finally {
+      setCommitBusy(false)
+    }
+  }
+
+  const runCommit = async () => {
+    if (commitBusy) return
+    setFailure(null)
+    setNotice(null)
+    setStatusReport(null)
+    setRefreshWarning(null)
+    if (!online) {
+      setFailure(mapPropertyTransitionError({ code: 'property_transition_offline' }))
+      return
+    }
+    if (!commitAvailable) {
+      setFailure(mapPropertyTransitionError({ code: 'unavailable' }))
+      return
+    }
+    if (pendingOp) {
+      // Exact retry of the pending operation: the live draft must still match
+      // the captured values, otherwise the submit is blocked and the operator
+      // is directed to Check outcome (never a silent new key).
+      if (target !== pendingOp.targetType || reason.trim() !== String(pendingOp.reason || '')) {
+        setFailure({
+          kind: 'conflict',
+          message: `This change differs from pending operation ${shortOperationKey(pendingOp.idempotencyKey)} (${pendingLabel}). Use “Check outcome” with the original values, or explicitly discard the pending operation to start a new change.`,
+          retryable: false
+        })
+        return
+      }
+      if (previewForTarget
+        && (previewForTarget.expectedPropertyType !== pendingOp.expectedPropertyType
+          || (previewForTarget.expectedUpdatedAt ?? null) !== (pendingOp.expectedUpdatedAt ?? null))) {
+        setFailure({
+          kind: 'stale',
+          message: 'The fresh preview no longer matches the pending operation. Use “Check outcome” with the original values first.',
+          retryable: true
+        })
+        return
+      }
+      if (!retryReady) return
+      await submitStoredOp(pendingOp)
+      return
+    }
+    if (!confirmReady) return
+    // beginNew mints a FRESH key and durably persists (write + re-read verify)
+    // BEFORE any RPC call. A blocked store throws TransitionStorageError here
+    // with zero RPC calls — the change is NOT submitted. A later genuine
+    // change mints its own fresh key because retire/archive clears the record.
+    let op
+    try {
+      op = controllerRef.current.beginNew({
+        targetType: target,
+        expectedPropertyType: previewForTarget.expectedPropertyType,
+        expectedUpdatedAt: previewForTarget.expectedUpdatedAt,
+        reason: reason.trim()
+      })
+    } catch (error) {
+      setFailure(storageFailureOf(error))
+      return
+    }
+    syncFromController()
+    await submitStoredOp(op)
+  }
+
+  // Archive-and-supersede is the ONLY way to abandon an operation: the
+  // unresolved op is retained in the append-only on-device archive under its
+  // ORIGINAL key (recoverable via its own “Check outcome” in the history
+  // list below), then cleared so a genuinely new change may mint a fresh key.
+  // There is no permanent-delete path, and a blocked archive keeps the op in
+  // place instead of losing it. Offered as a two-step action. The archived
+  // reason states what the operator ACTUALLY did (recorded outcome check for
+  // this key, or explicitly none) — never an unconditional "outcome checked"
+  // assertion — and keeps superseded-unresolved distinct from completed.
+  const archivePending = () => {
+    const controller = controllerRef.current
+    const stored = controller?.getStored()
+    if (!stored) return
+    if (!discardArmed) {
+      setDiscardArmed(true)
+      return
+    }
+    const checked = statusCheckRef.current[stored.idempotencyKey]
+    const stamp = new Date().toISOString()
+    const truthfulReason = checked
+      ? `operator archive-and-supersede from Property type section after recorded ${checked} at ${stamp}; unresolved operation retained in on-device history under its original key`
+      : `operator archive-and-supersede from Property type section with no recorded outcome check at ${stamp}; unresolved operation retained in on-device history under its original key`
+    try {
+      controller.archiveAndSupersede(truthfulReason)
+    } catch (error) {
+      setFailure(storageFailureOf(error))
+      return
+    }
+    syncFromController()
+    clearTransitionForm()
+    setDiscardArmed(false)
+    setStatusReport(null)
+    setNotice({ tone: 'info', message: `Operation ${shortOperationKey(stored.idempotencyKey)} archived on this device (kept in the history list below under its original key — select it there to check a late outcome) and superseded. A genuinely new change will mint a fresh operation key.` })
+  }
+
+  // Scoped archive/history recovery (F2): check ONE archived operation by its
+  // ORIGINAL key through the shared controller. Read-only by construction —
+  // the controller never submits on this path and never touches the current
+  // stored op — and fenced here too: a scope switch or a different selection
+  // mid-flight drops the result instead of showing it under the wrong entry.
+  const checkArchivedEntry = async (entryKey) => {
+    const controller = controllerRef.current
+    if (!controller || !entryKey || archivedBusy) return
+    const ticketScope = scopeRef.current.scopeKey
+    const ticketEpoch = scopeEpochRef.current
+    const ticketLookup = ++archivedLookupTicketRef.current
+    const lookupIsCurrent = () => archivedLookupTicketRef.current === ticketLookup
+      && scopeEpochRef.current === ticketEpoch
+      && scopeRef.current.scopeKey === ticketScope
+    setSelectedArchivedKey(entryKey)
+    setArchivedBusy(true)
+    setFailure(null)
+    try {
+      const res = await controller.checkArchivedOutcome(entryKey)
+      if (!lookupIsCurrent()) return
+      if (res?.stale) {
+        setNotice({ tone: 'info', message: 'That archived lookup returned a mismatched receipt — nothing was displayed as its outcome and nothing was changed. The current operation above is untouched.' })
+        return
+      }
+      setArchivedLookups((prev) => ({ ...prev, [entryKey]: res }))
+      if (res && res.found === false) {
+        setNotice({ tone: 'info', message: `No recorded server result yet for archived operation ${shortOperationKey(entryKey)} — an earlier request may still finish. The current operation above is untouched (nothing was resubmitted).` })
+      }
+    } catch (error) {
+      if (!lookupIsCurrent()) return
+      setFailure(storageFailureOf(error))
+    } finally {
+      if (lookupIsCurrent()) setArchivedBusy(false)
+    }
+  }
+
+  // Status recovery through the shared controller: retires + archives only on
+  // an authoritative completed outcome whose identity matches the current op
+  // (lodge + key); anything else keeps the op for exact retry. A recovered
+  // outcome reconciles canonical settings via the authoritative server read;
+  // a refresh failure keeps the retired result visible with refresh-only
+  // recovery and never resubmits.
+  const checkOutcome = async () => {
+    const controller = controllerRef.current
+    const stored = controller?.getStored() || loadScopedTransitionOp(scopeKey)?.op || null
+    if (!stored) {
+      setFailure({ kind: 'unknown', message: 'No property-type operation has been started yet, so there is no outcome to check.', retryable: false })
+      return
+    }
+    if (!controller?.getStored()) {
+      // Re-adopt a record that exists in storage but not in the controller.
+      try {
+        controller.recover()
+      } catch (error) {
+        setFailure(storageFailureOf(error))
+        return
+      }
+      syncFromController()
+      setTarget(stored.targetType)
+      setReason(stored.reason || '')
+    }
+    setFailure(null)
+    setNotice(null)
+    setRefreshWarning(null)
+    if (!online) {
+      setFailure(mapPropertyTransitionError({ code: 'property_transition_offline' }))
+      return
+    }
+    if (!statusAvailable) {
+      setFailure(mapPropertyTransitionError({ code: 'unavailable' }))
+      return
+    }
+    setStatusBusy(true)
+    try {
+      const res = await controller.checkOutcome()
+      if (res?.stale) {
+        // A scope switch or supersede landed mid-flight: nothing changed.
+        syncFromController()
+        setNotice({ tone: 'info', message: 'This check belongs to a previous scope or a superseded operation — nothing was changed. The current operation is shown above.' })
+        return
+      }
+      if (res && res.found === false) {
+        // NOT_FOUND is not a green light for a different change: an earlier
+        // request may still land. The ORIGINAL operation (same key) remains
+        // safe to retry; the key must not be reused for anything else.
+        statusCheckRef.current[stored.idempotencyKey] = 'outcome check: no recorded result (NOT_FOUND)'
+        setStatusReport({ found: false, code: 'NOT_FOUND', message: '' })
+        setNotice({ tone: 'info', message: `No recorded result for that key right now — an earlier request may still finish; retrying the ORIGINAL operation remains safe (same key), but do not start a different change with this key.` })
+        return
+      }
+      const outcome = res?.result?.data || res?.result || {}
+      if (!res?.retired) {
+        statusCheckRef.current[stored.idempotencyKey] = 'outcome check: stored outcome not yet completed'
+        setStatusReport({
+          found: true,
+          targetType: res?.result?.target_type || outcome.target_type || stored.targetType || '',
+          previousType: res?.result?.previous_type || outcome.previous_type || '',
+          changed: outcome.changed,
+          at: res?.result?.created_at || ''
+        })
+        setNotice({ tone: 'info', message: 'The stored outcome is not a completed change yet. Keep this operation and check again before retrying.' })
+        return
+      }
+      const archived = archiveFailedRef.current
+      archiveFailedRef.current = false
+      statusCheckRef.current[stored.idempotencyKey] = 'outcome check: authoritative outcome found'
+      setStatusReport({
+        found: true,
+        targetType: res?.result?.target_type || outcome.target_type || stored.targetType || '',
+        previousType: res?.result?.previous_type || outcome.previous_type || '',
+        changed: outcome.changed,
+        at: res?.result?.created_at || ''
+      })
+      syncFromController()
+      clearTransitionForm()
+      setDiscardArmed(false)
+      setNotice({ tone: 'success', message: 'Found the authoritative stored outcome below. Refreshing settings and access to match it.' })
+      if (archived) {
+        setNotice({ tone: 'warning', message: 'Found the authoritative stored outcome below, but the on-device archive write failed — the outcome stays visible above and remains checkable by its key.' })
+      }
+      await settleRefreshPending(res?.refresh)
+    } catch (error) {
+      setFailure(storageFailureOf(error))
+    } finally {
+      setStatusBusy(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm p-6 mb-6" data-testid="property-type-section">
+      <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-1 flex items-center gap-2">
+        <Building2 size={15} className="text-green-600" /> Property type
+      </h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Same-product reclassification inside LodgingOS only. Product identity (LodgingOS vs HotelOS vs POS) cannot be switched here.
+      </p>
+
+      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800">
+        <p><span className="font-semibold">Current type:</span> {currentSupported ? getLodgingTypeOptions().find((option) => option.value === currentSupported)?.label : currentType}</p>
+        <p className="mt-1 text-xs text-gray-500">
+          Accommodation mix: {mixSummary}
+          {currentWording ? ` · Inventory shows as “${currentWording.inventoryLabel}” · Exclusive use reads “${currentWording.exclusiveUseLabel}”.` : ''}
+        </p>
+        <p className="mt-1 text-xs text-gray-500">
+          Bookings, ledgers, rates, invoices, stock, IDs and history are preserved — only wording, navigation and presentation defaults change.
+        </p>
+      </div>
+
+      {!canManage && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          You can view this section, but only a lodge manager with general-settings permission can preview or commit a property-type change.
+        </div>
+      )}
+      {!online && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          You are offline. Property-type changes are online-only and are never queued — reconnect before previewing or committing.
+        </div>
+      )}
+      {!contractAvailable && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          The property-type transition service is unavailable in this build (missing desktop service). Advisory wording preview only — update the app before committing.
+        </div>
+      )}
+
+      <div className="mt-4">
+        <p className="block text-sm font-medium text-gray-700 mb-2">Change to (same LodgingOS product only)</p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Target property type">
+          {getLodgingTypeOptions().map((option) => {
+            const isCurrent = option.value === currentSupported
+            const selected = target === option.value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={!canManage || commitBusy || pendingLock}
+                onClick={() => { if (pendingLock) return; setTarget(option.value); setFailure(null); setNotice(null); }}
+                className={`flex items-start gap-3 border-2 p-3 text-left transition-all rounded-xl ${selected ? 'border-green-600 bg-green-50' : 'border-gray-200 hover:border-gray-300'} ${(!canManage || commitBusy) ? 'opacity-60' : ''}`}
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">
+                    {option.label}
+                    {isCurrent ? <span className="ml-2 text-[11px] font-semibold text-gray-500">(current)</span> : null}
+                  </p>
+                  <p className="text-[11px] text-gray-500 mt-0.5 leading-tight">{option.description}</p>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {pendingLock && pendingOp ? (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="property-transition-pending">
+          <p className="font-semibold">Pending operation {shortOperationKey(pendingOp.idempotencyKey)} for {pendingLabel} — target and reason are locked.</p>
+          <p className="mt-1">Use “Check outcome” before retrying. To choose a different target or reason, first check the outcome, then archive the operation below (it stays in on-device history under its key — nothing is ever permanently deleted).</p>
+          <button
+            type="button"
+            onClick={archivePending}
+            disabled={!canManage || commitBusy || statusBusy}
+            className="btn-secondary mt-2 text-xs"
+            title="Checking the outcome first is recommended — a late request may still land on the server. The operation stays recoverable by its original key in the history list below."
+          >
+            {discardArmed ? 'Confirm archive and supersede (kept in history)' : 'Archive operation and start new'}
+          </button>
+        </div>
+      ) : null}
+      {storageBlocked ? (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" data-testid="property-transition-storage-blocked">
+          <p className="font-semibold">On-device recovery storage is blocked</p>
+          <p className="mt-1">{storageBlocked.message || 'Local recovery storage is unavailable.'} Nothing was submitted.</p>
+        </div>
+      ) : null}
+      {foreignKeys.length > 0 ? (
+        <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700" data-testid="property-transition-foreign">
+          <p className="font-semibold">Another property or user has a pending property-type check on this device ({foreignKeys.length}).</p>
+          <p className="mt-1">Switch back to that property/user to resolve it. Its details are hidden here and it will never be submitted, modified or deleted from this scope.</p>
+        </div>
+      ) : null}
+      {archiveEntries.length > 0 ? (
+        <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3" data-testid="property-transition-archive-history">
+          <p className="text-sm font-semibold text-gray-800">On-device history ({archiveEntries.length}) — this property and user only</p>
+          <p className="mt-1 text-[11px] text-gray-500">Archived operations stay recoverable under their original keys. Checking an archived operation never resubmits it and never touches the current operation above. Switching property or user shows only that scope&apos;s history.</p>
+          <ul className="mt-2 space-y-2">
+            {archiveEntries.map((entry) => {
+              const entryOp = entry && typeof entry === 'object' && entry.op && typeof entry.op === 'object' ? entry.op : {}
+              const entryKey = entryOp.idempotencyKey || ''
+              const terminal = describeArchivedTerminal(entry)
+              const lookup = archivedLookups[entryKey]
+              const selected = selectedArchivedKey === entryKey && lookup
+              const lookupOutcome = lookup?.result?.data || lookup?.result || {}
+              const badgeTone = terminal.kind === 'completed'
+                ? 'bg-green-100 text-green-800'
+                : terminal.kind === 'unresolved'
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-gray-100 text-gray-600'
+              return (
+                <li key={entryKey} data-testid="property-transition-archive-item" data-key={entryKey} className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <p className="text-sm text-gray-800">
+                    <span className="font-semibold">{transitionTargetLabel(entryOp.targetType)} </span>
+                    <span className="text-gray-400">({shortOperationKey(entryKey)})</span>{' '}
+                    <span className={`ml-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${badgeTone}`}>{terminal.label}</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-gray-500 break-all">
+                    Archived {entry?.terminal?.at || 'at an unknown time'}{entry?.terminal?.reason ? ` — ${entry.terminal.reason}` : ''}
+                  </p>
+                  {terminal.kind === 'unresolved' ? (
+                    <button
+                      type="button"
+                      onClick={() => { void checkArchivedEntry(entryKey) }}
+                      disabled={archivedBusy || statusBusy || commitBusy}
+                      className="btn-secondary mt-2 text-xs"
+                      data-testid="property-transition-archive-check"
+                      title="Look up the authoritative stored outcome for this archived operation's ORIGINAL key. Never resubmits; never touches the current operation."
+                    >
+                      {archivedBusy && selectedArchivedKey === entryKey ? 'Checking…' : 'Check outcome (original key)'}
+                    </button>
+                  ) : null}
+                  {selected && lookup ? (
+                    <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900" data-testid="property-transition-archive-result">
+                      {lookup.found === false ? (
+                        <p>No recorded server result yet for {shortOperationKey(entryKey)} — an earlier request may still finish. Nothing was resubmitted.</p>
+                      ) : (
+                        <p>Server reports a recorded outcome for {shortOperationKey(entryKey)}: previous {lookupOutcome.previous_type || lookupOutcome.previousType || '—'} → target {lookupOutcome.target_type || lookup?.result?.target_type || entryOp.targetType || '—'} · {lookupOutcome.changed === false ? 'recorded no-op' : 'change recorded'}. The current operation above is untouched.</p>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={runPreview}
+          disabled={!target || previewBusy || commitBusy || !canManage || !online || pendingLock}
+          className="btn-secondary text-sm"
+        >
+          {previewBusy ? 'Previewing…' : 'Preview impact'}
+        </button>
+        {(operationKey || pendingOp) ? (
+          <button
+            type="button"
+            onClick={checkOutcome}
+            disabled={statusBusy || commitBusy}
+            className="btn-secondary text-sm"
+            title="Look up the authoritative stored outcome for the current operation key before retrying."
+          >
+            {statusBusy ? 'Checking…' : 'Check outcome'}
+          </button>
+        ) : null}
+        {pendingOp ? (
+          <button
+            type="button"
+            onClick={() => { void submitStoredOp(pendingOp) }}
+            disabled={!canManage || !online || commitBusy || statusBusy}
+            className="btn-secondary text-sm"
+            title="Resubmit the ORIGINAL captured operation with the same key and identical payload."
+          >
+            {commitBusy ? 'Retrying…' : 'Retry original operation (same key)'}
+          </button>
+        ) : null}
+      </div>
+      {pendingOp ? (
+        <p className="mt-2 text-[11px] text-gray-400 break-all">Operation key: {pendingOp.idempotencyKey} — reused for every retry and status check of this change. A new change mints a fresh key.</p>
+      ) : operationKey ? (
+        <p className="mt-2 text-[11px] text-gray-400 break-all">Operation key: {operationKey} — reused for every retry and status check of this change.</p>
+      ) : null}
+
+      {previewForTarget ? (
+        <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/60 px-4 py-3">
+          <p className="text-sm font-semibold text-gray-800">Impact preview — {targetOption?.label}</p>
+          {!previewFresh ? (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+              This preview is stale: settings changed underneath it. Reload settings, then preview again before committing.
+            </p>
+          ) : null}
+          {previewForTarget.advisory ? (
+            <ul className="mt-2 list-disc pl-5 text-sm text-gray-700 space-y-1">
+              {previewForTarget.diff.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          ) : (
+            <>
+              {previewForTarget.data?.wording ? (
+                <p className="mt-2 text-sm text-gray-700">
+                  “{previewForTarget.data.wording.from_label}” → “{previewForTarget.data.wording.to_label}” · units “{previewForTarget.data.wording.unit_label_from}” → “{previewForTarget.data.wording.unit_label_to}” · exclusive use “{previewForTarget.data.wording.exclusive_use_from}” → “{previewForTarget.data.wording.exclusive_use_to}”.
+                </p>
+              ) : null}
+              {previewForTarget.data?.accommodation_mix ? (
+                <p className="mt-1 text-xs text-gray-500">
+                  Live inventory: {previewForTarget.data.accommodation_mix.rooms} room-style + {previewForTarget.data.accommodation_mix.sites} site-style unit(s) — all preserved with IDs, bookings and rates unchanged.
+                </p>
+              ) : null}
+              {previewNotes.length > 0 ? (
+                <ul className="mt-2 list-disc pl-5 text-sm text-gray-700 space-y-1">
+                  {previewNotes.map((note, index) => <li key={`${note?.code || 'note'}-${index}`}>{note?.message || note}</li>)}
+                </ul>
+              ) : null}
+              {previewForTarget.data?.expected_match === false ? (
+                <p className="mt-2 text-sm font-medium text-amber-800">Settings changed since this preview was requested. Reload settings, then preview again before committing.</p>
+              ) : null}
+            </>
+          )}
+          {previewBlockers.length > 0 ? (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+              <p className="text-sm font-semibold text-red-800">Blocked — resolve before committing:</p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-red-700 space-y-1">
+                {previewBlockers.map((blocker, index) => (
+                  <li key={`${blocker?.code || 'blocker'}-${index}`}>
+                    {blocker?.message || blocker}
+                    {blocker?.repair ? ` Repair: ${blocker.repair}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="mt-3 space-y-3 border-t border-blue-100 pt-3">
+            <label className="block text-sm text-gray-700">
+              <span className="font-medium">Reason for change (optional, kept in the audit record)</span>
+              <input
+                className="input mt-1"
+                value={reason}
+                onChange={(e) => { if (pendingLock) return; setReason(e.target.value) }}
+                placeholder="e.g. Re-registered as a camp"
+                maxLength={200}
+                disabled={pendingLock}
+                title={pendingLock ? 'Locked while a pending operation exists. Discard it explicitly to enter a different reason.' : undefined}
+              />
+              {pendingLock ? <span className="mt-1 block text-[11px] text-gray-500">Locked while the pending operation is unresolved.</span> : null}
+            </label>
+            <label className="flex items-start gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={ackPreserved}
+                onChange={(e) => setAckPreserved(e.target.checked)}
+              />
+              <span>I understand bookings, ledgers, rates, invoices, stock and history are preserved, and only wording, navigation and presentation defaults change.</span>
+            </label>
+            <label className="block text-sm text-gray-700">
+              <span className="font-medium">Type “{targetOption?.label}” to confirm this exact change</span>
+              <input
+                className="input mt-1"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={targetOption?.label || ''}
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={runCommit}
+              disabled={pendingOp ? (!retryReady || commitBusy) : (!confirmReady || commitBusy || previewBlockers.length > 0)}
+              className="btn-primary text-sm"
+              title={pendingOp ? 'Retry the ORIGINAL captured operation with the same key.' : (previewBlockers.length > 0 ? 'Resolve the listed blockers before committing.' : undefined)}
+            >
+              {commitBusy ? 'Committing…' : `Commit change to ${pendingOp ? pendingLabel : (targetOption?.label || '')}`}
+            </button>
+            {!online ? <p className="text-xs text-red-600">Online connection required to commit.</p> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {statusReport?.found ? (
+        <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          <p className="font-semibold">Stored outcome for this operation key</p>
+          <p className="mt-1">Previous: {statusReport.previousType || '—'} → Target: {statusReport.targetType || '—'} · {statusReport.changed === false ? 'recorded no-op' : 'change recorded'}{statusReport.at ? ` · ${statusReport.at}` : ''}.</p>
+        </div>
+      ) : null}
+      {statusReport && !statusReport.found && statusReport.code === 'NOT_FOUND' ? (
+        <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700" data-testid="property-transition-not-found">
+          <p className="font-semibold">No recorded result for that key right now</p>
+          <p className="mt-1">An earlier request may still finish; retrying the ORIGINAL operation remains safe (same key), but do not start a different change with this key.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" onClick={checkOutcome} disabled={statusBusy || commitBusy} className="btn-secondary text-xs">
+              {statusBusy ? 'Checking…' : 'Check outcome again'}
+            </button>
+            {pendingOp ? (
+              <button type="button" onClick={() => { void submitStoredOp(pendingOp) }} disabled={!canManage || !online || commitBusy || statusBusy} className="btn-secondary text-xs">
+                {commitBusy ? 'Retrying…' : 'Retry original operation (same key)'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : statusReport && !statusReport.found ? (
+        <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+          {statusReport.message}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className={`mt-4 rounded-lg border px-4 py-3 text-sm font-medium ${notice.tone === 'success' ? 'border-green-200 bg-green-50 text-green-700' : notice.tone === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-blue-200 bg-blue-50 text-blue-800'}`}>
+          {notice.message}
+        </div>
+      ) : null}
+      {refreshWarning ? (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800" data-testid="property-transition-refresh-warning">
+          <p>{refreshWarning}</p>
+          <button
+            type="button"
+            onClick={() => { void retryRefreshOnly() }}
+            className="btn-secondary mt-2 text-xs"
+            data-testid="property-transition-refresh-retry"
+            title="Re-runs only the authoritative settings read. Never submits a new mutation."
+          >
+            Retry refresh only (no new submission)
+          </button>
+        </div>
+      ) : null}
+      {failure ? (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <p className="font-semibold">Property-type change {failure.kind === 'offline' ? 'needs a connection' : failure.kind === 'denied' ? 'not permitted' : failure.kind === 'stale' ? 'needs a fresh preview' : failure.kind === 'blocker' ? 'blocked' : 'could not complete'}</p>
+          <p className="mt-1">{failure.message}</p>
+          {(failure.kind === 'timeout' || failure.kind === 'unknown') && (pendingOp || operationKey) ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" onClick={checkOutcome} disabled={statusBusy || commitBusy} className="btn-secondary text-xs">
+                {statusBusy ? 'Checking…' : 'Check outcome before retrying'}
+              </button>
+              {pendingOp ? (
+                <button type="button" onClick={() => { void submitStoredOp(pendingOp) }} disabled={!canManage || !online || commitBusy || statusBusy} className="btn-secondary text-xs">
+                  {commitBusy ? 'Retrying…' : 'Retry original operation (same key)'}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+
 
 export default function Settings() {
   const navigate = useNavigate()
@@ -176,11 +1342,11 @@ export default function Settings() {
 
   // App updates
   const [appVersion, setAppVersion] = useState('')
-  const [updateStatus, setUpdateStatus] = useState('idle') // idle | checking | uptodate | available | error
+  const [updateStatus, setUpdateStatus] = useState(/** @type {'idle' | 'checking' | 'uptodate' | 'available' | 'error'} */ ('idle'))
   const [updateMessage, setUpdateMessage] = useState('')
-  const [downloadProgress, setDownloadProgress] = useState(null) // null | { percent, transferred, total }
+  const [downloadProgress, setDownloadProgress] = useState(/** @type {import('../types/desktop-api.js').DesktopUpdateProgressReadView | null} */ (null))
   const [updateReady, setUpdateReady] = useState(false)
-  const [updateMeta, setUpdateMeta] = useState(null)
+  const [updateMeta, setUpdateMeta] = useState(/** @type {SettingsUpdateMetaReadView | null} */ (null))
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
   const [updateSnoozedUntil, setUpdateSnoozedUntil] = useState('')
   const updateListenersAdded = useRef(false)
@@ -621,6 +1787,24 @@ export default function Settings() {
     setBookingFaqText(faqToText(savedSettings?.booking_faq))
   }
 
+  // After a property-type commit (or a recovered stored outcome), refresh the
+  // canonical settings, entitlement/access snapshot and derived profile so no
+  // surface keeps a stale classification. A failed refresh never implies the
+  // database change failed — the outcome panel stays visible for recovery.
+  const refreshAfterPropertyTransition = async () => {
+    try {
+      const fresh = await window.api.settings.get()
+      if (fresh) applySavedSettings(fresh)
+    } catch {
+      // Keep the committed outcome visible; the operator can reload Settings.
+    }
+    try {
+      await access?.refreshEntitlement?.({ forceFresh: true })
+    } catch {
+      // Entitlement refresh is best-effort here; access re-resolves on next load.
+    }
+  }
+
   const discardChanges = () => {
     const savedSettings = savedFormSnapshotRef.current
       ? JSON.parse(JSON.stringify(savedFormSnapshotRef.current))
@@ -967,6 +2151,34 @@ export default function Settings() {
     setEmailTesting(false)
   }
 
+  // Outlet setup hooks live ABOVE the `if (!form)` early return by design:
+  // hooks must run unconditionally on every render. Declaring useState /
+  // useEffect below that return changes the hook count once the form loads
+  // and React throws "Rendered more hooks than during the previous render",
+  // landing Settings on the recovery screen (crashed opening ?tab=outlets
+  // from Cash & close). Do not move these back down.
+  const [outletSetupOutlets, setOutletSetupOutlets] = useState([])
+  const [outletSetupOutletId, setOutletSetupOutletId] = useState('')
+  const [outletSetupChoice, setOutletSetupChoice] = useState('shared_drawer')
+  const [outletSetupBusy, setOutletSetupBusy] = useState(false)
+  const [outletSetupError, setOutletSetupError] = useState('')
+  const [outletSetupNotice, setOutletSetupNotice] = useState('')
+  const loadOutletSetup = async () => {
+    try {
+      const rows = await window.api?.outlets?.getAll?.()
+      const all = Array.isArray(rows) ? rows : []
+      setOutletSetupOutlets(all)
+      setOutletSetupOutletId((current) => (current && all.some((row) => row.id === current) ? current : all[0]?.id || ''))
+    } catch {
+      setOutletSetupOutlets([])
+    }
+  }
+  useEffect(() => { if (activeTab === 'outlets') loadOutletSetup() }, [activeTab])
+  useEffect(() => {
+    const found = outletSetupOutlets.find((row) => row.id === outletSetupOutletId)
+    setOutletSetupChoice(found?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank')
+  }, [outletSetupOutlets, outletSetupOutletId])
+
   if (!form) return (
     <div className="p-6 flex items-center justify-center h-64 text-gray-400">
       Loading settings...
@@ -1003,30 +2215,10 @@ export default function Settings() {
   // Outlet setup (moved from Cash & close): outlet picker + cash counting
   // switch. Base feature, no multi-outlet add-on needed. The server still
   // enforces admin-only + zero open activity; this surface only asks the
-  // question and reports the authoritative answer.
-  const [outletSetupOutlets, setOutletSetupOutlets] = useState([])
-  const [outletSetupOutletId, setOutletSetupOutletId] = useState('')
-  const [outletSetupChoice, setOutletSetupChoice] = useState('shared_drawer')
-  const [outletSetupBusy, setOutletSetupBusy] = useState(false)
-  const [outletSetupError, setOutletSetupError] = useState('')
-  const [outletSetupNotice, setOutletSetupNotice] = useState('')
+  // question and reports the authoritative answer. (Hooks live above the
+  // `if (!form)` early return; only plain consts remain here.)
   const outletSetupRole = String(access?.role || '').toLowerCase()
   const canSwitchOutletCashModel = ['admin', 'super_admin'].includes(outletSetupRole)
-  const loadOutletSetup = async () => {
-    try {
-      const rows = await window.api?.outlets?.getAll?.()
-      const all = Array.isArray(rows) ? rows : []
-      setOutletSetupOutlets(all)
-      setOutletSetupOutletId((current) => (current && all.some((row) => row.id === current) ? current : all[0]?.id || ''))
-    } catch {
-      setOutletSetupOutlets([])
-    }
-  }
-  useEffect(() => { if (activeTab === 'outlets') loadOutletSetup() }, [activeTab])
-  useEffect(() => {
-    const found = outletSetupOutlets.find((row) => row.id === outletSetupOutletId)
-    setOutletSetupChoice(found?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank')
-  }, [outletSetupOutlets, outletSetupOutletId])
   const switchOutletCashModel = async () => {
     const outlet = outletSetupOutlets.find((row) => row.id === outletSetupOutletId)
     if (!outlet || outletSetupBusy) return
@@ -1566,7 +2758,7 @@ export default function Settings() {
                       ) : null}
                     </p>
                     <p className="mt-1 text-xs text-gray-500">
-                      Product and property type are set at setup and cannot be switched in Settings.
+                      Product identity is set at setup and cannot be switched in Settings.
                       LodgingOS, HotelOS, and Restaurant &amp; Bar POS are separate apps. Contact Tsa Bonno support if you need a different product.
                     </p>
                   </div>
@@ -1620,6 +2812,16 @@ export default function Settings() {
                 </div>
               </div>
             </div>
+
+            {/* ── Property type (LodgingOS same-product reclassification) ── */}
+            {IS_LODGE_PRODUCT && !restaurantMode && (
+              <PropertyTypeSection
+                globalSettings={globalSettings}
+                access={access}
+                canManage={canManageGeneralSettings}
+                onCommitted={refreshAfterPropertyTransition}
+              />
+            )}
 
             {/* ── Location ─────────────────────────────────────────────────── */}
             <div className="bg-white rounded-xl shadow-sm p-6">

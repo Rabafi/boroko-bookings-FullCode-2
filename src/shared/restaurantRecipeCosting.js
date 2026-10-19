@@ -1,3 +1,4 @@
+// @ts-check
 const UNIT_FAMILIES = {
   mass: {
     base: 'g',
@@ -34,18 +35,35 @@ const UNIT_FAMILIES = {
   }
 }
 
+/** @typedef {'mass' | 'volume' | 'count'} UnitFamily */
+/** @typedef {{inventory_item_id: unknown, quantity: unknown, inventory_item_name?: unknown, unit?: unknown}} RecipeQuantityRow */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readField(value, key) {
+  if (value === null || value === undefined) {
+    throw new TypeError(`Cannot read properties of ${value} (reading '${key}')`)
+  }
+  return Reflect.get(Object(value), key, value)
+}
+
+/** @param {unknown} unit @returns {string} */
 function normalizeUnit(unit) {
   return String(unit || 'each').trim().toLowerCase()
 }
 
+/** @param {unknown} unit @returns {UnitFamily | null} */
 export function getUnitFamily(unit) {
   const normalized = normalizeUnit(unit)
   for (const [family, config] of Object.entries(UNIT_FAMILIES)) {
-    if (Object.prototype.hasOwnProperty.call(config.factors, normalized)) return family
+    if (Object.prototype.hasOwnProperty.call(config.factors, normalized)) {
+      // The three configuration keys above are the complete family set.
+      return /** @type {UnitFamily} */ (family)
+    }
   }
   return null
 }
 
+/** @param {unknown} quantity @param {unknown} fromUnit @param {unknown} toUnit @returns {number} */
 export function convertQuantity(quantity, fromUnit, toUnit) {
   const numeric = Number(quantity)
   if (!Number.isFinite(numeric)) throw new Error('Quantity must be a finite number.')
@@ -59,32 +77,39 @@ export function convertQuantity(quantity, fromUnit, toUnit) {
     throw new Error(`Cannot convert ${fromUnit || 'unknown'} to ${toUnit || 'unknown'}.`)
   }
 
-  const family = UNIT_FAMILIES[fromFamily]
-  return (numeric * family.factors[from]) / family.factors[to]
+  const family = UNIT_FAMILIES[/** @type {UnitFamily} */ (fromFamily)]
+  // The family checks above prove both normalized units are present in this
+  // finite factor map; keep the runtime lookup and its existing failure path.
+  const factors = /** @type {Record<string, number>} */ (family.factors)
+  return (numeric * factors[from]) / factors[to]
 }
 
+/** @param {unknown} [ingredient] */
 export function normalizeRecipeIngredient(ingredient = {}) {
-  const quantity = Number(ingredient.quantity)
-  if (!ingredient.inventory_item_id) throw new Error('Recipe ingredient is missing inventory_item_id.')
+  const quantity = Number(readField(ingredient, 'quantity'))
+  const inventoryItemId = readField(ingredient, 'inventory_item_id')
+  if (!inventoryItemId) throw new Error('Recipe ingredient is missing inventory_item_id.')
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Recipe ingredient quantity must be greater than zero.')
 
   return {
-    inventory_item_id: ingredient.inventory_item_id,
-    inventory_item_name: ingredient.inventory_item_name || ingredient.name || '',
+    inventory_item_id: readField(ingredient, 'inventory_item_id'),
+    inventory_item_name: readField(ingredient, 'inventory_item_name') || readField(ingredient, 'name') || '',
     quantity,
-    unit: normalizeUnit(ingredient.unit || 'each'),
-    waste_percent: Math.max(0, Number(ingredient.waste_percent || 0)),
-    cost_per_base_unit: Number.isFinite(Number(ingredient.cost_per_base_unit)) ? Number(ingredient.cost_per_base_unit) : null
+    unit: normalizeUnit(readField(ingredient, 'unit') || 'each'),
+    waste_percent: Math.max(0, Number(readField(ingredient, 'waste_percent') || 0)),
+    cost_per_base_unit: Number.isFinite(Number(readField(ingredient, 'cost_per_base_unit'))) ? Number(readField(ingredient, 'cost_per_base_unit')) : null
   }
 }
 
+/** @param {unknown} [recipe] @param {unknown} [saleQuantity] */
 export function calculateRecipeUsage(recipe = {}, saleQuantity = 1) {
   const sold = Number(saleQuantity)
   if (!Number.isFinite(sold) || sold <= 0) throw new Error('Sale quantity must be greater than zero.')
 
-  const recipeId = recipe.id || recipe.recipe_id || null
-  const recipeVersion = recipe.version || recipe.recipe_version || 1
-  const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : []
+  const recipeId = readField(recipe, 'id') || readField(recipe, 'recipe_id') || null
+  const recipeVersion = readField(recipe, 'version') || readField(recipe, 'recipe_version') || 1
+  const rawIngredients = readField(recipe, 'ingredients')
+  const ingredients = Array.isArray(rawIngredients) ? /** @type {unknown[]} */ (rawIngredients) : []
 
   return ingredients.map((raw) => {
     const ingredient = normalizeRecipeIngredient(raw)
@@ -107,6 +132,7 @@ export function calculateRecipeUsage(recipe = {}, saleQuantity = 1) {
   })
 }
 
+/** @param {unknown} [recipe] @param {unknown} [saleQuantity] @returns {number} */
 export function calculateRecipeCost(recipe = {}, saleQuantity = 1) {
   return calculateRecipeUsage(recipe, saleQuantity).reduce((sum, row) => {
     if (row.theoretical_cost == null) return sum
@@ -114,6 +140,7 @@ export function calculateRecipeCost(recipe = {}, saleQuantity = 1) {
   }, 0)
 }
 
+/** @param {{theoretical?: RecipeQuantityRow[], actual?: RecipeQuantityRow[]}} [input] */
 export function calculateStockVariance({ theoretical = [], actual = [] } = {}) {
   const actualByItem = new Map((actual || []).map((row) => [row.inventory_item_id, Number(row.quantity || 0)]))
   return (theoretical || []).map((row) => {
@@ -131,10 +158,12 @@ export function calculateStockVariance({ theoretical = [], actual = [] } = {}) {
   })
 }
 
+/** @param {unknown} value @returns {number} */
 function roundMoney(value) {
   return Math.round(Number(value || 0) * 100) / 100
 }
 
+/** @param {unknown} value @returns {number} */
 function roundQuantity(value) {
   return Math.round(Number(value || 0) * 10000) / 10000
 }

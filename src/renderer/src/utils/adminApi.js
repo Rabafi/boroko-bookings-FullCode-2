@@ -1,11 +1,15 @@
+// @ts-check
 export function getAdminApi() {
   return window?.api?.admin || {}
 }
 
+/** @param {string} name */
 export function isAdminApiAvailable(name) {
-  return typeof getAdminApi()[name] === 'function'
+  const api = getAdminApi()
+  return typeof Reflect.get(Object(api), name) === 'function'
 }
 
+/** @param {string} name @param {Record<string, unknown>} [fallback] */
 export function unavailableAdminApiResult(name, fallback = {}) {
   return {
     ok: false,
@@ -15,8 +19,10 @@ export function unavailableAdminApiResult(name, fallback = {}) {
   }
 }
 
+/** @param {string} name @param {Iterable<unknown>} [args] @param {Record<string, unknown>} [fallback] */
 export async function callAdminApi(name, args = [], fallback = {}) {
-  const fn = getAdminApi()[name]
-  if (typeof fn !== 'function') return unavailableAdminApiResult(name, fallback)
-  return fn(...args)
+  const api = getAdminApi()
+  const candidate = Reflect.get(Object(api), name)
+  if (typeof candidate !== 'function') return unavailableAdminApiResult(name, fallback)
+  return candidate(...args)
 }

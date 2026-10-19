@@ -140,12 +140,26 @@ test('Phase 5: completeChecklistItem function exists', () => {
   assert.match(posJs, /export async function completeChecklistItem/)
 })
 
-test('Phase 5: createDailyChecklist rejects offline', () => {
-  assert.match(posJs, /Cannot create checklist offline/)
+test('Phase 5: createDailyChecklist queues an offline checklist with a local projection', () => {
+  const start = posJs.indexOf('export async function createDailyChecklist')
+  const end = posJs.indexOf('export async function completeChecklistItem', start)
+  const body = posJs.slice(start, end)
+  assert.ok(start >= 0 && end > start)
+  assert.match(body, /writeCache\('pos-checklists'/)
+  assert.match(body, /queueOperation\('rpc', 'create_daily_checklist'/)
+  assert.match(body, /_queue_id: queueId/)
+  assert.match(body, /return \{ success: true, offline: true, queued: true, id: row\.id \}/)
 })
 
-test('Phase 5: completeChecklistItem rejects offline', () => {
-  assert.match(posJs, /Cannot complete checklist item offline/)
+test('Phase 5: completeChecklistItem queues the stable offline check-off', () => {
+  const start = posJs.indexOf('export async function completeChecklistItem')
+  const end = posJs.indexOf('export async function getActiveAlerts', start)
+  const body = posJs.slice(start, end)
+  assert.ok(start >= 0 && end > start)
+  assert.match(body, /writeCache\('pos-checklists'/)
+  assert.match(body, /queueOperation\('rpc', 'complete_checklist_item'/)
+  assert.match(body, /checklist-item-\$\{itemId\}/)
+  assert.match(body, /return \{ success: true, offline: true, queued: true \}/)
 })
 
 test('Phase 5: createDailyChecklist uses create_daily_checklist RPC', () => {

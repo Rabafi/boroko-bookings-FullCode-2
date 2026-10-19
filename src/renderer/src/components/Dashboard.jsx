@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import { Link, useNavigate } from 'react-router'
 import {
@@ -57,8 +58,9 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
-import { isBarOnlyMode, isRestaurantOnly, isHotelPropertyType } from '../../../shared/propertyTypes'
+import { isBarOnlyMode, isRestaurantOnly, isHotelPropertyType, normalizePropertyType } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getPropertyPresentation, getPresentationUnitName } from '../../../shared/propertyPresentation'
 import { getRestaurantDashboardShortcuts } from '../../../shared/barModeProfile'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
@@ -182,6 +184,24 @@ export default function Dashboard() {
     () => (restaurantMode ? resolveRestaurantShortcuts(settings) : []),
     [restaurantMode, settings]
   )
+  // Property-appropriate wording from existing data only (no invented KPIs).
+  // Mix comes from loaded inventory when available, else the saved profile.
+  const dashPresentation = useMemo(() => {
+    try {
+      return getPropertyPresentation({
+        propertyType: normalizePropertyType(propertyType),
+        operatingProfile: settings?.operating_profile
+      })
+    } catch {
+      return null
+    }
+  }, [propertyType, settings?.operating_profile])
+  const dashUnits = (dashPresentation?.unitNounPlural || 'Rooms').toLowerCase()
+  const dashUnitOne = (dashPresentation?.inventoryLabelSingular || 'Room').toLowerCase()
+  const dashBoardLabel = dashPresentation?.navHints?.boardLabel || 'Room Board'
+  const dashExclusiveUse = dashPresentation?.exclusiveUseLabel || 'Full Lodge'
+  const dashOccupancyDetail = dashPresentation?.dashboardHints?.occupancyDetail || 'Rooms occupied today'
+  const dashFirstUnit = dashPresentation?.dashboardHints || { firstUnitTitle: 'Add your first room', firstUnitCopy: 'Create the room list before bookings, housekeeping, and availability can work properly.', firstUnitAction: 'Add rooms' }
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
   const [actioningId, setActioningId] = useState(null)
 
@@ -392,6 +412,7 @@ export default function Dashboard() {
     setLowStock(Array.isArray(ls) ? ls : [])
     setFrontDeskRequests(Array.isArray(lodgeRequests) ? lodgeRequests : [])
     const roomNumberById = new Map((Array.isArray(rooms) ? rooms : []).map((room) => [room.id, room.room_number]))
+    const roomKindById = new Map((Array.isArray(rooms) ? rooms : []).map((room) => [room.id, room.accommodation_kind || room.kind || 'room']))
     const todayKey = localToday()
     setActiveSpecials(
       (Array.isArray(rateOverrides) ? rateOverrides : [])
@@ -407,7 +428,7 @@ export default function Dashboard() {
             : 0
           return {
             ...row,
-            roomLabel: row.room_id ? `Room ${roomNumberById.get(row.room_id) || row.room_id}` : 'All rooms',
+            roomLabel: row.room_id ? getPresentationUnitName({ room_number: roomNumberById.get(row.room_id) || row.room_id, accommodation_kind: roomKindById.get(row.room_id) || 'room' }) : `All ${dashUnits}`,
             durationDays,
             daysRemaining
           }
@@ -715,7 +736,7 @@ export default function Dashboard() {
     {
       label: 'Occupancy',
       value: `${Number(stats?.occupied_today || 0)}/${Number(stats?.total_rooms || 0)}`,
-      detail: 'Rooms occupied today',
+      detail: dashOccupancyDetail,
       to: '/rooms'
     },
     {
@@ -807,11 +828,11 @@ export default function Dashboard() {
   ].filter(Boolean).slice(0, 4) : [
     Number(stats?.total_rooms || 0) === 0 && {
       key: 'rooms',
-      title: 'Add your first room',
-      copy: 'Create the room list before bookings, housekeeping, and availability can work properly.',
+      title: dashFirstUnit.firstUnitTitle,
+      copy: dashFirstUnit.firstUnitCopy,
       icon: BedDouble,
       to: '/rooms',
-      action: 'Add rooms'
+      action: dashFirstUnit.firstUnitAction.charAt(0).toUpperCase() + dashFirstUnit.firstUnitAction.slice(1)
     },
     recentBookings.length === 0 && Number(stats?.total_rooms || 0) > 0 && {
       key: 'booking',
@@ -1064,7 +1085,7 @@ export default function Dashboard() {
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 truncate">
-                      {booking.room_number} · {booking.room_type} · {nights} night{nights !== 1 ? 's' : ''}
+                      {getPresentationUnitName(booking)} · {booking.room_type} · {nights} night{nights !== 1 ? 's' : ''}
                       {' · '}{new Date(booking.check_in).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                       {' → '}{new Date(booking.check_out).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                     </p>
@@ -1324,7 +1345,7 @@ export default function Dashboard() {
                 onClick={() => navigate('/roomgrid')}
                 className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white/70 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-white"
               >
-                Open Room Board <ArrowRight size={13} />
+                Open {dashBoardLabel} <ArrowRight size={13} />
               </button>
               <button
                 type="button"
@@ -1390,7 +1411,7 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
             <div>
               <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">Balance Collection Queue</h2>
-              <p className="mt-1 text-sm text-slate-500">Same urgency language as the room board and calendar: checked out first, then active stays, then upcoming arrivals.</p>
+              <p className="mt-1 text-sm text-slate-500">Same urgency language as the {dashBoardLabel.toLowerCase()} and calendar: checked out first, then active stays, then upcoming arrivals.</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -1428,7 +1449,7 @@ export default function Dashboard() {
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-slate-500">
-                      {booking._event_group ? `${booking.room_count} rooms` : `Room ${booking.room_number || '—'}`}
+                      {booking._event_group ? `${dashExclusiveUse} · ${booking.room_count} ${dashUnits}` : getPresentationUnitName(booking)}
                       {' · '}
                       {booking.status === 'checked_out' ? 'Checkout date' : booking.status === 'checked_in' ? 'Current stay' : 'Arrival date'}
                       {': '}
@@ -1500,7 +1521,7 @@ export default function Dashboard() {
         <section className="bb-card p-5">
           <div className="mb-4">
             <h2 className="text-lg font-semibold tracking-[-0.02em] text-slate-800">30-Day Occupancy Forecast</h2>
-            <p className="mt-1 text-sm text-slate-500">See expected room pressure over the next month.</p>
+            <p className="mt-1 text-sm text-slate-500">See expected {dashUnits} pressure over the next month.</p>
           </div>
           <div className="flex items-end gap-1 h-20 overflow-x-auto pb-1">
             {forecast.map((day) => {
@@ -1597,7 +1618,7 @@ export default function Dashboard() {
                 <tr>
                   <th className="px-5 py-3 text-left">#</th>
                   <th className="px-5 py-3 text-left">Guest</th>
-                  <th className="px-5 py-3 text-left">Room</th>
+                  <th className="px-5 py-3 text-left">{dashPresentation?.inventoryLabelSingular || 'Room'}</th>
                   <th className="px-5 py-3 text-left">Check In</th>
                   <th className="px-5 py-3 text-left">Status</th>
                   <th className="px-5 py-3 text-right">Amount</th>
@@ -1615,7 +1636,7 @@ export default function Dashboard() {
                         )}
                       </div>
                     </td>
-                    <td className="px-5 py-4 text-slate-600">{b._event_group ? `${b.room_count} rooms` : `Room ${b.room_number}`}</td>
+                    <td className="px-5 py-4 text-slate-600">{b._event_group ? `${b.room_count} ${dashUnits}` : getPresentationUnitName(b)}</td>
                     <td className="px-5 py-4 text-slate-600">{b.check_in}</td>
                     <td className="px-5 py-4">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -1644,7 +1665,7 @@ export default function Dashboard() {
                             onClick={() => navigate(Number(stats?.total_rooms || 0) > 0 ? '/bookings' : '/rooms')}
                             className="btn-primary"
                           >
-                            {Number(stats?.total_rooms || 0) > 0 ? 'Create first booking' : 'Add rooms first'}
+                            {Number(stats?.total_rooms || 0) > 0 ? 'Create first booking' : `${dashFirstUnit.firstUnitAction.charAt(0).toUpperCase()}${dashFirstUnit.firstUnitAction.slice(1)} first`}
                           </button>
                           <button
                             type="button"
@@ -1715,7 +1736,7 @@ export default function Dashboard() {
                       </p>
                     ) : (
                       <p className="mt-1 text-xs text-slate-500">
-                        Room {b.room_number} · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in} → {b.check_out}
+                        {getPresentationUnitName(b)} · {b.adults}A{b.children > 0 ? ` ${b.children}C` : ''} · {b.check_in} → {b.check_out}
                       </p>
                     )}
                   </div>
@@ -1733,7 +1754,7 @@ export default function Dashboard() {
                           '',
                           `This is a reminder of your upcoming check-in at *${lodge}*.`,
                           '',
-                          `🛏️  Room ${b.room_number}`,
+                          `🛏️  ${getPresentationUnitName(b)}`,
                           `📅  Check-in: ${b.check_in}`,
                           `📅  Check-out: ${b.check_out}`,
                           '',
@@ -1757,7 +1778,7 @@ export default function Dashboard() {
                           '',
                           `This is a reminder of your upcoming check-in at ${lodge}.`,
                           '',
-                          `Room: ${b.room_number}`,
+                          `${getPresentationUnitName(b)}:`,
                           `Check-in: ${b.check_in}`,
                           `Check-out: ${b.check_out}`,
                           '',

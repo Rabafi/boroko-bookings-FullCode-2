@@ -324,6 +324,7 @@ function summarizeJournalEntries(entries = []) {
   return { byEvent, byOperation, oldestAt, newestAt };
 }
 
+/** @param {{limit?: number}} [options] @returns {import('../../shared/desktopIpcContracts.js').SyncOperationJournalSummary} */
 export function getOperationJournalSummary({ limit = OPERATION_JOURNAL_SUMMARY_LIMIT } = {}) {
   if (!state.cacheDir) {
     return {
@@ -402,6 +403,7 @@ export function summarizeFullJournalEntries(entries = []) {
   };
 }
 
+/** @returns {import('../../shared/desktopIpcContracts.js').SyncOfflineModeSnapshot} */
 export function readOfflineModeState() {
   if (!state.cacheDir) {
     return {

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useRef, useState } from 'react'
 import { Printer, X, Download, ShoppingBag } from 'lucide-react'
 import { useSettings } from '../../app-context'
@@ -37,6 +38,9 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
   const { settings } = useSettings()
   const [saving, setSaving] = useState(false)
   const autoPrintDoneRef = useRef(false)
+  // One cash-drawer kick per receipt view, even across auto-print + manual
+  // reprint in the same modal. Reprints from history never carry the flag.
+  const drawerKickSpentRef = useRef(false)
   // Hooks must stay unconditional: an early return before useEffect changes
   // the hook count when `order` flips null <-> object and React throws
   // "Rendered fewer/more hooks than expected", which lands on the app
@@ -86,6 +90,12 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
       hardware = {}
     }
     const printerName = hardware?.receipt_printer_name || ''
+    // The automatic post-sale drawer kick is bound to the first print attempt
+    // for this receipt view. It is spent even if the print failed (a failed
+    // ESC/POS buffer never gated a pulse safely), so a retry or a manual
+    // reprint in this modal can never open the drawer twice.
+    const drawerKick = safeOrder?._open_drawer_on_print === true && !drawerKickSpentRef.current
+    drawerKickSpentRef.current = true
     let result = null
     try {
       result = await window.api?.receipts?.printCurrent?.({
@@ -94,12 +104,20 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
         business: settings || {},
         deviceName: printerName,
         silent: Boolean(printerName),
-        openDrawer: safeOrder?._open_drawer_on_print === true
+        openDrawer: drawerKick
       })
     } catch (error) {
       result = { success: false, error: error?.message || 'Print could not be started.' }
     }
-    if (!result?.success) window.alert?.(result?.error || 'Print could not be started.')
+    if (!result?.success) {
+      // Distinguish "sale committed; print pending" from "saved locally, still
+      // unconfirmed" so a printer fault never reads as financial uncertainty
+      // and never invites ringing the sale again.
+      const saleState = safeOrder?._pending_sync === true
+        ? 'The sale is saved on this till and still awaiting server confirmation; only printing failed.'
+        : `The sale is already recorded${safeOrder?.receipt_number ? ` (receipt ${safeOrder.receipt_number})` : ''}; only printing failed.`
+      window.alert?.(`${saleState} ${result?.error || 'Print could not be started.'} Fix the printer and press Print receipt again — do not ring this sale again.`)
+    }
   }
 
   const handleSavePDF = async () => {
@@ -161,7 +179,7 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
   }
 
   return (
-    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 print:p-0 print:static print:bg-transparent print:backdrop-blur-none">
+    <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 print:p-0 print:static print:bg-transparent print:backdrop-blur-none" style={{ zIndex: 1101 }}>
       <div className="relative w-full max-w-xl bg-white shadow-2xl rounded-3xl overflow-hidden flex flex-col max-h-full print:shadow-none print:max-h-none print:w-full print:rounded-none">
         
         {/* Header - Hidden on print */}

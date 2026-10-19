@@ -1,4 +1,6 @@
+// @ts-check
 import electron from 'electron'
+import { createPreloadTransport } from './transport.js'
 
 const { contextBridge, ipcRenderer, webUtils } = electron
 
@@ -7,17 +9,13 @@ const { contextBridge, ipcRenderer, webUtils } = electron
 // The envelope must pass through the contextBridge untouched: the renderer
 // bootstraps an unpack that rebuilds the array in the renderer's main world,
 // because the bridge strips array own properties a second time.
-const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args)
+const { invoke, onIpc } = createPreloadTransport(ipcRenderer)
 
-const onIpc = (channel, cb) => {
-  const listener = (_, value) => cb(value)
-  ipcRenderer.on(channel, listener)
-  return () => ipcRenderer.off(channel, listener)
-}
-
+/** @type {import('../renderer/src/types/desktop-api.js').DesktopApi} */
 const api = {
   auth: {
-    login:          (email, password, selectedLodgeId = null) => invoke('auth:login', email, password, selectedLodgeId),
+    // Main constructs the finite outer branches; session/user values stay unknown.
+    login:          (email, password, selectedLodgeId = null) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'auth:login'>>} */ (invoke('auth:login', email, password, selectedLodgeId)),
     getStatus:      (email)           => invoke('auth:status', email),
     healthCheck:    (email)           => invoke('auth:healthCheck', email),
     sendPasswordReset: (email)         => invoke('auth:sendPasswordReset', email),
@@ -25,7 +23,8 @@ const api = {
     restoreCurrentSession: ()          => invoke('auth:restoreCurrentSession'),
     restoreSavedSession: (email, password) => invoke('auth:restoreSavedSession', email, password),
     validateSession: ()               => invoke('auth:validateSession'),
-    logout:         ()                => invoke('auth:logout')
+    // Both main branches return the same constructed success envelope.
+    logout:         ()                => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'auth:logout'>>} */ (invoke('auth:logout'))
   },
   profiles: {
     list:       ()              => invoke('profiles:list'),
@@ -208,6 +207,7 @@ const api = {
     saveSupportBundle: (limit) => invoke('reports:saveSupportBundle', limit),
     getSupportBundle: (limit) => invoke('reports:getSupportBundle', limit),
     runFinancialValidation: () => invoke('reports:runFinancialValidation'),
+    retryFinancialValidationRun: (runId) => invoke('reports:retryFinancialValidationRun', runId),
     savePDF: (payload) => invoke('reports:savePDF', payload),
     printCurrent: () => invoke('reports:printCurrent'),
     saveExcel: (data) => invoke('reports:saveExcel', data),
@@ -264,7 +264,8 @@ const api = {
     upcoming: () => invoke('notifications:upcoming')
   },
   shell: {
-    openExternal: (url) => invoke('shell:openExternal', url)
+    // The URL input remains the declared string request; return the main handler's finite fallback union.
+    openExternal: (url) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'shell:openExternal'>>} */ (invoke('shell:openExternal', url))
   },
   barGuides: {
     getManifest: () => invoke('barGuides:getManifest'),
@@ -274,14 +275,15 @@ const api = {
   window: {
     repairInputFocus: (reason) => invoke('window:repairInputFocus', reason),
     onFocusRecovery: (cb) => {
+      /** @param {unknown} _ @param {unknown} payload */
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('window:focus-recovery', listener)
       return () => ipcRenderer.off('window:focus-recovery', listener)
     }
   },
   app: {
-    getVersion: () => invoke('app:getVersion'),
-    getProduct: () => invoke('app:getProduct'),
+    getVersion: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'app:getVersion'>>} */ (invoke('app:getVersion')),
+    getProduct: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'app:getProduct'>>} */ (invoke('app:getProduct')),
     notify: (payload) => invoke('app:notify', payload),
     logRendererError: (payload) => invoke('app:logRendererError', payload),
     getRendererErrors: (limit) => invoke('app:getRendererErrors', limit),
@@ -337,16 +339,24 @@ const api = {
     getOutletContext: () => invoke('settings:getOutletContext'),
     save: (data) => invoke('settings:save', data),
     updateOperatingProfile: (profile) => invoke('settings:updateOperatingProfile', profile),
+    previewPropertyTypeChange: (targetType) => invoke('settings:previewPropertyTypeChange', targetType),
+    commitPropertyTypeChange: (payload) => invoke('settings:commitPropertyTypeChange', payload),
+    getPropertyTypeTransitionStatus: (idempotencyKey) => invoke('settings:getPropertyTypeTransitionStatus', idempotencyKey),
+    refreshSettingsFromServer: () => invoke('settings:refreshSettingsFromServer'),
     getDiagnostics: (expectedLodgeId) => invoke('settings:getDiagnostics', expectedLodgeId),
     getSystemHealth: (options) => invoke('settings:getSystemHealth', options),
     relinkLodge: (lodgeId) => invoke('settings:relinkLodge', lodgeId),
     resetToNewLodge: () => invoke('settings:resetToNewLodge')
   },
   sync: {
-    getStatus: () => invoke('sync:getStatus'),
-    getDetails: () => invoke('sync:getDetails'),
-    getOfflineMode: () => invoke('sync:getOfflineMode'),
-    setOfflineMode: (payload) => invoke('sync:setOfflineMode', payload),
+    // The main handler constructs this snapshot and its explicit offline fallback.
+    getStatus: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').SyncStatusSnapshot>} */ (invoke('sync:getStatus')),
+    // The main handler returns its constructed aggregate or the explicit queue-only fallback.
+    getDetails: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').SyncDetailsResult>} */ (invoke('sync:getDetails')),
+    // These results describe the producer's constructed values and explicit catch fallbacks.
+    getOfflineMode: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').SyncOfflineModeResult>} */ (invoke('sync:getOfflineMode')),
+    // Keep the request unvalidated and forward the invoke promise unchanged.
+    setOfflineMode: /** @param {unknown} payload */ (payload) => /** @type {Promise<import('../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult>} */ (invoke('sync:setOfflineMode', payload)),
     exportOfflineOperations: () => invoke('sync:exportOfflineOperations'),
     retryFailed: (queueIds) => invoke('sync:retryFailed', queueIds),
     clearFailed: (queueIds) => invoke('sync:clearFailed', queueIds),
@@ -354,11 +364,14 @@ const api = {
     clearHealthFault: (id) => invoke('sync:clearHealthFault', id),
     getDeviceHealthRollup: () => invoke('sync:getDeviceHealthRollup'),
     onStatusChanged: (cb) => {
+      // The only sender is connectivity.broadcastSyncStatus, which emits the constructed snapshot.
+      /** @param {unknown} _ @param {import('../shared/desktopIpcContracts.js').FullSyncStatusSnapshot} payload */
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('sync:status-changed', listener)
       return () => ipcRenderer.off('sync:status-changed', listener)
     },
     onBookingConflict: (cb) => {
+      /** @param {unknown} _ @param {unknown} payload */
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('booking:sync-conflict', listener)
       return () => ipcRenderer.off('booking:sync-conflict', listener)
@@ -373,6 +386,7 @@ const api = {
     refreshDiscovery: () => invoke('mesh:refreshDiscovery'),
     connectManualPeer: (address, port) => invoke('mesh:connectManualPeer', address, port || null),
     onConflictDetected: (cb) => {
+      /** @param {unknown} _ @param {unknown} payload */
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('mesh:conflict-detected', listener)
       return () => ipcRenderer.off('mesh:conflict-detected', listener)
@@ -398,7 +412,7 @@ const api = {
     check: () => invoke('update:check'),
     download: () => invoke('update:download'),
     getState: () => invoke('update:getState'),
-    getVersion: () => invoke('app:getVersion')
+    getVersion: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'app:getVersion'>>} */ (invoke('app:getVersion'))
   },
   outlets: {
     getAll: () => invoke('outlets:getAll')
@@ -415,6 +429,19 @@ const api = {
     discardProductRequest: (operationKey) => invoke('pos:discardProductRequest', operationKey),
     getProductRequestStatus: () => invoke('pos:getProductRequestStatus'),
     getMenuStockReadiness: () => invoke('pos:getMenuStockReadiness'),
+    // Bar trading recovery backups (queues, journals, tabs, cash-ups, drafts).
+    getTradingBackupStatus: () => invoke('pos:tradingBackup:getStatus'),
+    configureTradingBackup: (data) => invoke('pos:tradingBackup:configure', data),
+    disableTradingBackup: () => invoke('pos:tradingBackup:disable'),
+    snoozeTradingBackup: () => invoke('pos:tradingBackup:snooze'),
+    clearTradingBackupSnooze: () => invoke('pos:tradingBackup:clearSnooze'),
+    runTradingBackupNow: () => invoke('pos:tradingBackup:runNow'),
+    listTradingBackupPackages: () => invoke('pos:tradingBackup:listPackages'),
+    verifyTradingBackupPackage: (data) => invoke('pos:tradingBackup:verifyPackage', data),
+    stageTradingBackupRestore: (data) => invoke('pos:tradingBackup:stageRestore', data),
+    activateTradingBackupRestore: (data) => invoke('pos:tradingBackup:activateRestore', data),
+    onTradingBackupCollectState: (cb) => onIpc('pos:tradingBackup:collectRendererState', cb),
+    replyTradingBackupState: (requestId, payload) => invoke('pos:tradingBackup:rendererStateReply', requestId, payload),
     processPendingPublications: (outletIds) => invoke('catalog:processPendingPublications', outletIds),
     getOrders: (start, end) => invoke('pos:getOrders', start, end),
     getCertifiedReportHistory: (start, end) => invoke('pos:getCertifiedReportHistory', start, end),
@@ -486,10 +513,11 @@ const api = {
     openShift: (data) => invoke('pos:openShift', data),
     closeShift: (data) => invoke('pos:closeShift', data),
     getUnconfirmedPosUsage: () => invoke('pos:getUnconfirmedPosUsage'),
-    getHardwareSettings: () => invoke('pos:getHardwareSettings'),
+    // The main reader constructs the settings record; its handler catch returns {}.
+    getHardwareSettings: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').PosHardwareSettingsResult>} */ (invoke('pos:getHardwareSettings')),
     saveHardwareSettings: (data) => invoke('pos:saveHardwareSettings', data),
     testHardware: (kind) => invoke('pos:testHardware', kind),
-    verifyBarcodeScanner: (data) => invoke('pos:verifyBarcodeScanner', data),
+    verifyBarcodeScanner: (data) => /** @type {Promise<import('../shared/desktopIpcContracts.js').BarcodeScannerVerificationResult>} */ (invoke('pos:verifyBarcodeScanner', data)),
     openCashDrawer: (data) => invoke('pos:openCashDrawer', data),
     getStaff: () => invoke('pos:getStaff'),
     selectStaffWithPin: (data) => invoke('pos:selectStaffWithPin', data),
@@ -551,7 +579,7 @@ const api = {
     acknowledgeAlert: (alertId, reason, operationId) => invoke('pos:acknowledgeAlert', alertId, reason, operationId),
     resolveAlert: (alertId, reason, operationId) => invoke('pos:resolveAlert', alertId, reason, operationId),
     getPurchaseOrders: (startDate, endDate) => invoke('pos:getPurchaseOrders', startDate, endDate),
-    getPurchasingSnapshot: () => invoke('pos:getPurchasingSnapshot').then((payload) => JSON.parse(payload)),
+    getPurchasingSnapshot: () => invoke('pos:getPurchasingSnapshot').then((payload) => JSON.parse(/** @type {string} Main's corresponding handler JSON.stringify()s its object on both success and caught-error paths; this compile-time assumption does not validate the IPC value. */ (payload))),
     getShiftHistory: (startDate, endDate) => invoke('pos:getShiftHistory', startDate, endDate),
     getCashDrawerSessions: (startDate, endDate) => invoke('pos:getCashDrawerSessions', startDate, endDate),
     getChecklists: () => invoke('pos:getChecklists'),
@@ -627,7 +655,7 @@ const api = {
   },
   inventory: {
     getItems: () => invoke('inventory:getItems'),
-    getItemsWithReadStatus: () => invoke('inventory:getItemsWithReadStatus'),
+    getItemsWithReadStatus: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'inventory:getItemsWithReadStatus'>>} */ (invoke('inventory:getItemsWithReadStatus')),
     getBarStockAging: (outletId) => invoke('inventory:getBarStockAging', outletId || null),
     postBarPhysicalCount: (payload) => invoke('inventory:postBarPhysicalCount', payload),
     postBarSimpleDelivery: (payload) => invoke('inventory:postBarSimpleDelivery', payload),
@@ -644,7 +672,7 @@ const api = {
     getMovementsWithReadStatus: (filters) => invoke('inventory:getMovementsWithReadStatus', filters),
     getLowStock: () => invoke('inventory:getLowStock'),
     getStocktakes: (limit) => invoke('inventory:getStocktakes', limit),
-    getRestaurantStockSnapshot: (movementDate) => invoke('inventory:getRestaurantStockSnapshot', movementDate).then((payload) => JSON.parse(payload)),
+    getRestaurantStockSnapshot: (movementDate) => invoke('inventory:getRestaurantStockSnapshot', movementDate).then((payload) => JSON.parse(/** @type {string} Main's corresponding handler JSON.stringify()s its object on both success and caught-error paths; this compile-time assumption does not validate the IPC value. */ (payload))),
     createStocktake: (data) => invoke('inventory:createStocktake', data),
     getStocktake: (stocktakeId) => invoke('inventory:getStocktake', stocktakeId),
     saveStocktakeCounts: (stocktakeId, lines) => invoke('inventory:saveStocktakeCounts', stocktakeId, lines),
@@ -762,8 +790,8 @@ const api = {
     createNotification: (payload) => invoke('admin:createNotification', payload),
     getNotifications: (filters) => invoke('admin:getNotifications', filters),
     getUnreadCount: () => invoke('admin:getUnreadCount'),
-    markNotificationsRead: (ids) => invoke('admin:markNotificationsRead', ids),
-    cleanupNotifications: (days) => invoke('admin:cleanupNotifications', days),
+    markNotificationsRead: (ids) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'admin:markNotificationsRead'>>} */ (invoke('admin:markNotificationsRead', ids)),
+    cleanupNotifications: (days) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'admin:cleanupNotifications'>>} */ (invoke('admin:cleanupNotifications', days)),
     getFleetHealthRollup: () => invoke('admin:getFleetHealthRollup'),
     getFleetHealthSummary: () => invoke('admin:getFleetHealthSummary'),
     recordCommandCentralHealthRun: (payload) => invoke('admin:recordCommandCentralHealthRun', payload),
@@ -791,7 +819,7 @@ const api = {
     // Task Center
     getAdminToday: () => invoke('admin:getAdminToday'),
     // Global Search
-    globalSearch: (query, limit) => invoke('admin:globalSearch', query, limit),
+    globalSearch: (query, limit) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'admin:globalSearch'>>} */ (invoke('admin:globalSearch', query, limit)),
     // Bulk Actions
     bulkUpdateStatus: (entityType, entityIds, newStatus) => invoke('admin:bulkUpdateStatus', entityType, entityIds, newStatus),
     bulkDelete: (entityType, entityIds) => invoke('admin:bulkDelete', entityType, entityIds),
@@ -856,13 +884,14 @@ const api = {
     getVenueProfitabilityReport:   (startDate, endDate)                               => invoke('venueManagement:getVenueProfitabilityReport', startDate, endDate)
   },
   ai: {
-    turn: (payload) => invoke('ai:turn', payload),
+    turn: (payload) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'ai:turn'>>} */ (invoke('ai:turn', payload)),
     catalog: () => invoke('ai:catalog'),
     execute: (payload) => invoke('ai:execute', payload),
     collections: {
       preview: (payload) => invoke('ai:collections:preview', payload),
       execute: (payload) => invoke('ai:collections:execute', payload),
       onProgress: (cb) => {
+        /** @param {unknown} _ @param {unknown} data */
         const listener = (_, data) => cb(data)
         ipcRenderer.on('ai:collections:progress', listener)
         return () => ipcRenderer.off('ai:collections:progress', listener)
@@ -872,12 +901,14 @@ const api = {
       preview: (payload) => invoke('ai:overdue:preview', payload),
       execute: (payload) => invoke('ai:overdue:execute', payload),
       onProgress: (cb) => {
+        /** @param {unknown} _ @param {unknown} data */
         const listener = (_, data) => cb(data)
         ipcRenderer.on('ai:overdue:progress', listener)
         return () => ipcRenderer.off('ai:overdue:progress', listener)
       }
     },
     onAlert: (cb) => {
+      /** @param {unknown} _ @param {unknown} payload */
       const listener = (_, payload) => cb(payload)
       ipcRenderer.on('ai:alert', listener)
       return () => ipcRenderer.off('ai:alert', listener)
@@ -885,6 +916,7 @@ const api = {
   },
   import: {
     parseExcel: (filePath) => invoke('import:parseExcel', filePath),
+    /** @param {File & { path?: string }} file */
     getDroppedFilePath: (file) => webUtils?.getPathForFile?.(file) || file?.path || '',
     exportErrors: (payload) => invoke('import:exportErrors', payload),
     execute: (rows, filename, type) => invoke('import:execute', rows, filename, type),
@@ -895,6 +927,7 @@ const api = {
     getBatches: () => invoke('import:getBatches'),
     downloadTemplate: (type) => invoke('import:downloadTemplate', type),
     onProgress: (cb) => {
+      /** @param {unknown} _ @param {unknown} progress */
       const handler = (_, progress) => cb(progress)
       ipcRenderer.on('import:progress', handler)
       return () => ipcRenderer.removeListener('import:progress', handler)
@@ -903,6 +936,7 @@ const api = {
   data: {
     exportAll: (options) => invoke('data:exportAll', options),
     onExportProgress: (cb) => {
+      /** @param {unknown} _ @param {unknown} progress */
       const handler = (_, progress) => cb(progress)
       ipcRenderer.on('data:exportProgress', handler)
       return () => ipcRenderer.removeListener('data:exportProgress', handler)
@@ -972,7 +1006,9 @@ const api = {
     closeFolio:     (folioId, intentId)                       => invoke('folioLedger:closeFolio', folioId, intentId),
     reopenFolio:    (folioId, intentId)                       => invoke('folioLedger:reopenFolio', folioId, intentId),
     lockFolio:      (folioId, intentId)                       => invoke('folioLedger:lockFolio', folioId, intentId),
-    getBalance:     (folioId)                       => invoke('folioLedger:getBalance', folioId)
+    getBalance:     (folioId)                       => invoke('folioLedger:getBalance', folioId),
+    getPendingIntentRecovery: () => invoke('folioLedger:getPendingIntentRecovery'),
+    retryIntent: (intentId) => invoke('folioLedger:retryIntent', intentId)
   },
   roomMoves: {
     getAvailable: (currentRoomId, checkIn, checkOut) => invoke('roomMoves:getAvailable', currentRoomId, checkIn, checkOut),
@@ -1058,9 +1094,11 @@ const api = {
     getDepositLiability: () => invoke('advancedReports:getDepositLiability'),
     getFolioExceptions: () => invoke('advancedReports:getFolioExceptions')
   },
-  payments: {
-    getProviderConfig:  (provider, lodgeId)       => invoke('payments:getProviderConfig', provider, lodgeId),
-    saveProviderConfig: (payload, lodgeId)        => invoke('payments:saveProviderConfig', payload, lodgeId)
+  ['payments']: {
+    getProviderConfig:   (provider, lodgeId)                  => invoke('payments:getProviderConfig', provider, lodgeId),
+    saveProviderConfig:  (payload, lodgeId)                   => invoke('payments:saveProviderConfig', payload, lodgeId),
+    getPaymentDashboard: (lodgeId)                            => invoke('payments:getPaymentDashboard', lodgeId),
+    verifyWebhookSignature: (provider, signature, payloadRaw) => invoke('payments:verifyWebhookSignature', provider, signature, payloadRaw)
   },
   subscriptionRequests: {
     submit: (request) => invoke('subscriptionRequests:submit', request),
@@ -1271,12 +1309,6 @@ const api = {
   hotelRoles: {
     getTemplates:       ()                           => invoke('hotelRoles:getTemplates'),
     getRoleCapabilities: (roleKey)                   => invoke('hotelRoles:getRoleCapabilities', roleKey)
-  },
-  payments: {
-    getProviderConfig:   (provider, lodgeId)                  => invoke('payments:getProviderConfig', provider, lodgeId),
-    saveProviderConfig:  (payload, lodgeId)                   => invoke('payments:saveProviderConfig', payload, lodgeId),
-    getPaymentDashboard:  (lodgeId)                           => invoke('payments:getPaymentDashboard', lodgeId),
-    verifyWebhookSignature: (provider, signature, payloadRaw) => invoke('payments:verifyWebhookSignature', provider, signature, payloadRaw)
   },
   guestMessaging: {
     getTemplates:       ()                                    => invoke('guestMessaging:getTemplates'),

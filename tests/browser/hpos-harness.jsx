@@ -8,6 +8,7 @@ import { AuthContext, SettingsContext, AccessContext, FeaturesContext } from '..
 import Checks from '../../src/renderer/src/components/hospitality-pos/HposOpenChecks.jsx';
 import RestaurantWorkspace from '../../src/renderer/src/components/restaurant/RestaurantWorkspace.jsx';
 import RestaurantAccountingActivation from '../../src/renderer/src/components/restaurant-accounting/RestaurantAccountingActivation.jsx';
+import RestaurantGeneralLedger from '../../src/renderer/src/components/restaurant-accounting/RestaurantGeneralLedger.jsx';
 import '../../src/renderer/src/styles/hospitality-pos.css';
 
 const params = new URLSearchParams(location.search);
@@ -458,5 +459,43 @@ if (suite === 'finance') {
         </AccessContext.Provider>
       </SettingsContext.Provider>
     </AuthContext.Provider>
+  );
+}
+
+// Exercise the real Post form with the raw RPC response and the older envelope.
+if (suite === 'pos-post-notice') {
+  let postCount = 0, balanceReadCount = 0;
+  window.api = { restaurantAccountingV2: { invoke: async (operation, ...args) => {
+    window.__calls.push({ operation, args });
+    if (operation === 'getAccounts') return { data: [] };
+    if (operation === 'getLedgerPage') return { data: { entries: [], total_count: 0, complete: true } };
+    if (operation === 'getLedger') {
+      const sequence=++balanceReadCount;
+      if(params.get('balance')==='race' && sequence===1)await new Promise((resolve)=>setTimeout(resolve,1500));
+      const amount=params.get('balance')==='race' && sequence>1?'24.68':'12.34';
+      if (params.get('balance') === 'missing') return { success: true, data: {} };
+      return { success: true, data: { trial_balance: [
+        { account_id: 'cash', code: '1000', name: 'Cash', debit: amount, credit: '0.00', balance: amount },
+        { account_id: 'revenue', code: '4000', name: 'Beer revenue', debit: '0.00', credit: amount, balance: amount }
+      ] } };
+    }
+    if (operation === 'getPosMappings') return { data: [] };
+    if (operation === 'getReadiness') return { data: { ready: true, active: true } };
+    if (operation === 'postPosOrder') {
+      const response = { success: true, journal_entry_id: '22222222-2222-4222-8222-222222222222', replayed: postCount++ > 0 };
+      return params.get('shape') === 'envelope' ? { success: true, data: response } : response;
+    }
+    return { success: true, data: {} };
+  } } };
+  createRoot(document.getElementById('root')).render(
+    <MemoryRouter>
+      <AuthContext.Provider value={{ user: { ...STAFF, role: 'admin' } }}>
+        <SettingsContext.Provider value={{ settings: { lodge_id: TENANT, property_type: 'bar', hospitality_mode: 'bar_only', currency: 'BWP' } }}>
+          <AccessContext.Provider value={{ capabilities: { 'accounting.read': true, 'accounting.manage': true } }}>
+            <RestaurantGeneralLedger />
+          </AccessContext.Provider>
+        </SettingsContext.Provider>
+      </AuthContext.Provider>
+    </MemoryRouter>
   );
 }

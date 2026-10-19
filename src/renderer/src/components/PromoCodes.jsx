@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -18,12 +19,12 @@ function formatCurrency(amount, currency = 'P') {
 export default function PromoCodes() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
-  const [codes, setCodes] = useState([])
-  const [roomTypes, setRoomTypes] = useState([])
+  const [codes, setCodes] = useState(/** @type {unknown[]} */ ([]))
+  const [roomTypes, setRoomTypes] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showValidate, setShowValidate] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {unknown} */ (null))
   const [form, setForm] = useState(emptyForm)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -32,7 +33,7 @@ export default function PromoCodes() {
   const [validateCode, setValidateCode] = useState('')
   const [validateRoomType, setValidateRoomType] = useState('')
   const [validateNights, setValidateNights] = useState('1')
-  const [validationResult, setValidationResult] = useState(null)
+  const [validationResult, setValidationResult] = useState(/** @type {unknown} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -42,8 +43,8 @@ export default function PromoCodes() {
         window.api.promoCodes.getAll(),
         window.api.roomTypes.getAll().catch(() => [])
       ])
-      setCodes(Array.isArray(codesData) ? codesData : [])
-      setRoomTypes(Array.isArray(rtData) ? rtData : [])
+      setCodes(Array.isArray(codesData) ? /** @type {unknown[]} */ (codesData) : [])
+      setRoomTypes(Array.isArray(rtData) ? /** @type {unknown[]} */ (rtData) : [])
     } catch (err) {
       setError(err?.message || 'Failed to load promo codes')
     } finally {

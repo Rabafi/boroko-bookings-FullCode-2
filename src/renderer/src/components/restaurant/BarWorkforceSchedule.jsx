@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'

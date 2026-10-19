@@ -1,3 +1,4 @@
+// @ts-check
 import { state } from '../state.js'
 import { logActivity, readCache, writeCache, dedupePromise } from './infrastructure.js'
 import { getAllBookings } from './bookings.js'

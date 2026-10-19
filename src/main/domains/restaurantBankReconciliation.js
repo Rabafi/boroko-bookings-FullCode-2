@@ -1,18 +1,22 @@
+// @ts-check
 import { state } from '../state.js';
 import { dedupePromise } from './infrastructure.js';
 
+/** @returns {Promise<unknown>} */
 async function _getBankAccounts() {
-  const { data, error } = await state.supabase.rpc('get_restaurant_bank_accounts', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_restaurant_bank_accounts', {
     p_lodge_id: state.lodgeId,
   });
   if (error) throw new Error(error.message);
   if (!data?.success) throw new Error(data?.error || 'Failed to load bank accounts');
   return data;
 }
-export const getBankAccounts = (...args) => dedupePromise('br:getBankAccounts', () => _getBankAccounts(...args));
+/** @param {...unknown} args @returns {Promise<unknown>} */
+export const getBankAccounts = (...args) => dedupePromise('br:getBankAccounts', () => /** @type {(...args: unknown[]) => Promise<unknown>} */ (_getBankAccounts)(...args));
 
+/** @param {Record<string, unknown>} param0 @returns {Promise<unknown>} */
 export async function createBankAccount({ name, bank_name, account_number, account_type, opening_balance, account_id }) {
-  const { data, error } = await state.supabase.rpc('create_restaurant_bank_account', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_restaurant_bank_account', {
     p_lodge_id: state.lodgeId,
     p_name: name,
     p_account_id: account_id,
@@ -26,8 +30,9 @@ export async function createBankAccount({ name, bank_name, account_number, accou
   return data;
 }
 
+/** @param {Record<string, unknown>} param0 @returns {Promise<unknown>} */
 export async function updateBankAccount({ id, name, bank_name, account_number, is_active }) {
-  const { data, error } = await state.supabase.rpc('update_restaurant_bank_account', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_restaurant_bank_account', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     p_name: name,
@@ -40,8 +45,9 @@ export async function updateBankAccount({ id, name, bank_name, account_number, i
   return data;
 }
 
+/** @param {unknown} bankAccountId @param {unknown} transactions @param {unknown} statementHash @param {unknown} fileName @returns {Promise<unknown>} */
 export async function importBankStatement(bankAccountId, transactions, statementHash, fileName) {
-  const { data, error } = await state.supabase.rpc('import_bank_statement', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('import_bank_statement', {
     p_lodge_id: state.lodgeId,
     p_bank_account_id: bankAccountId,
     p_transactions: transactions,
@@ -53,10 +59,11 @@ export async function importBankStatement(bankAccountId, transactions, statement
   return data;
 }
 
+/** @param {unknown} bankAccountId @param {Record<string, unknown>} [param1] @returns {Promise<unknown>} */
 function _getBankTransactions(bankAccountId, { startDate, endDate, unreconciled } = {}) {
   const key = `br:getBankTransactions:${bankAccountId}:${startDate || ''}:${endDate || ''}:${unreconciled || false}`;
   return dedupePromise(key, async () => {
-    const { data, error } = await state.supabase.rpc('get_bank_transactions', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_bank_transactions', {
       p_lodge_id: state.lodgeId,
       p_bank_account_id: bankAccountId,
       p_start_date: startDate || null,
@@ -70,8 +77,9 @@ function _getBankTransactions(bankAccountId, { startDate, endDate, unreconciled 
 }
 export const getBankTransactions = _getBankTransactions;
 
+/** @param {unknown} bankAccountId @returns {Promise<unknown>} */
 export async function proposeBankMatches(bankAccountId) {
-  const { data, error } = await state.supabase.rpc('propose_bank_matches', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('propose_bank_matches', {
     p_lodge_id: state.lodgeId,
     p_bank_account_id: bankAccountId,
   });
@@ -80,8 +88,9 @@ export async function proposeBankMatches(bankAccountId) {
   return data;
 }
 
+/** @param {unknown} proposalId @param {unknown} approve @returns {Promise<unknown>} */
 export async function approveBankMatch(proposalId, approve) {
-  const { data, error } = await state.supabase.rpc('approve_bank_match', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('approve_bank_match', {
     p_lodge_id: state.lodgeId,
     p_proposal_id: proposalId,
     p_approve: approve,
@@ -91,8 +100,9 @@ export async function approveBankMatch(proposalId, approve) {
   return data;
 }
 
+/** @param {Record<string, unknown>} param0 @returns {Promise<unknown>} */
 export async function createBankReconciliation({ bankAccountId, statementBalance, reconciliationDate, transactionIds }) {
-  const { data, error } = await state.supabase.rpc('create_bank_reconciliation', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_bank_reconciliation', {
     p_lodge_id: state.lodgeId,
     p_bank_account_id: bankAccountId,
     p_statement_balance: Number(statementBalance),
@@ -104,8 +114,9 @@ export async function createBankReconciliation({ bankAccountId, statementBalance
   return data;
 }
 
+/** @param {unknown} id @param {unknown} notes @returns {Promise<unknown>} */
 export async function completeBankReconciliation(id, notes) {
-  const { data, error } = await state.supabase.rpc('complete_bank_reconciliation', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_bank_reconciliation', {
     p_id: id,
     p_lodge_id: state.lodgeId,
     p_notes: notes || null,
@@ -115,10 +126,11 @@ export async function completeBankReconciliation(id, notes) {
   return data;
 }
 
+/** @param {unknown} bankAccountId @returns {Promise<unknown>} */
 function _getBankReconciliations(bankAccountId) {
   const key = `br:getBankReconciliations:${bankAccountId || ''}`;
   return dedupePromise(key, async () => {
-    const { data, error } = await state.supabase.rpc('get_bank_reconciliations', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_bank_reconciliations', {
       p_lodge_id: state.lodgeId,
       p_bank_account_id: bankAccountId,
     });

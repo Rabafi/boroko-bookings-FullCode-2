@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import { createPortal } from 'react-dom'

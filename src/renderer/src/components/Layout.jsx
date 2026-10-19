@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState, useContext } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router'
 import { useAuth, useSettings, useAccess, useOnlineRequests, UnsavedChangesContext } from '../app-context'
@@ -700,6 +701,30 @@ export default function Layout() {
   const effectiveUiPropertyType = propertyType
   const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
   const effectiveUiAccess = access
+  // Actual-mix summary for shell wording: the sidebar/header must reflect the
+  // SAME loaded inventory mix the inventory screens use, so a legacy lodge
+  // profile containing campsites says Sites consistently in shell AND body.
+  // Null keeps the resolver's operating-profile fallback (safe offline).
+  const [shellAccommodationMix, setShellAccommodationMix] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    const loadMix = async () => {
+      try {
+        if (isBrowserPreview || typeof window?.api?.rooms?.getAll !== 'function') return
+        const rows = await window.api.rooms.getAll()
+        if (!cancelled && Array.isArray(rows)) setShellAccommodationMix(rows)
+      } catch {
+        // Best-effort only: profile fallback wording stays in effect.
+      }
+    }
+    loadMix()
+    const refresh = () => { setShellAccommodationMix(null); loadMix() }
+    window.addEventListener('boroko:rooms-changed', refresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener('boroko:rooms-changed', refresh)
+    }
+  }, [isBrowserPreview, settings?.lodge_id])
   const navItems = useMemo(() => (
     getDesktopNavItems(
       effectiveUiBizType,
@@ -708,9 +733,10 @@ export default function Layout() {
       effectiveUiPlan,
       effectiveUiAddons,
       settings?.operating_profile,
-      BUILD_PRODUCT.id
+      BUILD_PRODUCT.id,
+      shellAccommodationMix
     ).filter((item) => assistantEnabled || item.to !== '/ai')
-  ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons, settings?.operating_profile])
+  ), [effectiveUiBizType, effectiveUiAccess, assistantEnabled, effectiveUiPlan, effectiveUiPropertyType, effectiveUiAddons, settings?.operating_profile, shellAccommodationMix])
   const standaloneTop = useMemo(
     () => navItems.filter((item) => !item.group && item.to !== '/settings'),
     [navItems]

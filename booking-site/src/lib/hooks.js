@@ -1,20 +1,22 @@
+// @ts-check
 import { useEffect, useRef, useState, useCallback } from 'react'
 
 /**
  * Swipe gesture hook for touch devices.
  * Pass `onLeft` for next and `onRight` for previous.
  */
+/** @param {{onLeft?:()=>void,onRight?:()=>void}} options */
 export function useSwipe({ onLeft, onRight }) {
-  const touchStart = useRef(null)
-  const touchEnd = useRef(null)
+  const touchStart = useRef(/** @type {number|null} */ (null))
+  const touchEnd = useRef(/** @type {number|null} */ (null))
   const minSwipeDistance = 40
 
-  const onTouchStart = useCallback((e) => {
+  const onTouchStart = useCallback(/** @param {import('react').TouchEvent<HTMLElement>} e */ (e) => {
     touchEnd.current = null
     touchStart.current = e.targetTouches[0].clientX
   }, [])
 
-  const onTouchMove = useCallback((e) => {
+  const onTouchMove = useCallback(/** @param {import('react').TouchEvent<HTMLElement>} e */ (e) => {
     touchEnd.current = e.targetTouches[0].clientX
   }, [])
 
@@ -40,13 +42,13 @@ export function useKeyboardVisibility() {
     if (typeof window === 'undefined' || !window.visualViewport) return
 
     const handleResize = () => {
-      const vv = window.visualViewport
+      const vv = /** @type {VisualViewport} */ (window.visualViewport)
       const isOpen = vv.height < window.innerHeight - 100
       setKeyboardOpen(isOpen)
     }
 
     window.visualViewport.addEventListener('resize', handleResize)
-    return () => window.visualViewport.removeEventListener('resize', handleResize)
+    return () => /** @type {VisualViewport} */ (window.visualViewport).removeEventListener('resize', handleResize)
   }, [])
 
   return keyboardOpen
@@ -56,6 +58,7 @@ export function useKeyboardVisibility() {
  * Focus a ref element on mount (or when deps change).
  * Useful for resetting focus on route changes.
  */
+/** @param {{current:HTMLElement|null}} ref @param {import('react').DependencyList} [deps] */
 export function useFocusOnMount(ref, deps = []) {
   useEffect(() => {
     if (ref.current) {
@@ -70,13 +73,20 @@ export function useFocusOnMount(ref, deps = []) {
 /**
  * Persist form state to sessionStorage so it survives refreshes.
  */
+/**
+ * @template {Record<string, unknown>} T
+ * @param {string} key
+ * @param {T} initialState
+ * @returns {[T, import('react').Dispatch<import('react').SetStateAction<T>>]}
+ */
 export function useSessionForm(key, initialState) {
-  const [form, setForm] = useState(() => {
+  const [form, setForm] = useState(/** @returns {T} */ () => {
     try {
       const raw = window.sessionStorage.getItem(key)
       if (raw) {
         const parsed = JSON.parse(raw)
-        return { ...initialState, ...parsed }
+        // This is an expected view over persisted session data, not validation.
+        return /** @type {T} */ ({ ...initialState, ...parsed })
       }
     } catch {
       // ignore
@@ -99,32 +109,33 @@ export function useSessionForm(key, initialState) {
  * Trap focus inside a container element (e.g., modal or lightbox).
  * Returns a ref to attach to the container.
  */
+/** @param {boolean} isActive @returns {import('react').RefObject<HTMLElement|null>} */
 export function useFocusTrap(isActive) {
-  const containerRef = useRef(null)
-  const previousActiveElement = useRef(null)
+  const containerRef = useRef(/** @type {HTMLElement|null} */ (null))
+  const previousActiveElement = useRef(/** @type {(Element & {focus():void})|null} */ (null))
 
   useEffect(() => {
     if (!isActive) return
 
-    previousActiveElement.current = document.activeElement
+    previousActiveElement.current = /** @type {(Element & {focus():void})|null} */ (document.activeElement)
 
     const container = containerRef.current
     if (!container) return
 
     // Focus the first focusable element
-    const focusable = container.querySelectorAll(
+    const focusableElements = /** @type {NodeListOf<HTMLElement>} */ (container.querySelectorAll(
       'a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])'
-    )
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
+    ))
+    const first = focusableElements[0]
+    const last = focusableElements[focusableElements.length - 1]
 
     if (first) {
       first.focus()
     }
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {KeyboardEvent} */ e) => {
       if (e.key !== 'Tab') return
-      if (focusable.length === 0) {
+      if (focusableElements.length === 0) {
         e.preventDefault()
         return
       }
@@ -158,7 +169,7 @@ export function useFocusTrap(isActive) {
  */
 export function useScrollToError() {
   return useCallback((selector = '.input-error, [aria-invalid="true"]') => {
-    const el = document.querySelector(selector)
+    const el = /** @type {HTMLElement|null} */ (document.querySelector(selector))
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
       el.focus()
@@ -169,6 +180,7 @@ export function useScrollToError() {
 /**
  * Persist route-level state to sessionStorage so it survives refreshes.
  */
+/** @param {string} key @param {unknown} state */
 export function useSessionState(key, state) {
   useEffect(() => {
     if (state !== undefined && state !== null) {
@@ -184,6 +196,7 @@ export function useSessionState(key, state) {
 /**
  * Read state from sessionStorage by key.
  */
+/** @param {string} key @returns {unknown|null} */
 export function readSessionState(key) {
   try {
     const raw = window.sessionStorage.getItem(key)
@@ -197,6 +210,7 @@ export function readSessionState(key) {
 /**
  * Clear a sessionStorage key.
  */
+/** @param {string} key */
 export function clearSessionState(key) {
   try {
     window.sessionStorage.removeItem(key)

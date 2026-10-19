@@ -1,3 +1,4 @@
+// @ts-check
 import { TILL_OPERATOR_SESSION_CODES } from './tillOperatorSession.js'
 
 export const TILL_SHIFT_CLOSED_CODE = 'till_shift_closed'
@@ -6,6 +7,22 @@ export const TILL_SHIFT_CLOSED_CODE = 'till_shift_closed'
 // remain scoped to the PIN-verified operator. Resolving history access is a
 // read: it must never renew the session lease, consume a Strict session, or
 // accept a renderer-supplied operator id. The session store is the authority.
+/**
+ * The session is the in-memory value created and cloned by
+ * `createTillOperatorSessionStore`; this is not persisted queue or RPC data.
+ * @typedef {{ staffId: string, staffName: string, outletId: string | null, shiftId: string | null, mode: 'shift' | 'strict', inactivityMinutes: number, lastActivityAt: number, expiresAt: number }} TillOperatorHistorySession
+ * @typedef {{ get(webContentsId: number): TillOperatorHistorySession | null, clear(webContentsId: number): void }} TillOperatorHistoryStore
+ * @typedef {{ mode?: unknown, inactivityMinutes?: unknown } | null | undefined} TillOperatorHistoryPolicy
+ * @typedef {{ id?: unknown, status?: unknown } | null | undefined} ExpectedOpenShift
+ */
+
+/**
+ * `getOpenShift` has both the server RPC and local-cache fallback behind it;
+ * this records only the `{id,status}` fields this existing consumer reads.
+ * Their values remain unknown, and no runtime response validation is implied.
+ * @param {{ sessions: TillOperatorHistoryStore, webContentsId: number, policy: TillOperatorHistoryPolicy, isOnline: boolean, getOpenShift?: (staffId: string) => ExpectedOpenShift | Promise<ExpectedOpenShift> }} input
+ * @returns {Promise<{ session: TillOperatorHistorySession | null, code: string | null, error: string | null }>}
+ */
 export async function resolveSharedTillHistoryAccess({ sessions, webContentsId, policy, isOnline, getOpenShift }) {
   const operator = sessions.get(webContentsId)
   if (!operator) {

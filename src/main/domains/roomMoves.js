@@ -1,9 +1,13 @@
+// @ts-check
 import { createHash, randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { logActivity, queueOperation, readCache, refreshCache, writeCache, dedupePromise } from './infrastructure.js';
 import { getAllBookings } from './bookings.js';
 import { getAllRooms } from './rooms.js';
 
+/** @typedef {Record<string, unknown>} RoomMoveRow */
+
+/** @param {{ bookingId: unknown, targetRoomId: unknown, reason: unknown, actorName: unknown, expectedUpdatedAt: unknown }} values */
 function buildRoomMoveIdempotencyKey({ bookingId, targetRoomId, reason, actorName, expectedUpdatedAt }) {
   const payload = JSON.stringify({
     bookingId: bookingId || null,
@@ -15,6 +19,7 @@ function buildRoomMoveIdempotencyKey({ bookingId, targetRoomId, reason, actorNam
   return `room-move:${createHash('sha256').update(payload).digest('hex')}`;
 }
 
+/** @param {unknown} reason @returns {string} */
 function requireMoveReason(reason) {
   const trimmed = String(reason || '').trim();
   if (!trimmed) {
@@ -23,16 +28,17 @@ function requireMoveReason(reason) {
   return trimmed;
 }
 
+/** @param {unknown} currentRoomId @param {string} checkIn @param {string} checkOut */
 async function _getAvailableRoomsForMove(currentRoomId, checkIn, checkOut) {
   const rooms = await getAllRooms();
-  const bookings = await getAllBookings();
+  const bookings = /** @type {RoomMoveRow[]} */ (await getAllBookings());
 
   const available = rooms.filter((room) => {
     if (room.id === currentRoomId) return false;
     const roomStatus = String(room.status || 'available').toLowerCase();
     if (roomStatus !== 'available') return false;
     const hk = String(room.housekeeping_status || 'clean').toLowerCase();
-    if (['out_of_order', 'out_of_service', 'maintenance'].includes(hk) || roomStatus === 'maintenance') {
+    if (['out_of_order', 'out_of_service', 'maintenance'].includes(hk)) {
       return false;
     }
 
@@ -58,10 +64,11 @@ async function _getAvailableRoomsForMove(currentRoomId, checkIn, checkOut) {
   }));
 }
 
+/** @param {unknown} bookingId @param {unknown} targetRoomId @param {unknown} reason @param {unknown} actorName */
 async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
   const auditReason = requireMoveReason(reason);
 
-  const bookings = await getAllBookings();
+      const bookings = /** @type {RoomMoveRow[]} */ (await getAllBookings());
   const booking = bookings.find((b) => b.id === bookingId);
   if (!booking) throw new Error('Booking not found');
   if (booking.status === 'cancelled') throw new Error('Cannot move a cancelled booking');
@@ -85,7 +92,7 @@ async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
     throw new Error(`Target room is ${hk.replace(/_/g, ' ')} and cannot receive a move`);
   }
 
-  const bookings2 = await getAllBookings();
+  const bookings2 = /** @type {RoomMoveRow[]} */ (await getAllBookings());
   const conflict = bookings2.find((b) => {
     if (!b || b.status === 'cancelled' || b.status === 'checked_out' || b.status === 'no_show') return false;
     if (String(b.id) === String(bookingId)) return false;
@@ -116,7 +123,7 @@ async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
   const rateImpact = Math.abs(rateDelta) > 0.009;
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('move_booking_room', {
+    const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('move_booking_room', {
       p_booking_id: bookingId,
       p_lodge_id: state.lodgeId,
       p_target_room_id: targetRoomId,
@@ -136,7 +143,7 @@ async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
         (rateImpact ? ` (rate delta ${rateDelta >= 0 ? '+' : ''}${rateDelta.toFixed(2)}/night — review folio)` : '')
     );
   } else {
-    const cached = readCache('bookings');
+    const cached = /** @type {RoomMoveRow[]} */ (readCache('bookings'));
     const idx = cached.findIndex((b) => b.id === bookingId);
     if (idx >= 0) {
       cached[idx] = {
@@ -164,7 +171,7 @@ async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
       rate_delta: rateDelta,
       _pending_sync: true
     };
-    const logCache = readCache('room-move-log') || [];
+    const logCache = /** @type {RoomMoveRow[]} */ (readCache('room-move-log') || []);
     logCache.unshift(moveLog);
     writeCache('room-move-log', logCache);
     queueOperation('rpc', 'move_booking_room', {
@@ -199,12 +206,14 @@ async function _executeRoomMove(bookingId, targetRoomId, reason, actorName) {
   };
 }
 
+/** @param {unknown} currentRoomId @param {string} checkIn @param {string} checkOut */
 export function getAvailableRoomsForMove(currentRoomId, checkIn, checkOut) {
   return dedupePromise(`roomMove:${currentRoomId}:${checkIn}:${checkOut}`, () =>
     _getAvailableRoomsForMove(currentRoomId, checkIn, checkOut)
   );
 }
 
+/** @param {unknown} bookingId @param {unknown} targetRoomId @param {unknown} reason @param {unknown} actorName */
 export function executeRoomMove(bookingId, targetRoomId, reason, actorName) {
   return dedupePromise(`roomMoveExec:${bookingId}`, () =>
     _executeRoomMove(bookingId, targetRoomId, reason, actorName)

@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Server, AlertTriangle, RefreshCw, Send, Wifi, WifiOff, CheckCircle, Activity, Monitor, X, Clock, AlertCircle } from 'lucide-react'
 import { useToast } from './shared/Toast'

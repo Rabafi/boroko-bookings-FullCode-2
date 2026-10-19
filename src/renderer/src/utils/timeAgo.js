@@ -1,5 +1,8 @@
+// @ts-check
 import { formatLocalDate } from './localDate'
 
+/** @param {string|number|null|undefined} dt */
+/** @param {string|number|null|undefined} dt */
 export function timeAgo(dt) {
   if (!dt) return ''
   const diff = Date.now() - new Date(dt).getTime()
@@ -11,12 +14,16 @@ export function timeAgo(dt) {
   return formatLocalDate(dt)
 }
 
+/** @param {string|null|undefined} currency @param {unknown} amount */
+/** @param {string|null|undefined} currency @param {unknown} amount */
 export function formatMoney(currency, amount) {
   const num = Number(amount || 0)
   const formatted = num.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return currency ? `${currency} ${formatted}` : formatted
 }
 
+/** @param {string|number|null|undefined} dt */
+/** @param {string|number|null|undefined} dt */
 export function fmtDate(dt) {
   if (!dt) return '\u2014'
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })

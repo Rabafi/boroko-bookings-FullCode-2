@@ -1,5 +1,8 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { normalizeFnbPreferences } from '../../../shared/fnbModules.js'
+
+/** @typedef {Record<string, unknown>} FnbModulePreferencesPropertyReads */
 
 /**
  * Shared F&B module preference state.
@@ -9,11 +12,11 @@ import { normalizeFnbPreferences } from '../../../shared/fnbModules.js'
  *   enabled/entitled/can_manage/reason/version.
  */
 export function useFnbModules() {
-  const [modules, setModules] = useState([])
+  const [modules, setModules] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [offline, setOffline] = useState(false)
   const [error, setError] = useState('')
-  const [updatingKey, setUpdatingKey] = useState(null)
+  const [updatingKey, setUpdatingKey] = useState(/** @type {string | null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -27,8 +30,10 @@ export function useFnbModules() {
       // Cache is best-effort.
     }
     try {
-      const result = await window.api?.fnb?.getModulePreferences?.()
-      const rows = Array.isArray(result?.modules) ? result.modules : []
+      // Main constructs the envelope, but these reads do not validate any
+      // response field or the raw module rows. Preserve the optional bridge case.
+      const result = /** @type {FnbModulePreferencesPropertyReads | undefined} */ (await window.api?.fnb?.getModulePreferences?.())
+      const rows = Array.isArray(result?.modules) ? /** @type {unknown[]} */ (result.modules) : []
       setModules(rows)
       setOffline(Boolean(result?.offline))
       if (result?.success === false) setError(result?.error || 'Module settings are unavailable.')
@@ -61,7 +66,7 @@ export function useFnbModules() {
 
   const preferenceMap = useMemo(() => normalizeFnbPreferences(modules), [modules])
 
-  const setPreference = useCallback(async (moduleKey, enabled, expectedVersion) => {
+  const setPreference = useCallback(async (/** @type {string} */ moduleKey, /** @type {boolean} */ enabled, /** @type {unknown} */ expectedVersion) => {
     setUpdatingKey(moduleKey)
     setError('')
     try {

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Check, AlertTriangle, FileText, Eye, Send } from 'lucide-react'
 import { canAccessCapability } from '../../../shared/accessControl'
@@ -39,9 +40,12 @@ export default function DocumentSystem({ templatesOnly = false } = {}) {
     && canAccessCapability(access, 'documents.view')
   const canManageDocuments = canViewDocuments && canAccessCapability(access, 'documents.manage')
   const canGenerateDocuments = canViewDocuments && canAccessCapability(access, 'documents.generate')
-  const [templates, setTemplates] = useState([])
-  const [dashboard, setDashboard] = useState({ recent_documents: [] })
-  const [history, setHistory] = useState([])
+  // Existing Array.isArray guards establish only these containers, not row schemas.
+  const [templates, setTemplates] = useState(/** @type {unknown[]} */ ([]))
+  // The dashboard and its nested recent_documents value are forwarded from the database.
+  const [dashboard, setDashboard] = useState(/** @type {unknown} */ ({ recent_documents: [] }))
+  // History RPC arrays receive only a container check; row fields remain unvalidated.
+  const [history, setHistory] = useState(/** @type {unknown[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('templates')
   const [showModal, setShowModal] = useState(false)

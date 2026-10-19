@@ -1,3 +1,18 @@
+// @ts-check
+/**
+ * Format existing error guidance; input conversion and existing throws remain.
+ *
+ * Unknown input is deliberate: objects use their existing String conversion
+ * (not raw.message extraction), and exotic conversions can throw, so this is
+ * neither a total no-throw function nor a complete sensitive-data sanitizer.
+ * Advisory strings, regex branches, UUID redaction, whitespace rules and the
+ * 160-unit truncation behaviour are preserved exactly as implemented, and the
+ * duplicate advice remains provisional wording rather than server-confirmed
+ * financial state. Output is always a plain string when no throw occurs.
+ *
+ * @param {unknown} raw
+ * @returns {string}
+ */
 export function sanitizePosError(raw) {
   if (!raw) return 'Operation failed to sync. Please retry from Sync screen.';
   const msg = String(raw);

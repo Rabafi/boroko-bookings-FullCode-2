@@ -1,7 +1,12 @@
+// @ts-check
 import crypto from 'crypto';
 import { meshState } from './meshState.js';
 import { broadcastToMesh } from './meshClient.js';
 import { broadcastSyncStatus } from '../connectivity.js';
+
+/** @typedef {Record<string, unknown> & {lockId: unknown, sourceNodeId: unknown, expiresAt: unknown}} MeshLock */
+/** The state initializer leaves this array empty; runtime fills room/tab lock records. */
+const meshStateWithLocks = /** @type {Omit<typeof meshState, 'activeLocks'> & {activeLocks: MeshLock[]}} */ (meshState);
 
 // Run lock pruning every 10 seconds to auto-expire stale locks.
 const lockPruneInterval = setInterval(pruneExpiredLocks, 10000);
@@ -10,6 +15,9 @@ lockPruneInterval.unref?.();
 /**
  * Creates an advisory room lock locally and broadcasts it to all P2P peers.
  * Advisory locks expire automatically after 2 minutes.
+ * @param {unknown} roomId
+ * @param {unknown} startDate
+ * @param {unknown} endDate
  */
 export async function createLocalLock(roomId, startDate, endDate) {
   if (!meshState.running || !meshState.nodeId) {
@@ -30,7 +38,7 @@ export async function createLocalLock(roomId, startDate, endDate) {
     expiresAt
   };
 
-  meshState.activeLocks.push(lock);
+  meshStateWithLocks.activeLocks.push(lock);
   
   // Trigger local UI update
   broadcastSyncStatus();
@@ -51,10 +59,11 @@ const TAB_LOCK_TTL_MS = 120000; // 2 minutes: covers one settle, never a shift.
  * The server still refuses genuine double settlements; this lock only stops
  * the confusing second attempt. Expires on its own; release on settle done.
  */
+/** @param {unknown} tabId @param {unknown} [operatorLabel] */
 export async function createTabLock(tabId, operatorLabel = '') {
   const resourceId = String(tabId || '').trim();
   if (!resourceId) return { acquired: false, error: 'A tab reference is required.' };
-  const held = meshState.activeLocks.find((lock) =>
+  const held = meshStateWithLocks.activeLocks.find((lock) =>
     lock.resourceKind === 'pos-tab'
     && String(lock.resourceId || '') === resourceId
     && new Date(lock.expiresAt).getTime() > Date.now()
@@ -73,7 +82,7 @@ export async function createTabLock(tabId, operatorLabel = '') {
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + TAB_LOCK_TTL_MS).toISOString(),
   };
-  meshState.activeLocks.push(lock);
+  meshStateWithLocks.activeLocks.push(lock);
   broadcastSyncStatus();
   broadcastToMesh('POST', '/mesh/locks', null, lock).catch((err) => {
     console.warn('[MeshLocks] Failed to broadcast tab lock to mesh:', err.message);
@@ -81,13 +90,14 @@ export async function createTabLock(tabId, operatorLabel = '') {
   return { acquired: true, lockId: lock.lockId };
 }
 
+/** @param {unknown} lockId */
 export async function releaseTabLock(lockId) {
   const id = String(lockId || '').trim();
   if (!id) return false;
-  const index = meshState.activeLocks.findIndex((l) =>
+  const index = meshStateWithLocks.activeLocks.findIndex((l) =>
     l.lockId === id && l.resourceKind === 'pos-tab' && l.sourceNodeId === meshState.nodeId);
   if (index === -1) return false;
-  meshState.activeLocks.splice(index, 1);
+  meshStateWithLocks.activeLocks.splice(index, 1);
   broadcastSyncStatus();
   broadcastToMesh('DELETE', `/mesh/locks/${id}`).catch((err) => {
     console.warn(`[MeshLocks] Failed to broadcast release of tab lock ${id}:`, err.message);
@@ -98,10 +108,11 @@ export async function releaseTabLock(lockId) {
 /**
  * Releases a locally held lock and broadcasts the release to all peers.
  */
+/** @param {unknown} lockId */
 export async function releaseLocalLock(lockId) {
-  const index = meshState.activeLocks.findIndex((l) => l.lockId === lockId && l.sourceNodeId === meshState.nodeId);
+  const index = meshStateWithLocks.activeLocks.findIndex((l) => l.lockId === lockId && l.sourceNodeId === meshState.nodeId);
   if (index !== -1) {
-    meshState.activeLocks.splice(index, 1);
+    meshStateWithLocks.activeLocks.splice(index, 1);
     broadcastSyncStatus();
 
     // Broadcast delete to peers
@@ -118,40 +129,43 @@ export async function releaseLocalLock(lockId) {
  * Room locks keep their shape; tab-settlement locks carry
  * resourceKind/resourceId instead of a room.
  */
+/** @param {unknown} lock */
 export function registerRemoteLock(lock) {
-  const isTabLock = lock?.resourceKind === 'pos-tab' && String(lock?.resourceId || '').trim() !== '';
-  if (!lock || !lock.lockId || !lock.sourceNodeId) {
+  const incomingFields = /** @type {Record<string, unknown> | null | undefined} */ (lock);
+  const isTabLock = incomingFields?.resourceKind === 'pos-tab' && String(incomingFields?.resourceId || '').trim() !== '';
+  if (!lock || !incomingFields?.lockId || !incomingFields.sourceNodeId) {
     return false;
   }
-  if (!isTabLock && !lock.roomId) {
+  const fields = /** @type {Record<string, unknown>} */ (lock);
+  if (!isTabLock && !fields.roomId) {
     return false;
   }
 
   // Deduplicate: remove existing lock with same ID if present
-  meshState.activeLocks = meshState.activeLocks.filter((l) => l.lockId !== lock.lockId);
+  meshStateWithLocks.activeLocks = meshStateWithLocks.activeLocks.filter((l) => l.lockId !== fields.lockId);
 
   // Schema verification and sanity bounds
-  const expiresTime = new Date(lock.expiresAt).getTime();
+  const expiresTime = new Date(fields.expiresAt).getTime();
   if (isNaN(expiresTime) || expiresTime <= Date.now()) {
     return false; // Already expired or invalid date format
   }
 
-  meshState.activeLocks.push(isTabLock ? {
-    lockId: lock.lockId,
+  meshStateWithLocks.activeLocks.push(isTabLock ? {
+    lockId: fields.lockId,
     resourceKind: 'pos-tab',
-    resourceId: String(lock.resourceId),
-    operator: String(lock.operator || '').slice(0, 80),
-    sourceNodeId: lock.sourceNodeId,
-    createdAt: lock.createdAt,
-    expiresAt: lock.expiresAt
+    resourceId: String(fields.resourceId),
+    operator: String(fields.operator || '').slice(0, 80),
+    sourceNodeId: fields.sourceNodeId,
+    createdAt: fields.createdAt,
+    expiresAt: fields.expiresAt
   } : {
-    lockId: lock.lockId,
-    roomId: lock.roomId,
-    startDate: lock.startDate,
-    endDate: lock.endDate,
-    sourceNodeId: lock.sourceNodeId,
-    createdAt: lock.createdAt,
-    expiresAt: lock.expiresAt
+    lockId: fields.lockId,
+    roomId: fields.roomId,
+    startDate: fields.startDate,
+    endDate: fields.endDate,
+    sourceNodeId: fields.sourceNodeId,
+    createdAt: fields.createdAt,
+    expiresAt: fields.expiresAt
   });
 
   broadcastSyncStatus();
@@ -161,11 +175,12 @@ export function registerRemoteLock(lock) {
 /**
  * Releases an advisory lock registered from a remote peer.
  */
+/** @param {unknown} lockId */
 export function releaseRemoteLock(lockId) {
-  const initialLength = meshState.activeLocks.length;
-  meshState.activeLocks = meshState.activeLocks.filter((l) => l.lockId !== lockId);
+  const initialLength = meshStateWithLocks.activeLocks.length;
+  meshStateWithLocks.activeLocks = meshStateWithLocks.activeLocks.filter((l) => l.lockId !== lockId);
   
-  if (meshState.activeLocks.length !== initialLength) {
+  if (meshStateWithLocks.activeLocks.length !== initialLength) {
     broadcastSyncStatus();
     return true;
   }
@@ -177,15 +192,15 @@ export function releaseRemoteLock(lockId) {
  */
 export function pruneExpiredLocks() {
   const now = Date.now();
-  const initialLength = meshState.activeLocks.length;
+  const initialLength = meshStateWithLocks.activeLocks.length;
   
-  meshState.activeLocks = meshState.activeLocks.filter((lock) => {
+  meshStateWithLocks.activeLocks = meshStateWithLocks.activeLocks.filter((lock) => {
     const expiresTime = new Date(lock.expiresAt).getTime();
     return !isNaN(expiresTime) && expiresTime > now;
   });
 
-  if (meshState.activeLocks.length !== initialLength) {
-    console.log(`[MeshLocks] Pruned ${initialLength - meshState.activeLocks.length} expired lock(s).`);
+  if (meshStateWithLocks.activeLocks.length !== initialLength) {
+    console.log(`[MeshLocks] Pruned ${initialLength - meshStateWithLocks.activeLocks.length} expired lock(s).`);
     broadcastSyncStatus();
   }
 }

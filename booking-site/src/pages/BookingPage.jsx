@@ -20,7 +20,8 @@ import { trackBeginCheckout, trackBookingRequest } from '../lib/analytics.js'
 import SeoMeta from '../components/SeoMeta.jsx'
 import LodgeHeader from '../components/LodgeHeader.jsx'
 import { Lightbox, optimizeImageUrl } from '../components/RoomCard.jsx'
-import { computeStayTotal, isCampsiteUnit, normalizeRateMode } from '../../../src/shared/accommodation.js'
+import { isCampsitePriced, normalizeRateMode } from '../../../src/shared/accommodation.js'
+import { buildPublicAccommodationDraft } from '../lib/publicBookingAccommodation.js'
 import {
   buildWhatsAppUrl,
   buildCalendarUrl,
@@ -40,6 +41,9 @@ const ROOM_MEDIA_TTL_MS = 30 * 60 * 1000
 const BOOKING_FORM_KEY = 'booking-form-data'
 const BOOKING_STATE_KEY = 'booking-state'
 const BOOKING_IDEMPOTENCY_KEY = 'booking-idempotency-key'
+const BOOKING_REJECTED_INTENT_KEY = 'booking-rejected-intent'
+
+/** @typedef {{guest_first_name: string, guest_last_name: string, guest_email: string, guest_phone: string, adults: number|string, children: number|string, tents: number|string, vehicles: number|string, notes: string, [field: string]: string|number}} BookingFormExpectedData */
 
 function createBookingIdempotencyKey() {
   const randomUuid = globalThis.crypto?.randomUUID
@@ -47,12 +51,7 @@ function createBookingIdempotencyKey() {
   return `public-booking-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`
 }
 
-function clampGuestCount(value, max) {
-  const numeric = Number(value || 0)
-  if (!Number.isFinite(numeric)) return 0
-  return Math.max(0, Math.min(numeric, Math.max(0, max)))
-}
-
+/** @param {unknown} message @returns {string} */
 function toGuestBookingError(message) {
   const text = String(message || '').toLowerCase()
   if (!text) return 'Something went wrong. Please try again.'
@@ -65,11 +64,13 @@ function toGuestBookingError(message) {
   return 'We could not send your booking request right now. Please try again or contact the lodge directly.'
 }
 
+/** @param {string} email @returns {boolean} */
 function validateEmail(email) {
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   return re.test(email)
 }
 
+/** @param {string} phone @returns {boolean} */
 function validatePhone(phone) {
   const re = /^[+\d()\s-]{7,32}$/
   return re.test(phone)
@@ -78,6 +79,7 @@ function validatePhone(phone) {
 /**
  * Build booking state to persist so the page survives a refresh.
  */
+/** @param {{lodge: Record<string, unknown>, room: Record<string, unknown>, rooms: Record<string, unknown>[], bookingType: string, checkIn: string, checkOut: string, nights: number}} state */
 function buildBookingState({ lodge, room, rooms, bookingType, checkIn, checkOut, nights }) {
   return {
     lodge: {
@@ -151,8 +153,8 @@ export default function BookingPage() {
   const navigate = useNavigate()
   const { state } = useLocation()
   const [searchParams] = useSearchParams()
-  const formRef = useRef(null)
-  const headingRef = useRef(null)
+  const formRef = useRef(/** @type {HTMLFormElement|null} */ (null))
+  const headingRef = useRef(/** @type {HTMLHeadingElement|null} */ (null))
 
   if (!isValidSlug(slug)) {
     return (
@@ -217,13 +219,13 @@ export default function BookingPage() {
   const lightboxRef = useFocusTrap(lightboxOpen)
 
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
   const [lastSubmitTime, setLastSubmitTime] = useState(0)
   const SUBMIT_COOLDOWN_MS = 2000
   const keyboardOpen = useKeyboardVisibility()
 
   // Form fields with sessionStorage persistence
-  const [form, setForm] = useSessionForm(BOOKING_FORM_KEY, {
+  const [form, setForm] = useSessionForm(BOOKING_FORM_KEY, /** @type {BookingFormExpectedData} */ ({
     guest_first_name: '',
     guest_last_name: '',
     guest_email: '',
@@ -233,16 +235,34 @@ export default function BookingPage() {
     tents: 0,
     vehicles: 0,
     notes: ''
-  })
+  }))
+  const publicDraft = useMemo(() => buildPublicAccommodationDraft(selectedRooms, form, {
+    nights,
+    fullLodge: isFullLodge,
+    exclusiveTotal: room?.total_price
+  }), [selectedRooms, form.adults, form.children, form.tents, form.vehicles, nights, isFullLodge, room?.total_price])
   // Keep one request key for this form intent.  A refresh or ambiguous
   // network retry must replay the same key; a successful submission clears it
   // so a later booking is a new intent.
-  const [idempotencyKey] = useState(() => readSessionState(BOOKING_IDEMPOTENCY_KEY) || createBookingIdempotencyKey())
+  const [idempotencyKey, setIdempotencyKey] = useState(() => readSessionState(BOOKING_IDEMPOTENCY_KEY) || createBookingIdempotencyKey())
   useSessionState(BOOKING_IDEMPOTENCY_KEY, idempotencyKey)
+  const bookingIntentFingerprint = JSON.stringify({
+    slug, bookingType: effectiveBookingType, checkIn, checkOut,
+    rooms: selectedRooms.map((entry) => ({ id: entry?.id, max_occupancy: entry?.max_occupancy, accommodation_kind: entry?.accommodation_kind })),
+    form
+  })
+  const [rejectedIntentFingerprint, setRejectedIntentFingerprint] = useState(() => readSessionState(BOOKING_REJECTED_INTENT_KEY) || null)
+  useSessionState(BOOKING_REJECTED_INTENT_KEY, rejectedIntentFingerprint)
+
+  useEffect(() => {
+    if (!rejectedIntentFingerprint || rejectedIntentFingerprint === bookingIntentFingerprint) return
+    setIdempotencyKey(createBookingIdempotencyKey())
+    setRejectedIntentFingerprint(null)
+  }, [rejectedIntentFingerprint, bookingIntentFingerprint])
 
   // Inline validation state
-  const [touched, setTouched] = useState({})
-  const [fieldErrors, setFieldErrors] = useState({})
+  const [touched, setTouched] = useState(/** @type {Record<string, boolean>} */ ({}))
+  const [fieldErrors, setFieldErrors] = useState(/** @type {Record<string, string>} */ ({}))
 
   const photoPrev = useCallback(() => setPhotoIdx((i) => (i - 1 + roomPhotos.length) % roomPhotos.length), [roomPhotos.length])
   const photoNext = useCallback(() => setPhotoIdx((i) => (i + 1) % roomPhotos.length), [roomPhotos.length])
@@ -270,28 +290,6 @@ export default function BookingPage() {
     setRoomPhotos(initialRoomPhotos)
     setPhotoIdx(0)
   }, [room?.id, room?.photo, room?.photo_count, initialRoomPhotos.length])
-
-  // Auto-clamp guest counts when max_occupancy changes
-  useEffect(() => {
-    if (!hasState) return
-    const maxOccupancy = selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room?.max_occupancy || 0)
-    const adults = clampGuestCount(form.adults, Math.max(1, maxOccupancy))
-    const maxChildren = Math.max(0, maxOccupancy - adults)
-    const children = clampGuestCount(form.children, maxChildren)
-    const campsite = selectedRooms.find((entry) => isCampsiteUnit(entry))
-    const tents = campsite ? clampGuestCount(form.tents, Number(campsite.max_tents || 0)) : 0
-    const vehicles = campsite ? clampGuestCount(form.vehicles, Number(campsite.max_vehicles || 0)) : 0
-
-    if (adults !== Number(form.adults) || children !== Number(form.children) || tents !== Number(form.tents) || vehicles !== Number(form.vehicles)) {
-      setForm((current) => ({
-        ...current,
-        adults,
-        children,
-        tents,
-        vehicles
-      }))
-    }
-  }, [form.adults, form.children, room?.max_occupancy, selectedRooms, hasState, setForm])
 
   // Fetch room media if missing
   useEffect(() => {
@@ -346,6 +344,7 @@ export default function BookingPage() {
   }, [hasState, initialRoomPhotos.length, room?.id, room?.photo_count, room?.photo, slug])
 
   // Validate a single field
+  /** @param {string} name @param {string} value @returns {string} */
   function validateField(name, value) {
     switch (name) {
       case 'guest_email':
@@ -363,6 +362,7 @@ export default function BookingPage() {
 
   // Validate entire form
   function validateForm() {
+    /** @type {Record<string, string>} */
     const errors = {}
     const fields = ['guest_first_name', 'guest_last_name', 'guest_email', 'guest_phone']
     for (const name of fields) {
@@ -372,6 +372,7 @@ export default function BookingPage() {
     return errors
   }
 
+  /** @param {import('react').ChangeEvent<HTMLInputElement|HTMLTextAreaElement>} event */
   function handleChange(event) {
     const { name, value } = event.target
     setForm((current) => ({ ...current, [name]: value }))
@@ -380,6 +381,7 @@ export default function BookingPage() {
     }
   }
 
+  /** @param {import('react').FocusEvent<HTMLInputElement|HTMLTextAreaElement>} event */
   function handleBlur(event) {
     const { name, value } = event.target
     setTouched((prev) => ({ ...prev, [name]: true }))
@@ -401,7 +403,7 @@ export default function BookingPage() {
     setFieldErrors(errors)
 
     if (Object.keys(errors).length > 0) {
-      const firstErrorField = document.querySelector('[aria-invalid="true"]')
+      const firstErrorField = /** @type {HTMLElement|null} */ (document.querySelector('[aria-invalid="true"]'))
       if (firstErrorField) {
         firstErrorField.scrollIntoView({ behavior: 'smooth', block: 'center' })
         firstErrorField.focus()
@@ -415,64 +417,46 @@ export default function BookingPage() {
       return
     }
 
-    const totalGuests = Number(form.adults) + Number(form.children)
-    if (totalGuests < 1) {
-      setError('Please select at least 1 guest before sending your request.')
-      return
-    }
-
-    const totalCapacity = selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room.max_occupancy || 0)
-    if (totalGuests > totalCapacity) {
-      setError(`${isMultiRoom || isFullLodge ? 'This request' : 'This room'} supports up to ${totalCapacity} guests. Please reduce the number of adults or children.`)
+    if (!publicDraft.valid) {
+      setError(publicDraft.errors.join(' '))
       return
     }
 
     setLastSubmitTime(now)
     setSubmitting(true)
 
-    let remainingAdults = Number(form.adults)
-    let remainingChildren = Number(form.children)
-    const roomLines = selectedRooms.map((entry, index) => {
-      const capacity = Math.max(1, Number(entry.max_occupancy || 1))
-      const adults = Math.max(index === 0 ? 1 : 0, Math.min(remainingAdults, capacity))
-      remainingAdults = Math.max(0, remainingAdults - adults)
-      const children = Math.max(0, Math.min(remainingChildren, Math.max(0, capacity - adults)))
-      remainingChildren = Math.max(0, remainingChildren - children)
-      return {
-        room_id: entry.id,
-        adults,
-        children,
-        tents: isCampsiteUnit(entry) ? Number(form.tents) || 0 : 0,
-        vehicles: isCampsiteUnit(entry) ? Number(form.vehicles) || 0 : 0
-      }
-    }).filter((entry) => entry.room_id)
+    const bookingPayload = {
+      idempotency_key: idempotencyKey,
+      booking_type: effectiveBookingType,
+      room_id: selectedRooms[0]?.id || room.id,
+      check_in: checkIn,
+      check_out: checkOut,
+      guest_first_name: form.guest_first_name.trim(),
+      guest_last_name: form.guest_last_name.trim(),
+      guest_email: form.guest_email.trim().toLowerCase(),
+      guest_phone: form.guest_phone.trim(),
+      adults: publicDraft.totals.adults,
+      children: publicDraft.totals.children,
+      tents: publicDraft.totals.tents,
+      vehicles: publicDraft.totals.vehicles,
+      notes: form.notes.trim()
+    }
+    // The full-lodge RPC creates one exclusive-use booking from the lodge's
+    // representative inventory row. Its contract accepts aggregate counts
+    // and whole-property pricing; a per-room array would fail the one-row
+    // receipt binding (and imply independent bookings that were not created).
+    if (!isFullLodge) bookingPayload.rooms = publicDraft.lines
 
-    const { data, error: rpcError } = await rpc('create_online_booking', {
-      p_slug: slug,
-      payload: {
-        idempotency_key: idempotencyKey,
-        booking_type: effectiveBookingType,
-        room_id: selectedRooms[0]?.id || room.id,
-        rooms: roomLines,
-        check_in: checkIn,
-        check_out: checkOut,
-        guest_first_name: form.guest_first_name.trim(),
-        guest_last_name: form.guest_last_name.trim(),
-        guest_email: form.guest_email.trim().toLowerCase(),
-        guest_phone: form.guest_phone.trim(),
-        adults: Number(form.adults),
-        children: Number(form.children),
-        tents: Number(form.tents),
-        vehicles: Number(form.vehicles),
-        notes: form.notes.trim()
-      }
-    })
+    const { data, error: rpcError } = await rpc('create_online_booking', { p_slug: slug, payload: bookingPayload })
 
     if (rpcError || !data?.success) {
       setSubmitting(false)
       const errMsg = data?.error || rpcError?.message
       captureException(new Error(errMsg || 'Booking RPC failed'), { slug, roomId: room.id, bookingType: effectiveBookingType })
       setError(toGuestBookingError(errMsg))
+      if (data?.success === false && !['idempotency_conflict', 'manual_recovery_required'].includes(data.code)) {
+        setRejectedIntentFingerprint(bookingIntentFingerprint)
+      }
       return
     }
 
@@ -488,6 +472,8 @@ export default function BookingPage() {
     clearSessionState(BOOKING_FORM_KEY)
     clearSessionState(BOOKING_STATE_KEY)
     clearSessionState(BOOKING_IDEMPOTENCY_KEY)
+    clearSessionState(BOOKING_REJECTED_INTENT_KEY)
+    setRejectedIntentFingerprint(null)
 
     trackBookingRequest(slug, room.id, data.booking_id, data.total_amount)
     navigate(`/${slug}/success`, { state: { booking: data }, replace: true })
@@ -518,18 +504,20 @@ export default function BookingPage() {
     )
   }
 
-  const campsite = selectedRooms.find((entry) => isCampsiteUnit(entry))
+  // Pricing uses the campsite-priced family (campsites AND permanent tents).
+  // Display wording still comes from each inventory row's own kind.
+  const allocationUnits = isFullLodge ? selectedRooms.slice(0, 1) : selectedRooms
+  const pricedUnits = allocationUnits.filter((entry) => isCampsitePriced(entry))
   const hasContact = lodge?.phone || lodge?.email || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
-  const maxOccupancy = Math.max(1, selectedRooms.reduce((sum, entry) => sum + Number(entry?.max_occupancy || 0), 0) || Number(room?.max_occupancy || 1))
-  const selectedAdults = clampGuestCount(form.adults, maxOccupancy)
-  const maxChildren = Math.max(0, maxOccupancy - selectedAdults)
-  const campsiteRateMode = normalizeRateMode(campsite?.rate_mode)
-  const maxTents = Math.max(0, Number(campsite?.max_tents || 0))
-  const maxVehicles = Math.max(0, Number(campsite?.max_vehicles || 0))
-  const totalAmount = campsite
-    ? computeStayTotal(campsite, { nights, adults: selectedAdults, children: Number(form.children), tents: Number(form.tents), vehicles: Number(form.vehicles) })
-    : Number(room.total_price || 0)
+  const maxOccupancy = publicDraft.limits.guests
+  const maxAdults = publicDraft.limits.adults
+  const maxChildren = publicDraft.limits.children
+  const maxTents = publicDraft.limits.tents
+  const maxVehicles = publicDraft.limits.vehicles
+  const hasTentPricing = pricedUnits.some((entry) => ['tent', 'composite'].includes(normalizeRateMode(entry?.rate_mode)))
+  const hasVehiclePricing = pricedUnits.some((entry) => ['vehicle', 'composite'].includes(normalizeRateMode(entry?.rate_mode)))
+  const totalAmount = publicDraft.estimate
   const stayLabel = isFullLodge ? 'Full lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : `Room ${room.room_number}`
   const roomTitle = isFullLodge ? 'Full Lodge' : isMultiRoom ? `${selectedRooms.length} rooms` : room.room_number
   const roomTypeLabel = isFullLodge ? 'Exclusive use' : isMultiRoom ? 'Multi-room stay' : room.room_type
@@ -656,7 +644,7 @@ export default function BookingPage() {
                   </span>
                   <span className="inline-flex items-center gap-2 rounded-full bg-[var(--surface-soft)] px-3 py-1.5">
                     <Users size={14} />
-                    Up to {maxOccupancy} guests
+                  {maxOccupancy === null ? 'Guest capacity varies by selected units' : `Up to ${maxOccupancy} guests`}
                   </span>
                 </div>
 
@@ -670,6 +658,18 @@ export default function BookingPage() {
                           <span className="text-right text-[var(--muted)]">{entry.room_type}</span>
                         </div>
                       ))}
+                    </div>
+                    <div className="mt-3 border-t border-[var(--line)] pt-3">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--muted)]">Estimated by unit</p>
+                      <div className="mt-2 space-y-2">
+                        {publicDraft.lineEstimates.map((line) => (
+                          <div key={line.roomId} className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs">
+                            <span className="font-semibold text-[var(--text)]">{line.label}: {line.adults} adult{line.adults === 1 ? '' : 's'}, {line.children} child{line.children === 1 ? '' : 'ren'}{line.tents ? `, ${line.tents} tent${line.tents === 1 ? '' : 's'}` : ''}{line.vehicles ? `, ${line.vehicles} vehicle${line.vehicles === 1 ? '' : 's'}` : ''}</span>
+                            <span className="text-[var(--muted)]">{lodge.currency}{Number(line.total || 0).toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs text-[var(--muted)]">Counts are assigned once across units in the order shown. The server confirms final availability and price.</p>
                     </div>
                   </div>
                 )}
@@ -813,18 +813,27 @@ export default function BookingPage() {
                 </div>
               </div>
 
-              {campsite && (campsiteRateMode === 'tent' || campsiteRateMode === 'composite') && (
+              {(hasTentPricing || Number(form.tents) > 0) && (
                 <div className="mt-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] p-4">
                   <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="tents">Tents</label>
-                  <input id="tents" name="tents" type="number" min={0} max={maxTents} value={form.tents} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
-                  <p className="mt-1 text-xs text-[var(--muted)]">Maximum {maxTents} tent{maxTents === 1 ? '' : 's'}.</p>
+                  <input id="tents" name="tents" type="number" min={0} step={1} max={maxTents ?? undefined} value={form.tents} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
+                  <p className="mt-1 text-xs text-[var(--muted)]">{maxTents === null ? 'No fixed tent limit for this stay.' : `Maximum ${maxTents} tent${maxTents === 1 ? '' : 's'}.`}</p>
                 </div>
               )}
-              {campsite && (campsiteRateMode === 'vehicle' || campsiteRateMode === 'composite') && (
+              {(hasVehiclePricing || Number(form.vehicles) > 0) && (
                 <div className="mt-4 rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] p-4">
                   <label className="mb-1.5 block text-sm font-semibold text-[var(--text)]" htmlFor="vehicles">Vehicles</label>
-                  <input id="vehicles" name="vehicles" type="number" min={0} max={maxVehicles} value={form.vehicles} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
-                  <p className="mt-1 text-xs text-[var(--muted)]">Maximum {maxVehicles} vehicle{maxVehicles === 1 ? '' : 's'}.</p>
+                  <input id="vehicles" name="vehicles" type="number" min={0} step={1} max={maxVehicles ?? undefined} value={form.vehicles} onChange={handleChange} className="w-full rounded-xl border border-[var(--line)] bg-white px-3 py-2 text-sm" />
+                  <p className="mt-1 text-xs text-[var(--muted)]">{maxVehicles === null ? 'No fixed vehicle limit for this stay.' : `Maximum ${maxVehicles} vehicle${maxVehicles === 1 ? '' : 's'}.`}</p>
+                </div>
+              )}
+
+              {publicDraft.errors.length > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status" aria-live="polite">
+                  <p className="font-semibold">Review accommodation counts</p>
+                  <ul className="mt-1 list-disc pl-5">
+                    {publicDraft.errors.map((message) => <li key={message}>{message}</li>)}
+                  </ul>
                 </div>
               )}
 
@@ -900,7 +909,7 @@ export default function BookingPage() {
                       name="adults"
                       type="number"
                       min={1}
-                      max={maxOccupancy}
+                      max={maxAdults ?? undefined}
                       value={form.adults}
                       onChange={handleChange}
                       className="h-11 w-full bg-transparent text-center text-sm font-semibold text-[var(--text)] outline-none"
@@ -908,8 +917,8 @@ export default function BookingPage() {
                     />
                     <button
                       type="button"
-                      onClick={() => setForm((c) => ({ ...c, adults: Math.min(maxOccupancy, Number(c.adults) + 1) }))}
-                      disabled={Number(form.adults) >= maxOccupancy}
+                      onClick={() => setForm((c) => ({ ...c, adults: maxAdults === null ? Number(c.adults) + 1 : Math.min(maxAdults, Number(c.adults) + 1) }))}
+                      disabled={maxAdults !== null && Number(form.adults) >= maxAdults}
                       className="flex h-11 w-11 items-center justify-center rounded-r-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
                       aria-label="Increase adults"
                     >
@@ -936,7 +945,7 @@ export default function BookingPage() {
                       name="children"
                       type="number"
                       min={0}
-                      max={maxChildren}
+                      max={maxChildren ?? undefined}
                       value={form.children}
                       onChange={handleChange}
                       className="h-11 w-full bg-transparent text-center text-sm font-semibold text-[var(--text)] outline-none"
@@ -944,8 +953,8 @@ export default function BookingPage() {
                     />
                     <button
                       type="button"
-                      onClick={() => setForm((c) => ({ ...c, children: Math.min(maxChildren, Number(c.children) + 1) }))}
-                      disabled={Number(form.children) >= maxChildren}
+                      onClick={() => setForm((c) => ({ ...c, children: maxChildren === null ? Number(c.children) + 1 : Math.min(maxChildren, Number(c.children) + 1) }))}
+                      disabled={maxChildren !== null && Number(form.children) >= maxChildren}
                       className="flex h-11 w-11 items-center justify-center rounded-r-2xl text-lg font-bold text-[var(--text)] transition hover:bg-[var(--surface-strong)] disabled:opacity-40"
                       aria-label="Increase children"
                     >

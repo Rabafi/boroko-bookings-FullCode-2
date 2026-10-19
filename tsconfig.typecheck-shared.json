@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.typecheck-pilot.json",
+  "compilerOptions": {
+    "checkJs": true
+  },
+  "files": [
+    "packages/product-config/index.js",
+    "src/shared/brandIdentity.js",
+    "tests/typecheck/shared-brand/valid.ts"
+  ],
+  "include": []
+}

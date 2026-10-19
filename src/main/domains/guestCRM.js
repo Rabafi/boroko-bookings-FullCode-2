@@ -1,14 +1,16 @@
+// @ts-check
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
 const VIP_CACHE = 'guest-crm-vip-list'
 const NOTES_CACHE_PREFIX = 'guest-crm-notes:'
 
+/** @param {unknown} customerId */
 export async function getGuestCRMProfile(customerId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return null
   if (!customerId) throw new Error('Customer id is required')
-  const { data, error } = await state.supabase.rpc('get_guest_crm_profile', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_guest_crm_profile', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId
   })
@@ -21,7 +23,8 @@ export async function getGuestCRMProfile(customerId) {
   try {
     notes = await listGuestNotes(customerId)
   } catch (e) {
-    notesError = e?.message || 'Could not load CRM notes'
+    const caught = /** @type {Record<string, unknown> | null | undefined} */ (e)
+    notesError = caught?.message || 'Could not load CRM notes'
     notes = []
   }
 
@@ -32,11 +35,12 @@ export async function getGuestCRMProfile(customerId) {
   }
 }
 
+/** @param {unknown} customerId @param {unknown} data */
 export async function updateGuestCRMProfile(customerId, data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!customerId) throw new Error('Customer id is required')
-  const { data: result, error } = await state.supabase.rpc('update_guest_crm_profile', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_guest_crm_profile', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId,
     p_data: data
@@ -46,11 +50,12 @@ export async function updateGuestCRMProfile(customerId, data) {
   return result
 }
 
+/** @param {unknown} customerId @param {unknown} level @param {unknown} [approvedBy] */
 export async function setVipLevel(customerId, level, approvedBy) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!customerId) throw new Error('Customer id is required')
-  const { data: result, error } = await state.supabase.rpc('set_vip_level', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('set_vip_level', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId,
     p_level: level,
@@ -61,12 +66,13 @@ export async function setVipLevel(customerId, level, approvedBy) {
   return result
 }
 
+/** @param {unknown} customerId @param {unknown} key @param {unknown} value */
 export async function addGuestPreference(customerId, key, value) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!customerId) throw new Error('Customer id is required')
   if (!key || !String(key).trim()) throw new Error('Preference key is required')
-  const { data: result, error } = await state.supabase.rpc('add_guest_preference', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_guest_preference', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId,
     p_preference_key: key,
@@ -77,6 +83,7 @@ export async function addGuestPreference(customerId, key, value) {
   return result
 }
 
+/** @param {unknown} customerId @param {unknown} blacklisted @param {unknown} reason */
 export async function setBlacklistStatus(customerId, blacklisted, reason) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -84,7 +91,7 @@ export async function setBlacklistStatus(customerId, blacklisted, reason) {
   if (blacklisted && !String(reason || '').trim()) {
     throw new Error('A reason is required when blacklisting a guest')
   }
-  const { data: result, error } = await state.supabase.rpc('set_blacklist_status', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('set_blacklist_status', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId,
     p_blacklisted: blacklisted,
@@ -95,11 +102,12 @@ export async function setBlacklistStatus(customerId, blacklisted, reason) {
   return result
 }
 
+/** @param {unknown} customerId */
 export async function getGuestStayHistory(customerId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   if (!customerId) throw new Error('Customer id is required')
-  const { data, error } = await state.supabase.rpc('get_guest_stay_history', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_guest_stay_history', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId
   })
@@ -107,11 +115,12 @@ export async function getGuestStayHistory(customerId) {
   return Array.isArray(data) ? data : []
 }
 
+/** @param {unknown} customerId @param {unknown} consentType @param {unknown} granted @param {unknown} [ipAddress] */
 export async function recordGuestConsent(customerId, consentType, granted, ipAddress) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!customerId) throw new Error('Customer id is required')
-  const { data: result, error } = await state.supabase.rpc('record_guest_consent', {
+  const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('record_guest_consent', {
     p_customer_id: customerId,
     p_lodge_id: currentLodgeId,
     p_consent_type: consentType,
@@ -123,10 +132,11 @@ export async function recordGuestConsent(customerId, consentType, granted, ipAdd
   return result
 }
 
+/** @param {unknown} query */
 export async function searchGuestsCRM(query) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
-  const { data, error } = await state.supabase.rpc('search_guests_crm', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('search_guests_crm', {
     p_lodge_id: currentLodgeId,
     p_search: query || ''
   })
@@ -134,16 +144,18 @@ export async function searchGuestsCRM(query) {
   return data?.results || (Array.isArray(data) ? data : [])
 }
 
-async function _getVIPList() {
+/** @param {...unknown} _args */
+async function _getVIPList(..._args) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
-  const { data, error } = await state.supabase.rpc('get_vip_list', { p_lodge_id: currentLodgeId })
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_vip_list', { p_lodge_id: currentLodgeId })
   if (error) throw error
   const list = data?.vip_list || (Array.isArray(data) ? data : [])
   writeCache(VIP_CACHE, list)
   return list
 }
 
+/** @param {...unknown} args */
 export const getVIPList = (...args) => dedupePromise('getVIPList', () => _getVIPList(...args))
 
 /**
@@ -151,6 +163,7 @@ export const getVIPList = (...args) => dedupePromise('getVIPList', () => _getVIP
  * Prefers dedicated RPC; falls back to enterprise_guest_crm_notes via RPC-shaped payload.
  * Never swallows errors into empty success without signalling.
  */
+/** @param {unknown} customerId */
 export async function listGuestNotes(customerId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
@@ -158,7 +171,7 @@ export async function listGuestNotes(customerId) {
 
   // Preferred RPC (may exist on newer deployments).
   try {
-    const { data, error } = await state.supabase.rpc('get_guest_crm_notes', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_guest_crm_notes', {
       p_customer_id: customerId,
       p_lodge_id: currentLodgeId
     })
@@ -172,13 +185,14 @@ export async function listGuestNotes(customerId) {
       throw error
     }
   } catch (e) {
-    if (!/function|does not exist|404|PGRST202/i.test(String(e?.message || ''))) {
+    const caught = /** @type {Record<string, unknown> | null | undefined} */ (e)
+    if (!/function|does not exist|404|PGRST202/i.test(String(caught?.message || ''))) {
       throw e
     }
   }
 
   // Table read fallback through PostgREST (RLS may deny; surface that).
-  const { data, error } = await state.supabase
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase))
     .from('enterprise_guest_crm_notes')
     .select('*')
     .eq('lodge_id', currentLodgeId)
@@ -191,6 +205,7 @@ export async function listGuestNotes(customerId) {
   return notes
 }
 
+/** @param {unknown} customerId @param {unknown} noteText @param {unknown} [noteType] */
 export async function addGuestNote(customerId, noteText, noteType = 'general') {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -205,7 +220,7 @@ export async function addGuestNote(customerId, noteText, noteType = 'general') {
   }
 
   try {
-    const { data: result, error } = await state.supabase.rpc('add_guest_crm_note', {
+    const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_guest_crm_note', {
       p_customer_id: customerId,
       p_lodge_id: currentLodgeId,
       p_note_type: noteType || 'general',
@@ -219,12 +234,13 @@ export async function addGuestNote(customerId, noteText, noteType = 'general') {
       throw error
     }
   } catch (e) {
-    if (!/function|does not exist|404|PGRST202/i.test(String(e?.message || ''))) {
+    const caught = /** @type {Record<string, unknown> | null | undefined} */ (e)
+    if (!/function|does not exist|404|PGRST202/i.test(String(caught?.message || ''))) {
       throw e
     }
   }
 
-  const { data, error } = await state.supabase
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase))
     .from('enterprise_guest_crm_notes')
     .insert({
       lodge_id: currentLodgeId,

@@ -1,3 +1,4 @@
+// @ts-check
 const ERROR_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
 
 /**
@@ -7,6 +8,7 @@ const ERROR_ENDPOINT = import.meta.env.VITE_ANALYTICS_ENDPOINT || ''
  */
 import { telemetryUrl } from './analytics.js'
 
+/** @param {unknown} value */
 function scrub(value) {
   return String(value || '')
     .replace(/[?&](token|session|code)=[^&#]*/gi, '')
@@ -14,11 +16,18 @@ function scrub(value) {
     .slice(0, 1000)
 }
 
+/** @param {unknown} error @param {'message'|'stack'} key @returns {unknown} */
+function readErrorField(error, key) {
+  if (error === null || error === undefined) return undefined
+  return /** @type {Record<string, unknown>} */ (Object(error))[key]
+}
+
+/** @param {unknown} error @param {Record<string, unknown>} [context] */
 function reportError(error, context = {}) {
   const payload = {
     type: 'js_error',
-    message: scrub(error?.message || String(error)),
-    stack: scrub(error?.stack || ''),
+    message: scrub(readErrorField(error, 'message') || String(error)),
+    stack: scrub(readErrorField(error, 'stack') || ''),
     url: telemetryUrl(),
     userAgent: typeof window !== 'undefined' ? window.navigator.userAgent : '',
     context: Object.fromEntries(Object.entries(context).filter(([key]) => !['token', 'session', 'code', 'email', 'phone', 'notes'].includes(key))),
@@ -51,6 +60,7 @@ export function initErrorTracking() {
   })
 }
 
+/** @param {unknown} error @param {Record<string, unknown>} [context] */
 export function captureException(error, context = {}) {
   reportError(error, context)
 }

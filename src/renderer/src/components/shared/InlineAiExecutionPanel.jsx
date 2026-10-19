@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   CheckCircle2,

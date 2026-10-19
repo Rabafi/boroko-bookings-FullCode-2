@@ -42,7 +42,7 @@ test('cash-up submissions reuse a stable per-shift idempotency key so retries re
 test('cash-up feedback persists after staff clock-out and manager approval actions remain reachable', () => {
   assert.doesNotMatch(sharedCashup, /setCash\(''\); setNotice\(''\); setResolvingShift/, 'resetting staff selection must not erase a successful clock-out notice')
   assert.match(sharedCashup, /setError\(''\); setNotice\(''\) \}\} disabled=\{loading \|\| saving\}/, 'selecting another staff member clears stale notices intentionally')
-  assert.match(cashClose, /hpos-cashup-review-card--decision/)
+  assert.match(cashClose, /className="hpos-cashup-review"/)
   assert.match(cashClose, /hpos-cashup-review-actions/)
   assert.match(cashClose, /scrollIntoView\(\{ block: 'end', behavior: 'smooth' \}\)/)
   assert.match(hospitalityPosCss, /\.hpos-cashup-review-actions \{[^}]*scroll-margin-bottom:32px/, 'manager action bar keeps a safe visible scroll target')

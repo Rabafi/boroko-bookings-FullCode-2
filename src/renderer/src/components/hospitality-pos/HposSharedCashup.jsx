@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Banknote, CheckCircle2, LogOut, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
 import { useAuth } from '../../app-context'

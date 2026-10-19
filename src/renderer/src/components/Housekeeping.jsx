@@ -1,7 +1,10 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { CheckCircle, AlertCircle, Clock, RefreshCw, Package2, BarChart3, ClipboardList, Search, ShowerHead, Sparkles, XCircle, AlertTriangle } from 'lucide-react'
 import { useFeatures, useSettings } from '../app-context'
+import { normalizePropertyType } from '../../../shared/propertyTypes.js'
+import { getPropertyPresentation, getPresentationUnitName } from '../../../shared/propertyPresentation.js'
 import { formatLocalDate, localDateStringFromOffset, localToday } from '../utils/localDate'
 import { StatusBadge } from './shared/StatusBadge'
 import { ErrorNotice } from './shared/ErrorNotice'
@@ -118,6 +121,21 @@ function BoardTab() {
   const [loading, setLoading] = useState(true)
 
   const today = localToday()
+  // Unit-aware display only: readiness tasks stay per actual inventory
+  // (rooms, cabins, tents, sites) — never blanket-renamed.
+  const hkPresentation = useMemo(() => {
+    try {
+      return getPropertyPresentation({
+        propertyType: normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge'),
+        accommodationMix: rooms,
+        operatingProfile: settings?.operating_profile
+      })
+    } catch {
+      return null
+    }
+  }, [settings, rooms])
+  const hkUnits = (hkPresentation?.unitNounPlural || 'Rooms').toLowerCase()
+  const hkBoardLabel = hkPresentation?.navHints?.boardLabel || 'Room Board'
   const tomorrow = localDateStringFromOffset(1)
 
   useEffect(() => { loadRooms() }, [])
@@ -292,11 +310,11 @@ function BoardTab() {
             <div>
               <p className="text-sm font-semibold text-amber-900">Arrival Readiness Alert</p>
               <p className="mt-1 text-sm text-amber-800">
-                These rooms have guests arriving today but still show dirty or in-progress housekeeping status.
+                These {hkUnits} have guests arriving today but still show dirty or in-progress readiness status.
               </p>
             </div>
             <button onClick={() => navigate('/roomgrid')} className="btn-secondary text-xs">
-              Open Room Board
+              Open {hkBoardLabel}
             </button>
           </div>
           <div className="mt-3 space-y-2">
@@ -304,7 +322,7 @@ function BoardTab() {
               <div key={booking.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-100 bg-white/80 px-3 py-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-900">
-                    Room {room.room_number} · {booking.customer_name}
+                    {getPresentationUnitName(room)} · {booking.customer_name}
                   </p>
                   <p className="text-xs text-slate-500">
                     Arriving today · {room.room_type || 'Room'} · status {housekeepingStatus === 'in_progress' ? 'in progress' : housekeepingStatus}
@@ -327,7 +345,7 @@ function BoardTab() {
           <div className="col-span-3">
             <div className="bb-empty-state min-h-[220px]">
               <p className="text-base font-semibold text-slate-800">Loading housekeeping board</p>
-              <p className="text-sm text-slate-500">Bringing in room status and notes.</p>
+              <p className="text-sm text-slate-500">Bringing in {hkUnits} status and notes.</p>
             </div>
           </div>
         )}
@@ -350,7 +368,7 @@ function BoardTab() {
               <div className="px-5 py-4">
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <p className="font-semibold text-slate-800">Room {room.room_number}</p>
+                    <p className="font-semibold text-slate-800">{getPresentationUnitName(room)}</p>
                     <p className="text-xs text-slate-400">{room.room_type}</p>
                     {arrivalAttention.some((entry) => String(entry.room.id) === String(room.id)) && (
                       <p className="mt-1 text-[11px] font-semibold text-amber-700">Arrival today needs readiness</p>
@@ -414,8 +432,8 @@ function BoardTab() {
         {!loading && rooms.length === 0 && (
           <div className="col-span-3">
             <div className="bb-empty-state min-h-[240px]">
-              <p className="text-base font-semibold text-slate-800">No rooms found</p>
-              <p className="text-sm text-slate-500">Add rooms first so housekeeping can track readiness and notes.</p>
+              <p className="text-base font-semibold text-slate-800">No {hkUnits} found</p>
+              <p className="text-sm text-slate-500">Add {hkUnits} first so housekeeping can track readiness and notes.</p>
             </div>
           </div>
         )}
@@ -475,6 +493,15 @@ function TurnoverTab() {
         return String(a.room_number || '').localeCompare(String(b.room_number || ''), undefined, { numeric: true })
       })
   }, [arrivalRoomIds, departureRoomIds, query, rooms])
+
+  // Mix-derived wording from the loaded rows (no settings dependency here).
+  const turnoverUnits = (() => {
+    try {
+      return (getPropertyPresentation({ accommodationMix: rooms }).unitNounPlural || 'Rooms').toLowerCase()
+    } catch {
+      return 'rooms'
+    }
+  })()
 
   const counts = HOUSEKEEPING_STATES.reduce((acc, entry) => {
     acc[entry.key] = rooms.filter((room) => (room.housekeeping_status || 'clean') === entry.key).length
@@ -568,7 +595,7 @@ function TurnoverTab() {
                 <div key={room.id} className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-semibold text-slate-900">Room {room.room_number}</p>
+                      <p className="font-semibold text-slate-900">{getPresentationUnitName(room)}</p>
                       <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
                         {room.room_type || 'Room'}
                       </span>
@@ -601,7 +628,7 @@ function TurnoverTab() {
               )
             })}
             {filteredRooms.length === 0 && (
-              <div className="py-14 text-center text-sm text-slate-500">No rooms match this view.</div>
+              <div className="py-14 text-center text-sm text-slate-500">No {turnoverUnits} match this view.</div>
             )}
           </div>
         )}

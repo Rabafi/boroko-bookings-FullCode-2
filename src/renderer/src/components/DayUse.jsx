@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
@@ -171,8 +172,9 @@ export default function DayUse() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
 
-  const [entries, setEntries] = useState([])
-  const [inventoryItems, setInventoryItems] = useState([])
+  // Main forwards database rows without validating either the response container or row fields.
+  const [entries, setEntries] = useState(/** @type {unknown} */ ([]))
+  const [inventoryItems, setInventoryItems] = useState(/** @type {unknown} */ ([]))
   const [loading, setLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState(today())
   const [showForm, setShowForm] = useState(false)

@@ -1,34 +1,56 @@
+// @ts-check
 const MONEY_EPSILON = 0.005
 
+/** @typedef {{gross_sales: number, discounts: number, tax: number, tips: number, returns: number, net_recorded_sales: number, completed_sale_count: number, return_count: number, void_count: number, cancelled_count: number, pending_count: number, failed_manual_review_count: number, tender_totals: Record<string, number>, average_completed_sale?: number, dataset_row_count?: number, dataset_complete?: boolean, dataset_status?: string, money_tolerance?: number}} PosControls */
+
+/** @param {unknown} value @param {string} key @returns {unknown} */
+function readField(value, key) {
+  if (value === null || value === undefined) {
+    throw new TypeError(`Cannot read properties of ${value} (reading '${key}')`)
+  }
+  return Reflect.get(Object(value), key, value)
+}
+
+/** @param {unknown} values @param {(value: unknown, index: number, values: unknown) => unknown} mapper @returns {unknown} */
+function mapItems(values, mapper) {
+  const mapMethod = readField(values, 'map')
+  if (typeof mapMethod !== 'function') throw new TypeError('items.map is not a function')
+  return Reflect.apply(mapMethod, values, [mapper])
+}
+
+/** @param {unknown} value @returns {number} */
 function number(value) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+/** @param {unknown} value @returns {number} */
 function roundMoney(value) {
   return Math.round((number(value) + Number.EPSILON) * 100) / 100
 }
 
+/** @param {unknown} value @returns {unknown[]} */
 function parseBreakdown(value) {
-  if (Array.isArray(value)) return value
+  if (Array.isArray(value)) return /** @type {unknown[]} */ (value)
   if (typeof value === 'string' && value.trim()) {
     try {
-      const parsed = JSON.parse(value)
-      return Array.isArray(parsed) ? parsed : []
+      const parsed = /** @type {unknown} */ (JSON.parse(value))
+      return Array.isArray(parsed) ? /** @type {unknown[]} */ (parsed) : []
     } catch {}
   }
   return []
 }
 
+/** @param {unknown} [order] @returns {'pending' | 'cancelled' | 'void' | 'failed/manual review' | 'return' | 'sale'} */
 export function classifyPosTransaction(order = {}) {
-  const status = String(order.status || '').toLowerCase()
-  const syncState = String(order._sync_state || '').toLowerCase()
-  const transactionType = String(order.transaction_type || '').toLowerCase()
-  if (['pending', 'failed', 'manual_review_required'].includes(syncState) || order._pending_sync === true) return 'pending'
+  const status = String(readField(order, 'status') || '').toLowerCase()
+  const syncState = String(readField(order, '_sync_state') || '').toLowerCase()
+  const transactionType = String(readField(order, 'transaction_type') || '').toLowerCase()
+  if (['pending', 'failed', 'manual_review_required'].includes(syncState) || readField(order, '_pending_sync') === true) return 'pending'
   if (status === 'cancelled' || transactionType === 'cancelled') return 'cancelled'
   if (status === 'voided' || transactionType === 'void') return 'void'
   if (status === 'failed' || syncState === 'failed') return 'failed/manual review'
-  if (transactionType === 'return' || number(order.total) < 0) return 'return'
+  if (transactionType === 'return' || number(readField(order, 'total')) < 0) return 'return'
   // A missing status is not evidence of a posted sale.  Historical rows with
   // no status must remain visible for investigation, but must never enter a
   // certified financial total.
@@ -36,18 +58,21 @@ export function classifyPosTransaction(order = {}) {
   return 'failed/manual review'
 }
 
+/** @param {unknown} [order] */
 export function posTenderRows(order = {}) {
-  const parsed = parseBreakdown(order.payment_breakdown)
-  return parsed.map((row, index) => ({
-    tender_id: String(row.tender_id || row.id || `${order.id || 'order'}:${index}`),
+  const parsed = parseBreakdown(readField(order, 'payment_breakdown'))
+  return parsed.map((rawRow, index) => {
+    return ({
+    tender_id: String(readField(rawRow, 'tender_id') || readField(rawRow, 'id') || `${readField(order, 'id') || 'order'}:${index}`),
     tender_index: index,
-    method: String(row.method || row.type || order.payment_method || 'unknown').toLowerCase(),
-    amount: roundMoney(row.amount),
-    customer_id: row.customer_id || row.customer_account_id || null,
-    voucher_id: row.voucher_id || null,
-    reference: row.reference || row.approval_code || null,
-    payload: row
-  }))
+    method: String(readField(rawRow, 'method') || readField(rawRow, 'type') || readField(order, 'payment_method') || 'unknown').toLowerCase(),
+    amount: roundMoney(readField(rawRow, 'amount')),
+    customer_id: readField(rawRow, 'customer_id') || readField(rawRow, 'customer_account_id') || null,
+    voucher_id: readField(rawRow, 'voucher_id') || null,
+    reference: readField(rawRow, 'reference') || readField(rawRow, 'approval_code') || null,
+    payload: rawRow
+    })
+  })
 }
 
 /**
@@ -56,42 +81,58 @@ export function posTenderRows(order = {}) {
  * envelope. Older rows without payment_breakdown remain visible for review,
  * but must never be turned into a synthetic cash/card payment.
  */
+/** @param {unknown} [order] @returns {boolean} */
 export function hasRecordedPosTenderEnvelope(order = {}) {
-  const parsed = parseBreakdown(order.payment_breakdown)
+  const parsed = parseBreakdown(readField(order, 'payment_breakdown'))
   if (parsed.length === 0) return false
-  if (parsed.some((row) => !row || !String(row.method || row.type || '').trim() || !Number.isFinite(Number(row.amount)))) return false
-  const expected = roundMoney(order.total)
-  const actual = roundMoney(parsed.reduce((sum, row) => sum + Number(row.amount), 0))
+  /** @param {unknown} rawRow */
+  const malformed = (rawRow) => {
+    return !rawRow || !String(readField(rawRow, 'method') || readField(rawRow, 'type') || '').trim() || !Number.isFinite(Number(readField(rawRow, 'amount')))
+  }
+  if (parsed.some(malformed)) return false
+  const expected = roundMoney(readField(order, 'total'))
+  const actual = roundMoney(parsed.reduce(
+    /** @param {number} sum @param {unknown} rawRow @returns {number} */
+    (sum, rawRow) => sum + Number(readField(rawRow, 'amount')),
+    0,
+  ))
   return Math.abs(expected - actual) <= MONEY_EPSILON
 }
 
+/** @param {unknown} [order] */
 export function posItemSnapshotRows(order = {}) {
-  const items = Array.isArray(order.pos_order_items) ? order.pos_order_items : (Array.isArray(order.items) ? order.items : [])
-  return items.map((item) => ({
-    order_id: order.id || null,
-    item_id: item.id || null,
-    item_name: item.item_name || item.name || '',
-    quantity: number(item.quantity),
-    unit_price: roundMoney(item.unit_price ?? item.price),
+  const items = Array.isArray(readField(order, 'pos_order_items'))
+    ? readField(order, 'pos_order_items')
+    : (Array.isArray(readField(order, 'items')) ? readField(order, 'items') : [])
+  return mapItems(items, (rawItem, index) => {
+    return ({
+    order_id: readField(order, 'id') || null,
+    item_id: readField(rawItem, 'id') || null,
+    item_name: readField(rawItem, 'item_name') || readField(rawItem, 'name') || '',
+    quantity: number(readField(rawItem, 'quantity')),
+    unit_price: roundMoney(readField(rawItem, 'unit_price') ?? readField(rawItem, 'price')),
     // Quantity × unit price is a pricing estimate, not a posted line amount.
     // Keep it null when the persisted subtotal is absent so downstream reports
     // can fail closed instead of presenting reconstructed money as fact.
-    gross: item.gross_subtotal === null || item.gross_subtotal === undefined || item.gross_subtotal === ''
+    gross: readField(rawItem, 'gross_subtotal') === null || readField(rawItem, 'gross_subtotal') === undefined || readField(rawItem, 'gross_subtotal') === ''
       ? null
-      : roundMoney(item.gross_subtotal),
-    discount: roundMoney(item.discount_allocated ?? item.discount_total ?? 0),
-    tax: roundMoney(item.tax_allocated ?? item.tax_total ?? 0),
-    net: item.net_subtotal === null || item.net_subtotal === undefined || item.net_subtotal === ''
-      ? (item.subtotal === null || item.subtotal === undefined || item.subtotal === '' ? null : roundMoney(item.subtotal))
-      : roundMoney(item.net_subtotal),
-    cost: item.cost_snapshot === null || item.cost_snapshot === undefined || item.cost_snapshot === ''
-      ? (item.total_cost === null || item.total_cost === undefined || item.total_cost === '' ? null : roundMoney(item.total_cost))
-      : roundMoney(item.cost_snapshot),
-    inventory_item_id: item.inventory_item_id || null
-  }))
+      : roundMoney(readField(rawItem, 'gross_subtotal')),
+    discount: roundMoney(readField(rawItem, 'discount_allocated') ?? readField(rawItem, 'discount_total') ?? 0),
+    tax: roundMoney(readField(rawItem, 'tax_allocated') ?? readField(rawItem, 'tax_total') ?? 0),
+    net: readField(rawItem, 'net_subtotal') === null || readField(rawItem, 'net_subtotal') === undefined || readField(rawItem, 'net_subtotal') === ''
+      ? (readField(rawItem, 'subtotal') === null || readField(rawItem, 'subtotal') === undefined || readField(rawItem, 'subtotal') === '' ? null : roundMoney(readField(rawItem, 'subtotal')))
+      : roundMoney(readField(rawItem, 'net_subtotal')),
+    cost: readField(rawItem, 'cost_snapshot') === null || readField(rawItem, 'cost_snapshot') === undefined || readField(rawItem, 'cost_snapshot') === ''
+      ? (readField(rawItem, 'total_cost') === null || readField(rawItem, 'total_cost') === undefined || readField(rawItem, 'total_cost') === '' ? null : roundMoney(readField(rawItem, 'total_cost')))
+      : roundMoney(readField(rawItem, 'cost_snapshot')),
+    inventory_item_id: readField(rawItem, 'inventory_item_id') || null
+    })
+  })
 }
 
+/** @param {unknown} [orders] @param {{dataset_complete?: unknown}} [source] */
 export function calculatePosFinancialTruth(orders = [], source = {}) {
+  /** @type {PosControls} */
   const controls = {
     gross_sales: 0,
     discounts: 0,
@@ -105,15 +146,19 @@ export function calculatePosFinancialTruth(orders = [], source = {}) {
     cancelled_count: 0,
     pending_count: 0,
     failed_manual_review_count: 0,
-    tender_totals: {}
+    tender_totals: /** @type {Record<string, number>} */ ({})
   }
-  const rows = (Array.isArray(orders) ? orders : []).map((order) => {
+  const rawOrders = Array.isArray(orders) ? /** @type {unknown[]} */ (orders) : []
+  const rows = rawOrders.map((rawOrder) => {
+    // Preserve the current direct object processing; malformed entries retain
+    // their existing runtime behavior rather than being silently discarded.
+    const order = rawOrder
     const classification = classifyPosTransaction(order)
-    const total = roundMoney(order.total)
-    const gross = roundMoney(order.gross_total ?? (total > 0 ? total : 0))
-    const discount = roundMoney(order.discount_total ?? 0)
-    const tax = roundMoney(order.tax_total ?? 0)
-    const tip = roundMoney(order.tip_total ?? 0)
+    const total = roundMoney(readField(order, 'total'))
+    const gross = roundMoney(readField(order, 'gross_total') ?? (total > 0 ? total : 0))
+    const discount = roundMoney(readField(order, 'discount_total') ?? 0)
+    const tax = roundMoney(readField(order, 'tax_total') ?? 0)
+    const tip = roundMoney(readField(order, 'tip_total') ?? 0)
     if (classification === 'sale') {
       controls.gross_sales += gross
       controls.discounts += discount
@@ -147,17 +192,17 @@ export function calculatePosFinancialTruth(orders = [], source = {}) {
       }
     }
     return {
-      ...order,
+      ...Object(order),
       classification,
-      business_date: order.business_date || String(order.created_at || '').slice(0, 10) || null,
-      technical_created_at: order.created_at || null,
-      transaction_type: order.transaction_type || (classification === 'return' ? 'return' : 'sale'),
+      business_date: readField(order, 'business_date') || String(readField(order, 'created_at') || '').slice(0, 10) || null,
+      technical_created_at: readField(order, 'created_at') || null,
+      transaction_type: readField(order, 'transaction_type') || (classification === 'return' ? 'return' : 'sale'),
       tender_envelope_complete: tenderEnvelopeComplete,
       tender_rows: posTenderRows(order),
       item_rows: posItemSnapshotRows(order)
     }
   })
-  for (const key of ['gross_sales', 'discounts', 'tax', 'tips', 'returns', 'net_recorded_sales']) controls[key] = roundMoney(controls[key])
+  for (const key of /** @type {Array<keyof Pick<PosControls, 'gross_sales' | 'discounts' | 'tax' | 'tips' | 'returns' | 'net_recorded_sales'>>} */ (['gross_sales', 'discounts', 'tax', 'tips', 'returns', 'net_recorded_sales'])) controls[key] = roundMoney(controls[key])
   for (const key of Object.keys(controls.tender_totals)) controls.tender_totals[key] = roundMoney(controls.tender_totals[key])
   controls.average_completed_sale = controls.completed_sale_count
     ? roundMoney((controls.net_recorded_sales + controls.returns) / controls.completed_sale_count)
@@ -172,6 +217,7 @@ export function calculatePosFinancialTruth(orders = [], source = {}) {
   return { rows, controls }
 }
 
+/** @param {unknown} [order] @returns {boolean} */
 export function assertPosTenderTotal(order = {}) {
   return hasRecordedPosTenderEnvelope(order)
 }

@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, CircleDollarSign, ClipboardList, Clock3, KeyRound, LogIn, LogOut, MessageSquareHeart, RefreshCw, ShieldCheck, Store, WalletCards, ShieldAlert } from 'lucide-react'
 import { useAccess, useAuth, useSettings } from '../../app-context'
@@ -7,6 +8,11 @@ import { classifyPosTransaction } from '../../../../shared/posFinancialTruth'
 import { summarizeWasteMovements } from '../../../../shared/wasteSummary'
 import { unpackTransport } from '../../transportUnpack'
 import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
+
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 function formatTime(value) {
   if (!value) return '—'
@@ -177,11 +183,13 @@ export default function HposMyShift() {
         : Promise.resolve(null),
     ]).then(([history, tabRows, movements]) => {
       if (!active) return
-      const allOrders = unpackTransport(history?.orders) || []
+      const historyRecord = isRecord(history) ? history : null
+      const unpackedOrders = unpackTransport(historyRecord?.orders)
+      const allOrders = Array.isArray(unpackedOrders) ? unpackedOrders.filter(isRecord) : []
       const shiftOrders = allOrders.filter((order) => order?.shift_id
         ? String(order.shift_id) === String(shift.id)
         : openedAt && String(order?.created_at || '') >= String(openedAt))
-      const tabs = (Array.isArray(tabRows) ? tabRows : [])
+      const tabs = (Array.isArray(tabRows) ? tabRows.filter(isRecord) : [])
         .filter((row) => !['closed', 'paid', 'cancelled', 'voided'].includes(String(row.status || '').toLowerCase()))
         .filter((row) => !row.outlet_id || !shift.outlet_id || String(row.outlet_id) === String(shift.outlet_id))
         .map((row) => ({
@@ -190,8 +198,10 @@ export default function HposMyShift() {
         }))
       let wasteText = 'None recorded'
       let wasteReady = false
-      if (canHandoverWaste && movements?.complete === true && movements?.source === 'server') {
-        const rows = (movements.rows || []).filter((row) => !openedAt || String(row?.created_at || '') >= String(openedAt))
+      const movementRecord = isRecord(movements) ? movements : null
+      if (canHandoverWaste && movementRecord?.complete === true && movementRecord?.source === 'server') {
+        const movementRows = Array.isArray(movementRecord.rows) ? movementRecord.rows.filter(isRecord) : []
+        const rows = movementRows.filter((row) => !openedAt || String(row.created_at || '') >= String(openedAt))
         const summary = summarizeWasteMovements(rows)
         wasteReady = true
         wasteText = summary.totalEntries
@@ -201,7 +211,7 @@ export default function HposMyShift() {
       }
       setHandover({
         salesCount: shiftOrders.filter((order) => classifyPosTransaction(order) === 'sale').length,
-        salesReady: history?.complete === true && history?.source === 'server',
+        salesReady: historyRecord?.complete === true && historyRecord?.source === 'server',
         tabs,
         tabsReady: Array.isArray(tabRows),
         wasteText,

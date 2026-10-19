@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Operator-facing product vocabulary.
  * Internal fields may still use lodge_id / lodge_name; UI must not.
@@ -6,10 +7,12 @@
 import { getProductDefinition, getRuntimeProductId } from './productIdentity.js'
 import { isBarOnlyMode, isRestaurantOnly, normalizePropertyType } from './propertyTypes.js'
 
+/** @param {Record<string, string>} base @returns {Readonly<Record<string, string>>} */
 function freezeVocab(base) {
   return Object.freeze(base)
 }
 
+/** @param {{id: string, brandName?: string, name?: string}} product @param {{noun: string, nounTitle: string, nounPlural: string, slug: string, fullPropertyLabel?: string, emailLocal?: string, websiteSlug?: string | null}} options */
 function accommodationVocab(product, {
   noun,
   nounTitle,
@@ -45,6 +48,7 @@ function accommodationVocab(product, {
 }
 
 /** Property-type language for accommodation products (Lodge app and Hotel app). */
+/** @param {{id: string, brandName?: string, name?: string}} product @param {unknown} propertyType */
 export function getAccommodationVocabulary(product, propertyType) {
   const type = normalizePropertyType(propertyType)
   switch (type) {
@@ -111,6 +115,7 @@ export function getAccommodationVocabulary(product, propertyType) {
   }
 }
 
+/** @param {{productId?: unknown, propertyType?: unknown, settings?: (Record<string, unknown> & {lodge_name?: string | null, company_name?: string | null}) | null}} [input] */
 export function getUiVocabulary({
   productId = getRuntimeProductId(),
   propertyType = null,
@@ -188,6 +193,7 @@ export function getUiVocabulary({
 }
 
 /** Display name for a company/settings row without leaking internal keys. */
+/** @param {(Record<string, unknown> & {lodge_name?: string | null, company_name?: string | null}) | null} [settings] @param {ReturnType<typeof getUiVocabulary>} [vocab] */
 export function getBusinessDisplayName(settings = {}, vocab = getUiVocabulary({ settings })) {
   return settings?.lodge_name?.trim()
     || settings?.company_name?.trim()

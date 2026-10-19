@@ -1,3 +1,5 @@
+// @ts-check
+/** @param {unknown} raw @param {{restaurantMode?: boolean}} [options] @returns {string} */
 export function sanitizeForOperator(raw, { restaurantMode = false } = {}) {
   if (!raw) return 'Unknown sync failure'
   const msg = String(raw)

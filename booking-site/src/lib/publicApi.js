@@ -1,3 +1,4 @@
+// @ts-check
 const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '')
 const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '')
 const rpcBaseUrl = supabaseUrl ? `${supabaseUrl}/rest/v1/rpc` : ''
@@ -15,16 +16,18 @@ const BOOKING_SUBMISSION_LIMIT = 6
 const BOOKING_SUBMISSION_WINDOW_MS = 60 * 60 * 1000
 const RATE_LIMIT_KEY = 'boroko:booking_submissions'
 
+/** @returns {number[]} */
 function readRateLimitTimestamps() {
   try {
     const raw = localStorage.getItem(RATE_LIMIT_KEY)
-    const parsed = JSON.parse(raw)
+    const parsed = JSON.parse(/** @type {string} */ (raw))
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
 }
 
+/** @param {number[]} timestamps */
 function writeRateLimitTimestamps(timestamps) {
   try {
     localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(timestamps))
@@ -49,6 +52,7 @@ function checkBookingSubmissionRateLimit() {
 // Pending confirmation emails are stored in localStorage and retried on page load.
 const EMAIL_QUEUE_KEY = 'boroko:pending_emails'
 
+/** @param {unknown} payload */
 export function queueConfirmationEmail(payload) {
   if (!EMAIL_FUNCTION_URL) return
   try {
@@ -95,14 +99,23 @@ export async function flushPendingEmails() {
   }
 }
 
+/** @param {string} key */
 function cacheKey(key) {
   return `${cachePrefix}${key}`
 }
 
+/** @param {unknown} message @param {number} [status] */
 function normalizeError(message, status = 0) {
   return { message, status }
 }
 
+/** @param {unknown} value @param {'message'|'name'} key @returns {unknown} */
+function errorField(value, key) {
+  if (value === null || value === undefined) return undefined
+  return /** @type {Record<string, unknown>} */ (Object(value))[key]
+}
+
+/** @param {Response} response @returns {Promise<unknown|null>} */
 async function parseJsonResponse(response) {
   const text = await response.text()
   if (!text) return null
@@ -113,6 +126,7 @@ async function parseJsonResponse(response) {
   }
 }
 
+/** @param {string} functionName @param {unknown} [payload] @param {{signal?:AbortSignal}} [options] */
 export async function rpc(functionName, payload = {}, options = {}) {
   if (!rpcBaseUrl || !anonKey) {
     return {
@@ -126,9 +140,10 @@ export async function rpc(functionName, payload = {}, options = {}) {
     try {
       checkBookingSubmissionRateLimit()
     } catch (e) {
+      const message = errorField(e, 'message')
       return {
         data: null,
-        error: normalizeError(e.message)
+        error: normalizeError(message)
       }
     }
   }
@@ -146,12 +161,15 @@ export async function rpc(functionName, payload = {}, options = {}) {
     })
 
     const data = await parseJsonResponse(response)
+    const dataRecord = data && typeof data === 'object'
+      ? /** @type {Record<string, unknown>} */ (data)
+      : null
 
     if (!response.ok) {
       return {
         data: null,
         error: normalizeError(
-          data?.message || data?.error || `Request failed (${response.status})`,
+          dataRecord?.message || dataRecord?.error || `Request failed (${response.status})`,
           response.status
         )
       }
@@ -159,17 +177,18 @@ export async function rpc(functionName, payload = {}, options = {}) {
 
     return { data, error: null }
   } catch (error) {
-    if (error?.name === 'AbortError') {
+    if (errorField(error, 'name') === 'AbortError') {
       return { data: null, error: normalizeError('Request cancelled.') }
     }
 
     return {
       data: null,
-      error: normalizeError(error?.message || 'Network error.')
+      error: normalizeError(errorField(error, 'message') || 'Network error.')
     }
   }
 }
 
+/** @param {string} key @param {number} maxAgeMs @returns {unknown|null} */
 export function readSessionCache(key, maxAgeMs) {
   if (typeof window === 'undefined') return null
 
@@ -178,7 +197,7 @@ export function readSessionCache(key, maxAgeMs) {
     if (!raw) return null
 
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed.savedAt !== 'number') return null
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.savedAt !== 'number') return null
 
     if (Date.now() - parsed.savedAt > maxAgeMs) {
       window.sessionStorage.removeItem(cacheKey(key))
@@ -191,6 +210,7 @@ export function readSessionCache(key, maxAgeMs) {
   }
 }
 
+/** @param {string} key @param {unknown} data */
 export function writeSessionCache(key, data) {
   if (typeof window === 'undefined') return
 
@@ -207,7 +227,8 @@ export function writeSessionCache(key, data) {
   }
 }
 
+/** @param {unknown} error */
 export function isMissingRpcError(error) {
-  const message = String(error?.message || '').toLowerCase()
+  const message = String(errorField(error, 'message') || '').toLowerCase()
   return message.includes('function') && (message.includes('does not exist') || message.includes('not found'))
 }

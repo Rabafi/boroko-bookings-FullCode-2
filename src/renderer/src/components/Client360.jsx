@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { Building2, CreditCard, LifeBuoy, Activity, Server, FileText, Clock, CheckCircle, AlertTriangle, AlertCircle, XCircle, RefreshCw, Mail, Phone, MapPin, Calendar, TrendingUp, Users, ArrowLeft, Banknote } from 'lucide-react'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'

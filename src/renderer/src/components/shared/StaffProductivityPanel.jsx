@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3, RefreshCw } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
@@ -16,6 +17,7 @@ function defaultEndDate() {
   return new Date().toISOString().slice(0, 10)
 }
 
+/** @param {unknown} value */
 function isValidDay(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) && !Number.isNaN(new Date(String(value)).getTime())
 }
@@ -25,14 +27,18 @@ function isValidDay(value) {
  * so the Starter-visible lodge surface does not depend on the hotel-only
  * StaffOperations workspace.
  */
+/** @param {unknown} metrics */
 export function rollupStaffProductivity(metrics = []) {
   const grouped = new Map()
   for (const metric of Array.isArray(metrics) ? metrics : []) {
     if (!metric || typeof metric !== 'object') continue
-    const name = String(metric.staff_name || metric.user_name || 'Unknown').trim() || 'Unknown'
-    const key = String(metric.staff_id || name)
+    // The existing object guard permits property reads; it does not validate
+    // any field or the RPC row's shape.
+    const metricFields = /** @type {Record<string, unknown>} */ (metric)
+    const name = String(metricFields.staff_name || metricFields.user_name || 'Unknown').trim() || 'Unknown'
+    const key = String(metricFields.staff_id || name)
     const row = grouped.get(key) || {
-      staff_id: metric.staff_id || null,
+      staff_id: metricFields.staff_id || null,
       staff_name: name,
       days: 0,
       completed: 0,
@@ -43,14 +49,14 @@ export function rollupStaffProductivity(metrics = []) {
       ratingTotal: 0,
       ratingDays: 0
     }
-    const completed = Math.max(0, Number(metric.tasks_completed) || 0)
-    const onTime = Math.min(completed, Math.max(0, Number(metric.tasks_on_time) || 0))
-    const avgTime = Number(metric.avg_completion_time_minutes)
-    const rating = Number(metric.rating)
+    const completed = Math.max(0, Number(metricFields.tasks_completed) || 0)
+    const onTime = Math.min(completed, Math.max(0, Number(metricFields.tasks_on_time) || 0))
+    const avgTime = Number(metricFields.avg_completion_time_minutes)
+    const rating = Number(metricFields.rating)
     row.days += 1
     row.completed += completed
     row.onTime += onTime
-    row.incidents += Math.max(0, Number(metric.incidents) || 0)
+    row.incidents += Math.max(0, Number(metricFields.incidents) || 0)
     if (Number.isFinite(avgTime) && completed > 0) {
       row.timeTotal += avgTime * completed
       row.timeTasks += completed
@@ -83,13 +89,13 @@ export default function StaffProductivityPanel() {
 
   const [startDate, setStartDate] = useState(defaultStartDate)
   const [endDate, setEndDate] = useState(defaultEndDate)
-  const [data, setData] = useState({ metrics: [], summary: {} })
+  const [data, setData] = useState(/** @type {{ metrics: unknown[], summary: unknown }} */ ({ metrics: [], summary: {} }))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string | null} */ (null))
 
   const canView = canAccessCapability(access, 'staff.view') || canAccessCapability(access, 'workforce_scheduling.view')
 
-  const load = useCallback(async (from, to) => {
+  const load = useCallback(async (/** @type {string} */ from, /** @type {string} */ to) => {
     if (!isValidDay(from) || !isValidDay(to)) {
       setError('Pick a valid from/to date to load performance data.')
       return

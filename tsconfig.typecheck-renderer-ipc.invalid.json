@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.typecheck-renderer-ipc.json",
+  "files": [
+    "src/renderer/src/types/desktop-api.d.ts",
+    "tests/typecheck/renderer-desktop-api/invalid.ts"
+  ],
+  "include": []
+}

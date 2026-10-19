@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import { Building2, Phone, Mail, MapPin, Globe, Hash, CheckCircle, Upload, Image, X, User, Lock, Eye, EyeOff, Home, BedDouble, Tent, Car, Hotel, Palmtree, UtensilsCrossed, Wine } from 'lucide-react'
@@ -5,6 +6,7 @@ import { useProfiles } from '../app-context'
 import { productLogoLight } from '../assets/productLogos'
 import { HOSPITALITY_MODES, PROPERTY_TYPE_ORDER, PROPERTY_TYPE_LABELS, PROPERTY_TYPE_DESCRIPTIONS, propertyTypeToBusinessType } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { getPropertyPresentation, toSupportedLodgingType } from '../../../shared/propertyPresentation'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
 import { ErrorNotice } from './shared/ErrorNotice'
 
@@ -396,10 +398,18 @@ export default function Setup({ onComplete }) {
     restaurant: UtensilsCrossed
   }
 
-  const draftLabel = IS_LODGE_PRODUCT ? 'Draft Lodge Profile' : `Draft ${BUSINESS_NOUN_TITLE} profile`
-  const draftName = IS_LODGE_PRODUCT ? 'New Lodge' : `New ${BUSINESS_NOUN_TITLE}`
+  // Property-neutral until a type is chosen; known-type nouns after.
+  // Stable internal ids (property_type values) never change — labels only.
+  const setupKnownType = IS_LODGE_PRODUCT ? toSupportedLodgingType(form.property_type) : null
+  const setupBusinessLabel = setupKnownType ? getPropertyPresentation({ propertyType: setupKnownType }).businessLabel : 'Property'
+  const draftLabel = IS_LODGE_PRODUCT
+    ? (setupKnownType ? `Draft ${setupBusinessLabel} Profile` : 'Draft Property Profile')
+    : `Draft ${BUSINESS_NOUN_TITLE} profile`
+  const draftName = IS_LODGE_PRODUCT
+    ? (setupKnownType ? `New ${setupBusinessLabel}` : 'New property')
+    : `New ${BUSINESS_NOUN_TITLE}`
   const nameLabel = IS_LODGE_PRODUCT
-    ? 'Property / Lodge Name *'
+    ? (setupKnownType ? `${setupBusinessLabel} name *` : 'Property name *')
     : IS_HOTEL_PRODUCT
       ? 'Hotel name *'
       : hospitalityMode === HOSPITALITY_MODES.BAR_ONLY
@@ -413,7 +423,9 @@ export default function Setup({ onComplete }) {
         ? 'e.g. Town Bar, Corner Pub, Shebeen...'
         : 'e.g. River Bistro, Delta Grill...'
   const nameHelp = IS_LODGE_PRODUCT
-    ? 'The name of your lodge as it will appear on receipts'
+    ? (setupKnownType
+      ? `The name of your ${setupBusinessLabel.toLowerCase()} as it will appear on receipts`
+      : 'The name of your property as it will appear on receipts')
     : IS_HOTEL_PRODUCT
       ? 'Shown on folios, receipts, night audit and guest documents'
       : `The name of your ${BUSINESS_NOUN} as it will appear on receipts`
@@ -421,7 +433,7 @@ export default function Setup({ onComplete }) {
     ? 'e.g. Cresta Hospitality (Pty) Ltd'
     : IS_HOSPITALITY_POS_PRODUCT
       ? 'e.g. River Bistro (Pty) Ltd'
-      : 'e.g. Sunset Lodge (Pty) Ltd'
+      : (setupKnownType ? `e.g. Sunset ${setupBusinessLabel} (Pty) Ltd` : 'e.g. Sunset Property (Pty) Ltd')
   const emailPlaceholder = IS_HOTEL_PRODUCT
     ? 'reservations@yourhotel.com'
     : IS_HOSPITALITY_POS_PRODUCT
@@ -438,7 +450,7 @@ export default function Setup({ onComplete }) {
       ? 'owner@yourrestaurant.com'
       : 'admin@yourlodge.com'
   const backChooserLabel = IS_LODGE_PRODUCT
-    ? '← Back to Lodge Chooser'
+    ? '← Back to Property Chooser'
     : IS_HOTEL_PRODUCT
       ? '← Back to hotel chooser'
       : '← Back to restaurant chooser'

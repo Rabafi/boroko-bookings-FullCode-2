@@ -1,3 +1,4 @@
+// @ts-check
 import { useState, useEffect, useCallback } from 'react'
 import { BarChart3, TrendingUp, TrendingDown, AlertTriangle, Clock, DollarSign, Users, Server, LifeBuoy, Bell, Building2, Rocket, CheckCircle, XCircle, ArrowUpRight } from 'lucide-react'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
@@ -47,10 +48,12 @@ function MiniBar({ label, current, max, color = 'bg-purple-500' }) {
 }
 
 export default function ExecutiveCockpit({ companies, licenses, tickets, activityLogs }) {
-  const [invoices, setInvoices] = useState([])
-  const [expenses, setExpenses] = useState([])
-  const [leads, setLeads] = useState([])
-  const [fleetSummary, setFleetSummary] = useState(null)
+  // Existing Array.isArray checks prove only container shape; row values stay unknown.
+  const [invoices, setInvoices] = useState(/** @type {unknown[]} */ ([]))
+  const [expenses, setExpenses] = useState(/** @type {unknown[]} */ ([]))
+  // The leads fallback accepts any truthy `leadData.leads` value without a guard.
+  const [leads, setLeads] = useState(/** @type {unknown} */ ([]))
+  const [fleetSummary, setFleetSummary] = useState(/** @type {unknown} */ (null))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [loadWarnings, setLoadWarnings] = useState(null)

@@ -1,8 +1,18 @@
+// @ts-check
 import { state } from '../state.js'
 import { dedupePromise } from './infrastructure.js'
 
 const CACHE_KEY = 'abandoned-payments'
 
+/**
+ * Passes caller values to the authoritative RPC without locally interpreting them.
+ * @param {unknown} bookingId
+ * @param {unknown} amount
+ * @param {unknown} provider
+ * @param {unknown} sessionToken
+ * @param {unknown} expiresAt
+ * @returns {Promise<unknown>}
+ */
 async function _logAbandonedSession(bookingId, amount, provider, sessionToken, expiresAt) {
   const { data, error } = await state.supabase.rpc('log_abandoned_session', {
     p_lodge_id: state.lodgeId,
@@ -16,10 +26,12 @@ async function _logAbandonedSession(bookingId, amount, provider, sessionToken, e
   return data
 }
 
+/** @param {unknown} bookingId @param {unknown} amount @param {unknown} provider @param {unknown} sessionToken @param {unknown} expiresAt @returns {Promise<unknown>} */
 export function logAbandonedSession(bookingId, amount, provider, sessionToken, expiresAt) {
   return dedupePromise('logAbandonedSession', () => _logAbandonedSession(bookingId, amount, provider, sessionToken, expiresAt))
 }
 
+/** @param {unknown} statusFilter @returns {Promise<unknown>} */
 async function _getAbandonedSessions(statusFilter) {
   const { data, error } = await state.supabase.rpc('get_abandoned_sessions', {
     p_lodge_id: state.lodgeId,
@@ -29,10 +41,12 @@ async function _getAbandonedSessions(statusFilter) {
   return data
 }
 
+/** @param {unknown} statusFilter @returns {Promise<unknown>} */
 export function getAbandonedSessions(statusFilter) {
   return dedupePromise('getAbandonedSessions', () => _getAbandonedSessions(statusFilter))
 }
 
+/** @param {unknown} sessionToken @returns {Promise<unknown>} */
 async function _recoverSession(sessionToken) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   if (!sessionToken) throw new Error('Session token is required')
@@ -68,6 +82,7 @@ async function _recoverSession(sessionToken) {
   }
 }
 
+/** @param {unknown} sessionToken @returns {Promise<unknown>} */
 export function recoverSession(sessionToken) {
   return dedupePromise('recoverSession', () => _recoverSession(sessionToken))
 }

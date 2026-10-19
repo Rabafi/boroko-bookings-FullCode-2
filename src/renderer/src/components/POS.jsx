@@ -1,3 +1,4 @@
+// @ts-check
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Pencil, Trash2, ShoppingCart, X, ChevronDown, ChevronUp, Scan, Eye, EyeOff, Keyboard, Printer, BadgePercent, ReceiptText, Calculator, RefreshCw, Monitor, Utensils, FileSpreadsheet, FileDown, Star } from 'lucide-react'
 import { Modal } from './shared/Modal'
@@ -33,14 +34,158 @@ const POS_FAVOURITES_MAX = 30
 const POS_COMPACT_CART_THRESHOLD = 20
 const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
 
+/** Local consumer expectations; IPC, cache, and RPC values are not runtime-validated by these typedefs. */
+/** @typedef {Record<string, unknown> & {id?: unknown}} PosRecord */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosHardwareSettings} PosHardwareSettings */
+/**
+ * Draft state starts empty, receives the main-process settings record on load,
+ * and is updated one field at a time by the existing form handlers. Its
+ * partial shape records those states; it does not validate IPC/cache values.
+ * @typedef {Partial<PosHardwareSettings>} PosHardwareSettingsDraft
+ */
+/** Expected fields from Electron `getPrintersAsync`; the IPC rows are not runtime-validated. @typedef {{name: string, displayName?: string}} PosPrinterView */
+/** The main `listPosSystemDisplays` IPC projection includes these consumer fields; no Electron types enter the browser program. @typedef {{id: string, label: string, isPrimary: boolean}} PosSystemDisplayView */
+/** @typedef {Record<string, unknown> & {id: string | null, name: string, type: string}} PosOutletRecord */
+/** App provides null for unrestricted access and an outlet ID list otherwise; the default context may omit it. The nullable member preserves the existing includes check for virtual outlet ids. */
+/** @typedef {{allowedOutletIds?: Array<string | null> | null}} PosAccessView */
+/** @typedef {Record<string, unknown> & {id: string, name?: string | null, email?: string | null, role?: string | null, has_pin: boolean, allowed_outlet_ids?: string[], capability_overrides?: Record<string, unknown>}} PosStaffRecord */
+/** @typedef {{id?: string | null, name?: string | null, email?: string | null, role?: string | null}} PosOperatorIdentity */
+/** @typedef {{success: true, staff: PosStaffRecord, offline?: boolean, provisional?: boolean} | {success: false, error?: unknown}} PosStaffPinResult */
+/**
+ * Expected view of the `get_pos_menu_items_for_staff_v1` rows and the
+ * inventory-backed virtual bar rows assembled below. IPC/cache rows are not
+ * validated by this type; the load path retains its existing array handling.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   name: string,
+ *   price: number | string,
+ *   category?: string | null,
+ *   item_name?: string,
+ *   is_available?: boolean | null,
+ *   archived_at?: string | null,
+ *   barcode?: string | null,
+ *   inventory_item_id?: string | null,
+ *   depletion_qty?: unknown,
+ *   kitchen_station_id?: string | null,
+ *   outlet_id?: string | null,
+ *   template_kind?: string | null,
+ *   template_pack_size?: number | string | null,
+ *   _virtual_inventory_item?: boolean
+ * }} PosMenuItem
+ */
+/**
+ * Expected projection of `inventory:getItems`, whose live and compatibility
+ * queries select the fields used by the Till. Offline cache rows are not
+ * validated by this view; stock and price remain unknown until existing
+ * numeric coercion sites consume them.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   name: string,
+ *   category: string | null,
+ *   unit: string | null,
+ *   current_stock: unknown,
+ *   selling_price: unknown,
+ *   outlet_id: string | null
+ * }} PosInventoryItem
+ */
+/** @typedef {{id?: string | number, name?: string, price_delta?: number | string | null, group_id?: string | null}} PosOrderModifier */
+/** @typedef {Record<string, unknown> & {id?: string, name?: string, max_selections?: string | number | null, options?: PosOrderModifier[]}} PosModifierGroupRecord */
+/** @typedef {Record<string, unknown> & {order_key?: string, menu_item_id?: string | null, item_name: string, category?: string | null, unit_price: number | string, base_unit_price?: number | string, modifiers: PosOrderModifier[], item_notes?: string | null, quantity: number | string, inventory_item_id?: string | null, depletion_qty?: unknown, kitchen_station_id?: string | null}} PosOrderLine */
+/**
+ * Expected consumer view of the offline `pos:createOrder` envelope and the
+ * successful `create_pos_order_v3` projection. Main forwards the RPC object
+ * without JSON validation; this view does not validate IPC data. Financial
+ * fields stay unknown because the existing receipt path performs its own
+ * coercion and fallback, while authoritative line rows come from the SQL
+ * projection or the submitted offline queue payload.
+ * @typedef {Record<string, unknown> & {
+ *   success?: unknown,
+ *   offline?: boolean,
+ *   id?: string | null,
+ *   receipt_number?: string | null,
+ *   items?: PosOrderLine[],
+ *   payment_method?: string | null,
+ *   payment_breakdown?: unknown,
+ *   gross_total?: unknown,
+ *   discount_total?: unknown,
+ *   tax_total?: unknown,
+ *   tip_total?: unknown,
+ *   total?: unknown,
+ *   error?: unknown
+ * }} PosCreateOrderExpectedResult
+ */
+/** @typedef {Record<string, unknown> & {_auto_print?: unknown, _open_drawer_on_print?: unknown}} PosReceiptOrderView */
+/**
+ * Expected order-history/cache projection from `getPosOrders`. Cache rows are
+ * merged without row validation; this view only follows fields consumed by
+ * the history and return UI.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   status?: unknown,
+ *   outlet_id?: unknown,
+ *   payment_method?: unknown,
+ *   pos_order_items?: PosHistoryOrderLine[],
+ *   items?: PosHistoryOrderLine[]
+ * }} PosHistoryOrderRow
+ * @typedef {Record<string, unknown> & {id: string, quantity: unknown, unit_price: unknown, item_name?: unknown, menu_item_id?: unknown, inventory_item_id?: unknown, depletion_qty?: unknown}} PosHistoryOrderLine
+ * @typedef {PosHistoryOrderRow[] & {_source?: unknown, _complete?: unknown, _tender_complete?: unknown}} PosHistoryOrderReadRows
+ * @typedef {Record<string, unknown> & {id: unknown, order_id: unknown, action: string, approved_by?: unknown, approver_name?: unknown, reason?: unknown, outlet_id?: unknown, created_at?: unknown, _pending_sync?: unknown, _sync_state?: unknown, return_order_id?: unknown, return_total?: unknown}} PosVoidHistoryRow
+ * @typedef {{source: string, complete: boolean, tenderComplete: boolean}} PosOrderReadCompleteness
+ * @typedef {{success: true, offline?: unknown, override_log_id?: unknown, approved_by?: unknown, approver_name?: unknown, reason?: unknown}|{success: false, error?: unknown}} PosVoidApprovalExpectedResult
+ * @typedef {{success: true}|{success: false, error?: unknown}} PosPartialReturnExpectedResult
+ *
+ * Expected view of `pos_tabs` rows returned by main POS tab readers and
+ * mutations. Cache/RPC values are not validated here; items remain unknown
+ * until the existing array guard at the split UI.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   outlet_id?: string | null,
+ *   table_name?: string | null,
+ *   tab_name?: string | null,
+ *   customer_name?: string | null,
+ *   waiter_name?: string | null,
+ *   status?: string,
+ *   items: unknown,
+ *   total?: unknown,
+ *   tab_version?: number | null,
+ *   version?: number | null
+ * }} PosTableTabView
+ * @typedef {Record<string, unknown> & {id: string, name: string, outlet_id?: string | null, area?: string | null, seats?: number | null, tab?: PosTableTabView | null, status?: string}} PosFloorTableView
+ * @typedef {{success: boolean, error?: string, already_open?: boolean, tab?: PosTableTabView}} PosTabMutationExpectedResult
+ * @typedef {{success: boolean, error?: string, source_tab?: PosTableTabView}} PosTabSplitExpectedResult
+ * @typedef {'close'|'deliver'|'transfer'|'merge'} PosTableOverrideAction
+ */
+/** @typedef {Record<string, unknown> & {unit_price?: unknown, quantity?: unknown, inventory_item_id?: string | null, depletion_qty?: unknown, modifiers?: Array<string | {id?: unknown}>}} PosSubmitSignatureLine */
+/** @typedef {{current_stock: unknown}} PosInventoryRow */
+/** Expected recipe and ingredient fields projected by get_restaurant_recipes; IPC/cache rows are not validated here. */
+/** @typedef {{id?: string, inventory_item_id: string, quantity: number | string, unit: string, waste_percent: number | string, latest_unit_cost?: unknown}} PosRecipeIngredientView */
+/** @typedef {{id: string, name: string, menu_item_id: string | null, serving_size: number | string, ingredients?: PosRecipeIngredientView[]}} PosRecipeView */
+/** @typedef {{name: string, menu_item_id: string, serving_size: string, ingredients: Array<{inventory_item_id: string, quantity: string, unit: string, waste_percent: string}>}} PosRecipeForm */
+/** @typedef {{success: true, recipe?: PosRecipeView} | {success: false, error?: string}} PosSaveRecipeResult */
+/** @typedef {{success?: boolean, filePath?: string, error?: string}} PosHistoryExportResultExpected */
+/**
+ * Consumer view of the cash-up summary assembled by main from the local
+ * summary helper or `get_pos_shift_cashup_preview_v2`. RPC/IPC values are not
+ * runtime-validated here; amounts keep the numeric/string forms consumed by
+ * the existing UI.
+ * @typedef {Record<string, unknown> & {success?: boolean, error?: string, complete?: boolean, orders_count?: number, void_count?: number, returns_total?: number|string, net_sales?: number|string, pending_count?: number, by_method?: Record<string, unknown>}} PosCashupSummaryExpectedView
+ */
+/** @typedef {Record<string, unknown> & {id: string, lodge_id?: string, date?: string, outlet_id?: string|null, shift_id?: string|null, created_by?: string|null, cashier_id?: string|null, created_at?: string}} PosCashupHistoryExpectedRow */
+/** @typedef {PosCashupHistoryExpectedRow[] & {_available?: boolean, _error?: string, _source?: string}} PosCashupHistoryExpectedRows */
+/** @typedef {PosCashupHistoryExpectedRows | import('../../../shared/desktopIpcContracts.js').UnavailablePosRead} PosCashupHistoryReadExpected */
+/** @typedef {{success?: boolean, error?: string}} PosCashupCreateResultExpected */
+
 const toLocalDateInput = (value = new Date()) => formatLocalDate(value)
+/** @param {Date | string | number} value */
 const formatIsoTimestamp = (value = new Date()) => {
   const date = value instanceof Date ? new Date(value) : new Date(value)
   return date.toISOString()
 }
 
 const currency = 'P'
+/** @param {unknown} v */
 const fmt = (v) => Number(v || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+/** @param {Record<string, unknown>} item */
 const recordedLineAmount = (item = {}) => {
   const value = item.net_subtotal ?? item.line_subtotal ?? item.subtotal ?? item.line_total ?? item.total
   if (value === null || value === undefined || value === '') return null
@@ -49,6 +194,11 @@ const recordedLineAmount = (item = {}) => {
 }
 const ACTIVE_TABLE_STATUSES = new Set(['open', 'running', 'ready', 'delivered'])
 
+/** @typedef {{id?: string | null, customer_name?: string | null, guest_name?: string | null, items?: unknown, notes?: string | null, waiter_name?: string | null}} PosRouteTabHandoff */
+/** Expected route view from HposFloorPlan.openTill and retained top-level aliases; values are not runtime-validated here. */
+/** @typedef {{posHandoff?: PosRouteHandoffState | null, tableId?: string | null, table_id?: string | null, tableName?: string, table_name?: string, serviceMode?: string, service_mode?: string, outletId?: string | null, outlet_id?: string | null, outletName?: string | null, outlet_name?: string | null, tabId?: string | null, tab_id?: string | null, tab?: PosRouteTabHandoff | null}} PosRouteHandoffState */
+
+/** @param {PosRouteHandoffState | null | undefined} state */
 function normalizePosRouteHandoff(state) {
   if (!state || typeof state !== 'object') return null
   const envelope = state.posHandoff && typeof state.posHandoff === 'object' ? state.posHandoff : state
@@ -69,12 +219,14 @@ function normalizePosRouteHandoff(state) {
   }
 }
 
+/** @param {unknown} status */
 function normalizeTableStatus(status) {
   const value = String(status || '').toLowerCase()
   if (value === 'open') return 'running'
   return ['available', 'running', 'ready', 'delivered'].includes(value) ? value : 'available'
 }
 
+/** @param {unknown} status */
 function getTableStatusClasses(status) {
   const normalized = normalizeTableStatus(status)
   if (normalized === 'available') return 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
@@ -90,6 +242,7 @@ function getTableStatusClasses(status) {
  * 2. Sanitize transport-level noise (e.g. fetch failed)
  * 3. Fallback to a generic retry prompt if msg is empty
  */
+/** @param {unknown} raw */
 function sanitizePosError(raw) {
   if (!raw) return 'Operation failed to sync. Please retry from System Health.'
   const msg = String(raw)
@@ -120,6 +273,7 @@ function sanitizePosError(raw) {
   return cleaned.length > 160 ? `${cleaned.slice(0, 157)}…` : cleaned
 }
 
+/** @param {PosRecord | null | undefined} order @returns {'failed' | 'pending' | 'needs_attention' | 'synced'} */
 function normalizeOrderSyncState(order) {
   if (order?._sync_state === 'failed') return 'failed'
   if (order?._sync_state === 'pending') return 'pending'
@@ -128,31 +282,38 @@ function normalizeOrderSyncState(order) {
   return 'synced'
 }
 
+/** @param {Array<{method?: unknown, amount?: unknown}>} [payments] */
 function paymentBreakdownHasCash(payments = []) {
   return Array.isArray(payments) && payments.some((payment) => (
     String(payment.method || '').toLowerCase() === 'cash' && Number(payment.amount || 0) > 0
   ))
 }
 
+/** @param {Record<string, unknown> & {payment_breakdown?: unknown}} [order] */
 function historyTenderLabel(order = {}) {
   if (!hasRecordedPosTenderEnvelope(order)) return 'Tender unavailable'
   const rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : (() => {
-    try { const parsed = JSON.parse(order.payment_breakdown || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+    // Persisted JSONB and IPC values use JSON-compatible data. String conversion
+    // preserves JSON.parse's coercion behavior; it does not validate the value.
+    try { const parsed = JSON.parse(String(order.payment_breakdown || '[]')); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
   })()
   const methods = [...new Set(rows.map((row) => String(row?.method || row?.type || '').trim()).filter(Boolean))]
   if (methods.length !== 1) return 'Split tender'
   return formatPaymentMethod(methods[0], { plain: true })
 }
 
+/** @param {Record<string, unknown> & {payment_breakdown?: unknown}} [order] */
 function recordedSingleTenderMethod(order = {}) {
   if (!hasRecordedPosTenderEnvelope(order)) return ''
   const rows = Array.isArray(order.payment_breakdown) ? order.payment_breakdown : (() => {
-    try { const parsed = JSON.parse(order.payment_breakdown || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+    // Use the same JSONB/IPC coercion and malformed-input fallback as the label.
+    try { const parsed = JSON.parse(String(order.payment_breakdown || '[]')); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
   })()
   const methods = [...new Set(rows.map((row) => String(row?.method || row?.type || '').trim()).filter(Boolean))]
   return methods.length === 1 ? methods[0] : ''
 }
 
+/** @param {Record<string, unknown> | null | undefined} status */
 function isSyncOffline(status) {
   if (!status) return false
   if (status.isOnline === false) return true
@@ -162,11 +323,13 @@ function isSyncOffline(status) {
   return false
 }
 
+/** @param {unknown} value */
 function normalizeStockValue(value) {
   const numeric = Number(value || 0)
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0
 }
 
+/** @param {unknown} value @param {number} [fallback] */
 function normalizePositiveQty(value, fallback = 1) {
   const numeric = Number(value)
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
@@ -175,9 +338,13 @@ function normalizePositiveQty(value, fallback = 1) {
 // The database protects outlet names per lodge, but a stale cache or a legacy
 // import can still hand the renderer repeated rows. Never make an operator
 // choose between visually identical Kitchen/Bar buttons.
+/**
+ * @param {unknown} rows Expected normalized outlet rows from getOutlets/cache; no input validation is added.
+ * @returns {PosOutletRecord[]}
+ */
 function dedupeOutlets(rows = []) {
   const seen = new Set()
-  return (rows || []).filter((row) => {
+  return /** @type {PosOutletRecord[]} */ (rows || []).filter((row) => {
     if (!row) return false
     const key = row.id
       ? `id:${row.id}`
@@ -188,6 +355,7 @@ function dedupeOutlets(rows = []) {
   })
 }
 
+/** @param {Map<string, PosInventoryRow>} inventoryMap @param {string | null | undefined} inventoryItemId @param {unknown} [depletionQty] */
 function getInventoryAvailableUnits(inventoryMap, inventoryItemId, depletionQty = 1) {
   if (!inventoryItemId) return Number.POSITIVE_INFINITY
   const inventoryRow = inventoryMap.get(inventoryItemId)
@@ -197,11 +365,13 @@ function getInventoryAvailableUnits(inventoryMap, inventoryItemId, depletionQty 
   return Math.floor(stock / depletion)
 }
 
+/** @param {PosRecord & {inventory_item_id?: string | null, depletion_qty?: unknown, is_available?: unknown}} item @param {Map<string, PosInventoryRow>} inventoryMap */
 function isOrderableMenuItem(item, inventoryMap) {
   if (item?.is_available === false) return false
   return getInventoryAvailableUnits(inventoryMap, item?.inventory_item_id, item?.depletion_qty) > 0
 }
 
+/** @param {PosOrderLine[]} [items] */
 function buildOrderStockUsage(items = []) {
   const usage = new Map()
   for (const item of items || []) {
@@ -212,6 +382,7 @@ function buildOrderStockUsage(items = []) {
   return usage
 }
 
+/** @param {PosSubmitSignatureLine} [item] */
 function normalizePosSubmitSignatureItem(item = {}) {
   return {
     menu_item_id: item.menu_item_id || null,
@@ -221,14 +392,18 @@ function normalizePosSubmitSignatureItem(item = {}) {
     quantity: Number(item.quantity || 0),
     unit_price: Number(item.unit_price || 0),
     modifier_option_ids: (item.modifiers || [])
-      .map((modifier) => modifier?.id || modifier)
+      .map((modifier) => typeof modifier === 'string' ? modifier : (modifier?.id || modifier))
       .filter(Boolean)
       .sort()
   }
 }
 
+/** @param {unknown} startedAt @param {number} [now] */
 function formatElapsed(startedAt, now = Date.now()) {
-  const started = new Date(startedAt || now).getTime()
+  // POS tab and kitchen-ticket producers supply their persisted created_at
+  // values here. Keep native Date coercion/failure behavior; this is an
+  // expected-data view, not runtime validation of external timestamps.
+  const started = new Date(/** @type {string | number | Date} */ (startedAt || now)).getTime()
   if (!Number.isFinite(started)) return '0m'
   const minutes = Math.max(0, Math.floor((now - started) / 60000))
   if (minutes < 60) return `${minutes}m`
@@ -236,6 +411,9 @@ function formatElapsed(startedAt, now = Date.now()) {
   return `${hours}h ${minutes % 60}m`
 }
 
+/**
+ * @param {{customerType: string, selectedRoom?: string | null, selectedEventId?: string | null, walkInName?: string, orderNotes?: string, paymentMethod?: string, paymentBreakdown?: unknown, taxTotal?: unknown, tipTotal?: unknown, tableName?: string, activeTabId?: string | null, selectedOutletId?: string | null, orderItems?: PosOrderLine[], appliedPromotionId?: string | null, discountMode?: string, discountValue?: unknown, discountReason?: string}} input
+ */
 function buildPosSubmitSignature({
   customerType,
   selectedRoom,
@@ -290,7 +468,9 @@ export default function POS() {
   const navigate = useNavigate()
   const routeHandoff = useMemo(() => normalizePosRouteHandoff(location.state), [location.state])
   const appliedRouteHandoffRef = useRef('')
-  const access = useAccess()
+  // App's provider derives this from the signed-in user's outlet scope;
+  // the empty default context keeps allowedOutletIds absent.
+  const access = /** @type {PosAccessView} */ (useAccess())
   const { user: currentUser } = useAuth()
   const [touchMode, setTouchMode] = useState(() => {
     try {
@@ -314,21 +494,24 @@ export default function POS() {
   const [tab, setTab] = useState('terminal') // terminal | menu | history | cashup | tickets | setup
 
   // Outlets
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {PosOutletRecord[]} */ ([]))
   const [outletsLoading, setOutletsLoading] = useState(true)
   const [outletsError, setOutletsError] = useState(false)
-  const [selectedOutlet, setSelectedOutlet] = useState(null)
+  const [selectedOutlet, setSelectedOutlet] = useState(/** @type {PosOutletRecord | null} */ (null))
 
   // Menu items
-  const [menuItems, setMenuItems] = useState([])
+  const [menuItems, setMenuItems] = useState(/** @type {PosMenuItem[]} */ ([]))
   const [menuLoading, setMenuLoading] = useState(false)
   const [menuRefreshing, setMenuRefreshing] = useState(false)
+  const [menuReadError, setMenuReadError] = useState('')
   const [menuSearch, setMenuSearch] = useState('')
   const [activeTerminalCategory, setActiveTerminalCategory] = useState('All')
   const [menuDisplayLimit, setMenuDisplayLimit] = useState(POS_MENU_PAGE_SIZE)
 
   // Current order (terminal)
-  const [orderItems, setOrderItems] = useState([])
+  // This expected line view is emitted by menu adds and used for restored
+  // POS/Hpos tab rows. Route and saved-tab contents stay unvalidated.
+  const [orderItems, setOrderItems] = useState(/** @type {PosOrderLine[]} */ ([]))
   const [customerType, setCustomerType] = useState('walkin') // walkin | room | event
   const [rooms, setRooms] = useState([])
   const [selectedRoom, setSelectedRoom] = useState('')
@@ -349,34 +532,38 @@ export default function POS() {
   const [serviceMode, setServiceMode] = useState('takeaway')
   const [tableName, setTableName] = useState('')
   const [waiterName, setWaiterName] = useState('')
-  const [posTables, setPosTables] = useState([])
+  const [posTables, setPosTables] = useState(/** @type {PosFloorTableView[]} */ ([]))
   const [tableForm, setTableForm] = useState({ name: '', area: '', seats: '' })
   const [savingTable, setSavingTable] = useState(false)
   const [activeTabId, setActiveTabId] = useState('')
-  const [openTabs, setOpenTabs] = useState([])
-  const [tickets, setTickets] = useState([])
-  const [currentShift, setCurrentShift] = useState(null)
+  // These values are forwarded from POS IPC/cache reads without shape guards.
+  // Keep their full payloads unknown; `value || []` is not array validation.
+  const [openTabs, setOpenTabs] = useState(/** @type {PosTableTabView[]} */ ([]))
+  const [tickets, setTickets] = useState(/** @type {unknown} */ ([]))
+  const [currentShift, setCurrentShift] = useState(/** @type {unknown} */ (null))
   const [shiftFloat, setShiftFloat] = useState('')
   const [shiftCloseCash, setShiftCloseCash] = useState('')
   const [shiftCloseMessage, setShiftCloseMessage] = useState('')
-  const [hardwareSettings, setHardwareSettings] = useState(null)
+  const [hardwareSettings, setHardwareSettings] = useState(/** @type {PosHardwareSettingsDraft | null} */ (null))
   const [hardwareMsg, setHardwareMsg] = useState('')
-  const [receiptPrinters, setReceiptPrinters] = useState([])
-  const [systemDisplays, setSystemDisplays] = useState([])
+  const [receiptPrinters, setReceiptPrinters] = useState(/** @type {PosPrinterView[]} */ ([]))
+  const [systemDisplays, setSystemDisplays] = useState(/** @type {PosSystemDisplayView[]} */ ([]))
   const [displayTargets, setDisplayTargets] = useState({ customer: '', kitchen: '', bar: '' })
-  const [posStaff, setPosStaff] = useState([])
-  const [selectedPosStaff, setSelectedPosStaff] = useState(null)
+  // Safe-staff and PIN-selection values retain their existing RPC/cache
+  // producer fields; these expected views do not validate IPC data.
+  const [posStaff, setPosStaff] = useState(/** @type {PosStaffRecord[]} */ ([]))
+  const [selectedPosStaff, setSelectedPosStaff] = useState(/** @type {PosStaffRecord | null} */ (null))
   const [pendingPosStaffId, setPendingPosStaffId] = useState('')
   const [staffPin, setStaffPin] = useState('')
   const [tableServiceMode, setTableServiceMode] = useState('operator')
-  const [selectedWaiterStaff, setSelectedWaiterStaff] = useState(null)
+  const [selectedWaiterStaff, setSelectedWaiterStaff] = useState(/** @type {PosStaffRecord | null} */ (null))
   const [pendingWaiterStaffId, setPendingWaiterStaffId] = useState('')
   const [waiterPin, setWaiterPin] = useState('')
   const [showWaiterPicker, setShowWaiterPicker] = useState(false)
-  const [modifierGroups, setModifierGroups] = useState([])
-  const [promotions, setPromotions] = useState([])
-  const [floorLayout, setFloorLayout] = useState({ areas: [] })
-  const [auditLog, setAuditLog] = useState([])
+  const [modifierGroups, setModifierGroups] = useState(/** @type {unknown} */ ([]))
+  const [promotions, setPromotions] = useState(/** @type {unknown} */ ([]))
+  const [floorLayout, setFloorLayout] = useState(/** @type {unknown} */ ({ areas: [] }))
+  const [auditLog, setAuditLog] = useState(/** @type {unknown} */ ([]))
   const [modifierTargetIdx, setModifierTargetIdx] = useState(null)
   const [modifierDraftNotes, setModifierDraftNotes] = useState('')
   const [modifierForm, setModifierForm] = useState({ name: '', options: '', min_selections: '', max_selections: '', applies_to_categories: '' })
@@ -389,7 +576,7 @@ export default function POS() {
   const [syncStatus, setSyncStatus] = useState(null)
 
   // Phase 4: Customer & loyalty
-  const [posCustomers, setPosCustomers] = useState([])
+  const [posCustomers, setPosCustomers] = useState(/** @type {unknown} */ ([]))
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
   const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [loyaltyPointsEarned, setLoyaltyPointsEarned] = useState(0)
@@ -421,18 +608,20 @@ export default function POS() {
   const menuSearchInputRef = useRef(null)
   const selectedOutletRef = useRef(null)
   const outletsRef = useRef([])
-  const menuItemsRef = useRef([])
-  const inventoryItemsRef = useRef([])
+  const menuItemsRef = useRef(/** @type {PosMenuItem[]} */ ([]))
+  const inventoryItemsRef = useRef(/** @type {PosInventoryItem[]} */ ([]))
   const liveRefreshBusyRef = useRef(false)
   const submitIntentRef = useRef({ signature: null, intentId: null })
-  const splitOperationIdRef = useRef(null)
+  const splitOperationIdRef = useRef(/** @type {string|null} */ (null))
   const [barcodeFlash, setBarcodeFlash] = useState(null) // null | { name, found, wrongOutlet? }
 
   // Favourites
+  // This expected persisted-ID view does not validate parsed localStorage;
+  // retaining the raw parse preserves the existing malformed-value behavior.
   const [favourites, setFavourites] = useState(() => {
     try {
       const raw = window.localStorage.getItem(POS_FAVOURITES_STORAGE_KEY)
-      return raw ? JSON.parse(raw) : []
+      return /** @type {string[]} */ (raw ? JSON.parse(raw) : [])
     } catch { return [] }
   })
 
@@ -440,6 +629,7 @@ export default function POS() {
   const [selectedLineIdx, setSelectedLineIdx] = useState(-1)
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false)
 
+  /** @type {PosOperatorIdentity} */
   const currentOperator = selectedPosStaff || {
     id: currentUser?.id || null,
     name: currentUser?.name || currentUser?.email || 'Logged-in user',
@@ -456,27 +646,27 @@ export default function POS() {
     : (currentOperator.id || null)
 
   // Order history
-  const [orders, setOrders] = useState([])
-  const [voidHistory, setVoidHistory] = useState([])
+  const [orders, setOrders] = useState(/** @type {PosHistoryOrderRow[]} */ ([]))
+  const [voidHistory, setVoidHistory] = useState(/** @type {PosVoidHistoryRow[]} */ ([]))
   const [ordersError, setOrdersError] = useState(null)
-  const [orderReadCompleteness, setOrderReadCompleteness] = useState({ source: 'unknown', complete: false, tenderComplete: false })
+  const [orderReadCompleteness, setOrderReadCompleteness] = useState(/** @type {PosOrderReadCompleteness} */ ({ source: 'unknown', complete: false, tenderComplete: false }))
   const [histStart, setHistStart] = useState(() => toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
   const [histEnd, setHistEnd] = useState(() => toLocalDateInput(new Date()))
   const [historyExporting, setHistoryExporting] = useState('')
   const [historyExportMsg, setHistoryExportMsg] = useState('')
   const [expandedOrder, setExpandedOrder] = useState(null)
   const [voidModal, setVoidModal] = useState(false)
-  const [voidTarget, setVoidTarget] = useState(null)
+  const [voidTarget, setVoidTarget] = useState(/** @type {PosHistoryOrderRow|null} */ (null))
   const [voidPin, setVoidPin] = useState('')
   const [voidReason, setVoidReason] = useState('')
   const [voidError, setVoidError] = useState('')
   const [voidLoading, setVoidLoading] = useState(false)
   const [showVoidPin, setShowVoidPin] = useState(false)
-  const [showReceiptOrder, setShowReceiptOrder] = useState(null)
+  const [showReceiptOrder, setShowReceiptOrder] = useState(/** @type {PosReceiptOrderView | null} */ (null))
 
   const [returnModal, setReturnModal] = useState(false)
-  const [returnTarget, setReturnTarget] = useState(null)
-  const [returnLines, setReturnLines] = useState({})
+  const [returnTarget, setReturnTarget] = useState(/** @type {PosHistoryOrderRow|null} */ (null))
+  const [returnLines, setReturnLines] = useState(/** @type {Record<string, string>} */ ({}))
   const [returnPin, setReturnPin] = useState('')
   const [returnReason, setReturnReason] = useState('')
   const [returnPaymentMethod, setReturnPaymentMethod] = useState('')
@@ -485,7 +675,7 @@ export default function POS() {
   const [showReturnPin, setShowReturnPin] = useState(false)
 
   const [splitModal, setSplitModal] = useState(false)
-  const [splitItemIndices, setSplitItemIndices] = useState([])
+  const [splitItemIndices, setSplitItemIndices] = useState(/** @type {number[]} */ ([]))
   const [splitTargetTable, setSplitTargetTable] = useState('')
   const [splitLoading, setSplitLoading] = useState(false)
   const [splitMode, setSplitMode] = useState('items')
@@ -502,22 +692,22 @@ export default function POS() {
   const [cashupDate, setCashupDate] = useState(() => toLocalDateInput(new Date()))
   const [cashupOutletId, setCashupOutletId] = useState('')
   const [cashupOpeningFloat, setCashupOpeningFloat] = useState('')
-  const [cashupCounted, setCashupCounted] = useState({})
+  const [cashupCounted, setCashupCounted] = useState(/** @type {Record<string, string>} */ ({}))
   const [cashupNotes, setCashupNotes] = useState('')
-  const [cashupSummary, setCashupSummary] = useState(null)
-  const [cashupHistory, setCashupHistory] = useState([])
+  const [cashupSummary, setCashupSummary] = useState(/** @type {PosCashupSummaryExpectedView | null} */ (null))
+  const [cashupHistory, setCashupHistory] = useState(/** @type {PosCashupHistoryExpectedRow[]} */ ([]))
   const [cashupLoading, setCashupLoading] = useState(false)
   const [cashupSaving, setCashupSaving] = useState(false)
   const [cashupError, setCashupError] = useState('')
 
   // Inventory items (for depletion linking)
-  const [inventoryItems, setInventoryItems] = useState([])
+  const [inventoryItems, setInventoryItems] = useState(/** @type {PosInventoryItem[]} */ ([]))
 
   // Recipes
-  const [recipes, setRecipes] = useState([])
+  const [recipes, setRecipes] = useState(/** @type {PosRecipeView[]} */ ([]))
   const [recipeModal, setRecipeModal] = useState(false)
-  const [editingRecipe, setEditingRecipe] = useState(null)
-  const [recipeForm, setRecipeForm] = useState({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] })
+  const [editingRecipe, setEditingRecipe] = useState(/** @type {PosRecipeView | null} */ (null))
+  const [recipeForm, setRecipeForm] = useState(/** @type {PosRecipeForm} */ ({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] }))
   const [recipeSaving, setRecipeSaving] = useState(false)
 
   // Menu item form modal
@@ -531,7 +721,7 @@ export default function POS() {
   const [menuSaving, setMenuSaving] = useState(false)
   const [menuError, setMenuError] = useState('')
   const [barTemplateSavingKey, setBarTemplateSavingKey] = useState('')
-  const [kitchenStations, setKitchenStations] = useState([])
+  const [kitchenStations, setKitchenStations] = useState(/** @type {unknown} */ ([]))
 
   // Floor-plan navigation carries an explicit POS handoff. Apply it once per
   // router navigation so a table click opens the same outlet, service mode,
@@ -550,7 +740,9 @@ export default function POS() {
     }
     if (routeHandoff.tab) {
       setActiveTabId(routeHandoff.tab.id || routeHandoff.tabId || '')
-      setOrderItems(Array.isArray(routeHandoff.tab.items) ? routeHandoff.tab.items : [])
+      // The floor plan's existing handoff carries persisted POS line objects;
+      // Array.isArray remains the only runtime check, as before.
+      setOrderItems(Array.isArray(routeHandoff.tab.items) ? /** @type {PosOrderLine[]} */ (routeHandoff.tab.items) : [])
       setOrderNotes(routeHandoff.tab.notes || '')
       setWaiterName(routeHandoff.tab.waiter_name || '')
     } else if (routeHandoff.tabId) {
@@ -577,7 +769,7 @@ export default function POS() {
     } catch { /* Best-effort */ }
   }, [favourites])
 
-  const toggleFavourite = useCallback((itemId) => {
+  const toggleFavourite = useCallback(/** @param {string} itemId */ (itemId) => {
     setFavourites((prev) => {
       if (prev.includes(itemId)) return prev.filter((id) => id !== itemId)
       if (prev.length >= POS_FAVOURITES_MAX) return [...prev.slice(1), itemId]
@@ -585,7 +777,7 @@ export default function POS() {
     })
   }, [])
 
-  const isFavourite = useCallback((itemId) => favourites.includes(itemId), [favourites])
+  const isFavourite = useCallback(/** @param {string} itemId */ (itemId) => favourites.includes(itemId), [favourites])
 
   // Outlets filtered to what this user is allowed to access
   // access.allowedOutletIds === null means full access (manager/admin)
@@ -692,8 +884,25 @@ export default function POS() {
     if (hasExistingMenu) setMenuRefreshing(true)
     else setMenuLoading(true)
     try {
-      const data = await window.api.pos.getMenuItems().catch(() => [])
-      setMenuItems(data || [])
+      // Main returns catalogue rows or its unavailable-read envelope. This
+      // consumer view does not validate catalogue fields from cache/RPC data.
+      const data = /** @type {PosMenuItem[] | import('../../../shared/desktopIpcContracts.js').UnavailablePosRead} */ (await window.api.pos.getMenuItems().catch(() => []))
+      const menuReadStatus = /** @type {Pick<import('../../../shared/desktopIpcContracts.js').UnavailablePosRead, '_available' | '_source' | '_error'>} */ (data)
+      if (!Array.isArray(data) && menuReadStatus?._available === false && menuReadStatus._source === 'unavailable') {
+        // Main constructs this error envelope; the expected string view does
+        // not validate arbitrary successful cache/RPC data.
+        const readError = menuReadStatus._error
+        setMenuReadError(typeof readError === 'string' && readError
+          ? readError
+          : 'The menu could not be verified. Refresh before taking orders.')
+        setMenuItems([])
+        return
+      }
+      setMenuReadError('')
+      // The explicit unavailable envelope branch above fails closed. Other
+      // IPC/cache values retain the old `data || []` behavior; this expected
+      // row view does not validate malformed truthy values.
+      setMenuItems(/** @type {PosMenuItem[]} */ (data || []))
     } finally {
       setMenuLoading(false)
       setMenuRefreshing(false)
@@ -702,7 +911,9 @@ export default function POS() {
 
   const loadInventoryItems = useCallback(async () => {
     const data = await window.api.inventory.getItems().catch(() => [])
-    setInventoryItems(data || [])
+    // Preserve the existing `data || []` behavior; this expected IPC/cache
+    // projection does not validate malformed truthy payloads.
+    setInventoryItems(/** @type {PosInventoryItem[]} */ (data || []))
   }, [])
 
   const loadRooms = useCallback(async () => {
@@ -722,13 +933,15 @@ export default function POS() {
         window.api.pos.getOrders(histStart, histEnd).then(unpackTransport),
         window.api.pos.getVoidHistory(histStart, histEnd).catch(() => [])
       ])
-      setOrders(data || [])
+      // These are expected query/cache row views, not runtime validation; retain
+      // the existing truthy fallback and metadata property reads.
+      setOrders(/** @type {PosHistoryOrderRow[]} */ (data || []))
       setOrderReadCompleteness({
-        source: data?._source || 'unknown',
-        complete: data?._source === 'server' && data?._complete === true,
-        tenderComplete: data?._tender_complete === true
+        source: (/** @type {PosHistoryOrderReadRows|null|undefined} */ (data))?._source || 'unknown',
+        complete: (/** @type {PosHistoryOrderReadRows|null|undefined} */ (data))?._source === 'server' && (/** @type {PosHistoryOrderReadRows|null|undefined} */ (data))?._complete === true,
+        tenderComplete: (/** @type {PosHistoryOrderReadRows|null|undefined} */ (data))?._tender_complete === true
       })
-      setVoidHistory(voids || [])
+      setVoidHistory(/** @type {PosVoidHistoryRow[]} */ (voids || []))
     } catch (err) {
       setOrders([])
       setOrderReadCompleteness({ source: 'error', complete: false, tenderComplete: false })
@@ -752,7 +965,7 @@ export default function POS() {
         setHistoryExportMsg('POS history export is unavailable until the server confirms a complete, reconciled source.')
         return
       }
-      const result = await exporter?.({ start: histStart, end: histEnd })
+      const result = /** @type {PosHistoryExportResultExpected | undefined} */ (await exporter?.({ start: histStart, end: histEnd }))
       if (result?.success) {
         setHistoryExportMsg(`${format === 'pdf' ? 'PDF' : 'Excel'} exported${result.filePath ? `: ${result.filePath}` : '.'}`)
       } else if (result?.error) {
@@ -771,15 +984,15 @@ export default function POS() {
     setCashupError('')
     try {
       const [summary, history] = await Promise.all([
-        window.api.pos.getCashupSummary({
+        /** @type {Promise<PosCashupSummaryExpectedView>} */ (window.api.pos.getCashupSummary({
           shift_id: currentShift?.id || null,
           date: cashupDate,
           outlet_id: cashupOutletId || null,
           opening_float: Number(cashupOpeningFloat || 0),
           cashier_id: currentOperator.id || null,
           cashier_name: currentOperator.name || null
-        }),
-        window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null }).then(unpackTransport)
+        })),
+        /** @type {Promise<PosCashupHistoryReadExpected>} */ (window.api.pos.getCashups(12, { cashier_id: currentOperator.id || null }).then(unpackTransport))
       ])
       if (summary?.success === false) {
         setCashupError(summary.error || 'Could not load cash-up summary.')
@@ -820,19 +1033,32 @@ export default function POS() {
       window.api.receipts.listPrinters?.().catch(() => []),
       window.api.pos.listDisplays?.().catch(() => [])
     ])
-    setOpenTabs((tabs || []).filter((row) => ACTIVE_TABLE_STATUSES.has(String(row.status || 'open').toLowerCase())))
+    // Main combines live tab rows with pending local rows. This expected view
+    // preserves the existing fallback/filter and does not validate IPC/cache data.
+    setOpenTabs((/** @type {PosTableTabView[]} */ (tabs || [])).filter((row) => ACTIVE_TABLE_STATUSES.has(String(row.status || 'open').toLowerCase())))
     setTickets(ticketRows || [])
     setCurrentShift(shift || null)
-    setHardwareSettings(hardware || null)
-    setPosStaff(staffRows || [])
+    // Main returns the concrete settings record on success and `{}` on its
+    // caught capability/read failure. `hardware || null` remains the original
+    // fallback; this expected view does not validate the IPC payload.
+    setHardwareSettings(/** @type {PosHardwareSettingsDraft | null} */ (hardware || null))
+    // getStaff returns the safe pos_get_safe_staff projection or its cache;
+    // preserve the existing fallback/coercion without claiming validation.
+    setPosStaff(/** @type {PosStaffRecord[]} */ (staffRows || []))
     setModifierGroups(modifierRows || [])
     setPromotions(promotionRows || [])
     setFloorLayout(floorRows || { areas: [] })
     setAuditLog(auditRows || [])
-    setPosTables(tables || [])
-    setReceiptPrinters(printers || [])
-    setSystemDisplays(displays || [])
-    setRecipes(recipeRows || [])
+    // The optional status reader falls back to the raw table reader on older
+    // app builds; both feed the same existing table-list fields here.
+    setPosTables(/** @type {PosFloorTableView[]} */ (tables || []))
+    // Keep the existing truthy fallback and expected Electron producer views;
+    // neither cast validates malformed IPC results.
+    setReceiptPrinters(/** @type {PosPrinterView[]} */ (printers || []))
+    setSystemDisplays(/** @type {PosSystemDisplayView[]} */ (displays || []))
+    // getPosRecipes returns the SQL projection or its persisted array cache;
+    // this expected view does not validate either source.
+    setRecipes(/** @type {PosRecipeView[]} */ (recipeRows || []))
     setPosCustomers(customerRows || [])
     setKitchenStations(stationRows || [])
 
@@ -866,6 +1092,8 @@ export default function POS() {
     setOutletsLoading(true)
     window.api.outlets.getAll()
       .then((d) => {
+        // getOutlets returns normalized database/cache rows or virtual outlet
+        // rows (whose id is null); the helper adds no IPC validation.
         const list = dedupeOutlets(d || [])
         setOutlets(list)
         const posList = list.filter((o) => o.type === 'food' || o.type === 'beverage')
@@ -1128,6 +1356,7 @@ export default function POS() {
 
   // ── Terminal ────────────────────────────────────────────────────────────────
 
+  /** @param {PosMenuItem} item */
   const addToOrder = (item) => {
     const orderKey = item._virtual_inventory_item
       ? `inventory:${item.inventory_item_id}`
@@ -1174,6 +1403,7 @@ export default function POS() {
     })
   }
 
+  /** @type {(idx: number, delta: number) => void} */
   const updateQty = useCallback((idx, delta) => {
     setOrderItems((prev) => {
       const updated = [...prev]
@@ -1186,6 +1416,7 @@ export default function POS() {
   const incrementQty = useCallback((idx) => updateQty(idx, 1), [updateQty])
   const decrementQty = useCallback((idx) => updateQty(idx, -1), [updateQty])
 
+  /** @type {(idx: number, rawValue: string) => void} */
   const setQty = useCallback((idx, rawValue) => {
     const parsed = Number.parseInt(String(rawValue || '').replace(/[^\d]/g, ''), 10)
     const quantity = Number.isFinite(parsed) && parsed > 0 ? parsed : 1
@@ -1389,7 +1620,8 @@ export default function POS() {
         tabNameForOrder = tableName.trim() || null
       }
 
-      const result = await window.api.pos.createOrder({
+      /** Main's offline envelope and SQL/RPC success projection are expected here; no runtime validation is added. */
+      const result = /** @type {PosCreateOrderExpectedResult | null | undefined} */ (await window.api.pos.createOrder({
         id: submitIntentId,
         submit_intent_id: submitIntentId,
         room_id: customerType === 'room' ? selectedRoom : null,
@@ -1436,7 +1668,7 @@ export default function POS() {
               reason: discountReason.trim()
             }
           : null
-      })
+      }))
       if (result?.success) {
         const authoritativeItems = result.offline === true
           ? orderItemsForSubmit
@@ -1777,6 +2009,7 @@ export default function POS() {
     return outlets.find((o) => o.id === item.outlet_id)?.name || 'another outlet'
   }
 
+  /** @param {PosHistoryOrderRow} order */
   function openVoidModal(order) {
     setVoidTarget(order)
     setVoidPin('')
@@ -1796,6 +2029,7 @@ export default function POS() {
     setShowVoidPin(false)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function submitVoidApproval(e) {
     e.preventDefault()
     if (!voidTarget?.id) {
@@ -1814,13 +2048,14 @@ export default function POS() {
     setVoidLoading(true)
     setVoidError('')
     try {
-      const res = await window.api.pos.approveVoidWithPin({
+      // Expected existing main-process success/failure results; IPC is not validated.
+      const res = /** @type {PosVoidApprovalExpectedResult|null|undefined} */ (await window.api.pos.approveVoidWithPin({
         order_id: voidTarget.id,
         pin: voidPin.trim(),
         reason: voidReason.trim(),
         cashier_user_id: currentOperator.id || currentUser?.id || null,
         outlet_id: voidTarget.outlet_id || selectedOutlet?.id || null
-      })
+      }))
 
       if (res?.success) {
         const voidedAt = formatIsoTimestamp(new Date())
@@ -1859,6 +2094,7 @@ export default function POS() {
     }
   }
 
+  /** @param {PosHistoryOrderRow} order */
   function openReturnModal(order) {
     const lines = Object.fromEntries((order.pos_order_items || [])
       .filter((line) => Number(line.quantity || 0) > 0 && Number(line.unit_price || 0) >= 0)
@@ -1884,6 +2120,7 @@ export default function POS() {
     setShowReturnPin(false)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function submitPartialReturn(e) {
     e.preventDefault()
     if (!returnTarget?.id) {
@@ -1913,7 +2150,8 @@ export default function POS() {
     setReturnLoading(true)
     setReturnError('')
     try {
-      const res = await window.api.pos.createPartialReturnWithPin({
+      // Expected main-process result view; the IPC value is not validated.
+      const res = /** @type {PosPartialReturnExpectedResult|null|undefined} */ (await window.api.pos.createPartialReturnWithPin({
         order_id: returnTarget.id,
         lines: selectedLines,
         pin: returnPin.trim(),
@@ -1922,7 +2160,7 @@ export default function POS() {
         shift_id: currentShift?.id || null,
         cashier_user_id: currentOperator.id || currentUser?.id || null,
         outlet_id: returnTarget.outlet_id || selectedOutlet?.id || null
-      })
+      }))
       if (!res?.success) {
         setReturnError(res?.error || 'Could not record this return.')
         return
@@ -1931,7 +2169,7 @@ export default function POS() {
       await refreshLivePosState({ includeOrders: true })
       if (tab === 'history') await loadOrders()
     } catch (err) {
-      setReturnError(err?.message || 'Could not record this return.')
+      setReturnError((/** @type {{message?: unknown}} */ (err))?.message || 'Could not record this return.')
     } finally {
       setReturnLoading(false)
     }
@@ -1958,7 +2196,7 @@ export default function POS() {
       const counted = Object.fromEntries(
         cashupMethodRows.map((method) => [method.value, Number(cashupCounted[method.value] || 0)])
       )
-      const res = await window.api.pos.createCashup({
+      const res = /** @type {PosCashupCreateResultExpected} */ (await window.api.pos.createCashup({
         shift_id: currentShift?.id || null,
         date: cashupDate,
         outlet_id: cashupOutletId || null,
@@ -1967,7 +2205,7 @@ export default function POS() {
         notes: cashupNotes || null,
         cashier_id: currentOperator.id || null,
         cashier_name: currentOperator.name || null
-      })
+      }))
       if (!res?.success) {
         setCashupError(res?.error || 'Could not save cash-up.')
         return
@@ -1994,13 +2232,16 @@ export default function POS() {
     setPaymentSplits((rows) => rows.filter((_, i) => i !== idx))
   }
 
+  /** @param {PosStaffRecord | null | undefined} staff */
   const selectStaffForPos = async (staff) => {
     if (!staff?.id) return
     if (!staff.has_pin) {
       alert('This staff member needs an approval PIN set in Staff before POS selection.')
       return
     }
-    const res = await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: staffPin })
+    // Main's PIN handler returns either a failure or the safe staff projection
+    // plus optional offline/provisional markers. The IPC value stays unvalidated.
+    const res = /** @type {PosStaffPinResult | null | undefined} */ (await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: staffPin }))
     if (!res?.success) {
       alert(res?.error || 'Could not select staff.')
       return
@@ -2011,13 +2252,14 @@ export default function POS() {
     setShowStaffLogin(false)
   }
 
+  /** @param {PosStaffRecord | null | undefined} staff */
   const selectWaiterForTable = async (staff) => {
     if (!staff?.id) return
     if (!staff.has_pin) {
       alert('This waiter needs a POS PIN set in Staff first.')
       return
     }
-    const res = await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: waiterPin })
+    const res = /** @type {PosStaffPinResult | null | undefined} */ (await window.api.pos.selectStaffWithPin?.({ staff_id: staff.id, pin: waiterPin }))
     if (!res?.success) {
       alert(res?.error || 'Could not select waiter.')
       return
@@ -2044,6 +2286,7 @@ export default function POS() {
     setModifierDraftNotes(line.item_notes || '')
   }, [orderItems])
 
+  /** @param {PosOrderModifier} option @param {PosModifierGroupRecord | null} [group] */
   const toggleLineModifier = (option, group = null) => {
     if (modifierTargetIdx == null || !option?.name) return
     setOrderItems((rows) => rows.map((line, idx) => {
@@ -2126,7 +2369,7 @@ export default function POS() {
       if (tableServiceMode === 'waiter' && !selectedWaiterStaff?.id && !waiterName.trim()) { alert('Select the waiter for this table.'); return }
     }
     const name = tableName.trim() || walkInName.trim() || `Tab ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-    const res = await window.api.pos.saveTab?.({
+    const res = /** @type {PosTabMutationExpectedResult|undefined} */ (await window.api.pos.saveTab?.({
       id: activeTabId || undefined,
       expected_version: activeTabId ? (currentOpenTab?.tab_version ?? currentOpenTab?.version ?? null) : null,
       tab_version: activeTabId ? (currentOpenTab?.tab_version ?? currentOpenTab?.version ?? null) : undefined,
@@ -2144,7 +2387,7 @@ export default function POS() {
       items: orderItems,
       notes: orderNotes || null,
       status: serviceMode === 'table' ? 'running' : 'open'
-    })
+    }))
     if (res?.already_open && res?.tab) {
       alert(res.error || 'That table is already running. Loading it now.')
       loadSavedTab(res.tab)
@@ -2161,9 +2404,12 @@ export default function POS() {
     await loadPosOperations()
   }
 
+  /** @param {PosRecord & {id: string, items?: unknown, notes?: string | null, customer_name?: string | null, tab_name?: string | null, waiter_name?: string | null, table_name?: string | null}} savedTab */
   const loadSavedTab = (savedTab) => {
     setActiveTabId(savedTab.id)
-    setOrderItems(Array.isArray(savedTab.items) ? savedTab.items : [])
+    // Cached/server tab items are already persisted order-line JSON. Keep the
+    // historical array guard and avoid claiming row validation.
+    setOrderItems(Array.isArray(savedTab.items) ? /** @type {PosOrderLine[]} */ (savedTab.items) : [])
     setOrderNotes(savedTab.notes || '')
     setWalkInName(savedTab.customer_name || savedTab.tab_name || '')
     setWaiterName(savedTab.waiter_name || '')
@@ -2174,6 +2420,7 @@ export default function POS() {
     setServiceMode(savedTab.table_name ? 'table' : 'takeaway')
   }
 
+  /** @param {PosFloorTableView} table */
   const selectTable = async (table) => {
     if (!table?.name) return
     const runningTab = table.tab || openTabs.find((row) =>
@@ -2199,14 +2446,14 @@ export default function POS() {
     setWalkInName(table.name)
     setOrderItems([])
     setOrderNotes('')
-    const res = await window.api.pos.openTableSession?.({
+    const res = /** @type {PosTabMutationExpectedResult|undefined} */ (await window.api.pos.openTableSession?.({
       outlet_id: selectedOutlet?.id || table.outlet_id || null,
       table_name: table.name,
       tab_name: table.name,
       waiter_name: tableWaiterName || currentOperator.name || null,
       waiter_id: tableWaiterId,
       items: []
-    })
+    }))
     if (!res?.success) {
       alert(res?.error || 'Could not open table.')
       return
@@ -2215,8 +2462,10 @@ export default function POS() {
     await loadPosOperations()
   }
 
+  /** @param {PosTableOverrideAction} action */
   const runTableOverride = async (action) => {
     if (!currentOpenTab?.id) return
+    /** @type {{action: PosTableOverrideAction, source_tab_id: string, target_table_name?: string, reason?: string}} */
     let payload = { action, source_tab_id: currentOpenTab.id }
     if (action === 'transfer' || action === 'merge') {
       const target = window.prompt(action === 'transfer' ? 'Move this order to which table?' : 'Merge this order into which running table?')
@@ -2228,7 +2477,7 @@ export default function POS() {
       payload.reason = reason
       if (!window.confirm('Close this table without completing an order?')) return
     }
-    const res = await window.api.pos.overrideTableTab?.(payload)
+    const res = /** @type {PosTabMutationExpectedResult|undefined} */ (await window.api.pos.overrideTableTab?.(payload))
     if (!res?.success) {
       alert(res?.error || 'Could not update this table.')
       return
@@ -2260,6 +2509,7 @@ export default function POS() {
     setSplitModal(true)
   }
 
+  /** @param {number} idx */
   const toggleSplitItem = (idx) => {
     setSplitItemIndices((prev) => prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx])
   }
@@ -2274,21 +2524,22 @@ export default function POS() {
     setSplitLoading(true)
     setSplitError('')
     try {
+      /** @type {PosTabSplitExpectedResult|undefined} */
       let res
       if (splitMode === 'even') {
-        res = await window.api.pos.splitBillEvenly?.({
+        res = /** @type {PosTabSplitExpectedResult|undefined} */ (await window.api.pos.splitBillEvenly?.({
           source_tab_id: currentOpenTab.id,
           split_count: splitEvenCount,
           target_table_names: splitEvenNames.slice(0, splitEvenCount),
           source_tab_version: currentOpenTab.tab_version ?? currentOpenTab.version ?? null,
           idempotency_key: splitOperationIdRef.current
-        })
+        }))
       } else {
-        res = await window.api.pos.splitBillByItems?.({
+        res = /** @type {PosTabSplitExpectedResult|undefined} */ (await window.api.pos.splitBillByItems?.({
           source_tab_id: currentOpenTab.id,
           item_indices: splitItemIndices,
           target_table_name: splitTargetTable.trim() || null
-        })
+        }))
       }
       if (!res?.success) {
         setSplitError(res?.error || 'Could not split bill.')
@@ -2299,7 +2550,9 @@ export default function POS() {
       if (res.source_tab) loadSavedTab(res.source_tab)
       await loadPosOperations()
     } catch (err) {
-      setSplitError(err.message || 'Could not split bill.')
+      // A caught value is not guaranteed to be an Error. Keep its raw message
+      // property read and fallback; this view does not validate thrown data.
+      setSplitError(/** @type {string} */ ((/** @type {{message?: unknown}} */ (err)).message || 'Could not split bill.'))
     } finally {
       setSplitLoading(false)
     }
@@ -2738,6 +2991,11 @@ export default function POS() {
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {menuReadError && (
+                      <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                        {menuReadError}
+                      </ErrorNotice>
+                    )}
                     {/* ── Favourites Quick Tiles ── */}
                     <POSFavouritesBar
                       favouriteItems={favouriteItems}
@@ -4950,7 +5208,8 @@ export default function POS() {
                     ))}
                   </select>
                   <button type="button" className="btn-secondary text-sm" onClick={() => {
-                    const sel = document.getElementById('add-recipe-ingredient-select')
+                    // This id is attached to the select immediately above.
+                    const sel = /** @type {HTMLSelectElement | null} */ (document.getElementById('add-recipe-ingredient-select'))
                     const itemId = sel?.value
                     if (!itemId) return
                     setRecipeForm((prev) => ({ ...prev, ingredients: [...prev.ingredients, { inventory_item_id: itemId, quantity: '1', unit: 'each', waste_percent: '0' }] }))
@@ -4962,7 +5221,7 @@ export default function POS() {
                   if (!recipeForm.name.trim()) { alert('Recipe name is required.'); return }
                   setRecipeSaving(true)
                   try {
-                    const res = await window.api.pos.saveRecipe?.({
+                    const res = /** @type {PosSaveRecipeResult | undefined} */ (await window.api.pos.saveRecipe?.({
                       id: editingRecipe?.id || undefined,
                       name: recipeForm.name.trim(),
                       menu_item_id: recipeForm.menu_item_id || null,
@@ -4974,7 +5233,7 @@ export default function POS() {
                         waste_percent: Number(ing.waste_percent || 0),
                         sort_order: idx
                       }))
-                    })
+                    }))
                     if (!res?.success) { alert(res?.error || 'Could not save recipe.'); return }
                     setRecipeForm({ name: '', menu_item_id: '', serving_size: '1', ingredients: [] })
                     setEditingRecipe(null)

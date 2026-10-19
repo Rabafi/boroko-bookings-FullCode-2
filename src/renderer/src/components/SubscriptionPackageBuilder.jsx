@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useMemo, useState } from 'react'
 import { Download, Send, CheckCircle, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { useSettings } from '../app-context'
@@ -28,7 +29,8 @@ export default function SubscriptionPackageBuilder() {
   const [notes, setNotes] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
-  const [submittedQuote, setSubmittedQuote] = useState(null)
+  // The submit RPC returns raw data; only the locally generated request quote is known to be a string.
+  const [submittedQuote, setSubmittedQuote] = useState(/** @type {unknown} */ (null))
   const [error, setError] = useState('')
 
   const commercialPackages = getCommercialPackageCatalog(BUILD_PRODUCT.id)

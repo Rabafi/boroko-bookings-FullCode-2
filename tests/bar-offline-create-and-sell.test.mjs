@@ -56,7 +56,7 @@ test('replay success resolves duplicate-name products by exact name', () => {
   assert.match(source, /ilike\('name', wanted\)/)
 })
 
-test('stale shifts resolve identically on both retry paths', () => {
+test('stale shifts still resolve for tab work, but sales keep their original shift', () => {
   const open = { id: 'shift-new', status: 'open', closed_at: null, outlet_id: 'out-1', cashier_id: 'op-1', opened_at: '2026-09-13T14:00:00.000Z' }
   const closed = { id: 'shift-old', status: 'closed', closed_at: '2026-09-13T13:00:00.000Z', outlet_id: 'out-1', cashier_id: 'op-1', opened_at: '2026-09-13T08:00:00.000Z' }
   assert.equal(resolveCurrentOpenShiftId([closed, open], { outletId: 'out-1', cashierId: 'op-1' }), 'shift-new')
@@ -65,8 +65,12 @@ test('stale shifts resolve identically on both retry paths', () => {
   // Wrong outlet never matches.
   assert.equal(resolveCurrentOpenShiftId([open], { outletId: 'out-2', cashierId: 'op-1' }), null)
   const source = pos()
-  assert.match(source, /resolveCurrentOpenShiftId\(readCache\('pos-shifts'\)/)
-  assert.match(source, /retry_shift_rewritten/)
+  // The sale retry path no longer rewrites shift_id; it classifies the route
+  // and lets the reviewed server contract reconcile the original shift.
+  assert.doesNotMatch(source, /retry_shift_rewritten/)
+  assert.match(source, /classifySaleReplayRoute\(readCache\('pos-shifts'\), v3Payload\)/)
+  assert.match(source, /buildHistoricalReplayRequest\(\{ _queue_id: submitIntentId \}, v3Payload\)/)
+  assert.match(source, /POS_HISTORICAL_REPLAY_RPC/)
 })
 
 test('Products names pending saves that the Till will sell offline', () => {

@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
@@ -10,8 +11,84 @@ import { isBarOnlyMode, isHotelPropertyType, isRestaurantOnly } from '../../../s
 import { sanitizeForOperator } from '../../../shared/operatorSyncText'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/**
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncDetailsSnapshot} SyncDetailsSnapshot
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncGroupedCounts} SyncGroupedCounts
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncOfflineModeSnapshot} SyncOfflineModeSnapshot
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncOperationJournalSummary} SyncOperationJournalSummary
+ * The failed-row view follows sync.js:getSyncDetails/enrichFailed. Queue rows
+ * come from local JSON and remain unvalidated; raw identifiers/payload fields
+ * stay unknown while producer-computed retry classification is typed.
+ * @typedef {{p_booking_id?: unknown, p_id?: unknown, payload?: {id?: unknown, booking_id?: unknown} | null}} FailedSyncItemDataExpectedView
+ * @typedef {{_queue_id?: unknown, type?: unknown, table?: unknown, scope?: unknown, context?: unknown, data?: unknown, isFinancial?: boolean, isAutoRetryable?: boolean, autoRetryEligible?: boolean, nextAutoRetryAt?: unknown, lastAttemptedAt?: unknown, displayError?: unknown, lastError?: unknown, dependencyLabel?: string, dependencyCategory?: string}} FailedSyncItemExpectedView
+ * @typedef {{label: string, route: string, state: Record<string, unknown>}} SyncItemNavigation
+ * The main handler returns the complete snapshot or a queue-only access
+ * fallback. Local catch/timeout fallbacks add error, faults, and freshness.
+ * Optional members below are only those omitted by these concrete fallbacks;
+ * queue rows and persisted leaf values remain unvalidated.
+ * @typedef {{
+ *   pending: unknown[],
+ *   failed: unknown[],
+ *   faults?: unknown,
+ *   groupedCounts?: Partial<SyncGroupedCounts>,
+ *   cacheFreshness?: Record<string, unknown>,
+ *   cacheStale?: Partial<SyncDetailsSnapshot['cacheStale']>,
+ *   syncMeta?: Partial<SyncDetailsSnapshot['syncMeta']>,
+ *   syncInProgress?: boolean,
+ *   replayAuthReady?: boolean,
+ *   financialPendingBookingIds?: unknown,
+ *   financialFailedBookingIds?: unknown,
+ *   unresolvedLocal?: SyncDetailsSnapshot['unresolvedLocal'] | null,
+ *   offlineMode?: Partial<SyncOfflineModeSnapshot>,
+ *   operationJournal?: Partial<SyncOperationJournalSummary>,
+ *   error?: unknown
+ * }} SystemHealthSyncDetailsResponseExpectedView
+ * @typedef {{
+ *   pending: unknown[],
+ *   failed: FailedSyncItemExpectedView[],
+ *   faults: unknown[],
+ *   groupedCounts: Partial<SyncGroupedCounts>,
+ *   cacheFreshness: Record<string, unknown>,
+ *   cacheStale: Partial<SyncDetailsSnapshot['cacheStale']>,
+ *   syncMeta: Partial<SyncDetailsSnapshot['syncMeta']>,
+ *   syncInProgress: boolean,
+ *   replayAuthReady: boolean,
+ *   financialPendingBookingIds: unknown[],
+ *   financialFailedBookingIds: unknown[],
+ *   unresolvedLocal: SyncDetailsSnapshot['unresolvedLocal'] | null,
+ *   offlineMode: Partial<SyncOfflineModeSnapshot>,
+ *   operationJournal: Partial<SyncOperationJournalSummary>,
+ *   error: unknown
+ * }} SystemHealthSyncDetails
+ * @typedef {{
+ *   pending: unknown[],
+ *   failed: FailedSyncItemExpectedView[],
+ *   faults: unknown[],
+ *   cacheFreshness: Record<string, unknown>,
+ *   groupedCounts?: undefined,
+ *   cacheStale?: undefined,
+ *   syncMeta?: undefined,
+ *   syncInProgress?: undefined,
+ *   replayAuthReady?: undefined,
+ *   financialPendingBookingIds?: undefined,
+ *   financialFailedBookingIds?: undefined,
+ *   unresolvedLocal?: undefined,
+ *   offlineMode?: undefined,
+ *   operationJournal?: undefined,
+ *   error?: undefined
+ * }} SystemHealthSyncDetailsInitial
+ * The mesh view follows getMeshHealthSnapshot in src/main/domains/mesh/meshState.js.
+ * Nested queue-fault and lock payloads remain unknown because the producer forwards them from local state.
+ * @typedef {{nodeId: unknown, address: string, httpPort: number, lastSeenAt: string, clockOffsetMs: number, manual: boolean, discoverySource: unknown, sameSubnet: unknown}} SystemHealthMeshPeerExpectedView
+ * @typedef {{name: string, address: string, netmask: string, network: string, broadcast: string, cidr: string|null, private: boolean}} SystemHealthMeshInterfaceExpectedView
+ * @typedef {{at: string, peerCount: number, importedCount: number, missingCount: number, conflictCount: number, conflictSamples: unknown[], perPeer: unknown[]}} SystemHealthMeshQueueRepairExpectedView
+ * @typedef {{enabled: boolean, running: boolean, nodeId?: unknown, peerCount: number, peers?: SystemHealthMeshPeerExpectedView[], activeLockCount?: number, activeLocks?: unknown[], lastQueueMergeAt?: string|null, lastQueueRepair?: SystemHealthMeshQueueRepairExpectedView|null, lastTeamSync?: unknown, lastError?: unknown, lastDiscoveryError?: string|null, lastBeaconAt?: string|null, lastPeerSeenAt?: string|null, httpPort?: number|null, localInterfaces?: SystemHealthMeshInterfaceExpectedView[], warnings?: string[]}} SystemHealthMeshStatusExpectedView
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncStatusSnapshot & {mesh?: SystemHealthMeshStatusExpectedView}} SystemHealthSyncStatusWithMeshExpectedView
+ */
+
 // ─── Pill helpers ──────────────────────────────────────────────────────────────
 
+/** @param {{ok: unknown, label: import('react').ReactNode, warn?: unknown}} props */
 function StatusPill({ ok, label, warn }) {
   const cls = ok
     ? 'bg-green-100 text-green-700'
@@ -25,6 +102,7 @@ function StatusPill({ ok, label, warn }) {
   )
 }
 
+/** @param {number | null | undefined} ms */
 function formatAge(ms) {
   if (ms == null) return 'unknown'
   const s = Math.floor(ms / 1000)
@@ -37,11 +115,15 @@ function formatAge(ms) {
   return `${d}d ago`
 }
 
+/** @param {unknown} ts */
 function formatTs(ts) {
   if (!ts) return null
-  try { return new Date(ts).toLocaleString('en-GB') } catch { return ts }
+  // Persisted timestamps remain unknown; this expected-data assertion records
+  // the current producer convention without validating or rewriting the value.
+  try { return new Date(/** @type {string | number} */ (ts)).toLocaleString('en-GB') } catch { return ts }
 }
 
+/** @template T, F @param {Promise<T> | T} promise @param {number} ms @param {F} fallback @returns {Promise<T | F>} */
 function withTimeout(promise, ms, fallback) {
   return Promise.race([
     promise,
@@ -51,15 +133,24 @@ function withTimeout(promise, ms, fallback) {
   ])
 }
 
+/**
+ * Queue payloads remain unvalidated external data. The caller supplies the
+ * existing room/customer collections; this expected UI shape only describes
+ * fields consumed below.
+ * @param {{details: unknown, rooms: Array<{id: string | number, name?: unknown, table_number?: unknown, room_number?: unknown}>, customers: Array<{id: string | number, name?: unknown}>, restaurantMode?: boolean}} props
+ */
 function HumanContext({ details, rooms, customers, restaurantMode = false }) {
   if (!details || typeof details !== 'object') return null
 
   // Flatten common payload structures
+  // Expected-data projection only: the existing object guard does not validate
+  // nested queue payloads or their leaf values.
+  const detailRecord = /** @type {Record<string, unknown> & {data?: {payload?: object | null} | null, payload?: object | null}} */ (details)
   const flattened = { 
-    ...(details.data?.payload || {}),
-    ...(details.data || {}),
-    ...(details.payload || {}), 
-    ...details 
+    ...(detailRecord.data?.payload || {}),
+    ...(detailRecord.data || {}),
+    ...(detailRecord.payload || {}),
+    ...detailRecord
   }
   
   const findRoom = (id) => rooms.find(r => r.id === Number(id) || r.id === String(id))
@@ -281,7 +372,7 @@ export default function SystemHealthPanel() {
   const [health, setHealth]               = useState(null)
   const [globalSettings, setGlobalSettings] = useState(null)
   const [sessionUser, setSessionUser]     = useState(null)
-  const [syncDetails, setSyncDetails]     = useState({ pending: [], failed: [], faults: [], cacheFreshness: {} })
+  const [syncDetails, setSyncDetails]     = useState(/** @type {SystemHealthSyncDetails | SystemHealthSyncDetailsInitial} */ ({ pending: [], failed: [], faults: [], cacheFreshness: {} }))
   const [reconciliation, setReconciliation] = useState(null)
   const [validation, setValidation]       = useState(null)
   const [validationRuns, setValidationRuns] = useState([])
@@ -294,7 +385,7 @@ export default function SystemHealthPanel() {
   const [rendererErrors, setRendererErrors] = useState([])
   const [rooms, setRooms]                 = useState([])
   const [customers, setCustomers]         = useState([])
-  const [meshStatus, setMeshStatus]       = useState({ enabled: false, running: false, peerCount: 0, activeLocks: [] })
+  const [meshStatus, setMeshStatus]       = useState(/** @type {SystemHealthMeshStatusExpectedView} */ ({ enabled: false, running: false, peerCount: 0, activeLocks: [] }))
   const [manualMeshIp, setManualMeshIp]   = useState('')
   // Track current pending count so post-sync polling can detect when items drain
   const pendingCountRef = useRef(0)
@@ -324,7 +415,7 @@ export default function SystemHealthPanel() {
         withTimeout(window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })), 8000, { error: 'System health is taking too long to load.' }),
         withTimeout(window.api.settings.get().catch(() => null), 8000, null),
         withTimeout(window.api.auth.validateSession().catch(() => null), 8000, null),
-        withTimeout(window.api.sync.getDetails().catch((e) => ({ error: e.message, pending: [], failed: [], faults: [], cacheFreshness: {} })), 8000, { error: 'Sync details are taking too long to load.', pending: [], failed: [], faults: [], cacheFreshness: {} }),
+        withTimeout(/** @type {Promise<SystemHealthSyncDetailsResponseExpectedView>} */ (window.api.sync.getDetails().catch((e) => ({ error: e.message, pending: [], failed: [], faults: [], cacheFreshness: {} }))), 8000, /** @type {SystemHealthSyncDetailsResponseExpectedView} */ ({ error: 'Sync details are taking too long to load.', pending: [], failed: [], faults: [], cacheFreshness: {} })),
         withTimeout(window.api.reports.financialReconciliation().catch((e) => ({ error: e.message, summary: {} })), 8000, { error: 'Money check is unavailable offline.', summary: {} }),
         withTimeout(window.api.reports.financialValidation().catch((e) => ({ error: e.message, totals: {} })), 8000, { error: 'Money validation is unavailable offline.', totals: {} }),
         withTimeout(window.api.reports.financialValidationRuns(10).catch(() => []), 8000, []),
@@ -333,7 +424,7 @@ export default function SystemHealthPanel() {
         withTimeout(window.api.reports.criticalErrors?.(8).catch(() => []) || Promise.resolve([]), 8000, []),
         withTimeout(window.api.sync.getDeviceHealthRollup().catch(() => ({ available: false, devices: [] })), 8000, { available: false, devices: [] }),
         withTimeout(window.api.customers.getAll().catch(() => []), 8000, []),
-        withTimeout(window.api.sync.getStatus().catch(() => null), 8000, null)
+        withTimeout(/** @type {Promise<SystemHealthSyncStatusWithMeshExpectedView|null>} */ (window.api.sync.getStatus().catch(() => null)), 8000, null)
       ])
       setHealth(systemHealth || null)
       setGlobalSettings(settingsSnapshot || null)
@@ -352,7 +443,8 @@ export default function SystemHealthPanel() {
       pendingCountRef.current = nextPending.length
       setSyncDetails({
         pending:        nextPending,
-        failed:         Array.isArray(details?.failed) ? details.failed : [],
+        // Existing array guard covers only the collection, not its persisted rows.
+        failed:         Array.isArray(details?.failed) ? /** @type {FailedSyncItemExpectedView[]} */ (details.failed) : [],
         faults:         Array.isArray(details?.faults) ? details.faults : [],
         groupedCounts:  details?.groupedCounts || {},
         cacheFreshness: details?.cacheFreshness && typeof details.cacheFreshness === 'object' ? details.cacheFreshness : {},
@@ -363,6 +455,8 @@ export default function SystemHealthPanel() {
         financialPendingBookingIds: Array.isArray(details?.financialPendingBookingIds) ? details.financialPendingBookingIds : [],
         financialFailedBookingIds:  Array.isArray(details?.financialFailedBookingIds)  ? details.financialFailedBookingIds  : [],
         unresolvedLocal: details?.unresolvedLocal || null,
+        // Main constructs the outer summaries; persisted timestamps and
+        // operation metadata stay unknown in the shared contract.
         offlineMode: details?.offlineMode || { enabled: false },
         operationJournal: details?.operationJournal || { total: 0 },
         error: details?.error || ''
@@ -455,6 +549,7 @@ export default function SystemHealthPanel() {
     }
   }
 
+  /** @param {string | null | undefined} queueId */
   const retryFailedItem = async (queueId) => {
     if (!queueId) return
     setActionBusy(`retry:${queueId}`)
@@ -507,17 +602,38 @@ export default function SystemHealthPanel() {
     setActionBusy('validation')
     try {
       const result = await window.api.reports.runFinancialValidation().catch((e) => ({ success: false, error: e.message }))
-      if (result?.success === false) {
-        pushFlash('error', result.error || 'Could not run the money check right now.')
+      if (result?.run?.calculation_state === 'complete' && result?.run?.persistence_state !== 'confirmed') {
+        pushFlash('error', result.error || 'The calculation completed, but the server has not confirmed its saved audit record. Retry the saved run from Check history.')
+        await load()
         return
       }
-      pushFlash('success', 'Money check recorded.')
+      if (result?.success !== true || result?.run?.server_confirmed !== true) {
+        pushFlash('error', result?.error || 'A complete server reconciliation was unavailable. No audit run was recorded.')
+        return
+      }
+      pushFlash('success', 'Money check calculated and recorded by the server.')
       await load()
     } finally {
       setActionBusy('')
     }
   }
 
+  const retryValidationRun = async (runId) => {
+    if (!runId) return
+    setActionBusy('validation-retry:' + runId)
+    try {
+      const result = await window.api.reports.retryFinancialValidationRun(runId).catch((e) => ({ success: false, error: e.message }))
+      if (result?.success !== true || result?.run?.persistence_state !== 'confirmed') {
+        pushFlash('error', result?.error || 'The saved check is still not recorded. Retry it with the same run ID after checking access.')
+        await load()
+        return
+      }
+      pushFlash('success', 'The saved check was confirmed by the server.')
+      await load()
+    } finally {
+      setActionBusy('')
+    }
+  }
   const clearErrorHistory = async () => {
     setActionBusy('clear-errors')
     try {
@@ -708,8 +824,8 @@ export default function SystemHealthPanel() {
   const reconciliationDegraded  = reconciliation?.degraded === true || reconciliation?.timeout === true
   const reconciliationValid     = reconciliation?.valid === true
   const validationTotals        = validation?.totals || {}
-  const financeMismatchCount    = Number(reconciliationSummary.paymentMismatches || 0) + Number(reconciliationSummary.chargeMismatches || 0)
-  const invoiceGapCount         = Number(reconciliationSummary.invoiceGaps || 0) + Number(reconciliationSummary.orphanInvoices || 0)
+  const financeMismatchCount    = Number(reconciliationSummary.paymentMismatches || 0) + Number(reconciliationSummary.chargeMismatches || 0) + Number(reconciliationSummary.folioPosMismatches || 0) + Number(reconciliationSummary.posReturnMismatches || 0) + Number(reconciliationSummary.creditMismatches || 0) + Number(reconciliationSummary.posVoidMismatches || 0)
+  const invoiceGapCount         = Number(reconciliationSummary.invoiceGaps || 0) + Number(reconciliationSummary.duplicateInvoices || 0) + Number(reconciliationSummary.orphanInvoices || 0)
   const financialFailedBookingIds  = syncDetails?.financialFailedBookingIds  || []
   const financialPendingBookingIds = syncDetails?.financialPendingBookingIds || []
   const financialFailedCount    = financialFailedBookingIds.length
@@ -736,17 +852,21 @@ export default function SystemHealthPanel() {
   const criticalIssueCount     = criticalErrors.filter(isImportantIssueCritical).length
   const warningIssueCount      = Math.max(0, criticalErrors.length - criticalIssueCount)
 
+  /** @param {FailedSyncItemExpectedView | null | undefined} item */
   const getFailedItemBookingId = (item) => (
-    item?.data?.p_booking_id || item?.data?.payload?.id || item?.data?.payload?.booking_id || item?.data?.p_id || null
+    (/** @type {FailedSyncItemDataExpectedView | null | undefined} */ (item?.data))?.p_booking_id || (/** @type {FailedSyncItemDataExpectedView | null | undefined} */ (item?.data))?.payload?.id || (/** @type {FailedSyncItemDataExpectedView | null | undefined} */ (item?.data))?.payload?.booking_id || (/** @type {FailedSyncItemDataExpectedView | null | undefined} */ (item?.data))?.p_id || null
   )
 
   /**
    * Returns domain-aware action metadata (label, route, state) for a sync queue item or fault.
    * POS failures lead to POS/sell; accommodation booking failures lead to Bookings.
    */
+  /** @param {FailedSyncItemExpectedView} item @returns {SyncItemNavigation | null} */
   const getSyncItemAction = (item) => {
     // POS Orders
-    if (item.table === 'create_pos_order' || item.table === 'void_pos_order' || item.scope === 'pos' || item.type?.startsWith('pos_')) {
+    // The queue writer supplies string operation types; this assertion is only
+    // for the existing startsWith call and does not validate persisted rows.
+    if (item.table === 'create_pos_order' || item.table === 'void_pos_order' || item.scope === 'pos' || (/** @type {string | null | undefined} */ (item.type))?.startsWith('pos_')) {
       return {
         label: restaurantMode ? 'Review sale' : 'Review POS Order',
         route: restaurantMode ? '/hpos/pos' : '/pos',
@@ -777,7 +897,7 @@ export default function SystemHealthPanel() {
     }
 
     // Generic Bookings
-    const bookingId = getFailedItemBookingId(item) || (item.context && item.context.booking_id) || (typeof item.scope === 'string' && item.scope.startsWith('booking:') ? item.scope.slice(8) : null)
+    const bookingId = getFailedItemBookingId(item) || (item.context && (/** @type {{booking_id?: unknown}} */ (item.context)).booking_id) || (typeof item.scope === 'string' && item.scope.startsWith('booking:') ? item.scope.slice(8) : null)
     if (bookingId) {
       if (restaurantMode) {
         return { label: 'Open sell terminal', route: '/hpos/pos', state: {} }
@@ -1511,14 +1631,15 @@ export default function SystemHealthPanel() {
                           {getSyncItemAction(item) && (
                             <button type="button"
                               onClick={() => {
-                                const action = getSyncItemAction(item)
+                                const action = /** @type {SyncItemNavigation} */ (getSyncItemAction(item))
                                 navigate(action.route, { state: action.state })
                               }}
                               className="inline-flex items-center gap-2 rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50">
-                              {getSyncItemAction(item).label}
+                              {/** @type {SyncItemNavigation} */ (getSyncItemAction(item)).label}
                             </button>
                           )}
-                          <button type="button" onClick={() => retryFailedItem(item._queue_id)}
+                          {/* Queue writers use string operation IDs; the expected view does not validate this persisted value. */}
+                          <button type="button" onClick={() => retryFailedItem(/** @type {string | null | undefined} */ (item._queue_id))}
                             disabled={actionBusy === `retry:${item._queue_id}`}
                             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-60">
                             <RotateCcw size={12} />
@@ -1770,7 +1891,12 @@ export default function SystemHealthPanel() {
                     ['Payment mismatches', reconciliationSummary.paymentMismatches],
                     ['Charge mismatches', reconciliationSummary.chargeMismatches],
                     ['Missing invoices', reconciliationSummary.invoiceGaps],
+                    ['Duplicate invoices', reconciliationSummary.duplicateInvoices],
                     ['Unlinked invoices', reconciliationSummary.orphanInvoices],
+                    ['POS return differences', reconciliationSummary.posReturnMismatches],
+                    ['Customer credit differences', reconciliationSummary.creditMismatches],
+                    ['POS void differences', reconciliationSummary.posVoidMismatches],
+                    ['Folio POS differences', reconciliationSummary.folioPosMismatches],
                     ['Refunds waiting', reconciliationSummary.pendingRefunds],
                   ].map(([label, val]) => (
                     <div key={label} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
@@ -1889,7 +2015,7 @@ export default function SystemHealthPanel() {
             <div className="mt-5 border-t border-gray-100 pt-4">
               <div className="flex items-center justify-between gap-3">
                 <h4 className="text-sm font-semibold text-gray-900">Check history</h4>
-                <StatusPill ok={validationRuns.length > 0} warn={validationRuns.length === 0} label={validationRuns.length > 0 ? `${validationRuns.length} saved` : 'No checks yet'} />
+                <StatusPill ok={validationRuns.some((run) => run.server_confirmed === true || run.persistence_state === 'confirmed')} warn={validationRuns.some((run) => run.persistence_state !== 'confirmed' || run.local_only)} label={validationRuns.length > 0 ? validationRuns.filter((run) => run.server_confirmed === true || run.persistence_state === 'confirmed').length + ' server-confirmed · ' + validationRuns.filter((run) => run.persistence_state !== 'confirmed' && run.local_only).length + ' pending here' : 'No checks yet'} />
               </div>
               <div className="mt-3 space-y-3">
                 {validationRuns.length === 0 ? (
@@ -1909,8 +2035,17 @@ export default function SystemHealthPanel() {
                         Payment mismatches {Number(run.summary?.totals?.payment_mismatches || 0)} · Charge mismatches {Number(run.summary?.totals?.charge_mismatches || 0)} · Missing invoices {Number(run.summary?.totals?.invoice_gaps || 0)}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
-                        By {run.triggered_by_name || 'System'}{run.local_only ? ' · this computer only' : ''}
+                        By {run.triggered_by_name || 'System'} · {run.persistence_state === 'confirmed' || run.server_confirmed ? 'server confirmed' : 'not yet server-confirmed'}{run.local_only ? ' · saved on this computer' : ''}
                       </p>
+                      {run.local_only && run.calculation_state === 'complete' && run.persistence_state !== 'confirmed' && (
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs text-amber-800">{run.error || 'This saved check still needs server confirmation.'}</p>
+                          <button type="button" onClick={() => retryValidationRun(run.id)} disabled={String(actionBusy).startsWith('validation-retry:')}
+                            className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-900 disabled:opacity-60">
+                            {actionBusy === 'validation-retry:' + run.id ? 'Retrying…' : 'Retry same run'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))
                 )}

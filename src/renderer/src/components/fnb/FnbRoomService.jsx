@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState } from 'react'
 
 const NEXT = { new: 'preparing', preparing: 'ready', ready: 'dispatched', dispatched: 'delivered' }

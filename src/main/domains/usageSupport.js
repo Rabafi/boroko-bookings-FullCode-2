@@ -1,3 +1,4 @@
+// @ts-check
 import { readCache } from './cacheStore.js';
 import { readSyncQueue } from './syncStore.js';
 import {
@@ -11,6 +12,12 @@ import {
   getPlanRecommendation
 } from '../../shared/subscriptionPlans.js';
 
+/** @typedef {Record<string, unknown>} UsagePropertyView */
+/** @typedef {{isAbovePlan?: unknown, isBlocked?: unknown, isInGrace?: unknown, effectiveLimit?: unknown, used?: unknown}} UsageStatusView */
+/** @typedef {{targetMonthStatus?: UsageStatusView, combinedStatus?: UsageStatusView, creationMonthStatus?: UsageStatusView, isBlocked?: unknown}} UsageBookingAllowanceView */
+/** @typedef {{plan: string, limits: import('../../shared/subscriptionPlans.js').UsageLimits, usage: {monthlyBookings?: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, source: string, statuses: {rooms?: UsageStatusView, users?: UsageStatusView, bookings?: UsageStatusView, bookingTargetMonth?: UsageStatusView, bookingCreationMonth?: UsageStatusView}, bookingAllowance: UsageBookingAllowanceView, recommendation: unknown, monthlyResetCopy: string, [field: string]: unknown}} UsageSummary */
+
+/** @param {Date} [now] */
 export function getMonthWindowIso(now = new Date()) {
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -19,20 +26,23 @@ export function getMonthWindowIso(now = new Date()) {
   return { start: start.toISOString(), end: end.toISOString(), dateStart, dateEnd, startDate: start, endDate: end };
 }
 
+/** @param {unknown} item */
 function resolveQueuedItemCreatedAtRaw(item = {}) {
+  const fields = /** @type {UsagePropertyView | null | undefined} */ (item)
   return (
-    item?.timestamp ||
-    item?.createdAt ||
-    item?.created_at ||
-    item?.queued_at ||
-    item?.data?.created_at_client ||
-    item?.data?.payload?.created_at_client ||
-    item?.data?.createdAt ||
-    item?.data?.created_at ||
-    item?.data?.queued_at ||
+    fields?.timestamp ||
+    fields?.createdAt ||
+    fields?.created_at ||
+    fields?.queued_at ||
+    (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.created_at_client ||
+    (/** @type {UsagePropertyView | null | undefined} */ ((/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.payload))?.created_at_client ||
+    (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.createdAt ||
+    (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.created_at ||
+    (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.queued_at ||
     new Date().toISOString());
 }
 
+/** @param {{targetMonthDate?: Date, creationMonthDate?: Date}} [options] */
 function getPendingUsageQueueCounts({ targetMonthDate = new Date(), creationMonthDate = new Date() } = {}) {
   const queue = readSyncQueue();
   const { startDate, endDate } = getMonthWindowIso(targetMonthDate);
@@ -42,23 +52,24 @@ function getPendingUsageQueueCounts({ targetMonthDate = new Date(), creationMont
   let pendingRooms = 0;
   let pendingUsers = 0;
   for (const item of queue) {
-    if (item?.type !== 'rpc') continue;
-    if (item?.table === 'create_booking') {
-      const status = String(item?.data?.p_status || item?.data?.payload?.status || 'confirmed').toLowerCase();
+    const fields = /** @type {UsagePropertyView | null | undefined} */ (item)
+    if (fields?.type !== 'rpc') continue;
+    if (fields?.table === 'create_booking') {
+      const status = String((/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.p_status || (/** @type {UsagePropertyView | null | undefined} */ ((/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.payload))?.status || 'confirmed').toLowerCase();
       if (!['confirmed', 'checked_in', 'checked_out'].includes(status)) continue;
-      if (item?.data?.payload?.is_exclusive_event === true || item?.data?.p_is_exclusive_event === true) continue;
-      const checkInRaw = item?.data?.p_check_in || item?.data?.payload?.check_in;
-      const checkIn = new Date(checkInRaw || 0);
+      if ((/** @type {UsagePropertyView | null | undefined} */ ((/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.payload))?.is_exclusive_event === true || (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.p_is_exclusive_event === true) continue;
+      const checkInRaw = (/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.p_check_in || (/** @type {UsagePropertyView | null | undefined} */ ((/** @type {UsagePropertyView | null | undefined} */ (fields?.data))?.payload))?.check_in;
+      const checkIn = new Date(/** @type {string | number | Date} */ (checkInRaw || 0));
       if (!Number.isFinite(checkIn.getTime())) continue;
       const createdAtRaw = resolveQueuedItemCreatedAtRaw(item);
-      const createdAt = new Date(createdAtRaw);
+      const createdAt = new Date(/** @type {string | number | Date} */ (createdAtRaw));
       if (checkIn >= startDate && checkIn < endDate) pendingTargetMonthBookings += 1;
       if (Number.isFinite(createdAt.getTime()) && createdAt >= creationWindow.startDate && createdAt < creationWindow.endDate) {
         pendingCreationMonthBookings += 1;
       }
-    } else if (item?.table === 'create_room') {
+    } else if (fields?.table === 'create_room') {
       pendingRooms += 1;
-    } else if (item?.table === 'create_user') {
+    } else if (fields?.table === 'create_user') {
       pendingUsers += 1;
     }
   }
@@ -66,13 +77,15 @@ function getPendingUsageQueueCounts({ targetMonthDate = new Date(), creationMont
 }
 
 function getCachedMonthlyBookingUsage(now = new Date()) {
-  return countMonthlyUsageBookings(readCache('bookings'), now);
+  // This call-site view preserves the shared helper's existing cache-row reads; it adds no validation.
+  return countMonthlyUsageBookings(/** @type {Parameters<typeof countMonthlyUsageBookings>[0]} */ (readCache('bookings')), now);
 }
 
 function getCachedCreatedBookingUsage(now = new Date()) {
-  return countMonthlyCreatedBookings(readCache('bookings'), now);
+  return countMonthlyCreatedBookings(/** @type {Parameters<typeof countMonthlyCreatedBookings>[0]} */ (readCache('bookings')), now);
 }
 
+/** @param {{targetMonthDate?: Date, creationMonthDate?: Date}} [options] */
 export function getCachedEntityUsageCounts({ targetMonthDate = new Date(), creationMonthDate = new Date() } = {}) {
   const pending = getPendingUsageQueueCounts({ targetMonthDate, creationMonthDate });
   const targetMonthBookings = getCachedMonthlyBookingUsage(targetMonthDate) + pending.pendingTargetMonthBookings;
@@ -81,11 +94,12 @@ export function getCachedEntityUsageCounts({ targetMonthDate = new Date(), creat
     monthlyBookings: targetMonthBookings,
     targetMonthBookings,
     creationMonthBookings,
-    rooms: readCache('rooms').length + pending.pendingRooms,
-    users: readCache('users').length + pending.pendingUsers
+    rooms: /** @type {unknown[]} */ (readCache('rooms')).length + pending.pendingRooms,
+    users: /** @type {unknown[]} */ (readCache('users')).length + pending.pendingUsers
   };
 }
 
+/** @param {string} plan @param {import('../../shared/subscriptionPlans.js').UsageLimits} limits @param {{monthlyBookings?: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}} usage @param {string} source @returns {UsageSummary} */
 export function buildUsageSummary(plan, limits, usage, source) {
   const bookingAllowance = evaluateBookingCreationAllowance({
     plan,
@@ -121,6 +135,7 @@ export function buildUsageSummary(plan, limits, usage, source) {
   };
 }
 
+/** @param {'booking' | 'room' | 'user'} resource @param {UsageSummary} summary */
 function usageLimitErrorMessage(resource, summary) {
   const plan = summary.plan;
   const limits = summary.limits;
@@ -141,6 +156,7 @@ function usageLimitErrorMessage(resource, summary) {
   return `User limit reached: ${plan} allows up to ${limits?.users} staff accounts. Upgrade to ${nextPlan} for more users.`;
 }
 
+/** @param {UsageSummary | null | undefined} summary */
 export function buildUsageWarning(summary) {
   if (!summary) return '';
   const plan = summary.plan;
@@ -156,6 +172,7 @@ export function buildUsageWarning(summary) {
   return '';
 }
 
+/** @param {'booking' | 'room' | 'user'} resource @param {UsageSummary} summary */
 export function finalizeUsageGate(resource, summary) {
   const status = resource === 'booking' ?
   summary.bookingAllowance?.combinedStatus :

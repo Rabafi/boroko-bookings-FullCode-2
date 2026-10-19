@@ -1,3 +1,4 @@
+// @ts-check
 export const FINANCIAL_SYNC_TABLES = new Set([
   'create_booking',
   'create_campsite_booking',
@@ -93,6 +94,14 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'capture_fnb_supplier_invoice'
 ])
 
+/** @typedef {{_queue_id?: unknown, _depends_on?: unknown, _depends_on_all?: unknown}} PendingSyncRecord */
+
+/**
+ * @param {PendingSyncRecord[]} [pending=[]]
+ * @param {Set<string>} [completedQueueIds]
+ * @param {Set<string>} [failedQueueIds]
+ * @param {((dependencyId: string) => boolean) | null} [isDependencyResolved]
+ */
 export function pickNextReadySyncItemIndex(
   pending = [],
   completedQueueIds = new Set(),
@@ -117,6 +126,7 @@ export function pickNextReadySyncItemIndex(
   })
 }
 
+/** @param {{table?: unknown}} [item={}] */
 export function isFinancialSyncItem(item = {}) {
   const table = String(item?.table || '').trim()
   return FINANCIAL_SYNC_TABLES.has(table)
