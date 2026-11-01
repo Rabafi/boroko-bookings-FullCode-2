@@ -1,0 +1,21 @@
+{
+  "request_timeout_ms": 1000,
+  "elapsed_ms": 1752,
+  "settled_after_deadline": false,
+  "advisory_client_released": false,
+  "receiver": "fresh owned loopback HTTP server, no real database or hosted request",
+  "final_result": {
+    "status": "failed",
+    "transport": "local_test",
+    "checked_at": "2026-10-28T09:36:25.383Z",
+    "uploaded_batches": 0,
+    "pending_events": 1,
+    "last_error_code": "CLOUD_SYNC_RECEIVER_REFUSED",
+    "last_error_message": "The cloud receiver refused the batch.",
+    "final": false,
+    "final_state": null,
+    "status_detail": {
+      "pending_events": 1
+    }
+  }
+}

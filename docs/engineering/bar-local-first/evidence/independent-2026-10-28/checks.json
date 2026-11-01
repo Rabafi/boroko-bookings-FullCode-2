@@ -1,0 +1,88 @@
+[
+  {
+    "name": "modern-electron",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "run",
+      "test:bar-local-electron"
+    ],
+    "code": 0,
+    "signal": null,
+    "seconds": 58.189,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\modern-electron.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  {
+    "name": "legacy",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "test",
+      "--prefix",
+      "legacy-pos"
+    ],
+    "code": 0,
+    "signal": null,
+    "seconds": 26.808,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\legacy.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  {
+    "name": "renderer-typecheck",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "run",
+      "typecheck:renderer"
+    ],
+    "code": 0,
+    "signal": null,
+    "seconds": 27.869,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\renderer-typecheck.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  {
+    "name": "finance-typecheck",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "run",
+      "typecheck:bar-local-finance"
+    ],
+    "code": 0,
+    "signal": null,
+    "seconds": 26.446,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\finance-typecheck.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  {
+    "name": "modern-ui",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "run",
+      "test:bar-local-ui"
+    ],
+    "code": 0,
+    "signal": null,
+    "seconds": 214.919,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\modern-ui.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  },
+  {
+    "name": "broad-bar",
+    "command": [
+      "node",
+      "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js",
+      "run",
+      "test:bar"
+    ],
+    "code": null,
+    "signal": "SIGTERM",
+    "error": "review command timeout",
+    "seconds": 600.45,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\docs\\engineering\\bar-local-first\\evidence\\independent-2026-10-28\\broad-bar.log",
+    "browser": "C:\\Users\\Botswapelo Studios\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1248\\chrome-headless-shell-win64\\chrome-headless-shell.exe"
+  }
+]

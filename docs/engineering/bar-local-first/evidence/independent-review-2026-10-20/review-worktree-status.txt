@@ -1,0 +1,73 @@
+ M PROJECT_STATE.md
+ M docs/ARCHITECTURE.md
+ M docs/engineering/bar-local-first/IMPLEMENTATION_PROMPT.md
+ M docs/engineering/bar-local-first/REVIEW_PROMPT.md
+ M docs/engineering/bar-local-first/TECHNICAL_PLAN.md
+ M docs/engineering/typescript-migration/STATUS.md
+ M legacy-pos/package.json
+ M legacy-pos/src/main/index.js
+ M legacy-pos/src/preload/index.js
+ M legacy-pos/src/renderer/src/App.jsx
+ M legacy-pos/src/renderer/src/screens/Login.jsx
+ M legacy-pos/tsconfig.typecheck-main-l03.json
+ M legacy-pos/tsconfig.typecheck-preload-l03.json
+ M package-lock.json
+ M package.json
+ M scripts/typecheck-legacy-l03.mjs
+ M src/main/domains/bookings.js
+ M src/main/domains/mesh/meshQueueMerge.js
+ M src/main/domains/pos.js
+ M src/main/domains/reports.js
+ M src/main/emailNotifications.js
+ M src/main/hardware/posHardwareAdapter.js
+ M src/main/index.js
+ M src/preload/index.js
+ M src/renderer/src/App.jsx
+ M src/renderer/src/components/AdminCentral.jsx
+ M src/renderer/src/components/Bookings.jsx
+ M src/renderer/src/components/POS.jsx
+ M src/renderer/src/components/Reports.jsx
+ M src/renderer/src/components/Settings.jsx
+ M src/renderer/src/components/SystemHealthPanel.jsx
+ M src/renderer/src/components/hospitality-pos/HposSystemHealth.jsx
+ M src/renderer/src/components/hospitality-pos/HposTerminal.jsx
+ M src/renderer/src/types/desktop-api.d.ts
+ M src/shared/desktopIpcContracts.d.ts
+ M tests/mesh-p2p-sync.test.mjs
+ M tests/typecheck/renderer-desktop-api/invalid.ts
+ M tests/typecheck/renderer-desktop-api/valid.ts
+?? .commandcode/
+?? docs/engineering/bar-local-first/ACCEPTANCE_MANIFEST.csv
+?? docs/engineering/bar-local-first/ADR-001-LOCAL-AUTHORITY.md
+?? docs/engineering/bar-local-first/CHANGED_FILE_HASHES.csv
+?? docs/engineering/bar-local-first/CUTOVER_AND_RECOVERY_RUNBOOK.md
+?? docs/engineering/bar-local-first/DEPENDENCY_INVENTORY.md
+?? docs/engineering/bar-local-first/EVIDENCE_LOG.md
+?? docs/engineering/bar-local-first/FEATURE_CONTRACT_MATRIX.csv
+?? docs/engineering/bar-local-first/FUTURE_CLOUD_CONTRACT.md
+?? docs/engineering/bar-local-first/IMPLEMENTATION_REPORT.md
+?? docs/engineering/bar-local-first/INDEPENDENT_ACCEPTANCE_2026-10-20.csv
+?? docs/engineering/bar-local-first/INDEPENDENT_FEATURE_COVERAGE_2026-10-20.csv
+?? docs/engineering/bar-local-first/INDEPENDENT_PLAN_COVERAGE_2026-10-20.csv
+?? docs/engineering/bar-local-first/INDEPENDENT_REVIEW_2026-10-20.md
+?? docs/engineering/bar-local-first/MANUAL_IMPACT.md
+?? docs/engineering/bar-local-first/SECURITY_AND_FAILURE_REVIEW.md
+?? docs/engineering/bar-local-first/evidence/
+?? legacy-pos/docs/
+?? legacy-pos/src/main/bar-local/
+?? legacy-pos/src/main/companyLogin.js
+?? legacy-pos/src/main/stdioGuard.js
+?? legacy-pos/src/renderer/src/assets/tsa-bonno-hospitalityos-logo.png
+?? legacy-pos/src/renderer/src/screens/BarLocalWorkspace.jsx
+?? legacy-pos/tests/bar-local-client.test.mjs
+?? legacy-pos/tests/bar-local-runtime.test.mjs
+?? legacy-pos/tests/company-login-ui.mjs
+?? legacy-pos/tests/company-login.test.mjs
+?? legacy-pos/tests/stdio-guard.test.mjs
+?? packages/bar-contracts/
+?? scripts/open-legacy-pos.mjs
+?? services/
+?? src/main/bar-local/
+?? src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx
+?? src/shared/barLocalCashEstimate.js
+?? tests/bar-local/

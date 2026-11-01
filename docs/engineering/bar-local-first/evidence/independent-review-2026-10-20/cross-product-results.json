@@ -1,0 +1,20 @@
+[
+  {
+    "label": "build-lodge",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 41493
+  },
+  {
+    "label": "build-hotel",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 38748
+  },
+  {
+    "label": "renderer-ipc-typecheck",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 109702
+  }
+]

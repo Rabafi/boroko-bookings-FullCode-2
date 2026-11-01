@@ -1,3 +1,4 @@
+import './stdioGuard.js';
 import dotenv from 'dotenv';
 import { app, BrowserWindow, ipcMain, session, safeStorage } from 'electron';
 import autoUpdaterPkg from 'electron-updater';
@@ -7,6 +8,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createHash, randomUUID } from 'crypto';
+import { listLegacyCompanies, selectLegacyCompany, selectTrustedCompany, scopeCompanyRows, mergeCompanyRows } from './companyLogin.js';
+import { printVerifiedLocalBarReceipt } from './bar-local/receiptPrinter.js';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePosHardwareSettings } from '../shared/hardwareSettings.js';
 import {
@@ -41,6 +44,7 @@ import {
   appendFinancialJournalEvent,
   rebuildFinancialQueueFromJournal
 } from './storage/financialJournal.js';
+import { installLegacyBarLocalIpcFence, LegacyBarLocalRuntime } from './bar-local/runtime.js';
 import {
   protectLegacyQueuePayload,
   resolveLegacyQueuePayload
@@ -131,16 +135,25 @@ function refreshLegacyInventoryProjection() {
 }
 
 // ── Cash-Up Summarizer (main-process authoritative) ────────────────────────
+/**
+ * Expected row reads in the cache-backed cash-up preview. The order cache is
+ * not runtime-validated; these fields describe existing reads only.
+ * @typedef {{payment_breakdown?: unknown, total?: unknown, status?: unknown, _pending_sync?: unknown, _sync_state?: unknown}} LegacyCashupOrderExpectedView
+ * @typedef {{method?: unknown, type?: unknown, amount?: unknown}} LegacyCashupTenderInputExpectedView
+ * @typedef {{method: string, amount: number}} LegacyCashupTenderSummaryReadView
+ * @typedef {Record<string, unknown>} LegacyCashupTenderTotalsExpectedView
+ */
+/** @param {LegacyCashupOrderExpectedView} [order] @returns {LegacyCashupTenderSummaryReadView[]} */
 function getOrderPaymentRows(order = {}) {
-  const breakdown = Array.isArray(order.payment_breakdown) ? order.payment_breakdown
+  const breakdown = /** @type {LegacyCashupTenderInputExpectedView[]} */ (Array.isArray(order.payment_breakdown) ? order.payment_breakdown
     : typeof order.payment_breakdown === 'string'
       ? (() => { try { return JSON.parse(order.payment_breakdown); } catch { return []; } })()
-      : [];
+      : []);
   // A legacy payment_method label is not a recorded tender allocation. Keep
   // the row visible for reconciliation, but never turn the order total into
   // an invented cash/card amount in a cash-up preview.
   return breakdown
-    .map((row) => ({
+    .map((/** @type {LegacyCashupTenderInputExpectedView} */ row) => ({
       ...row,
       method: String(row?.method || row?.type || '').trim().toLowerCase(),
       amount: Number(row?.amount)
@@ -148,6 +161,7 @@ function getOrderPaymentRows(order = {}) {
     .filter((row) => row.method && Number.isFinite(row.amount) && row.amount !== 0);
 }
 
+/** @param {LegacyCashupOrderExpectedView} [order] */
 function hasRecordedPosTenderEnvelope(order = {}) {
   const rows = getOrderPaymentRows(order);
   const total = Number(order?.total);
@@ -156,9 +170,11 @@ function hasRecordedPosTenderEnvelope(order = {}) {
     && Math.abs(rows.reduce((sum, row) => sum + Number(row.amount), 0) - Math.abs(total)) <= 0.005;
 }
 
+/** @param {LegacyCashupOrderExpectedView[]} [orders] @param {{openingFloat?: number}} [options] */
 function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   const completed = orders.filter((o) => o?.status === 'completed');
   const voided = orders.filter((o) => o?.status === 'voided');
+  /** @type {Record<string, number>} */
   const byMethod = {};
   let grossSales = 0;
   let returnTotal = 0;
@@ -201,10 +217,14 @@ function summarizeCashupOrders(orders = [], { openingFloat = 0 } = {}) {
   };
 }
 
+/** @param {LegacyCashupTenderTotalsExpectedView} [expectedByMethod] @param {LegacyCashupTenderTotalsExpectedView} [countedByMethod] @param {number} [expectedCashDrawer] */
 function computeCashupVariances(expectedByMethod = {}, countedByMethod = {}, expectedCashDrawer = 0) {
+  /** @type {LegacyCashupTenderTotalsExpectedView} */
   const normalizedExpected = expectedByMethod && typeof expectedByMethod === 'object' ? expectedByMethod : {};
+  /** @type {LegacyCashupTenderTotalsExpectedView} */
   const normalizedCounted = countedByMethod && typeof countedByMethod === 'object' ? countedByMethod : {};
   const methods = new Set([...Object.keys(normalizedExpected), ...Object.keys(normalizedCounted), 'cash']);
+  /** @type {Record<string, number>} */
   const varianceByMethod = {};
 
   for (const method of methods) {
@@ -280,7 +300,7 @@ function buildTrustedSessionRecord(user, session, passwordHash, borokoSession = 
   };
 }
 
-function restoreTrustedSession(email, password) {
+function restoreTrustedSession(email, password, lodgeId = null) {
   const sessions = readTrustedSessions();
   const now = Date.now();
   const maxAge = 14 * 24 * 60 * 60 * 1000;
@@ -289,13 +309,13 @@ function restoreTrustedSession(email, password) {
     return String(s.email || '').toLowerCase() === String(email || '').toLowerCase();
   });
   if (candidates.length === 0) return { user: null, code: 'no_session' };
-  const session = candidates[0];
   if (!password) return { user: null, code: 'password_required' };
+  let session;
   try {
     const bcrypt = require('bcryptjs');
-    if (!bcrypt.compareSync(password, session.offline_password_hash)) {
-      return { user: null, code: 'wrong_password' };
-    }
+    const selection = selectTrustedCompany(candidates, email, password, lodgeId, (value, hash) => bcrypt.compareSync(value, hash));
+    if (selection.code !== 'ok') return selection;
+    session = selection.session;
   } catch { return { user: null, code: 'verify_failed' }; }
   const restoredUser = {
     id: session.userId,
@@ -548,9 +568,10 @@ function requireLodgeContext() {
   return state.lodgeId;
 }
 
-async function lookupUserProfileBy(column, value, authUser) {
+async function lookupUserProfileBy(column, value, authUser, lodgeId) {
   if (!value) return null;
-  let query = state.supabase.from('users').select(USER_SELECT).limit(1);
+  if (!normalizeUuid(lodgeId)) return null;
+  let query = state.supabase.from('users').select(USER_SELECT).eq('lodge_id', lodgeId).limit(2);
   query = column === 'email' ? query.ilike('email', value) : query.eq(column, value);
   const { data, error } = await query.maybeSingle();
   if (error) return null;
@@ -577,16 +598,16 @@ async function resolveCurrentUserProfileViaRpc(authUser, lodgeId = null) {
   return profile;
 }
 
-async function resolveCurrentUserProfile(authUser) {
+async function resolveCurrentUserProfile(authUser, selectedLodgeId = state.lodgeId) {
   if (!state.supabase || !authUser?.id) return null;
   state.pendingBorokoSession = null;
   const authId = normalizeUuid(authUser.id);
   const email = normalizeEmail(authUser.email);
   const profile =
-    await resolveCurrentUserProfileViaRpc(authUser, state.lodgeId) ||
-    await lookupUserProfileBy('auth_user_id', authId, authUser) ||
-    await lookupUserProfileBy('id', authId, authUser) ||
-    await lookupUserProfileBy('email', email, authUser);
+    await resolveCurrentUserProfileViaRpc(authUser, selectedLodgeId) ||
+    await lookupUserProfileBy('auth_user_id', authId, authUser, selectedLodgeId) ||
+    await lookupUserProfileBy('id', authId, authUser, selectedLodgeId) ||
+    await lookupUserProfileBy('email', email, authUser, selectedLodgeId);
   if (!profile) {
     throw new Error('Login succeeded, but this Supabase account is not linked to a Tsa Bonno staff profile.');
   }
@@ -595,6 +616,9 @@ async function resolveCurrentUserProfile(authUser) {
   }
   if (!profile.lodge_id) {
     throw new Error('Login succeeded, but this staff profile is not linked to a lodge.');
+  }
+  if (normalizeUuid(selectedLodgeId) && profile.lodge_id !== normalizeUuid(selectedLodgeId)) {
+    throw new Error('The staff profile does not belong to the selected company. Sign in again.');
   }
   return profile;
 }
@@ -682,18 +706,46 @@ function getCacheDir() {
   return dir;
 }
 
+const COMPANY_REFERENCE_CACHES = new Set(['settings', 'outlets', 'pos-staff', 'pos-menu-items', 'pos-catalog-snapshots', 'rooms', 'bookings', 'pos-tables', 'pos-modifier-groups', 'pos-promotions', 'pos-floor-layout']);
+const COMPANY_FINANCIAL_CACHES = new Set(['pos-orders', 'pos-cashups', 'pos-shifts', 'inventory-items', 'pos-tickets']);
+function scopeCachedValue(name, data) {
+  const companyId = normalizeUuid(state.lodgeId);
+  if (!companyId || !COMPANY_FINANCIAL_CACHES.has(name)) return data;
+  const owner = normalizeUuid(readJsonFile(path.join(state.cacheDir, 'settings.json'))?.lodge_id);
+  return scopeCompanyRows(data, companyId, owner);
+}
+function referenceCachePath(name) {
+  const companyId = normalizeUuid(state.lodgeId);
+  if (!companyId || !COMPANY_REFERENCE_CACHES.has(name)) return path.join(state.cacheDir, `${name}.json`);
+  const directory = path.join(state.cacheDir, 'companies', companyId);
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `${name}.json`);
+  const legacy = path.join(state.cacheDir, `${name}.json`);
+  const legacyOwner = readJsonFile(path.join(state.cacheDir, 'settings.json'));
+  if (!fs.existsSync(file) && fs.existsSync(legacy) && normalizeUuid(legacyOwner?.lodge_id) === companyId) fs.copyFileSync(legacy, file);
+  return file;
+}
+
+function assertCompanyQueueSafe(lodgeId) {
+  const pending = readSyncQueue();
+  if (!Array.isArray(pending)) throw new Error('The pending work store is invalid. Recover it before choosing a company.');
+  if (pending.some((item) => item.status !== 'synced' && normalizeUuid(item.lodge_id || item.payload?.lodge_id || item.payload?.p_lodge_id || item.payload?.payload?.lodge_id) !== lodgeId)) {
+    throw new Error('This terminal has unresolved work for another company. Sign in to that company and resolve Sync before switching.');
+  }
+}
+
 function readCache(name) {
-  const filePath = path.join(state.cacheDir, `${name}.json`);
+  const filePath = referenceCachePath(name);
   const tmpPath = filePath + '.tmp';
   if (fs.existsSync(tmpPath)) {
     try {
       const data = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
       fs.renameSync(tmpPath, filePath);
-      return data;
+      return scopeCachedValue(name, data);
     } catch { try { fs.unlinkSync(tmpPath); } catch {} }
   }
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    return scopeCachedValue(name, JSON.parse(fs.readFileSync(filePath, 'utf-8')));
   } catch { return []; }
 }
 
@@ -729,7 +781,11 @@ function getLegacyTabScope() {
 }
 
 function writeCache(name, data) {
-  const filePath = path.join(state.cacheDir, `${name}.json`);
+  const filePath = referenceCachePath(name);
+  if (normalizeUuid(state.lodgeId) && COMPANY_FINANCIAL_CACHES.has(name) && Array.isArray(data)) {
+    const owner = normalizeUuid(readJsonFile(path.join(state.cacheDir, 'settings.json'))?.lodge_id);
+    data = mergeCompanyRows(readJsonFile(filePath), data, state.lodgeId, owner);
+  }
   const tmpPath = filePath + '.tmp';
   const financialCache = new Set([
     'sync-queue', 'pos-orders', 'pos-cashups', 'pos-shifts', 'inventory-items'
@@ -1433,13 +1489,88 @@ function formatAuthLoginError(error) {
   return message;
 }
 
+let legacyBarLocalRuntime = null;
+
 function registerIpcHandlers() {
+  legacyBarLocalRuntime ||= new LegacyBarLocalRuntime({ userDataPath: app.getPath('userData'), safeStorage });
+  installLegacyBarLocalIpcFence(ipcMain, legacyBarLocalRuntime);
+  ipcMain.handle('pos:bar-local:get-status', () => legacyBarLocalRuntime.status());
+  ipcMain.handle('pos:bar-local:reconnect-server', async (_event, request) => {
+    const result = await legacyBarLocalRuntime.reconnectServer(request);
+    try { app.relaunch(); app.exit(0); } catch (error) { console.error('Replacement connection saved; restart required:', error.message); }
+    return result;
+  });
+  ipcMain.handle('pos:bar-local:select-cloud-workspace', () => {
+    const result = legacyBarLocalRuntime.selectCloudWorkspace();
+    if (result.restart_required) { try { app.relaunch(); app.exit(0); } catch (error) { console.error('Workspace restart required:', error.message); } }
+    return result;
+  });
+  ipcMain.handle('pos:bar-local:pair-device', async (_event, request) => {
+    try { return await legacyBarLocalRuntime.pairDevice(request); }
+    finally {
+      if (legacyBarLocalRuntime.status().authority_mode === 'bar_local') {
+        legacyBarLocalRuntime.restartRequired = true;
+        try { app.relaunch(); app.exit(0); } catch (error) { console.error('Local pairing committed; restart required:', error.message); }
+      }
+    }
+  });
+  ipcMain.handle('pos:bar-local:resume-provisioning', async () => {
+    try { return await legacyBarLocalRuntime.resumeProvisioning(); }
+    finally {
+      if (legacyBarLocalRuntime.status().authority_mode === 'bar_local') {
+        legacyBarLocalRuntime.restartRequired = true;
+        try { app.relaunch(); app.exit(0); } catch (error) { console.error('Workspace restart required:', error.message); }
+      }
+    }
+  });
+  ipcMain.handle('pos:bar-local:login', (_event, staffId, pin) => legacyBarLocalRuntime.login(staffId, pin));
+  ipcMain.handle('pos:bar-local:logout', () => legacyBarLocalRuntime.logout());
+  ipcMain.handle('pos:bar-local:start-pairing', (_event, request) => legacyBarLocalRuntime.startPairing(request));
+  ipcMain.handle('pos:bar-local:admin-status', () => legacyBarLocalRuntime.adminStatus());
+  ipcMain.handle('pos:bar-local:admin-backups', () => legacyBarLocalRuntime.adminBackups());
+  ipcMain.handle('pos:bar-local:admin-run-backup', (_event, request) => legacyBarLocalRuntime.adminRunBackup(request));
+  ipcMain.handle('pos:bar-local:admin-verify-backup', (_event, request) => legacyBarLocalRuntime.adminVerifyBackup(request));
+  ipcMain.handle('pos:bar-local:admin-restore-drill', (_event, request) => legacyBarLocalRuntime.adminRestoreDrill(request));
+  ipcMain.handle('pos:bar-local:admin-replication-status', () => legacyBarLocalRuntime.adminReplicationStatus());
+  ipcMain.handle('pos:bar-local:admin-set-durability', (_event, request) => legacyBarLocalRuntime.adminSetDurability(request));
+  ipcMain.handle('pos:bar-local:admin-switchover', (_event, request) => legacyBarLocalRuntime.adminSwitchover(request));
+  ipcMain.handle('pos:bar-local:admin-update-status', () => legacyBarLocalRuntime.adminUpdateStatus());
+  ipcMain.handle('pos:bar-local:admin-cloud-sync-status', () => legacyBarLocalRuntime.adminCloudSyncStatus());
+  ipcMain.handle('pos:bar-local:admin-cloud-sync-config', (_event, request) => legacyBarLocalRuntime.adminCloudSyncConfig(request));
+  ipcMain.handle('pos:bar-local:admin-cloud-sync-run', (_event, request) => legacyBarLocalRuntime.adminCloudSyncRun(request));
+  ipcMain.handle('pos:bar-local:query', (_event, name, filters) => legacyBarLocalRuntime.query(name, filters));
+  ipcMain.handle('pos:bar-local:events', (_event, after, limit) => legacyBarLocalRuntime.events(after, limit));
+  ipcMain.handle('pos:bar-local:request-approval', (_event, command, payload, pin, options) => legacyBarLocalRuntime.requestApproval(command, payload, pin, options));
+  ipcMain.handle('pos:bar-local:command', (_event, command, payload, options) => legacyBarLocalRuntime.command(command, payload, options));
+  ipcMain.handle('pos:bar-local:retry', (_event, operationId) => legacyBarLocalRuntime.retry(operationId));
+    ipcMain.handle('pos:bar-local:get-open-intents', () => legacyBarLocalRuntime.getOpenIntents());
+  ipcMain.handle('pos:bar-local:get-operation', (_event, operationId) => legacyBarLocalRuntime.getOperation(operationId));
+  ipcMain.handle('pos:bar-local:resolve-operation', (_event, operationId) => legacyBarLocalRuntime.resolve(operationId));
+  ipcMain.handle('pos:bar-local:refresh-readiness', () => legacyBarLocalRuntime.refreshReadiness());
+  ipcMain.handle('pos:bar-local:print-receipt', async (_event, saleId) => {
+    const hardware = normalizePosHardwareSettings(readCache('pos-hardware-settings')?.[0] || {});
+    return printVerifiedLocalBarReceipt({
+      runtime: legacyBarLocalRuntime,
+      saleId,
+      settings: hardware,
+      printer: printEscPosReceipt
+    });
+  });
   // ── Auth ───────────────────────────────────────────────────────────────────
-  ipcMain.handle('pos:auth-login', async (_event, { email, password }) => {
+  ipcMain.handle('pos:auth-login', async (_event, { email, password, lodgeId = null }) => {
     if (!state.supabase) throw new Error('Supabase not configured');
+    if (state.currentUser) throw new Error('Sign out before choosing another company.');
+    if (state.syncInProgress) throw new Error('Wait for Sync to finish before signing in to a company.');
+    state.lodgeId = null;
+    state.pendingBorokoSession = null;
+    await applySupabaseContext({ authSession: null, borokoSession: null });
     const { data, error } = await state.supabase.auth.signInWithPassword({ email: normalizeEmail(email), password });
     if (error) throw new Error(formatAuthLoginError(error));
-    const userData = await resolveCurrentUserProfile(data.user);
+    const companies = await listLegacyCompanies(state.supabase, normalizeUuid);
+    const selection = selectLegacyCompany(companies, lodgeId, normalizeUuid);
+    if (selection.code === 'company_selection_required') return selection;
+    assertCompanyQueueSafe(selection.lodgeId);
+    const userData = await resolveCurrentUserProfile(data.user, selection.lodgeId);
     const borokoSession = requireBorokoSession(await issueLegacyBorokoSession(userData));
     await applySupabaseContext({ authSession: data.session, borokoSession });
     state.currentUser = userData;
@@ -1451,14 +1582,16 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('pos:auth-restore', async (_event, credentials) => {
+    if (credentials?.email && state.currentUser) throw new Error('Sign out before choosing another company.');
     const saved = readCache('current-session');
-    if (saved?.session?.access_token && state.supabase) {
+    if (!credentials?.email && saved?.session?.access_token && state.supabase) {
       try {
         await applySupabaseContext({ authSession: saved.session, borokoSession: saved.borokoSession });
         {
           const { data: authData } = await state.supabase.auth.getUser().catch(() => ({ data: null }));
           const authUser = authData?.user || saved.session?.user || saved.user;
-          const userData = await resolveCurrentUserProfile(authUser);
+          const userData = await resolveCurrentUserProfile(authUser, saved.lodgeId || saved.user?.lodge_id);
+          assertCompanyQueueSafe(userData.lodge_id);
           const borokoSession = requireBorokoSession(await issueLegacyBorokoSession(userData) || state.borokoSession);
           await applySupabaseContext({ authSession: saved.session, borokoSession });
           state.currentUser = userData;
@@ -1470,8 +1603,12 @@ function registerIpcHandlers() {
       } catch {}
     }
     if (credentials?.email && credentials?.password) {
-      const result = restoreTrustedSession(credentials.email, credentials.password);
+      const selectedLodgeId = credentials.lodgeId == null ? null : normalizeUuid(credentials.lodgeId);
+      if (credentials.lodgeId && !selectedLodgeId) throw new Error('Select a valid company.');
+      const result = restoreTrustedSession(credentials.email, credentials.password, selectedLodgeId);
+      if (result.code === 'company_selection_required') return result;
       if (result.code === 'ok' && result.user) {
+        assertCompanyQueueSafe(result.user.lodge_id);
         state.currentUser = result.user;
         state.lodgeId = result.user.lodge_id;
         if (result.authSession || result.borokoSession) {
@@ -1791,6 +1928,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('pos:get-orders', async (_event, { startDate, endDate } = {}) => {
+    requireLodgeContext();
     const outletFilter = getUserOutletFilter();
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       const lodgeId = requireLodgeContext();
@@ -2136,6 +2274,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('pos:get-cashups', async (_event, { limit = 30 } = {}) => {
+    requireLodgeContext();
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       try {
         const { data, error } = await state.supabase.from('pos_cashup_sessions')
@@ -2576,6 +2715,7 @@ function registerIpcHandlers() {
 
   // ── Shifts (RPC-backed, database is source of truth) ───────────────────────
   ipcMain.handle('pos:get-shifts', async () => {
+    requireLodgeContext();
     if (state.isOnline && state.supabase && hasLodgeContext()) {
       const { data, error } = await state.supabase.rpc('get_pos_shifts', { p_lodge_id: requireLodgeContext() });
       if (error) throw new Error(error.message);
@@ -3274,25 +3414,38 @@ app.whenReady().then(() => {
     callback(isGitHubUpdateCertificateHost(request.hostname || request.url) ? 0 : -3);
   });
   state.cacheDir = getCacheDir();
-  recoverFinancialQueue();
-  startLegacyMesh();
   state.localConfig = readLocalConfig();
   state.runtimeConfig = readRuntimeConfig();
   state.lowResource = getLowResourceConfig(state.localConfig?.lowResource || {});
-  const supabaseConfig = resolveSupabaseConfig();
-  if (supabaseConfig?.url && supabaseConfig?.key) {
-    initSupabase(supabaseConfig.url, supabaseConfig.key);
+  // Resolve the device's trusted authority before starting Supabase, replaying
+  // the legacy cloud queue, or joining the legacy mesh. A committed or damaged
+  // local profile holds all of those cloud paths closed.
+  legacyBarLocalRuntime = new LegacyBarLocalRuntime({ userDataPath: app.getPath('userData'), safeStorage });
+  const localAuthorityCommitted = legacyBarLocalRuntime.status().authority_mode === 'bar_local';
+  const cloudStartupDisabled = localAuthorityCommitted || legacyBarLocalRuntime.cloudStartupDeferred;
+  if (cloudStartupDisabled) {
+    state.isOnline = false;
+  } else {
+    recoverFinancialQueue();
+    startLegacyMesh();
+    const supabaseConfig = resolveSupabaseConfig();
+    if (supabaseConfig?.url && supabaseConfig?.key) {
+      initSupabase(supabaseConfig.url, supabaseConfig.key);
+    }
   }
   registerIpcHandlers();
   createWindow();
-  setupAutoUpdater();
+  if (!cloudStartupDisabled) setupAutoUpdater();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
-      setupAutoUpdater();
+      if (!cloudStartupDisabled) setupAutoUpdater();
     }
   });
 });
 
-app.on('before-quit', () => legacyMeshController?.stop?.());
+app.on('before-quit', () => {
+  legacyMeshController?.stop?.();
+  legacyBarLocalRuntime?.close?.();
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

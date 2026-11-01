@@ -1,0 +1,21 @@
+[
+  {
+    "case": "definitive refusal via real HTTP",
+    "serviceOutcome": "refused",
+    "serviceError": {
+      "code": "INSUFFICIENT_STOCK",
+      "message": "Not enough stock for recipe ingredient RECIPE-INGREDIENT. Another till may have sold it.",
+      "requires_manager": false,
+      "retry_same_operation": false
+    },
+    "clientCode": "INSUFFICIENT_STOCK",
+    "clientOutcomeUnknown": true,
+    "journalState": "uncertain"
+  },
+  {
+    "case": "wrong authority receipt acceptance",
+    "outcome": "committed_local",
+    "journalState": "committed",
+    "receiptMatchesAuthority": false
+  }
+]

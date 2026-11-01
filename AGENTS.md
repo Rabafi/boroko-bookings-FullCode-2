@@ -28,12 +28,13 @@ Correctness means preserving financial and operational truth under concurrency, 
 - Public booking site: browser app under `booking-site/` using public, server-enforced booking APIs/RPCs.
 - Command Central: privileged administration within the desktop application.
 - Supabase: PostgreSQL, RLS, RPCs, audit data, and authoritative business rules.
+- Commissioned local Bar mode (partial implementation): Modern and Legacy local Bar authority paths use the dedicated `services/bar-local` PostgreSQL service and its scoped, atomic command contracts. This mode is not yet qualified or generally commissioned; until then, existing cloud-mode paths retain their current Supabase contract.
 
 Do not assume a change has only one caller. Trace every relevant desktop, PWA, Legacy POS, public-site, offline-replay, reporting, and migration path.
 
 ## Non-negotiable financial rules
 
-1. Financial mutations must use authoritative Supabase RPCs.
+1. Financial mutations in cloud-mode desktop, Manager PWA, Legacy POS, public booking, hotel and lodge paths must use authoritative Supabase RPCs. Only an explicitly committed/commissioned local-Bar authority profile may use the dedicated local Bar service's server-side atomic PostgreSQL command contract; this exception is Bar-scoped, fails closed, and does not authorize cloud fallback, client-side financial writes, or hosted ingestion. The local-Bar path remains unqualified until its separate release gates pass.
 2. Never write `bookings.amount_paid` directly from a client.
 3. Never author `payment_status` in React, Electron renderer code, or offline estimates.
 4. Payments are delta-based ledger entries; authoritative totals come from the database.
@@ -84,6 +85,7 @@ Relevant Bar changes must also verify that the approved manual and quick-start a
 5. Add focused regression coverage for the contract being changed.
 6. Run the real scripts from `package.json`; do not invent test names.
 7. Update [PROJECT_STATE.md](PROJECT_STATE.md) when a change materially alters architecture, active risks, release state, or deployment assumptions.
+8. For work spanning multiple days, leave a focused commit at the end of each working day and push it to the configured branch/remote when available. Never include unrelated user changes in that commit. If a safe focused commit or push is blocked, record why and the exact remaining action in task evidence.
 
 ## Guardrails are mandatory
 

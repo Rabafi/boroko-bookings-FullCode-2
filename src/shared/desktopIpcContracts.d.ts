@@ -76,6 +76,24 @@ export interface SyncGroupedCounts {
   pending_items: number;
 }
 
+/**
+ * Main sync:retryFailed success fields are built by retrySyncItems; failures
+ * preserve the existing IPC catch message. This describes the producer shape
+ * and does not validate values transported through Electron IPC.
+ */
+export type SyncRetryResult =
+  | { success: true; retried: number; remaining: number }
+  | { success: false; error: unknown };
+
+/**
+ * Main sync:clearFailed success fields are built by clearSyncFailed; failures
+ * preserve the existing IPC catch message. This describes the producer shape
+ * and does not validate values transported through Electron IPC.
+ */
+export type SyncClearFailedResult =
+  | { success: true; removed: number; financialCleared: number; integrityAlertsRecorded: number; remaining: number }
+  | { success: false; error: unknown };
+
 /** `enabled` and `reason` are normalized; persisted timestamps/path stay unknown. */
 export type SyncOfflineModeSnapshot =
   | {
@@ -292,6 +310,77 @@ export type PosHardwareSettingsResult = PosHardwareSettings | (object & {
   [Key in keyof PosHardwareSettings]?: never;
 });
 
+/** Outer result built by createDailyChecklist or its SQL RPC; this contract does not validate checklist/cache data. */
+export type PosChecklistCreateResult =
+  | { success: true; offline: true; queued: true; id: string }
+  | { success: true; checklist_id: string }
+  | { success: false; error: unknown };
+
+/** Result envelopes returned by the alert RPCs and main-process error branches; no row data is validated here. */
+export type PosAlertRecordResult =
+  | { success: true; alert_id: string; category: string; alert_type: string; outlet_id: string | null; created_by: string }
+  | { success: false; error: unknown };
+export type PosAlertResolutionResult =
+  | { success: true; alert_id: string; resolved_by: string; resolved_at: string; operation_id: string; replayed?: boolean; error?: never }
+  | { success: false; error: unknown; conflict?: boolean };
+
+/** Summary fields emitted by generate_owner_digest. The values remain expected JSON data, not runtime-validated values. */
+export interface PosOwnerDigestSummaryExpectedView {
+  date: string;
+  total_revenue: unknown;
+  total_orders: number | string;
+  avg_order?: unknown;
+  pending_orders?: number | string;
+  active_alerts: number | string;
+  low_stock_items: number | string;
+  open_checklists?: number | string;
+}
+export type PosOwnerDigestResult =
+  | { success: true; digest: PosOwnerDigestSummaryExpectedView }
+  | { success: false; error: unknown };
+
+/** Metadata keys emitted by settings persistence; values are not runtime-validated. */
+export interface SettingsSaveMetaExpectedView {
+  persistence: unknown;
+  online: unknown;
+  pending: unknown;
+  skippedColumns: unknown;
+  warnings: unknown;
+}
+/** Outer result shape built by the settings:save IPC handler; saved settings and metadata contents remain unvalidated. */
+export type SettingsSaveIpcResult =
+  | { success: true; data: unknown; meta: SettingsSaveMetaExpectedView }
+  | { success: false; error: unknown };
+
+/** Successful branches constructed by refundBooking; RPC/cache identifiers and result payloads remain unvalidated. */
+export type BookingRefundSuccessResult =
+  | {
+      success: true;
+      offline: true;
+      pending_approval: true;
+      booking_id: unknown;
+      request_id: string;
+      request: unknown;
+      refund_amount: number;
+      retained_amount: number;
+      retained_percent: number;
+      method: string;
+      proof_reference: string;
+      notes: string;
+    }
+  | {
+      success: true;
+      booking_id: unknown;
+      refund_amount: number;
+      retained_amount: number;
+      retained_percent: number;
+      approved_by: unknown;
+      approved_by_name: unknown;
+      credit_transfer: boolean;
+      credit_entry_id: unknown;
+      credit_balance: unknown;
+    };
+
 export type AdminNotificationsCleanupResult =
   | { ok: true; count: unknown }
   | { ok: false; count: 0; error: unknown };
@@ -314,8 +403,15 @@ export interface DesktopIpcResultContracts {
   'sync:getDetails': SyncDetailsResult;
   'sync:getOfflineMode': SyncOfflineModeResult;
   'sync:setOfflineMode': SyncOfflineModeWriteResult;
+  'sync:retryFailed': SyncRetryResult;
+  'sync:clearFailed': SyncClearFailedResult;
   'pos:getHardwareSettings': PosHardwareSettingsResult;
   'pos:verifyBarcodeScanner': BarcodeScannerVerificationResult;
+  'pos:createChecklist': PosChecklistCreateResult;
+  'pos:recordAlert': PosAlertRecordResult;
+  'pos:resolveAlert': PosAlertResolutionResult;
+  'pos:generateOwnerDigest': PosOwnerDigestResult;
+  'settings:save': SettingsSaveIpcResult;
   /** Raw JSONB from the global-search RPC; shape is not validated in main. */
   'admin:globalSearch': unknown;
   /** The AI turn may wrap unvalidated model/tool/RPC data in several branches. */

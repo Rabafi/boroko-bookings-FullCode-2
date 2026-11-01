@@ -1,0 +1,48 @@
+{
+  "checkpoint": "2026-10-26",
+  "implementation_complete": false,
+  "customer_ready": false,
+  "service_latest": {
+    "tests": 149,
+    "passed": 147,
+    "failed": 2,
+    "migrations_through": "0057",
+    "later_migrations_unverified": [
+      "0058",
+      "0059"
+    ]
+  },
+  "ui": {
+    "tests": 5,
+    "passed": 5,
+    "form_actions": 14,
+    "mocked_reads": true,
+    "real_contract_validation": true
+  },
+  "modern_electron": {
+    "passed": 52
+  },
+  "modern_client": {
+    "passed": 32
+  },
+  "legacy": {
+    "source_checks": 219,
+    "node_tests": 48
+  },
+  "builds": {
+    "modern": "PASS",
+    "legacy": "PASS",
+    "service": "PASS"
+  },
+  "typechecks": {
+    "service_contracts": "strict",
+    "new_finance_components": "strict checked JavaScript",
+    "root_main_renderer": "pilot files only"
+  },
+  "hardware": "pending at user direction",
+  "customer_document_artifacts": "deferred at user direction",
+  "hosted_changes": false,
+  "hosted_ingestion": "disabled",
+  "blocker": "C: free space below 4 GiB isolated-test preflight; user asked to free 2 GB",
+  "source_manifest_scope": "Local Bar implementation, contracts, shared UI/helpers, tests and checkpoint documents; not whole dirty checkout"
+}

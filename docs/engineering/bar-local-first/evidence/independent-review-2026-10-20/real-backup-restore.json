@@ -1,0 +1,138 @@
+{
+  "backup": {
+    "ok": true,
+    "bytes": 935512
+  },
+  "restore": {
+    "host": "127.0.0.1",
+    "port": 55461,
+    "database": "bar_local_test_independent_restore"
+  },
+  "verification": {
+    "ok": true,
+    "status": "verified",
+    "generated_at": "2026-10-20T16:59:35.663Z",
+    "database": "bar_local_test_independent_restore",
+    "schema": {
+      "applied_count": 25,
+      "local_count": 25,
+      "checksums_verified": true,
+      "missing_local": [],
+      "unknown_applied": [],
+      "mismatched": []
+    },
+    "authority": {
+      "authority_id": "dbff414e-f46b-4609-93c6-8fd75e8a12d4",
+      "authority_epoch": "1",
+      "business_id": "1d9ffc99-ea2e-4e6c-a584-8f4c06b06403",
+      "commissioned_at": "2026-10-20 18:56:49.329571+02",
+      "catalogue_version": "7",
+      "entitlement_version": "1"
+    },
+    "counters": {
+      "commit_sequence": "20",
+      "receipt_sequence": "9",
+      "acknowledged_watermark": "0",
+      "exported_watermark": "0",
+      "pending_outbox": 20
+    },
+    "checks": [
+      {
+        "name": "schema_migrations_match_local",
+        "status": "pass",
+        "violations": 0,
+        "detail": "All applied migrations match local files."
+      },
+      {
+        "name": "authority_identity_valid",
+        "status": "pass",
+        "violations": 0,
+        "detail": "Exactly one commissioned authority and its business row are present."
+      },
+      {
+        "name": "sales_totals_balanced",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "sale_line_totals_balanced",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "journal_entries_balanced",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "cashup_variance_consistent",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "stock_balance_matches_movements",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "voucher_balance_matches_ledger",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "operation_receipts_complete",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "operation_commit_sequences_unique",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "receipt_numbers_within_counter",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "outbox_within_commit_watermark",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "outbox_payload_hashes_valid",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "export_batches_ranges_valid",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "export_batches_event_counts_match",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "outbox_before_acknowledgement_exported",
+        "status": "pass",
+        "violations": 0
+      },
+      {
+        "name": "acknowledgement_watermark_valid",
+        "status": "pass",
+        "violations": 0,
+        "detail": "Exported and acknowledged batch watermarks do not exceed the committed sequence."
+      }
+    ],
+    "failures": []
+  },
+  "tenderInvariant": {
+    "mismatches": 1
+  },
+  "runtimePrivileges": {
+    "schema_usage": false,
+    "function_execute": true
+  }
+}

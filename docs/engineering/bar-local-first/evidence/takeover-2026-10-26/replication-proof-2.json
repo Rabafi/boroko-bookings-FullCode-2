@@ -1,0 +1,104 @@
+[
+  {
+    "stage": "durability",
+    "report": {
+      "ok": true,
+      "profile": "synchronous_one_standby",
+      "synchronous_commit": "on",
+      "synchronous_standby_names": "ANY 1 (*)",
+      "caught_up_standbys": 1,
+      "checked_at": "2026-10-23T09:42:18.057Z"
+    }
+  },
+  {
+    "stage": "full-receipts",
+    "primary": {
+      "receipts": 5,
+      "hash": "41626d159e67dee37706f24b7801f971"
+    },
+    "standby": {
+      "receipts": 5,
+      "hash": "41626d159e67dee37706f24b7801f971"
+    }
+  },
+  {
+    "stage": "switchover",
+    "report": {
+      "ok": true,
+      "coordinator": "manual",
+      "authority_state": "promoted",
+      "client_repoint_required": true,
+      "fenced": {
+        "verified": true,
+        "at": "2026-10-23T09:42:18.790Z"
+      },
+      "promoted": {
+        "verified": true,
+        "lsn": "0/2C0004A8",
+        "at": "2026-10-23T09:42:20.379Z"
+      },
+      "operations": [
+        {
+          "target": "primary",
+          "sql": "ALTER SYSTEM SET default_transaction_read_only = on",
+          "at": "2026-10-23T09:42:18.455Z"
+        },
+        {
+          "target": "primary",
+          "sql": "ALTER DATABASE \"bar_local_test_takeover_20261023\" SET default_transaction_read_only = on",
+          "at": "2026-10-23T09:42:18.495Z"
+        },
+        {
+          "target": "primary",
+          "sql": "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND application_name = 'bar-local-service' AND pid <> pg_backend_pid()",
+          "at": "2026-10-23T09:42:18.503Z"
+        },
+        {
+          "target": "primary",
+          "sql": "SELECT pg_reload_conf()",
+          "at": "2026-10-23T09:42:18.525Z"
+        },
+        {
+          "target": "standby",
+          "sql": "SELECT pg_promote(false) AS promoted",
+          "at": "2026-10-23T09:42:19.305Z"
+        },
+        {
+          "target": "standby",
+          "sql": "SET synchronous_commit = 'local'",
+          "at": "2026-10-23T09:42:20.337Z"
+        },
+        {
+          "target": "standby",
+          "sql": "ALTER SYSTEM SET default_transaction_read_only = off",
+          "at": "2026-10-23T09:42:20.338Z"
+        },
+        {
+          "target": "standby",
+          "sql": "ALTER DATABASE \"bar_local_test_takeover_20261023\" SET default_transaction_read_only = off",
+          "at": "2026-10-23T09:42:20.372Z"
+        },
+        {
+          "target": "standby",
+          "sql": "SELECT pg_reload_conf()",
+          "at": "2026-10-23T09:42:20.376Z"
+        }
+      ],
+      "error": null,
+      "checked_at": "2026-10-23T09:42:20.379Z"
+    }
+  },
+  {
+    "stage": "after",
+    "primary_recovery": {
+      "r": false
+    },
+    "standby_recovery": {
+      "r": false
+    },
+    "standby_receipts": {
+      "receipts": 5,
+      "hash": "41626d159e67dee37706f24b7801f971"
+    }
+  }
+]

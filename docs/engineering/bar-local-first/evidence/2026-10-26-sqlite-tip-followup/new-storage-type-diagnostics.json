@@ -1,0 +1,14 @@
+{
+  "typescript": "5.9.3",
+  "scope": "Only new storage source, under the actual strict main-surface compiler options. This is not a whole-application typecheck.",
+  "results": [
+    {
+      "file": "src/main/bar-local/sqliteFrameStore.ts",
+      "diagnostics": []
+    },
+    {
+      "file": "src/main/bar-local/sqliteIntents.js",
+      "diagnostics": []
+    }
+  ]
+}

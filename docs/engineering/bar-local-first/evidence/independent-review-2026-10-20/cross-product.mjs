@@ -1,0 +1,4 @@
+import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';
+const dir=path.join(process.cwd(),'.tmp','bar-local-independent-review-20261020');const npm=path.join(path.dirname(process.execPath),'node_modules/npm/bin/npm-cli.js');
+const checks=[['build-lodge',[npm,'run','build']],['build-hotel',['scripts/product-app.mjs','hotel','build']],['renderer-ipc-typecheck',[npm,'run','test:typecheck:renderer-ipc']]];const results=[];
+for(const[label,args]of checks){const fd=fs.openSync(path.join(dir,label+'.log'),'w');const start=Date.now();const r=spawnSync(process.execPath,args,{cwd:process.cwd(),windowsHide:true,stdio:['ignore',fd,fd],timeout:300000});fs.closeSync(fd);results.push({label,exit:r.status,error:r.error?.message||null,duration_ms:Date.now()-start});fs.writeFileSync(path.join(dir,'cross-product-results.json'),JSON.stringify(results,null,2));console.log(label,'exit',r.status);}

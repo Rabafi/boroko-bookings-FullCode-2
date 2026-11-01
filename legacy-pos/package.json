@@ -8,6 +8,8 @@
   },
   "main": "out/main/index.cjs",
   "scripts": {
+    "legacy:open": "node ../scripts/open-legacy-pos.mjs",
+    "test:login-ui": "node tests/company-login-ui.mjs",
     "prepare:config": "node ./scripts/prepare-runtime-config.mjs",
     "dev": "npm run prepare:config && electron-vite dev",
     "build": "npm run prepare:config && electron-vite build",
@@ -22,7 +24,7 @@
     "release:minor": "node ./scripts/release.mjs minor",
     "release:major": "node ./scripts/release.mjs major",
     "release:publish": "node ./scripts/release.mjs publish",
-    "test": "node ./tests/legacy-pos-regression.test.mjs",
+    "test": "node ./tests/legacy-pos-regression.test.mjs && node --test ./tests/company-login.test.mjs ./tests/stdio-guard.test.mjs ./tests/bar-local-client.test.mjs ./tests/bar-local-runtime.test.mjs ./tests/bar-local-receipt-printer.test.mjs ./tests/bar-local-operator-workflows.test.mjs ./tests/bar-local-admin-response.test.mjs",
     "db:probe": "node ./scripts/probe-database-contract.mjs"
   },
   "dependencies": {

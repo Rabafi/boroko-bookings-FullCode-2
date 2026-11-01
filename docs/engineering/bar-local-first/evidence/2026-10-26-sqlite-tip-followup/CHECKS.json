@@ -1,0 +1,85 @@
+{
+  "recorded_at": "2026-10-26T21:41:37.436Z",
+  "author": "Implementer; not independent approval",
+  "checks": [
+    {
+      "command": "npm run bar-local:test:isolated",
+      "pass": 152,
+      "fail": 0,
+      "skipped": 0,
+      "raw_log": "service-full-0060.log",
+      "scope": "Through 0060, before Modern SQLite adapter integration; SQL source unchanged afterwards."
+    },
+    {
+      "command": "npm run bar-local:test:isolated -- --test-file api-real-clients.test.mjs",
+      "pass": 1,
+      "fail": 0,
+      "skipped": 0,
+      "raw_log": "sqlite-http-recovery.log",
+      "scope": "Actual Modern SQLite journal and unchanged Legacy client against HTTP/PostgreSQL, after SQLite integration."
+    },
+    {
+      "command": "npm run test:bar-local-electron",
+      "pass": 67,
+      "fail": 0,
+      "skipped": 0,
+      "source": "Observed terminal result, session 12901; a standalone raw log was not captured."
+    },
+    {
+      "command": "npm run test:bar-local-storage",
+      "pass": 15,
+      "fail": 0,
+      "skipped": 0,
+      "source": "Observed terminal result, session 76833; strict TS and fixture checks. Subsequent profile-pin case reran successfully in the 67-test suite."
+    },
+    {
+      "command": "npm run test:bar-local-ui",
+      "pass": 5,
+      "fail": 0,
+      "skipped": 0,
+      "source": "Observed serial rerun, session 7450; prior concurrent timeouts remain historical."
+    },
+    {
+      "command": "npm test --prefix legacy-pos",
+      "source_checks": 219,
+      "pass": 48,
+      "fail": 0,
+      "skipped": 0,
+      "source": "Observed terminal result, session 88111."
+    },
+    {
+      "command": "npm run test:bar-local-storage:electron",
+      "pass": true,
+      "raw_log": "sqlite-electron-restart.log",
+      "scope": "Bundled production module, actual Electron main-process OS protection and a separate main-process reopen. Synthetic data on development PC only."
+    },
+    {
+      "command": "npm run build:hospitality-pos",
+      "pass": true,
+      "raw_log": "modern-build.log"
+    },
+    {
+      "command": "npm run typecheck:main",
+      "pass": true,
+      "scope": "Existing pilot-file check, not whole-main qualification."
+    },
+    {
+      "command": "node .tmp/bar-takeover-20261023/check-storage-diagnostics.mjs",
+      "pass": true,
+      "raw_log": "new-storage-type-diagnostics.json",
+      "scope": "Both new storage files under actual strict main-surface options; other source diagnostics are outside this scoped result."
+    }
+  ],
+  "pending": [
+    "Original-plan acceptance beyond these checks",
+    "Supported automatic coordinator/quorum/fencing",
+    "Complete enrollment/replacement",
+    "Independent WAL/PITR and durable export/cutover boundaries",
+    "Remaining lot/FEFO and correction/reconciliation workflows",
+    "Installed Windows, physical multi-till/peripheral/power qualification",
+    "Deferred customer guide artifacts and packaged-guide checks"
+  ],
+  "hosted_supabase_changes": "none",
+  "hosted_ingestion": "disabled",
+  "commissioning": "NO-GO"
+}

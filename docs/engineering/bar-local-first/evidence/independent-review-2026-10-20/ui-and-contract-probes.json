@@ -1,0 +1,49 @@
+[
+  {
+    "case": "modern initial signed-out render",
+    "result": "THREW",
+    "message": "Cannot read properties of null (reading 'staff')"
+  },
+  {
+    "case": "legacy initial signed-out render",
+    "result": "rendered"
+  },
+  {
+    "case": "modern unknown result allows new sale",
+    "normalButtonEnabled": true,
+    "operations": [
+      "02751527-f9cc-4d2b-af4a-90d9c822192c",
+      "7fe04a3c-b9b4-426f-bff7-5233d9e6105b"
+    ],
+    "distinctIds": 2
+  },
+  {
+    "case": "legacy unknown result allows new sale",
+    "normalButtonEnabled": true,
+    "operations": [
+      "60e68a90-6556-44c7-a3df-f0a2bb873552",
+      "d8411d82-8c57-4876-b5c8-86b04776b344"
+    ],
+    "distinctIds": 2
+  },
+  {
+    "case": "service registry catalogue.recipe.set",
+    "result": "COMMAND_NOT_REGISTERED"
+  },
+  {
+    "case": "service registry promotion.upsert",
+    "result": "COMMAND_NOT_REGISTERED"
+  },
+  {
+    "case": "service registry loyalty.points.earn",
+    "result": "COMMAND_NOT_REGISTERED"
+  },
+  {
+    "case": "service registry workforce.tip.allocate",
+    "result": "COMMAND_NOT_REGISTERED"
+  },
+  {
+    "case": "service registry accounting.ap.invoice.upsert",
+    "result": "COMMAND_NOT_REGISTERED"
+  }
+]

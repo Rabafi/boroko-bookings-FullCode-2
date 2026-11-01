@@ -8,12 +8,44 @@ const onIpc = (channel, cb) => {
 
 const posAPI = {
   // Auth
-  login: (email, password) => ipcRenderer.invoke('pos:auth-login', { email, password }),
+  login: (email, password, lodgeId = null) => ipcRenderer.invoke('pos:auth-login', { email, password, lodgeId }),
   restoreSession: (credentials) => ipcRenderer.invoke('pos:auth-restore', credentials),
   hasTrustedSession: (email) => ipcRenderer.invoke('pos:auth-has-trusted-session', email),
   logout: () => ipcRenderer.invoke('pos:auth-logout'),
   getConfig: () => ipcRenderer.invoke('pos:config'),
   saveConfig: (data) => ipcRenderer.invoke('pos:save-config', data),
+  barLocal: {
+    getStatus: () => ipcRenderer.invoke('pos:bar-local:get-status'),
+    selectCloudWorkspace: () => ipcRenderer.invoke('pos:bar-local:select-cloud-workspace'),
+    pairDevice: (request) => ipcRenderer.invoke('pos:bar-local:pair-device', request),
+    reconnectServer: (request) => ipcRenderer.invoke('pos:bar-local:reconnect-server', request),
+    resumeProvisioning: () => ipcRenderer.invoke('pos:bar-local:resume-provisioning'),
+    login: (staffId, pin) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
+    logout: () => ipcRenderer.invoke('pos:bar-local:logout'),
+    startPairing: (request) => ipcRenderer.invoke('pos:bar-local:start-pairing', request),
+    adminStatus: () => ipcRenderer.invoke('pos:bar-local:admin-status'),
+    adminBackups: () => ipcRenderer.invoke('pos:bar-local:admin-backups'),
+    adminRunBackup: (request) => ipcRenderer.invoke('pos:bar-local:admin-run-backup', request),
+    adminVerifyBackup: (request) => ipcRenderer.invoke('pos:bar-local:admin-verify-backup', request),
+    adminRestoreDrill: (request) => ipcRenderer.invoke('pos:bar-local:admin-restore-drill', request),
+    adminReplicationStatus: () => ipcRenderer.invoke('pos:bar-local:admin-replication-status'),
+    adminSetDurability: (request) => ipcRenderer.invoke('pos:bar-local:admin-set-durability', request),
+    adminSwitchover: (request) => ipcRenderer.invoke('pos:bar-local:admin-switchover', request),
+    adminUpdateStatus: () => ipcRenderer.invoke('pos:bar-local:admin-update-status'),
+    adminCloudSyncStatus: () => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-status'),
+    adminCloudSyncConfig: (request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-config', request),
+    adminCloudSyncRun: (request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-run', request),
+    query: (name, filters) => ipcRenderer.invoke('pos:bar-local:query', name, filters),
+    events: (after, limit) => ipcRenderer.invoke('pos:bar-local:events', after, limit),
+    requestApproval: (command, payload, pin, options) => ipcRenderer.invoke('pos:bar-local:request-approval', command, payload, pin, options),
+    command: (command, payload, options) => ipcRenderer.invoke('pos:bar-local:command', command, payload, options),
+    retry: (operationId) => ipcRenderer.invoke('pos:bar-local:retry', operationId),
+    getOpenIntents: () => ipcRenderer.invoke('pos:bar-local:get-open-intents'),
+    getOperation: (operationId) => ipcRenderer.invoke('pos:bar-local:get-operation', operationId),
+    resolveOperation: (operationId) => ipcRenderer.invoke('pos:bar-local:resolve-operation', operationId),
+    refreshReadiness: () => ipcRenderer.invoke('pos:bar-local:refresh-readiness'),
+    printReceipt: (saleId) => ipcRenderer.invoke('pos:bar-local:print-receipt', saleId)
+  },
 
   // Connection
   goOnline: () => ipcRenderer.invoke('pos:go-online'),
@@ -144,7 +176,7 @@ const posAPI = {
   getInventoryDiagnostics: () => ipcRenderer.invoke('pos:get-inventory-diagnostics')
 };
 
-contextBridge.exposeInMainWorld('api', { pos: posAPI });
+contextBridge.exposeInMainWorld('api', { pos: posAPI, barLocal: posAPI.barLocal });
 
 ipcRenderer.on('display:update', (_event, snapshot) => {
   window.dispatchEvent(new CustomEvent('customer-display-update', { detail: snapshot }));

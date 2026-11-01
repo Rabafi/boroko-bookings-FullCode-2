@@ -1,0 +1,34 @@
+{
+  "name": "@tsa-bonno/bar-local-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone local Bar authority service backed by PostgreSQL.",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "scripts": {
+    "build": "npm --prefix ../../packages/bar-contracts run build && tsc -p tsconfig.json",
+    "typecheck": "npm --prefix ../../packages/bar-contracts run build && tsc -p tsconfig.json --noEmit",
+    "db:bootstrap": "node scripts/bootstrap-local.mjs",
+    "db:migrate": "node scripts/migrate-local.mjs",
+    "db:reset": "node scripts/reset-local.mjs",
+    "replication": "node scripts/bar-replication.mjs",
+    "replication:status": "node scripts/bar-replication.mjs status",
+    "wal-archive": "node scripts/wal-archive.mjs",
+    "witness": "node dist/witnessServer.js",
+    "start": "node dist/server.js",
+    "test": "npm run build && node scripts/run-suite.mjs"
+  },
+  "dependencies": {
+    "@tsa-bonno/bar-contracts": "file:../../packages/bar-contracts",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

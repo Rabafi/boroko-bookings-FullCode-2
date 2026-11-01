@@ -1,0 +1,33 @@
+{
+  "node": {
+    "electron": "42.11.10",
+    "node": "24.19.0",
+    "backend": "SqliteFrameStore",
+    "state": "committed_local",
+    "revision": 5,
+    "operation_id": "7ce5d257-6c99-4e1e-b086-d25c06569c8a",
+    "bundled_module": true,
+    "scope": "Synthetic bundled module only; no installed service, Windows DPAPI, peripherals or physical fault qualification"
+  },
+  "main": {
+    "electron": "42.11.10",
+    "node": "24.19.0",
+    "backend": "SqliteFrameStore",
+    "state": "committed_local",
+    "revision": 5,
+    "operation_id": "4ab92883-4d9d-4fff-8a26-217f19c27c57",
+    "os_secure_storage": true,
+    "scope": "Actual Electron main process and OS secure storage on this development PC only; no installed service, peripherals or physical fault qualification"
+  },
+  "restart": {
+    "electron": "42.11.10",
+    "node": "24.19.0",
+    "backend": "SqliteFrameStore",
+    "state": "committed_local",
+    "revision": 5,
+    "operation_id": "4ab92883-4d9d-4fff-8a26-217f19c27c57",
+    "os_secure_storage": true,
+    "process_restart": true,
+    "scope": "Synthetic protected journal reopened by a separate Electron main process on this development PC; not installed Windows or multi-till qualification"
+  }
+}

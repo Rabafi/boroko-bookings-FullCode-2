@@ -1,0 +1,7 @@
+{
+  "pass": true,
+  "code": "AUTH_INVALID",
+  "httpStatus": 401,
+  "database_calls": 0,
+  "note": "Forged device is denied before DB execution. api-scope-isolation.test.mjs incorrectly expects HTTP200/refused for every scope field."
+}

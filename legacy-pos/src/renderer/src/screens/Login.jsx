@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
-import tsaBonnoRestaurantLogo from '../assets/tsa-bonno-restaurant-bar-os-logo-color.png';
+import tsaBonnoHospitalityLogo from '../assets/tsa-bonno-hospitalityos-logo.png';
 
 const LEGACY_POS_REMEMBERED_EMAILS_KEY = 'boroko.legacyPos.rememberedEmails';
 const MAX_REMEMBERED_EMAILS = 8;
@@ -40,6 +40,8 @@ export default function Login({ onLogin, onOfflineUnlock }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [companyChoices, setCompanyChoices] = useState([]);
+  const [companyMode, setCompanyMode] = useState('online');
   const [loading, setLoading] = useState(false);
   const [configured, setConfigured] = useState(null);
   const [hasSavedSession, setHasSavedSession] = useState(false);
@@ -86,8 +88,9 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     checkTrustedSession(normalizeEmail(email));
   }, [email, checkTrustedSession]);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e, lodgeId = null) => {
     e.preventDefault();
+    setCompanyMode('online');
     const loginEmail = normalizeEmail(email);
     if (!loginEmail || !password) {
       setError('Email and password are required.');
@@ -96,7 +99,12 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     setError('');
     setLoading(true);
     try {
-      await onLogin(loginEmail, password);
+      const result = await onLogin(loginEmail, password, lodgeId);
+      if (result?.code === 'company_selection_required') {
+        setCompanyChoices(result.memberships || []);
+        return;
+      }
+      setCompanyChoices([]);
       setEmail(loginEmail);
       setRememberedEmails(saveRememberedEmail(loginEmail));
     } catch (err) {
@@ -111,8 +119,9 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     }
   };
 
-  const handleOfflineUnlock = async (e) => {
+  const handleOfflineUnlock = async (e, lodgeId = null) => {
     e.preventDefault();
+    setCompanyMode('offline');
     const loginEmail = normalizeEmail(email);
     if (!loginEmail || !password) {
       setError('Email and password are required for offline unlock.');
@@ -121,11 +130,14 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     setError('');
     setLoading(true);
     try {
-      if (onOfflineUnlock) {
-        await onOfflineUnlock(loginEmail, password);
-      } else {
-        await window.api.pos.restoreSession({ email: loginEmail, password });
+      const result = onOfflineUnlock
+        ? await onOfflineUnlock(loginEmail, password, lodgeId)
+        : await window.api.pos.restoreSession({ email: loginEmail, password, lodgeId });
+      if (result?.code === 'company_selection_required') {
+        setCompanyChoices(result.memberships || []);
+        return;
       }
+      setCompanyChoices([]);
       setEmail(loginEmail);
       setRememberedEmails(saveRememberedEmail(loginEmail));
     } catch (err) {
@@ -151,7 +163,7 @@ export default function Login({ onLogin, onOfflineUnlock }) {
       <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
           <div className="text-center">
-            <img src={tsaBonnoRestaurantLogo} alt="Tsa Bonno Restaurant & Bar OS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
+            <img src={tsaBonnoHospitalityLogo} alt="Tsa Bonno HospitalityOS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
             <h1 className="text-xl font-bold text-slate-800">Tsa Bonno POS Legacy</h1>
             <p className="mt-4 text-sm text-slate-600">
               This POS terminal is not configured. Contact the system administrator.
@@ -166,7 +178,7 @@ export default function Login({ onLogin, onOfflineUnlock }) {
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <div className="text-center">
-          <img src={tsaBonnoRestaurantLogo} alt="Tsa Bonno Restaurant & Bar OS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
+          <img src={tsaBonnoHospitalityLogo} alt="Tsa Bonno HospitalityOS" className="mx-auto mb-4 h-24 w-72 max-w-full object-contain" draggable="false" />
           <h1 className="text-xl font-bold text-slate-800">Tsa Bonno POS Legacy</h1>
           <p className="mt-1.5 text-sm text-slate-400">Sign in to your terminal</p>
         </div>
@@ -184,9 +196,9 @@ export default function Login({ onLogin, onOfflineUnlock }) {
               type="email"
               list="legacy-pos-remembered-emails"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => { setEmail(e.target.value); setCompanyChoices([]); }}
               className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              placeholder="you@lodge.com"
+              placeholder="you@company.com"
               autoComplete="email"
               disabled={loading}
             />
@@ -205,7 +217,7 @@ export default function Login({ onLogin, onOfflineUnlock }) {
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => { setPassword(e.target.value); setCompanyChoices([]); }}
                 className="block w-full rounded-lg border border-slate-300 px-3 py-2.5 pr-11 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 placeholder="Your password"
                 autoComplete="current-password"
@@ -223,6 +235,22 @@ export default function Login({ onLogin, onOfflineUnlock }) {
               </button>
             </div>
           </div>
+
+          {companyChoices.length > 0 && (
+            <section aria-label="Choose company" className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <h2 className="font-semibold text-slate-800">Which company are you working in?</h2>
+              <p className="text-xs text-slate-600">{companyMode === 'offline' ? 'Choose a company previously saved on this terminal.' : 'Choose your company. Its staff permissions still apply.'}</p>
+              {companyChoices.map((company) => (
+                <button key={company.lodge_id} type="button" disabled={loading}
+                  onClick={(event) => companyMode === 'offline' ? handleOfflineUnlock(event, company.lodge_id) : handleSubmit(event, company.lodge_id)}
+                  className="block w-full rounded border border-slate-200 bg-white p-3 text-left hover:border-emerald-500 disabled:opacity-50">
+                  <span className="block font-semibold">{company.lodge_display_name}</span>
+                  <span className="block text-xs text-slate-500">{company.property_type || 'Saved company'} · {company.role}</span>
+                </button>
+              ))}
+              <button type="button" disabled={loading} onClick={() => setCompanyChoices([])} className="text-xs underline">Cancel selection</button>
+            </section>
+          )}
 
           <button
             type="submit"

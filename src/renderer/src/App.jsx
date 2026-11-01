@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useCallback, useContext, lazy, Suspense } 
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router'
 import { BellRing, ChevronDown, ChevronUp, Download, FileText, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { APP_FEATURES, FEATURE_LABELS, buildCapabilitySnapshot, canAccessCapability, isPosFullAccessRole } from '../../shared/accessControl'
+import { SUPPORT_EMAIL } from '../../shared/publicEndpoints'
+import { TrainingFrame, TrainingSetup } from './components/hospitality-pos/BarTraining.jsx'
 import { SUBSCRIPTION_PLAN_ORDER, getFeatureRequiredPlan, normalizeSubscriptionPlan } from '../../shared/subscriptionPlans'
 import { getCommercialPackageCatalog, getCommercialPackageLabel } from '../../shared/commercialPackages'
 import { getCommercialAddonOffers, isCommercialSelectionEligible } from '../../shared/commercialEntitlements.js'
@@ -173,6 +175,7 @@ const HposMySales      = lazy(() => import('./components/hospitality-pos/HposMyS
 const HposExpenses     = lazy(() => import('./components/hospitality-pos/HposExpenses'))
 const HposManageHub    = lazy(() => import('./components/hospitality-pos/HposManageHub'))
 const HposSetupReadiness = lazy(() => import('./components/hospitality-pos/HposSetupReadiness'))
+const BarLocalWorkspace = lazy(() => import('./components/hospitality-pos/BarLocalWorkspace'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -194,6 +197,7 @@ function PageLoader() {
 }
 
 // Thin wrapper so each lazy route element reads cleanly
+/** @param {{children: import('react').ReactNode}} props */
 function Lazy({ children }) {
   return <Suspense fallback={<PageLoader />}>{children}</Suspense>
 }
@@ -203,6 +207,7 @@ const INPUT_FOCUS_DEBUG = false
 const DEFAULT_TRIAL_STATUS = { status: 'trial', daysLeft: 30, expired: false }
 const USER_SCOPE_KEY = 'bb_user_scope'
 
+/** @param {EventTarget | null} target */
 function isEditableFieldTarget(target) {
   if (!(target instanceof Element)) return false
   const editable = target.closest('input, textarea, [contenteditable="true"], [contenteditable=""], [contenteditable]')
@@ -225,6 +230,7 @@ const PRODUCT_THEME_COLORS = Object.freeze({
 })
 
 // ── Upgrade Wall ───────────────────────────────────────────────────────────────
+/** @param {{feature: string, children: import('react').ReactNode}} props */
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
   const access = useContext(AccessContext)
@@ -268,6 +274,7 @@ function UpgradeWall({ feature, children }) {
  * but this product binary will not navigate into routes outside its allowlist.
  * Lodge allowlist remains full so live Lodge behaviour is unchanged.
  */
+/** @param {{children: import('react').ReactNode}} props */
 function ProductShellGuard({ children }) {
   const location = useLocation()
   if (!isProductRouteAllowed(location.pathname, BUILD_PRODUCT.id)) {
@@ -338,6 +345,7 @@ const RESTAURANT_EXCLUDED_PATHS = [
  * Used under the main layout and on sibling display routes (e.g. kitchen-display)
  * that sit outside RestaurantGuard.
  */
+/** @param {{children: import('react').ReactNode, redirectTo?: string}} props */
 function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   const { settings } = useContext(SettingsContext)
   const access = useContext(AccessContext)
@@ -363,6 +371,7 @@ function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   return children
 }
 
+/** @param {{children: import('react').ReactNode}} props */
 function RestaurantGuard({ children }) {
   const { settings } = useContext(SettingsContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
@@ -379,6 +388,7 @@ function RestaurantGuard({ children }) {
 }
 
 // ── Restaurant-Only Route Guard ────────────────────────────────────────────────
+/** @param {{children: import('react').ReactNode}} props */
 function RestaurantOnlyRoute({ children }) {
   const { settings } = useContext(SettingsContext)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
@@ -386,12 +396,14 @@ function RestaurantOnlyRoute({ children }) {
   return children
 }
 
+/** @param {{feature: string, children: import('react').ReactNode}} props */
 function BarAddonFeatureRoute({ feature, children }) {
   const { settings } = useContext(SettingsContext)
   if (!isBarOnlyMode(settings)) return children
   return <UpgradeWall feature={feature}>{children}</UpgradeWall>
 }
 
+/** @param {{payroll?: boolean, children: import('react').ReactNode}} props */
 function RestaurantAccountingRoute({ payroll = false, children }) {
   const access = useContext(AccessContext)
   const capability = payroll ? 'accounting.payroll_view' : 'accounting.read'
@@ -401,6 +413,7 @@ function RestaurantAccountingRoute({ payroll = false, children }) {
   return <UpgradeWall feature="restaurant_accounting">{children}</UpgradeWall>
 }
 
+/** @param {{capability: string, children: import('react').ReactNode}} props */
 function CapabilityRoute({ capability, children }) {
   const access = useContext(AccessContext)
   if (!canAccessCapability(access, capability)) {
@@ -412,8 +425,11 @@ function CapabilityRoute({ capability, children }) {
 // ── Update Banner ─────────────────────────────────────────────────────────────
 function UpdateBanner() {
   const UPDATE_SNOOZE_KEY = 'bb_update_snooze_until'
-  const [state, setState] = useState(null) // null | 'available' | 'downloading' | 'ready' | 'error'
-  const [updateInfo, setUpdateInfo] = useState(null)
+  /** @type {[import('./types/desktop-api').DesktopUpdateStateReadView['phase'] | null, import('react').Dispatch<import('react').SetStateAction<import('./types/desktop-api').DesktopUpdateStateReadView['phase'] | null>>]} */
+  const [state, setState] = useState(/** @type {import('./types/desktop-api').DesktopUpdateStateReadView['phase'] | null} */ (null))
+  /** @type {[import('./types/desktop-api').DesktopUpdateStateReadView | null, import('react').Dispatch<import('react').SetStateAction<import('./types/desktop-api').DesktopUpdateStateReadView | null>>]} */
+  const [updateInfo, setUpdateInfo] = useState(/** @type {import('./types/desktop-api').DesktopUpdateStateReadView | null} */ (null))
+  /** @type {[import('./types/desktop-api').DesktopUpdateProgressReadView, import('react').Dispatch<import('react').SetStateAction<import('./types/desktop-api').DesktopUpdateProgressReadView>>]} */
   const [progress, setProgress] = useState({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 })
   const [message, setMessage] = useState('')
   const [minimized, setMinimized] = useState(false)
@@ -703,8 +719,10 @@ function UpdateBanner() {
 }
 
 // ── Broadcast Banner ──────────────────────────────────────────────────────────
+/** The active-broadcast producer selects these columns; Array.isArray below checks only the outer IPC container. */
+/** @typedef {{id: string, title: string, message: string}} ActiveBroadcastBannerExpectedView */
 function BroadcastBanner() {
-  const [broadcasts, setBroadcasts] = useState([])
+  const [broadcasts, setBroadcasts] = useState(/** @type {ActiveBroadcastBannerExpectedView[]} */ ([]))
   const [minimized, setMinimized] = useState(false)
 
   useEffect(() => {
@@ -712,11 +730,11 @@ function BroadcastBanner() {
     window.api.admin.getActiveBroadcasts().then((data) => {
       if (!Array.isArray(data)) return
       const dismissed = JSON.parse(localStorage.getItem('bb_dismissed_broadcasts') || '[]')
-      setBroadcasts(data.filter(b => !dismissed.includes(b.id)))
+      setBroadcasts((/** @type {ActiveBroadcastBannerExpectedView[]} */ (data)).filter(b => !dismissed.includes(b.id)))
     }).catch(() => {})
   }, [])
 
-  const dismiss = (id) => {
+  const dismiss = (/** @type {string} */ id) => {
     const dismissed = JSON.parse(localStorage.getItem('bb_dismissed_broadcasts') || '[]')
     localStorage.setItem('bb_dismissed_broadcasts', JSON.stringify([...dismissed, id]))
     setBroadcasts(prev => prev.filter(b => b.id !== id))
@@ -760,9 +778,13 @@ function BroadcastBanner() {
 }
 
 // ── Sync Fail Banner ───────────────────────────────────────────────────────────
+/** The mesh producer emits these summary fields; lastError remains unknown because it originates in runtime mesh state. */
+/** @typedef {{running: boolean, peerCount: number, activeLockCount: number, lastError: unknown}} SyncFailMeshExpectedView */
+/** The sync IPC fallback omits cacheStale and mesh; this banner also has a smaller nested cacheStale default. IPC data is not validated here. */
+/** @typedef {Omit<Partial<import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot>, 'cacheStale'|'mesh'> & {cacheStale?: Partial<import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot['cacheStale']>, mesh?: SyncFailMeshExpectedView}} SyncFailBannerStatusExpectedView */
 function SyncFailBanner() {
   const navigate = useNavigate()
-  const [syncStatus, setSyncStatus] = useState({ failed: 0, cacheStale: { active: false, names: [] } })
+  const [syncStatus, setSyncStatus] = useState(/** @type {SyncFailBannerStatusExpectedView} */ ({ failed: 0, cacheStale: { active: false, names: [] } }))
   const [minimized, setMinimized] = useState(false)
   const [dismissedSignature, setDismissedSignature] = useState('')
 
@@ -772,15 +794,15 @@ function SyncFailBanner() {
     const checkStatus = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        setSyncStatus(status || { failed: 0, cacheStale: { active: false, names: [] } })
+        setSyncStatus(/** @type {SyncFailBannerStatusExpectedView} */ (status || { failed: 0, cacheStale: { active: false, names: [] } }))
       } catch (e) {
-        setSyncStatus({ failed: 0, cacheStale: { active: false, names: [] } })
+        setSyncStatus(/** @type {SyncFailBannerStatusExpectedView} */ ({ failed: 0, cacheStale: { active: false, names: [] } }))
       }
     }
 
     checkStatus()
     const unsubscribe = window.api.sync.onStatusChanged((status) => {
-      setSyncStatus(status || { failed: 0, cacheStale: { active: false, names: [] } })
+      setSyncStatus(/** @type {SyncFailBannerStatusExpectedView} */ (status || { failed: 0, cacheStale: { active: false, names: [] } }))
     })
 
     return () => unsubscribe?.()
@@ -789,7 +811,7 @@ function SyncFailBanner() {
   const failedCount = Number(syncStatus?.failed || 0)
   const staleNames = Array.isArray(syncStatus?.cacheStale?.names) ? syncStatus.cacheStale.names : []
   const hasStaleCache = syncStatus?.cacheStale?.active === true && staleNames.length > 0
-  const mesh = syncStatus?.mesh || {}
+  const mesh = /** @type {Partial<SyncFailMeshExpectedView>} */ (syncStatus?.mesh || {})
   const meshPeerCount = Number(mesh.peerCount || 0)
   const meshLastError = String(mesh.lastError || '').trim()
   const meshAutoStandby = /missing lodge_mesh_secret/i.test(meshLastError)
@@ -910,6 +932,7 @@ function WifiIcon() {
   )
 }
 
+/** @param {{message?: unknown, error?: unknown, scope?: unknown, operation?: unknown}} entry Persisted log data remains unvalidated; this view records only the current reads. */
 function importantIssueMessage(entry) {
   return String(entry?.message || entry?.error || entry?.scope || entry?.operation || 'System warning').trim()
 }
@@ -917,7 +940,8 @@ function importantIssueMessage(entry) {
 // ── Financial Health Banner ───────────────────────────────────────────────────
 function FinancialHealthBanner() {
   const navigate = useNavigate()
-  const [errors, setErrors] = useState([])
+  // Critical-error log values remain unvalidated; this is the banner's expected row projection.
+  const [errors, setErrors] = useState(/** @type {Array<{id?: string | number | null, detected_at?: string | number | null, scope?: string | null, operation?: string | null, severity?: string | null, level?: string | null, message?: unknown, error?: unknown}>} */ ([]))
   const [minimized, setMinimized] = useState(false)
   const [dismissedSignature, setDismissedSignature] = useState('')
 
@@ -927,7 +951,7 @@ function FinancialHealthBanner() {
       try {
         const criticalErrors = await (window.api.reports?.criticalErrors?.(3).catch(() => []) || Promise.resolve([]))
         if (!mounted) return
-        setErrors(Array.isArray(criticalErrors) ? criticalErrors : [])
+        setErrors(Array.isArray(criticalErrors) ? /** @type {Array<{id?: string | number | null, detected_at?: string | number | null, scope?: string | null, operation?: string | null, severity?: string | null, level?: string | null, message?: unknown, error?: unknown}>} */ (criticalErrors) : [])
       } catch {
         if (mounted) setErrors([])
       }
@@ -992,14 +1016,19 @@ function FinancialHealthBanner() {
 // ── Booking Sync Conflict Notification ────────────────────────────────────────
 // P0-4: Notify staff when offline bookings fail due to room conflicts
 function BookingSyncConflictNotification() {
-  const [conflicts, setConflicts] = useState([])
+  // Current main send sites construct these rows; event payloads are still unvalidated.
+  /** @typedef {{bookingId: string, error: string, timestamp: number, mesh?: boolean}} BookingConflictBannerExpectedView */
+  /** @typedef {{bookingId: string, error: string}} BookingConflictEventExpectedView */
+  /** @typedef {{loserId?: string, bookingId?: string, roomId?: string, checkIn?: string}} MeshConflictEventExpectedView */
+  const [conflicts, setConflicts] = useState(/** @type {BookingConflictBannerExpectedView[]} */ ([]))
 
   useEffect(() => {
+    /** @type {Array<() => unknown>} */
     const unsubscribers = []
 
     if (window.api?.sync?.onBookingConflict) {
       unsubscribers.push(window.api.sync.onBookingConflict((payload) => {
-      const { bookingId, error } = payload
+      const { bookingId, error } = /** @type {BookingConflictEventExpectedView} */ (payload)
       setConflicts((prev) => {
         // Avoid duplicate notifications for the same booking
         if (prev.some((c) => c.bookingId === bookingId)) return prev
@@ -1015,9 +1044,9 @@ function BookingSyncConflictNotification() {
 
     if (window.api?.mesh?.onConflictDetected) {
       unsubscribers.push(window.api.mesh.onConflictDetected((payload) => {
-        const bookingId = payload?.loserId || payload?.bookingId || `${payload?.roomId || 'mesh'}:${payload?.checkIn || ''}`
-        const error = payload?.roomId
-          ? `Local mesh conflict on room ${payload.roomId} for ${payload.checkIn || 'selected dates'}`
+        const bookingId = (/** @type {MeshConflictEventExpectedView} */ (payload))?.loserId || (/** @type {MeshConflictEventExpectedView} */ (payload))?.bookingId || `${(/** @type {MeshConflictEventExpectedView} */ (payload))?.roomId || 'mesh'}:${(/** @type {MeshConflictEventExpectedView} */ (payload))?.checkIn || ''}`
+        const error = (/** @type {MeshConflictEventExpectedView} */ (payload))?.roomId
+          ? `Local mesh conflict on room ${(/** @type {MeshConflictEventExpectedView} */ (payload)).roomId} for ${(/** @type {MeshConflictEventExpectedView} */ (payload)).checkIn || 'selected dates'}`
           : 'Local mesh conflict detected'
         setConflicts((prev) => {
           if (prev.some((c) => c.bookingId === bookingId)) return prev
@@ -1066,15 +1095,16 @@ function BookingSyncConflictNotification() {
 }
 
 // ── Trial Expired Lock Screen ─────────────────────────────────────────────────
-const SALES_EMAIL = 'sales@tsabonno.com'
 
+/** @param {string} featureName */
 function commercialFeatureLabel(featureName) {
-  return FEATURE_LABELS[featureName]
+  return FEATURE_LABELS[/** @type {keyof typeof FEATURE_LABELS} */ (featureName)]
     || String(featureName || '')
       .replace(/_/g, ' ')
       .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** @param {ReturnType<typeof getCommercialPackageCatalog>[number]} tier */
 function commercialPriceLabel(tier) {
   const amount = Number(tier?.priceBwp)
   if (!Number.isFinite(amount) || amount < 0) return 'Price on request'
@@ -1086,6 +1116,7 @@ function commercialPriceLabel(tier) {
   return `P${amount.toLocaleString('en-BW', { maximumFractionDigits: 0 })} ${billingCopy}`
 }
 
+/** @param {ReturnType<typeof getCommercialAddonOffers>[number]} addon */
 function commercialAddonPriceLabel(addon) {
   const annualAmount = Number(addon?.annualPriceBwp)
   if (Number.isFinite(annualAmount) && annualAmount >= 0) {
@@ -1098,11 +1129,12 @@ function commercialAddonPriceLabel(addon) {
   return 'Price on request'
 }
 
+/** @param {{lodgeName?: string | null, lodgeId?: string | null, operatingProfile: 'bar_only' | 'restaurant_bar' | null, propertyType: string | null, user: import('./app-context.jsx').AuthContextUser, onSwitchAccount: () => void}} props */
 function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType, user, onSwitchAccount }) {
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [requestError, setRequestError] = useState('')
-  const [selectedAddonKeys, setSelectedAddonKeys] = useState([])
+  const [selectedAddonKeys, setSelectedAddonKeys] = useState(/** @type {string[]} */ ([]))
   const tiers = getCommercialPackageCatalog(BUILD_PRODUCT.id).filter((tier) => {
     if (!IS_HPOS_PRODUCT) return true
     if (!operatingProfile) return false
@@ -1120,22 +1152,25 @@ function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType
       ? 'min-h-screen bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26] flex flex-col items-center justify-center p-6'
       : 'min-h-screen bg-gradient-to-br from-green-900 via-green-800 to-green-700 flex flex-col items-center justify-center p-6'
   const subText = IS_HOTEL_PRODUCT ? `${HOTEL_CHROME.mute} text-sm max-w-md` : IS_HPOS_PRODUCT ? 'text-orange-50 text-sm max-w-md' : 'text-green-200 text-sm max-w-md'
+  /** @param {ReturnType<typeof getCommercialPackageCatalog>[number]} tier */
   const eligibleAddonsForTier = (tier) => {
     if (!IS_HPOS_PRODUCT || !tier?.commercialPackageKey) return []
     return getCommercialAddonOffers(BUILD_PRODUCT.id, propertyType)
       .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(tier.commercialPackageKey))
       .filter((addon) => !addon.eligibleOperatingProfiles || addon.eligibleOperatingProfiles.length === 0 || addon.eligibleOperatingProfiles.includes(operatingProfile))
   }
+  /** @param {ReturnType<typeof getCommercialPackageCatalog>[number]} tier */
   const selectedAddonsForTier = (tier) => {
     const eligibleKeys = new Set(eligibleAddonsForTier(tier).map((addon) => addon.addonKey))
     return selectedAddonKeys.filter((addonKey) => eligibleKeys.has(addonKey))
   }
-  const toggleAddon = (addonKey) => {
+  const toggleAddon = (/** @type {string} */ addonKey) => {
     setSelectedAddonKeys((current) => current.includes(addonKey)
       ? current.filter((key) => key !== addonKey)
       : [...current, addonKey])
   }
 
+  /** @param {ReturnType<typeof getCommercialPackageCatalog>[number]} tier */
   const requestUpgrade = async (tier) => {
     setRequestError('')
     setSubmitting(true)
@@ -1163,7 +1198,7 @@ function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType
       }
       setSubmitted(true)
     } catch (error) {
-      setRequestError(error?.message || `We could not send the request. Email ${SALES_EMAIL} for help.`)
+      setRequestError(error?.message || `We could not send the request. Email ${SUPPORT_EMAIL} for help.`)
     } finally {
       setSubmitting(false)
     }
@@ -1203,7 +1238,7 @@ function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType
           {tiers.length === 0 ? (
             <div className="mx-auto max-w-xl rounded-2xl border border-white/20 bg-white/10 p-6 text-center text-sm text-white">
               We could not confirm a package that matches this business profile. Email{' '}
-              <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>{' '}
+              <a className="font-semibold underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>{' '}
               and our sales team will prepare the correct quotation.
             </div>
           ) : (
@@ -1265,20 +1300,21 @@ function TrialExpiredScreen({ lodgeName, lodgeId, operatingProfile, propertyType
           )}
           {requestError ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-800">
-              {requestError} You can also email <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>.
+              {requestError} You can also email <a className="font-semibold underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.
             </div>
           ) : null}
         </div>
       )}
 
       <p className="text-green-300 text-xs mt-6">
-        Need help? Email <a className="font-semibold underline" href={`mailto:${SALES_EMAIL}`}>{SALES_EMAIL}</a>
+        Need help? Email <a className="font-semibold underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
       </p>
     </div>
   )
 }
 
 // ── Trial Banner ──────────────────────────────────────────────────────────────
+/** @param {{daysLeft: number}} props */
 function TrialBanner({ daysLeft }) {
   const [dismissed, setDismissed] = useState(false)
   if (dismissed) return null
@@ -1294,6 +1330,7 @@ function TrialBanner({ daysLeft }) {
   )
 }
 
+/** @param {{children: import('react').ReactNode, fallbackPath?: string, isTransitioning?: boolean}} props */
 function ProtectedRoute({ children, fallbackPath = '/login', isTransitioning = false }) {
   const { user } = useAuth()
   const { activeProfile, loading } = useProfiles()
@@ -1304,6 +1341,370 @@ function ProtectedRoute({ children, fallbackPath = '/login', isTransitioning = f
     return <Navigate to={fallbackPath} replace />
   }
   return children
+}
+
+function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloudBusiness = false, onBack }) {
+  const dedicatedLocalBarWorkspace = authority?.workspace_isolation === 'dedicated_bar'
+  const [guideStatus, setGuideStatus] = useState('')
+  const [guideBusy, setGuideBusy] = useState('')
+  const [currentAuthority, setCurrentAuthority] = useState(authority)
+  const [setupRecovery, setSetupRecovery] = useState(null)
+  const [committedSetup, setCommittedSetup] = useState(null)
+  const [setupMode, setSetupMode] = useState('commission')
+  const [setupBusy, setSetupBusy] = useState(false)
+  const [setupError, setSetupError] = useState('')
+  const [newBusinessConfirmed, setNewBusinessConfirmed] = useState(false)
+  // A dedicated local Bar workspace is handed the business name and currency
+  // chosen in the ordinary setup journey. Nothing else crosses over.
+  const setupPrefill = authority?.setup_prefill || null
+  const [setupDraft, setSetupDraft] = useState({
+    business_name: typeof setupPrefill?.business_name === 'string' ? setupPrefill.business_name : '',
+    outlet_name: '',
+    owner_name: '', pin: '',
+    currency: typeof setupPrefill?.currency === 'string' ? setupPrefill.currency : 'BWP',
+    company_name: typeof setupPrefill?.business_profile?.company_name === 'string' ? setupPrefill.business_profile.company_name : '',
+    address: typeof setupPrefill?.business_profile?.address === 'string' ? setupPrefill.business_profile.address : '',
+    city: typeof setupPrefill?.business_profile?.city === 'string' ? setupPrefill.business_profile.city : '',
+    country: typeof setupPrefill?.business_profile?.country === 'string' ? setupPrefill.business_profile.country : '',
+    phone: typeof setupPrefill?.business_profile?.phone === 'string' ? setupPrefill.business_profile.phone : '',
+    email: typeof setupPrefill?.business_profile?.email === 'string' ? setupPrefill.business_profile.email : '',
+    website: typeof setupPrefill?.business_profile?.website === 'string' ? setupPrefill.business_profile.website : '',
+    vat_number: typeof setupPrefill?.business_profile?.vat_number === 'string' ? setupPrefill.business_profile.vat_number : '',
+    timezone: 'Africa/Gaborone', device_name: 'Bar office till'
+  })
+  const [joinDraft, setJoinDraft] = useState({
+    base_url: '', certificate_fingerprint: '', pairing_code: '', device_name: 'Bar till'
+  })
+  const [serverSetup, setServerSetup] = useState(null)
+  const [serverPreflight, setServerPreflight] = useState(null)
+  const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
+  const [serverPin, setServerPin] = useState('')
+
+  const refreshServerSetup = useCallback(async () => {
+    if (!window.api?.barLocal?.serverSetupStatus) return
+    setServerPreflightBusy(true)
+    try {
+      const [status, preflight] = await Promise.all([
+        window.api.barLocal.serverSetupStatus().catch(() => null),
+        window.api.barLocal.serverSetupPreflight().catch((error) => ({
+          ready: false,
+          blockers: [{ code: 'PREFLIGHT_FAILED', message: error?.message || 'Server setup readiness could not be checked.' }],
+          warnings: []
+        }))
+      ])
+      setServerSetup(status?.available ? status : null)
+      setServerPreflight(preflight)
+    } finally { setServerPreflightBusy(false) }
+  }, [])
+
+  const serverSetupAvailable = !unavailable && !hasSavedCloudBusiness
+    && authority?.authority_mode === 'cloud' && !authority?.configured
+    && !authority?.provisioning_recovery?.pending
+  useEffect(() => {
+    if (serverSetupAvailable && setupMode === 'commission') void refreshServerSetup()
+  }, [serverSetupAvailable, setupMode, refreshServerSetup])
+  useEffect(() => {
+    const prefill = authority?.setup_prefill
+    if (!prefill) return
+    setSetupDraft((draft) => {
+      if (draft.business_name || draft.pin) return draft
+      return {
+        ...draft,
+        business_name: typeof prefill.business_name === 'string' ? prefill.business_name : draft.business_name,
+        currency: typeof prefill.currency === 'string' ? prefill.currency : draft.currency
+      }
+    })
+  }, [authority?.setup_prefill])
+  useEffect(() => {
+    if (!serverSetup || !['prepared', 'installing'].includes(serverSetup.phase)) return undefined
+    const timer = setInterval(() => { void refreshServerSetup() }, 2500)
+    return () => clearInterval(timer)
+  }, [serverSetup?.phase, refreshServerSetup])
+
+  /** @param {'open'|'save'} action @param {string} documentId @param {string} label */
+  const useGuide = async (action, documentId, label) => {
+    setGuideBusy(`${action}:${documentId}`)
+    setGuideStatus('')
+    try {
+      const result = await window.api?.barGuides?.[action]?.(documentId)
+      if (result && typeof result === 'object' && 'success' in result && result.success === true) {
+        setGuideStatus(action === 'save' ? `${label} saved.` : `${label} opened.`)
+      } else if (result && typeof result === 'object' && 'canceled' in result && result.canceled === true) {
+        setGuideStatus('Save canceled.')
+      } else {
+        const error = result && typeof result === 'object' && 'error' in result && typeof result.error === 'string'
+          ? result.error
+          : `${label} is unavailable in this app build.`
+        setGuideStatus(error)
+      }
+    } catch (error) {
+      const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message
+        : `${label} is unavailable.`
+      setGuideStatus(message)
+    } finally {
+      setGuideBusy('')
+    }
+  }
+
+  const guides = [
+    { id: 'bar-manual', label: 'Bar customer manual' },
+    { id: 'bar-quick-start', label: 'Bar quick-start' }
+  ]
+
+  if (!unavailable && currentAuthority?.configured && !currentAuthority?.restart_required) {
+    return <Lazy><BarLocalWorkspace status={currentAuthority} onLogout={() => {}} initialStaffId={setupRecovery?.staffId || (currentAuthority?.training ? currentAuthority.setup_owner_staff_id : undefined)} initialLoginNotice={setupRecovery?.notice} /></Lazy>
+  }
+
+  const startServerSetup = async (event) => {
+    event.preventDefault()
+    setSetupBusy(true); setSetupError('')
+    try {
+      const result = await window.api.barLocal.serverSetupBegin({
+        business_name: setupDraft.business_name.trim(),
+        outlet_name: setupDraft.outlet_name.trim(),
+        owner_name: setupDraft.owner_name.trim(),
+        pin: setupDraft.pin,
+        currency: setupDraft.currency,
+        business_profile: {
+          company_name: setupDraft.company_name,
+          address: setupDraft.address,
+          city: setupDraft.city,
+          country: setupDraft.country,
+          phone: setupDraft.phone,
+          email: setupDraft.email,
+          website: setupDraft.website,
+          vat_number: setupDraft.vat_number
+        },
+        timezone: setupDraft.timezone,
+        device_name: setupDraft.device_name.trim()
+      })
+      setServerSetup(result?.available ? result : null)
+      setSetupDraft((draft) => ({ ...draft, pin: '' }))
+      await refreshServerSetup()
+    } catch (error) {
+      setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message : 'Automatic Bar server setup could not be started.')
+      await refreshServerSetup()
+    } finally { setSetupBusy(false) }
+  }
+
+  const resumeServerSetup = async () => {
+    setSetupBusy(true); setSetupError('')
+    try {
+      const needsPin = ['installed', 'owner_pending'].includes(serverSetup?.phase)
+      const result = await window.api.barLocal.serverSetupResume(needsPin ? { pin: serverPin } : {})
+      setServerPin('')
+      if (result?.available) setServerSetup(result)
+      const status = await window.api.barLocal.getStatus().catch(() => null)
+      if (status?.restart_required) { setCurrentAuthority(status); return }
+      await refreshServerSetup()
+    } catch (error) {
+      setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message : 'The local Bar server setup could not be resumed. Do not start a second setup.')
+      await refreshServerSetup()
+    } finally { setSetupBusy(false) }
+  }
+
+  const cancelServerSetup = async () => {
+    setSetupBusy(true); setSetupError('')
+    try {
+      await window.api.barLocal.serverSetupCancel()
+      setServerSetup(null)
+      await refreshServerSetup()
+    } catch (error) {
+      setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message : 'The prepared setup could not be cancelled.')
+    } finally { setSetupBusy(false) }
+  }
+
+  const joinAuthority = async (event) => {
+    event.preventDefault()
+    setSetupBusy(true); setSetupError('')
+    try {
+      await window.api.barLocal.pairDevice(joinDraft)
+      setCommittedSetup({ staffId: '', paired: true })
+      setJoinDraft((draft) => ({ ...draft, pairing_code: '' }))
+      const status = await window.api.barLocal.getStatus()
+      if (status?.restart_required) { setCurrentAuthority(status); return }
+      if (!status?.configured || status.authority_mode !== 'bar_local') throw new Error('Pairing was committed but the local authority status could not be verified. Restart this till; do not reuse the pairing code.')
+      setCurrentAuthority(status)
+      setJoinDraft((draft) => ({ ...draft, pairing_code: '' }))
+    } catch (error) {
+      const status = await window.api.barLocal.getStatus().catch(() => null)
+      if (status?.restart_required) { setCommittedSetup({ staffId: '', paired: true }); setCurrentAuthority(status); return }
+      setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message : 'This till could not join the local Bar service. Check the server address, certificate fingerprint and unused pairing code.')
+    } finally { setSetupBusy(false) }
+  }
+
+  const resumeSavedProvisioning = async () => {
+    const pendingKind = currentAuthority?.provisioning_recovery?.kind
+    setSetupBusy(true); setSetupError('')
+    try {
+      const result = await window.api.barLocal.resumeProvisioning()
+      const status = await window.api.barLocal.getStatus()
+      if (status?.restart_required) {
+        setCommittedSetup({ staffId: result?.owner_staff_id || '', paired: pendingKind === 'pairing' })
+        setCurrentAuthority(status)
+        return
+      }
+      if (!status?.configured || status.authority_mode !== 'bar_local') {
+        throw new Error('The saved setup attempt returned, but this till could not verify its local authority. Keep this till for recovery and check its status again.')
+      }
+      setCurrentAuthority(status)
+    } catch (error) {
+      const status = await window.api.barLocal.getStatus().catch(() => null)
+      if (status?.restart_required) {
+        setCommittedSetup({ staffId: '', paired: pendingKind === 'pairing' })
+        setCurrentAuthority(status)
+      } else {
+        if (status) setCurrentAuthority(status)
+        setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+          ? error.message : 'The saved local setup attempt could not be resumed. Keep this till for recovery; do not start a second setup.')
+      }
+    } finally { setSetupBusy(false) }
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+      <section className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Bar local authority</p>
+        <h1 className="mt-3 text-2xl font-bold">{unavailable ? 'Authority state unavailable' : dedicatedLocalBarWorkspace ? 'Set up this new local Bar' : 'Set up or join a local Bar'}</h1>
+        {onBack && !committedSetup && !dedicatedLocalBarWorkspace && <button type="button" disabled={setupBusy} onClick={onBack} className="mt-3 text-sm text-amber-300 underline disabled:opacity-50">Back to application choices</button>}
+        <p className="mt-3 text-sm leading-6 text-slate-300">
+          {unavailable
+            ? message || 'The local Bar could not be checked yet. Your records are safe. Try opening it again.'
+            : currentAuthority?.blocked_reason?.message || 'Create your Bar on its main computer, or connect this till to the Bar computer. Bar records stay local.'}
+        </p>
+        {unavailable && <button type="button" className="mt-4 rounded bg-amber-500 px-4 py-2 font-semibold text-slate-950" onClick={() => window.location.reload()}>Try opening the Bar again</button>}
+        {currentAuthority?.restart_required && <p role="alert" className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">Setup was committed. Close and reopen the application to start the local Bar workspace. Do not repeat setup or reuse a pairing code. If the app cannot restart, keep this till for support.</p>}
+        {committedSetup && !currentAuthority?.configured && !currentAuthority?.restart_required && <div className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">
+          <p>{committedSetup.paired ? 'Pairing was committed. Do not reuse the pairing code. Check this till’s local authority status or restart the application.' : 'Setup was committed. Do not create the Bar again. Check this till’s local authority status or restart the application.'}</p>
+          <button type="button" disabled={setupBusy} className="mt-3 rounded border border-amber-500 px-3 py-2 disabled:opacity-50" onClick={async () => {
+            setSetupBusy(true); setSetupError('')
+            try {
+              const status = await window.api.barLocal.getStatus()
+              if (!status?.configured || status.authority_mode !== 'bar_local') throw new Error('Local authority status is not yet available. Restart this till and contact your administrator if it remains unavailable.')
+              setSetupRecovery({ staffId: committedSetup.staffId, notice: committedSetup.paired ? 'This till was paired. Sign in with your staff ID and PIN.' : 'Your Bar was created. Sign in with the owner PIN.' })
+              setCurrentAuthority(status)
+            } catch (error) { setSetupError(error?.message || 'Could not verify local authority status. Restart this till.') }
+            finally { setSetupBusy(false) }
+          }}>Check local authority status</button>
+          {setupError && <p role="alert" className="mt-3">{setupError}</p>}
+        </div>}
+        {hasSavedCloudBusiness && !unavailable && <p role="alert" className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">This computer already has a saved workspace. Bar setup cannot safely start here yet. Use a separate, unused computer for a new Bar, or contact support before continuing. Do not reset this computer.</p>}
+        {currentAuthority?.provisioning_recovery?.pending && !unavailable && <section role="status" className="mt-5 rounded border border-amber-700 bg-amber-950/40 p-4 text-sm text-amber-100">
+          <p className="font-semibold">{currentAuthority.provisioning_recovery.kind === 'owner' ? 'A saved local Bar setup needs to be resumed.' : currentAuthority.provisioning_recovery.kind === 'pairing' ? 'A saved till pairing needs to be resumed.' : 'A saved local setup record needs recovery.'}</p>
+          <p className="mt-1">The protected request and device credential were saved before contacting the service. Resume uses that same request; do not create another Bar or request a replacement pairing code.</p>
+          {currentAuthority.provisioning_recovery.recoverable === true
+            ? <button type="button" disabled={setupBusy} onClick={() => void resumeSavedProvisioning()} className="mt-3 rounded border border-amber-400 px-3 py-2 font-semibold disabled:opacity-50">{setupBusy ? 'Checking saved setup…' : `Resume saved ${currentAuthority.provisioning_recovery.kind === 'pairing' ? 'pairing' : 'setup'}`}</button>
+            : <p className="mt-3">The recovery record could not be opened. Keep this till and its user profile intact and contact your administrator.</p>}
+          {setupError && <p role="alert" className="mt-3 rounded bg-red-950 p-3">{setupError}</p>}
+        </section>}
+        {!hasSavedCloudBusiness && !committedSetup && !unavailable && currentAuthority?.authority_mode === 'cloud' && !currentAuthority?.configured && !currentAuthority?.provisioning_recovery?.pending && <>
+          <div className="mt-5 flex gap-2" role="tablist" aria-label="Local Bar setup">
+            <button type="button" role="tab" aria-selected={setupMode === 'commission'} onClick={() => { setSetupMode('commission'); setSetupError('') }} className={`rounded px-3 py-2 text-sm ${setupMode === 'commission' ? 'bg-amber-500 font-semibold text-slate-950' : 'border border-slate-600'}`}>Set up a new Bar on this computer</button>
+            <button type="button" role="tab" aria-selected={setupMode === 'join'} onClick={() => { setSetupMode('join'); setSetupError('') }} className={`rounded px-3 py-2 text-sm ${setupMode === 'join' ? 'bg-amber-500 font-semibold text-slate-950' : 'border border-slate-600'}`}>Connect this till to my Bar</button>
+          </div>
+          {setupMode === 'commission' ? <div className="mt-4 space-y-3">
+            {serverSetup ? <section role="status" aria-live="polite" className="space-y-3 rounded-lg border border-amber-800 bg-slate-950/60 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-amber-200">{serverSetup.phase_label || serverSetup.phase}</p>
+                <button type="button" disabled={setupBusy || serverPreflightBusy} onClick={() => void refreshServerSetup()} className="rounded border border-slate-600 px-3 py-1 text-xs disabled:opacity-50">{serverPreflightBusy ? 'Checking…' : 'Refresh'}</button>
+              </div>
+              <dl className="grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                <div><dt className="text-slate-500">Business</dt><dd>{serverSetup.business_name}</dd></div>
+                <div><dt className="text-slate-500">Service address</dt><dd className="font-mono">{serverSetup.base_url}</dd></div>
+                <div><dt className="text-slate-500">Service version</dt><dd>{serverSetup.service_version}</dd></div>
+                <div><dt className="text-slate-500">PostgreSQL</dt><dd>{serverSetup.postgres_version}</dd></div>
+              </dl>
+              {serverSetup.last_error && <div role="alert" className="rounded bg-red-950 p-3 text-sm text-red-100"><p className="font-semibold">{serverSetup.last_error.code}</p><p className="mt-1">{serverSetup.last_error.message}</p></div>}
+              {serverSetup.installer_status?.message && <p className="text-xs text-slate-300">{serverSetup.installer_status.message}</p>}
+              {serverSetup.phase === 'installing' && <p className="text-sm text-slate-200">Windows is installing the local database and Bar service. Approve the Windows administrator prompt if it is waiting. Keep this window open.</p>}
+              {['installed', 'owner_pending'].includes(serverSetup.phase) && <div className="space-y-2 rounded border border-amber-700 p-3">
+                <p className="text-sm text-amber-100">The service is installed. Enter the owner PIN to create the first owner and finish setup. The PIN is not saved.</p>
+                <label className="block text-sm">Owner PIN<input type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={serverPin} onChange={(event) => setServerPin(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
+                <button type="button" disabled={setupBusy || !/^\d{4,12}$/.test(serverPin)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Creating the first owner…' : 'Finish creating the local Bar'}</button>
+              </div>}
+              {['prepared', 'failed'].includes(serverSetup.phase) && <button type="button" disabled={setupBusy || Boolean(serverPreflight && !serverPreflight.ready)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Starting the installer…' : serverSetup.phase === 'failed' ? 'Retry the local Bar installer' : 'Install the local Bar service'}</button>}
+              {serverSetup.can_cancel && <button type="button" disabled={setupBusy} onClick={() => void cancelServerSetup()} className="w-full rounded border border-slate-600 p-2 text-sm disabled:opacity-50">Cancel this prepared setup</button>}
+              {serverSetup.phase === 'complete' && <p className="text-sm text-emerald-200">Setup is complete. Restart the application to open the local Bar workspace.</p>}
+              {serverSetup.log_tail && <details className="text-xs text-slate-400"><summary className="cursor-pointer">Installer log (redacted)</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2">{serverSetup.log_tail}</pre></details>}
+            </section> : <>
+              <p className="text-xs text-slate-400">This will be the main Bar computer. It keeps the Bar’s records and must stay on while other tills are using the Bar.</p>
+              <p className="text-xs text-amber-200">Windows will ask for administrator approval once. This starts a new Bar with no imported sales. Choose a computer that will stay at the venue.</p>
+              {serverPreflightBusy && !serverPreflight && <p className="text-sm text-slate-300">Checking this computer and the packaged server files…</p>}
+              {serverPreflight && !serverPreflight.ready && <div role="alert" className="rounded bg-red-950 p-3 text-sm text-red-100"><p className="font-semibold">{serverPreflight.storage?.status === 'blocked' && !(serverPreflight.blockers || []).some((blocker) => blocker.code !== 'INSUFFICIENT_DISK') ? 'More storage space is needed' : 'This setup needs attention before it can continue.'}</p><ul className="mt-2 list-disc space-y-1 pl-5">{(serverPreflight.blockers || []).map((blocker) => <li key={blocker.code}>{blocker.message}</li>)}</ul><button type="button" disabled={serverPreflightBusy} onClick={() => void refreshServerSetup()} className="mt-3 rounded border border-red-200 px-3 py-1 text-sm disabled:opacity-50">{serverPreflightBusy ? 'Checking…' : 'Check again'}</button></div>}
+              {serverPreflight?.ready && <p className="rounded bg-emerald-950 p-3 text-sm text-emerald-100">This computer is ready to set up the Bar.</p>}
+              {serverPreflight?.warnings?.length > 0 && <ul className="list-disc space-y-1 pl-5 text-xs text-amber-200">{serverPreflight.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+              <form onSubmit={startServerSetup} className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm">Business name <span className="text-slate-300">(required)</span><input required maxLength={200} value={setupDraft.business_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, business_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
+                  <label className="block text-sm">Bar or counter name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.outlet_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, outlet_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs leading-5 text-slate-300">An outlet is a trading area, not each till. For one counter, enter Main Bar. If you have several, use names like Pool Bar; tills serving the same counter share its outlet.</span></label>
+                  <label className="block text-sm">Owner name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.owner_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, owner_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Enter the owner’s name as it should appear in Bar records.</span></label>
+                  <label className="block text-sm">Owner PIN <span className="text-slate-300">(required)</span><input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={setupDraft.pin} onChange={(event) => setSetupDraft((draft) => ({ ...draft, pin: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Choose 4–12 digits. Use it for local owner sign-in and keep it private.</span></label>
+                  <label className="block text-sm">Currency <span className="text-slate-300">(required)</span><input required maxLength={3} value={setupDraft.currency} onChange={(event) => setSetupDraft((draft) => ({ ...draft, currency: event.target.value.toUpperCase() }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Use a 3-letter code, such as BWP for Botswana pula.</span></label>
+                  <label className="block text-sm">Timezone <span className="text-slate-300">(required)</span><input required maxLength={80} value={setupDraft.timezone} onChange={(event) => setSetupDraft((draft) => ({ ...draft, timezone: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Used for Bar opening times and reports. Botswana uses Africa/Gaborone.</span></label>
+                </div>
+                <details open className="rounded border border-slate-700 p-3">
+                  <summary className="cursor-pointer text-sm font-semibold">Bar contact details <span className="font-normal text-slate-300">(optional)</span></summary>
+                  <p className="mt-2 text-xs text-slate-300">Every field here is optional. Details you enter are saved on this Bar computer with the Bar records.</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {[
+                      ['company_name', 'Registered company name'], ['address', 'Street address'], ['city', 'City or town'], ['country', 'Country'],
+                      ['phone', 'Phone'], ['email', 'Contact email'], ['website', 'Website'], ['vat_number', 'VAT or tax number']
+                    ].map(([key, label]) => <label key={key} className="block text-sm">{label}<input maxLength={key === 'address' ? 240 : key === 'email' ? 254 : key === 'company_name' ? 200 : key === 'phone' || key === 'vat_number' ? 80 : 120} type={key === 'email' ? 'email' : 'text'} value={setupDraft[key]} onChange={(event) => setSetupDraft((draft) => ({ ...draft, [key]: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>)}
+                  </div>
+                </details>
+                <label className="block text-sm">Main computer name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.device_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, device_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Name this computer, for example Bar Office. Other tills connect to this main computer.</span></label>
+                <label className="flex gap-2 text-sm"><input type="checkbox" checked={newBusinessConfirmed} onChange={(event) => setNewBusinessConfirmed(event.target.checked)} />This is a new Bar on this computer, not an existing cloud business.</label>
+                <button disabled={setupBusy || !newBusinessConfirmed || !serverPreflight?.ready} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Preparing secure setup…' : 'Set up this computer as the Bar server'}</button>
+              </form>
+            </>}
+          </div> : <form onSubmit={joinAuthority} className="mt-4 space-y-3">
+            <p className="text-xs text-slate-400">On the main Bar computer, open Bar setup and create a one-use connection code. Enter the address and security code shown there.</p>
+            <p className="text-xs text-slate-400">This computer will connect to the main Bar computer. Keep the main computer on while the Bar is open.</p>
+            <label className="block text-sm">Main computer address<input required placeholder="https://bar-office.local:8787" value={joinDraft.base_url} onChange={(event) => setJoinDraft((draft) => ({ ...draft, base_url: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
+            <details className="rounded border border-slate-700 p-3"><summary className="cursor-pointer text-sm">Connection security details</summary><label className="mt-3 block text-xs">Certificate fingerprint<input required autoComplete="off" value={joinDraft.certificate_fingerprint} onChange={(event) => setJoinDraft((draft) => ({ ...draft, certificate_fingerprint: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2 font-mono text-xs" /></label></details>
+            <label className="block text-sm">Single-use pairing code<input required inputMode="numeric" pattern="[0-9]{6,12}" autoComplete="one-time-code" value={joinDraft.pairing_code} onChange={(event) => setJoinDraft((draft) => ({ ...draft, pairing_code: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
+            <label className="block text-sm">Till name<input required maxLength={120} value={joinDraft.device_name} onChange={(event) => setJoinDraft((draft) => ({ ...draft, device_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
+            <button disabled={setupBusy} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Pairing…' : 'Join local Bar'}</button>
+          </form>}
+          {setupError && <p role="alert" className="mt-3 rounded bg-red-950 p-3 text-sm text-red-200">{setupError}</p>}
+        </>}
+        {(unavailable || currentAuthority?.authority_mode !== 'cloud' || currentAuthority?.configured) && <p className="mt-5 rounded-lg border border-amber-900 bg-amber-950/40 p-3 text-sm text-amber-100">This till will not restore a cloud profile or send local sales to cloud. Keep it connected to its configured Bar service and resolve saved operations before changing or repairing its pairing.</p>}
+        <div className="mt-6 border-t border-slate-700 pt-5">
+          <h2 className="text-sm font-semibold">Offline Bar guides</h2>
+          <p className="mt-1 text-xs text-slate-400">Open a guide or save a copy on this computer.</p>
+          <div className="mt-3 space-y-3">
+            {guides.map((guide) => (
+              <div key={guide.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-800 p-3">
+                <span className="text-sm">{guide.label}</span>
+                <div className="flex gap-2">
+                  {/** @type {Array<'open'|'save'>} */ (['open', 'save']).map((action) => {
+                    const busy = guideBusy === `${action}:${guide.id}`
+                    return (
+                      <button
+                        key={action}
+                        type="button"
+                        disabled={Boolean(guideBusy)}
+                        onClick={() => useGuide(action, guide.id, guide.label)}
+                        className="rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {busy ? 'Working…' : action === 'open' ? 'Open' : 'Save'}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          {guideStatus && <p role="status" className="mt-3 text-sm text-slate-200">{guideStatus}</p>}
+        </div>
+      </section>
+    </main>
+  )
 }
 
 export default function App() {
@@ -1323,6 +1724,15 @@ export default function App() {
   const [activeProfile, setActiveProfile] = useState(null)
   const [profilesLoading, setProfilesLoading] = useState(!isBrowserPreview)
   const [settingsLoading, setSettingsLoading] = useState(!isBrowserPreview)
+  // Resolve the trusted authority profile before any cloud profile/session
+  // bootstrap. A committed local profile must never be ignored because the
+  // existing cloud shell happened to load first.
+  const [localAuthorityState, setLocalAuthorityState] = useState(/** @type {null | {authority_mode?: string, configured?: boolean, error?: string, workspace_choice_required?: boolean, has_saved_cloud_business?: boolean, provisioning_recovery?: {pending?: boolean, kind?: 'owner'|'pairing'|null, recoverable?: boolean, error_code?: string}|null}} */ (null))
+  // A fresh hospitality-pos install enters the local Bar setup path by default.
+  // Existing cloud workspaces remain available only through the explicit
+  // cloud-choice action; committed local authorities never reach that chooser.
+  const [entryChoice, setEntryChoice] = useState(IS_HPOS_PRODUCT ? 'local' : 'choose')
+  const [entryChoiceError, setEntryChoiceError] = useState('')
   const [settings, setSettings] = useState(/** @type {import('./app-context.jsx').SettingsRowView | null} */ (null))
   const [features, setFeatures] = useState(/** @type {import('./app-context.jsx').FeatureFlags} */ ({})) // feature flags keyed by feature name
   const [trialStatus, setTrialStatus] = useState(DEFAULT_TRIAL_STATUS)
@@ -1337,6 +1747,8 @@ export default function App() {
 
   // Let Electron's native frame own the caption and window controls.
   useEffect(() => {
+    console.info('[STARTUP] react-first-commit', { at_ms: Math.round(performance.now()) })
+    void window.api?.barLocal?.rendererReady?.().catch(() => {})
     document.title = BUILD_PRODUCT.name
     const themeColor = PRODUCT_THEME_COLORS[BUILD_PRODUCT.id] || PRODUCT_THEME_COLORS['lodge-camp']
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor)
@@ -1562,11 +1974,53 @@ export default function App() {
       setTrialStatus(DEFAULT_TRIAL_STATUS)
       return
     }
-    reloadProfiles().catch(() => {
-      setProfiles([])
-      setActiveProfile(null)
-      setProfilesLoading(false)
-    })
+    let cancelled = false
+    const loadTrustedStartupState = async () => {
+      let timeoutId
+      try {
+        console.info('[STARTUP] authority-check-start', { at_ms: Math.round(performance.now()) })
+        const authority = await Promise.race([
+          window.api?.barLocal?.getStatus?.(),
+          new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('The local Bar check took too long. Try opening the Bar again.')), 12000) })
+        ])
+        if (cancelled) return
+        if (!authority || authority.authority_mode === 'bar_local' || authority.workspace_choice_required === true) {
+          console.info('[STARTUP] authority-check-complete', { at_ms: Math.round(performance.now()), result: authority?.authority_mode || 'new-or-unknown' })
+          setLocalAuthorityState(authority || { authority_mode: 'unknown', error: 'The trusted local authority state could not be read.' })
+          setProfiles([])
+          setActiveProfile(null)
+          setSettings(null)
+          setProfilesLoading(false)
+          setSettingsLoading(false)
+          setAuthRestoreLoading(false)
+          // A stale cloud user must not be restored against a local authority.
+          localStorage.removeItem('bb_user')
+          localStorage.removeItem(USER_SCOPE_KEY)
+          setUser(null)
+          return
+        }
+        setLocalAuthorityState(authority)
+        console.info('[STARTUP] authority-check-complete', { at_ms: Math.round(performance.now()), result: authority.authority_mode || 'workspace' })
+        await reloadProfiles()
+      } catch {
+        if (cancelled) return
+        console.error('[STARTUP] authority-check-failed', { at_ms: Math.round(performance.now()) })
+        // If authority discovery itself fails, do not guess that this is a
+        // cloud installation. That guess could route a commissioned till to
+        // Supabase-backed write handlers.
+        setLocalAuthorityState({ authority_mode: 'unknown', error: 'The trusted authority state could not be verified. Restart the application or contact your administrator.' })
+        setProfiles([])
+        setActiveProfile(null)
+        setSettings(null)
+        setProfilesLoading(false)
+        setSettingsLoading(false)
+        setAuthRestoreLoading(false)
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    }
+    loadTrustedStartupState()
+    return () => { cancelled = true }
   }, [isBrowserPreview, reloadProfiles])
 
   useEffect(() => {
@@ -1673,9 +2127,11 @@ export default function App() {
     }
 
     restoreAttemptedRef.current = true
+    console.info('[STARTUP] session-restore-start', { at_ms: Math.round(performance.now()) })
     const restorePromise = window.api.auth.restoreCurrentSession()
 
     restorePromise.then((restored) => {
+      console.info('[STARTUP] session-restore-result', { at_ms: Math.round(performance.now()), restored: Boolean(restored) })
       if (!restored) {
         clearStoredRendererSession()
         setAuthRestoreLoading(false)
@@ -1843,16 +2299,54 @@ export default function App() {
       )
     }
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26]">
+      <div role="status" aria-live="polite" className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#6f8061] via-[#d08a64] to-[#a83c26]">
         <div className="text-center text-white">
           <div className="mx-auto mb-5 flex h-36 w-[420px] max-w-[86vw] items-center justify-center">
             <img src={productLogoLight} alt={BUILD_PRODUCT.brandName} className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <h1 className="sr-only">{BUILD_PRODUCT.brandName}</h1>
-          <p className="mt-2 text-sm text-orange-50">Loading restaurant workspace...</p>
+          <div className="mt-4 flex items-center justify-center gap-2 text-sm text-orange-50">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-orange-100 border-t-transparent" aria-hidden="true" />
+            <span>{IS_HPOS_PRODUCT ? 'Starting the application…' : 'Loading your workspace…'}</span>
+          </div>
         </div>
       </div>
     )
+  }
+
+  if (IS_HPOS_PRODUCT && localAuthorityState?.training) {
+    if (!localAuthorityState.configured) return <TrainingSetup />
+    return <TrainingFrame><LocalAuthorityBoundary authority={localAuthorityState} /></TrainingFrame>
+  }
+  if (IS_HPOS_PRODUCT && (localAuthorityState?.authority_mode === 'bar_local' || localAuthorityState?.authority_mode === 'unknown')) {
+    const unavailable = localAuthorityState.authority_mode === 'unknown'
+    return <LocalAuthorityBoundary unavailable={unavailable} message={localAuthorityState.error} authority={localAuthorityState} />
+  }
+
+  if (IS_HPOS_PRODUCT && !isBrowserPreview && localAuthorityState?.workspace_choice_required) {
+    const dedicatedLocalBarWorkspace = localAuthorityState?.workspace_isolation === 'dedicated_bar'
+    if (entryChoice === 'local') return <LocalAuthorityBoundary authority={localAuthorityState} hasSavedCloudBusiness={localAuthorityState.has_saved_cloud_business === true} onBack={dedicatedLocalBarWorkspace ? undefined : () => setEntryChoice('choose')} />
+    return <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
+      <section className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-8">
+        <h1 className="text-2xl font-bold">{dedicatedLocalBarWorkspace ? 'This window is a local Bar' : 'Choose your workspace'}</h1>
+        <p className="mt-3 text-sm text-slate-300">{dedicatedLocalBarWorkspace
+          ? 'This window creates or joins the local Bar. The other workspace stays separate and is not copied or changed.'
+          : 'For a new Bar, set up or join the local Bar server. Restaurant and existing cloud businesses can continue in their current workspace.'}</p>
+        <button type="button" onClick={() => setEntryChoice('local')} className="mt-6 w-full rounded bg-amber-500 p-3 text-left font-semibold text-slate-950">Bar: set up or join a local server</button>
+        {!dedicatedLocalBarWorkspace && <button type="button" disabled={entryChoice === 'restarting'} onClick={async () => {
+          setEntryChoice('restarting'); setEntryChoiceError('')
+          try {
+            await window.api.barLocal.selectCloudWorkspace()
+            setEntryChoiceError('Close and reopen the application to continue to the other workspace.')
+          } catch {
+            setEntryChoice('choose')
+            setEntryChoiceError('The workspace choice could not be completed. Try again, or close and reopen the application.')
+          }
+        }} className="mt-3 w-full rounded border border-slate-500 p-3 text-left disabled:opacity-50">{entryChoice === 'restarting' ? 'Restarting application…' : 'Continue to other workspace'}</button>}
+        {entryChoiceError && <p role="status" className="mt-3 text-sm text-amber-200">{entryChoiceError}</p>}
+        <p className="mt-4 text-xs text-slate-400">Existing cloud Bars need a verified migration before local activation. Choosing local setup does not transfer cloud data.</p>
+      </section>
+    </main>
   }
 
   const authContextValue = { user, login, logout }

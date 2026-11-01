@@ -1,0 +1,70 @@
+[
+  {
+    "case": "isolated target identity",
+    "database": "bar_local_test_independent_review",
+    "port": 55461,
+    "version": "PostgreSQL 17.6 on x86_64-windows, compiled by msvc-19.44.35213, 64-bit",
+    "data": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-local-independent-review-20261020\\pg-data"
+  },
+  {
+    "case": "refund tenders must equal refund total",
+    "actual": {
+      "total": "-0.01",
+      "tender_total": "0"
+    },
+    "pass": false
+  },
+  {
+    "case": "cumulative partial returns cannot exceed net original",
+    "original": 0.02,
+    "refunds": [
+      -0.01,
+      -0.01,
+      -0.01
+    ],
+    "refunded": -0.03,
+    "pass": false
+  },
+  {
+    "case": "recipe return restores the inventory that was depleted",
+    "balances": {
+      "ingredient": 8,
+      "finished": 11
+    },
+    "expected": {
+      "finished": 10,
+      "ingredient": 10
+    },
+    "pass": false
+  },
+  {
+    "case": "cashier without pos.discount cannot grant discount",
+    "cashierCapabilities": [
+      "pos.view",
+      "pos.manage",
+      "pos.reports",
+      "inventory.view",
+      "customers.manage"
+    ],
+    "outcome": "committed_local",
+    "discount": 9,
+    "pass": false
+  },
+  {
+    "case": "staff manager cannot create a more privileged owner",
+    "callerCapabilities": [
+      "staff.manage"
+    ],
+    "outcome": "committed_local",
+    "createdRole": "owner",
+    "pass": false
+  },
+  {
+    "case": "closed accounting period prevents new sale posting gap",
+    "counts": {
+      "sales": 9,
+      "journals": 0
+    },
+    "note": "Informational only; no asserted period policy."
+  }
+]

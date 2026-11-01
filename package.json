@@ -138,7 +138,21 @@
     "test:preload-api": "node --test tests/preload-api-equivalence.test.mjs",
     "typecheck:l01": "node scripts/typecheck-l01.mjs",
     "test:typecheck:l01-guards": "node scripts/typecheck-l01-guards.mjs",
-    "typecheck:l01:deno": "node scripts/typecheck-l01-deno.mjs"
+    "typecheck:l01:deno": "node scripts/typecheck-l01-deno.mjs",
+    "test:bar-local-contracts": "npm --prefix packages/bar-contracts run build && node --test tests/bar-local/export-workflow-ui.test.mjs tests/bar-local/export-commit-group.test.mjs tests/bar-local/loyalty-program-query.test.mjs tests/bar-local/drawer-count-workflow.test.mjs tests/bar-local/stock-lot-expiry-workflow.test.mjs",
+    "typecheck:bar-local-finance": "tsc --project tsconfig.typecheck-bar-local-finance.json --pretty false",
+    "typecheck:bar-local-storage": "tsc --project tsconfig.typecheck-bar-local-storage.json --pretty false",
+    "test:bar-local-storage:electron": "node scripts/test-bar-local-storage-electron.mjs",
+    "test:bar-local-startup:electron": "node scripts/test-bar-local-startup-electron.mjs",
+    "test:bar-local-storage": "npm run typecheck:bar-local-storage && node --test --test-concurrency=1 tests/bar-local/sqlite-frame-store.test.mjs tests/bar-local/sqlite-intents.test.mjs tests/bar-local/sqlite-runtime.test.mjs",
+    "test:bar-local-ui": "npm run typecheck:bar-local-finance && node scripts/test-bar-local-ui.mjs",
+    "bar-local:build": "npm --prefix services/bar-local run build",
+    "bar-local:stage": "node scripts/stage-bar-local-server.mjs",
+    "bar-local:verify-stage": "node scripts/stage-bar-local-server.mjs --verify-only",
+    "bar-local:typecheck": "npm --prefix services/bar-local run typecheck",
+    "bar-local:test": "npm --prefix services/bar-local test",
+    "bar-local:test:isolated": "node services/bar-local/scripts/run-isolated-db.mjs",
+    "test:bar-local-electron": "node --test tests/bar-local/journal-protection.test.mjs tests/bar-local/complete-list.test.mjs tests/bar-local/electron-runtime.test.mjs tests/bar-local/cash-estimate.test.mjs tests/bar-local/renderer-recovery.test.mjs tests/bar-local/tender-workflows.test.mjs tests/bar-local/sqlite-frame-store.test.mjs tests/bar-local/sqlite-intents.test.mjs tests/bar-local/sqlite-runtime.test.mjs tests/bar-local/operator-messages.test.mjs tests/bar-local/post-close-corrections-ui.test.mjs tests/bar-local/backup-recovery-ui.test.mjs tests/bar-local/readiness-status.test.mjs tests/bar-local/startup-authority-gate.test.mjs"
   },
   "workspaces": [
     "apps/*",

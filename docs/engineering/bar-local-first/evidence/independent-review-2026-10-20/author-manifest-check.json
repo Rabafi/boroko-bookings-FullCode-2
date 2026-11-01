@@ -1,0 +1,14 @@
+{
+  "rows": 171,
+  "stale_count": 8,
+  "stale": [
+    "docs/engineering/bar-local-first/FEATURE_CONTRACT_MATRIX.csv",
+    "docs/engineering/bar-local-first/IMPLEMENTATION_REPORT.md",
+    "docs/engineering/bar-local-first/MANUAL_IMPACT.md",
+    "docs/engineering/typescript-migration/STATUS.md",
+    "legacy-pos/src/renderer/src/screens/BarLocalWorkspace.jsx",
+    "src/main/index.js",
+    "src/renderer/src/components/Bookings.jsx",
+    "src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx"
+  ]
+}

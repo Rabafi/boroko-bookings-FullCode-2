@@ -1,0 +1,86 @@
+[
+  {
+    "script": "bar-local:typecheck",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 9151,
+    "logfile": "bar-local-typecheck.log"
+  },
+  {
+    "script": "test:bar-local-electron",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 1257,
+    "logfile": "test-bar-local-electron.log"
+  },
+  {
+    "script": "legacy-pos:test",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 2276,
+    "logfile": "legacy-pos-test.log"
+  },
+  {
+    "script": "legacy-pos:build",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 16686,
+    "logfile": "legacy-pos-build.log"
+  },
+  {
+    "script": "build:hospitality-pos",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 58287,
+    "logfile": "build-hospitality-pos.log"
+  },
+  {
+    "script": "typecheck:main",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 4229,
+    "logfile": "typecheck-main.log"
+  },
+  {
+    "script": "test:bar-guides",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 1612,
+    "logfile": "test-bar-guides.log"
+  },
+  {
+    "script": "test:preload-api",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 1085,
+    "logfile": "test-preload-api.log"
+  },
+  {
+    "script": "test:preload-transport",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 2799,
+    "logfile": "test-preload-transport.log"
+  },
+  {
+    "script": "test:bar",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 272122,
+    "logfile": "test-bar.log"
+  },
+  {
+    "script": "test:release-architecture",
+    "exit": 0,
+    "error": null,
+    "duration_ms": 1589,
+    "logfile": "test-release-architecture.log"
+  },
+  {
+    "script": "test:release-behavior",
+    "exit": 1,
+    "error": null,
+    "duration_ms": 1173,
+    "logfile": "test-release-behavior.log"
+  }
+]

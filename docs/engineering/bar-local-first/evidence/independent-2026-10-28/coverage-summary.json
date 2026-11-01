@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-10-28T09:44:25.296Z",
+  "requirements": 105,
+  "acceptance": 32,
+  "features": 64,
+  "work_packages": 9,
+  "reviewed_source_files": 291,
+  "status_counts": {
+    "PARTIAL": 98,
+    "PASS": 1,
+    "FAIL": 3,
+    "UNVERIFIED": 3
+  }
+}

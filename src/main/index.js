@@ -1,11 +1,22 @@
 // @ts-check
 /** Read view of existing caught error fields; it documents property use and does not validate thrown values. */
 /** @typedef {{message?: unknown, code?: unknown}} ErrorMessageReadView */
+/** The catch sites below read existing error-like fields directly; leaves remain unknown and no validation or coercion is claimed. */
+/** @typedef {{message?: unknown, code?: unknown, booking_id?: unknown, invoice_number?: unknown}} CaughtErrorExpectedData */
+/** Expected message field used by IPC error wrappers; this view does not validate thrown values. */
+/** @typedef {{message?: string}} IpcCaughtErrorExpectedView */
+/** Read view for caught values; `message` remains untrusted and this view does not validate or coerce thrown data. */
+/** @typedef {{message?: unknown}} CaughtErrorMessageReadView */
+/** The auth:login catch reads these fields from thrown values; leaves remain unknown and the view does not validate them. */
+/** @typedef {{message?: unknown, code?: unknown, stack?: unknown}} AuthLoginCaughtErrorReadView */
+/** authLogin domain result shapes read by auth:login; leaves stay unknown and these views do not validate the returned data. */
+/** @typedef {{mode: string, warning?: unknown}} AuthLoginSuccessReadView */
+/** @typedef {{code: unknown, error: unknown, memberships?: unknown}} AuthLoginFailureReadView */
 /** @typedef {{id?: unknown, name?: unknown, email?: unknown, shift_id?: unknown, shiftId?: unknown}} StartupStaffExpectedData */
 /** @typedef {{profiles?: unknown, active_lodge_id?: unknown}} StartupProfileRegistryExpectedData */
 /** @typedef {{lodge_mesh_secret?: unknown}} StartupMeshSettingsExpectedData */
 
-import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage, screen } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, Notification, dialog, Menu, nativeImage, screen, safeStorage } from 'electron'
 import { join, dirname, basename, resolve, relative as relativePath, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -18,6 +29,14 @@ import * as db from './database.js'
 import { accountingExportRowCount } from './accountingExportRowCount.js'
 import { assertCompleteAccountingExport } from './accountingExportCompleteness.js'
 import { showAccountingExportSaveDialog } from './accountingExportSaveDialog.js'
+
+function startupTrace(stage, details = {}) {
+  console.info('[STARTUP]', stage, { uptime_ms: Math.round(process.uptime() * 1000), ...details })
+}
+
+// Native Error applies ECMAScript ToString to a supplied message. This type view
+// models only the constructor signature; it does not validate or coerce message data.
+/** @typedef {new (message?: unknown) => Error} ErrorConstructorWithRuntimeMessage */
 
 // Electron IPC serializes arrays by elements only: own properties attached to
 // arrays (report/read metadata such as `_source`, `_complete`) are silently
@@ -50,10 +69,13 @@ const TRANSPORT_ENVELOPE_CHANNELS = new Set([
 /** @typedef {{ __rowsTransport: true, rows: unknown[], _source?: unknown, _complete?: unknown, _tender_complete?: unknown, _item_detail_complete?: unknown, _available?: unknown }} IpcRowsTransportEnvelope */
 /** @typedef {{ success: false, error: unknown, code?: unknown }} MainIpcFailure */
 /** @typedef {{ success: true, offline: true, queued: true } | (Record<string, unknown> & { success: unknown, offline: unknown }) | MainIpcFailure} BookingPaymentIpcResult */
-/** @typedef {{ success: true, offline: true, pending_approval: true, booking_id: unknown, request_id: string, request: unknown, refund_amount: number, retained_amount: number, retained_percent: number, method: string, proof_reference: string, notes: string } | { success: true, booking_id: unknown, refund_amount: number, retained_amount: number, retained_percent: number, approved_by: unknown, approved_by_name: unknown, credit_transfer: boolean, credit_entry_id: unknown, credit_balance: unknown } | MainIpcFailure} BookingRefundIpcResult */
-/** @typedef {{ success: true, id: string, offline: true, provisional: true, receipt_number: string, order: Record<string, unknown>, tab_close_warning?: unknown } | (Record<string, unknown> & { success: unknown }) | MainIpcFailure} PosCreateOrderIpcResult */
+/** @typedef {import('../shared/desktopIpcContracts.js').BookingRefundSuccessResult | MainIpcFailure} BookingRefundIpcResult */
+/** The IPC handler forwards the domain result unchanged, adding a till session only on its existing success branch. @typedef {Awaited<ReturnType<typeof db.createPosOrder>> | (Record<string, unknown> & {till_session: {staffId: string, staffName: unknown, outletId: string|null, shiftId: string|null, mode: 'strict'|'shift', inactivityMinutes: number, lastActivityAt: number, expiresAt: number}}) | MainIpcFailure} PosCreateOrderIpcResult */
 /** @typedef {{ success: true, new_stock: number, offline: true } | { success: true, new_stock: unknown } | MainIpcFailure} InventoryAdjustStockIpcResult */
-/** @typedef {{ success: true, retried: number, remaining: number } | MainIpcFailure} RetryFailedQueueIpcResult */
+/** Hardware settings read from the POS settings store; the existing empty-object fallback is retained and the adapter normalizes this expected view. @typedef {Record<string, unknown> & {escpos_printer_path?: unknown}} InventoryBarcodeLabelHardwareExpectedData */
+/** Existing adapter variants; fields absent from one branch stay absent at runtime. @typedef {{success: true, verified: true, transport: 'path', target: string, printed: number, message: string, error?: undefined}|{success: false, error: string, verified?: undefined, transport?: undefined, target?: undefined, printed?: undefined, message?: undefined}} InventoryBarcodeLabelPrintResultReadView */
+/** Decorated movement rows always include outlet_id; its value may be null when neither the movement nor item has an outlet. @typedef {{outlet_id: unknown}} InventoryMovementOutletReadView */
+/** @typedef {import('../shared/desktopIpcContracts.js').DesktopIpcResult<'sync:retryFailed'>} RetryFailedQueueIpcResult */
 /** @param {unknown} value @returns {unknown} */
 function toTransport(value) {
   if (Array.isArray(value)) {
@@ -112,6 +134,7 @@ for (const method of /** @type {Array<'warn' | 'error' | 'log' | 'info'>} */ (['
   console[method] = (...args) => { try { original(...args) } catch {} }
 }
 import { state } from './state.js'
+import { selectBusinessCrashHistory } from '../shared/tillFirstRun.js'
 import { readCache } from './domains/cacheStore.js'
 import { createAiOrchestrator, writeAiAuditLog } from './ai/aiOrchestrator.js'
 import { buildCapabilitySnapshot, isPosOutletScopedRole, normalizeAppRole } from '../shared/accessControl.js'
@@ -152,6 +175,8 @@ import { getProductDefinition, getRuntimeProductId } from '../shared/productIden
 import { getTillOperatorPolicy, TILL_OPERATOR_MODES } from '../shared/tillOperatorPolicy.js'
 import { resolveAuthorizeShiftId } from '../shared/tillAuthorizeShift.js'
 import { isBarOnlyMode } from '../shared/propertyTypes.js'
+import { cloudCompanySetupRefusal } from '../shared/barLocalCompanySetup.js'
+import { LOCAL_BAR_WORKSPACE_DIR, isDedicatedLocalBarWorkspaceArgv } from '../shared/barLocalWorkspace.js'
 import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
 import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
@@ -199,6 +224,8 @@ function buildWasteExportSection(movementRead, includeWaste) {
 }
 import { writePosHistoryExcelArtifact, writePosHistoryJsonArtifact, writePosHistoryPdfArtifact } from './posHistoryExportArtifacts.js'
 import { registerBarGuideIpc } from './barGuidesIpc.js'
+import { registerBarLocalIpc } from './bar-local/electronRuntime.js'
+import { AUTHORITY_MODES } from './bar-local/authority.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const BUILD_PRODUCT_ID = getRuntimeProductId()
@@ -362,8 +389,10 @@ if (process.env.BOROKO_TEST_USER_DATA_DIR) {
   const appDataDir = app.getPath('appData')
   const devUserDataDir = join(appDataDir, devDeskName)
   const installedUserDataDir = join(appDataDir, installedDeskName)
-  seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir)
-  ensureDevDeskMeshSecret(appDataDir, devUserDataDir)
+  if (!process.argv.includes('--bar-training') && !isDedicatedLocalBarWorkspaceArgv(process.argv)) {
+    seedDevDeskFromInstalledApp(installedUserDataDir, devUserDataDir)
+    ensureDevDeskMeshSecret(appDataDir, devUserDataDir)
+  }
   app.setName(devDeskName)
   app.setPath('userData', devUserDataDir)
 }
@@ -374,16 +403,67 @@ if (process.env.BOROKO_TEST_USER_DATA_DIR) {
 // product quits while focusing the first product's window. Packaged builds keep
 // distinct appId/userData per product via their installer configs, so Lodge,
 // Hotel and Bar can run side by side while same-product doubles still quit.
+if (process.argv.includes('--bar-training')) {
+  if (BUILD_PRODUCT_ID !== 'hospitality-pos') throw new Error('Practice authority is available only in Bar POS.')
+  app.setPath('userData', join(app.getPath('userData'), 'bar-training', 'workspace'))
+  app.setName(`${BUILD_PRODUCT.name} — TRAINING`)
+}
+// A separate local Bar workspace for an owner who already runs a cloud business
+// on this computer. It uses its own userData root, so its protected authority
+// profile, device credential, intent journal and caches never touch the cloud
+// business, and it takes its own single-instance lock. The cloud workspace is
+// never imported, converted or erased by this flow.
+if (isDedicatedLocalBarWorkspaceArgv(process.argv)) {
+  if (BUILD_PRODUCT_ID !== 'hospitality-pos') throw new Error('A separate local Bar workspace is available only in Bar POS.')
+  if (process.argv.includes('--bar-training')) throw new Error('Practice mode cannot open a live local Bar workspace.')
+  app.setPath('userData', join(app.getPath('userData'), LOCAL_BAR_WORKSPACE_DIR))
+  app.setName(`${BUILD_PRODUCT.name} — Local Bar`)
+}
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine) => {
     const existing = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
     if (!existing) return
     if (existing.isMinimized()) existing.restore()
     existing.focus()
+    const handoffFlags = Array.isArray(commandLine) ? commandLine.filter((arg) => typeof arg === 'string' && arg.startsWith('--bar-local-workspace-ready=')) : []
+    if (localWorkspaceRendererReady && mainWindowVisible) for (const flag of handoffFlags) void acknowledgeLocalBarWorkspace([flag])
+    else for (const flag of handoffFlags) pendingLocalBarHandoffs.add(flag)
   })
+}
+
+let localWorkspaceRendererReady = false
+let mainWindowVisible = false
+const pendingLocalBarHandoffs = new Set()
+
+/** A local setup handoff is complete only after its dedicated window is visible. */
+function acknowledgeLocalBarWorkspace(argv = process.argv) {
+  const flag = Array.isArray(argv) ? argv.find((arg) => typeof arg === 'string' && arg.startsWith('--bar-local-workspace-ready=')) : null
+  if (!flag) return Promise.resolve(false)
+  const value = flag.slice('--bar-local-workspace-ready='.length)
+  const match = /^(\d{1,5})\.([a-f0-9]{64})$/.exec(value)
+  if (!match) return Promise.resolve(false)
+  const port = Number(match[1])
+  if (port < 1 || port > 65535) return Promise.resolve(false)
+  return fetch(`http://127.0.0.1:${port}/ready/${match[2]}`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(1500)
+  }).then((response) => response.status === 204).catch(() => false)
+}
+
+ipcMain.handle('barLocal:rendererReady', () => {
+  localWorkspaceRendererReady = true
+  if (mainWindowVisible) completeLocalWorkspaceHandoffs()
+  return true
+})
+
+function completeLocalWorkspaceHandoffs() {
+  void acknowledgeLocalBarWorkspace(process.argv)
+  const pending = [...pendingLocalBarHandoffs]
+  pendingLocalBarHandoffs.clear()
+  for (const flag of pending) void acknowledgeLocalBarWorkspace([flag])
 }
 
 // -- URL safety guard (used by shell:openExternal and setWindowOpenHandler) ----
@@ -424,7 +504,8 @@ function appendRendererErrorLog(payload) {
     const entry = {
       at: new Date().toISOString(),
       // Object spread applies ToObject here; this view models that operation only.
-      .../** @type {object} */ (payload)
+      .../** @type {object} */ (payload),
+      lodge_id: state.lodgeId || null
     }
     fs.appendFileSync(logPath, JSON.stringify(entry) + '\n', 'utf8')
     return { success: true }
@@ -435,22 +516,23 @@ function appendRendererErrorLog(payload) {
   }
 }
 
-function getRendererErrorLog(limit = 10) {
+function getRendererErrorLog(limit = 10, businessOnly = false) {
   try {
     const logPath = join(app.getPath('userData'), 'renderer-errors.log')
     if (!fs.existsSync(logPath)) return []
     const lines = fs.readFileSync(logPath, 'utf8')
       .split(/\r?\n/)
       .filter(Boolean)
-      .slice(-Math.max(1, Number(limit) || 10))
-      .reverse()
-    return lines.map((line) => {
+    const entries = lines.map((line) => {
       try {
         return JSON.parse(line)
       } catch {
-        return { at: new Date().toISOString(), message: 'Unreadable renderer error entry', raw: line }
+        return { at: null, message: 'Unreadable renderer error entry', raw: line }
       }
     })
+    return businessOnly
+      ? selectBusinessCrashHistory(entries, state.lodgeId, limit)
+      : entries.slice(-Math.max(1, Number(limit) || 10)).reverse()
   } catch (error) {
     // String operations and Node's filesystem APIs throw Error instances.
     console.error('Renderer error log read failed:', /** @type {Error} */ (error).message)
@@ -635,6 +717,7 @@ function getSplashTheme(productId = BUILD_PRODUCT_ID) {
 
 function buildSplashHtml(productId = BUILD_PRODUCT_ID) {
   const theme = getSplashTheme(productId)
+  const startupMessage = productId === 'hospitality-pos' ? 'Starting the application.' : 'Preparing your workspace.'
   const logoPath = getAppDarkLogoPath()
   const logoMarkup = logoPath
     ? `<img src="data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}" alt="${escapeHtml(APP_BRAND_NAME)}" />`
@@ -707,6 +790,15 @@ function buildSplashHtml(productId = BUILD_PRODUCT_ID) {
           font-size: 12px;
           color: ${theme.status};
         }
+        .retry {
+          border: 0;
+          border-radius: 8px;
+          padding: 10px 16px;
+          background: ${theme.bar};
+          color: ${theme.text};
+          font-weight: 700;
+          cursor: pointer;
+        }
         .progress {
           position: relative;
           width: 100%;
@@ -764,10 +856,12 @@ function buildSplashHtml(productId = BUILD_PRODUCT_ID) {
         <div class="title">${escapeHtml(APP_BRAND_NAME)}</div>
         <div class="subtitle">Starting up <span class="dots"><span></span><span></span><span></span></span></div>
         <div class="status" role="status" aria-live="polite">
-          <div class="status-text">Checking internet connection and online database access</div>
+          <div class="status-text">${escapeHtml(startupMessage)}</div>
           <div class="progress" aria-hidden="true"></div>
+          <button class="retry" id="startup-retry" hidden>Restart application</button>
         </div>
       </div>
+      <script>document.getElementById('startup-retry')?.addEventListener('click',()=>{location.href='bar-local-retry://restart'})</script>
     </body>
   </html>`
 }
@@ -778,7 +872,8 @@ function createStartupSplashWindow() {
   }
 
   const appIcon = createAppLogoNativeImage() || undefined
-  const splashWindow = new BrowserWindow({
+  // Keep the historical own `icon` property even when its value is undefined.
+  const splashWindow = new BrowserWindow(/** @type {import('electron').BrowserWindowConstructorOptions} */ ({
     width: 420,
     height: 420,
     resizable: false,
@@ -798,14 +893,37 @@ function createStartupSplashWindow() {
       contextIsolation: true,
       nodeIntegration: false
     }
-  })
+  }))
 
   activeSplashWindow = splashWindow
   splashWindow.once('closed', () => {
     if (activeSplashWindow === splashWindow) activeSplashWindow = null
   })
+  splashWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith('data:text/html')) return
+    event.preventDefault()
+    if (url === 'bar-local-retry://restart') {
+      app.relaunch()
+      app.quit()
+    }
+  })
   splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildSplashHtml())}`)
   return splashWindow
+}
+
+/** Keep a visible native recovery screen when the renderer cannot start. */
+function showStartupProblem(message) {
+  const splash = activeSplashWindow && !activeSplashWindow.isDestroyed()
+    ? activeSplashWindow
+    : createStartupSplashWindow()
+  if (splash.isMinimized()) splash.restore()
+  splash.show()
+  const safeMessage = JSON.stringify(message)
+  const update = () => {
+    void splash.webContents.executeJavaScript(`(() => { const text=document.querySelector('.status-text'); const retry=document.getElementById('startup-retry'); if(text)text.textContent=${safeMessage}; if(retry)retry.hidden=false })()`).catch(() => {})
+  }
+  if (splash.webContents.isLoading()) splash.webContents.once('did-finish-load', update)
+  else update()
 }
 
 /** The scope helper reads this one field from database lookup results; it does not validate or otherwise type the row. */
@@ -977,9 +1095,12 @@ function reportRowsComplete(rows = [], amountKeys = ['total_cost', 'total', 'amo
  * @param {{rows?: boolean, amountKeys?: string[]}} [options]
  */
 function requireCompleteReportRead(value, label, { rows = false, amountKeys } = {}) {
-  const complete = value?._complete === true || value?.complete === true
-  const source = value?._source || value?.source
-  if (source && !['server', 'server-authoritative'].includes(source)) throw new Error(`${label} is not server-authoritative.`)
+  const expectedValue = /** @type {{_complete?: unknown, complete?: unknown, _source?: unknown, source?: unknown} | null | undefined} */ (value)
+  const complete = expectedValue?._complete === true || expectedValue?.complete === true
+  const source = expectedValue?._source || expectedValue?.source
+  // Report producers supply string source labels; this is only the existing
+  // includes() signature view and does not validate or coerce the raw value.
+  if (source && !['server', 'server-authoritative'].includes(/** @type {string} */ (source))) throw new Error(`${label} is not server-authoritative.`)
   if (complete !== true) throw new Error(`${label} is incomplete or lacks an explicit server-complete certificate.`)
   if (rows && !reportRowsComplete(value, amountKeys)) throw new Error(`${label} contains rows without recorded amounts.`)
   return value
@@ -990,6 +1111,10 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * @param {Electron.WebContents} webContents
+ * @param {{timeoutMs?: number, minTextLength?: number}} [options]
+ */
 async function waitForPrintableWebContents(webContents, { timeoutMs = 5000, minTextLength = 1 } = {}) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -1023,22 +1148,33 @@ async function waitForPrintableWebContents(webContents, { timeoutMs = 5000, minT
   return false
 }
 
+/**
+ * @param {Electron.WebContents} webContents
+ * @param {Electron.WebContentsPrintOptions} [printOptions]
+ * @param {{timeoutMs?: number, minTextLength?: number}} [waitOptions]
+ */
 async function printWebContentsSafely(webContents, printOptions = {}, waitOptions = {}) {
   await waitForPrintableWebContents(webContents, waitOptions)
   await delay(120)
   return await new Promise((resolve) => {
-    webContents.print(printOptions, (success, failureReason) => {
+    webContents.print(printOptions, (/** @type {boolean} */ success, /** @type {string} */ failureReason) => {
       resolve(success ? { success: true } : { success: false, error: failureReason || 'Print failed.' })
     })
   })
 }
 
+/**
+ * @param {Electron.WebContents} webContents
+ * @param {Electron.PrintToPDFOptions} [pdfOptions]
+ * @param {{timeoutMs?: number, minTextLength?: number}} [waitOptions]
+ */
 async function printWebContentsToPdfSafely(webContents, pdfOptions = {}, waitOptions = {}) {
   await waitForPrintableWebContents(webContents, waitOptions)
   await delay(120)
   return await webContents.printToPDF(pdfOptions)
 }
 
+/** @param {Electron.WebContents} webContents */
 async function assertBasicReportPage(webContents) {
   const route = await webContents.executeJavaScript(`
     String(window.location.hash || window.location.pathname || '')
@@ -1050,6 +1186,11 @@ async function assertBasicReportPage(webContents) {
 
 const STARTER_PRINT_OPERATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+/**
+ * @param {string} html
+ * @param {Electron.PrintToPDFOptions} [pdfOptions]
+ * @param {{timeoutMs?: number, minTextLength?: number}} [waitOptions]
+ */
 async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
   const pdfWindow = new BrowserWindow({
     show: false,
@@ -1071,6 +1212,22 @@ async function renderHtmlToPdfBuffer(html, pdfOptions = {}, waitOptions = {}) {
 }
 
 const ACCOUNTING_EXPORT_FILE_FORMATS = Object.freeze(['json', 'xlsx', 'csv', 'pdf'])
+/** @typedef {'json' | 'xlsx' | 'csv' | 'pdf'} AccountingExportFileFormat */
+/**
+ * Metadata fields inspected by the certified export artifact path. This is an
+ * expected-data view of the server-produced report, not runtime validation.
+ * @typedef {{export_id?: unknown, exportId?: unknown, report_run_id?: unknown, reportRunId?: unknown, dataset_hash?: unknown, data_hash?: unknown} | null | undefined} AccountingExportIdentityExpectedData
+ */
+/** Presentation and serialization fields read from the certified report and lodge settings; leaves remain unknown.
+ * The type records the existing serializer's expected source view, not validation of every RPC field.
+ * @typedef {NonNullable<Parameters<typeof assertCompleteAccountingExport>[0]> & {lodge_name?: unknown, company_name?: unknown, parameters?: {lodge_id?: unknown} | null, data?: unknown, rows?: unknown, control_totals?: unknown, reconciliations?: unknown, report_type?: unknown, generated_at?: unknown, data_cutoff?: unknown, business_timezone?: unknown, currency?: unknown, schema_version?: unknown, export_version?: unknown}} AccountingExportFileSourceExpectedData
+ */
+/** Lodge-setting fields used in the export heading; this view does not validate the settings result.
+ * @typedef {{lodge_id?: unknown, lodge_name?: unknown, company_name?: unknown} | null | undefined} AccountingExportSettingsExpectedData
+ */
+/** Fields passed by the export handler to both artifact-registration adapters.
+ * @typedef {{artifactType: AccountingExportFileFormat, filePath: string | null, fileHash: string | null, byteCount: number, detailedCompanionPath: string | null, detailedCompanionHash: string | null, artifactError?: unknown}} AccountingArtifactRegistration
+ */
 const ACCOUNTING_FILE_EXPORT_OPERATIONS = new Set([
   'exportChart',
   'exportLedgerReport',
@@ -1082,12 +1239,16 @@ const ACCOUNTING_FILE_EXPORT_OPERATIONS = new Set([
   'exportPayrollRegister'
 ])
 
+/** @param {unknown} result */
 function unwrapAccountingExportResponse(result) {
-  return result?.data && typeof result.data === 'object' ? result.data : result
+  return (/** @type {{data?: unknown} | null | undefined} */ (result))?.data && typeof (/** @type {{data?: unknown}} */ (result)).data === 'object'
+    ? (/** @type {{data?: unknown}} */ (result)).data
+    : result
 }
 
 
 
+/** @param {AccountingExportIdentityExpectedData} source */
 function accountingExportIdentity(source) {
   return {
     exportId: source?.export_id || source?.exportId || null,
@@ -1096,6 +1257,7 @@ function accountingExportIdentity(source) {
   }
 }
 
+/** @param {AccountingExportIdentityExpectedData} source @param {AccountingArtifactRegistration} artifact */
 async function recordAccountingArtifact(source, artifact) {
   const identity = accountingExportIdentity(source)
   if (identity.exportId) {
@@ -1112,6 +1274,7 @@ async function recordAccountingArtifact(source, artifact) {
   }
   throw new Error('The certified export response has no server artifact identity.')
 }
+/** @param {string} filePath @param {AccountingExportFileFormat} format */
 function verifyAccountingExportFile(filePath, format) {
   const saved = fs.statSync(filePath)
   if (!saved.isFile() || saved.size <= 0) throw new Error('The accounting export file was not written or is empty.')
@@ -1129,22 +1292,32 @@ function verifyAccountingExportFile(filePath, format) {
   return saved
 }
 
+/**
+ * @typedef {{path: string, value: string}} AccountingExportFlatRow
+ * @param {unknown} value
+ * @param {string} [path]
+ * @param {AccountingExportFlatRow[]} [rows]
+ * @returns {AccountingExportFlatRow[]}
+ */
 function flattenAccountingExportValue(value, path = '', rows = []) {
   if (Array.isArray(value)) {
     if (value.length === 0) rows.push({ path, value: '[]' })
-    value.forEach((item, index) => flattenAccountingExportValue(item, `${path}[${index}]`, rows))
+    value.forEach((/** @type {unknown} */ item, /** @type {number} */ index) => flattenAccountingExportValue(item, `${path}[${index}]`, rows))
     return rows
   }
   if (value && typeof value === 'object') {
     const keys = Object.keys(value)
     if (keys.length === 0) rows.push({ path, value: '{}' })
-    keys.forEach((key) => flattenAccountingExportValue(value[key], path ? `${path}.${key}` : key, rows))
+    // The existing object guard and Object.keys drive this expected key lookup;
+    // payload values remain unknown and are recursively narrowed without validation.
+    keys.forEach((key) => flattenAccountingExportValue((/** @type {Record<string, unknown>} */ (value))[key], path ? `${path}.${key}` : key, rows))
     return rows
   }
   rows.push({ path, value: value == null ? '' : String(value) })
   return rows
 }
 
+/** @param {AccountingExportFileSourceExpectedData} source */
 function accountingExportRows(source) {
   const payload = Object.prototype.hasOwnProperty.call(source, 'data')
     ? source.data
@@ -1158,6 +1331,7 @@ function accountingExportRows(source) {
   ]
 }
 
+/** @param {unknown} value */
 function csvCell(value) {
   const text = String(value ?? '')
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
@@ -1166,12 +1340,24 @@ function csvCell(value) {
 // Prepayment exports contain operator/customer-controlled ledger text. Prefix
 // formula-looking cells so opening the CSV in a spreadsheet cannot execute a
 // formula from a name, reference, method, notes, or idempotency value.
+/** @param {unknown} value */
 function safePrepaymentCsvCell(value) {
   let text = String(value ?? '')
   if (/^[\t\r]/.test(text) || /^[=+\-@]/.test(text)) text = `'${text}`
   return csvCell(text)
 }
 
+/**
+ * The get_prepayment_export RPC emits to_jsonb(ledger_row) plus customer_name.
+ * Values remain unknown because the result is RPC data, not runtime-validated.
+ * @typedef {{id: unknown, created_at: unknown, customer_id: unknown, customer_name: unknown, entry_type: unknown, amount: unknown, method: unknown, reference: unknown, notes: unknown, booking_id: unknown, payment_id: unknown, recorded_by: unknown, idempotency_key: unknown}} PrepaymentExportEntryExpectedData
+ * @typedef {keyof PrepaymentExportEntryExpectedData} PrepaymentExportColumnKey
+ * The get_prepayment_export SQL producer returns this envelope. Its entries
+ * and certification fields remain unknown here; the IPC consumer below keeps
+ * its existing Array.isArray and strict-true checks as the runtime guards.
+ * @typedef {{success?: unknown, error?: unknown, data?: {entries?: unknown, financial_certified?: unknown} | null}} PrepaymentExportResponseExpectedData
+ */
+/** @type {Array<[PrepaymentExportColumnKey, string]>} */
 const PREPAYMENT_EXPORT_COLUMNS = [
   ['id', 'Entry ID'],
   ['created_at', 'Created at'],
@@ -1188,10 +1374,13 @@ const PREPAYMENT_EXPORT_COLUMNS = [
   ['idempotency_key', 'Operation ID']
 ]
 
+/** @param {unknown[]} [entries] */
 function buildPrepaymentExportCsv(entries = []) {
   const header = PREPAYMENT_EXPORT_COLUMNS.map(([, label]) => csvCell(label)).join(',')
   const rows = entries.map((entry) => PREPAYMENT_EXPORT_COLUMNS.map(([key]) => {
-    const value = entry?.[key]
+    // Caller has already selected an array from the RPC envelope; this row
+    // view preserves direct optional property access without validating fields.
+    const value = (/** @type {PrepaymentExportEntryExpectedData|null|undefined} */ (entry))?.[key]
     // Keep numeric amounts machine-readable while treating every ledger text
     // field as hostile spreadsheet input.
     return key === 'amount' ? csvCell(value) : safePrepaymentCsvCell(value)
@@ -1199,6 +1388,7 @@ function buildPrepaymentExportCsv(entries = []) {
   return `${[header, ...rows].join('\r\n')}\r\n`
 }
 
+/** @param {AccountingExportFileSourceExpectedData} source */
 function buildAccountingExportCsv(source) {
   const lines = [['record_type', 'path', 'value']]
   const metadataRows = flattenAccountingExportValue(Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'data')), 'metadata')
@@ -1209,6 +1399,10 @@ function buildAccountingExportCsv(source) {
   return `${lines.map((row) => row.map(csvCell).join(',')).join('\r\n')}\r\n`
 }
 
+/**
+ * @param {AccountingExportFileSourceExpectedData} source
+ * @param {{fileName?: unknown, companionFilePath?: string|null}} options
+ */
 function buildAccountingExportPdfHtml(source, { fileName, companionFilePath }) {
   const manifest = source.export_manifest || source.exportManifest || {}
   const controls = source.control_totals || {}
@@ -1239,6 +1433,11 @@ function buildAccountingExportPdfHtml(source, { fileName, companionFilePath }) {
   </body></html>`
 }
 
+/**
+ * @param {AccountingExportFileSourceExpectedData} source
+ * @param {AccountingExportFileFormat} format
+ * @param {string|null} [companionFilePath]
+ */
 function buildAccountingExportEnvelope(source, format, companionFilePath = null) {
   const canonical = JSON.stringify(source)
   return {
@@ -1252,6 +1451,7 @@ function buildAccountingExportEnvelope(source, format, companionFilePath = null)
   }
 }
 
+/** @param {string} filePath @param {AccountingExportFileFormat} format @param {AccountingExportFileSourceExpectedData} source @param {string|null} [companionFilePath] */
 function writeAccountingExportFile(filePath, format, source, companionFilePath = null) {
   const envelope = buildAccountingExportEnvelope(source, format, companionFilePath)
   if (format === 'json') {
@@ -1336,7 +1536,7 @@ function buildPrepaymentReceiptPdfHtml(receipt = {}) {
       ${contact ? `<p class="muted">${contact}</p>` : ''}
     </div>
     <div class="title"><div><h2>Guest Deposit Receipt</h2><p class="muted">${escapeHtml(receipt.receiptNumber || '')}</p></div>
-      <div style="text-align:right"><div class="label">Date issued</div><div class="value">${escapeHtml(new Date(receipt.createdAt || Date.now()).toLocaleString('en-BW'))}</div></div></div>
+      <div style="text-align:right"><div class="label">Date issued</div><div class="value">${escapeHtml(new Date(/** Expected receipt date input; this assertion is erased and Date keeps its existing coercion/error behavior. */ /** @type {string | number} */ (receipt.createdAt || Date.now())).toLocaleString('en-BW'))}</div></div></div>
     <div class="grid">
       <div><div class="label">Customer</div><div class="value">${escapeHtml(receipt.customerName || '')}</div></div>
       <div><div class="label">Payment method</div><div class="value">${escapeHtml(String(receipt.method || 'other').replaceAll('_', ' '))}</div></div>
@@ -1350,12 +1550,22 @@ function buildPrepaymentReceiptPdfHtml(receipt = {}) {
   </div></body></html>`
 }
 
+/**
+ * Purchase-order and supplier rows from getPosPurchaseOrders are read as an
+ * expected document view; this does not validate RPC data.
+ * @typedef {{description?: unknown, quantity?: unknown, unit_cost?: unknown, total?: unknown}} PurchaseOrderPdfItemExpectedData
+ * @typedef {{name?: unknown, contact_person?: unknown, email?: unknown, phone?: unknown}|null} PurchaseOrderPdfSupplierExpectedData
+ * @typedef {{id?: unknown, status?: unknown, created_at?: unknown, order_date?: unknown, expected_delivery?: unknown, supplier?: PurchaseOrderPdfSupplierExpectedData, items?: PurchaseOrderPdfItemExpectedData[]|null, total?: unknown, notes?: unknown}} PurchaseOrderPdfExpectedData
+ * @typedef {{lodge_name?: unknown, company_name?: unknown}} PurchaseOrderPdfBusinessExpectedData
+ * @param {{purchaseOrder?: PurchaseOrderPdfExpectedData|null, business?: PurchaseOrderPdfBusinessExpectedData, currency?: unknown}} input
+ */
 function buildPurchaseOrderPdfHtml({ purchaseOrder, business = {}, currency = 'P' }) {
   const reference = `PO-${String(purchaseOrder?.id || '').slice(-6).toUpperCase() || 'DRAFT'}`
   const businessName = business.lodge_name || business.company_name || APP_BRAND_NAME
   const supplier = purchaseOrder?.supplier || {}
-  const formatDate = (value) => value ? new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
-  const rows = (purchaseOrder?.items || []).map((item) => `<tr><td>${escapeHtml(item.description || 'Stock item')}</td><td class="number">${Number(item.quantity || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.unit_cost || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.total ?? (Number(item.quantity || 0) * Number(item.unit_cost || 0))).toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4">No stock lines recorded.</td></tr>'
+  // DB projections normally supply date strings; this expected view preserves the existing Date coercion without validating external/cache values.
+  const formatDate = (/** @type {unknown} */ value) => value ? new Date(/** @type {string} */ (value)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  const rows = (purchaseOrder?.items || []).map((/** @type {PurchaseOrderPdfItemExpectedData} */ item) => `<tr><td>${escapeHtml(item.description || 'Stock item')}</td><td class="number">${Number(item.quantity || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.unit_cost || 0).toFixed(2)}</td><td class="number">${escapeHtml(currency)} ${Number(item.total ?? (Number(item.quantity || 0) * Number(item.unit_cost || 0))).toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4">No stock lines recorded.</td></tr>'
   const isDraft = purchaseOrder?.status === 'draft'
   return `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#30242a;padding:42px;font-size:12px}header{border-bottom:3px solid #d87945;padding-bottom:20px;display:flex;justify-content:space-between}h1{margin:0;font-size:25px}.muted{color:#76636b}.status{display:inline-block;border-radius:12px;padding:5px 10px;background:${isDraft ? '#fff3df' : '#eaf8f0'};font-weight:bold;text-transform:uppercase;font-size:10px}section{margin-top:25px}table{width:100%;border-collapse:collapse;margin-top:12px}th{background:#35242c;color:#fff;text-align:left;padding:10px;font-size:10px;text-transform:uppercase}td{padding:10px;border-bottom:1px solid #eadedb}.number{text-align:right}.total{margin-top:16px;margin-left:auto;width:280px;border-top:2px solid #35242c;padding-top:10px;font-weight:bold;font-size:16px;text-align:right}.footer{position:fixed;bottom:28px;color:#8b777e;font-size:10px}.draft{margin-top:18px;border:1px solid #efd09e;background:#fff3df;padding:10px;color:#794017}</style></head><body><header><div><h1>${escapeHtml(businessName)}</h1><p class="muted">Purchase order ${escapeHtml(reference)}</p></div><div style="text-align:right"><span class="status">${escapeHtml(purchaseOrder?.status || 'draft')}</span><p class="muted">Issued ${escapeHtml(formatDate(purchaseOrder?.created_at || purchaseOrder?.order_date))}</p></div></header>${isDraft ? '<p class="draft">Draft only — do not treat this as an approved supplier order.</p>' : ''}<section><strong>Supplier</strong><p>${escapeHtml(supplier.name || 'Supplier not recorded')}<br>${escapeHtml(supplier.contact_person || '')}${supplier.email ? `<br>${escapeHtml(supplier.email)}` : ''}${supplier.phone ? `<br>${escapeHtml(supplier.phone)}` : ''}</p></section><section><strong>Order lines</strong><table><thead><tr><th>Description</th><th class="number">Quantity</th><th class="number">Unit cost</th><th class="number">Line total</th></tr></thead><tbody>${rows}</tbody></table><div class="total">Total: ${escapeHtml(currency)} ${Number(purchaseOrder?.total || 0).toFixed(2)}</div></section>${purchaseOrder?.expected_delivery ? `<section><strong>Expected delivery</strong><p>${escapeHtml(formatDate(purchaseOrder.expected_delivery))}</p></section>` : ''}${purchaseOrder?.notes ? `<section><strong>Notes</strong><p>${escapeHtml(purchaseOrder.notes)}</p></section>` : ''}<p class="footer">Generated by ${escapeHtml(APP_BRAND_NAME)} · ${escapeHtml(reference)}</p></body></html>`
 }
@@ -1382,6 +1592,7 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
   const totals = documentPayload.totals || {}
   const addons = Array.isArray(packageInfo.requested_addons) ? packageInfo.requested_addons : []
   const documentType = documentPayload.document_type === 'invoice' ? 'Pro-forma Invoice' : 'Subscription Quote'
+  /** @param {unknown} value */
   const money = (value) => `${escapeHtml(totals.currency || 'P')} ${Number(value || 0).toFixed(2)}`
   const addonList = addons.length
     ? addons.map((addon) => `<li>${escapeHtml(String(addon).replaceAll('_', ' '))}</li>`).join('')
@@ -1472,17 +1683,20 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
  *   maintenanceRows?: Awaited<ReturnType<typeof db.getMaintenanceRowsForPeriod>>,
  *   posOrders?: Awaited<ReturnType<typeof db.getPosOrders>>,
  *   posRevenue?: Awaited<ReturnType<typeof db.getPosRevenueSummary>> | null,
- *   inventoryPurchases?: Awaited<ReturnType<typeof db.getAllInventoryPurchases>>,
- *   supplyPurchases?: Awaited<ReturnType<typeof db.getAllSupplyPurchases>>,
+  *   inventoryPurchases?: unknown[],
+  *   supplyPurchases?: unknown[],
  *   profitLoss?: Awaited<ReturnType<typeof db.getProfitLoss>> | null,
  *   credits?: Awaited<ReturnType<typeof db.getCustomerCreditSummary>>
  * }} DetailedReportSupplementalData
+ * @typedef {Record<string, unknown> & {pos_order_items?: {length?: unknown} | null, items?: {length?: unknown} | null}} DetailedReportPosOrderExpectedView
  * Expected request projection sent by the existing renderer export controls.
  * This type does not validate Electron IPC input at runtime.
  * @typedef {{startDate?: string, endDate?: string, currency?: string, lodgeName?: string, companyName?: string, outletLabel?: string, activeTab?: string, reportType?: string}} DetailedReportExportPayload
  * @typedef {Record<string, unknown> & {amount: unknown}} DetailedExportExpenseReadView
  * @typedef {Record<string, unknown> & {total_cost: unknown}} DetailedExportMaintenanceReadView
  * @typedef {Record<string, unknown> & {total_cost: unknown, inventory_items?: (Record<string, unknown> & {name?: unknown, category?: unknown, outlet_id?: unknown}) | null, supply_items?: (Record<string, unknown> & {name?: unknown}) | null}} DetailedExportPurchaseReadView
+ * Purchase date view for the existing detail-export filter; SQL date values are strings and offline writers preserve the supplied value. Cache rows remain unvalidated.
+ * @typedef {{date: string | number}} DetailedReportPurchaseDateReadView
  * @typedef {Record<string, unknown> & {source: string, total?: number, purchases?: DetailedExportPurchaseReadView[], by_category?: Record<string, number>}} DetailedExportSpendReadView
  * @typedef {Record<string, unknown> & {name?: unknown, qty?: unknown, revenue: unknown, cost?: unknown, margin?: unknown}} DetailedExportTopItemReadView
  * @typedef {{date: string, total: unknown}} DetailedExportDailyReadView
@@ -1497,6 +1711,9 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
  * }} DetailedExportProfitLossReadView
  * @typedef {Record<string, unknown> & {balance: unknown}} DetailedExportCreditReadView
  * @typedef {{message?: unknown}} DetailedExportVerificationErrorReadView
+ * The existing POS revenue reader normalizes its local projection and certified
+ * export rows to numeric totals; this consumer view does not validate its RPC/cache data.
+ * @typedef {{total_revenue?: number, total_orders?: number, avg_order?: number, gross_revenue?: number, discount_total?: number, returns_total?: number, tax_total?: number, tip_total?: number, by_payment?: Record<string, number>, by_cashier?: Record<string, number>, top_items?: Array<{name?: unknown, qty?: unknown, revenue?: number, margin?: unknown}>, daily?: Array<{date?: unknown, total?: number}>}} DetailedExportPosRevenueReadView
  * Occupancy rows combine the selected rooms projection with values computed by
  * reports.js; this view describes expected producer fields and does not validate
  * the RPC/cache rows carried through that helper.
@@ -1915,13 +2132,17 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     ]
     bodyContent += table(['Metric', 'Value'], reconRows)
   } else if (reportType === 'expenses') {
-    const expenses = extraData.expenses || []
-    const maintenanceRows = extraData.maintenanceRows || []
+    // These expected row views come from the supplemental database reads; they
+    // do not validate the underlying RPC/cache rows.
+    const expenses = /** @type {DetailedExportExpenseReadView[]} */ (extraData.expenses || [])
+    const maintenanceRows = /** @type {DetailedExportMaintenanceReadView[]} */ (extraData.maintenanceRows || [])
     const totalExpenses = expenses.every((e) => recordedReportAmount(e, ['amount']) !== null)
-      ? expenses.reduce((s, e) => s + recordedReportAmount(e, ['amount']), 0)
+      // The preceding every() pass checked the same conversion. This assertion
+      // preserves the existing second conversion and numeric addition exactly.
+      ? expenses.reduce((s, e) => s + /** @type {number} */ (recordedReportAmount(e, ['amount'])), 0)
       : null
     const totalMaintenance = maintenanceRows.every((m) => recordedReportAmount(m, ['actual_cost', 'total_cost']) !== null)
-      ? maintenanceRows.reduce((s, m) => s + recordedReportAmount(m, ['actual_cost', 'total_cost']), 0)
+      ? maintenanceRows.reduce((s, m) => s + /** @type {number} */ (recordedReportAmount(m, ['actual_cost', 'total_cost'])), 0)
       : null
     
     // Summary cards
@@ -1939,16 +2160,18 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
     
     // By category breakdown
     if (expenses.length > 0) {
+      /** @type {Record<string, number>} */
       const byCategory = {}
       expenses.forEach((e) => {
         const amount = recordedReportAmount(e, ['amount'])
         if (amount === null) return
-        byCategory[e.category || 'Other'] = (byCategory[e.category || 'Other'] || 0) + amount
+        byCategory[/** @type {string} */ (e.category || 'Other')] = (byCategory[/** @type {string} */ (e.category || 'Other')] || 0) + amount
       })
       const sortedCats = Object.entries(byCategory).sort((a, b) => b[1] - a[1])
       let catRows = ''
       for (const [cat, amt] of sortedCats) {
-        const pct = totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0
+        // This is guarded by the exact existing conversion pass; the assertion keeps JS's null comparison behavior and does not claim data validation.
+        const pct = /** @type {number} */ (totalExpenses) > 0 ? (amt / /** @type {number} */ (totalExpenses)) * 100 : 0
         catRows += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
           <span style="width:140px;font-size:11px;color:#475569">${escapeHtml(cat)}</span>
           <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden">
@@ -1985,8 +2208,10 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
       bodyContent += '<p style="color:#888;font-style:italic">No expense records for this period.</p>'
     }
   } else if (reportType === 'pos') {
-    const posOrders = extraData.posOrders || []
-    const posRevenue = extraData.posRevenue
+    // This expected projection covers only the existing item-count property reads.
+    // It does not validate the returned rows or change their current fallback behavior.
+    const posOrders = /** @type {DetailedReportPosOrderExpectedView[]} */ (/** @type {unknown} */ (extraData.posOrders || []))
+    const posRevenue = /** @type {DetailedExportPosRevenueReadView|null|undefined} */ (extraData.posRevenue)
     if (posRevenue) {
       bodyContent += `
         <div style="margin:0 0 16px">
@@ -2257,7 +2482,8 @@ function buildDetailedReportPdfHtml({ lodgeName, companyName, reportType, startD
  * @typedef {{start?: string | null, end?: string | null}} PosHistoryExportFilterExpectedData
  * @typedef {{currency?: string | null, lodge_name?: string | null, company_name?: string | null}} PosHistorySettingsExpectedData
  * @typedef {{id?: unknown, order_id?: unknown, created_at?: unknown, outlet_id?: unknown, requested_by?: unknown, approved_by?: unknown, approver_name?: unknown, reason?: unknown, _pending_sync?: unknown, _sync_state?: unknown}} PosHistoryVoidExpectedData
- * @typedef {{_pending_sync?: boolean, _sync_state?: string | null}} PosHistoryPendingOrderExpectedData
+ * @typedef {Record<string, unknown> & {_pending_sync?: unknown, _sync_state?: unknown}} PosHistoryPendingOrderExpectedData
+ * @typedef {PosHistoryPendingOrderExpectedData[] & {_source?: unknown, _complete?: unknown}} PosHistoryLocalOrdersReadExpectedData
  * @typedef {{status: string, items: ReturnType<typeof summarizeWasteMovements>['items'], detail: ReturnType<typeof summarizeWasteMovements>['detail']}} PosHistoryWasteExportSection
  * @typedef {{reportTitle?: string, lodgeName?: string, companyName?: string, periodLabel?: string, generatedAt?: string, currency?: string, orders?: PosHistoryOrderExpectedData[], voidHistory?: PosHistoryVoidExpectedData[], wasteSection?: PosHistoryWasteExportSection | null, reportRunId?: string, dataHash?: string, companionFilePath?: string}} PosHistoryPdfInput
  */
@@ -2277,7 +2503,7 @@ function parseMaybeJsonArray(value) {
 }
 
 /** @param {PosHistoryOrderExpectedData} [order] @returns {PosHistoryItemExpectedData[]} */
-function getPosOrderItems(order = {}) {
+function getPosOrderItems(order = /** @type {PosHistoryOrderExpectedData} */ ({})) {
   return Array.isArray(order.pos_order_items)
     ? order.pos_order_items
     : Array.isArray(order.items)
@@ -2286,7 +2512,7 @@ function getPosOrderItems(order = {}) {
 }
 
 /** @param {PosHistoryOrderExpectedData} [order] @returns {PosHistoryTenderExpectedData[]} */
-function getPosOrderPayments(order = {}) {
+function getPosOrderPayments(order = /** @type {PosHistoryOrderExpectedData} */ ({})) {
   // The POS export SQL emits tender rows with these fields; local/JSON values
   // are not validated here, so preserve the existing array and parse behavior.
   const payments = /** @type {PosHistoryTenderExpectedData[]} */ (parseMaybeJsonArray(order.payment_breakdown))
@@ -2296,19 +2522,19 @@ function getPosOrderPayments(order = {}) {
 }
 
 /** @param {PosHistoryOrderExpectedData} [order] */
-function getPosOrderCustomer(order = {}) {
+function getPosOrderCustomer(order = /** @type {PosHistoryOrderExpectedData} */ ({})) {
   if (order.walk_in_name) return order.walk_in_name
   if (order.room_id) return 'Room Guest'
   return ''
 }
 
 /** @param {PosHistoryOrderExpectedData} [order] */
-function getPosOrderOutletName(order = {}) {
+function getPosOrderOutletName(order = /** @type {PosHistoryOrderExpectedData} */ ({})) {
   return order.outlets?.name || order.outlet_name || ''
 }
 
 /** @param {PosHistoryOrderExpectedData} [order] */
-function getPosOrderSyncState(order = {}) {
+function getPosOrderSyncState(order = /** @type {PosHistoryOrderExpectedData} */ ({})) {
   if (order?._sync_state === 'failed') return 'failed'
   if (order?._sync_state === 'pending') return 'pending'
   if (order?._sync_state === 'manual_review_required') return 'needs_attention'
@@ -2339,7 +2565,7 @@ function getPosHistorySummary(orders = []) {
  * @param {PosHistoryItemExpectedData} [item]
  * @param {string[]} [keys]
  */
-function getRecordedPosItemAmount(item = {}, keys = ['gross_subtotal', 'gross', 'subtotal']) {
+function getRecordedPosItemAmount(item = /** @type {PosHistoryItemExpectedData} */ ({}), keys = ['gross_subtotal', 'gross', 'subtotal']) {
   for (const key of keys) {
     const raw = item?.[key]
     if (raw === null || raw === undefined || raw === '') continue
@@ -2414,7 +2640,10 @@ function assertCompletePosHistoryExport(orders, voidHistory, localOrders = []) {
   }
   if (!Array.isArray(voidHistory)) throw new Error('POS history export is blocked because the void source could not be loaded.')
   const pendingOrders = [...orders, ...(Array.isArray(localOrders) ? localOrders : [])]
-    .filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(row?._sync_state))
+    // The cast carries the existing string membership check through includes;
+    // it does not validate or coerce cached or RPC-backed row values.
+    .filter((row) => /** @type {PosHistoryPendingOrderExpectedData} */ (row)?._pending_sync
+      || ['pending', 'failed', 'manual_review_required'].includes(/** @type {string | null | undefined} */ ((/** @type {PosHistoryPendingOrderExpectedData} */ (row))?._sync_state)))
   const pendingVoids = voidHistory.filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(row?._sync_state))
   if (pendingOrders.length || pendingVoids.length) {
     throw new Error(`POS history export is blocked while ${pendingOrders.length + pendingVoids.length} financial operation(s) await sync or resolution.`)
@@ -2481,7 +2710,7 @@ function buildPosHistoryPdfHtml({
   const voidRows = voidHistory.length
     ? voidHistory.map((row) => `
       <tr>
-        <td>${escapeHtml(row.created_at ? new Date(row.created_at).toLocaleString() : '')}</td>
+        <td>${escapeHtml(row.created_at ? new Date(/** Expected void-history date input; assertion is erased so Date coercion/error behavior is unchanged. */ /** @type {string | number} */ (row.created_at)).toLocaleString() : '')}</td>
         <td>${escapeHtml(row.order_id || '')}</td>
         <td>${escapeHtml(row.approver_name || row.approved_by || '')}</td>
         <td>${escapeHtml(row.reason || '')}</td>
@@ -2582,6 +2811,10 @@ function buildPosHistoryPdfHtml({
   </html>`
 }
 
+/** Expected row view for the existing room-supplies PDF renderer; payload data is not validated here. */
+/** @typedef {Record<string, unknown>} RoomSuppliesPdfExpectedRow */
+
+/** @param {Record<string, unknown>} [param0] */
 function buildRoomSuppliesPdfHtml({
   reportTitle,
   lodgeName,
@@ -2600,9 +2833,9 @@ function buildRoomSuppliesPdfHtml({
   const rows = Array.isArray(allocations) ? allocations : []
   const roomRows = Array.isArray(byRoom) ? byRoom : []
   const itemRows = Array.isArray(byItem) ? byItem : []
-  const fmtMoney = (value) => formatReportMoney(currency || 'P', value)
+  const fmtMoney = (/** @type {unknown} */ value) => formatReportMoney(currency || 'P', value)
   const usageTable = rows.length
-    ? rows.map((row) => `
+    ? rows.map((/** @type {RoomSuppliesPdfExpectedRow} */ row) => `
         <tr>
           <td>${escapeHtml(row.entry_date || row.week_start || '')}</td>
           <td>${escapeHtml(row.room_number || '')}</td>
@@ -2616,7 +2849,7 @@ function buildRoomSuppliesPdfHtml({
       `).join('')
     : '<tr><td colspan="8" class="empty">No room supply usage was recorded in this period.</td></tr>'
   const roomTable = roomRows.length
-    ? roomRows.map((row) => `
+    ? roomRows.map((/** @type {RoomSuppliesPdfExpectedRow} */ row) => `
         <tr>
           <td>Room ${escapeHtml(row.room_number || '')}</td>
           <td class="num">${escapeHtml(fmtMoney(row.total || row.total_cost || 0))}</td>
@@ -2626,7 +2859,7 @@ function buildRoomSuppliesPdfHtml({
       `).join('')
     : '<tr><td colspan="4" class="empty">No room totals to show for this period.</td></tr>'
   const itemTable = itemRows.length
-    ? itemRows.map((row) => `
+    ? itemRows.map((/** @type {RoomSuppliesPdfExpectedRow} */ row) => `
         <tr>
           <td>${escapeHtml(row.name || '')}</td>
           <td>${escapeHtml(row.unit || '')}</td>
@@ -2833,6 +3066,12 @@ const EDGE_FN_URL = process.env.SUPABASE_URL
   : null
 const PUSH_FUNCTION_SECRET = process.env.PUSH_FUNCTION_SECRET || process.env.BOROKO_PUSH_FUNCTION_SECRET || ''
 
+/**
+ * @param {unknown} lodgeId
+ * @param {unknown} title
+ * @param {unknown} body
+ * @param {{url?: unknown, tag?: unknown, dedupeKey?: unknown, version?: unknown}} [options]
+ */
 function notifyLodge(lodgeId, title, body, options = {}) {
   showDesktopNotification({ title, body, sound: true, flash: true })
   if (!EDGE_FN_URL || !lodgeId || !PUSH_FUNCTION_SECRET) return
@@ -2855,6 +3094,7 @@ function notifyLodge(lodgeId, title, body, options = {}) {
   }).catch(() => {})
 }
 
+/** @param {{title?: unknown, body?: unknown, sound?: unknown, flash?: unknown}} [options] */
 function showDesktopNotification({ title = APP_BRAND_NAME, body = '', sound = true, flash = true } = {}) {
   const safeTitle = String(title || APP_BRAND_NAME)
   const safeBody = String(body || '')
@@ -2887,7 +3127,7 @@ function showDesktopNotification({ title = APP_BRAND_NAME, body = '', sound = tr
       }).show()
     }
   } catch (error) {
-    console.warn('Desktop notification failed:', error?.message || error)
+    console.warn('Desktop notification failed:', (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || error)
   }
 }
 
@@ -2906,22 +3146,33 @@ const updateState = {
   error: ''
 }
 
+/** Existing updater object alternatives consumed by the notes normalizer; values stay unvalidated. */
+/** @typedef {{note?: unknown, text?: unknown, name?: unknown}} UpdateReleaseNotesExpectedReadView */
+/** @param {unknown} notes */
 function normalizeReleaseNotes(notes) {
   if (!notes) return ''
   if (typeof notes === 'string') return notes.trim()
   if (Array.isArray(notes)) {
     return notes
-      .map((entry) => {
+      .map((/** @type {unknown} */ entry) => {
         if (typeof entry === 'string') return entry.trim()
         if (!entry || typeof entry !== 'object') return ''
-        return String(entry.note || entry.text || entry.name || '').trim()
+        return String(
+          (/** @type {UpdateReleaseNotesExpectedReadView} */ (entry)).note ||
+          (/** @type {UpdateReleaseNotesExpectedReadView} */ (entry)).text ||
+          (/** @type {UpdateReleaseNotesExpectedReadView} */ (entry)).name || ''
+        ).trim()
       })
       .filter(Boolean)
       .join('\n\n')
       .trim()
   }
   if (typeof notes === 'object') {
-    return String(notes.note || notes.text || notes.name || '').trim()
+    return String(
+      (/** @type {UpdateReleaseNotesExpectedReadView} */ (notes)).note ||
+      (/** @type {UpdateReleaseNotesExpectedReadView} */ (notes)).text ||
+      (/** @type {UpdateReleaseNotesExpectedReadView} */ (notes)).name || ''
+    ).trim()
   }
   return String(notes).trim()
 }
@@ -2952,11 +3203,12 @@ async function gateUpdateCheck() {
     console.log('[Updater] RPC gate: no update offered by Command Central')
     return false
   } catch (err) {
-    console.warn('[Updater] RPC gate check failed, allowing fallback:', err?.message)
+    console.warn('[Updater] RPC gate check failed, allowing fallback:', (/** @type {ErrorMessageReadView | null | undefined} */ (err))?.message)
     return true // fail-open: if RPC is unreachable, allow normal update flow
   }
 }
 
+/** @param {BrowserWindow} mainWindow Created by createWindow at startup. */
 function setupAutoUpdater(mainWindow) {
   // Only run in production (not dev mode)
   if (is.dev) return
@@ -3039,6 +3291,7 @@ function setupAutoUpdater(mainWindow) {
 
 /** @returns {import('electron').BrowserWindow} */
 function createWindow() {
+  startupTrace('window-create-start')
   const existingSplashWindow = activeSplashWindow && !activeSplashWindow.isDestroyed()
     ? activeSplashWindow
     : null
@@ -3071,9 +3324,12 @@ function createWindow() {
 
   // -- Proactive Ops AI watcher (lightweight) ---------------------------------
   // Emits ai:alert events to the renderer so Ops AI feels "alive" across screens.
+  /** @type {ReturnType<typeof setInterval> | null} */
   let aiWatcherTimer = null
   let lastAttentionSignature = ''
 
+  /** @typedef {{ key: string, type: 'unpaid' | 'briefing', title: string, message: string, action: { label: string, prompt: string }, badge: number }} AiAlertPayload */
+  /** @param {AiAlertPayload} payload */
   const emitAiAlert = (payload) => {
     try {
       mainWindow?.webContents?.send('ai:alert', payload)
@@ -3085,9 +3341,14 @@ function createWindow() {
   const computeAttention = async () => {
     // Keep this lightweight; it reads dashboard data, so avoid hot polling.
     // We start with existing dashboard stats + upcoming checkouts heuristics.
-    const stats = await db.getDashboardStats().catch(() => null)
+    const stats = /** @type {{unpaid_count?: unknown, unpaidCount?: unknown, outstanding_total?: unknown, outstandingTotal?: unknown} | null} */ (await db.getDashboardStats().catch(() => null))
+    /** The producer returns cached/query booking rows with check_out; values remain unvalidated. */
+    /** @type {{today?: Array<{check_out?: unknown}>, tomorrow?: unknown[], dayAfter?: unknown[]}} */
     const upcoming = await db.getUpcomingCheckins().catch(() => ({ today: [], tomorrow: [], dayAfter: [] }))
 
+    // The current dashboard producer returns snake_case values; retain the
+    // existing camelCase compatibility reads without treating either shape as
+    // runtime-validated.
     const unpaidCount = Number(stats?.unpaid_count || stats?.unpaidCount || 0)
     const outstandingTotal = Number(stats?.outstanding_total || stats?.outstandingTotal || 0)
     const checkoutsToday = Array.isArray(upcoming?.today)
@@ -3150,12 +3411,13 @@ function createWindow() {
   }
 
   let didShowWindow = false
-  let splashClosed = false
   const closeSplashWindow = () => {
-    if (splashClosed || splashWindow.isDestroyed()) return
-    splashClosed = true
+    const currentSplash = activeSplashWindow && !activeSplashWindow.isDestroyed()
+      ? activeSplashWindow
+      : splashWindow
+    if (currentSplash.isDestroyed()) return
     try {
-      splashWindow.destroy()
+      currentSplash.destroy()
     } catch {
       // best-effort
     }
@@ -3166,31 +3428,45 @@ function createWindow() {
     didShowWindow = true
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] show requested:', reason)
     mainWindow.show()
+    mainWindowVisible = true
     mainWindow.focus()
     mainWindow.webContents.focus()
+    if (localWorkspaceRendererReady) completeLocalWorkspaceHandoffs()
     closeSplashWindow()
   }
 
   mainWindow.on('ready-to-show', () => {
+    startupTrace('window-ready-to-show')
     if (INPUT_FOCUS_DEBUG) console.log('[WINDOW] ready-to-show')
     showWindowSafely('ready-to-show')
     closeSplashWindow()
   })
 
-  // If the renderer gets slow or partially fails, do not leave the app hidden forever.
+  // Keep the native loading screen visible; never expose the blank renderer on
+  // a timer. The HTML fallback has its own local retry state if modules stall.
   setTimeout(() => {
-    showWindowSafely('startup-timeout')
-    closeSplashWindow()
-  }, 1800)
+    if (!didShowWindow) {
+      console.warn('[STARTUP] window-ready-timeout', { at_ms: Date.now() })
+      showStartupProblem('The application is taking longer than expected. Your saved records are unchanged. Restart to try again.')
+    }
+  }, 15000)
 
   mainWindow.on('show', closeSplashWindow)
   mainWindow.on('closed', closeSplashWindow)
-  mainWindow.webContents.on('dom-ready', closeSplashWindow)
-  mainWindow.webContents.on('did-finish-load', closeSplashWindow)
-  mainWindow.webContents.on('did-stop-loading', closeSplashWindow)
 
   mainWindow.webContents.on('did-finish-load', () => {
+    startupTrace('renderer-document-loaded')
     console.log('[WINDOW] did-finish-load', mainWindow.webContents.getURL())
+  })
+
+  mainWindow.webContents.on('dom-ready', () => startupTrace('renderer-dom-ready'))
+  mainWindow.webContents.on('console-message', (_event, level, message) => {
+    if (typeof message === 'string' && message.startsWith('[STARTUP]')) {
+      startupTrace('renderer-mark', { level, message: message.slice(0, 400) })
+    }
+  })
+  mainWindow.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (isMainFrame) startupTrace('renderer-navigation-start', { url, isInPlace })
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -3200,10 +3476,12 @@ function createWindow() {
       validatedURL,
       isMainFrame
     })
+    if (isMainFrame) showStartupProblem('The application screen could not be opened. Your saved records are unchanged. Restart to try again.')
   })
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('[WINDOW] render-process-gone', details)
+    showStartupProblem('The application screen stopped responding. Your saved records are unchanged. Restart to try again.')
   })
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -3307,8 +3585,10 @@ function createWindow() {
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    startupTrace('renderer-load-url', { development: true })
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
+    startupTrace('renderer-load-file', { development: false })
     mainWindow.loadFile(join(currentDir, '../renderer/index.html'))
   }
 
@@ -3414,12 +3694,14 @@ function centerBoundsOnDisplay(kind, display, fullScreen) {
 
 /**
  * @typedef {{ bounds: import('electron').Rectangle | null, fullScreen: boolean, restored: boolean, displayId: number | null }} SavedDisplayWindowState
+ * @typedef {{ bounds: unknown, displayId: unknown, fullScreen: unknown }} PosDisplayLayoutExpectedData
  * @param {string} kind
  * @param {{ displayId?: unknown, fullScreen?: unknown }} [options]
  * @returns {SavedDisplayWindowState}
  */
 function getSavedDisplayWindowState(kind, options = {}) {
-  const saved = readPosDisplayLayouts()[kind] || {}
+  // The local JSON writer stores these fields; persisted JSON is not validated here.
+  const saved = /** @type {PosDisplayLayoutExpectedData} */ (readPosDisplayLayouts()[kind] || {})
   const requestedDisplay = getDisplayById(options?.displayId)
   const savedFullScreen = saved.fullScreen === true
   const fullScreen = options?.fullScreen === true || (options?.fullScreen === undefined && savedFullScreen)
@@ -3483,6 +3765,7 @@ function savePosDisplayWindowLayout(kind, displayWindow) {
 
 /** @param {string} kind @param {import('electron').BrowserWindow} displayWindow */
 function rememberPosDisplayWindow(kind, displayWindow) {
+  /** @type {ReturnType<typeof setTimeout> | null} */
   let saveTimer = null
   const scheduleSave = () => {
     if (saveTimer) clearTimeout(saveTimer)
@@ -3527,7 +3810,9 @@ async function getReceiptBusinessSettings(fallback = {}) {
  * @returns {{ success: true, kind: string, fullScreen: boolean, restored: boolean, displayId: number | null }}
  */
 function openPosDisplayWindow(kind = 'customer', options = {}) {
-  const displayKind = Object.hasOwn(POS_DISPLAY_ROUTES, kind) ? kind : 'customer'
+  // Object.hasOwn above establishes that the dynamic value is one of the
+  // fixed route-map keys; the type view does not add runtime validation.
+  const displayKind = /** @type {keyof typeof POS_DISPLAY_ROUTES} */ (Object.hasOwn(POS_DISPLAY_ROUTES, kind) ? kind : 'customer')
   const windowState = getSavedDisplayWindowState(displayKind, options || {})
   const defaultSize = getDefaultPosDisplaySize(displayKind)
   const windowBounds = windowState.bounds || defaultSize
@@ -3659,11 +3944,45 @@ const FINANCIAL_EXPORT_SECTIONS = new Set([
  * @typedef {keyof typeof EXPORT_PRESETS} ExportPresetKey
  * @typedef {{preset?: unknown, sections?: unknown[], startDate?: string, endDate?: string, privacyMode?: unknown, onProgress?: unknown}} FullExportOptionsExpectedData
  * @typedef {{preset: ExportPresetKey, sections: ExportSectionKey[], startDate: string, endDate: string, privacyMode: boolean, requiresComplete: boolean}} NormalizedFullExportOptions
- * @typedef {{stage: string, current: number|null, total: number|null}} FullExportProgress
+ * @typedef {{stage: string} | {stage: string, current: number|null, total: number|null}} FullExportProgress
  * @typedef {{section: ExportSectionKey, label: string, status: 'COMPLETE'|'INCOMPLETE'|'FAILED', source: 'server'|'local-cache'|'unknown'|'unavailable'|'not-loaded', row_count: number, error: unknown|null}} FullExportSectionStatus
  * @typedef {{row_count?: unknown, rowCount?: unknown, _complete?: unknown, complete?: unknown, source?: unknown}} FullExportReadStatusView
  * @typedef {{id: string, name?: string|null, item_name?: string|null}} FullExportInventoryItemNameExpectedData
+ * @typedef {{clock_in: string, clock_out?: string|null, staff_name?: string|null, name?: string|null, role?: string|null, opened_at?: string|null, closed_at?: string|null}} FullExportShiftExpectedData
  * @typedef {{item_id?: string|null, item_name?: unknown}} FullExportPurchaseExpectedData
+ * Expected read views for the existing inventory/supply workbook projections.
+ * Values remain unknown because these arrays may include cached or queued rows;
+ * these views do not validate those rows.
+ * @typedef {{name?: unknown, item_name?: unknown, category?: unknown, current_stock?: unknown, stock_quantity?: unknown, reorder_level?: unknown, unit?: unknown, updated_at?: unknown}} FullExportStockItemExpectedData
+ * @typedef {{item_name?: unknown, purchase_date?: unknown, created_at?: unknown, quantity?: unknown, quantity_purchased?: unknown, unit_cost?: unknown, total_cost?: unknown, total?: unknown, supplier?: unknown, notes?: unknown}} FullExportStockPurchaseExpectedData
+ * Workbook projections below consume arrays returned by the named database
+ * readers in collectFullExportData. These views name fields the workbook
+ * already reads; remote/cache values remain unvalidated and leaves stay unknown.
+ * @typedef {{booking_number: unknown, customer_name: unknown, room_number: unknown, check_in: unknown, check_out: unknown, status: unknown, payment_status: unknown, total_amount: unknown, charges_total: unknown, amount_paid: unknown, payment_method: unknown, notes: unknown, created_at: unknown}} FullExportBookingWorkbookReadView
+ * @typedef {{id: unknown, name: unknown, full_name?: unknown, email: unknown, phone: unknown, id_number: unknown, nationality: unknown, is_blacklisted: unknown}} FullExportCustomerWorkbookReadView
+ * @typedef {{id: unknown, room_number: unknown, room_type: unknown, rate_per_night: unknown, rate?: unknown, max_occupancy: unknown, max_adults?: unknown, max_children?: unknown, capacity_adults: unknown, capacity_children: unknown, status: unknown}} FullExportRoomWorkbookReadView
+ * @typedef {{date: unknown, category: unknown, description: unknown, amount: unknown, paid_by: unknown}} FullExportExpenseWorkbookReadView
+ * @typedef {{created_at: unknown, walk_in_name: unknown, room_id: unknown, room_number?: unknown, pos_order_items?: {quantity: unknown, item_name: unknown}[] | null, payment_method: unknown, total: unknown}} FullExportPosOrderWorkbookReadView
+ * @typedef {{quotation_number: unknown, customer_name: unknown, customer_email: unknown, customer_phone: unknown, quotation_type: unknown, event_name: unknown, room_name: unknown, room_number: unknown, check_in: unknown, check_out: unknown, event_daily_rate: unknown, status: unknown, total_amount: unknown, created_at: unknown}} FullExportQuotationWorkbookReadView
+ * @typedef {{created_at: unknown, room_number: unknown, issue: unknown, description: unknown, priority: unknown, status: unknown, assigned_to_name: unknown, resolved_at: unknown}} FullExportMaintenanceWorkbookReadView
+ * @typedef {{id: unknown, booking_date: unknown, start_time: unknown, end_time: unknown, client_name: unknown, company: unknown, attendees: unknown, setup_type: unknown, room_name: unknown, includes_catering: unknown, catering_notes: unknown, total_amount: unknown, deposit_paid: unknown, payment_status: unknown, payment_method: unknown, notes: unknown, created_at: unknown, updated_at: unknown, lodge_id: unknown, event_name?: unknown, customer_name?: unknown, event_date?: unknown, check_in?: unknown, status?: unknown, guest_count?: unknown}} FullExportConferenceBookingWorkbookReadView
+ * @typedef {{extras?: {name?: unknown, quantity?: unknown, unit_price?: unknown}[] | null}} FullExportDayUseWorkbookReadView
+ * @typedef {{name: unknown, item_name: unknown, category: unknown, selling_price: unknown, price: unknown, is_available: unknown, description: unknown}} FullExportMenuItemWorkbookReadView
+ * @typedef {{name: unknown, recipe_name: unknown, menu_item_name: unknown, menu_item: unknown, ingredient_name: unknown, ingredient: unknown, quantity: unknown, unit: unknown, unit_cost: unknown, cost: unknown}} FullExportRecipeWorkbookReadView
+ * @typedef {{name: unknown, contact_person: unknown, phone: unknown, email: unknown, category: unknown}} FullExportSupplierWorkbookReadView
+ * @typedef {{po_number: unknown, id: unknown, supplier_name: unknown, supplier: unknown, status: unknown, total: unknown, total_amount: unknown, created_at: unknown, approved_at: unknown, received_at: unknown}} FullExportPurchaseOrderWorkbookReadView
+ * @typedef {{cashier_name: unknown, opened_at: unknown, closed_at: unknown, opening_float: unknown, closing_total: unknown, declared_total: unknown, variance: unknown}} FullExportCashDrawerWorkbookReadView
+ * @typedef {{checklist_type: unknown, status: unknown, items: {is_completed: unknown}[] | null, created_at: unknown}} FullExportChecklistWorkbookReadView
+ * @typedef {{severity: unknown, alert_type: unknown, message: unknown, status: unknown, created_at: unknown, resolved_at: unknown}} FullExportAlertWorkbookReadView
+ * @typedef {{is_completed: unknown}} FullExportChecklistItemWorkbookReadView
+ * The inventory movement producer returns both decorated live rows and local/derived rows; values remain unknown because the fallback can include persisted cache entries.
+ * @typedef {{movement_type?: unknown, quantity?: unknown, created_at?: unknown, date?: unknown, item_name?: unknown, item?: unknown, type?: unknown, reference?: unknown, notes?: unknown}} FullExportMovementWorkbookReadView
+ * Local activity-log JSON is read without runtime validation; this view only names fields consumed by the workbook projection.
+ * @typedef {{timestamp?: unknown, action?: unknown, details?: unknown, user_email?: unknown}} FullExportActivityLogWorkbookReadView
+ * `getUsers()` supplies normalized server/cache rows; the export projection retains expected fields as unknown and does not validate persisted data.
+ * @typedef {{name?: unknown, email?: unknown, role?: unknown, pwa_enabled?: unknown, created_at?: unknown}} FullExportUserWorkbookReadView
+ * `getBookingInvoices()` projects these values from its booking query and invoice query, filters rows without an invoice number, and calculates the three amounts. Cached/query values remain unvalidated at this export consumer.
+ * @typedef {{invoice_number: unknown, check_in: unknown, total_amount: unknown, amount_paid: unknown, balance_due: unknown, customer_name?: unknown, customer_email?: unknown, customer_phone?: unknown, room_number?: unknown, check_out?: unknown, status?: unknown, payment_status?: unknown, issued_at?: unknown}} BookingInvoiceWorkbookReadView
  * Options and returned database/cache rows are expected-data views; this path does not validate arbitrary IPC or persisted data.
  */
 /** @param {FullExportOptionsExpectedData} [options] @returns {NormalizedFullExportOptions} */
@@ -3710,14 +4029,15 @@ async function collectFullExportData(options = {}) {
     return 'unknown'
   }
   /**
-   * @template {keyof typeof db} K
+   * @template {'getInventoryItems'|'getSupplyItems'|'getUsers'|'getActivityLog'|'getPosMenuItems'|'getPosRecipes'|'getPosSuppliers'|'getPosPurchaseOrders'|'getInventoryMovements'|'getShiftHistory'|'getCashDrawerSessions'|'getChecklists'|'getExceptionAlerts'} K
    * @param {K} method
-   * @param {...Parameters<(typeof db)[K]>} args
+   * @param {Parameters<(typeof db)[K]>} args
    * @returns {ReturnType<(typeof db)[K]>}
    */
   const callDb = (method, ...args) => {
     if (typeof db[method] !== 'function') throw new Error(`Database method ${method} is unavailable; authoritative export cannot continue.`)
-    return db[method](...args)
+    // The indexed method and tuple share K; the assertion restores that correlation after the runtime function guard.
+    return (/** @type {(...args: Parameters<(typeof db)[K]>) => ReturnType<(typeof db)[K]>} */ (db[method]))(...args)
   }
   /** @param {string} stage @param {number|null} [current] @param {number|null} [total] */
   const progress = (stage, current = null, total = null) => {
@@ -3786,23 +4106,23 @@ async function collectFullExportData(options = {}) {
   // Database/cache item rows are consumed according to the existing export
   // projection. The view does not imply validation of malformed cached rows.
   /** @type {Map<string|null|undefined, string>} */
-  const inventoryNameMap = new Map((inventoryItems || []).map((/** @type {unknown} */ item) => [
+  const inventoryNameMap = new Map((/** @type {FullExportStockItemExpectedData[]} */ (/** @type {unknown} */ (inventoryItems || []))).map((/** @type {FullExportStockItemExpectedData} */ item) => [
     /** @type {FullExportInventoryItemNameExpectedData} */ (item).id,
     /** @type {FullExportInventoryItemNameExpectedData} */ (item).name || /** @type {FullExportInventoryItemNameExpectedData} */ (item).item_name || ''
   ]))
   /** @type {Map<string|null|undefined, string>} */
-  const supplyNameMap = new Map((supplyItems || []).map((/** @type {unknown} */ item) => [
+  const supplyNameMap = new Map((/** @type {FullExportStockItemExpectedData[]} */ (/** @type {unknown} */ (supplyItems || []))).map((/** @type {FullExportStockItemExpectedData} */ item) => [
     /** @type {FullExportInventoryItemNameExpectedData} */ (item).id,
     /** @type {FullExportInventoryItemNameExpectedData} */ (item).name || /** @type {FullExportInventoryItemNameExpectedData} */ (item).item_name || ''
   ]))
   const inventoryPurchases = includesSection(normalized, 'inventoryPurchases')
-    ? (await safe('inventoryPurchases', () => db.getAllInventoryPurchases(), [])).map((/** @type {unknown} */ purchase) => ({
+    ? (/** @type {FullExportStockPurchaseExpectedData[]} */ (/** @type {unknown} */ (await safe('inventoryPurchases', () => db.getAllInventoryPurchases(), [])))).map((/** @type {FullExportStockPurchaseExpectedData} */ purchase) => ({
         .../** @type {FullExportPurchaseExpectedData & Record<string, unknown>} */ (purchase),
         item_name: /** @type {FullExportPurchaseExpectedData} */ (purchase).item_name || inventoryNameMap.get(/** @type {FullExportPurchaseExpectedData} */ (purchase).item_id) || ''
       }))
     : []
   const supplyPurchases = includesSection(normalized, 'supplyPurchases')
-    ? (await safe('supplyPurchases', () => db.getAllSupplyPurchases(), [])).map((/** @type {unknown} */ purchase) => ({
+    ? (/** @type {FullExportStockPurchaseExpectedData[]} */ (/** @type {unknown} */ (await safe('supplyPurchases', () => db.getAllSupplyPurchases(), [])))).map((/** @type {FullExportStockPurchaseExpectedData} */ purchase) => ({
         .../** @type {FullExportPurchaseExpectedData & Record<string, unknown>} */ (purchase),
         item_name: /** @type {FullExportPurchaseExpectedData} */ (purchase).item_name || supplyNameMap.get(/** @type {FullExportPurchaseExpectedData} */ (purchase).item_id) || ''
       }))
@@ -3888,8 +4208,10 @@ async function collectFullExportData(options = {}) {
   }
 }
 
+/** @param {Awaited<ReturnType<typeof collectFullExportData>>} data The workbook consumes the collector's existing projection; its source row types and values pass through unchanged. */
 function buildFullExportWorkbook(data) {
   const wb = XLSX.utils.book_new()
+  /** @param {ExportSectionKey} key */
   const hasSection = (key) => !data.options || data.options.sections.includes(key)
   const hidePrivate = data.options?.privacyMode === true
   const exportManifest = data.exportManifest || {
@@ -3919,7 +4241,7 @@ function buildFullExportWorkbook(data) {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(manifestRows), 'Export Manifest')
 
   if (hasSection('bookings')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.bookings || []).map(b => ({
+    (/** @type {FullExportBookingWorkbookReadView[]} */ (/** @type {unknown} */ (data.bookings || []))).map(b => ({
       'Booking #': b.booking_number || '',
       'Guest': b.customer_name || '',
       'Room': b.room_number || '',
@@ -3937,7 +4259,7 @@ function buildFullExportWorkbook(data) {
   ), 'Bookings')
 
   if (hasSection('customers')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.customers || []).map(c => ({
+    (/** @type {FullExportCustomerWorkbookReadView[]} */ (/** @type {unknown} */ (data.customers || []))).map(c => ({
       'Name': c.full_name || '',
       'Email': hidePrivate ? '' : (c.email || ''),
       'Phone': hidePrivate ? '' : (c.phone || ''),
@@ -3948,7 +4270,7 @@ function buildFullExportWorkbook(data) {
   ), 'Guests')
 
   if (hasSection('rooms')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.rooms || []).map(r => ({
+    (/** @type {FullExportRoomWorkbookReadView[]} */ (/** @type {unknown} */ (data.rooms || []))).map(r => ({
       'Room #': r.room_number || '',
       'Type': r.room_type || '',
       'Rate': Number(r.rate || 0),
@@ -3959,7 +4281,7 @@ function buildFullExportWorkbook(data) {
   ), 'Rooms')
 
   if (hasSection('expenses')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.expenses || []).map(e => ({
+    (/** @type {FullExportExpenseWorkbookReadView[]} */ (/** @type {unknown} */ (data.expenses || []))).map(e => ({
       'Date': e.date || '',
       'Category': e.category || '',
       'Description': e.description || '',
@@ -3969,7 +4291,7 @@ function buildFullExportWorkbook(data) {
   ), 'Expenses')
 
   if (hasSection('posOrders')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.posOrders || []).map(o => ({
+    (/** @type {FullExportPosOrderWorkbookReadView[]} */ (/** @type {unknown} */ (data.posOrders || []))).map(o => ({
       'Date': o.created_at || '',
       'Room / Guest': o.walk_in_name || (o.room_number ? `Room ${o.room_number}` : ''),
       'Items': (o.pos_order_items || []).map(i => `${i.quantity}x ${i.item_name}`).join(', '),
@@ -3979,7 +4301,7 @@ function buildFullExportWorkbook(data) {
   ), 'POS Orders')
 
   if (hasSection('bookingInvoices')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.bookingInvoices || []).map(inv => ({
+    (/** @type {BookingInvoiceWorkbookReadView[]} */ (/** @type {unknown} */ (data.bookingInvoices || []))).map(inv => ({
       'Invoice #': inv.invoice_number || '',
       'Guest': inv.customer_name || '',
       'Guest Email': hidePrivate ? '' : (inv.customer_email || ''),
@@ -3997,7 +4319,7 @@ function buildFullExportWorkbook(data) {
   ), 'Booking Invoices')
 
   if (hasSection('quotations')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.quotations || []).map(q => ({
+    (/** @type {FullExportQuotationWorkbookReadView[]} */ (/** @type {unknown} */ (data.quotations || []))).map(q => ({
       'Quotation #': q.quotation_number || '',
       'Guest': q.customer_name || '',
       'Email': hidePrivate ? '' : (q.customer_email || ''),
@@ -4015,7 +4337,7 @@ function buildFullExportWorkbook(data) {
   ), 'Quotations')
 
   if (hasSection('maintenance')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.maintenance || []).map(ticket => ({
+    (/** @type {FullExportMaintenanceWorkbookReadView[]} */ (/** @type {unknown} */ (data.maintenance || []))).map(ticket => ({
       'Created': ticket.created_at || '',
       'Room': ticket.room_number || '',
       'Issue': ticket.issue || ticket.description || '',
@@ -4027,7 +4349,7 @@ function buildFullExportWorkbook(data) {
   ), 'Maintenance')
 
   if (hasSection('inventoryItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.inventoryItems || []).map(item => ({
+    (data.inventoryItems || []).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
       'Stock': Number(item.current_stock || item.stock_quantity || 0),
@@ -4038,7 +4360,7 @@ function buildFullExportWorkbook(data) {
   ), 'Inventory Items')
 
   if (hasSection('inventoryPurchases')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.inventoryPurchases || []).map(purchase => ({
+    (data.inventoryPurchases || []).map((/** @type {FullExportStockPurchaseExpectedData} */ purchase) => ({
       'Item': purchase.item_name || '',
       'Date': purchase.purchase_date || purchase.created_at || '',
       'Quantity': Number(purchase.quantity || purchase.quantity_purchased || 0),
@@ -4050,7 +4372,7 @@ function buildFullExportWorkbook(data) {
   ), 'Inventory Purchases')
 
   if (hasSection('supplyItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.supplyItems || []).map(item => ({
+    (data.supplyItems || []).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
       'Stock': Number(item.current_stock || item.stock_quantity || 0),
@@ -4060,7 +4382,7 @@ function buildFullExportWorkbook(data) {
   ), 'Supply Items')
 
   if (hasSection('supplyPurchases')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.supplyPurchases || []).map(purchase => ({
+    (data.supplyPurchases || []).map((/** @type {FullExportStockPurchaseExpectedData} */ purchase) => ({
       'Item': purchase.item_name || '',
       'Date': purchase.purchase_date || purchase.created_at || '',
       'Quantity': Number(purchase.quantity || purchase.quantity_purchased || 0),
@@ -4072,7 +4394,7 @@ function buildFullExportWorkbook(data) {
   ), 'Supply Purchases')
 
   if (hasSection('conferenceBookings')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.conferenceBookings || []).map(entry => ({
+    (/** @type {FullExportConferenceBookingWorkbookReadView[]} */ (/** @type {unknown} */ (data.conferenceBookings || []))).map(entry => ({
       'Event': entry.event_name || '',
       'Customer': entry.customer_name || '',
       'Date': entry.event_date || entry.check_in || '',
@@ -4083,7 +4405,7 @@ function buildFullExportWorkbook(data) {
   ), 'Conference')
 
   if (hasSection('dayUseEntries')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.dayUseEntries || []).map((entry) => {
+    (/** @type {FullExportDayUseWorkbookReadView[]} */ (/** @type {unknown} */ (data.dayUseEntries || []))).map((entry) => {
       const row = normalizeDayUseReportRow(entry)
       return {
         'Date': row.date,
@@ -4116,7 +4438,7 @@ function buildFullExportWorkbook(data) {
     const resourceMap = new Map()
     const extrasMap = new Map()
     const balances = []
-    for (const entry of data.dayUseEntries || []) {
+    for (const entry of /** @type {FullExportDayUseWorkbookReadView[]} */ (/** @type {unknown} */ (data.dayUseEntries || []))) {
       const row = normalizeDayUseReportRow(entry)
       const templateKey = row.templateName || row.activityLabel
       const templateSummary = templateMap.get(templateKey) || { 'Type': 'Template', 'Label': templateKey, 'Count': 0, 'Quantity': '', 'Revenue': 0, 'Balance': '' }
@@ -4156,7 +4478,7 @@ function buildFullExportWorkbook(data) {
   }
 
   if (hasSection('users')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.users || []).map(u => ({
+    (/** @type {FullExportUserWorkbookReadView[]} */ (/** @type {unknown} */ (data.users || []))).map(u => ({
       'Name': u.name || '',
       'Email': u.email || '',
       'Role': u.role || '',
@@ -4166,7 +4488,7 @@ function buildFullExportWorkbook(data) {
   ), 'Staff')
 
   if (hasSection('activityLog')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.activityLog || []).map(entry => ({
+    (/** @type {FullExportActivityLogWorkbookReadView[]} */ (/** @type {unknown} */ (data.activityLog || []))).map(entry => ({
       'Timestamp': entry.timestamp || '',
       'Action': entry.action || '',
       'Details': entry.details || '',
@@ -4175,7 +4497,7 @@ function buildFullExportWorkbook(data) {
   ), 'Activity Log')
 
   if (hasSection('menuItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.menuItems || []).map(item => ({
+    (/** @type {FullExportMenuItemWorkbookReadView[]} */ (/** @type {unknown} */ (data.menuItems || []))).map(item => ({
       'Name': item.name || item.item_name || '',
       'Category': item.category || '',
       'Price': Number(item.selling_price || item.price || 0),
@@ -4185,7 +4507,7 @@ function buildFullExportWorkbook(data) {
   ), 'Menu Items')
 
   if (hasSection('recipes')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.recipes || []).map(r => ({
+    (/** @type {FullExportRecipeWorkbookReadView[]} */ (/** @type {unknown} */ (data.recipes || []))).map(r => ({
       'Recipe': r.name || r.recipe_name || '',
       'Menu Item': r.menu_item_name || r.menu_item || '',
       'Ingredient': r.ingredient_name || r.ingredient || '',
@@ -4196,7 +4518,7 @@ function buildFullExportWorkbook(data) {
   ), 'Recipes')
 
   if (hasSection('suppliers')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.suppliers || []).map(s => ({
+    (/** @type {FullExportSupplierWorkbookReadView[]} */ (/** @type {unknown} */ (data.suppliers || []))).map(s => ({
       'Name': s.name || '',
       'Contact Person': s.contact_person || '',
       'Phone': s.phone || '',
@@ -4206,7 +4528,7 @@ function buildFullExportWorkbook(data) {
   ), 'Suppliers')
 
   if (hasSection('purchaseOrders')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.purchaseOrders || []).map(po => ({
+    (/** @type {FullExportPurchaseOrderWorkbookReadView[]} */ (/** @type {unknown} */ (data.purchaseOrders || []))).map(po => ({
       'PO #': po.po_number || po.id || '',
       'Supplier': po.supplier_name || po.supplier || '',
       'Status': po.status || '',
@@ -4218,7 +4540,7 @@ function buildFullExportWorkbook(data) {
   ), 'Purchase Orders')
 
   if (hasSection('stockMovements')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.stockMovements || []).map(m => ({
+    (/** @type {FullExportMovementWorkbookReadView[]} */ (/** @type {unknown} */ (data.stockMovements || []))).map(m => ({
       'Date': m.created_at || m.date || '',
       'Item': m.item_name || m.item || '',
       'Type': m.movement_type || m.type || '',
@@ -4229,17 +4551,17 @@ function buildFullExportWorkbook(data) {
   ), 'Stock Movements')
 
   if (hasSection('shifts')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.shifts || []).map(s => ({
+    (/** @type {FullExportShiftExpectedData[]} */ (/** @type {unknown} */ (data.shifts || []))).map(s => ({
       'Staff': s.staff_name || s.name || '',
       'Role': s.role || '',
       'Clock In': s.clock_in || s.opened_at || '',
       'Clock Out': s.clock_out || s.closed_at || '',
-      'Duration': s.clock_out ? `${Math.round((new Date(s.clock_out) - new Date(s.clock_in)) / 3600000)}h` : 'Active'
+      'Duration': s.clock_out ? `${Math.round((new Date(s.clock_out).getTime() - new Date(s.clock_in).getTime()) / 3600000)}h` : 'Active'
     }))
   ), 'Shifts')
 
   if (hasSection('cashDrawerSessions')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.cashDrawerSessions || []).map(s => ({
+    (/** @type {FullExportCashDrawerWorkbookReadView[]} */ (/** @type {unknown} */ (data.cashDrawerSessions || []))).map(s => ({
       'Cashier': s.cashier_name || '',
       'Opened': s.opened_at || '',
       'Closed': s.closed_at || '',
@@ -4251,7 +4573,7 @@ function buildFullExportWorkbook(data) {
   ), 'Cash Drawer')
 
   if (hasSection('checklists')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.checklists || []).map(c => ({
+    (/** @type {FullExportChecklistWorkbookReadView[]} */ (/** @type {unknown} */ (data.checklists || []))).map(c => ({
       'Type': (c.checklist_type || '').replace(/_/g, ' '),
       'Status': c.status || '',
       'Items Total': Array.isArray(c.items) ? c.items.length : 0,
@@ -4261,7 +4583,7 @@ function buildFullExportWorkbook(data) {
   ), 'Checklists')
 
   if (hasSection('alerts')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.alerts || []).map(a => ({
+    (/** @type {FullExportAlertWorkbookReadView[]} */ (/** @type {unknown} */ (data.alerts || []))).map(a => ({
       'Severity': a.severity || '',
       'Type': a.alert_type || '',
       'Message': a.message || '',
@@ -4274,12 +4596,15 @@ function buildFullExportWorkbook(data) {
   return wb
 }
 
+/** @param {string} filePath @param {unknown} error */
 function formatFileSaveError(filePath, error) {
-  const message = error?.message || 'Unknown file save error.'
-  const code = error?.code ? ` (${error.code})` : ''
+  // fs/XLSX failures use the message/code fields already read here; this view does not validate caught values.
+  const message = (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unknown file save error.'
+  const code = (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.code ? ` (${(/** @type {ErrorMessageReadView|null|undefined} */ (error))?.code})` : ''
   return `Cannot save file "${filePath}"${code}. ${message} Close the file if it is open, check that the folder is available, then try again.`
 }
 
+/** @param {import('@e965/xlsx').WorkBook} wb @param {string} filePath */
 function writeWorkbookFile(wb, filePath) {
   try {
     fs.mkdirSync(dirname(filePath), { recursive: true })
@@ -4290,6 +4615,7 @@ function writeWorkbookFile(wb, filePath) {
   }
 }
 
+/** @param {string} filePath @param {FullExportOptionsExpectedData} [options] */
 async function exportAllDataWorkbookToPath(filePath, options = {}) {
   const data = await collectFullExportData(options)
   if (data.exportManifest?.requires_complete === true && data.exportManifest.completeness !== 'COMPLETE') {
@@ -4310,19 +4636,25 @@ async function exportAllDataWorkbookToPath(filePath, options = {}) {
   }
 }
 
+/** @param {string} key */
 function emailAutomationEnabled(key) {
   const config = getEmailConfig()
   return Boolean(config?.host && config?.user && config?.pass && config?.[key] === true)
 }
 
+/** Settings normalizes cached/default/remote rows with lodge_id; older cached branding values may be absent and remain unvalidated.
+ * @typedef {{lodge_id: unknown, lodge_name?: unknown, company_name?: unknown, currency?: unknown}} LodgeEmailSettingsExpectedView
+ */
+/** @returns {Promise<LodgeEmailSettingsExpectedView|null>} */
 async function getCurrentLodgeSettings() {
   try {
-    return await db.getSettings()
+    return /** @type {LodgeEmailSettingsExpectedView} */ (await db.getSettings())
   } catch {
     return null
   }
 }
 
+/** @param {string} bookingId */
 async function getBookingEmailContext(bookingId) {
   const [bookings, invoices, settings] = await Promise.all([
     db.getAllBookings().catch(() => []),
@@ -4336,6 +4668,15 @@ async function getBookingEmailContext(bookingId) {
   }
 }
 
+/**
+ * This is an expected-data view for the existing invoice email/audit reads;
+ * it does not validate IPC, cache, or query data.
+ * @typedef {Parameters<typeof sendBookingInvoiceEmail>[0]['invoice'] & {booking_id?: string|null, customer_email?: string|null, customer_name?: string|null, invoice_number?: string|null, lodge_name?: unknown, settings?: {lodge_name?: unknown, currency?: unknown}|null, currency?: unknown}} BookingEmailContextInvoiceExpectedData
+ */
+/**
+ * @param {BookingEmailContextInvoiceExpectedData} invoice
+ * @param {{success?: unknown, subject?: unknown, error?: unknown}} result
+ */
 async function recordSuccessfulInvoiceDelivery(invoice, result) {
   const guestLabel = invoice?.customer_name || invoice?.customer_email || 'guest'
   const invoiceLabel = invoice?.invoice_number || 'invoice'
@@ -4354,6 +4695,7 @@ async function recordSuccessfulInvoiceDelivery(invoice, result) {
   }).catch(() => {})
 }
 
+/** @param {BookingEmailContextInvoiceExpectedData} invoice @param {unknown} errorMessage */
 async function recordFailedInvoiceDelivery(invoice, errorMessage) {
   await db.recordInvoiceDelivery({
     booking_id: invoice?.booking_id || null,
@@ -4368,10 +4710,14 @@ async function recordFailedInvoiceDelivery(invoice, errorMessage) {
   }).catch(() => {})
 }
 
+/** @param {BookingEmailContextInvoiceExpectedData} invoice */
 async function sendBookingInvoiceEmailWithAudit(invoice) {
   try {
     const result = await sendBookingInvoiceEmail({
-      to: invoice?.customer_email,
+      // The normal UI path uses DB-projected invoices and enables Send only
+      // for a truthy email. Direct main IPC does not validate arbitrary invoice
+      // payloads, so this expected-data view guarantees nothing at runtime.
+      to: /** @type {string} */ (invoice?.customer_email),
       invoice,
       lodgeName: invoice?.lodge_name || invoice?.settings?.lodge_name || undefined,
       currency: invoice?.currency || invoice?.settings?.currency || 'P'
@@ -4383,11 +4729,12 @@ async function sendBookingInvoiceEmailWithAudit(invoice) {
     }
     return result
   } catch (e) {
-    await recordFailedInvoiceDelivery(invoice, e.message || 'Could not send invoice email')
-    return { success: false, error: e.message }
+    await recordFailedInvoiceDelivery(invoice, /** @type {ErrorMessageReadView} */ (e).message || 'Could not send invoice email')
+    return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message }
   }
 }
 
+/** @param {string} quotationId @param {string} [previousStatus] */
 async function maybeSendQuotationEmail(quotationId, previousStatus = '') {
   if (!emailAutomationEnabled('auto_send_quotations')) return
   if (String(previousStatus || '').toLowerCase() === 'sent') return
@@ -4405,13 +4752,14 @@ async function maybeSendQuotationEmail(quotationId, previousStatus = '') {
     quotation,
     lodgeName: settings?.lodge_name || undefined,
     settings: settings || {}
-  }).catch((error) => ({ success: false, error: error?.message || 'Could not send quotation email' }))
+  }).catch((error) => ({ success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not send quotation email' }))
 
   if (result?.success) {
     db.recordActivity('quotation_emailed', `Quotation emailed - ${quotation.quotation_number || quotation.id} - ${quotation.customer_name || quotation.customer_email}`)
   }
 }
 
+/** @param {string} bookingId @param {string} status */
 async function maybeSendBookingLifecycleEmails(bookingId, status) {
   const normalizedStatus = String(status || '').toLowerCase()
   if (!['confirmed', 'cancelled'].includes(normalizedStatus)) return
@@ -4426,7 +4774,7 @@ async function maybeSendBookingLifecycleEmails(bookingId, status) {
       lodgeName: settings?.lodge_name || undefined,
       settings: settings || {},
       currency: settings?.currency || 'P'
-    }).catch((error) => ({ success: false, error: error?.message || 'Could not send booking confirmation email' }))
+    }).catch((error) => ({ success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not send booking confirmation email' }))
 
     if (result?.success) {
       db.recordActivity('booking_confirmation_emailed', `Booking confirmation emailed - ${booking.invoice_number || booking.id} - ${booking.customer_name || booking.customer_email}`)
@@ -4443,7 +4791,7 @@ async function maybeSendBookingLifecycleEmails(bookingId, status) {
       booking,
       lodgeName: settings?.lodge_name || undefined,
       settings: settings || {}
-    }).catch((error) => ({ success: false, error: error?.message || 'Could not send booking cancellation email' }))
+    }).catch((error) => ({ success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not send booking cancellation email' }))
 
     if (result?.success) {
       db.recordActivity('booking_cancellation_emailed', `Booking cancellation emailed - ${booking.invoice_number || booking.id} - ${booking.customer_name || booking.customer_email}`)
@@ -4470,8 +4818,8 @@ async function runManagedBackupPolicy(force = false) {
     db.recordManagedBackupRun({ success: true, excelPath })
     return { success: true, excelPath }
   } catch (e) {
-    db.recordManagedBackupRun({ success: false, error: e.message || 'Managed export failed.', excelPath })
-    return { success: false, error: e.message || 'Managed export failed.', excelPath }
+    db.recordManagedBackupRun({ success: false, error: /** @type {ErrorMessageReadView} */ (e).message || 'Managed export failed.', excelPath })
+    return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message || 'Managed export failed.', excelPath }
   }
 }
 
@@ -4499,6 +4847,25 @@ app.whenReady().then(async () => {
     releaseRepo: BUILD_PRODUCT.releaseRepo
   }))
 
+  // Local Bar runtime is main-process owned. Its authority file, protected
+  // device credential and durable intent journal never cross the preload
+  // boundary. A missing profile remains cloud mode; an explicitly configured
+  // local profile fails closed when its service is unavailable.
+  // The committed profile is loaded here, before any cloud database or queue
+  // initialization, so internet reachability can never select authority.
+  /** @type {import('./bar-local/electronRuntime.js').BarLocalElectronRuntime|null} */
+  let barLocalRuntime = null
+  /** @type {unknown} */
+  let barLocalStartupError = null
+  try {
+    barLocalRuntime = registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildProductId: BUILD_PRODUCT_ID })
+    if (barLocalRuntime.training && barLocalRuntime.status().configured) {
+      await barLocalRuntime.trainingSupervisor?.start(barLocalRuntime)
+    }
+  } catch (error) {
+    barLocalStartupError = error
+  }
+
   // -- Offline Bar customer guides ------------------------------------------
   // Registration keeps the renderer boundary fixed to approved document IDs.
   registerBarGuideIpc({
@@ -4518,6 +4885,35 @@ app.whenReady().then(async () => {
 
   createStartupSplashWindow()
 
+  if (barLocalStartupError !== null) {
+    const startupError = /** @type {{code?: unknown, message?: unknown}} */ (barLocalStartupError)
+    const code = typeof startupError.code === 'string' ? startupError.code : 'AUTHORITY_UNAVAILABLE'
+    const detail = typeof startupError.message === 'string'
+      ? startupError.message
+      : 'The protected local authority profile could not be opened.'
+    try { console.error('[BOOT] Local Bar authority unavailable:', code, detail); } catch {}
+    dialog.showErrorBox(
+      'Local Bar authority unavailable',
+      `This till is committed to local Bar authority, but its protected profile could not be opened (${code}).\n\n${detail}\n\nCloud fallback is disabled. Repair or re-pair this till using the approved local Bar recovery workflow, then restart the application.`
+    )
+    app.quit()
+    return
+  }
+
+  if (barLocalRuntime?.mode === AUTHORITY_MODES.BAR_LOCAL || barLocalRuntime?.cloudStartupDeferred) {
+    // Local authority owns this installation. Cloud database, queues, mesh,
+    // timers, background sync and cloud IPC handlers must not start. The
+    // renderer opens the fixed local Bar workspace; the registered local IPC
+    // surface fails closed and never falls back to Supabase.
+    try { console.log('[BOOT] bar_local authority: cloud startup disabled'); } catch {}
+    createWindow()
+    try { console.log('[BOOT] local Bar main window created'); } catch {}
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+    return
+  }
+
   // Init DB
   try { console.log('[BOOT] initDatabase start'); } catch {}
   await db.initDatabase()
@@ -4534,9 +4930,9 @@ app.whenReady().then(async () => {
         masterAdmin = await db.checkMasterAdmin(email, password)
         console.log('[AUTH] Master admin result:', masterAdmin ? 'FOUND' : 'NOT FOUND')
       } catch (err) {
-        console.error('[AUTH] Master admin check failed:', err.message)
-        if (err?.code === 'MASTER_ADMIN_LOCKED') {
-          return { ok: false, code: 'master_admin_locked', error: err.message }
+        console.error('[AUTH] Master admin check failed:', (/** @type {AuthLoginCaughtErrorReadView} */ (err)).message)
+        if ((/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.code === 'MASTER_ADMIN_LOCKED') {
+          return { ok: false, code: 'master_admin_locked', error: (/** @type {AuthLoginCaughtErrorReadView} */ (err)).message }
         }
       }
 
@@ -4566,51 +4962,56 @@ app.whenReady().then(async () => {
         db.setCurrentUser(result.user)
         db.runScheduledFinancialValidation('startup').catch(() => {})
         const savedSessionNonce = db.createSessionNonce(result.user, password)
+        const successfulResult = /** @type {AuthLoginSuccessReadView} */ (result)
 
         return {
           ok: true,
           code: null,
           user: result.user,
-          mode: result.mode,
+          mode: successfulResult.mode,
           warning: savedSessionNonce
-            ? result.warning
+            ? successfulResult.warning
             : [
-              result.warning,
+              successfulResult.warning,
               'Signed in, but this computer could not save a secure offline session. Enable OS secure storage and sign in again.'
             ].filter(Boolean).join(' ')
         }
       }
 
-      console.warn('[AUTH] FAILED:', result?.error)
+      console.warn('[AUTH] FAILED:', (/** @type {AuthLoginFailureReadView|null|undefined} */ (result))?.error)
 
-      return { ok: false, code: result?.code || 'sign_in_failed', error: result?.error || 'Sign-in failed.', memberships: result?.memberships || [] }
+      return { ok: false, code: (/** @type {AuthLoginFailureReadView|null|undefined} */ (result))?.code || 'sign_in_failed', error: (/** @type {AuthLoginFailureReadView|null|undefined} */ (result))?.error || 'Sign-in failed.', memberships: (/** @type {AuthLoginFailureReadView|null|undefined} */ (result))?.memberships || [] }
     } catch (err) {
       console.error('[AUTH DEBUG][MAIN ERROR]', {
-        message: err?.message,
-        code: err?.code,
-        stack: err?.stack
+        message: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.message,
+        code: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.code,
+        stack: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.stack
       })
       console.error('[AUTH TRACE] main auth:login result', {
         ok: false,
-        code: err?.code || 'auth_ipc_failed',
-        error: err?.message || 'Main process login failed'
+        code: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.code || 'auth_ipc_failed',
+        error: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.message || 'Main process login failed'
       })
       return {
         ok: false,
-        code: err?.code || 'auth_ipc_failed',
-        error: err?.message || 'Main process login failed'
+        code: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.code || 'auth_ipc_failed',
+        error: (/** @type {AuthLoginCaughtErrorReadView|null|undefined} */ (err))?.message || 'Main process login failed'
       }
     }
   })
 
   ipcMain.handle('auth:healthCheck', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} email */ async (_, email) => {
     try { return await db.runAuthHealthCheck(email) }
-    catch (e) { return { ok: false, code: 'health_check_failed', error: e.message || 'Could not validate auth health.', online: false } }
+    // Expected-data view for the pre-existing error-message fallback. The auth domain returns
+    // ordinary failure results; unexpected rejections keep this IPC fallback and are not validated here.
+    catch (e) { return { ok: false, code: 'health_check_failed', error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Could not validate auth health.', online: false } }
   })
 
   ipcMain.handle('auth:sendPasswordReset', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} email */ async (_, email) => {
     try { return await db.sendPasswordResetEmail(email) }
-    catch (e) { return { success: false, error: e.message || 'Could not send password reset email.' } }
+    // Expected-data view for the existing fallback: the auth producer throws Error(message) for
+    // its operational failures. Unexpected thrown values remain unvalidated.
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Could not send password reset email.' } }
   })
 
   // Restores main-process session using a nonce issued during login.
@@ -4659,17 +5060,19 @@ app.whenReady().then(async () => {
     try { return db.getActiveProfile() }
     catch { return null }
   })
+  // These handlers preserve raw properties from thrown values; this narrow
+  // view does not assert that database rejections are Error instances.
   ipcMain.handle('profiles:select', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId */ async (_, lodgeId) => {
     try { return { success: true, data: await db.selectProfile(lodgeId) } }
-    catch (e) { return { success: false, error: e.message || 'Could not switch lodge.' } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not switch lodge.' } }
   })
   ipcMain.handle('profiles:createDraft', async () => {
     try { return { success: true, data: await db.createDraftProfile() } }
-    catch (e) { return { success: false, error: e.message || 'Could not create a new lodge profile.' } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not create a new lodge profile.' } }
   })
   ipcMain.handle('profiles:removeDraft', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId */ async (_, lodgeId) => {
     try { return await db.removeDraftProfile(lodgeId) }
-    catch (e) { return { success: false, code: e.code || 'remove_draft_failed', error: e.message || 'Could not remove the draft lodge.' } }
+    catch (e) { return { success: false, code: (/** @type {ErrorMessageReadView} */ (e)).code || 'remove_draft_failed', error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not remove the draft lodge.' } }
   })
 
   // -- Role enforcement helper ------------------------------------------------
@@ -4680,7 +5083,9 @@ app.whenReady().then(async () => {
     if (existing) return existing
 
     try {
-      const storedNonce = db.readSessionNonce?.()
+      // readSessionNonce returns persisted JSON. This one-field expected view
+      // preserves the existing string guard and does not validate the record.
+      const storedNonce = /** @type {{nonce?: unknown} | null | undefined} */ (db.readSessionNonce?.())
       const nonce = typeof storedNonce?.nonce === 'string' ? storedNonce.nonce : ''
       if (!nonce) return null
       return db.restoreUserSession?.(nonce) || null
@@ -4689,6 +5094,7 @@ app.whenReady().then(async () => {
     }
   }
 
+  /** @param {...string} roles */
   function requireRole(...roles) {
     const user = getCurrentUserOrRestore()
     if (!user) throw new Error('Not authenticated')
@@ -4711,6 +5117,7 @@ app.whenReady().then(async () => {
     return user
   }
 
+  /** @param {unknown} targetLodgeId */
   function requireCurrentLodgeOrSuperAdmin(targetLodgeId) {
     const user = getCurrentUserOrRestore()
     if (user?.isMasterAdmin === true) return
@@ -4888,6 +5295,8 @@ app.whenReady().then(async () => {
     throw new Error(errorMessage || 'Your role does not have access to this action.')
   }
 
+  // Expected IPC request properties; leaf values remain unvalidated.
+  /** @param {{idempotencyKey?: unknown, operationId?: unknown, operationKey?: unknown, idempotency_key?: unknown}|null|undefined} payload @param {string} label */
   function requireStablePrepaymentOperation(payload, label) {
     const key = String(payload?.idempotencyKey || payload?.operationId || payload?.operationKey || payload?.idempotency_key || '').trim()
     if (!key || key.length < 8 || key.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(key)) {
@@ -4896,6 +5305,7 @@ app.whenReady().then(async () => {
     return key
   }
 
+  /** @param {{notes?: unknown, reason?: unknown}|null|undefined} payload @param {string} label */
   function requirePrepaymentReason(payload, label) {
     if (!String(payload?.notes || payload?.reason || '').trim()) {
       throw new Error(`A reason is required for a prepayment ${label}.`)
@@ -4929,8 +5339,12 @@ app.whenReady().then(async () => {
     return getTillOperatorPolicy(settings)
   }
 
+  /** Shared-Till request aliases read here; payload leaves stay unknown and are not validated. */
+  /** @typedef {{cashier_id?: unknown, cashierId?: unknown, waiter_id?: unknown, waiterId?: unknown, outlet_id?: unknown, outletId?: unknown, shift_id?: unknown, shiftId?: unknown}} SharedTillActionRequestExpectedData */
+  /** The session store returns null-session failures and a cloned session on success; this view does not add runtime validation. */
+  /** @typedef {{success: true, session: NonNullable<ReturnType<typeof sharedTillOperatorSessions.get>>, code?: null, error?: null} | {success: false, session: null, code: string, error: string}} SharedTillAuthorizationExpectedResult */
   /** @typedef {{shared: false, session: null, policy: null, operatorProof?: null|undefined} | {shared: true, session: ReturnType<typeof sharedTillOperatorSessions.get>, policy: ReturnType<typeof getTillOperatorPolicy>, code?: string|null|undefined, error?: string|null|undefined, operatorProof?: string|null|undefined}} SharedTillActionContextExpectedData */
-  /** @returns {Promise<SharedTillActionContextExpectedData>} */
+  /** @param {import('electron').IpcMainInvokeEvent} event @param {SharedTillActionRequestExpectedData} [data] @returns {Promise<SharedTillActionContextExpectedData>} */
   async function getSharedTillActionContext(event, data = {}) {
     const user = getCurrentUserOrRestore()
     if (!SHARED_TILL_ROLES.has(normalizeAppRole(user?.role))) {
@@ -4946,16 +5360,17 @@ app.whenReady().then(async () => {
     // this gate. Reattribute to the operator's current open shift for the
     // authorize check only; the payload (and journal digest) below is
     // untouched, and any doubt keeps the original shift (fail closed).
+    /** @type {unknown} */
     let authorizeShiftId = shiftId
     if (requestedOperatorId && shiftId) {
       const currentOpen = await db.getStaffOpenPosShift(requestedOperatorId).catch(() => null)
       authorizeShiftId = resolveAuthorizeShiftId({ requestedShiftId: shiftId, outletId, openShift: currentOpen })
     }
-    const authorized = sharedTillOperatorSessions.authorize(event?.sender?.id, {
+    const authorized = /** @type {SharedTillAuthorizationExpectedResult} */ (sharedTillOperatorSessions.authorize(event?.sender?.id, {
       outletId,
       operatorId: requestedOperatorId,
       shiftId: authorizeShiftId
-    })
+    }))
     if (!authorized.success) {
       return { shared: true, session: null, policy, code: authorized.code, error: authorized.error }
     }
@@ -4989,7 +5404,7 @@ app.whenReady().then(async () => {
   // Revalidate the live shared-Till session immediately before any tab
   // mutation. The opaque proof stays in the main process and is attached only
   // to the final RPC payload by the domain layer.
-  /** @returns {Promise<SharedTillActionContextExpectedData>} */
+  /** @param {import('electron').IpcMainInvokeEvent} event @param {SharedTillActionRequestExpectedData} [data] @returns {Promise<SharedTillActionContextExpectedData>} */
   async function getTabMutationTillContext(event, data = {}) {
     const session = sharedTillOperatorSessions.get(event?.sender?.id)
     if (!session) return { shared: false, session: null, policy: null, operatorProof: null }
@@ -5011,6 +5426,7 @@ app.whenReady().then(async () => {
     return context
   }
 
+  /** @param {import('electron').IpcMainInvokeEvent} event */
   async function getBarOfflineTabProofError(event) {
     if (state.isOnline) return null
     const settings = await db.getSettings().catch(() => ({}))
@@ -5028,9 +5444,15 @@ app.whenReady().then(async () => {
     }
   }
 
+  /**
+   * @param {Record<string, unknown>|null|undefined} data Existing IPC callers supply an object payload; this expected-data view preserves the spread and does not validate it.
+   * @param {SharedTillActionContextExpectedData} tillContext Created by the local authorization helpers above; this describes that returned shape.
+   * @param {'order'|'tab'} [kind]
+   */
   function buildAuthoritativeTillPayload(data, tillContext, kind = 'order') {
     if (!tillContext?.shared || !tillContext.session) return data
     const session = tillContext.session
+    /** @type {Record<string, unknown>} */
     const payload = {
       ...(data || {}),
       outlet_id: session.outletId,
@@ -5046,6 +5468,10 @@ app.whenReady().then(async () => {
     return payload
   }
 
+  /**
+   * @param {import('electron').IpcMainInvokeEvent} event
+   * @param {{success?:unknown}|null|undefined} result Database result is consumed only for its existing success flag; this expected-data view does not validate returned data.
+   */
   function finalizeSharedTillMutation(event, result) {
     if (result?.success) {
       const session = sharedTillOperatorSessions.get(event?.sender?.id)
@@ -5093,13 +5519,14 @@ app.whenReady().then(async () => {
     'advanced_rates.view'
   ])
 
+  /** @param {string} capabilityName @param {string} [errorMessage] */
   async function requireCapabilityOrDevEnterprisePreview(capabilityName, errorMessage) {
     try {
       return await requireCapability(capabilityName, errorMessage)
     } catch (error) {
       const canPreview = !app.isPackaged && DEV_ENTERPRISE_PREVIEW_CAPABILITIES.has(capabilityName)
       if (!canPreview) throw error
-      console.warn(`[Enterprise Preview] Allowing local development read for ${capabilityName}:`, error?.message || error)
+      console.warn(`[Enterprise Preview] Allowing local development read for ${capabilityName}:`, (/** @type {ErrorMessageReadView | null | undefined} */ (error))?.message || error)
       return await getAccessSnapshot().catch(() => null)
     }
   }
@@ -5124,7 +5551,7 @@ app.whenReady().then(async () => {
       const result = await ai.turn({ message, model, route, threadId, uiContext })
       return { success: true, ...result }
     } catch (e) {
-      return { success: false, error: e.message || 'AI request failed.' }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'AI request failed.' }
     }
   })
 
@@ -5133,7 +5560,7 @@ app.whenReady().then(async () => {
       await requireCapability('dashboard.view')
       return { success: true, items: ai.getLocalCatalog() }
     } catch (e) {
-      return { success: false, error: e.message || 'Could not load assistant topics.', items: [] }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not load assistant topics.', items: [] }
     }
   })
 
@@ -5145,7 +5572,7 @@ app.whenReady().then(async () => {
       const result = await ai.execute({ proposalId })
       return { success: true, ...result }
     } catch (e) {
-      return { success: false, error: e.message || 'AI action failed.' }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'AI action failed.' }
     }
   })
 
@@ -5216,7 +5643,7 @@ app.whenReady().then(async () => {
         items
       }
     } catch (e) {
-      return { success: false, error: e.message || 'Preview failed.' }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Preview failed.' }
     }
   })
 
@@ -5239,6 +5666,7 @@ app.whenReady().then(async () => {
 
       if (items.length === 0) return { success: false, error: 'No items to process.' }
 
+      /** @param {Record<string, unknown> & {timestamp: number}} data */
       const emit = (data) => {
         try { event.sender.send('ai:collections:progress', { ...data, timestamp: data.timestamp || Date.now() }) } catch { /* window closed */ }
       }
@@ -5295,7 +5723,7 @@ app.whenReady().then(async () => {
           successCount++
           emit({ type: 'success', index: i, booking_id, guest, amount, timestamp: Date.now() })
         } catch (e) {
-          const errMsg = e.message || 'Payment failed'
+          const errMsg = (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Payment failed'
           results.push({ booking_id, guest, amount, status: 'error', error: errMsg })
           errorCount++
           emit({ type: 'error', index: i, booking_id, guest, amount, error: errMsg, timestamp: Date.now() })
@@ -5336,9 +5764,9 @@ app.whenReady().then(async () => {
       const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
       writeAiAuditLog({
         user, lodgeId, event: 'ai.collections.execute.failed',
-        payload: { source: 'bulk_workflow', error: e.message || 'Execution failed.' }
+        payload: { source: 'bulk_workflow', error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Execution failed.' }
       }, { userDataPath: app.getPath('userData') })
-      return { success: false, error: e.message || 'Execution failed.' }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Execution failed.' }
     }
   })
 
@@ -5370,7 +5798,7 @@ app.whenReady().then(async () => {
         bookings
       }
     } catch (e) {
-      return { success: false, error: e.message || 'Overdue preview failed.' }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Overdue preview failed.' }
     }
   })
 
@@ -5390,6 +5818,7 @@ app.whenReady().then(async () => {
       const allBookings = await db.getAllBookings().catch(() => [])
       const bookingMap = new Map((Array.isArray(allBookings) ? allBookings : []).map((b) => [b.id, b]))
 
+      /** @param {Record<string, unknown> & {timestamp: number}} data */
       const emit = (data) => {
         try { event.sender.send('ai:overdue:progress', { ...data, timestamp: data.timestamp || Date.now() }) } catch { /* window closed */ }
       }
@@ -5425,7 +5854,7 @@ app.whenReady().then(async () => {
           successCount++
           emit({ type: 'success', index: i, booking_id: id, timestamp: Date.now() })
         } catch (e) {
-          const errMsg = e.message || 'Checkout failed'
+          const errMsg = (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Checkout failed'
           results.push({ booking_id: id, status: 'error', error: errMsg })
           errorCount++
           emit({ type: 'error', index: i, booking_id: id, error: errMsg, timestamp: Date.now() })
@@ -5464,9 +5893,9 @@ app.whenReady().then(async () => {
       const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
       writeAiAuditLog({
         user, lodgeId, event: 'ai.overdue.execute.failed',
-        payload: { source: 'bulk_workflow', error: e.message || 'Execution failed.' }
+        payload: { source: 'bulk_workflow', error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Execution failed.' }
       }, { userDataPath: app.getPath('userData') })
-      return { success: false, error: e.message || 'Execution failed.' }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Execution failed.' }
     }
   })
 
@@ -5488,7 +5917,7 @@ app.whenReady().then(async () => {
       return { ok: true, verified: true, expires_at: status.expiresAt }
     } catch (error) {
       commandCentralElevation.clear()
-      return { ok: false, verified: false, error: error?.message || 'Could not re-authenticate Command Central' }
+      return { ok: false, verified: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not re-authenticate Command Central' }
     }
   })
   ipcMain.handle('admin:setup', async (_, name, email, password) => {
@@ -5499,11 +5928,11 @@ app.whenReady().then(async () => {
   // -- Admin: Company & License Management -----------------------------------
   ipcMain.handle('admin:getCompanies', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.companies.manage'); return await db.getAllCompanies() }
-    catch (e) { console.error('[admin:getCompanies]', e?.message || e); throw e }
+    catch (e) { console.error('[admin:getCompanies]', (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || e); throw e }
   })
   ipcMain.handle('admin:getLicenses', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.licensing.manage'); return await db.getLicenses() }
-    catch (e) { console.error('[admin:getLicenses]', e?.message || e); throw e }
+    catch (e) { console.error('[admin:getLicenses]', (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || e); throw e }
   })
   // These legacy channels are intentionally retained as explicit refusals for
   // older renderer builds. They must not remain alternate write paths around
@@ -5531,12 +5960,12 @@ app.whenReady().then(async () => {
   // -- Admin: Broadcasts -----------------------------------------------------
   ipcMain.handle('admin:getBroadcasts', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getBroadcasts() }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central broadcasts') }
+    catch (error) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message) || 'Unable to load Command Central broadcasts') }
   })
   ipcMain.handle('admin:getActiveBroadcasts', async () => db.getActiveBroadcasts().catch(() => []))
   ipcMain.handle('admin:getExpenses', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getAdminExpenses() }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central expenses') }
+    catch (error) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message) || 'Unable to load Command Central expenses') }
   })
   ipcMain.handle('admin:createExpense', async (_, data) => {
     try { requireFreshCommandCentralReauth(); return await db.createAdminExpense(data) }
@@ -5554,37 +5983,37 @@ app.whenReady().then(async () => {
     try {
       requireFreshCommandCentralReauth()
       return await db.createBroadcast(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:updateBroadcast', async (_, id, data) => {
     try {
       requireFreshCommandCentralReauth()
       return await db.updateBroadcast(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:deleteBroadcast', async (_, id) => {
     try {
       requireFreshCommandCentralReauth()
       return await db.deleteBroadcast(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Admin: Feature Flags --------------------------------------------------
   ipcMain.handle('admin:getLodgeFeatures', async (_, lodgeId) => {
     try { requireCurrentLodgeOrSuperAdmin(lodgeId); return await db.getLodgeFeatures(lodgeId) }
-    catch (error) { throw new Error(error?.message || 'Unable to load lodge feature overrides') }
+    catch (error) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message) || 'Unable to load lodge feature overrides') }
   })
   ipcMain.handle('admin:setLodgeFeature', async (_, lodgeId, name, enabled, metadata) => {
     try {
       requireFreshCommandCentralReauth()
       return await db.setLodgeFeature(lodgeId, name, enabled, metadata || {})
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:clearLodgeFeature', async (_, lodgeId, name) => {
     try {
       requireFreshCommandCentralReauth()
       return await db.clearLodgeFeature(lodgeId, name)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:getCommercialEntitlementOverrides', async (_, lodgeId, productId) => {
     try {
@@ -5592,7 +6021,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       assertCommandCentralTarget(lodgeId)
       return await db.getCommercialEntitlementOverrides(lodgeId, productId)
-    } catch (error) { throw new Error(error?.message || 'Unable to load commercial entitlement overrides') }
+    } catch (error) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message) || 'Unable to load commercial entitlement overrides') }
   })
   ipcMain.handle('admin:getCommercialTransitionPreview', async (_, lodgeId, productId, targetPackageKey, referenceDate) => {
     try {
@@ -5600,7 +6029,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       assertCommandCentralTarget(lodgeId)
       return await db.getCommercialTransitionPreview(lodgeId, productId, targetPackageKey, referenceDate || null)
-    } catch (error) { return { success: false, error: error?.message || 'Unable to preview the commercial transition' } }
+    } catch (error) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to preview the commercial transition' } }
   })
   ipcMain.handle('admin:setCommercialEntitlementOverride', async (_, payload) => {
     try {
@@ -5615,7 +6044,7 @@ app.whenReady().then(async () => {
         actor_email: admin.email,
         fresh_auth_at: new Date().toISOString()
       })
-    } catch (error) { return { success: false, error: error?.message || 'Unable to save the commercial entitlement override' } }
+    } catch (error) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to save the commercial entitlement override' } }
   })
   ipcMain.handle('admin:revokeCommercialEntitlementOverride', async (_, payload) => {
     try {
@@ -5630,7 +6059,7 @@ app.whenReady().then(async () => {
         actor_email: admin.email,
         fresh_auth_at: new Date().toISOString()
       })
-    } catch (error) { return { success: false, error: error?.message || 'Unable to revoke the commercial entitlement override' } }
+    } catch (error) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to revoke the commercial entitlement override' } }
   })
   ipcMain.handle('admin:applyCommercialUserRemediation', async (_, payload) => {
     try {
@@ -5646,11 +6075,11 @@ app.whenReady().then(async () => {
         actor_email: admin.email,
         fresh_auth_at: new Date().toISOString()
       })
-    } catch (error) { return { success: false, error: error?.message || 'Unable to apply the commercial user remediation' } }
+    } catch (error) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (error))?.message || 'Unable to apply the commercial user remediation' } }
   })
   ipcMain.handle('admin:getAllLodgeFeatures', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.companies.manage'); return await db.getAllLodgeFeatures() }
-    catch (error) { throw new Error(error?.message || 'Unable to load lodge feature overrides') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load lodge feature overrides') }
   })
   ipcMain.handle('admin:getTestDataResetPreview', async (_, lodgeId, payload) => {
     try {
@@ -5658,13 +6087,13 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.destructive.manage')
       assertCommandCentralTarget(lodgeId)
       return await db.getTestDataResetPreview(lodgeId, payload || {})
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:runTestDataReset', async (_, lodgeId, payload) => {
     try {
       requireFreshCommandCentralReauth()
       return await db.runTestDataReset(lodgeId, payload || {})
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:getTestDataResetAudit', async (_, lodgeId, limit) => {
     try {
@@ -5672,13 +6101,13 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.destructive.manage')
       assertCommandCentralTarget(lodgeId)
       return await db.getTestDataResetAudit(lodgeId, limit || 20)
-    } catch (error) { throw new Error(error?.message || 'Unable to load reset audit history') }
+    } catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load reset audit history') }
   })
 
   // -- Admin: Support Tickets ------------------------------------------------
   ipcMain.handle('admin:getSupportTickets', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.support.manage'); return await db.getSupportTickets(filters || {}) }
-    catch (error) { throw new Error(error?.message || 'Unable to load support tickets') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load support tickets') }
   })
   ipcMain.handle('admin:createSupportTicket', async (_, data) => {
     try {
@@ -5705,50 +6134,50 @@ app.whenReady().then(async () => {
         : buildSupportTicketEmail(ticketData)
       sendNotificationEmail(subject, html).catch(() => {})
       return result
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:updateSupportTicket', async (_, id, updates) => {
     try { requireFreshCommandCentralReauth(); return await db.updateSupportTicket(id, updates) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:addSupportTicketMessage', async (_, id, payload) => {
     try { requireFreshCommandCentralReauth(); return await db.addSupportTicketMessage(id, payload || {}) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:deleteSupportTicket', async (_, id) => {
     try { requireFreshCommandCentralReauth(); return await db.deleteSupportTicket(id) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Admin: Activity Logs --------------------------------------------------
   ipcMain.handle('admin:getActivityLogs', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getActivityLogs(filters || {}) }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central activity') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load Command Central activity') }
   })
 
   ipcMain.handle('admin:getAuditSummary', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getAuditSummary(filters || {}) }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central audit summary') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load Command Central audit summary') }
   })
   ipcMain.handle('admin:recordCommandCentralHealthRun', async (_, payload = {}) => {
     try {
       const actor = requireMasterAdmin()
       return await db.recordCommandCentralHealthRun({ ...payload, actor_id: actor.id, actor_email: actor.email })
-    } catch (error) { return { ok: false, error: error?.message || 'Unable to record Command Central diagnostic run' } }
+    } catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView} */ (error))?.message || 'Unable to record Command Central diagnostic run' } }
   })
   ipcMain.handle('admin:listCommandCentralHealthRuns', async (_, limit) => {
     try { requireMasterAdmin(); return await db.listCommandCentralHealthRuns(limit || 20) }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central diagnostic history') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load Command Central diagnostic history') }
   })
 
   // -- Admin Notifications --------------------------------------------------
   ipcMain.handle('admin:createNotification', async (_, payload) => {
     try { requireFreshCommandCentralReauth(); return { ok: true, id: await db.createNotification(payload) } }
-    catch (error) { return { ok: false, error: error?.message || 'Failed to create notification' } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView} */ (error))?.message || 'Failed to create notification' } }
   })
   ipcMain.handle('admin:getNotifications', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotifications(filters || {}) }
-    catch (error) { throw new Error(error?.message || 'Unable to load Command Central notifications') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load Command Central notifications') }
   })
   ipcMain.handle('admin:getUnreadCount', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getUnreadCount() }
@@ -5760,35 +6189,35 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:cleanupNotifications', /** @param {unknown} _ @param {unknown} days @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'admin:cleanupNotifications'>>} */ async (_, days) => {
     try { requireFreshCommandCentralReauth(); return { ok: true, count: await db.cleanupNotifications(days) } }
-    catch (e) { return { ok: false, count: 0, error: e.message } }
+    catch (e) { return { ok: false, count: 0, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Release Control --------------------------------------------------------
   ipcMain.handle('admin:getScheduledReleases', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.releases.manage'); return await db.getScheduledReleases() }
-    catch (error) { throw new Error(error?.message || 'Unable to load scheduled releases') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load scheduled releases') }
   })
   ipcMain.handle('admin:expireOverdueFeatures', async () => {
     try { requireFreshCommandCentralReauth(); return { ok: true, count: await db.expireOverdueFeatures() } }
-    catch (e) { return { ok: false, count: 0, error: e.message } }
+    catch (e) { return { ok: false, count: 0, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Notification Automation ----------------------------------------------
   ipcMain.handle('admin:getNotificationRules', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotificationRules() }
-    catch (error) { throw new Error(error?.message || 'Unable to load notification automation rules') }
+    catch (error) { throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView} */ (error))?.message) || 'Unable to load notification automation rules') }
   })
   ipcMain.handle('admin:upsertNotificationRule', async (_, rule) => {
     try { requireFreshCommandCentralReauth(); return await db.upsertNotificationRule(rule) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:evaluateRule', async (_, ruleKey) => {
     try { requireFreshCommandCentralReauth(); return await db.evaluateRule(ruleKey) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:evaluateAllRules', async () => {
     try { requireFreshCommandCentralReauth(); return await db.evaluateAllRules() }
-    catch (e) { return { ok: false, error: e.message, results: [] } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message, results: [] } }
   })
   ipcMain.handle('admin:getNotificationEvents', async (_, opts) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getNotificationEvents(opts || {}) }
@@ -5800,36 +6229,37 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:markEventsDispatched', async (_, eventIds) => {
     try { requireFreshCommandCentralReauth(); return await db.markEventsDispatched(eventIds) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Accounting ----------------------------------------------------------
+  // These existing failure wrappers inspect only `.message`; the read view does not validate thrown values.
   ipcMain.handle('admin:getMrrSummary', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getMrrSummary() }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load commercial subscription summary', mrr: 0, arr: 0, lodge_count: 0, trials_active: 0, by_plan: {} } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load commercial subscription summary', mrr: 0, arr: 0, lodge_count: 0, trials_active: 0, by_plan: {} } }
   })
   ipcMain.handle('admin:getRevenueSummary', async (_, days) => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getRevenueSummary(days) }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking revenue summary', daily: [], total_revenue: 0, payment_count: 0, avg_daily: 0 } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load customer booking revenue summary', daily: [], total_revenue: 0, payment_count: 0, avg_daily: 0 } }
   })
   ipcMain.handle('admin:getLodgeFinancialSummary', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getLodgeFinancialSummary() }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking balances', lodges: [] } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load customer booking balances', lodges: [] } }
   })
   ipcMain.handle('admin:getCollectionsQueue', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getCollectionsQueue() }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking collections', queue: [] } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load customer booking collections', queue: [] } }
   })
   ipcMain.handle('admin:getRevenueByMethod', async (_, days) => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getRevenueByMethod(days) }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load customer booking payment methods', methods: [] } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load customer booking payment methods', methods: [] } }
   })
   ipcMain.handle('admin:generateCommercialInvoice', async (_, payload) => {
     try {
       const admin = requireFreshCommandCentralReauth()
       return await db.generateCommercialInvoice({ ...payload, actor_id: admin.id, actor_email: admin.email })
     } catch (error) {
-      return { success: false, error: error?.message || 'Unable to generate commercial invoice' }
+      return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to generate commercial invoice' }
     }
   })
   ipcMain.handle('admin:recordCommercialPayment', async (_, payload) => {
@@ -5837,7 +6267,7 @@ app.whenReady().then(async () => {
       const admin = requireFreshCommandCentralReauth()
       return await db.recordCommercialPayment({ ...payload, actor_id: admin.id, actor_email: admin.email })
     } catch (error) {
-      return { success: false, error: error?.message || 'Unable to record commercial payment' }
+      return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to record commercial payment' }
     }
   })
   ipcMain.handle('admin:getCommercialInvoices', async (_, filters = {}) => {
@@ -5847,7 +6277,7 @@ app.whenReady().then(async () => {
       if (filters?.lodgeId) assertCommandCentralTarget(filters.lodgeId)
       return await db.listCommercialInvoices(filters)
     } catch (error) {
-      throw new Error(error?.message || 'Unable to load commercial invoices')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Unable to load commercial invoices')
     }
   })
   ipcMain.handle('admin:getCommercialBillingSummary', async () => {
@@ -5856,7 +6286,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.billing.manage')
       return await db.getCommercialBillingSummary()
     } catch (error) {
-      throw new Error(error?.message || 'Unable to load commercial billing summary')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Unable to load commercial billing summary')
     }
   })
 
@@ -5875,31 +6305,31 @@ app.whenReady().then(async () => {
   // -- Bulk Actions --------------------------------------------------------
   ipcMain.handle('admin:bulkUpdateStatus', async (_, entityType, entityIds, newStatus) => {
     try { requireFreshCommandCentralReauth(); return await db.bulkUpdateStatus(entityType, entityIds, newStatus) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:bulkDelete', async (_, entityType, entityIds) => {
     try { requireFreshCommandCentralReauth(); return await db.bulkDelete(entityType, entityIds) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:bulkNotify', async (_, entityType, entityIds, message) => {
     try { requireFreshCommandCentralReauth(); return await db.bulkNotify(entityType, entityIds, message) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
   // -- Deep Fleet Health + App Update Control ------------------------------
   ipcMain.handle('admin:pushUpdateNotification', async (_, version, message, force) => {
     try { requireFreshCommandCentralReauth(); return await db.pushUpdateNotification(version, message, force) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('admin:getSyncQueueStatus', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSyncQueueStatus() }
-    catch (error) { return { ok: false, error: error?.message || 'Unable to load sync queue status', devices: [], stale_count: null, total_devices: null } }
+    catch (error) { return { ok: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (error))?.message || 'Unable to load sync queue status', devices: [], stale_count: null, total_devices: null } }
   })
 
   // -- Release Rollout Control --------------------------------------------
   ipcMain.handle('admin:createRelease', async (_, release) => {
     try { requireFreshCommandCentralReauth(); return await db.createRelease(release) }
-    catch (e) { return { ok: false, error: e.message } }
+    catch (e) { return { ok: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   // Existing database and permission failures expose Error.message; these views preserve the
   // current property reads without validating the caught runtime value.
@@ -5914,7 +6344,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getReleases', async (_, productId) => {
     try { requireMasterAdmin(); return await db.getReleases(productId || BUILD_PRODUCT_ID) }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load product releases') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load product releases') }
   })
   ipcMain.handle('admin:getSurfaceIntelligence', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSurfaceIntelligence() }
@@ -5924,14 +6354,14 @@ app.whenReady().then(async () => {
   // -- Admin: Company Stats --------------------------------------------------
   ipcMain.handle('admin:getCompanyStats', async (_, lodgeId) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); assertCommandCentralTarget(lodgeId); return await db.getCompanyStats(lodgeId) }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load company statistics') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load company statistics') }
   })
 
   // -- Admin: Billing --------------------------------------------------------
   ipcMain.handle('admin:updateLicenseBilling', async () => ({ success: false, error: legacyLicenseMutationRefusal }))
   ipcMain.handle('admin:getOverdueLicenses', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getOverdueLicenses() }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load overdue licenses') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load overdue licenses') }
   })
 
   // -- Invoices --------------------------------------------------------------
@@ -5945,15 +6375,15 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getInvoices', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoices(filters) }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load invoices') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load invoices') }
   })
   ipcMain.handle('admin:getInvoicesByLodge', async (_, lodgeId) => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoicesByLodge(lodgeId) }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load booking invoices') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load booking invoices') }
   })
   ipcMain.handle('admin:getClientBookingInvoices', async (_, lodgeId) => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); assertCommandCentralTarget(lodgeId); return await db.getClientBookingInvoices(lodgeId) }
-    catch (e) { throw new Error(/** @type {AdminThrownErrorExpectedData} */ (e).message) }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData} */ (e).message) }
   })
   ipcMain.handle('admin:updateInvoice', async (_, id, data) => {
     try { requireFreshCommandCentralReauth(); return await db.updateInvoice(id, data) }
@@ -5965,7 +6395,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getInvoiceSummary', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.billing.manage'); return await db.getInvoiceSummary() }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load invoice summary') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load invoice summary') }
   })
   ipcMain.handle('admin:updateCompany', async (_, lodgeId, updates) => {
     try {
@@ -6013,7 +6443,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getCompanyUsers', async (_, lodgeId) => {
     try { requireMasterAdmin(); await requireCapability('command_central.security.manage'); assertCommandCentralTarget(lodgeId); return await db.getCompanyUsers(lodgeId) }
-    catch (error) { throw new Error(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load company users') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))(/** @type {AdminThrownErrorExpectedData|null|undefined} */ (error)?.message || 'Unable to load company users') }
   })
   ipcMain.handle('admin:resetCompanyUserPassword', async (_, lodgeId, userId, password) => {
     try { requireFreshCommandCentralReauth(); return await db.resetCompanyUserPassword(lodgeId, userId, password) }
@@ -6033,7 +6463,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getMarketingLeads', async (_, filters) => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getMarketingLeads(filters || {}) }
-    catch (e) { throw new Error(e?.message || 'Unable to load marketing leads') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Unable to load marketing leads') }
   })
   ipcMain.handle('admin:updateMarketingLeadStatus', async (_, id, status) => {
     try { requireFreshCommandCentralReauth(); return await db.updateMarketingLeadStatus(id, status) }
@@ -6045,12 +6475,15 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getSalesPipelineSummary', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getSalesPipelineSummary() }
-    catch (e) { throw new Error(e?.message || 'Unable to load sales pipeline') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Unable to load sales pipeline') }
   })
 
   // -- Generic Admin Excel Export --------------------------------------------
-  ipcMain.handle('admin:exportExcel', async (event, payload = {}) => {
-    const { title = 'Export', rows = [], sheetName, columns } = payload
+  /** Column and row view emitted by renderer/src/utils/adminExport.js; payload remains unvalidated at IPC. Cell values stay unknown. */
+  /** @typedef {{key: string, header: string, width?: number | undefined}} AdminExportColumnExpectedData */
+  /** @typedef {{title?: string | undefined, rows?: Array<Record<string, unknown>> | undefined, sheetName?: string | undefined, columns?: AdminExportColumnExpectedData[] | undefined}} AdminExportPayloadExpectedData */
+  ipcMain.handle('admin:exportExcel', async (event, /** @type {unknown} */ payload = {}) => {
+    const { title = 'Export', rows = [], sheetName, columns } = /** @type {AdminExportPayloadExpectedData} */ (payload)
     const win = BrowserWindow.fromWebContents(event.sender)
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       title: `Export ${title} to Excel`,
@@ -6060,6 +6493,8 @@ app.whenReady().then(async () => {
     if (canceled || !filePath) return { success: false }
     try {
       const wb = XLSX.utils.book_new()
+      // Generated fallback columns intentionally contain only key and header; width is optional.
+      /** @type {AdminExportColumnExpectedData[]} */
       const cols = columns || (rows.length ? Object.keys(rows[0]).map(k => ({ key: k, header: k })) : [])
       const headers = cols.map(c => c.header)
       const data = rows.map(row => cols.map(c => row[c.key] ?? ''))
@@ -6069,12 +6504,12 @@ app.whenReady().then(async () => {
       const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
       fs.writeFileSync(filePath, buffer)
       return { success: true, filePath }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Generic Admin PDF Export (print-to-PDF) ------------------------------
-  ipcMain.handle('admin:exportPdf', async (event, payload = {}) => {
-    const { title = 'Export', rows = [], columns } = payload
+  ipcMain.handle('admin:exportPdf', async (event, /** @type {unknown} */ payload = {}) => {
+    const { title = 'Export', rows = [], columns } = /** @type {AdminExportPayloadExpectedData} */ (payload)
     const cols = columns || (rows.length ? Object.keys(rows[0]).map(k => ({ key: k, header: k })) : [])
     const win = BrowserWindow.fromWebContents(event.sender)
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
@@ -6128,7 +6563,7 @@ app.whenReady().then(async () => {
         available: false,
         _available: false,
         source: 'unavailable',
-        error: error?.message || 'Subscription billing history is unavailable.',
+        error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Subscription billing history is unavailable.',
         rows: [],
         total: 0
       }
@@ -6156,8 +6591,8 @@ app.whenReady().then(async () => {
       }
       return await sendBookingInvoiceEmailWithAudit(invoice)
     } catch (e) {
-      await recordFailedInvoiceDelivery(invoice, e.message || 'Could not send invoice email')
-      return { success: false, error: e.message }
+      await recordFailedInvoiceDelivery(invoice, /** @type {ErrorMessageReadView} */ (e).message || 'Could not send invoice email')
+      return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message }
     }
   })
   ipcMain.handle('invoices:recordDelivery', async (_, payload = {}) => {
@@ -6168,59 +6603,59 @@ app.whenReady().then(async () => {
       }
       return await db.recordInvoiceDelivery(payload || {})
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('reports:invoiceDeliveryHistory', async (_, payload = {}) => {
     try {
       await requireCapability('invoices.view')
       return await db.getInvoiceDeliveryHistory(payload || {})
-    } catch (e) { throw new Error(e?.message || 'Failed to load invoice delivery history') }
+    } catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load invoice delivery history') }
   })
   ipcMain.handle('reports:financialAudit', async (_, payload = {}) => {
     try {
       await requireCapability('reports.view')
       return await db.getFinancialAuditLog(payload || {})
-    } catch (e) { throw new Error(e?.message || 'Failed to load financial audit log') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load financial audit log') }
   })
   ipcMain.handle('reports:financialReconciliation', async () => {
     try {
       await requireCapability('reports.view')
       return await db.getFinancialReconciliation()
-    } catch (e) { throw new Error(e?.message || 'Failed to load reconciliation summary') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load reconciliation summary') }
   })
   ipcMain.handle('reports:financialValidation', async () => {
     try {
       await requireCapability('reports.view')
       return await db.getFinancialValidationSummary()
-    } catch (e) { throw new Error(e?.message || 'Failed to load financial validation summary') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load financial validation summary') }
   })
   ipcMain.handle('reports:financialValidationRuns', async (_, limit = 30) => {
     try {
       await requireCapability('reports.view')
       return await db.getFinancialValidationRuns(limit)
-    } catch (e) { throw new Error(e?.message || 'Failed to load financial validation history') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load financial validation history') }
   })
   ipcMain.handle('reports:financialValidationAlerts', async (_, limit = 30) => {
     try {
       await requireCapability('reports.view')
       return db.getFinancialValidationAlerts(limit)
-    } catch (e) { throw new Error(e?.message || 'Failed to load financial validation alerts') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load financial validation alerts') }
   })
   ipcMain.handle('reports:criticalErrors', async (_, limit = 100) => {
     try {
       await requireCapability('system.health')
       return db.getCriticalErrorLog(limit)
     } catch (e) {
-      if (/not authenticated/i.test(e?.message || '')) return []
-      throw new Error(e?.message || 'Failed to load critical error history')
+      if (/not authenticated/i.test(/* Expected string view for this existing RegExp.test input; regex coercion is unchanged and this does not validate the caught value. */ (/** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || ''))) return []
+      throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to load critical error history')
     }
   })
   ipcMain.handle('reports:clearCriticalErrors', async () => {
     try {
       await requireCapability('system.health')
       return db.clearCriticalErrorLog()
-    } catch (e) { throw new Error(e?.message || 'Failed to clear critical error history') }
+    } catch (e) { throw new Error(/* Expected-data view for the existing Error(message) argument; Error keeps its existing runtime coercion, and this does not validate the caught value. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message) || 'Failed to clear critical error history') }
   })
   ipcMain.handle('reports:saveSupportBundle', async (event, limit = 20) => {
     try {
@@ -6241,7 +6676,7 @@ app.whenReady().then(async () => {
       fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), 'utf8')
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { success: false, error: e?.message || 'Failed to export support bundle' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to export support bundle' }
     }
   })
   ipcMain.handle('reports:getSupportBundle', async (_, limit = 20) => {
@@ -6253,7 +6688,7 @@ app.whenReady().then(async () => {
       }
       return { success: true, bundle: payload }
     } catch (e) {
-      return { success: false, error: e?.message || 'Failed to get support bundle' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to get support bundle' }
     }
   })
   ipcMain.handle('reports:exportOfflineSafetyManifest', async (event) => {
@@ -6280,20 +6715,20 @@ app.whenReady().then(async () => {
       XLSX.writeFile(wb, result.filePath)
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { success: false, error: e?.message || 'Failed to export offline safety manifest' }
+      return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to export offline safety manifest' }
     }
   })
   ipcMain.handle('reports:retryFinancialValidationRun', async (_, runId) => {
     try {
       await requireCapability('system.health')
       return await db.retryFinancialValidationRun(runId)
-    } catch (e) { return { success: false, error: e?.message || 'Could not recover this validation run' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Could not recover this validation run' } }
   })
   ipcMain.handle('reports:runFinancialValidation', async () => {
     try {
       await requireCapability('system.health')
       return await db.runFinancialValidation({ triggerSource: 'manual' })
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Email Notifications ---------------------------------------------------
@@ -6324,7 +6759,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('email:sendLicense', async (_, payload) => {
     try { requireMasterAdmin(); await requireCapability('command_central.licensing.manage'); return await sendLicenseEmail(payload) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Users -----------------------------------------------------------------
@@ -6345,7 +6780,7 @@ app.whenReady().then(async () => {
         await requireCapability('staff.permissions')
       }
       return { success: true, id: await db.createUser(data) }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:update', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -6362,7 +6797,7 @@ app.whenReady().then(async () => {
         await requireCapability('staff.permissions')
       }
       await db.updateUser(id, data); return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:resetPassword', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -6375,7 +6810,7 @@ app.whenReady().then(async () => {
       const targetUser = /** @type {ManagerStaffScopeUserView | null | undefined} */ (await assertResourceBelongsToCurrentLodge('User', id, db.getUserById))
       assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       await db.resetUserPassword(id, password); return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:delete', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -6387,14 +6822,14 @@ app.whenReady().then(async () => {
       const targetUser = /** @type {ManagerStaffScopeUserView | null | undefined} */ (await assertResourceBelongsToCurrentLodge('User', id, db.getUserById))
       assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       await db.deleteUser(id); return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:getAccessAudit', async () => {
     try {
       requireRole('manager', 'admin', 'super_admin')
       await requireCapability('staff.manage')
       return { success: true, entries: await db.getStaffAccessAudit(100) }
-    } catch (e) { return { success: false, error: e.message, entries: [] } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message, entries: [] } }
   })
   ipcMain.handle('users:changeOwnPin', async (_, data) => {
     // Self-service Staff PIN: any signed-in operator with Till access can
@@ -6403,7 +6838,7 @@ app.whenReady().then(async () => {
     // one operator change another operator's PIN. Admin override stays on
     // users:update (staff.manage).
     try { await requireCapability('pos.view'); return await db.changeOwnStaffPin(data || {}) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Staff Scheduling & Attendance --------------------------------------------
@@ -6581,7 +7016,7 @@ app.whenReady().then(async () => {
       await requireCapability('rooms.view')
       return await db.getAllRooms()
     } catch (error) {
-      console.warn('[Rooms] rooms:getAll using cache fallback:', error?.message || error)
+      console.warn('[Rooms] rooms:getAll using cache fallback:', (/** @type {ErrorMessageReadView | null | undefined} */ (error))?.message || error)
       try {
         return await db.getAllRooms()
       } catch {
@@ -6601,25 +7036,25 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('rooms.manage')
       return { success: true, id: await db.createRoom(data) }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('rooms:update', async (_, id, data) => {
     try {
       await requireCapability('rooms.manage')
       await assertResourceBelongsToCurrentLodge('Room', id, db.getRoomById)
       await db.updateRoom(id, data); return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('rooms:delete', async (_, id) => {
     try {
       await requireCapability('rooms.manage')
       await assertResourceBelongsToCurrentLodge('Room', id, db.getRoomById)
       await db.deleteRoom(id); return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('rooms:updateHousekeeping', async (_, id, status, notes) => {
     try { await requireCapability('housekeeping.manage'); await assertResourceBelongsToCurrentLodge('Room', id, db.getRoomById); await db.updateRoomHousekeeping(id, status, notes); return { success: true } }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Customers -------------------------------------------------------------
@@ -6756,7 +7191,7 @@ app.whenReady().then(async () => {
       await db.updateBooking(id, data)
       return { success: true }
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('bookings:updateStatus', async (_, id, status) => {
     try {
@@ -6766,7 +7201,7 @@ app.whenReady().then(async () => {
       maybeSendBookingLifecycleEmails(id, status).catch(() => {})
       return { success: true }
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   /**
    * Main result variants from database.js: offline queue success is exactly
@@ -6783,7 +7218,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Booking', id, db.getBookingById)
       return await db.updateBookingPayment(id, amount, method, 'payment', null, intentKey)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('bookings:updateGroupPayment', async (_, groupId, amount, method, intentKey) => {
@@ -6791,7 +7226,7 @@ app.whenReady().then(async () => {
       await requireCapability('payments.record')
       return await db.updateGroupInvoicePayment(groupId, amount, method, intentKey)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('bookings:getPayments', async (_, bookingId) => {
@@ -6800,7 +7235,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Booking', bookingId, db.getBookingById)
       return await db.getBookingPayments(bookingId)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   /**
@@ -6817,7 +7252,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Booking', bookingId, db.getBookingById)
       return await db.refundBooking(bookingId, payload)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('bookings:refundGroup', async (_, groupId, payload) => {
@@ -6825,7 +7260,7 @@ app.whenReady().then(async () => {
       await requireCapability('payments.refund')
       return await db.refundGroupInvoice(groupId, payload)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('bookings:createEvent', async (_, data) => {
@@ -6833,19 +7268,19 @@ app.whenReady().then(async () => {
       await requireCapability('bookings.manage')
       return { success: true, ...(await db.createEventBooking(data)) }
     } catch (e) {
-      if (e.code === 'DEPOSIT_FAILED') {
+      if ((/** @type {CaughtErrorExpectedData} */ (e)).code === 'DEPOSIT_FAILED') {
         // Room bookings were created - only deposit recording failed.
         // Return success so the operator knows the event exists; depositWarning signals action needed.
-        const eventDedupeId = e.booking_id || `${data.event_name || 'event'}:${data.check_in || ''}:${data.check_out || ''}`
+        const eventDedupeId = (/** @type {CaughtErrorExpectedData} */ (e)).booking_id || `${data.event_name || 'event'}:${data.check_in || ''}:${data.check_out || ''}`
         notifyLodge(data.lodge_id, 'ðŸ“‹ Event booking created', `${data.event_name || ''} - deposit not recorded`, {
           tag: `event-booking-deposit-warning:${eventDedupeId}`,
           dedupeKey: `event-booking-deposit-warning:${eventDedupeId}`,
           version: eventDedupeId,
           url: '/#/bookings'
         })
-        return { success: true, depositWarning: e.message }
+        return { success: true, depositWarning: (/** @type {CaughtErrorExpectedData} */ (e)).message }
       }
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('bookings:reschedule', async (_, bookingId, data) => {
@@ -6862,7 +7297,7 @@ app.whenReady().then(async () => {
         overrideTotal: data.override_total || data.overrideTotal || null
       })
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
 
@@ -6873,7 +7308,7 @@ app.whenReady().then(async () => {
       await requireCapability('prepayments.view')
       return await db.getCustomerCreditBalance(customerId)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:getHistory', async (_, customerId, limit, offset) => {
@@ -6882,7 +7317,7 @@ app.whenReady().then(async () => {
       await requireCapability('prepayments.view')
       return await db.getCustomerCreditHistory(customerId, limit, offset)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:getSummary', async (_, search, limit, offset) => {
@@ -6891,7 +7326,7 @@ app.whenReady().then(async () => {
       await requireCapability('prepayments.view')
       return await db.getCustomerCreditSummary(search, limit, offset)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:record', async (_, data) => {
@@ -6901,7 +7336,7 @@ app.whenReady().then(async () => {
       requireStablePrepaymentOperation(data, 'receipt')
       return await db.recordCustomerCredit(data)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:applyToBooking', async (_, data) => {
@@ -6912,7 +7347,7 @@ app.whenReady().then(async () => {
       if (data.bookingId) await assertResourceBelongsToCurrentLodge('Booking', data.bookingId, db.getBookingById)
       return await db.applyCustomerCreditToBooking(data)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:refund', async (_, data) => {
@@ -6923,7 +7358,7 @@ app.whenReady().then(async () => {
       requirePrepaymentReason(data, 'refund')
       return await db.refundCustomerCredit(data)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('customerCredit:reverse', async (_, data) => {
@@ -6934,7 +7369,7 @@ app.whenReady().then(async () => {
       requirePrepaymentReason(data, 'reversal')
       return await db.reverseCustomerCreditEntry(data)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
 
@@ -6943,7 +7378,7 @@ app.whenReady().then(async () => {
     try { await requireCapability('quotations.view'); return await db.getAllQuotations() }
     catch (e) {
       console.error('quotations:getAll failed:', e)
-      throw new Error(e?.message || 'Failed to load quotations')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load quotations')
     }
   })
   ipcMain.handle('quotations:create', async (_, data) => {
@@ -6951,7 +7386,7 @@ app.whenReady().then(async () => {
       await requireCapability('quotations.manage')
       const result = await db.createQuotation(data)
       return { success: true, ...result }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('quotations:update', async (_, id, data) => {
     try {
@@ -6964,7 +7399,7 @@ app.whenReady().then(async () => {
       }
       return { success: true }
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('quotations:convert', async (_, quotationId, depositAmount, paymentMethod) => {
     try {
@@ -6973,40 +7408,41 @@ app.whenReady().then(async () => {
       const result = await db.convertQuotationToBooking(quotationId, depositAmount, paymentMethod)
       return { success: true, ...result }
     } catch (e) {
-      if (e.code === 'DEPOSIT_FAILED') {
-        return { success: true, booking_id: e.booking_id, invoice_number: e.invoice_number, depositWarning: e.message }
+      if ((/** @type {CaughtErrorExpectedData} */ (e)).code === 'DEPOSIT_FAILED') {
+        return { success: true, booking_id: (/** @type {CaughtErrorExpectedData} */ (e)).booking_id, invoice_number: (/** @type {CaughtErrorExpectedData} */ (e)).invoice_number, depositWarning: (/** @type {CaughtErrorExpectedData} */ (e)).message }
       }
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
   // -- Reports ---------------------------------------------------------------
+  // These error views preserve the existing optional `.message` reads; they do not validate caught values.
   ipcMain.handle('reports:occupancy', async (_, start, end) => {
     try { await requireCapability('reports.view'); return await db.getOccupancyReport(start, end) }
-    catch (e) { throw new Error(e?.message || 'Failed to load occupancy report') }
+    catch (e) { throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load occupancy report')) }
   })
   ipcMain.handle('reports:revenue', async (_, start, end) => {
     try { await requireCapability('reports.view'); return await db.getRevenueReport(start, end) }
-    catch (e) { throw new Error(e?.message || 'Failed to load revenue report') }
+    catch (e) { throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load revenue report')) }
   })
   ipcMain.handle('reports:snapshot', async (_, today) => {
     try { await requireCapability('reports.view'); return await db.getReportsSnapshot(today) }
-    catch (e) { throw new Error(e?.message || 'Failed to load reports snapshot') }
+    catch (e) { throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load reports snapshot')) }
   })
   ipcMain.handle('reports:profitLoss', async (_, start, end) => {
     try { await requireCapability('reports.view'); return await db.getProfitLoss(start, end) }
-    catch (e) { throw new Error(e?.message || 'Failed to load profit and loss report') }
+    catch (e) { throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load profit and loss report')) }
   })
   ipcMain.handle('reports:maintenanceRows', async (_, start, end) => {
     try { await requireCapability('reports.view'); return await db.getMaintenanceRowsForPeriod(start, end) }
-    catch (e) { throw new Error(e?.message || 'Failed to load maintenance costs report') }
+    catch (e) { throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load maintenance costs report')) }
   })
   ipcMain.handle('reports:outletProfitLoss', async (_, start, end) => {
     try {
       await requireCapability('reports.view')
       await requireCapability('pos.combined_reports')
       return await db.getOutletProfitLoss(start, end)
-    } catch (e) { console.error('reports:outletProfitLoss failed:', e); throw new Error(e?.message || 'Failed to load outlet profit and loss report') }
+    } catch (e) { console.error('reports:outletProfitLoss failed:', e); throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load outlet profit and loss report')) }
   })
   ipcMain.handle('dashboard:bookingPaymentsToday', async () => {
     try { return await db.getTodayBookingPaymentMix() }
@@ -7026,7 +7462,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
       return await db.updateLodgeSupportTicket(id, updates || {})
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('requests:markRead', async (_, id, audience, messageId) => {
@@ -7035,7 +7471,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
       return await db.markLodgeSupportTicketRead(id, audience || 'front_desk', messageId || null)
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('requests:addMessage', async (_, id, payload) => {
@@ -7044,12 +7480,12 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Support request', id, db.getLodgeSupportTicketById)
       return await db.addLodgeSupportTicketMessage(id, payload || {})
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
   ipcMain.handle('reports:roomProfitability', async (_, start, end) => {
     try { await requireCapability('reports.view'); return await db.getRoomProfitabilityReport(start, end) }
-    catch (e) { console.error('reports:roomProfitability failed:', e); throw new Error(e?.message || 'Failed to load room profitability report') }
+    catch (e) { console.error('reports:roomProfitability failed:', e); throw new Error(/* Existing Error(message) signature view; Error keeps its prior runtime coercion and this does not validate e. */ /** @type {string} */ ((/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Failed to load room profitability report')) }
   })
   ipcMain.handle('dashboard:stats', async () => {
     try { await requireCapability('dashboard.view'); return await db.getDashboardStats() }
@@ -7081,7 +7517,7 @@ app.whenReady().then(async () => {
       fs.writeFileSync(result.filePath, pdfBuffer)
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('reports:printCurrent', async (event) => {
@@ -7094,7 +7530,7 @@ app.whenReady().then(async () => {
         margins: { marginType: 'default' }
       }, { minTextLength: 20 })
     } catch (e) {
-      return { success: false, error: e?.message || 'Print failed.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Print failed.' }
     }
   })
 
@@ -7127,6 +7563,10 @@ app.whenReady().then(async () => {
   })
 
   // -- Excel Export ----------------------------------------------------------
+  // Expected row views for the existing report payload; incoming IPC data is not runtime-validated.
+  /** @typedef {{check_in: string|number, check_out: string|number, nights: number, room_count: number, daily_rate: number|string, total: number}} ReportExcelEventExpectedView */
+  /** @typedef {DetailedExportOccupancyExpectedRow} ReportExcelOccupancyExpectedView */
+  /** @typedef {{date?: unknown, category?: unknown, description?: unknown, amount?: unknown}} ReportExcelExpenseExpectedView */
   ipcMain.handle('reports:saveExcel', async (event, payload = {}) => {
     await requireCapability('reports.view')
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -7176,7 +7616,7 @@ app.whenReady().then(async () => {
       if ((revenue?.event_count || 0) > 0) {
         revRows.push([], ['EXCLUSIVE EVENTS'])
         revRows.push(['Event', 'Dates', 'Nights', 'Rooms', `Daily Rate (${sym})`, `Total (${sym})`])
-        ;(revenue.event_bookings || []).forEach((evt, i) => {
+        ;(revenue.event_bookings || []).forEach((/** @type {ReportExcelEventExpectedView} */ evt, /** @type {number} */ i) => {
           revRows.push([
             `Event ${i + 1}`,
             `${evt.check_in} -> ${evt.check_out}`,
@@ -7219,7 +7659,7 @@ app.whenReady().then(async () => {
         [`${resolvedLodge} - Room Occupancy Report`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['Room', 'Type', `Rate/Night (${sym})`, 'Nights Occupied', 'Total Period Days', 'Occupancy %', `Revenue (${sym})`, 'Note'],
-        ...(occupancy || []).map((r) => [
+        ...(occupancy || []).map((/** @type {ReportExcelOccupancyExpectedView} */ r) => [
           `Room ${r.room_number}`,
           r.room_type,
           Number(r.rate_per_night).toFixed(2),
@@ -7238,9 +7678,9 @@ app.whenReady().then(async () => {
           [`${resolvedLodge} - Expenses Report`],
           ...buildWorkbookMetaRows({ ...outletMeta, includeOutlet: true }),
           ['Date', 'Category', 'Description', `Amount (${sym})`],
-          ...expenses.map((e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2)]),
+          ...expenses.map((/** @type {ReportExcelExpenseExpectedView} */ e) => [e.date || '', e.category || '', e.description || '', Number(e.amount || 0).toFixed(2)]),
           [],
-          ['TOTAL', '', '', expenses.reduce((s, e) => s + Number(e.amount || 0), 0).toFixed(2)]
+          ['TOTAL', '', '', expenses.reduce((/** @type {number} */ s, /** @type {ReportExcelExpenseExpectedView} */ e) => s + Number(e.amount || 0), 0).toFixed(2)]
         ]
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(expRows), 'Expenses')
       }
@@ -7355,10 +7795,10 @@ app.whenReady().then(async () => {
       }
       return { success: true, filePath, size: fs.statSync(filePath).size }
     } catch (e) {
-      if (e.code === 'EBUSY' || e.code === 'EACCES') {
-        return { success: false, error: `Cannot save file: ${e.code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
+      if ((/** @type {CaughtErrorExpectedData} */ (e)).code === 'EBUSY' || (/** @type {CaughtErrorExpectedData} */ (e)).code === 'EACCES') {
+        return { success: false, error: `Cannot save file: ${(/** @type {CaughtErrorExpectedData} */ (e)).code === 'EBUSY' ? 'the destination file is open or locked' : 'permission denied'}. Please close the file and try again.` }
       }
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -7856,7 +8296,7 @@ app.whenReady().then(async () => {
             addSheetWithFormatting('Customer Credit', [...db.buildExportMetaRows(sharedMeta), ['Customer', `Received (${sym})`, `Allocated (${sym})`, `Refunded (${sym})`, `Balance (${sym})`, 'Last Activity'], ['No customer credit records for this period']], { filter: false })
           }
         } catch (error) {
-          supplementalFailures.push({ section: 'prepayments', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'prepayments', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       }
 
@@ -7938,7 +8378,7 @@ app.whenReady().then(async () => {
           ])
           extraData = { revenue: revenueData || null, occupancy: occupancyData || [], profitability: profitData || [] }
         } catch (error) {
-          supplementalFailures.push({ section: 'bookings', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'bookings', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       } else if (reportType === 'expenses') {
         try {
@@ -7950,7 +8390,7 @@ app.whenReady().then(async () => {
           requireCompleteReportRead(maintenanceRows, 'Maintenance cost source', { rows: true, amountKeys: ['total_cost'] })
           extraData = { expenses: expenses || [], maintenanceRows: maintenanceRows || [] }
         } catch (error) {
-          supplementalFailures.push({ section: 'expenses', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'expenses', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       } else if (reportType === 'pos') {
         try {
@@ -7961,7 +8401,7 @@ app.whenReady().then(async () => {
           if (posOrders?._complete !== true || posOrders?._source !== 'server' || posRevenue?.complete !== true || posRevenue?.financial_truth !== 'server_confirmed') throw new Error('POS order source is not server-certified and complete.')
           extraData = { posOrders: posOrders || [], posRevenue: posRevenue || null }
         } catch (error) {
-          supplementalFailures.push({ section: 'pos', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'pos', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       } else if (reportType === 'costs') {
         try {
@@ -7969,27 +8409,27 @@ app.whenReady().then(async () => {
             db.getAllInventoryPurchases(),
             db.getAllSupplyPurchases()
           ])
-          const invFiltered = (invPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
-          const supFiltered = (supPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
+          const invFiltered = /** @type {DetailedReportPurchaseDateReadView[]} */ (invPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
+          const supFiltered = /** @type {DetailedReportPurchaseDateReadView[]} */ (supPurchases || []).filter((p) => p.date >= startDate && p.date <= endDate)
           requireCompleteReportRead(invPurchases, 'Inventory purchase source', { rows: true, amountKeys: ['total_cost'] })
           requireCompleteReportRead(supPurchases, 'Supply purchase source', { rows: true, amountKeys: ['total_cost'] })
           extraData = { inventoryPurchases: invFiltered, supplyPurchases: supFiltered }
         } catch (error) {
-          supplementalFailures.push({ section: 'costs', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'costs', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       } else if (reportType === 'pl') {
         try {
           const profitLoss = await db.getProfitLoss(startDate, endDate)
           extraData = { profitLoss: profitLoss || null }
         } catch (error) {
-          supplementalFailures.push({ section: 'pl', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'pl', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       } else if (reportType === 'prepayments') {
         try {
           const credits = await db.getCustomerCreditSummary(null, 500, 0)
           extraData = { credits: credits || [] }
         } catch (error) {
-          supplementalFailures.push({ section: 'prepayments', message: error?.message || String(error) })
+          supplementalFailures.push({ section: 'prepayments', message: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || String(error) })
         }
       }
 
@@ -8038,12 +8478,15 @@ app.whenReady().then(async () => {
   })
 
   // -- Full Data Export -------------------------------------------------------
-  ipcMain.handle('data:exportAll', async (event, options = {}) => {
+  ipcMain.handle('data:exportAll', /** @param {import('electron').IpcMainInvokeEvent} event @param {FullExportOptionsExpectedData} [options] */ async (event, options = {}) => {
     await requireCapability('data.export')
     const win = BrowserWindow.fromWebContents(event.sender)
     try {
       const today = new Date().toISOString().split('T')[0]
       const normalized = normalizeExportOptions(options)
+      // Settings may come from the existing cache fallback; this view only
+      // describes fields read by this handler and does not validate them.
+      /** @type {{property_type?: unknown, business_type?: unknown, hospitality_mode?: unknown, operating_profile?: unknown}} */
       const activeSettings = await db.getSettings().catch(() => ({}))
       const restaurantMode = ['restaurant', 'bar', 'bar_only'].includes(String(activeSettings?.property_type || activeSettings?.business_type || '').toLowerCase())
         || String(activeSettings?.hospitality_mode || activeSettings?.operating_profile || '').toLowerCase() === 'bar_only'
@@ -8064,7 +8507,7 @@ app.whenReady().then(async () => {
       const sender = event.sender
       const result = await exportAllDataWorkbookToPath(filePath, {
         ...normalized,
-        onProgress: (progress) => {
+        onProgress: /** @param {FullExportProgress} progress */ (progress) => {
           try { sender.send('data:exportProgress', progress) } catch {}
         }
       })
@@ -8075,12 +8518,12 @@ app.whenReady().then(async () => {
             details: { preset: normalized.preset, start_date: normalized.startDate, end_date: normalized.endDate }
           })
         } catch (evidenceError) {
-          console.warn('[SETUP READINESS] Export succeeded but setup evidence could not be recorded:', evidenceError?.message || evidenceError)
+          console.warn('[SETUP READINESS] Export succeeded but setup evidence could not be recorded:', (/** @type {ErrorMessageReadView | null | undefined} */ (evidenceError))?.message || evidenceError)
         }
       }
       return result
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -8118,7 +8561,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('activity:clear', async () => {
     try { await requireCapability('sync.manage'); db.clearActivityLog(); return { success: true } }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Backups ---------------------------------------------------------------
@@ -8133,32 +8576,32 @@ app.whenReady().then(async () => {
   // enforcement so direct IPC callers cannot bypass the contract.
   ipcMain.handle('prepayments:getPortfolio', async (_, asOf) => {
     try { await requireCapability('prepayments.reconcile'); return await db.getPrepaymentPortfolio(asOf || null) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:getAging', async (_, asOf) => {
     try { await requireCapability('prepayments.age'); return await db.getPrepaymentAging(asOf || null) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:getReconciliation', async (_, startAt, endAt) => {
     try { await requireCapability('prepayments.reconcile'); return await db.getPrepaymentReconciliation(startAt, endAt) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:getMatchingSuggestions', async (_, limit) => {
     try { await requireCapability('prepayments.match'); return await db.getPrepaymentMatchingSuggestions(limit) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:getConfig', async () => {
     try { await requireCapability('prepayments.age'); return await db.getPrepaymentConfig() }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:setConfig', async (_, payload) => {
     try { await requireCapability('prepayments.configure'); requireStablePrepaymentOperation(payload, 'configuration'); return await db.setPrepaymentConfig(payload || {}) }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('prepayments:export', async (event, startAt, endAt) => {
     try {
       await requireCapability('prepayments.export')
-      const serverResult = await db.exportPrepayments(startAt || null, endAt || null)
+      const serverResult = /** @type {PrepaymentExportResponseExpectedData | null | undefined} */ (await db.exportPrepayments(startAt || null, endAt || null))
       if (serverResult?.success === false) return serverResult
       const entries = Array.isArray(serverResult?.data?.entries) ? serverResult.data.entries : []
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -8193,7 +8636,7 @@ app.whenReady().then(async () => {
           fileName: basename(filePath),
           filePath,
           rowCount: entries.length,
-          error: `Export was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim()
+          error: `Export was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${(/** @type {ErrorMessageReadView | null | undefined} */ (auditError))?.message || ''}`.trim()
         }
       }
       return {
@@ -8208,7 +8651,7 @@ app.whenReady().then(async () => {
         artifactSha256
       }
     } catch (e) {
-      return { success: false, canceled: false, error: e?.message || 'Guest Deposits export could not be saved.' }
+      return { success: false, canceled: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Guest Deposits export could not be saved.' }
     }
   })
   // Recovery and verification results are metadata-only at the renderer
@@ -8219,6 +8662,7 @@ app.whenReady().then(async () => {
     'payload', 'tables', 'sanitizedTables', 'remappedTables', 'decryptedTables',
     'decryptedRows', 'rawRows', 'rows', 'passphrase', 'passphrase_hash'
   ])
+  /** @param {unknown} value @returns {unknown} */
   const stripRecoveryIpcData = (value) => {
     if (Array.isArray(value)) return value.map(stripRecoveryIpcData)
     if (!value || typeof value !== 'object') return value
@@ -8265,7 +8709,7 @@ app.whenReady().then(async () => {
         reminder = db.getStarterBackupReminder(historyPath, { lodgeId: backup.lodgeId })
       } catch (historyError) {
         historyRecorded = false
-        console.warn('[Starter recovery export] local history could not be recorded:', historyError?.message || 'unknown error')
+        console.warn('[Starter recovery export] local history could not be recorded:', (/** @type {ErrorMessageReadView|null|undefined} */ (historyError))?.message || 'unknown error')
       }
       try {
         await db.recordStarterArtifactAudit({
@@ -8280,11 +8724,11 @@ app.whenReady().then(async () => {
           }
         })
       } catch (auditError) {
-        return stripRecoveryIpcData({ ...backup, success: false, fileWritten: true, auditRecorded: false, historyRecorded, historyEntry, reminder, error: `Backup was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim() })
+        return stripRecoveryIpcData({ ...backup, success: false, fileWritten: true, auditRecorded: false, historyRecorded, historyEntry, reminder, error: `Backup was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${(/** @type {ErrorMessageReadView|null|undefined} */ (auditError))?.message || ''}`.trim() })
       }
       return stripRecoveryIpcData({ ...backup, auditRecorded: true, historyRecorded, historyEntry, reminder })
     } catch (e) {
-      return { success: false, error: e?.message || 'Starter backup could not be created. No success is claimed.' }
+      return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Starter backup could not be created. No success is claimed.' }
     }
   })
   ipcMain.handle('backup:starterHistory', async () => {
@@ -8294,7 +8738,7 @@ app.whenReady().then(async () => {
       const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       return { success: true, ...db.getStarterBackupReminder(historyPath, { lodgeId }) }
-    } catch (e) { return { success: false, error: e?.message || 'Core data recovery export history is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Core data recovery export history is unavailable.' } }
   })
   ipcMain.handle('backup:starterVerify', async (_, options = {}) => {
     try {
@@ -8305,7 +8749,7 @@ app.whenReady().then(async () => {
       const verification = db.verifyStarterBackupAtPath(destination, { passphrase: typeof options?.passphrase === 'string' ? options.passphrase : '', expectedLodgeId: lodgeId })
       if (!verification?.success) return stripRecoveryIpcData(verification)
       return stripRecoveryIpcData(verification)
-    } catch (e) { return { success: false, error: e?.message || 'Core data recovery export verification is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Core data recovery export verification is unavailable.' } }
   })
   ipcMain.handle('backup:starterOpenFolder', async (_, options = {}) => {
     try {
@@ -8323,7 +8767,7 @@ app.whenReady().then(async () => {
       const openError = await shell.openPath(dirname(destination))
       if (openError) return { success: false, error: `Could not open the recovery export folder. ${openError}`.trim() }
       return { success: true }
-    } catch (e) { return { success: false, error: e?.message || 'Could not open the recovery export folder.' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Could not open the recovery export folder.' } }
   })
   ipcMain.handle('backup:starterCopy', async (event, options = {}) => {
     try {
@@ -8332,7 +8776,14 @@ app.whenReady().then(async () => {
       const source = String(options?.destination || '').trim()
       const passphrase = typeof options?.passphrase === 'string' ? options.passphrase : ''
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      const verification = db.verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: lodgeId })
+      /**
+       * `verifyStarterBackupAtPath` returns this failure shape for invalid paths or
+       * failed package validation, and its success DTO only after package
+       * validation. This expected result view does not validate an arbitrary IPC
+       * or JSON value.
+       * @typedef {{success: false, error: string} | {success: true, packageSha256: string, encrypted: boolean, complete: boolean, counts: Record<string, number>}} StarterBackupCopyVerificationExpectedData
+       */
+      const verification = /** @type {StarterBackupCopyVerificationExpectedData} */ (db.verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: lodgeId }))
       if (!verification.success) return stripRecoveryIpcData(verification)
       const win = BrowserWindow.fromWebContents(event.sender)
       const targetResult = await dialog.showSaveDialog(win, { title: 'Save another copy of this recovery export', defaultPath: `tsa-bonno-core-data-recovery-copy-${formatFilenameStamp()}.tbbackup`, filters: [{ name: 'Tsa Bonno recovery package', extensions: ['tbbackup'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] })
@@ -8345,7 +8796,7 @@ app.whenReady().then(async () => {
       const historyPath = join(app.getPath('userData'), 'starter-backup-history.json')
       db.recordStarterBackupHistory(historyPath, { ...copied, lodgeId, at: new Date().toISOString() })
       return copied
-    } catch (e) { return { success: false, error: e?.message || 'The recovery export copy could not be saved.' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'The recovery export copy could not be saved.' } }
   })
   ipcMain.handle('backup:starterRestoreRehearsal', async (_, options = {}) => {
     try {
@@ -8358,7 +8809,7 @@ app.whenReady().then(async () => {
       const rehearsalRoot = join(app.getPath('userData'), 'starter-restore-rehearsals')
       const rehearsal = await db.createStarterRestoreRehearsal(destination, rehearsalRoot, { passphrase: typeof options?.passphrase === 'string' ? options.passphrase : '', expectedLodgeId: lodgeId })
       return stripRecoveryIpcData(rehearsal)
-    } catch (e) { return { success: false, error: e?.message || 'Disposable restore rehearsal is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView|null|undefined} */ (e))?.message || 'Disposable restore rehearsal is unavailable.' } }
   })
   // --- Recovery workspace: Begin → Stage → Seal → Preview → Approve → Execute → Verify → Discard
   // Support-only, disposable-only. Decryption and validation run in the
@@ -8374,7 +8825,7 @@ app.whenReady().then(async () => {
       const lodgeId = assertCommandCentralTarget(String(payload?.lodge_id || payload?.lodgeId || ''))
       const op = db.beginStarterRecoveryOperation({ operation_id: payload?.operation_id || payload?.operationId, lodge_id: lodgeId, lodgeId, reason: payload?.reason, ticket_ref: payload?.ticket_ref || payload?.ticketRef })
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be started. Command Central support capability is required.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery operation could not be started. Command Central support capability is required.' } }
   })
   ipcMain.handle('backup:recoveryChoosePackage', async (event) => {
     try {
@@ -8388,7 +8839,7 @@ app.whenReady().then(async () => {
       })
       if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
       return { success: true, path: result.filePaths[0], fileName: basename(result.filePaths[0]) }
-    } catch (e) { return { success: false, error: e?.message || 'The recovery package could not be selected.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'The recovery package could not be selected.' } }
   })
   ipcMain.handle('backup:recoveryStage', async (_, payload = {}) => {
     try {
@@ -8396,7 +8847,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = db.stageStarterRecoveryPackage(String(payload?.operation_id || payload?.operationId || ''), String(payload?.source_path || payload?.sourcePath || payload?.destination || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery package could not be staged.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery package could not be staged.' } }
   })
   ipcMain.handle('backup:recoverySeal', async (_, payload = {}) => {
     try {
@@ -8404,7 +8855,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = db.sealAndValidateStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery package could not be sealed.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery package could not be sealed.' } }
   })
   ipcMain.handle('backup:recoveryPreview', async (_, operationId) => {
     try {
@@ -8416,7 +8867,7 @@ app.whenReady().then(async () => {
       const preview = db.previewStarterRecovery(String(operationId || ''))
       // Strip any PII tables before crossing IPC — metadata only.
       return { success: true, preview: stripRecoveryIpcData(preview) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery preview is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery preview is unavailable.' } }
   })
   ipcMain.handle('backup:recoveryApprove', async (_, payload = {}) => {
     try {
@@ -8424,7 +8875,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = db.approveStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { reason: payload?.reason, ticket_ref: payload?.ticket_ref || payload?.ticketRef })
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be approved.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery operation could not be approved.' } }
   })
   ipcMain.handle('backup:recoveryExecute', async (_, payload = {}) => {
     try {
@@ -8432,7 +8883,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = await db.executeStarterRecovery(String(payload?.operation_id || payload?.operationId || ''), { passphrase: typeof payload?.passphrase === 'string' ? payload.passphrase : '' })
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery execution failed.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery execution failed.' } }
   })
   ipcMain.handle('backup:recoveryDiscard', async (_, operationId) => {
     try {
@@ -8440,7 +8891,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = db.discardStarterRecoveryOperation(String(operationId || ''))
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery operation could not be discarded.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery operation could not be discarded.' } }
   })
   ipcMain.handle('backup:recoveryGet', async (_, operationId) => {
     try {
@@ -8448,7 +8899,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const op = db.getStarterRecoveryOperation(String(operationId || ''))
       return { success: true, operation: stripRecoveryIpcData(op) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery operation not found.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery operation not found.' } }
   })
   ipcMain.handle('backup:recoveryList', async () => {
     try {
@@ -8456,7 +8907,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.recovery.manage')
       const ops = db.listStarterRecoveryOperations().map((op) => stripRecoveryIpcData(op))
       return { success: true, operations: ops }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery operations could not be listed.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery operations could not be listed.' } }
   })
   ipcMain.handle('backup:recoveryVerify', async (_, operationId) => {
     try {
@@ -8469,7 +8920,7 @@ app.whenReady().then(async () => {
       const result = await db.verifyStarterRecoveryOperation(String(operationId || ''))
       // Ensure report tables are not leaked; report already contains only counts/hashes.
       return { success: true, ...stripRecoveryIpcData(result) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery verification failed.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery verification failed.' } }
   })
   // --- Automation: weekly encrypted Starter backup (customer-owned, opt-in)
   ipcMain.handle('backup:automationStatus', async () => {
@@ -8478,7 +8929,7 @@ app.whenReady().then(async () => {
       await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       return db.getStarterBackupAutomationStatus(lodgeId)
-    } catch (e) { return { success: false, error: e?.message || 'Automation status is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation status is unavailable.' } }
   })
   ipcMain.handle('backup:automationConfigure', async (_, payload = {}) => {
     try {
@@ -8487,28 +8938,28 @@ app.whenReady().then(async () => {
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       const result = db.configureStarterBackupAutomation({ ...stripRendererLodgeScope(payload), lodge_id: lodgeId })
       return result
-    } catch (e) { return { success: false, error: e?.message || 'Automation could not be configured.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation could not be configured.' } }
   })
   ipcMain.handle('backup:automationDisable', async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       return db.disableStarterBackupAutomation(lodgeId)
-    } catch (e) { return { success: false, error: e?.message || 'Automation could not be disabled.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation could not be disabled.' } }
   })
   ipcMain.handle('backup:automationSnooze', async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       return db.snoozeStarterBackupAutomation(lodgeId)
-    } catch (e) { return { success: false, error: e?.message || 'Automation snooze failed.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation snooze failed.' } }
   })
   ipcMain.handle('backup:automationClearSnooze', async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       return db.clearStarterBackupAutomationSnooze(lodgeId)
-    } catch (e) { return { success: false, error: e?.message || 'Automation snooze could not be cleared.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation snooze could not be cleared.' } }
   })
   ipcMain.handle('backup:automationRunNow', async (_, payload = {}) => {
     try {
@@ -8517,7 +8968,7 @@ app.whenReady().then(async () => {
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
       const result = await db.runStarterBackupAutomationOnce({ ...stripRendererLodgeScope(payload), lodgeId })
       return result
-    } catch (e) { return { success: false, error: e?.message || 'Scheduled backup could not be run.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Scheduled backup could not be run.' } }
   })
   // --- Bar trading recovery backups (queues, journals, tabs, cash-ups, drafts) ---
   // Renderer-owned durable draft state seam: POS windows answer a collect
@@ -8530,6 +8981,7 @@ app.whenReady().then(async () => {
     return new Promise((resolveRequest) => {
       const requestId = `trading-state-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
       let settled = false
+      /** @param {unknown} value */
       const finish = (value) => {
         if (settled) return
         settled = true
@@ -8554,7 +9006,12 @@ app.whenReady().then(async () => {
     entry.resolve(value)
     return { success: true }
   })
+  /** Thrown values are read as before; this expected view does not validate or normalize them. */
+  /** @typedef {{message?: unknown}} TradingBackupCaughtValueExpectedData */
+  /** Successful results are produced after validateBarTradingPackage verifies the package fields and hashes. */
+  /** @typedef {{success: true, fileName: string, bytes: number, destination: string, packageSha256: string, snapshot: Record<string, unknown> & {lodge_id?: unknown, captured_at?: unknown, complete?: unknown, warnings?: unknown}, complete: boolean, warnings: unknown[]}} TradingPackageVerificationSuccessExpectedData */
   const resolveTradingLodgeId = () => db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
+  /** @param {unknown} filePath */
   function resolveConfiguredTradingPackagePath(filePath) {
     const targetDir = readBarTradingBackupAutomationTargetForHealth()
     if (!targetDir) return { error: 'No Bar trading recovery target is configured yet. Set up the scheduled recovery backup first.' }
@@ -8569,31 +9026,31 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.manage')
       return getBarTradingBackupAutomationStatus(resolveTradingLodgeId())
-    } catch (e) { return { success: false, error: e?.message || 'Recovery backup status is unavailable.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery backup status is unavailable.' } }
   })
   ipcMain.handle('pos:tradingBackup:configure', async (_, payload = {}) => {
     try {
       await requireCapability('pos.manage')
       return configureBarTradingBackupAutomation({ ...stripRendererLodgeScope(payload), lodge_id: resolveTradingLodgeId() })
-    } catch (e) { return { success: false, error: e?.message || 'Recovery backup automation could not be configured.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery backup automation could not be configured.' } }
   })
   ipcMain.handle('pos:tradingBackup:disable', async () => {
     try {
       await requireCapability('pos.manage')
       return disableBarTradingBackupAutomation(resolveTradingLodgeId())
-    } catch (e) { return { success: false, error: e?.message || 'Recovery backup automation could not be disabled.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery backup automation could not be disabled.' } }
   })
   ipcMain.handle('pos:tradingBackup:snooze', async () => {
     try {
       await requireCapability('pos.manage')
       return snoozeBarTradingBackupAutomation(resolveTradingLodgeId())
-    } catch (e) { return { success: false, error: e?.message || 'Recovery backup snooze failed.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery backup snooze failed.' } }
   })
   ipcMain.handle('pos:tradingBackup:clearSnooze', async () => {
     try {
       await requireCapability('pos.manage')
       return clearBarTradingBackupAutomationSnooze(resolveTradingLodgeId())
-    } catch (e) { return { success: false, error: e?.message || 'Recovery backup snooze could not be cleared.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery backup snooze could not be cleared.' } }
   })
   ipcMain.handle('pos:tradingBackup:runNow', async () => {
     try {
@@ -8604,7 +9061,7 @@ app.whenReady().then(async () => {
         appVersion: app.getVersion(),
         dependencies: { collectRendererState: () => collectRendererTradingState(4000) }
       })
-    } catch (e) { return { success: false, error: e?.message || 'The recovery backup could not be run.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'The recovery backup could not be run.' } }
   })
   ipcMain.handle('pos:tradingBackup:listPackages', async () => {
     try {
@@ -8612,7 +9069,7 @@ app.whenReady().then(async () => {
       const targetDir = readBarTradingBackupAutomationTargetForHealth()
       if (!targetDir) return { success: false, error: 'No Bar trading recovery target is configured yet.' }
       return { success: true, target_dir: targetDir, packages: listBarTradingPackages(targetDir, { lodgeId: resolveTradingLodgeId() }) }
-    } catch (e) { return { success: false, error: e?.message || 'Recovery packages could not be listed.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'Recovery packages could not be listed.' } }
   })
   ipcMain.handle('pos:tradingBackup:verifyPackage', async (_, payload = {}) => {
     try {
@@ -8621,18 +9078,21 @@ app.whenReady().then(async () => {
       if (allowed.error) return { success: false, error: allowed.error }
       const verification = verifyBarTradingPackageAtPath(allowed.path, { passphrase: String(payload.passphrase || ''), expectedLodgeId: resolveTradingLodgeId() })
       if (!verification.success) return { success: false, error: verification.error || 'The recovery package could not be verified.' }
+      // The local verifier's success branch follows package validation; this
+      // view narrows its emitted result and does not validate extra IPC data.
+      const verified = /** @type {TradingPackageVerificationSuccessExpectedData} */ (verification)
       return {
         success: true,
-        fileName: verification.fileName,
-        bytes: verification.bytes,
-        destination: verification.destination,
-        package_sha256: verification.packageSha256,
-        lodge_id: verification.snapshot?.lodge_id || null,
-        captured_at: verification.snapshot?.captured_at || null,
-        complete: verification.snapshot?.complete === true,
-        warnings: verification.snapshot?.warnings || []
+        fileName: verified.fileName,
+        bytes: verified.bytes,
+        destination: verified.destination,
+        package_sha256: verified.packageSha256,
+        lodge_id: verified.snapshot?.lodge_id || null,
+        captured_at: verified.snapshot?.captured_at || null,
+        complete: verified.snapshot?.complete === true,
+        warnings: verified.snapshot?.warnings || []
       }
-    } catch (e) { return { success: false, error: e?.message || 'The recovery package could not be verified.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'The recovery package could not be verified.' } }
   })
   ipcMain.handle('pos:tradingBackup:stageRestore', async (_, payload = {}) => {
     try {
@@ -8648,7 +9108,7 @@ app.whenReady().then(async () => {
         expectedLodgeId: lodgeId,
         replaceExisting: payload.replace_existing === true || payload.replaceExisting === true
       })
-    } catch (e) { return { success: false, error: e?.message || 'The restore could not be staged.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'The restore could not be staged.' } }
   })
   ipcMain.handle('pos:tradingBackup:activateRestore', async (_, payload = {}) => {
     try {
@@ -8666,7 +9126,7 @@ app.whenReady().then(async () => {
         targetRoot: getBarTradingRestoreStagingRoot(lodgeId),
         liveCacheDir: state.cacheDir
       })
-    } catch (e) { return { success: false, error: e?.message || 'The staged restore could not be activated.' } }
+    } catch (e) { return { success: false, error: (/** @type {TradingBackupCaughtValueExpectedData|null|undefined} */ (e))?.message || 'The staged restore could not be activated.' } }
   })
   ipcMain.handle('backup:chooseTargetFolder', async (event) => {
     try {
@@ -8678,43 +9138,43 @@ app.whenReady().then(async () => {
       })
       if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
       return { success: true, path: result.filePaths[0] }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:savePolicy', async (_, updates) => {
     try {
       await requireCapability('backup.manage')
       return { success: true, policy: db.saveManagedBackupPolicy(updates || {}) }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:runManagedNow', async () => {
     try {
       await requireCapability('backup.manage')
       return await runManagedBackupPolicy(true)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:createManual', async () => {
     try {
       await requireCapability('backup.manage')
       return await db.createManualBackup()
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:verify', async (_, name) => {
     try {
       await requireCapability('backup.manage')
       return db.verifyLocalBackup(name)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:previewRestore', async (_, name) => {
     try {
       await requireCapability('backup.manage')
       return db.previewLocalBackupRestore(name)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:createRestoreRehearsal', async (_, name) => {
     try {
       await requireCapability('backup.manage')
       return db.createRestoreRehearsalPackage(name)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('backup:openFolder', async () => {
     const info = db.getBackupInfo()
@@ -8749,14 +9209,14 @@ app.whenReady().then(async () => {
       requireRole('receptionist', 'manager', 'admin', 'super_admin')
       await assertResourceBelongsToCurrentLodge('Booking', bookingId, db.getBookingById)
       return await db.addBookingCharge(bookingId, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('charges:delete', async (_, id, reason) => {
     try {
       requireRole('manager', 'admin', 'super_admin')
       await assertResourceBelongsToCurrentLodge('Charge', id, db.getBookingChargeById)
       return await db.deleteBookingCharge(id, reason)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
 
   // -- Rate Overrides (Seasonal Pricing) ------------------------------------
@@ -8768,21 +9228,21 @@ app.whenReady().then(async () => {
     try {
       try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can create rate overrides. Please ask a manager or admin to do this.') }
       return await db.createRateOverride(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('rateOverrides:update', async (_, id, data) => {
     try {
       try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can edit rate overrides. Please ask a manager or admin to do this.') }
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.updateRateOverride(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('rateOverrides:delete', async (_, id) => {
     try {
       try { requireRole('manager', 'admin', 'super_admin') } catch { throw new Error('Only managers and admins can delete rate overrides. Please ask a manager or admin to do this.') }
       await assertResourceBelongsToCurrentLodge('Rate override', id, db.getRateOverrideById)
       return await db.deleteRateOverride(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {IpcCaughtErrorExpectedView} */ (e).message } }
   })
   ipcMain.handle('rateOverrides:getApplicable', async (_, roomId, checkIn, checkOut) =>
     db.getApplicableRate(roomId, checkIn, checkOut)
@@ -8793,28 +9253,28 @@ app.whenReady().then(async () => {
     try { await requireCapability('expenses.view'); return await db.getExpenses(start, end, outletId) }
     catch (e) {
       console.error('expenses:getAll failed:', e)
-      throw new Error(e?.message || 'Failed to load expenses')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load expenses')
     }
   })
   ipcMain.handle('expenses:create', async (_, data) => {
     try {
       await requireCapability('expenses.manage')
       return await db.createExpense(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:update', async (_, id, data) => {
     try {
       await requireCapability('expenses.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.updateExpense(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:delete', async (_, id, operationId) => {
     try {
       await requireCapability('expenses.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.deleteExpense(id, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('backup:chooseStarterAutomationFolder', async (event) => {
     try {
@@ -8827,13 +9287,13 @@ app.whenReady().then(async () => {
       })
       if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
       return { success: true, path: result.filePaths[0] }
-    } catch (e) { return { success: false, error: e?.message || 'Backup folder could not be selected.' } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Backup folder could not be selected.' } }
   })
   ipcMain.handle('reports:basicSummary', async (_, rangeDays = 1) => {
     try {
       await requireCapability('reports.basic_view')
       return await db.getStarterBasicReport(rangeDays)
-    } catch (e) { throw new Error(e?.message || 'Failed to load Starter basic report') }
+    } catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load Starter basic report') }
   })
   ipcMain.handle('reports:basicSavePDF', async (event, payload = {}) => {
     try {
@@ -8871,14 +9331,14 @@ app.whenReady().then(async () => {
           metadata: { range_days: rangeDays, bytes: size, file_name: basename(result.filePath) }
         })
       } catch (auditError) {
-        return { success: false, fileName: basename(result.filePath), size, fileWritten: true, auditRecorded: false, error: `Report PDF was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${auditError?.message || ''}`.trim() }
+        return { success: false, fileName: basename(result.filePath), size, fileWritten: true, auditRecorded: false, error: `Report PDF was written but authoritative audit recording failed. Keep the file and reconnect before treating it as audit-confirmed. ${(/** @type {ErrorMessageReadView | null | undefined} */ (auditError))?.message || ''}`.trim() }
       }
       return { success: true, fileName: basename(result.filePath), size, sha256: fileHash, auditRecorded: true }
     } catch (e) {
-      if (e?.code === 'EBUSY' || e?.code === 'EACCES') {
+      if ((/** @type {ErrorMessageReadView | null | undefined} */ (e))?.code === 'EBUSY' || (/** @type {ErrorMessageReadView | null | undefined} */ (e))?.code === 'EACCES') {
         return { success: false, error: 'The selected PDF destination is unavailable. Close the file or choose another destination.' }
       }
-      return { success: false, error: e?.message || 'Starter Basic Report PDF could not be saved.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Starter Basic Report PDF could not be saved.' }
     }
   })
   ipcMain.handle('reports:basicPrint', async (event, payload = {}) => {
@@ -8904,12 +9364,12 @@ app.whenReady().then(async () => {
             metadata: { surface: 'desktop-basic-report', operation_id: operationId }
           })
         } catch (auditError) {
-          return { success: false, printed: true, auditRecorded: false, error: `Report was sent to the printer but authoritative audit recording failed. ${auditError?.message || ''}`.trim() }
+          return { success: false, printed: true, auditRecorded: false, error: `Report was sent to the printer but authoritative audit recording failed. ${(/** @type {ErrorMessageReadView | null | undefined} */ (auditError))?.message || ''}`.trim() }
         }
       }
       return { ...printResult, auditRecorded: true }
     } catch (e) {
-      return { success: false, error: e?.message || 'Starter Basic Report could not be printed.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Starter Basic Report could not be printed.' }
     }
   })
   ipcMain.handle('expenses:submit', async (_, id, payload, operationId) => {
@@ -8917,48 +9377,48 @@ app.whenReady().then(async () => {
       await requireCapability('expenses.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.submitExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:approve', async (_, id, payload, operationId) => {
     try {
       await requireCapability('accounting.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.approveExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:post', async (_, id, payload, operationId) => {
     try {
       await requireCapability('accounting.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.postExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:pay', async (_, id, payload, operationId) => {
     try {
       await requireCapability('accounting.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.payExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:void', async (_, id, payload, operationId) => {
     try {
       await requireCapability('expenses.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.voidExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('expenses:reverse', async (_, id, payload, operationId) => {
     try {
       await requireCapability('accounting.manage')
       await assertResourceBelongsToCurrentLodge('Expense', id, db.getExpenseById)
       return await db.reverseExpense(id, payload || {}, operationId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
 
   // -- Maintenance -----------------------------------------------------------
   ipcMain.handle('maintenance:getAll', async () => {
     try { await requireCapability('maintenance.view'); return await db.getMaintenanceTickets() }
-    catch (error) { throw new Error(error?.message || 'Failed to load maintenance tickets') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to load maintenance tickets') }
   })
   ipcMain.handle('maintenance:create', async (_, data) => {
     try {
@@ -8972,7 +9432,7 @@ app.whenReady().then(async () => {
       })
       return result
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('maintenance:update', async (_, id, data) => {
     try {
@@ -8980,7 +9440,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Maintenance ticket', id, db.getMaintenanceTicketById)
       return await db.updateMaintenanceTicket(id, data)
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('maintenance:resolve', async (_, id, roomId) => {
     try {
@@ -8988,7 +9448,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Maintenance ticket', id, db.getMaintenanceTicketById)
       return await db.resolveMaintenanceTicket(id, roomId)
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- ID Photo --------------------------------------------------------------
@@ -8998,7 +9458,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Customer', id, db.getCustomerById)
       return await db.updateCustomerIdPhoto(id, photo)
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Forecast --------------------------------------------------------------
@@ -9051,10 +9511,10 @@ app.whenReady().then(async () => {
         file_path: result?.filePath || null,
         render_version: 'receipt-v1',
         metadata: {
-          error: e.message || 'Could not save PDF'
+          error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Could not save PDF'
         }
       }).catch(() => {})
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('receipts:listPrinters', async (event) => {
@@ -9130,7 +9590,7 @@ app.whenReady().then(async () => {
       }
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -9142,7 +9602,7 @@ app.whenReady().then(async () => {
       const result = await db.duplicateQuotation(id)
       return { success: true, ...result }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -9164,8 +9624,9 @@ app.whenReady().then(async () => {
    */ async (_, data) => {
     try {
       await requireCapability('pos.menu_manage')
-      return await db.createPosMenuItem(data)
-    } catch (e) { return { success: false, error: e.message } }
+      // This is only the domain's expected-data view; the IPC payload remains unvalidated.
+      return await db.createPosMenuItem(/** @type {Parameters<typeof db.createPosMenuItem>[0]} */ (data))
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:updateMenuItem', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9175,8 +9636,9 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.menu_manage')
       await assertResourceBelongsToCurrentLodge('POS menu item', id, db.getPosMenuItemById)
-      return await db.updatePosMenuItem(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+      // This is only the domain's expected-data view; the IPC payload remains unvalidated.
+      return await db.updatePosMenuItem(id, /** @type {Parameters<typeof db.updatePosMenuItem>[1]} */ (data))
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:deleteMenuItem', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9186,7 +9648,7 @@ app.whenReady().then(async () => {
       await requireCapability('pos.menu_manage')
       await assertResourceBelongsToCurrentLodge('POS menu item', id, db.getPosMenuItemById)
       return await db.deletePosMenuItem(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:setBarPackTemplate', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9195,7 +9657,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.menu_manage')
       return await db.setBarPosPackTemplate(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:getOrders', async (_, start, end) => {
     try {
@@ -9203,7 +9665,7 @@ app.whenReady().then(async () => {
       const outletFilter = db.getUserPosOutletFilter()
       return await db.getPosOrders(start, end, outletFilter)
     } catch (e) {
-      throw new Error(e?.message || 'Failed to load POS orders')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Failed to load POS orders')
     }
   })
   // The report workspace must render the same database-certified dataset as
@@ -9238,6 +9700,9 @@ app.whenReady().then(async () => {
       // Preserve an operational transaction list for investigation, but make
       // its financial state explicitly provisional. This is deliberately not
       // an export fallback and cannot turn cached numbers into report truth.
+      // getPosOrders returns cached/server-merged rows with read metadata; the
+      // fallback remains the existing empty array and no row data is validated.
+      /** @type {PosHistoryLocalOrdersReadExpectedData} */
       const provisionalOrders = await db.getPosOrders(start, end, outletFilter).catch(() => [])
       return {
         success: false,
@@ -9246,7 +9711,7 @@ app.whenReady().then(async () => {
         complete: false,
         tender_complete: false,
         item_detail_complete: false,
-        error: error?.message || 'The server did not certify a complete POS dataset for this report.'
+        error: (/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'The server did not certify a complete POS dataset for this report.'
       }
     }
   })
@@ -9256,7 +9721,7 @@ app.whenReady().then(async () => {
       const outletFilter = db.getUserPosOutletFilter()
       return await db.getPosVoidHistory(start, end, outletFilter)
     } catch (e) {
-      throw new Error(e?.message || 'Failed to load POS void history')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Failed to load POS void history')
     }
   })
   ipcMain.handle('pos:discardLocalVoidRecord', async (_, overrideId, options = {}) => {
@@ -9264,7 +9729,7 @@ app.whenReady().then(async () => {
       await requireCapability('sync.manage')
       return await db.discardLocalPosVoidRecord(overrideId, { reason: options?.reason || '' })
     } catch (e) {
-      return { success: false, error: e?.message || 'This void record could not be discarded.' }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'This void record could not be discarded.' }
     }
   })
   ipcMain.handle('pos:exportHistoryExcel', async (event, /** @type {unknown} */ payload = {}) => {
@@ -9301,7 +9766,7 @@ app.whenReady().then(async () => {
        // this view does not add runtime validation to the certified response.
        const orders = /** @type {PosHistoryOrdersExpectedData} */ (authoritative.orders)
        reportRunId = authoritative.reportRunId
-       assertCompletePosHistoryExport(orders, voidHistory, /** @type {PosHistoryPendingOrderExpectedData[]} */ (localOrders))
+       assertCompletePosHistoryExport(orders, voidHistory, localOrders)
        const wasteSection = buildWasteExportSection(movementRead, includeWaste)
        const currency = settings?.currency || 'P'
       const resolvedLodge = settings?.lodge_name || settings?.company_name || APP_BRAND_NAME
@@ -9447,8 +9912,8 @@ app.whenReady().then(async () => {
        await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', filePath, fileHash, byteCount: saved.byteCount }).catch(() => {})
        return { success: true, filePath, rows: (orders || []).length, reportRunId, dataHash, fileHash }
     } catch (e) {
-      if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', artifactError: e?.message || 'POS history export failed' }).catch(() => {})
-      return { success: false, error: e?.message || 'Could not export POS history.' }
+      if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'xlsx', artifactError: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'POS history export failed' }).catch(() => {})
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not export POS history.' }
     }
   })
   ipcMain.handle('pos:exportHistoryPdf', async (event, /** @type {unknown} */ payload = {}) => {
@@ -9484,7 +9949,7 @@ app.whenReady().then(async () => {
        // this view does not add runtime validation to the certified response.
        const orders = /** @type {PosHistoryOrdersExpectedData} */ (authoritative.orders)
        reportRunId = authoritative.reportRunId
-       assertCompletePosHistoryExport(orders, voidHistory, /** @type {PosHistoryPendingOrderExpectedData[]} */ (localOrders))
+       assertCompletePosHistoryExport(orders, voidHistory, localOrders)
        const wasteSection = buildWasteExportSection(movementReadPdf, includeWastePdf)
        const summary = getPosHistorySummary(orders || [])
        Object.assign(summary, {
@@ -9541,31 +10006,47 @@ app.whenReady().then(async () => {
        await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', filePath, fileHash, byteCount: saved.byteCount }).catch(() => {})
        return { success: true, filePath, companionFilePath, rows: (orders || []).length, reportRunId, dataHash, fileHash }
     } catch (e) {
-       if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: e?.message || 'POS history PDF export failed' }).catch(() => {})
-      return { success: false, error: e?.message || 'Could not export POS history PDF.' }
+       if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'POS history PDF export failed' }).catch(() => {})
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not export POS history PDF.' }
     }
   })
   // Device-records exports: this terminal's saved sales for offline bars.
   // Deliberately separate from the certified pos:exportHistory* path above:
   // no server controls, no report run, no dataset hash, every figure labeled
   // UNCONFIRMED. Certified gates and writers are never touched.
+  /** Expected order rows from the existing query/cache reader; this view does not validate row JSON. */
+  /** @typedef {Awaited<ReturnType<typeof db.getPosOrders>>[number]} DevicePosRecordsOrderExpectedData */
+  /** Expected settings fields from getSettings/cache; this view does not validate persisted settings. */
+  /** @typedef {Record<string, unknown> & {currency?: unknown, lodge_name?: unknown, company_name?: unknown}} DevicePosRecordsSettingsExpectedData */
+  /** @typedef {{count: number, gross: number, pending: number, voids: number}} DevicePosRecordsSummary */
+  /**
+   * Date strings are expected from HposReports; IPC input remains unvalidated
+   * and this helper preserves the caller's existing empty-string defaults.
+   * @param {string} start
+   * @param {string} end
+   * @param {string[] | null} outletFilter
+   * @returns {Promise<{orders: DevicePosRecordsOrderExpectedData[], voidHistory: unknown[], settings: DevicePosRecordsSettingsExpectedData}>}
+   */
   const loadDevicePosRecords = async (start, end, outletFilter) => {
     const [orders, settings] = await Promise.all([
       db.getPosOrders(start, end, outletFilter).catch(() => []),
       db.getSettings().catch(() => ({})),
     ])
-    let voidHistory = []
+    let voidHistory = /** @type {PosHistoryVoidExpectedData[]} */ ([])
     try {
       voidHistory = await db.getPosVoidHistory(start, end, outletFilter)
     } catch {
       voidHistory = []
     }
     return {
-      orders: Array.isArray(orders) ? orders : [],
-      voidHistory: Array.isArray(voidHistory) ? voidHistory : [],
-      settings: settings || {},
+      // Array guards and expected-data views preserve the existing behavior;
+      // they do not validate individual cached or RPC rows.
+      orders: Array.isArray(orders) ? /** @type {DevicePosRecordsOrderExpectedData[]} */ (orders) : [],
+      voidHistory: Array.isArray(voidHistory) ? /** @type {unknown[]} */ (voidHistory) : [],
+      settings: /** @type {DevicePosRecordsSettingsExpectedData} */ (settings || {}),
     }
   }
+  /** @param {DevicePosRecordsOrderExpectedData[]} [orders] @param {unknown[]} [voidHistory] @returns {DevicePosRecordsSummary} */
   const deviceRecordsSummary = (orders = [], voidHistory = []) => {
     let gross = 0
     let pending = 0
@@ -9576,6 +10057,10 @@ app.whenReady().then(async () => {
     }
     return { count: orders.length, gross, pending, voids: voidHistory.length }
   }
+  /**
+   * @param {{lodgeName: unknown, periodLabel: unknown, generatedAt: unknown, currency: unknown, orders: DevicePosRecordsOrderExpectedData[], summary: DevicePosRecordsSummary}} input
+   * @returns {string}
+   */
   const buildDeviceRecordsPdfHtml = ({ lodgeName, periodLabel, generatedAt, currency, orders, summary }) => {
     const rows = (orders || []).map((order) => `
       <tr>
@@ -9646,7 +10131,7 @@ app.whenReady().then(async () => {
       const saved = writePosHistoryExcelArtifact(filePath, wb)
       return { success: true, filePath, rows: orders.length, unconfirmed: true, fileHash: saved.fileHash }
     } catch (e) {
-      return { success: false, error: e?.message || 'Could not export device records.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not export device records.' }
     }
   })
   ipcMain.handle('pos:exportDeviceRecordsPdf', async (event, payload = {}) => {
@@ -9682,7 +10167,7 @@ app.whenReady().then(async () => {
       const saved = writePosHistoryPdfArtifact(filePath, pdfBuffer)
       return { success: true, filePath, rows: orders.length, unconfirmed: true, fileHash: saved.fileHash }
     } catch (e) {
-      return { success: false, error: e?.message || 'Could not export device records.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not export device records.' }
     }
   })
   ipcMain.handle('pos:exportDailyCloseSummaryPdf', async (event, payload = {}) => {    let reportRunId = null
@@ -9727,8 +10212,8 @@ app.whenReady().then(async () => {
       await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', filePath, fileHash: saved.fileHash, byteCount: saved.byteCount })
       return { success: true, filePath, reportRunId, dataHash: authoritative.dataHash, fileHash: saved.fileHash }
     } catch (error) {
-      if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: error?.message || 'Daily-close summary failed' }).catch(() => {})
-      return { success: false, error: error?.message || 'Could not create the certified daily-close summary.' }
+      if (reportRunId) await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', artifactError: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Daily-close summary failed' }).catch(() => {})
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not create the certified daily-close summary.' }
     }
   })
   /**
@@ -9759,14 +10244,16 @@ app.whenReady().then(async () => {
       await enforceBarTenderEntitlements(data || {})
       if (data?.booking_id) await assertResourceBelongsToCurrentLodge('Booking', data.booking_id, db.getBookingById)
       if (data?.room_id) await assertResourceBelongsToCurrentLodge('Room', data.room_id, db.getRoomById)
-      const result = await db.createPosOrder(buildAuthoritativeTillPayload(data, tillContext, 'order'))
+      // The IPC payload remains unvalidated here. This call-site view follows
+      // the concrete domain input contract without changing the forwarded value.
+      const result = await db.createPosOrder(/** @type {Parameters<typeof db.createPosOrder>[0]} */ (buildAuthoritativeTillPayload(data, tillContext, 'order')))
       if (result?.success && tillContext.shared && (tillContext.session?.mode || tillContext.policy?.mode) === TILL_OPERATOR_MODES.STRICT) {
         sharedTillOperatorSessions.consumeStrict(event?.sender?.id)
       }
       return result?.success && tillContext.shared && tillContext.session?.mode === TILL_OPERATOR_MODES.SHIFT
         ? { ...result, till_session: tillContext.session }
         : result
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:getPendingPosSubmitAttempt', async () => {
     try {
@@ -9774,7 +10261,7 @@ app.whenReady().then(async () => {
       const user = getCurrentUserOrRestore()
       return await db.getPendingPosSubmitAttempt({ lodgeId: db.getActiveProfile?.()?.lodge_id || null, userId: user?.id || null })
     } catch (e) {
-      return { success: false, code: e?.code || 'pos_submit_recovery_unavailable', error: e?.message || 'POS sale recovery is unavailable. Do not create a new sale.' }
+      return { success: false, code: (/** @type {ErrorMessageReadView | null | undefined} */ (e))?.code || 'pos_submit_recovery_unavailable', error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'POS sale recovery is unavailable. Do not create a new sale.' }
     }
   })
   ipcMain.handle('pos:saveBarProductWithPacks', /**
@@ -9783,8 +10270,9 @@ app.whenReady().then(async () => {
    */ async (_, data) => {
     try {
       await requireCapability('pos.menu_manage')
-      return await db.saveBarPosProductWithPacks(data)
-    } catch (e) { return { success: false, error: e.message } }
+      // IPC data remains unvalidated; preserve the exact value at this boundary.
+      return await db.saveBarPosProductWithPacks(/** @type {Parameters<typeof db.saveBarPosProductWithPacks>[0]} */ (data))
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:saveBarProductWithStock', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9794,8 +10282,9 @@ app.whenReady().then(async () => {
       // The unified wizard writes both catalog sides: both capabilities.
       await requireCapability('pos.menu_manage')
       await requireCapability('inventory.manage')
-      return await db.saveBarProductWithStock(data)
-    } catch (e) { return { success: false, error: e.message } }
+      // IPC data remains unvalidated; preserve the exact value at this boundary.
+      return await db.saveBarProductWithStock(/** @type {Parameters<typeof db.saveBarProductWithStock>[0]} */ (data))
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:retryProductRequest', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9805,7 +10294,7 @@ app.whenReady().then(async () => {
       await requireCapability('pos.menu_manage')
       await requireCapability('inventory.manage')
       return await db.retryProductRequest(operationKey)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:discardProductRequest', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9815,20 +10304,20 @@ app.whenReady().then(async () => {
       await requireCapability('pos.menu_manage')
       await requireCapability('inventory.manage')
       return await db.discardProductRequest(operationKey)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:getProductRequestStatus', async () => {
     try {
       await requireCapability('pos.view')
       return { success: true, requests: await db.getProductRequestStatus() }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:getMenuStockReadiness', async () => {
     // Readable by base Till users without recipe rights: outcome only.
     try {
       await requireCapability('pos.view')
       return await db.getMenuStockReadiness()
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:getUnconfirmedPosUsage', async () => {
     // Unsent sales on this computer (own queue + other-till mesh imports).
@@ -9836,7 +10325,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.view')
       return { success: true, ...(await db.getUnconfirmedPosUsage()) }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('catalog:processPendingPublications', /**
    * @param {import('electron').IpcMainInvokeEvent} _
@@ -9845,14 +10334,14 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('pos.manage')
       return await db.processPendingPublicationJobs(Array.isArray(outletIds) ? outletIds : [])
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:voidOrder', async (_, id) => {
     try {
       await requireCapability('pos.void')
       await assertResourceBelongsToCurrentLodge('POS order', id, db.getPosOrderById)
       return await db.voidPosOrder(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message } }
   })
   ipcMain.handle('pos:approveVoidWithPin', async (_, data) => {
     try {
@@ -9860,7 +10349,7 @@ app.whenReady().then(async () => {
       return await db.approvePosVoidWithPin(data)
     } catch (e) {
       console.error('pos:approveVoidWithPin failed:', e)
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message }
     }
   })
   ipcMain.handle('pos:approveDiscountWithPin', async (_, data) => {
@@ -9873,7 +10362,7 @@ app.whenReady().then(async () => {
       return await db.approvePosDiscountWithPin(data)
     } catch (e) {
       console.error('pos:approveDiscountWithPin failed:', e)
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message }
     }
   })
   ipcMain.handle('pos:createPartialReturnWithPin', async (_, data) => {
@@ -9886,7 +10375,7 @@ app.whenReady().then(async () => {
       return await db.createPosPartialReturnWithPin(data)
     } catch (e) {
       console.error('pos:createPartialReturnWithPin failed:', e)
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message }
     }
   })
   ipcMain.handle('pos:getCashupSummary', async (_, filters) => {
@@ -9898,7 +10387,7 @@ app.whenReady().then(async () => {
       }
       return await db.getPosCashupSummary({ ...(filters || {}), outlet_filter: outletFilter })
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message }
     }
   })
   ipcMain.handle('pos:getCashups', async (_, limit, filters) => {
@@ -9916,7 +10405,7 @@ app.whenReady().then(async () => {
       }
       return await db.createPosCashupSession({ ...(data || {}), outlet_filter: outletFilter })
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e)).message }
     }
   })
   // ErrorMessageReadView models the raw `.message` reads in these IPC catches; it neither validates nor coerces thrown values.
@@ -9955,14 +10444,16 @@ app.whenReady().then(async () => {
       if (tillContext.shared && tillContext.error) {
         return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       }
-      const result = await db.savePosTab(buildAuthoritativeTillPayload(data, tillContext, 'tab'))
+      // Match the concrete domain request view while forwarding the original
+      // helper result unchanged; no IPC validation is introduced here.
+      const result = await db.savePosTab(/** @type {Parameters<typeof db.savePosTab>[0]} */ (buildAuthoritativeTillPayload(data, tillContext, 'tab')))
       if (result?.success && tillContext.shared && (tillContext.session?.mode || tillContext.policy?.mode) === TILL_OPERATOR_MODES.STRICT) {
         sharedTillOperatorSessions.consumeStrict(event?.sender?.id)
       }
       return result?.success && tillContext.shared && tillContext.session?.mode === TILL_OPERATOR_MODES.SHIFT
         ? { ...result, till_session: tillContext.session }
         : result
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:closeTab', async (event, id) => {
     try {
@@ -9971,9 +10462,9 @@ app.whenReady().then(async () => {
       if (offlineTabProofError) return offlineTabProofError
       const tillContext = await getTabMutationTillContext(event)
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
-      return finalizeSharedTillMutation(event, await db.closePosTab(id, 'closed', { _operator_proof: tillContext.operatorProof }))
+      return finalizeSharedTillMutation(event, await db.closePosTab(id, 'closed', /** @type {Parameters<typeof db.closePosTab>[2]} */ ({ _operator_proof: tillContext.operatorProof })))
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:updateTabStatus', async (event, id, status) => {
     try {
@@ -9982,9 +10473,9 @@ app.whenReady().then(async () => {
       if (offlineTabProofError) return offlineTabProofError
       const tillContext = await getTabMutationTillContext(event)
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
-      return finalizeSharedTillMutation(event, await db.updatePosTabStatus(id, status, { _operator_proof: tillContext.operatorProof }))
+      return finalizeSharedTillMutation(event, await db.updatePosTabStatus(id, status, /** @type {Parameters<typeof db.updatePosTabStatus>[2]} */ ({ _operator_proof: tillContext.operatorProof })))
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:transferTabWaiter', async (event, data) => {
     try {
@@ -9994,7 +10485,7 @@ app.whenReady().then(async () => {
       const tillContext = await getTabMutationTillContext(event, data || {})
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       return finalizeSharedTillMutation(event, await db.transferPosTabWaiter({ ...(data || {}), _operator_proof: tillContext.operatorProof }))
-    } catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: e.message } }
+    } catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:overrideTableTab', async (event, data) => {
     try {
@@ -10003,9 +10494,9 @@ app.whenReady().then(async () => {
       if (offlineTabProofError) return offlineTabProofError
       const tillContext = await getTabMutationTillContext(event, data || {})
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
-      return finalizeSharedTillMutation(event, await db.overridePosTableTab(buildAuthoritativeTillPayload(data || {}, tillContext, 'tab')))
+      return finalizeSharedTillMutation(event, await db.overridePosTableTab(/** @type {Parameters<typeof db.overridePosTableTab>[0]} */ (buildAuthoritativeTillPayload(data || {}, tillContext, 'tab'))))
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:splitBillByItems', async (event, data) => {
     try {
@@ -10014,9 +10505,9 @@ app.whenReady().then(async () => {
       if (offlineTabProofError) return offlineTabProofError
       const tillContext = await getTabMutationTillContext(event, data || {})
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
-      return finalizeSharedTillMutation(event, await db.splitBillByItems(buildAuthoritativeTillPayload(data || {}, tillContext)))
+      return finalizeSharedTillMutation(event, await db.splitBillByItems(/** @type {Parameters<typeof db.splitBillByItems>[0]} */ (buildAuthoritativeTillPayload(data || {}, tillContext))))
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:splitBillEvenly', async (event, data) => {
     try {
@@ -10027,7 +10518,7 @@ app.whenReady().then(async () => {
       if (tillContext.shared && tillContext.error) return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       return finalizeSharedTillMutation(event, await db.splitBillEvenly({ ...(data || {}), _operator_proof: tillContext.operatorProof || null }))
     }
-    catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: e.message } }
+    catch (e) { return { success: false, code: 'ipc_transport_error', provenance: 'ipc-transport-error', outcome: 'unknown', error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('pos:getTablesWithStatus', async (_, outletId) => {
     try { await requireCapability('pos.view'); await requireCommercialFeature('tables'); return await db.getPosTablesWithStatus(outletId || null) }
@@ -10051,7 +10542,7 @@ app.whenReady().then(async () => {
       if (tillContext.shared && tillContext.error) {
         return { success: false, code: tillContext.code || 'till_operator_session_expired', error: tillContext.error }
       }
-      return finalizeSharedTillMutation(event, await db.openPosTableSession(buildAuthoritativeTillPayload(data, tillContext, 'tab')))
+      return finalizeSharedTillMutation(event, await db.openPosTableSession(/** @type {Parameters<typeof db.openPosTableSession>[0]} */ (buildAuthoritativeTillPayload(data, tillContext, 'tab'))))
     } catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('pos:getTables', async () => {
@@ -10171,14 +10662,16 @@ app.whenReady().then(async () => {
       const settings = await db.getPosHardwareSettings()
       const business = await getReceiptBusinessSettings()
       const result = await testPosHardwareDevice(kind || 'receipt', settings, business)
+      /** Adapter result variants expose these values to the audit call; this view does not validate the result. */
+      const expectedResult = /** @type {{success: boolean, verified?: unknown, error?: unknown, message?: unknown, transport?: unknown, target?: unknown}} */ (result)
       await db.recordPosHardwareEvent?.('hardware_test', {
         kind: kind || 'receipt',
-        success: result.success === true && result.verified === true,
-        verified: result.verified === true,
-        error: result.error || null,
-        message: result.message || null,
-        transport: result.transport || null,
-        target: result.target || null
+        success: expectedResult.success === true && expectedResult.verified === true,
+        verified: expectedResult.verified === true,
+        error: expectedResult.error || null,
+        message: expectedResult.message || null,
+        transport: expectedResult.transport || null,
+        target: expectedResult.target || null
       }).catch(() => {})
       return result
     } catch (e) {
@@ -10300,7 +10793,7 @@ app.whenReady().then(async () => {
         refresh: options?.refresh === true,
       })
     } catch (e) {
-      throw new Error(e?.message || 'Could not load the PIN-verified Till history')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not load the PIN-verified Till history')
     }
   })
   ipcMain.handle('pos:getMyOrders', async (_, start, end) => {
@@ -10319,7 +10812,7 @@ app.whenReady().then(async () => {
       })
       return filtered
     } catch (e) {
-      throw new Error(e?.message || 'Failed to load your Till sales')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load your Till sales')
     }
   })
   ipcMain.handle('pos:getStaffOpenShift', async (_, staffId) => {
@@ -10509,7 +11002,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:setOutletCashModel', async (_, outletId, cashModel) => {
     try { await requireCapability('pos.manage'); return await db.setOutletCashModel(outletId, cashModel) }
-    catch (e) { return { success: false, error: e?.message || 'Could not change how cash is counted.' } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not change how cash is counted.' } }
   })
   ipcMain.handle('pos:updateSupplier', async (_, supplierId, data) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('suppliers'); return await db.updatePosSupplier(supplierId, data || {}) }
@@ -10523,6 +11016,7 @@ app.whenReady().then(async () => {
     try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.updatePurchaseOrderDraft(orderId, data || {}) }
     catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
+  /** @param {unknown} orderId Raw IPC id is compared with strict equality; no coercion or validation is added. */
   const getPurchaseOrderForDocument = async (orderId) => {
     const orders = await db.getPosPurchaseOrders()
     const order = (orders || []).find((row) => row.id === orderId)
@@ -10541,7 +11035,7 @@ app.whenReady().then(async () => {
       const pdf = await renderHtmlToPdfBuffer(buildPurchaseOrderPdfHtml({ purchaseOrder: order, business: settings, currency: settings.currency || 'P' }), { pageSize: 'A4', printBackground: true }, { minTextLength: 40 })
       fs.writeFileSync(result.filePath, pdf)
       return { success: true, filePath: result.filePath }
-    } catch (error) { return { success: false, error: error?.message || 'Could not save purchase order PDF.' } }
+    } catch (error) { return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not save purchase order PDF.' } }
   })
   ipcMain.handle('pos:sendPurchaseOrderEmail', async (_, orderId) => {
     try {
@@ -10555,7 +11049,7 @@ app.whenReady().then(async () => {
       const sent = await sendPurchaseOrderEmail({ to: recipient, purchaseOrder: order, businessName: settings.lodge_name || settings.company_name, currency: settings.currency || 'P', pdfBuffer: pdf, filename: reference })
       if (sent?.success) Promise.resolve(db.recordActivity?.('purchase_order_emailed', `Purchase order ${String(order.id).slice(-6).toUpperCase()} emailed to ${recipient}`)).catch(() => {})
       return sent
-    } catch (error) { return { success: false, error: error?.message || 'Could not email purchase order.' } }
+    } catch (error) { return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not email purchase order.' } }
   })
   ipcMain.handle('pos:approvePurchaseOrder', async (_, orderId) => {
     try { await requireCapability('pos.manage'); await requireCommercialFeature('purchasing'); return await db.approvePurchaseOrder(orderId) }
@@ -10633,7 +11127,7 @@ app.whenReady().then(async () => {
         inventoryItems: Array.isArray(inventoryItems) ? inventoryItems : []
       })
     } catch (e) {
-      return JSON.stringify({ suppliers: [], orders: [], inventoryItems: [], error: e?.message || 'Purchasing data could not be loaded.' })
+      return JSON.stringify({ suppliers: [], orders: [], inventoryItems: [], error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Purchasing data could not be loaded.' })
     }
   })
   ipcMain.handle('pos:getShiftHistory', async (_, startDate, endDate) => {
@@ -10809,39 +11303,39 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getRestaurantOutletControls', async () => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantOutletControls() }
-    catch (e) { throw new Error(e?.message || 'Could not load outlet control.') }
+    catch (e) { throw new Error((/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not load outlet control.') }
   })
   ipcMain.handle('pos:getRestaurantStockLocations', async () => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantStockLocations() }
-    catch (e) { throw new Error(e?.message || 'Could not load stock locations.') }
+    catch (e) { throw new Error((/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not load stock locations.') }
   })
   ipcMain.handle('pos:getRestaurantStockLocationBalances', async () => {
     try { await requireCapability('inventory.view'); return await db.getRestaurantStockLocationBalances() }
-    catch (e) { throw new Error(e?.message || 'Could not load stock balances.') }
+    catch (e) { throw new Error((/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not load stock balances.') }
   })
   ipcMain.handle('pos:createRestaurantStockLocation', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.createRestaurantStockLocation(data || {}) }
-    catch (e) { return { success: false, error: e?.message || 'Could not create stock location.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not create stock location.' } }
   })
   ipcMain.handle('pos:updateRestaurantStockLocation', async (_, locationId, data) => {
     try { await requireCapability('pos.manage'); return await db.updateRestaurantStockLocation(locationId, data || {}) }
-    catch (e) { return { success: false, error: e?.message || 'Could not update stock location.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not update stock location.' } }
   })
   ipcMain.handle('pos:deleteRestaurantStockLocation', async (_, locationId) => {
     try { await requireCapability('pos.manage'); return await db.deleteRestaurantStockLocation(locationId) }
-    catch (e) { return { success: false, error: e?.message || 'Could not delete stock location.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not delete stock location.' } }
   })
   ipcMain.handle('pos:setRestaurantOutletStockLocation', async (_, outletId, stockLocationId) => {
     try { await requireCapability('pos.manage'); return await db.setRestaurantOutletStockLocation(outletId, stockLocationId) }
-    catch (e) { return { success: false, error: e?.message || 'Could not update stock source.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not update stock source.' } }
   })
   ipcMain.handle('pos:createRestaurantOutlet', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.createRestaurantOutlet(data || {}) }
-    catch (e) { return { success: false, error: e?.message || 'Could not create outlet.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not create outlet.' } }
   })
   ipcMain.handle('pos:updateRestaurantOutlet', async (_, outletId, data) => {
     try { await requireCapability('pos.manage'); return await db.updateRestaurantOutlet(outletId, data || {}) }
-    catch (e) { return { success: false, error: e?.message || 'Could not update outlet.' } }
+    catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Could not update outlet.' } }
   })
   ipcMain.handle('pos:recordFeedback', async (_, data) => {
     try { await requireCapability('pos.manage'); return await db.recordRestaurantFeedback(data || {}) }
@@ -10857,7 +11351,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pos:getSetupProgress', async () => {
     try { await requireCapability('pos.manage'); return await db.getRestaurantSetupProgress() }
-    catch (e) { throw new Error(e.message || 'Could not load setup progress') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorExpectedData} */ (e)).message || 'Could not load setup progress') }
   })
   ipcMain.handle('pos:getSetupProgressWithReadStatus', async () => {
     try {
@@ -10893,7 +11387,7 @@ app.whenReady().then(async () => {
       await requireCapability('pos.view')
       return openPosDisplayWindow(kind || 'customer', options || {})
     } catch (e) {
-      return { success: false, error: e?.message || 'Could not open POS display.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not open POS display.' }
     }
   })
   ipcMain.handle('pos:openCashDrawer', async (_, data = {}) => {
@@ -10920,7 +11414,7 @@ app.whenReady().then(async () => {
       }).catch(() => {})
       return result
     } catch (e) {
-      return { success: false, error: e?.message || 'Could not open cash drawer.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not open cash drawer.' }
     }
   })
   ipcMain.handle('pos:listDisplays', async () => {
@@ -10936,7 +11430,7 @@ app.whenReady().then(async () => {
       await requireCapability('settings.manage_general')
       return await scanNetworkPrinters()
     } catch (e) {
-      return { success: false, error: e?.message || 'Network printer scan failed.' }
+      return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Network printer scan failed.' }
     }
   })
   ipcMain.handle('pos:sendPaymentTerminalTotal', async (_, data) => {
@@ -10962,7 +11456,7 @@ app.whenReady().then(async () => {
       }).catch(() => {})
       return result
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('pos:getAuditLog', async (_, limit) => {
@@ -11001,7 +11495,7 @@ app.whenReady().then(async () => {
     try { await requireCapability('inventory.view'); return await db.getInventoryItems() }
     catch (e) {
       console.error('inventory:getItems failed:', e)
-      throw new Error(e?.message || 'Could not load inventory items right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not load inventory items right now.')
     }
   })
   // Array-owned metadata is not a reliable Electron IPC contract. Keep the
@@ -11019,7 +11513,7 @@ app.whenReady().then(async () => {
       }
     } catch (e) {
       console.error('inventory:getItemsWithReadStatus failed:', e)
-      throw new Error(e?.message || 'Could not load inventory items right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not load inventory items right now.')
     }
   })
   ipcMain.handle('inventory:getBarStockAging', async (_, outletId) => {
@@ -11028,7 +11522,7 @@ app.whenReady().then(async () => {
       return await db.getBarStockAging(outletId || null)
     } catch (e) {
       console.error('inventory:getBarStockAging failed:', e)
-      throw new Error(e?.message || 'Could not load stock aging right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Could not load stock aging right now.')
     }
   })
   ipcMain.handle('users:sendInvite', /**
@@ -11040,27 +11534,27 @@ app.whenReady().then(async () => {
       const targetUser = /** @type {ManagerStaffScopeUserView | null | undefined} */ (await assertResourceBelongsToCurrentLodge('User', id, db.getUserById))
       assertManagerStaffScope(db.getCurrentUser?.(), targetUser)
       return await db.sendUserInviteOrReset(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:createItem', async (_, data) => {
     try {
       await requireCapability('inventory.manage')
       return await db.createInventoryItem(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:updateItem', async (_, id, data) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', id, db.getInventoryItemById)
       return await db.updateInventoryItem(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:deleteItem', async (_, id) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', id, db.getInventoryItemById)
       return await db.deleteInventoryItem(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   // -- Food & Beverage progressive activation ---------------------------------
   // Module activation is a company preference, not a licence grant. Reads are
@@ -11075,7 +11569,7 @@ app.whenReady().then(async () => {
       return await db.getFnbModulePreferences()
     } catch (e) {
       console.error('fnb:getModulePreferences failed:', e)
-      throw new Error((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Could not load F&B module settings right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Could not load F&B module settings right now.')
     }
   })
   ipcMain.handle('fnb:getCachedModulePreferences', async () => {
@@ -11094,7 +11588,7 @@ app.whenReady().then(async () => {
       return await db.getFnbToday(outletId || null)
     } catch (e) {
       console.error('fnb:getToday failed:', e)
-      throw new Error((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Today view is unavailable right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Today view is unavailable right now.')
     }
   })
   ipcMain.handle('fnb:getConsolidatedReport', async (_, start, end, outletId) => {
@@ -11103,7 +11597,7 @@ app.whenReady().then(async () => {
       return await db.getFnbConsolidatedReport(start, end, outletId || null)
     } catch (e) {
       console.error('fnb:getConsolidatedReport failed:', e)
-      throw new Error((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Consolidated report is unavailable right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Consolidated report is unavailable right now.')
     }
   })
   ipcMain.handle('fnb:createRoomServiceOrder', async (_, payload, operationId) => {
@@ -11202,7 +11696,7 @@ app.whenReady().then(async () => {
       return await db.getFnbDemandRecommendations(date, outletId || null)
     } catch (e) {
       console.error('fnb:getDemandRecommendations failed:', e)
-      throw new Error((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Demand planning is unavailable right now.')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {FnbHandlerErrorReadView} */ (e))?.message || 'Demand planning is unavailable right now.')
     }
   })
   ipcMain.handle('fnb:approveDemandRecommendation', async (_, recommendationKey, action, payload, operationId) => {
@@ -11215,14 +11709,14 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('inventory.manage')
       return await db.discardDraft(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:addPurchase', async (_, data) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', data?.item_id, db.getInventoryItemById)
       return await db.addInventoryPurchase(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:getPurchases', async (_, itemId) => {
     try { await requireCapability('inventory.view'); await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById); return await db.getInventoryPurchases(itemId) }
@@ -11235,13 +11729,15 @@ app.whenReady().then(async () => {
    * Success is { success:true, new_stock }, with offline additionally marked
    * offline:true; an invalid delta returns { success:false, error }, and
    * caught capability/scope/RPC errors preserve their raw `.message` value.
+   * The domain method is the producer for this expected result view; server
+   * stock values remain unvalidated.
    */
   ipcMain.handle('inventory:adjustStock', /** @returns {Promise<InventoryAdjustStockIpcResult>} */ async (_, itemId, delta, notes, managerPin, adjustmentId) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory item', itemId, db.getInventoryItemById)
-      return await db.adjustInventoryStock(itemId, delta, notes, adjustmentId)
-    } catch (e) { return { success: false, error: e.message } }
+      return /** @type {InventoryAdjustStockIpcResult} */ (await db.adjustInventoryStock(itemId, delta, notes, adjustmentId))
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:getMovements', async (_, filters) => {
     try {
@@ -11257,30 +11753,30 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('inventory.manage')
       return await db.postBarPhysicalCount(payload || {})
-    } catch (e) { return { success: false, error: e?.message || 'Could not post the physical count.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not post the physical count.' } }
   })
   ipcMain.handle('inventory:postBarSimpleDelivery', async (_, payload = {}) => {
     try {
       await requireCapability('inventory.manage')
       return await db.postBarSimpleDelivery(payload || {})
-    } catch (e) { return { success: false, error: e?.message || 'Could not receive the delivery.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not receive the delivery.' } }
   })
   ipcMain.handle('inventory:getBarStockCountHistory', async (_, outletId, limit) => {
     try {
       await requireCapability('inventory.view')
       return await db.getBarStockCountHistory(outletId || null, limit)
-    } catch (e) { throw new Error(e?.message || 'Could not load the stock operation history.') }
+    } catch (e) { throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not load the stock operation history.') }
   })
   ipcMain.handle('inventory:findByBarcode', async (_, barcode, outletId) => {
     try {
       await requireCapability('inventory.view')
       return await db.findInventoryItemByBarcode(barcode, outletId || null)
-    } catch (e) { return { success: false, error: e?.message || 'Could not look up that barcode.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not look up that barcode.' } }
   })
   ipcMain.handle('inventory:printBarcodeLabels', async (_, labels = []) => {
     try {
       await requireCapability('inventory.manage')
-      const hardware = await db.getPosHardwareSettings().catch(() => ({}))
+      const hardware = /** @type {InventoryBarcodeLabelHardwareExpectedData} */ (await db.getPosHardwareSettings().catch(() => ({})))
       // The renderer supplies identifiers only. Re-read canonical, lodge/outlet
       // scoped item data in main so a renderer cannot print arbitrary text or
       // another outlet's barcode.
@@ -11298,7 +11794,7 @@ app.whenReady().then(async () => {
         canonical.push({ name: item.name, barcode: item.barcode })
       }
       if (!canonical.length) return { success: false, error: 'No selected stock item with a valid barcode is available in your outlet scope.' }
-      const result = await printBarcodeLabels({ labels: canonical, settings: hardware })
+      const result = /** @type {InventoryBarcodeLabelPrintResultReadView} */ (await printBarcodeLabels({ labels: canonical, settings: hardware }))
       await db.recordPosHardwareEvent?.('barcode_label_print', {
         success: result?.success === true,
         printed: result?.printed || 0,
@@ -11306,7 +11802,7 @@ app.whenReady().then(async () => {
         error: result?.error || null
       }).catch(() => {})
       return result
-    } catch (e) { return { success: false, error: e?.message || 'Could not print barcode labels.' } }
+    } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not print barcode labels.' } }
   })
   ipcMain.handle('inventory:getMovementsWithReadStatus', async (_, filters = {}) => {
     try {
@@ -11323,7 +11819,7 @@ app.whenReady().then(async () => {
           item_id: null,
           limit: Math.min(500, Math.max(1, Number(filters?.limit || 500)))
         })
-        const rows = Array.isArray(result?.rows) ? result.rows : []
+        const rows = Array.isArray(result?.rows) ? /** @type {InventoryMovementOutletReadView[]} */ (result.rows) : []
         const scoped = outletFilter !== null
           ? rows.filter((row) => outletFilter.map(String).includes(String(row?.outlet_id || '')))
           : rows
@@ -11340,7 +11836,7 @@ app.whenReady().then(async () => {
       })
     } catch (e) {
       console.error('inventory:getMovementsWithReadStatus failed:', e)
-      throw new Error(e?.message || 'Could not load item movement history right now.')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not load item movement history right now.')
     }
   })
   ipcMain.handle('inventory:getStocktakes', async (_, limit) => {
@@ -11368,14 +11864,14 @@ app.whenReady().then(async () => {
         stocktakes: Array.isArray(stocktakes) ? stocktakes : []
       })
     } catch (e) {
-      return JSON.stringify({ items: [], lowStock: [], movements: [], stocktakes: [], error: e?.message || 'Could not load restaurant inventory.' })
+      return JSON.stringify({ items: [], lowStock: [], movements: [], stocktakes: [], error: (/** @type {IpcCaughtErrorExpectedView} */ (e))?.message || 'Could not load restaurant inventory.' })
     }
   })
   ipcMain.handle('inventory:createStocktake', async (_, data) => {
     try {
       await requireCapability('inventory.manage')
       return await db.createInventoryStocktakeSession(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:getStocktake', async (_, stocktakeId) => {
     try { await requireCapability('inventory.view'); await assertResourceBelongsToCurrentLodge('Inventory stocktake', stocktakeId, db.getInventoryStocktakeById); return await db.getInventoryStocktakeSession(stocktakeId) }
@@ -11389,14 +11885,14 @@ app.whenReady().then(async () => {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory stocktake', stocktakeId, db.getInventoryStocktakeById)
       return await db.saveInventoryStocktakeCounts(stocktakeId, lines)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('inventory:postStocktake', async (_, stocktakeId, notes) => {
     try {
       await requireCapability('inventory.manage')
       await assertResourceBelongsToCurrentLodge('Inventory stocktake', stocktakeId, db.getInventoryStocktakeById)
       return await db.postInventoryStocktakeSession(stocktakeId, notes)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Room Supplies ----------------------------------------------------------
@@ -11432,7 +11928,7 @@ app.whenReady().then(async () => {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Supply item', itemId, db.getSupplyItemById)
       return await db.adjustSupplyStock(itemId, delta, notes, managerPin)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:getRoomStock', async () => {
     try { await requireCapability('supplies.view'); return await db.getRoomSupplyStock().catch(() => []) }
@@ -11444,7 +11940,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Supply item', data?.item_id, db.getSupplyItemById)
       await assertResourceBelongsToCurrentLodge('Room', data?.room_id, db.getRoomById)
       return await db.loadSupplyToRoom(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:useInRoom', async (_, data) => {
     try {
@@ -11452,7 +11948,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Supply item', data?.item_id, db.getSupplyItemById)
       await assertResourceBelongsToCurrentLodge('Room', data?.room_id, db.getRoomById)
       return await db.useSupplyInRoom(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:returnFromRoom', async (_, data) => {
     try {
@@ -11460,7 +11956,7 @@ app.whenReady().then(async () => {
       await assertResourceBelongsToCurrentLodge('Supply item', data?.item_id, db.getSupplyItemById)
       await assertResourceBelongsToCurrentLodge('Room', data?.room_id, db.getRoomById)
       return await db.returnSupplyFromRoom(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:getMovements', async (_, limit) => {
     try { await requireCapability('supplies.view'); return await db.getSupplyMovements(limit).catch(() => []) }
@@ -11478,7 +11974,16 @@ app.whenReady().then(async () => {
     try { await requireCapability('supplies.view'); return await db.getSupplyAllocationsForWeek(weekStart).catch(() => []) }
     catch { return [] }
   })
-  ipcMain.handle('supplies:exportReport', async (event, payload = {}) => {
+  /** Expected renderer-built allocation rows, based on RoomSupplies buildReportExportPayload and the supplies query projection. This is an unvalidated IPC read view. */
+  /** @typedef {{entry_date?: string|null, week_start?: string|null, room_number?: string|null, supply_name?: string, supply_category?: string, units_used: number|string, supply_unit?: string, unit_cost?: number|string, total_cost: number|string}} SuppliesExportAllocationExpectedView */
+  /** RoomSupplies creates room totals with `room_number` (possibly undefined) and numeric `total`; extra read fields retain existing fallback handling. IPC data remains unvalidated. */
+  /** @typedef {{room_number?: string|null, total: number, total_cost?: number|string, item_count?: number|string, total_units?: number|string}} SuppliesExportRoomExpectedView */
+  /** RoomSupplies creates item totals with a possibly undefined display name/unit and numeric aggregates; `room_count` remains a fallback read. */
+  /** @typedef {{name: string|undefined, unit: string|undefined, total_units: number, room_count?: number|string, total_cost: number}} SuppliesExportItemExpectedView */
+  /** RoomSupplies.buildReportExportPayload always sends these fields. This is an expected IPC view only; it does not validate runtime payloads. */
+  /** @typedef {{reportTitle: string, start: string, end: string, currency: string, allocations: SuppliesExportAllocationExpectedView[], byRoom: SuppliesExportRoomExpectedView[], byItem: SuppliesExportItemExpectedView[], grandTotal: number, lodgeName: string, companyName: string, generatedAt: string}} SuppliesExportPayloadExpectedView */
+  /** Empty IPC argument variant is the existing callback default, not validation or a runtime fallback change. @typedef {SuppliesExportPayloadExpectedView | Record<string, undefined>} SuppliesExportPayloadInputExpectedView */
+  ipcMain.handle('supplies:exportReport', /** @param {import('electron').IpcMainInvokeEvent} event @param {SuppliesExportPayloadInputExpectedView} payload */ async (event, payload = {}) => {
     try {
       await requireCapability('supplies.view')
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -11566,10 +12071,10 @@ app.whenReady().then(async () => {
       XLSX.writeFile(wb, filePath)
       return { success: true, filePath }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
-  ipcMain.handle('supplies:exportReportPdf', async (event, payload = {}) => {
+  ipcMain.handle('supplies:exportReportPdf', /** @param {import('electron').IpcMainInvokeEvent} event @param {SuppliesExportPayloadInputExpectedView} payload */ async (event, payload = {}) => {
     try {
       await requireCapability('supplies.view')
       const parentWin = BrowserWindow.fromWebContents(event.sender)
@@ -11602,7 +12107,7 @@ app.whenReady().then(async () => {
       fs.writeFileSync(filePath, pdfBuffer)
       return { success: true, filePath }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
   ipcMain.handle('supplies:getStocktakes', async (_, limit) => {
@@ -11623,13 +12128,13 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('supplies.manage')
       return await db.createSupplyStocktakeSession(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:createRoomStocktake', async (_, data) => {
     try {
       await requireCapability('supplies.manage')
       return await db.createRoomSupplyStocktakeSession(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:getStocktake', async (_, stocktakeId) => {
     try { await requireCapability('supplies.view'); await assertResourceBelongsToCurrentLodge('Supply stocktake', stocktakeId, db.getSupplyStocktakeById); return await db.getSupplyStocktakeSession(stocktakeId) }
@@ -11650,28 +12155,28 @@ app.whenReady().then(async () => {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Supply stocktake', stocktakeId, db.getSupplyStocktakeById)
       return await db.saveSupplyStocktakeCounts(stocktakeId, lines)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:saveRoomStocktakeCounts', async (_, stocktakeId, lines) => {
     try {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Room supply stocktake', stocktakeId, db.getRoomSupplyStocktakeById)
       return await db.saveRoomSupplyStocktakeCounts(stocktakeId, lines)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:postStocktake', async (_, stocktakeId, notes) => {
     try {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Supply stocktake', stocktakeId, db.getSupplyStocktakeById)
       return await db.postSupplyStocktakeSession(stocktakeId, notes)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:postRoomStocktake', async (_, stocktakeId, notes) => {
     try {
       await requireCapability('supplies.manage')
       await assertResourceBelongsToCurrentLodge('Room supply stocktake', stocktakeId, db.getRoomSupplyStocktakeById)
       return await db.postRoomSupplyStocktakeSession(stocktakeId, notes)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('supplies:addRoomStocktakeLine', async (_, stocktakeId, data) => {
     try {
@@ -11680,7 +12185,7 @@ app.whenReady().then(async () => {
       if (data?.item_id) await assertResourceBelongsToCurrentLodge('Supply item', data.item_id, db.getSupplyItemById)
       if (data?.room_id) await assertResourceBelongsToCurrentLodge('Room', data.room_id, db.getRoomById)
       return await db.addRoomSupplyStocktakeLine(stocktakeId, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Conference Bookings ----------------------------------------------------
@@ -11760,26 +12265,26 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('conference.manage')
       return await db.createVenuePackage(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('events:updateVenuePackage', async (_, id, data) => {
     try {
       await requireCapability('conference.manage')
       return await db.updateVenuePackage(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('events:deleteVenuePackage', async (_, id) => {
     try {
       requireRole('manager', 'admin', 'super_admin')
       await requireCapability('conference.manage')
       return await db.deleteVenuePackage(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('events:applyPackage', async (_, packageId, eventBookingId, quantity, intentKey) => {
     try {
       await requireCapability('conference.manage')
       return await db.applyVenuePackageToEvent(packageId, eventBookingId, quantity, intentKey)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Venue Management (Phase 6 depth) ------------------------------------
@@ -11921,15 +12426,15 @@ app.whenReady().then(async () => {
   // -- Analytics & Cost Reports -----------------------------------------------
   ipcMain.handle('reports:posSales', async (_, start, end, outletId) => {
     try { await requireCapability('pos.view'); return await db.getPosRevenueSummary(start, end, outletId) }
-    catch (e) { throw new Error(e?.message || 'Failed to load POS sales report') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load POS sales report') }
   })
   ipcMain.handle('reports:inventorySpend', async (_, start, end, outletId) => {
     try { await requireCapability('inventory.view'); return await db.getInventorySpend(start, end, outletId) }
-    catch (e) { throw new Error(e?.message || 'Failed to load inventory spend report') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load inventory spend report') }
   })
   ipcMain.handle('reports:supplySpend', async (_, start, end) => {
     try { await requireCapability('supplies.view'); return await db.getSupplySpend(start, end) }
-    catch (e) { throw new Error(e?.message || 'Failed to load supply spend report') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load supply spend report') }
   })
   ipcMain.handle('inventory:getLowStock', async () => {
     try { await requireCapability('inventory.view'); return await db.getLowStockItems().catch(() => []) }
@@ -11937,9 +12442,13 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('reports:nightAudit', async (_, date) => {
     try { await requireCapability('audit.view'); return await db.getNightAudit(date) }
-    catch (e) { throw new Error(e?.message || 'Failed to load night audit report') }
+    catch (e) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message || 'Failed to load night audit report') }
   })
 
+  /** Report arrays are expected record projections; arbitrary renderer IPC values remain unvalidated. */
+  /** @typedef {Record<string, unknown>} NightAuditExcelRecordExpectedView */
+  /** @typedef {Record<string, unknown> & {pos_order_items?: NightAuditExcelRecordExpectedView[]|null}} NightAuditExcelPosOrderExpectedView */
+  /** @typedef {{check_ins?: NightAuditExcelRecordExpectedView[]|null, check_outs?: NightAuditExcelRecordExpectedView[]|null, new_bookings?: NightAuditExcelRecordExpectedView[]|null, outstanding?: NightAuditExcelRecordExpectedView[]|null, pos_orders?: NightAuditExcelPosOrderExpectedView[]|null, pos_revenue?: unknown, outstanding_total?: unknown}} NightAuditExcelDataExpectedView */
   ipcMain.handle('reports:saveNightAuditExcel', async (event, payload = {}) => {
     await requireCapability('audit.view')
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -11961,7 +12470,8 @@ app.whenReady().then(async () => {
     try {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
-      const safeData = data || {}
+      // The source and renderer normally follow getNightAudit, but this view does not validate arbitrary IPC values.
+      const safeData = /** @type {NightAuditExcelDataExpectedView} */ (data || {})
       const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const sharedMeta = {
         lodgeName: resolvedLodge,
@@ -11984,7 +12494,7 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary')
 
       // 2. Check-ins
-      const checkinRows = [
+      /** @type {unknown[][]} */ const checkinRows = [
         [`${resolvedLodge} - Check-ins`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']
@@ -11999,7 +12509,7 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkinRows), 'Check-ins')
 
       // 3. Check-outs
-      const checkoutRows = [
+      /** @type {unknown[][]} */ const checkoutRows = [
         [`${resolvedLodge} - Check-outs`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['#', 'Guest', 'Room', 'Type', 'Adults', 'Children', `Total (${sym})`, `Paid (${sym})`, 'Status']
@@ -12014,7 +12524,7 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(checkoutRows), 'Check-outs')
 
       // 4. New Bookings
-      const newBookRows = [
+      /** @type {unknown[][]} */ const newBookRows = [
         [`${resolvedLodge} - New Bookings`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, 'Status']
@@ -12029,20 +12539,21 @@ app.whenReady().then(async () => {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(newBookRows), 'New Bookings')
 
       // 5. POS
-      const posRows = [
+      /** @type {unknown[][]} */ const posRows = [
         [`${resolvedLodge} - POS Orders`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['Time', 'Guest/Room', 'Payment', `Total (${sym})`, 'Items']
       ]
       ;(safeData.pos_orders || []).forEach((o) => {
-        const time = new Date(o.created_at).toLocaleTimeString()
+        // Night-audit producer projects created_at as timestamptz text; this view preserves Date coercion without validating IPC values.
+        const time = new Date(/** @type {string} */ (o.created_at)).toLocaleTimeString()
         const items = (o.pos_order_items || []).map((i) => `${i.quantity}x ${i.item_name}`).join(', ')
         posRows.push([time, o.walk_in_name || (o.room_number ? `Room ${o.room_number}` : 'Walk-in'), o.payment_method, Number(o.total || 0).toFixed(2), items])
       })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(posRows), 'POS Orders')
 
       // 6. Outstanding
-      const outstandingRows = [
+      /** @type {unknown[][]} */ const outstandingRows = [
         [`${resolvedLodge} - Outstanding Balances`],
         ...buildWorkbookMetaRows(sharedMeta),
         ['#', 'Guest', 'Room', 'Check-in', 'Check-out', `Total (${sym})`, `Paid (${sym})`, `Balance (${sym})`]
@@ -12060,7 +12571,7 @@ app.whenReady().then(async () => {
       XLSX.writeFile(wb, filePath)
       return { success: true, filePath }
     } catch (e) {
-      return { success: false, error: e.message }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -12105,7 +12616,7 @@ app.whenReady().then(async () => {
       }
     } catch { return null }
   })
-  ipcMain.handle('settings:save', async (_, data) => {
+  ipcMain.handle('settings:save', /** @returns {Promise<import('../shared/desktopIpcContracts.js').SettingsSaveIpcResult>} */ async (_, data) => {
     try {
       await requireCapability('settings.manage_general')
       const previousPolicy = getTillOperatorPolicy(await db.getSettings().catch(() => ({})))
@@ -12132,7 +12643,7 @@ app.whenReady().then(async () => {
         })
       }
       return { success: true, data: saved, meta: saveMeta }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('settings:updateOperatingProfile', async (_, profile) => {
     try {
@@ -12167,29 +12678,31 @@ app.whenReady().then(async () => {
         ? { success: true, data: saved, meta: deviceOnlyMeta }
         : { success: true, data: saved }
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('settings:previewPropertyTypeChange', async (_, targetType) => {
     // Capability, lodge scope, same-product, expected-state and idempotency
     // are enforced by the domain + authoritative server contract; the
     // handler only routes so denial codes reach the renderer unchanged.
     try { return await db.previewPropertyTypeChange(targetType) }
-    catch (e) { return { success: false, error: e.message, code: e.code || 'property_transition_failed' } }
+    // Preserve the existing thrown-value property reads; this is an expected
+    // error view, not validation or normalization of arbitrary thrown values.
+    catch (e) { return { success: false, error: (/** @type {{message: string, code?: string}} */ (e)).message, code: (/** @type {{message: string, code?: string}} */ (e)).code || 'property_transition_failed' } }
   })
   ipcMain.handle('settings:commitPropertyTypeChange', async (_, payload) => {
     try { return await db.commitPropertyTypeChange(payload) }
-    catch (e) { return { success: false, error: e.message, code: e.code || 'property_transition_failed' } }
+    catch (e) { return { success: false, error: (/** @type {{message: string, code?: string}} */ (e)).message, code: (/** @type {{message: string, code?: string}} */ (e)).code || 'property_transition_failed' } }
   })
   ipcMain.handle('settings:getPropertyTypeTransitionStatus', async (_, idempotencyKey) => {
     try { return await db.getPropertyTypeTransitionStatus(idempotencyKey) }
-    catch (e) { return { success: false, error: e.message, code: e.code || 'property_transition_failed' } }
+    catch (e) { return { success: false, error: (/** @type {{message: string, code?: string}} */ (e)).message, code: (/** @type {{message: string, code?: string}} */ (e)).code || 'property_transition_failed' } }
   })
   ipcMain.handle('settings:refreshSettingsFromServer', async () => {
     // Authoritative post-transition recovery read: bypasses the local cache
     // so a failed-refresh retry can never silently reapply stale
     // classification. Returns the truthful {ok,...} contract verbatim.
     try { return await db.refreshSettingsFromServer() }
-    catch (e) { return { ok: false, reason: 'exception', detail: e.message } }
+    catch (e) { return { ok: false, reason: 'exception', detail: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('auth:status', async (_, email) => {
     try { return await db.getAuthStatus(email) }
@@ -12200,31 +12713,36 @@ app.whenReady().then(async () => {
       await requireCapability('system.health')
       return await db.getLodgeDiagnostics(expectedLodgeId)
     }
-    catch (e) { return { error: e.message } }
+    catch (e) { return { error: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('settings:getSystemHealth', async (_, options = {}) => {
     try {
       await requireCapability('system.health')
       return await db.getSystemHealth(options)
     }
-    catch (e) { return { error: e.message } }
+    catch (e) { return { error: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('settings:relinkLodge', async (_, newLodgeId) => {
     try {
       await requireCapability('settings.manage_general')
       return await db.relinkLodge(newLodgeId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('settings:resetToNewLodge', async () => {
     try {
       requireMasterAdmin()
       await requireCapability('command_central.destructive.manage')
       return { success: true, lodge_id: db.resetToNewLodge() }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('setup:initializeCompany', async (_, payload) => {
+    // A Bar must never become a cloud company. The settings domain enforces the
+    // same rule; this pre-check keeps the actionable refusal in the IPC contract
+    // so a renderer that bypasses the setup screen cannot register a cloud Bar.
+    const localBarRefusal = cloudCompanySetupRefusal(payload?.settings)
+    if (localBarRefusal) return localBarRefusal
     try { return { success: true, data: await db.initializeCompanySetup(payload) } }
-    catch (e) { return { success: false, code: e.code || 'setup_failed', error: e.message || 'Setup failed.' } }
+    catch (e) { return { success: false, code: (/** @type {{message: string, code?: string}} */ (e)).code || 'setup_failed', error: (/** @type {{message: string}} */ (e)).message || 'Setup failed.' } }
   })
   ipcMain.handle('sync:getStatus', /** @returns {Promise<import('../shared/desktopIpcContracts.js').SyncStatusSnapshot>} */ async () => {
     try { return await Promise.resolve(db.getSyncStatus()) }
@@ -12236,13 +12754,13 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('sync:getOfflineMode', /** @returns {Promise<import('../shared/desktopIpcContracts.js').SyncOfflineModeResult>} */ async () => {
     try { await requireCapability('system.health'); return db.getOfflineModeState() }
-    catch (e) { return { enabled: false, error: e.message } }
+    catch (e) { return { enabled: false, error: (/** @type {{message: string}} */ (e)).message } }
   })
   ipcMain.handle('sync:setOfflineMode', /** @param {import('electron').IpcMainInvokeEvent} _ @param {unknown} payload @returns {Promise<import('../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult>} */ async (_, payload) => {
     try {
       await requireCapability('sync.manage')
       return db.setOfflineModeState(payload || {})
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('sync:exportOfflineOperations', async () => {
     try {
@@ -12259,7 +12777,7 @@ app.whenReady().then(async () => {
         appVersion: app.getVersion(),
         exportedBy: state.currentUser?.id || null
       })
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   /**
    * The database facade returns { success:true, retried:number,
@@ -12270,25 +12788,25 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('sync.manage')
       return await db.retrySyncItems(queueIds)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
-  ipcMain.handle('sync:clearFailed', async (_, queueIds) => {
+  ipcMain.handle('sync:clearFailed', /** @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'sync:clearFailed'>>} */ async (_, queueIds) => {
     try {
       await requireCapability('sync.manage')
       return db.clearSyncFailed(queueIds)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('sync:runNow', async () => {
     try {
       await requireCapability('sync.manage')
       return await db.runSyncNow()
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('sync:clearHealthFault', async (_, id) => {
     try {
       await requireCapability('sync.manage')
       return db.clearHealthFault(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('sync:getDeviceHealthRollup', async () => {
     try {
@@ -12298,11 +12816,11 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('admin:getFleetHealthRollup', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getFleetHealthRollup() }
-    catch (error) { throw new Error(error?.message || 'Unable to load fleet health rollup') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Unable to load fleet health rollup') }
   })
   ipcMain.handle('admin:getFleetHealthSummary', async () => {
     try { requireMasterAdmin(); await requireCapability('command_central.view'); return await db.getFleetHealthSummary() }
-    catch (error) { throw new Error(error?.message || 'Unable to load fleet health summary') }
+    catch (error) { throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Unable to load fleet health summary') }
   })
   ipcMain.handle('trial:getStatus', async (_, lodgeId, options = {}) => {
     try { return await db.getTrialStatus(lodgeId, { forceFresh: options?.forceFresh === true }) }
@@ -12312,7 +12830,7 @@ app.whenReady().then(async () => {
     try {
       return await db.getUsageLimitSnapshot(options || {})
     } catch (error) {
-      return { error: error.message || 'Could not load usage snapshot.' }
+      return { error: (/** @type {CaughtErrorExpectedData} */ (error)).message || 'Could not load usage snapshot.' }
     }
   })
   ipcMain.handle('trial:activateKey', async (_, lodgeId, key) => {
@@ -12320,7 +12838,7 @@ app.whenReady().then(async () => {
       await requireCapability('settings.manage_subscription')
       return await db.activateLicenseKey(lodgeId, key)
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   // -- Data Import (Excel) ---------------------------------------------------
@@ -12371,7 +12889,7 @@ app.whenReady().then(async () => {
         truncated: rows.length > 500
       }
     } catch (e) {
-      return { error: e?.message ? `Could not read this Excel file: ${e.message}` : 'Could not read this Excel file.' }
+      return { error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message ? `Could not read this Excel file: ${(/** @type {CaughtErrorMessageReadView | null | undefined} */ (e))?.message}` : 'Could not read this Excel file.' }
     }
   })
 
@@ -12387,7 +12905,7 @@ app.whenReady().then(async () => {
       })
     }
     catch (e) {
-      const msg = String(e.message || '')
+      const msg = String((/** @type {CaughtErrorExpectedData} */ (e)).message || '')
       const friendly = msg.includes('Internet connection') ? msg
         : msg.includes('capability') || msg.includes('permission') ? 'You do not have permission to import data.'
         : 'Import could not be started. Please restart the app and try again.'
@@ -12399,7 +12917,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('data.import')
       return db.dryRunImport(type, mappedRows || [])
-    } catch (e) { return { error: e.message } }
+    } catch (e) { return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   ipcMain.handle('import:exportErrors', async (event, payload = {}) => {
@@ -12434,7 +12952,7 @@ app.whenReady().then(async () => {
       XLSX.writeFile(wb, result.filePath)
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { error: e.message }
+      return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -12450,7 +12968,7 @@ app.whenReady().then(async () => {
       await requireCapability('data.import')
       return await db.checkImportDuplicates(rows)
     }
-    catch (e) { return { error: e.message, duplicates: [] } }
+    catch (e) { return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message, duplicates: [] } }
   })
 
   ipcMain.handle('import:undoBatch', async (_, batchId) => {
@@ -12458,7 +12976,7 @@ app.whenReady().then(async () => {
       await requireCapability('data.import')
       return await db.undoImportBatch(batchId)
     }
-    catch (e) { return { error: e.message } }
+    catch (e) { return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
   ipcMain.handle('import:getBatches', async () => {
@@ -12518,7 +13036,7 @@ app.whenReady().then(async () => {
       XLSX.writeFile(wb, result.filePath)
       return { success: true, filePath: result.filePath }
     } catch (e) {
-      return { error: e.message }
+      return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message }
     }
   })
 
@@ -12528,7 +13046,7 @@ app.whenReady().then(async () => {
 
   setTimeout(() => {
     runManagedBackupPolicy(false).catch((error) => {
-      console.error('Managed weekly backup check failed:', error?.message || error)
+      console.error('Managed weekly backup check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 20_000)
 
@@ -12556,18 +13074,19 @@ app.whenReady().then(async () => {
           }).catch(() => {})
         }
       } catch (error) {
-        console.warn('Pinned customer display did not auto-open:', error?.message || error)
+        console.warn('Pinned customer display did not auto-open:', (/** @type {ErrorMessageReadView | null | undefined} */ (error))?.message || error)
       }
     })()
   }, 15_000)
 
   setInterval(() => {
     runManagedBackupPolicy(false).catch((error) => {
-      console.error('Managed weekly backup check failed:', error?.message || error)
+      console.error('Managed weekly backup check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 60 * 60 * 1000)
 
   let starterAutomationSchedulerRunning = false
+  /** @param {'startup'|'periodic_or_reconnect'} trigger */
   const runStarterAutomationScheduler = async (trigger) => {
     if (starterAutomationSchedulerRunning) return
     starterAutomationSchedulerRunning = true
@@ -12580,7 +13099,7 @@ app.whenReady().then(async () => {
         })
       }
     } catch (error) {
-      console.warn('Starter weekly backup check did not complete:', error?.message || error)
+      console.warn('Starter weekly backup check did not complete:', (/** @type {ErrorMessageReadView | null | undefined} */ (error))?.message || error)
     } finally {
       starterAutomationSchedulerRunning = false
     }
@@ -12591,6 +13110,7 @@ app.whenReady().then(async () => {
   }, 25_000)
 
   let tradingAutomationSchedulerRunning = false
+  /** @param {'startup'|'interval'} trigger */
   const runTradingAutomationScheduler = async (trigger) => {
     if (tradingAutomationSchedulerRunning) return
     tradingAutomationSchedulerRunning = true
@@ -12604,7 +13124,7 @@ app.whenReady().then(async () => {
         })
       }
     } catch (error) {
-      console.warn('Bar trading recovery backup check did not complete:', error?.message || error)
+      console.warn('Bar trading recovery backup check did not complete:', (/** @type {ErrorMessageReadView | null | undefined} */ (error))?.message || error)
     } finally {
       tradingAutomationSchedulerRunning = false
     }
@@ -12626,22 +13146,23 @@ app.whenReady().then(async () => {
 
   setTimeout(() => {
     db.runScheduledFinancialValidation('startup').catch((error) => {
-      console.error('Startup financial validation check failed:', error?.message || error)
+      console.error('Startup financial validation check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 30_000)
 
   setInterval(() => {
     db.runScheduledFinancialValidation('scheduled').catch((error) => {
-      console.error('Scheduled financial validation check failed:', error?.message || error)
+      console.error('Scheduled financial validation check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 6 * 60 * 60 * 1000)
 
   // Recover interrupted product saves and pending catalog publications on
   // startup and periodically (which covers reconnects). Publication pauses
   // while all desktops are closed; pending jobs survive and resume here.
+  /** @param {'startup'|'periodic_or_reconnect'} trigger */
   const runCatalogRecoveryScheduler = (trigger) => {
     db.recoverPendingProductRequests({ trigger }).catch((error) => {
-      console.warn('Catalog recovery check did not complete:', error?.message || error)
+      console.warn('Catalog recovery check did not complete:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }
   setTimeout(() => {
@@ -12655,26 +13176,26 @@ app.whenReady().then(async () => {
   // Keep Command Central fleet health current while this desktop app is active.
   setTimeout(() => {
     db.publishDeviceHealth().catch((error) => {
-      console.warn('Initial device health heartbeat failed:', error?.message || error)
+      console.warn('Initial device health heartbeat failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 60_000)
 
   setInterval(() => {
     db.publishDeviceHealth().catch((error) => {
-      console.warn('Scheduled device health heartbeat failed:', error?.message || error)
+      console.warn('Scheduled device health heartbeat failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 5 * 60_000)
 
   // -- Notification Automation Scheduler --------------------------------------
   setTimeout(() => {
     db.evaluateAllRules().catch((error) => {
-      console.error('Initial notification automation check failed:', error?.message || error)
+      console.error('Initial notification automation check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 5 * 60_000)
 
   setInterval(() => {
     db.evaluateAllRules().catch((error) => {
-      console.error('Scheduled notification automation check failed:', error?.message || error)
+      console.error('Scheduled notification automation check failed:', (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || error)
     })
   }, 60 * 60 * 1000)
 
@@ -12704,7 +13225,7 @@ app.whenReady().then(async () => {
         state: { ...updateState }
       }
     }
-    catch (e) { return { success: false, error: e.message } }
+    catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('update:download', async () => {
     if (is.dev) return { success: true, dev: true }
@@ -12713,8 +13234,8 @@ app.whenReady().then(async () => {
       await autoUpdater.downloadUpdate()
       return { success: true }
     } catch (e) {
-      setUpdateState({ phase: 'error', error: e.message || 'Download failed.' })
-      return { success: false, error: e.message || 'Download failed.' }
+      setUpdateState({ phase: 'error', error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Download failed.' })
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message || 'Download failed.' }
     }
   })
   ipcMain.handle('update:getState', () => ({ ...updateState }))
@@ -12734,7 +13255,7 @@ app.whenReady().then(async () => {
       const lockId = await createLocalLock(roomId, startDate, endDate);
       return { success: !!lockId, lockId };
     } catch (e) {
-      return { success: false, error: e.message };
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message };
     }
   })
   ipcMain.handle('mesh:unlockRoom', async (_, lockId) => {
@@ -12742,7 +13263,7 @@ app.whenReady().then(async () => {
       const released = await releaseLocalLock(lockId);
       return { success: released };
     } catch (e) {
-      return { success: false, error: e.message };
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message };
     }
   })
   ipcMain.handle('mesh:lockTab', async (_, tabId, operatorLabel) => {
@@ -12751,7 +13272,7 @@ app.whenReady().then(async () => {
       await requireCapability('pos.view')
       return { success: true, ...(await createTabLock(tabId, operatorLabel)) }
     } catch (e) {
-      return { success: false, error: e.message };
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message };
     }
   })
   ipcMain.handle('mesh:unlockTab', async (_, lockId) => {
@@ -12760,7 +13281,7 @@ app.whenReady().then(async () => {
       const released = await releaseTabLock(lockId);
       return { success: released };
     } catch (e) {
-      return { success: false, error: e.message };
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message };
     }
   })
   ipcMain.handle('mesh:getDiagnostics', () => getMeshHealthSnapshot())
@@ -12769,7 +13290,7 @@ app.whenReady().then(async () => {
       await refreshMeshDiscovery()
       return { success: true, mesh: getMeshHealthSnapshot() }
     } catch (e) {
-      return { success: false, error: e.message, mesh: getMeshHealthSnapshot() }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message, mesh: getMeshHealthSnapshot() }
     }
   })
   ipcMain.handle('mesh:connectManualPeer', async (_, address, port) => {
@@ -12777,19 +13298,19 @@ app.whenReady().then(async () => {
       const result = await connectManualMeshPeer(address, port)
       return { ...result, mesh: getMeshHealthSnapshot() }
     } catch (e) {
-      return { success: false, error: e.message, mesh: getMeshHealthSnapshot() }
+      return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message, mesh: getMeshHealthSnapshot() }
     }
   })
   ipcMain.handle('app:logRendererError', /** @param {import('electron').IpcMainInvokeEvent} _ @param {unknown} payload */ async (_, payload) => {
     return appendRendererErrorLog(payload || {})
   })
-  ipcMain.handle('app:getRendererErrors', async (_, limit) => getRendererErrorLog(limit))
+  ipcMain.handle('app:getRendererErrors', async (_, limit) => getRendererErrorLog(limit, true))
   ipcMain.handle('app:clearRendererErrors', async () => clearRendererErrorLog())
 
   // -- Hotel Domain --------------------------------------------------------
   // These handlers preserve their existing Error.message forwarding. This is
   // an expected caught-error view only; it does not validate thrown values.
-  /** @typedef {{message?: unknown}} HotelHandlerCaughtErrorView */
+  /** @typedef {{message?: string}} HotelHandlerCaughtErrorView */
   ipcMain.handle('hotel:getDashboardStats', async () => {
     try {
       await requireCapabilityOrDevEnterprisePreview('front_desk_dashboard.view')
@@ -13053,7 +13574,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getAllGroupBlocks()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load group blocks')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load group blocks')
     }
   })
   ipcMain.handle('groupBlocks:create', async (_, data) => {
@@ -13061,7 +13582,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.createGroupBlock(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create group block')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create group block')
     }
   })
   ipcMain.handle('groupBlocks:update', async (_, id, data) => {
@@ -13069,7 +13590,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.updateGroupBlock(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update group block')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update group block')
     }
   })
   ipcMain.handle('groupBlocks:delete', async (_, id) => {
@@ -13077,7 +13598,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.deleteGroupBlock(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete group block')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to delete group block')
     }
   })
   ipcMain.handle('masterFolios:getAll', async () => {
@@ -13085,7 +13606,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getAllMasterFolios()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load master folios')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load master folios')
     }
   })
   ipcMain.handle('masterFolios:create', async (_, data) => {
@@ -13093,7 +13614,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.createMasterFolio(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create master folio')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create master folio')
     }
   })
   ipcMain.handle('masterFolios:getDebtorAging', async (_, corporateAccountId) => {
@@ -13101,7 +13622,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getDebtorAging(corporateAccountId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load debtor aging')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load debtor aging')
     }
   })
   ipcMain.handle('masterFolios:checkCreditLimit', async (_, corporateAccountId, additionalAmount) => {
@@ -13109,7 +13630,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.checkCreditLimit(corporateAccountId, additionalAmount)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to check credit limit')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to check credit limit')
     }
   })
   ipcMain.handle('masterFolios:generateStatement', async (_, corporateAccountId, periodStart, periodEnd) => {
@@ -13117,7 +13638,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.generateCompanyStatement(corporateAccountId, periodStart, periodEnd)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to generate statement')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to generate statement')
     }
   })
   ipcMain.handle('roomingLists:getAll', async () => {
@@ -13125,7 +13646,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getAllRoomingLists()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load rooming lists')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load rooming lists')
     }
   })
   ipcMain.handle('roomingLists:process', async (_, entries, corporateAccountId, groupBlockId, importName) => {
@@ -13133,14 +13654,14 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.manage')
       return await db.processRoomingList(entries, corporateAccountId, groupBlockId, importName)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to process rooming list')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to process rooming list')
     }
   })
   ipcMain.handle('roomingLists:parseCSV', async (_, csvText) => {
     try {
       return await db.parseRoomingListCSV(csvText)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to parse CSV')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to parse CSV')
     }
   })
 
@@ -13150,7 +13671,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_billing.charge')
       return await db.chargeToCorporateAccount(accountId, bookingId, amount, description, { idempotencyKey: intentId })
     } catch (error) {
-      throw new Error(error?.message || 'Failed to charge corporate account')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to charge corporate account')
     }
   })
   ipcMain.handle('corporateBilling:getOutstanding', async (_, accountId) => {
@@ -13158,7 +13679,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getCorporateOutstanding(accountId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get outstanding')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get outstanding')
     }
   })
   ipcMain.handle('corporateBilling:recordPayment', async (_, accountId, invoiceIds, amount, method, reference, intentId) => {
@@ -13166,7 +13687,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_billing.manage')
       return await db.recordCorporatePayment(accountId, invoiceIds, amount, method, reference, { idempotencyKey: intentId })
     } catch (error) {
-      throw new Error(error?.message || 'Failed to record payment')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to record payment')
     }
   })
   ipcMain.handle('corporateBilling:getStatement', async (_, accountId, start, end) => {
@@ -13174,7 +13695,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getCorporateStatement(accountId, start, end)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get statement')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get statement')
     }
   })
   ipcMain.handle('corporateBilling:checkCreditLimit', async (_, accountId, pendingAmount) => {
@@ -13182,7 +13703,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.checkCreditLimitWithPending(accountId, pendingAmount)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to check credit limit')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to check credit limit')
     }
   })
   ipcMain.handle('corporateBilling:suspend', async (_, accountId, reason) => {
@@ -13190,7 +13711,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_billing.manage')
       return await db.suspendCorporateAccount(accountId, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to suspend account')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to suspend account')
     }
   })
   ipcMain.handle('corporateBilling:reactivate', async (_, accountId) => {
@@ -13198,7 +13719,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_billing.manage')
       return await db.reactivateCorporateAccount(accountId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to reactivate account')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to reactivate account')
     }
   })
 
@@ -13208,7 +13729,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('group_operations.manage')
       return await db.getAllGroupOperations()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load group operations')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load group operations')
     }
   })
   ipcMain.handle('groupOperations:checkinBlock', async (_, blockId) => {
@@ -13216,7 +13737,7 @@ app.whenReady().then(async () => {
       await requireCapability('group_operations.manage')
       return await db.checkinGroupBlock(blockId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to check in group')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to check in group')
     }
   })
   ipcMain.handle('groupOperations:checkoutBlock', async (_, blockId) => {
@@ -13224,7 +13745,7 @@ app.whenReady().then(async () => {
       await requireCapability('group_operations.manage')
       return await db.checkoutGroupBlock(blockId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to check out group')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to check out group')
     }
   })
   ipcMain.handle('groupOperations:getPickup', async (_, blockId) => {
@@ -13232,7 +13753,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getGroupBlockPickup(blockId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get pickup')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get pickup')
     }
   })
   ipcMain.handle('groupOperations:releaseUnsold', async (_, blockId) => {
@@ -13240,7 +13761,7 @@ app.whenReady().then(async () => {
       await requireCapability('group_operations.manage')
       return await db.releaseUnsoldGroupRooms(blockId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to release unsold rooms')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to release unsold rooms')
     }
   })
   ipcMain.handle('groupOperations:createFromRoomingList', async (_, listId) => {
@@ -13248,7 +13769,7 @@ app.whenReady().then(async () => {
       await requireCapability('group_operations.manage')
       return await db.createBookingsFromRoomingList(listId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create bookings from rooming list')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create bookings from rooming list')
     }
   })
 
@@ -13258,7 +13779,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getAllPropertyGroups()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load property groups')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load property groups')
     }
   })
   ipcMain.handle('multiProperty:createGroup', async (_, data) => {
@@ -13266,7 +13787,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.createPropertyGroup(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create group')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create group')
     }
   })
   ipcMain.handle('multiProperty:updateGroup', async (_, id, data) => {
@@ -13274,7 +13795,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.updatePropertyGroup(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update group')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update group')
     }
   })
   ipcMain.handle('multiProperty:deleteGroup', async (_, id) => {
@@ -13282,7 +13803,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.deletePropertyGroup(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete group')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to delete group')
     }
   })
   ipcMain.handle('multiProperty:getProperties', async (_, groupId) => {
@@ -13290,7 +13811,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getGroupProperties(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get properties')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get properties')
     }
   })
   ipcMain.handle('multiProperty:addProperty', async (_, groupId, lodgeId, role) => {
@@ -13298,7 +13819,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.addPropertyToGroup(groupId, lodgeId, role)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to add property')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to add property')
     }
   })
   ipcMain.handle('multiProperty:removeProperty', async (_, groupId, lodgeId) => {
@@ -13306,7 +13827,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.removePropertyFromGroup(groupId, lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to remove property')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to remove property')
     }
   })
   ipcMain.handle('multiProperty:getConsolidatedDashboard', async (_, groupId) => {
@@ -13314,7 +13835,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getConsolidatedDashboard(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get consolidated dashboard')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get consolidated dashboard')
     }
   })
   ipcMain.handle('multiProperty:getConsolidatedOccupancy', async (_, groupId, start, end) => {
@@ -13322,7 +13843,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getConsolidatedOccupancyReport(groupId, start, end)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get occupancy report')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get occupancy report')
     }
   })
   ipcMain.handle('multiProperty:getConsolidatedFinancial', async (_, groupId, start, end) => {
@@ -13330,7 +13851,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getConsolidatedFinancialSummary(groupId, start, end)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get financial summary')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get financial summary')
     }
   })
   ipcMain.handle('multiProperty:switchProperty', async (_, lodgeId) => {
@@ -13338,7 +13859,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.switch')
       return await db.switchActiveProperty(lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to switch property')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to switch property')
     }
   })
   ipcMain.handle('multiProperty:getGroupSettings', async (_, groupId) => {
@@ -13346,7 +13867,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getGroupSettings(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get group settings')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get group settings')
     }
   })
   ipcMain.handle('multiProperty:updateGroupSettings', async (_, groupId, key, value) => {
@@ -13354,7 +13875,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.updateGroupSettings(groupId, key, value)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update group settings')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update group settings')
     }
   })
 
@@ -13363,7 +13884,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getSharedGuestProfiles(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get shared guest profiles')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get shared guest profiles')
     }
   })
   ipcMain.handle('multiProperty:shareGuestProfile', async (_, groupId, guestId, notes) => {
@@ -13371,7 +13892,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.shareGuestProfile(groupId, guestId, notes)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to share guest profile')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to share guest profile')
     }
   })
   ipcMain.handle('multiProperty:unshareGuestProfile', async (_, groupId, guestId) => {
@@ -13379,7 +13900,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.unshareGuestProfile(groupId, guestId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to unshare guest profile')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to unshare guest profile')
     }
   })
   ipcMain.handle('multiProperty:getSharedBlacklist', async (_, groupId) => {
@@ -13387,7 +13908,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getSharedBlacklist(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get shared blacklist')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get shared blacklist')
     }
   })
   ipcMain.handle('multiProperty:addBlacklistEntry', async (_, groupId, guestId, email, phone, reason) => {
@@ -13395,7 +13916,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.addBlacklistEntry(groupId, guestId, email, phone, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to add blacklist entry')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to add blacklist entry')
     }
   })
   ipcMain.handle('multiProperty:removeBlacklistEntry', async (_, groupId, entryId) => {
@@ -13403,7 +13924,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.removeBlacklistEntry(groupId, entryId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to remove blacklist entry')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to remove blacklist entry')
     }
   })
   ipcMain.handle('multiProperty:getSharedCorporateAccounts', async (_, groupId) => {
@@ -13411,7 +13932,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getSharedCorporateAccounts(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get shared corporate accounts')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get shared corporate accounts')
     }
   })
   ipcMain.handle('multiProperty:shareCorporateAccount', async (_, groupId, corporateAccountId, shareLevel) => {
@@ -13419,7 +13940,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.shareCorporateAccount(groupId, corporateAccountId, shareLevel)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to share corporate account')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to share corporate account')
     }
   })
   ipcMain.handle('multiProperty:unshareCorporateAccount', async (_, groupId, corporateAccountId) => {
@@ -13427,7 +13948,7 @@ app.whenReady().then(async () => {
       await requireCapability('multi_property.manage')
       return await db.unshareCorporateAccount(groupId, corporateAccountId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to unshare corporate account')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to unshare corporate account')
     }
   })
   ipcMain.handle('multiProperty:getGroupMemberLodges', async (_, groupId) => {
@@ -13435,7 +13956,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('multi_property.view')
       return await db.getGroupMemberLodges(groupId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get group member lodges')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to get group member lodges')
     }
   })
 
@@ -13450,7 +13971,7 @@ app.whenReady().then(async () => {
       }
       return await db.getEnterpriseWorkflowRecords(workflowKey, lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load Enterprise workflow records')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load Enterprise workflow records')
     }
   })
   ipcMain.handle('enterpriseOperations:upsertRecord', async (_, workflowKey, record, lodgeId = null) => {
@@ -13460,7 +13981,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.companies.manage')
       return await db.upsertEnterpriseWorkflowRecord(workflowKey, record, lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to save Enterprise workflow record')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to save Enterprise workflow record')
     }
   })
   ipcMain.handle('enterpriseOperations:appendEvent', async (_, workflowKey, event, lodgeId = null) => {
@@ -13470,7 +13991,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.companies.manage')
       return await db.appendEnterpriseWorkflowEvent(workflowKey, event, lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to append Enterprise workflow event')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to append Enterprise workflow event')
     }
   })
   ipcMain.handle('enterpriseOperations:createPaymentLinkRequest', async (_, payload) => {
@@ -13478,7 +13999,7 @@ app.whenReady().then(async () => {
       await requireCapability('payment_gateway.view')
       return await db.createPaymentLinkRequest(payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create payment link request')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create payment link request')
     }
   })
   ipcMain.handle('enterpriseOperations:createChannelSyncItem', async (_, payload) => {
@@ -13486,7 +14007,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.view')
       return await db.createChannelSyncItem(payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create channel sync item')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create channel sync item')
     }
   })
   ipcMain.handle('enterpriseOperations:createDocument', async (_, payload) => {
@@ -13494,7 +14015,7 @@ app.whenReady().then(async () => {
       await requireCapability('settings.view')
       return await db.createEnterpriseDocument(payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create Enterprise document')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create Enterprise document')
     }
   })
 
@@ -13504,7 +14025,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_messaging.manage')
       return await db.getGuestMessageTemplates()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load message templates')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load message templates')
     }
   })
   ipcMain.handle('guestMessaging:createTemplate', async (_, data) => {
@@ -13512,7 +14033,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.createMessageTemplate(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create template')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create template')
     }
   })
   ipcMain.handle('guestMessaging:updateTemplate', async (_, id, data) => {
@@ -13520,7 +14041,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.updateMessageTemplate(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update template')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update template')
     }
   })
   ipcMain.handle('guestMessaging:deleteTemplate', async (_, id) => {
@@ -13528,7 +14049,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.deleteMessageTemplate(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete template')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to delete template')
     }
   })
   ipcMain.handle('guestMessaging:getTriggers', async () => {
@@ -13536,7 +14057,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_messaging.manage')
       return await db.getGuestMessageTriggers()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load triggers')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load triggers')
     }
   })
   ipcMain.handle('guestMessaging:createTrigger', async (_, data) => {
@@ -13544,7 +14065,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.createMessageTrigger(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create trigger')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create trigger')
     }
   })
   ipcMain.handle('guestMessaging:updateTrigger', async (_, id, data) => {
@@ -13552,7 +14073,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.updateMessageTrigger(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update trigger')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update trigger')
     }
   })
   ipcMain.handle('guestMessaging:deleteTrigger', async (_, id) => {
@@ -13560,7 +14081,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.manage')
       return await db.deleteMessageTrigger(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete trigger')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to delete trigger')
     }
   })
   ipcMain.handle('guestMessaging:renderTemplate', async (_, templateId, variables) => {
@@ -13568,7 +14089,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_messaging.manage')
       return await db.renderMessageTemplate(templateId, variables)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to render template')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to render template')
     }
   })
   ipcMain.handle('guestMessaging:getDeliveryStatus', async (_, status) => {
@@ -13576,7 +14097,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_messaging.send')
       return await db.getMessageDeliveryStatus(status)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load delivery status')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load delivery status')
     }
   })
   ipcMain.handle('guestMessaging:getChannelReadiness', async (_, channel) => {
@@ -13586,7 +14107,7 @@ app.whenReady().then(async () => {
         ? db.getGuestMessageChannelReadiness(channel)
         : db.getGuestMessageAllChannelReadiness()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load channel readiness')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load channel readiness')
     }
   })
   ipcMain.handle('guestMessaging:dispatchMessage', async (_, messageId, options) => {
@@ -13594,7 +14115,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_messaging.send')
       return await db.dispatchGuestMessage(messageId, options || {})
     } catch (error) {
-      throw new Error(error?.message || 'Failed to dispatch guest message')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to dispatch guest message')
     }
   })
   // ── Guest Portal ──────────────────────────────────────────────────────────────────────────
@@ -13603,7 +14124,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_portal.configure')
       return await db.getGuestPortalConfig()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load portal config')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load portal config')
     }
   })
   ipcMain.handle('guestPortal:updateConfig', async (_, config) => {
@@ -13611,7 +14132,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_portal.configure')
       return await db.updateGuestPortalConfig(config)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update portal config')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update portal config')
     }
   })
   ipcMain.handle('guestPortal:createSession', async (_, email, bookingRef) => {
@@ -13619,14 +14140,14 @@ app.whenReady().then(async () => {
       await requireCapability('guest_portal.configure')
       return await db.createGuestPortalSession(email, bookingRef)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create portal session')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to create portal session')
     }
   })
   ipcMain.handle('guestPortal:validateSession', async (_, token) => {
     try {
       return await db.validateGuestPortalSession(token)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to validate session')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to validate session')
     }
   })
   ipcMain.handle('guestPortal:getPendingRequests', async () => {
@@ -13634,7 +14155,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_portal.configure')
       return await db.getPendingGuestPortalRequests()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load portal requests')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load portal requests')
     }
   })
   // ── Guest CRM ──────────────────────────────────────────────────────────────────────────────
@@ -13643,7 +14164,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.view')
       return await db.getGuestCRMProfile(customerId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load CRM profile')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load CRM profile')
     }
   })
   ipcMain.handle('guestCRM:updateProfile', async (_, customerId, data) => {
@@ -13651,7 +14172,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_crm.manage')
       return await db.updateGuestCRMProfile(customerId, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update CRM profile')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to update CRM profile')
     }
   })
   ipcMain.handle('guestCRM:setVipLevel', async (_, customerId, level) => {
@@ -13660,7 +14181,7 @@ app.whenReady().then(async () => {
       const currentUser = await db.getCurrentUser()
       return await db.setVipLevel(customerId, level, currentUser?.id || null)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to set VIP level')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to set VIP level')
     }
   })
   ipcMain.handle('guestCRM:addPreference', async (_, customerId, key, value) => {
@@ -13668,7 +14189,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_crm.manage')
       return await db.addGuestPreference(customerId, key, value)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to add preference')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to add preference')
     }
   })
   ipcMain.handle('guestCRM:setBlacklist', async (_, customerId, blacklisted, reason) => {
@@ -13676,7 +14197,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_crm.blacklist')
       return await db.setBlacklistStatus(customerId, blacklisted, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to set blacklist')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to set blacklist')
     }
   })
   ipcMain.handle('guestCRM:getStayHistory', async (_, customerId) => {
@@ -13684,7 +14205,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.view')
       return await db.getGuestStayHistory(customerId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load stay history')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load stay history')
     }
   })
   ipcMain.handle('guestCRM:recordConsent', async (_, customerId, consentType, granted) => {
@@ -13692,7 +14213,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_crm.manage')
       return await db.recordGuestConsent(customerId, consentType, granted)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to record consent')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to record consent')
     }
   })
   ipcMain.handle('guestCRM:search', async (_, query) => {
@@ -13700,7 +14221,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.view')
       return await db.searchGuestsCRM(query)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to search')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to search')
     }
   })
   ipcMain.handle('guestCRM:listNotes', async (_, customerId) => {
@@ -13708,7 +14229,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.view')
       return await db.listGuestNotes(customerId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load CRM notes')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load CRM notes')
     }
   })
   ipcMain.handle('guestCRM:addNote', async (_, customerId, noteText, noteType) => {
@@ -13716,7 +14237,7 @@ app.whenReady().then(async () => {
       await requireCapability('guest_crm.manage')
       return await db.addGuestNote(customerId, noteText, noteType)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to add CRM note')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to add CRM note')
     }
   })
   ipcMain.handle('guestCRM:getVipList', async () => {
@@ -13724,7 +14245,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('guest_crm.vip')
       return await db.getVIPList()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load VIP list')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load VIP list')
     }
   })
   // ── Payment Foundation ────────────────────────────────────────────────────────────────────
@@ -13738,7 +14259,7 @@ app.whenReady().then(async () => {
       }
       return await db.getPaymentProviderConfig(lodgeId, provider)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load payment provider config')
+      throw new Error(/** @type {HotelHandlerCaughtErrorView} */ (error)?.message || 'Failed to load payment provider config')
     }
   })
   ipcMain.handle('payments:saveProviderConfig', async (_, payload, lodgeId = null) => {
@@ -13751,7 +14272,7 @@ app.whenReady().then(async () => {
       }
       return await db.savePaymentProviderConfig(payload, lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to save payment provider config')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to save payment provider config')
     }
   })
   ipcMain.handle('subscriptionRequests:submit', async (_, request = {}) => {
@@ -13759,7 +14280,7 @@ app.whenReady().then(async () => {
       await requireCapability('settings.view')
       return await db.submitSubscriptionRequest(request)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to submit subscription request')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to submit subscription request')
     }
   })
   ipcMain.handle('subscriptionRequests:getAll', async (_, status, limit, offset) => {
@@ -13768,7 +14289,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       return await db.getSubscriptionRequests(status, limit, offset)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load subscription requests')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to load subscription requests')
     }
   })
   ipcMain.handle('subscriptionRequests:getById', async (_, requestId) => {
@@ -13777,7 +14298,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       return await db.getSubscriptionRequestById(requestId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load subscription request')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to load subscription request')
     }
   })
   ipcMain.handle('subscriptionRequests:updateStatus', async (_, requestId, status, reviewedBy, rejectionReason) => {
@@ -13786,7 +14307,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       return await db.updateSubscriptionRequestStatus(requestId, status, admin.email, rejectionReason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update subscription request status')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to update subscription request status')
     }
   })
   ipcMain.handle('subscriptionRequests:createDocument', async (_, requestId, type, documentInput) => {
@@ -13798,7 +14319,7 @@ app.whenReady().then(async () => {
         reviewed_by: admin.email
       })
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create subscription request document')
+      throw new Error((/** @type {IpcCaughtErrorExpectedView} */ (error))?.message || 'Failed to create subscription request document')
     }
   })
   ipcMain.handle('subscriptionRequests:exportDocumentPdf', async (event, documentPayload = {}) => {
@@ -13821,7 +14342,7 @@ app.whenReady().then(async () => {
       fs.writeFileSync(result.filePath, pdfBuffer)
       return { success: true, filePath: result.filePath }
     } catch (error) {
-      throw new Error(error?.message || 'Failed to export subscription document PDF')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to export subscription document PDF')
     }
   })
   ipcMain.handle('subscriptionRequests:activate', async (_, requestId, activatedBy, activationPayload) => {
@@ -13835,7 +14356,7 @@ app.whenReady().then(async () => {
         activated_by: admin.email
       })
     } catch (error) {
-      throw new Error(error?.message || 'Failed to activate subscription request')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to activate subscription request')
     }
   })
 
@@ -13845,7 +14366,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('room_moves.view')
       return await db.getAvailableRoomsForMove(currentRoomId, checkIn, checkOut)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load available rooms')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to load available rooms')
     }
   })
   ipcMain.handle('roomMoves:execute', async (_, bookingId, targetRoomId, reason, actorName) => {
@@ -13853,7 +14374,7 @@ app.whenReady().then(async () => {
       await requireCapability('room_moves.manage')
       return await db.executeRoomMove(bookingId, targetRoomId, reason, actorName)
     } catch (error) {
-      throw new Error(error?.message || 'Room move failed')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Room move failed')
     }
   })
 
@@ -13863,7 +14384,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('corporate_accounts.view')
       return await db.getAllCorporateAccounts()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load corporate accounts')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to load corporate accounts')
     }
   })
   ipcMain.handle('corporateAccounts:create', async (_, data) => {
@@ -13871,7 +14392,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.view')
       return await db.createCorporateAccount(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create corporate account')
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Failed to create corporate account')
     }
   })
   ipcMain.handle('corporateAccounts:update', async (_, id, data) => {
@@ -13879,7 +14400,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.view')
       return await db.updateCorporateAccount(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update corporate account')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to update corporate account')
     }
   })
   ipcMain.handle('corporateAccounts:delete', async (_, id) => {
@@ -13887,7 +14408,7 @@ app.whenReady().then(async () => {
       await requireCapability('corporate_accounts.view')
       return await db.deleteCorporateAccount(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete corporate account')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to delete corporate account')
     }
   })
 
@@ -13897,7 +14418,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('rate_plans.view')
       return await db.getAllRatePlans()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load rate plans')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to load rate plans')
     }
   })
   ipcMain.handle('ratePlans:create', async (_, data) => {
@@ -13905,7 +14426,7 @@ app.whenReady().then(async () => {
       await requireCapability('rate_plans.view')
       return await db.createRatePlan(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create rate plan')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to create rate plan')
     }
   })
   ipcMain.handle('ratePlans:update', async (_, id, data) => {
@@ -13913,7 +14434,7 @@ app.whenReady().then(async () => {
       await requireCapability('rate_plans.view')
       return await db.updateRatePlan(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update rate plan')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to update rate plan')
     }
   })
   ipcMain.handle('ratePlans:delete', async (_, id) => {
@@ -13921,7 +14442,7 @@ app.whenReady().then(async () => {
       await requireCapability('rate_plans.view')
       return await db.deleteRatePlan(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete rate plan')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to delete rate plan')
     }
   })
   ipcMain.handle('ratePlans:quoteRoomStay', async (_, roomId, checkIn, checkOut, corporateAccountId) => {
@@ -13929,7 +14450,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('rate_plans.view')
       return await db.quoteRoomStayFromPlans(roomId, checkIn, checkOut, corporateAccountId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to quote room stay')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to quote room stay')
     }
   })
 
@@ -13939,7 +14460,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('channel_manager.view')
       return await db.getChannelDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get channel dashboard')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get channel dashboard')
     }
   })
   ipcMain.handle('channelManager:getMappings', async () => {
@@ -13947,7 +14468,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('channel_manager.view')
       return await db.getAllMappings()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get mappings')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get mappings')
     }
   })
   ipcMain.handle('channelManager:createMapping', async (_, channelKey, sourceType, localId, channelCode, channelName) => {
@@ -13955,7 +14476,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.createMapping(channelKey, sourceType, localId, channelCode, channelName)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create mapping')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to create mapping')
     }
   })
   ipcMain.handle('channelManager:updateMapping', async (_, id, channelCode, channelName) => {
@@ -13963,7 +14484,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.updateMapping(id, channelCode, channelName)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update mapping')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to update mapping')
     }
   })
   ipcMain.handle('channelManager:deleteMapping', async (_, id) => {
@@ -13971,7 +14492,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.deleteMapping(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete mapping')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to delete mapping')
     }
   })
   ipcMain.handle('channelManager:getConfigs', async () => {
@@ -13979,7 +14500,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('channel_manager.view')
       return await db.getAllConfigs()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get configs')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get configs')
     }
   })
   ipcMain.handle('channelManager:createConfig', async (_, channelKey, channelLabel, enabled, syncAvailability, syncRates, importReservations) => {
@@ -13987,7 +14508,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.createConfig(channelKey, channelLabel, enabled, syncAvailability, syncRates, importReservations)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create config')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to create config')
     }
   })
   ipcMain.handle('channelManager:updateConfig', async (_, id, payload) => {
@@ -13995,7 +14516,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.updateConfig(id, payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update config')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to update config')
     }
   })
   ipcMain.handle('channelManager:enableChannel', async (_, channelKey) => {
@@ -14003,7 +14524,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.enableChannel(channelKey)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to enable channel')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to enable channel')
     }
   })
   ipcMain.handle('channelManager:disableChannel', async (_, channelKey) => {
@@ -14011,7 +14532,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.disableChannel(channelKey)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to disable channel')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to disable channel')
     }
   })
   ipcMain.handle('channelManager:processSyncQueue', async (_, channelKey) => {
@@ -14019,7 +14540,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.processSyncQueue(channelKey)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to process sync queue')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to process sync queue')
     }
   })
   ipcMain.handle('channelManager:pushAvailability', async (_, channelKey, payload) => {
@@ -14027,7 +14548,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.pushChannelAvailability(channelKey, payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to push channel availability')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to push channel availability')
     }
   })
   ipcMain.handle('channelManager:pushRates', async (_, channelKey, payload) => {
@@ -14035,7 +14556,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.pushChannelRates(channelKey, payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to push channel rates')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to push channel rates')
     }
   })
   ipcMain.handle('channelManager:fetchReservations', async (_, channelKey, since) => {
@@ -14043,7 +14564,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.fetchChannelReservations(channelKey, since)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to fetch channel reservations')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to fetch channel reservations')
     }
   })
   ipcMain.handle('channelManager:importReservation', async (_, payload) => {
@@ -14051,7 +14572,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.importReservation(payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to import reservation')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to import reservation')
     }
   })
   ipcMain.handle('channelManager:confirmImport', async (_, importId) => {
@@ -14059,7 +14580,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.confirmImport(importId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to confirm import')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to confirm import')
     }
   })
   ipcMain.handle('channelManager:rejectImport', async (_, importId, reason) => {
@@ -14067,7 +14588,7 @@ app.whenReady().then(async () => {
       await requireCapability('channel_manager.manage')
       return await db.rejectImport(importId, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to reject import')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to reject import')
     }
   })
 
@@ -14077,7 +14598,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('documents.view')
       return await db.getAllTemplates()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get templates')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get templates')
     }
   })
   ipcMain.handle('documentSystem:createTemplate', async (_, templateKey, name, documentType, contentTemplate, variables, branding, numberingPrefix) => {
@@ -14085,7 +14606,7 @@ app.whenReady().then(async () => {
       await requireCapability('documents.manage')
       return await db.createTemplate(templateKey, name, documentType, contentTemplate, variables, branding, numberingPrefix)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create template')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to create template')
     }
   })
   ipcMain.handle('documentSystem:updateTemplate', async (_, id, payload) => {
@@ -14093,7 +14614,7 @@ app.whenReady().then(async () => {
       await requireCapability('documents.manage')
       return await db.updateTemplate(id, payload)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update template')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to update template')
     }
   })
   ipcMain.handle('documentSystem:deleteTemplate', async (_, id) => {
@@ -14101,7 +14622,7 @@ app.whenReady().then(async () => {
       await requireCapability('documents.manage')
       return await db.deleteTemplate(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete template')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to delete template')
     }
   })
   ipcMain.handle('documentSystem:renderDocument', async (_, templateKey, subjectType, subjectId) => {
@@ -14109,7 +14630,7 @@ app.whenReady().then(async () => {
       await requireCapability('documents.generate')
       return await db.renderDocument(templateKey, subjectType, subjectId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to render document')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to render document')
     }
   })
   ipcMain.handle('documentSystem:publishDocument', async (_, documentId) => {
@@ -14117,7 +14638,7 @@ app.whenReady().then(async () => {
       await requireCapability('documents.manage')
       return await db.publishDocument(documentId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to publish document')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to publish document')
     }
   })
   ipcMain.handle('documentSystem:getDocumentHistory', async (_, subjectType, subjectId) => {
@@ -14125,7 +14646,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('documents.view')
       return await db.getDocumentHistory(subjectType, subjectId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get document history')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get document history')
     }
   })
   ipcMain.handle('documentSystem:getDocumentDashboard', async () => {
@@ -14133,7 +14654,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('documents.view')
       return await db.getDocumentDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get document dashboard')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get document dashboard')
     }
   })
 
@@ -14143,7 +14664,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('hotel_roles.view')
       return await db.getHotelRoleTemplates()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get role templates')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get role templates')
     }
   })
   ipcMain.handle('hotelRoles:getRoleCapabilities', async (_, roleKey) => {
@@ -14151,7 +14672,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('hotel_roles.view')
       return await db.getRoleCapabilities(roleKey)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get role capabilities')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get role capabilities')
     }
   })
 
@@ -14166,14 +14687,14 @@ app.whenReady().then(async () => {
       }
       return await db.getPaymentDashboard(lodgeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get payment dashboard')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get payment dashboard')
     }
   })
   ipcMain.handle('payments:verifyWebhookSignature', async (_, provider, signature, payloadRaw) => {
     try {
       return await db.verifyWebhookSignature(provider, signature, payloadRaw)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to verify webhook signature')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to verify webhook signature')
     }
   })
   // -- Abandoned Payment Recovery ---------------------------------------------
@@ -14182,7 +14703,7 @@ app.whenReady().then(async () => {
       await requireCapability('payment_gateway.manage')
       return await db.logAbandonedSession(bookingId, amount, provider, sessionToken, expiresAt)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to log abandoned payment session')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to log abandoned payment session')
     }
   })
   ipcMain.handle('abandonedPayments:getSessions', async (_, statusFilter) => {
@@ -14190,7 +14711,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('payment_gateway.view')
       return await db.getAbandonedSessions(statusFilter)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get abandoned payment sessions')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get abandoned payment sessions')
     }
   })
   ipcMain.handle('abandonedPayments:recoverSession', async (_, sessionToken) => {
@@ -14198,7 +14719,7 @@ app.whenReady().then(async () => {
       await requireCapability('payment_gateway.manage')
       return await db.recoverSession(sessionToken)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to recover abandoned payment session')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to recover abandoned payment session')
     }
   })
   ipcMain.handle('abandonedPayments:expireSessions', async () => {
@@ -14206,7 +14727,7 @@ app.whenReady().then(async () => {
       await requireCapability('payment_gateway.manage')
       return await db.expireSessions()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to expire abandoned payment sessions')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to expire abandoned payment sessions')
     }
   })
   ipcMain.handle('abandonedPayments:getPendingRecovery', async () => {
@@ -14214,14 +14735,14 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('payment_gateway.view')
       return await db.getPendingRecoverySessions()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get pending recovery sessions')
+      throw new Error(/** @type {IpcCaughtErrorExpectedView} */ (error)?.message || 'Failed to get pending recovery sessions')
     }
   })
 
   // -- Rate Calendar ----------------------------------------------------------
   // These handlers preserve their existing Error.message forwarding. This is
   // an expected caught-error view only; it does not validate thrown values.
-  /** @typedef {{message?: unknown}} RateManagementCaughtErrorView */
+  /** @typedef {{message?: string}} RateManagementCaughtErrorView */
   ipcMain.handle('rateCalendar:get', async (_, roomTypeId, startDate, endDate) => {
     try {
       await requireCapabilityOrDevEnterprisePreview('rate_calendar.manage')
@@ -14809,7 +15330,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('cancellation.manage')
       return await db.getAllCancellationPolicies()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load cancellation policies')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load cancellation policies')
     }
   })
   ipcMain.handle('cancellationPolicies:create', async (_, data) => {
@@ -14817,7 +15338,7 @@ app.whenReady().then(async () => {
       await requireCapability('cancellation.manage')
       return await db.createCancellationPolicy(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create cancellation policy')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to create cancellation policy')
     }
   })
   ipcMain.handle('cancellationPolicies:update', async (_, id, data) => {
@@ -14825,7 +15346,7 @@ app.whenReady().then(async () => {
       await requireCapability('cancellation.manage')
       return await db.updateCancellationPolicy(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update cancellation policy')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to update cancellation policy')
     }
   })
   ipcMain.handle('cancellationPolicies:delete', async (_, id) => {
@@ -14833,7 +15354,7 @@ app.whenReady().then(async () => {
       await requireCapability('cancellation.manage')
       return await db.deleteCancellationPolicy(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete cancellation policy')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to delete cancellation policy')
     }
   })
   ipcMain.handle('cancellationPolicies:calculateFee', async (_, bookingId, reason) => {
@@ -14841,7 +15362,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('cancellation.manage')
       return await db.calculateCancellationFee(bookingId, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to calculate cancellation fee')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to calculate cancellation fee')
     }
   })
   ipcMain.handle('cancellationPolicies:process', async (_, requestId, approvedBy) => {
@@ -14849,7 +15370,7 @@ app.whenReady().then(async () => {
       await requireCapability('cancellation.approve')
       return await db.processCancellation(requestId, approvedBy)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to process cancellation')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to process cancellation')
     }
   })
   ipcMain.handle('cancellationPolicies:getRequests', async () => {
@@ -14857,7 +15378,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('cancellation.manage')
       return await db.getAllCancellationRequests()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load cancellation requests')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load cancellation requests')
     }
   })
   ipcMain.handle('cancellationPolicies:approve', async (_, requestId, approvedBy) => {
@@ -14865,7 +15386,7 @@ app.whenReady().then(async () => {
       await requireCapability('cancellation.approve')
       return await db.approveCancellation(requestId, approvedBy)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to approve cancellation')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to approve cancellation')
     }
   })
 
@@ -14875,7 +15396,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getOccupancy(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getPace', async (_, start, end) => {
@@ -14883,7 +15404,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getPace(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getPickup', async (_, start, end) => {
@@ -14891,7 +15412,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getPickup(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getChannelSource', async (_, start, end) => {
@@ -14899,7 +15420,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getChannelSource(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getDebtorAging', async () => {
@@ -14907,7 +15428,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getAdvancedReportDebtorAging()
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getRatePerformance', async (_, start, end) => {
@@ -14915,7 +15436,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getRatePerformance(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getHousekeepingProductivity', async (_, start, end) => {
@@ -14923,7 +15444,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getHousekeepingProductivity(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getRoomDowntime', async (_, start, end) => {
@@ -14931,7 +15452,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getRoomDowntime(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getGroupPickup', async (_, start, end) => {
@@ -14939,7 +15460,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getGroupPickup(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getCancellationNoShow', async (_, start, end) => {
@@ -14947,7 +15468,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getCancellationNoShow(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getTaxVat', async (_, start, end) => {
@@ -14955,7 +15476,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getTaxVat(start, end)
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getDepositLiability', async () => {
@@ -14963,7 +15484,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getDepositLiability()
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
   ipcMain.handle('advancedReports:getFolioExceptions', async () => {
@@ -14971,7 +15492,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_reports.view')
       return await db.getFolioExceptions()
     } catch (error) {
-      return { data: null, error: error?.message || 'Failed' }
+      return { data: null, error: (/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed' }
     }
   })
 
@@ -14981,7 +15502,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('folios.view')
       return await db.getHotelFolios()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load hotel folios')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load hotel folios')
     }
   })
   ipcMain.handle('folios:getEntries', async (_, bookingId) => {
@@ -14989,14 +15510,14 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('folios.view')
       return await db.getHotelFolioEntries(bookingId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load folio entries')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load folio entries')
     }
   })
   ipcMain.handle('folios:postCharge', async (_, bookingId, data) => {
     try {
       await requireCapability('folios.manage')
       return await db.postHotelFolioCharge(bookingId, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
 
   // -- Hotel Folio Ledger (independent folio ledger) -------------------------
@@ -15005,7 +15526,7 @@ app.whenReady().then(async () => {
       await requireCapability('folios.view')
       return await db.folioLedger.getFolios(bookingId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load ledger folios')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load ledger folios')
     }
   })
   ipcMain.handle('folioLedger:getLineItems', async (_, folioId) => {
@@ -15013,62 +15534,62 @@ app.whenReady().then(async () => {
       await requireCapability('folios.view')
       return await db.folioLedger.getLineItems(folioId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load ledger line items')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load ledger line items')
     }
   })
   ipcMain.handle('folioLedger:createFolio', async (_, bookingId, guestId, folioType, label, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.createFolio(bookingId, guestId, folioType, label, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:addCharge', async (_, folioId, amount, description, referenceType, referenceId, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.addCharge(folioId, amount, description, referenceType, referenceId, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:addPayment', async (_, folioId, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.addPayment(folioId, amount, description, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:transferCharge', async (_, sourceFolioId, targetFolioId, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.transferCharge(sourceFolioId, targetFolioId, amount, description, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:splitFolio', async (_, sourceFolioId, targetFolioType, targetLabel, amount, description, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.splitFolio(sourceFolioId, targetFolioType, targetLabel, amount, description, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:voidLineItem', async (_, lineItemId, reason, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.voidLineItem(lineItemId, reason, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:closeFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.closeFolio(folioId, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:reopenFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.reopenFolio(folioId, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:lockFolio', async (_, folioId, intentId) => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.lockFolio(folioId, intentId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:getPendingIntentRecovery', async () => {
     await requireCapability('folios.manage')
@@ -15078,14 +15599,14 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('folios.manage')
       return await db.folioLedger.retryIntent(intentId)
-    } catch (e) { return { success: false, status: 'rejected', error: e.message } }
+    } catch (e) { return { success: false, status: 'rejected', error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('folioLedger:getBalance', async (_, folioId) => {
     try {
       await requireCapability('folios.view')
       return await db.folioLedger.getBalance(folioId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get folio balance')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to get folio balance')
     }
   })
 
@@ -15095,7 +15616,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_housekeeping.view')
       return await db.getHousekeepingDashboard(date)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load housekeeping dashboard')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load housekeeping dashboard')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:createAssignment', async (_, roomId, assignedTo, date, shift) => {
@@ -15103,7 +15624,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.assign')
       return await db.createAssignment(roomId, assignedTo, date, shift)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create assignment')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to create assignment')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:updateAssignmentStatus', async (_, id, status, notes) => {
@@ -15111,7 +15632,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.assign')
       return await db.updateAssignmentStatus(id, status, notes)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update assignment')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to update assignment')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:createInspection', async (_, roomId, inspectedBy, checklistResults) => {
@@ -15119,7 +15640,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.inspect')
       return await db.createInspection(roomId, inspectedBy, checklistResults)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create inspection')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to create inspection')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:startTurnaround', async (_, bookingId) => {
@@ -15127,7 +15648,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_housekeeping.view')
       return await db.startTurnaround(bookingId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to start turnaround')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to start turnaround')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:completeTurnaround', async (_, turnaroundId) => {
@@ -15135,7 +15656,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.assign')
       return await db.completeTurnaround(turnaroundId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to complete turnaround')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to complete turnaround')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:getTurnaroundTimes', async (_, startDate, endDate) => {
@@ -15143,7 +15664,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_housekeeping.view')
       return await db.getTurnaroundTimes(startDate, endDate)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load turnaround times')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load turnaround times')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:getProductivity', async (_, startDate, endDate) => {
@@ -15151,7 +15672,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_housekeeping.view')
       return await db.getProductivity(startDate, endDate)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load productivity data')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load productivity data')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:getChecklistItems', async () => {
@@ -15159,7 +15680,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_housekeeping.view')
       return await db.getChecklistItems()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load checklist items')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load checklist items')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:createChecklistItem', async (_, data) => {
@@ -15167,7 +15688,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.inspect')
       return await db.createChecklistItem(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create checklist item')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to create checklist item')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:updateChecklistItem', async (_, id, data) => {
@@ -15175,7 +15696,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.inspect')
       return await db.updateChecklistItem(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update checklist item')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to update checklist item')
     }
   })
   ipcMain.handle('housekeepingCommandCenter:deleteChecklistItem', async (_, id) => {
@@ -15183,7 +15704,7 @@ app.whenReady().then(async () => {
       await requireCapability('housekeeping.inspect')
       return await db.deleteChecklistItem(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete checklist item')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to delete checklist item')
     }
   })
 
@@ -15193,7 +15714,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('maintenance.view')
       return await db.getAllPreventiveSchedules()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load preventive schedules')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load preventive schedules')
     }
   })
   ipcMain.handle('maintenanceEnterprise:createPreventiveSchedule', async (_, data) => {
@@ -15201,7 +15722,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.preventive')
       return await db.createPreventiveSchedule(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create preventive schedule')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to create preventive schedule')
     }
   })
   ipcMain.handle('maintenanceEnterprise:updatePreventiveSchedule', async (_, id, data) => {
@@ -15209,7 +15730,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.preventive')
       return await db.updatePreventiveSchedule(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update preventive schedule')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to update preventive schedule')
     }
   })
   ipcMain.handle('maintenanceEnterprise:deletePreventiveSchedule', async (_, id) => {
@@ -15217,7 +15738,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.preventive')
       return await db.deletePreventiveSchedule(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete preventive schedule')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to delete preventive schedule')
     }
   })
   ipcMain.handle('maintenanceEnterprise:getDuePreventive', async (_, date) => {
@@ -15225,7 +15746,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('maintenance.view')
       return await db.getDuePreventiveMaintenance(date)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load due preventive maintenance')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load due preventive maintenance')
     }
   })
   ipcMain.handle('maintenanceEnterprise:completePreventive', async (_, id, completedBy, notes) => {
@@ -15233,7 +15754,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.preventive')
       return await db.completePreventiveMaintenance(id, completedBy, notes)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to complete preventive maintenance')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to complete preventive maintenance')
     }
   })
   ipcMain.handle('maintenanceEnterprise:setRoomOutOfOrder', async (_, roomId, startDate, reason, endDate, ticketId) => {
@@ -15241,7 +15762,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.ooo')
       return await db.setRoomOutOfOrder(roomId, startDate, reason, endDate, ticketId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to set room out of order')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to set room out of order')
     }
   })
   ipcMain.handle('maintenanceEnterprise:setRoomOutOfService', async (_, roomId, startDate, reason, endDate, ticketId) => {
@@ -15249,7 +15770,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.ooo')
       return await db.setRoomOutOfService(roomId, startDate, reason, endDate, ticketId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to set room out of service')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to set room out of service')
     }
   })
   ipcMain.handle('maintenanceEnterprise:returnRoomToService', async (_, downtimeId) => {
@@ -15257,7 +15778,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.ooo')
       return await db.returnRoomToService(downtimeId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to return room to service')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to return room to service')
     }
   })
   ipcMain.handle('maintenanceEnterprise:getRoomDowntimeHistory', async (_, roomId) => {
@@ -15265,7 +15786,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('maintenance.view')
       return await db.getRoomDowntimeHistory(roomId)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load downtime history')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load downtime history')
     }
   })
   ipcMain.handle('maintenanceEnterprise:getMaintenanceDashboard', async () => {
@@ -15273,7 +15794,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('maintenance.view')
       return await db.getMaintenanceDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load maintenance dashboard')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load maintenance dashboard')
     }
   })
   ipcMain.handle('maintenanceEnterprise:getDowntimeReport', async (_, startDate, endDate) => {
@@ -15281,7 +15802,7 @@ app.whenReady().then(async () => {
       await requireCapability('maintenance.preventive')
       return await db.getDowntimeReport(startDate, endDate)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load downtime report')
+      throw new Error((/** @type {WorkflowErrorMessageReadView} */ (error))?.message || 'Failed to load downtime report')
     }
   })
 
@@ -15294,20 +15815,20 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('maintenance.manage')
       return await db.createPropertyAsset(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:updateAsset', async (_, id, data) => {
     try {
       await requireCapability('maintenance.manage')
       return await db.updatePropertyAsset(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:deleteAsset', async (_, id) => {
     try {
       requireRole('manager', 'admin', 'super_admin')
       await requireCapability('maintenance.manage')
       return await db.deletePropertyAsset(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:getMaintenanceHistory', async (_, assetId) => {
     try { return await db.getAssetMaintenanceHistory(assetId) }
@@ -15317,7 +15838,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('maintenance.manage')
       return await db.logAssetMaintenance(assetId, ticketId, description, cost, vendorId)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:getVendors', async (_, specialisation) => {
     try { return await db.getMaintenanceVendors(specialisation) }
@@ -15327,20 +15848,20 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('maintenance.manage')
       return await db.createMaintenanceVendor(data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:updateVendor', async (_, id, data) => {
     try {
       await requireCapability('maintenance.manage')
       return await db.updateMaintenanceVendor(id, data)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
   ipcMain.handle('assetRegistry:deleteVendor', async (_, id) => {
     try {
       requireRole('manager', 'admin', 'super_admin')
       await requireCapability('maintenance.manage')
       return await db.deleteMaintenanceVendor(id)
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) { return { success: false, error: /** @type {WorkflowErrorMessageReadView} */ (e).message } }
   })
 
   // -- Asset Management (Phase 5 depth) ------------------------------------
@@ -15459,13 +15980,14 @@ app.whenReady().then(async () => {
     catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
 
+  // The Error constructor assertions below are expected-data views for existing Error/Supabase messages; they do not validate caught values, and Error retains its existing coercion.
   // ── Operations Compliance IPC ─────────────────────────────────────────────
   ipcMain.handle('operationsCompliance:createLinenStocktake', async (_, items) => {
     try {
       await requireCapability('linen.manage')
       return await db.createLinenStocktake(items)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create linen stocktake')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to create linen stocktake'))
     }
   })
   ipcMain.handle('operationsCompliance:getLinenDashboard', async () => {
@@ -15473,7 +15995,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('linen_laundry.view')
       return await db.getLinenDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load linen dashboard')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load linen dashboard'))
     }
   })
   ipcMain.handle('operationsCompliance:reportDamagedLinen', async (_, itemId, quantity, reason) => {
@@ -15481,7 +16003,7 @@ app.whenReady().then(async () => {
       await requireCapability('linen.manage')
       return await db.reportDamagedLinen(itemId, quantity, reason)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to report damaged linen')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to report damaged linen'))
     }
   })
   ipcMain.handle('operationsCompliance:chargeDamagedLinen', async (_, bookingId, linenItemId, quantity, amount) => {
@@ -15489,7 +16011,7 @@ app.whenReady().then(async () => {
       await requireCapability('linen.manage')
       return await db.chargeDamagedLinen(bookingId, linenItemId, quantity, amount)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to charge damaged linen')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to charge damaged linen'))
     }
   })
   ipcMain.handle('operationsCompliance:claimLostFoundItem', async (_, itemId, claimerName, claimerContact, disposition) => {
@@ -15497,7 +16019,7 @@ app.whenReady().then(async () => {
       await requireCapability('lost_found.manage')
       return await db.claimLostFoundItem(itemId, claimerName, claimerContact, disposition)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to claim lost & found item')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to claim lost & found item'))
     }
   })
   ipcMain.handle('operationsCompliance:getLostFoundDashboard', async () => {
@@ -15505,7 +16027,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('lost_found.view')
       return await db.getLostFoundDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load lost & found dashboard')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load lost & found dashboard'))
     }
   })
   ipcMain.handle('operationsCompliance:resolveIncident', async (_, id, resolution, resolvedBy) => {
@@ -15513,7 +16035,7 @@ app.whenReady().then(async () => {
       await requireCapability('incidents.manage')
       return await db.resolveIncident(id, resolution, resolvedBy)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to resolve incident')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to resolve incident'))
     }
   })
   ipcMain.handle('operationsCompliance:getIncidentDashboard', async () => {
@@ -15521,7 +16043,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('incident_log.view')
       return await db.getIncidentDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load incident dashboard')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load incident dashboard'))
     }
   })
   ipcMain.handle('operationsCompliance:getVisitorDashboard', async () => {
@@ -15529,7 +16051,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('visitor_register.view')
       return await db.getVisitorDashboard()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load visitor dashboard')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load visitor dashboard'))
     }
   })
   ipcMain.handle('operationsCompliance:getVisitorHistory', async (_, startDate, endDate) => {
@@ -15537,7 +16059,7 @@ app.whenReady().then(async () => {
       await requireCapability('visitors.manage')
       return await db.getVisitorHistory(startDate, endDate)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load visitor history')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load visitor history'))
     }
   })
   ipcMain.handle('operationsCompliance:getEvacuationList', async () => {
@@ -15545,7 +16067,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('emergency_list.view')
       return await db.getEvacuationList()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load evacuation list')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load evacuation list'))
     }
   })
   ipcMain.handle('operationsCompliance:exportEvacuationReport', async () => {
@@ -15553,7 +16075,7 @@ app.whenReady().then(async () => {
       await requireCapability('emergency.view')
       return await db.exportEvacuationReport()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to export evacuation report')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to export evacuation report'))
     }
   })
   ipcMain.handle('operationsCompliance:createShiftHandover', async (_, data) => {
@@ -15561,7 +16083,7 @@ app.whenReady().then(async () => {
       await requireCapability('shift_handover.manage')
       return await db.createComplianceShiftHandover(data)
     } catch (error) {
-      return { success: false, error: error?.message || 'Failed to create shift handover' }
+      return { success: false, error: /** @type {ErrorMessageReadView | null | undefined} */ (error)?.message || 'Failed to create shift handover' }
     }
   })
   ipcMain.handle('operationsCompliance:completeShiftHandover', async (_, id) => {
@@ -15569,7 +16091,7 @@ app.whenReady().then(async () => {
       await requireCapability('shift_handover.manage')
       return await db.completeShiftHandover(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to complete shift handover')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to complete shift handover'))
     }
   })
   ipcMain.handle('operationsCompliance:getShiftHandoverHistory', async () => {
@@ -15577,17 +16099,18 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('shift_handover.manage')
       return await db.getShiftHandoverHistory()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load shift handover history')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load shift handover history'))
     }
   })
 
+  // The Error constructor assertions below are expected-data views for existing Error/Supabase messages; they do not validate caught values, and Error retains its existing coercion.
   // ── Advanced Booking Engine ──────────────────────────────────────────────
   ipcMain.handle('bookingEngine:calculatePrice', async (_, roomTypeId, checkIn, checkOut, numGuests) => {
     try {
       await requireCapabilityOrDevEnterprisePreview('advanced_booking_engine.view')
       return await db.calculateBookingPrice(roomTypeId, checkIn, checkOut, numGuests)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to calculate price')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to calculate price'))
     }
   })
   ipcMain.handle('bookingEngine:checkAvailability', async (_, roomTypeId, checkIn, checkOut, numRooms) => {
@@ -15595,7 +16118,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_booking_engine.view')
       return await db.checkBookingAvailability(roomTypeId, checkIn, checkOut, numRooms)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to check availability')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to check availability'))
     }
   })
   ipcMain.handle('bookingEngine:getUpsells', async (_, roomTypeId, checkIn, checkOut, numGuests) => {
@@ -15603,7 +16126,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_booking_engine.view')
       return await db.getBookingUpsells(roomTypeId, checkIn, checkOut, numGuests)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to get booking upsells')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to get booking upsells'))
     }
   })
   ipcMain.handle('bookingEngine:createIntent', async (_, roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options) => {
@@ -15611,7 +16134,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.createBookingEngineIntent(roomTypeId, checkIn, checkOut, numGuests, priceEstimate, options)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create booking intent')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to create booking intent'))
     }
   })
   ipcMain.handle('bookingEngine:confirmIntent', async (_, intentOrId, confirmation) => {
@@ -15619,7 +16142,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.confirmBookingEngineIntent(intentOrId, confirmation)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to confirm booking intent')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to confirm booking intent'))
     }
   })
   ipcMain.handle('bookingEngine:getRules', async () => {
@@ -15627,7 +16150,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_booking_engine.view')
       return await db.getBookingEngineRules()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load booking engine rules')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load booking engine rules'))
     }
   })
   ipcMain.handle('bookingEngine:createRule', async (_, data) => {
@@ -15635,7 +16158,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.createBookingEngineRule(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create booking engine rule')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to create booking engine rule'))
     }
   })
   ipcMain.handle('bookingEngine:updateRule', async (_, id, data) => {
@@ -15643,7 +16166,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.updateBookingEngineRule(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update booking engine rule')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to update booking engine rule'))
     }
   })
   ipcMain.handle('bookingEngine:deleteRule', async (_, id) => {
@@ -15651,7 +16174,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.deleteBookingEngineRule(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete booking engine rule')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to delete booking engine rule'))
     }
   })
   ipcMain.handle('bookingEngine:getUpsellsList', async () => {
@@ -15659,7 +16182,7 @@ app.whenReady().then(async () => {
       await requireCapabilityOrDevEnterprisePreview('advanced_booking_engine.view')
       return await db.getBookingUpsellsList()
     } catch (error) {
-      throw new Error(error?.message || 'Failed to load booking engine upsells')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to load booking engine upsells'))
     }
   })
   ipcMain.handle('bookingEngine:createUpsell', async (_, data) => {
@@ -15667,7 +16190,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.createBookingUpsell(data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to create booking engine upsell')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to create booking engine upsell'))
     }
   })
   ipcMain.handle('bookingEngine:updateUpsell', async (_, id, data) => {
@@ -15675,7 +16198,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.updateBookingUpsell(id, data)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to update booking engine upsell')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to update booking engine upsell'))
     }
   })
   ipcMain.handle('bookingEngine:deleteUpsell', async (_, id) => {
@@ -15683,7 +16206,7 @@ app.whenReady().then(async () => {
       await requireCapability('advanced_booking_engine.manage')
       return await db.deleteBookingUpsell(id)
     } catch (error) {
-      throw new Error(error?.message || 'Failed to delete booking engine upsell')
+      throw new Error(/** @type {string} */ ((/** @type {ErrorMessageReadView | null | undefined} */ (error)?.message) || 'Failed to delete booking engine upsell'))
     }
   })
 
@@ -15792,14 +16315,16 @@ app.whenReady().then(async () => {
     reopenPeriodClose: ['accounting.close', db.reopenRestaurantPeriodCloseV2]
   }
   ipcMain.handle('restaurantAccountingV2:invoke', async (_, operation, args = []) => {
-    const contract = restaurantAccountingV2Operations[operation]
+    // The operation table is the concrete IPC dispatch map. Keep its existing
+    // truthiness rejection below; this indexed view adds no runtime validation.
+    const contract = restaurantAccountingV2Operations[/** @type {keyof typeof restaurantAccountingV2Operations} */ (operation)]
     if (!contract) throw new Error('Unsupported Restaurant Accounting operation')
     const [capability, handler] = contract
     try {
       await requireCapability(capability)
       return await handler(...(Array.isArray(args) ? args : []))
     } catch (error) {
-      throw new Error(error?.message || `Restaurant Accounting ${operation} failed`)
+      throw new (/** @type {ErrorConstructorWithRuntimeMessage} */ (Error))((/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || `Restaurant Accounting ${operation} failed`)
     }
   })
   ipcMain.handle('restaurantAccountingV2:exportFile', async (event, payload = {}) => {
@@ -15807,7 +16332,9 @@ app.whenReady().then(async () => {
     const format = String(payload?.format || '').toLowerCase()
     if (!ACCOUNTING_FILE_EXPORT_OPERATIONS.has(operation)) throw new Error('Unsupported Accounting export operation')
     if (!ACCOUNTING_EXPORT_FILE_FORMATS.includes(format)) throw new Error('Unsupported Accounting export format')
-    const contract = restaurantAccountingV2Operations[operation]
+    // The existing export allowlist narrows operation to this dispatch table's
+    // export keys; retain the following missing-contract error path unchanged.
+    const contract = restaurantAccountingV2Operations[/** @type {keyof typeof restaurantAccountingV2Operations} */ (operation)]
     if (!contract) throw new Error('Accounting export contract is unavailable')
     const [capability, handler] = contract
     await requireCapability(capability)
@@ -15821,7 +16348,9 @@ app.whenReady().then(async () => {
     } })
     if (canceled || !filePath) return { success: false, canceled: true }
 
+    /** @type {AccountingExportFileSourceExpectedData | null} */
     let source = null
+    /** @type {AccountingExportFileSourceExpectedData | null} */
     let exportSource = null
     let companionFilePath = null
     let companionFileHash = null
@@ -15832,7 +16361,10 @@ app.whenReady().then(async () => {
     let fileHash = null
     try {
       const response = await handler(...(Array.isArray(payload?.args) ? payload.args : []))
-      source = assertCompleteAccountingExport(unwrapAccountingExportResponse(response))
+      // This view matches the existing completeness guard's report envelope;
+      // that guard checks certification but does not validate every RPC field.
+      source = assertCompleteAccountingExport(/** @type {Parameters<typeof assertCompleteAccountingExport>[0]} */ (unwrapAccountingExportResponse(response)))
+      /** @type {AccountingExportSettingsExpectedData} */
       const settings = await db.getSettings().catch(() => ({}))
       exportSource = {
         ...source,
@@ -15848,22 +16380,25 @@ app.whenReady().then(async () => {
       }
 
       if (format === 'pdf') {
-        const envelope = buildAccountingExportEnvelope(exportSource, format, companionFilePath)
+        const envelope = buildAccountingExportEnvelope(exportSource, /** @type {AccountingExportFileFormat} */ (format), companionFilePath)
         const html = buildAccountingExportPdfHtml(envelope, { fileName: baseName, companionFilePath })
         const pdfBytes = await renderHtmlToPdfBuffer(html, { pageSize: 'A4', printBackground: true, margins: { marginType: 'default' } }, { minTextLength: 40 })
         fs.writeFileSync(filePath, pdfBytes)
         rows = accountingExportRowCount(exportSource)
       } else {
-        const output = writeAccountingExportFile(filePath, format, exportSource, null)
+        // The earlier allowlist check establishes this format union; carry that
+        // existing runtime narrowing through Array.includes' type signature.
+        const output = writeAccountingExportFile(filePath, /** @type {AccountingExportFileFormat} */ (format), exportSource, null)
         rows = output.rowCount
       }
-      saved = verifyAccountingExportFile(filePath, format)
+      saved = verifyAccountingExportFile(filePath, /** @type {AccountingExportFileFormat} */ (format))
       fileHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
       fileSaved = true
       const identity = accountingExportIdentity(exportSource)
       artifactRegistrationAttempted = true
       await recordAccountingArtifact(exportSource, {
-        artifactType: format,
+        // The earlier format allowlist check is the existing runtime guard.
+        artifactType: /** @type {AccountingExportFileFormat} */ (format),
         filePath,
         fileHash,
         byteCount: saved.size,
@@ -15885,14 +16420,15 @@ app.whenReady().then(async () => {
         artifact_status: 'complete'
       }
     } catch (error) {
-      const serverError = error?.message || 'Accounting export failed'
+      const serverError = (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Accounting export failed'
       let artifactStatus = artifactRegistrationAttempted ? 'registration_unconfirmed' : 'not_registered'
       let artifactError = ''
       if (source && !artifactRegistrationAttempted) {
         artifactRegistrationAttempted = true
         try {
           await recordAccountingArtifact(source, {
-            artifactType: format,
+            // The earlier format allowlist check is the existing runtime guard.
+            artifactType: /** @type {AccountingExportFileFormat} */ (format),
             filePath: fileSaved ? filePath : null,
             fileHash: fileSaved ? fileHash : null,
             byteCount: fileSaved ? saved?.size || 0 : 0,
@@ -15903,7 +16439,7 @@ app.whenReady().then(async () => {
           artifactStatus = 'failure_recorded'
         } catch (recordError) {
           artifactStatus = 'failure_record_unconfirmed'
-          artifactError = ` Server failure evidence could not be confirmed: ${recordError?.message || 'unknown artifact registration error'}`
+          artifactError = ` Server failure evidence could not be confirmed: ${(/** @type {ErrorMessageReadView | null | undefined} */ (recordError))?.message || 'unknown artifact registration error'}`
         }
       }
       const prefix = fileSaved

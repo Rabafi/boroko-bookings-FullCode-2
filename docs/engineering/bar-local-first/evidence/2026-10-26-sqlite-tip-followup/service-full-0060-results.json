@@ -1,0 +1,37 @@
+[
+  {
+    "name": "initdb",
+    "code": 0,
+    "signal": null,
+    "seconds": 21.384,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-isolated-tests\\2026-10-26T20-46-10-839Z-049f99c0\\initdb.log"
+  },
+  {
+    "name": "start",
+    "code": 0,
+    "signal": null,
+    "seconds": 0.995,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-isolated-tests\\2026-10-26T20-46-10-839Z-049f99c0\\start.log"
+  },
+  {
+    "name": "bootstrap",
+    "code": 0,
+    "signal": null,
+    "seconds": 7.581,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-isolated-tests\\2026-10-26T20-46-10-839Z-049f99c0\\bootstrap.log"
+  },
+  {
+    "name": "service-tests",
+    "code": 0,
+    "signal": null,
+    "seconds": 757.302,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-isolated-tests\\2026-10-26T20-46-10-839Z-049f99c0\\service-tests.log"
+  },
+  {
+    "name": "stop",
+    "code": 0,
+    "signal": null,
+    "seconds": 35.871,
+    "log": "C:\\Users\\Botswapelo Studios\\Documents\\Work\\Tsa Bonno HospitalityOS\\.tmp\\bar-isolated-tests\\2026-10-26T20-46-10-839Z-049f99c0\\stop.log"
+  }
+]
