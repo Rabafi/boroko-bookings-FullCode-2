@@ -197,7 +197,7 @@ export class TrainingSupervisor {
       this.started = true
       if (!runtime.status().configured) {
         if (!pin || !/^\d{4,12}$/.test(pin)) throw new Error('Enter the same practice PIN to resume owner creation.')
-        await runtime.setupOwner({ base_url: url, setup_secret: state.setupSecret, business_name: 'TRAINING — Practice Bar', outlet_name: 'Practice counter', owner_name: 'Practice owner', device_name: 'Practice till', currency: 'BWP', timezone: 'Africa/Gaborone', pin })
+        await runtime.setupOwner({ base_url: url, setup_secret: state.setupSecret, business_name: 'TRAINING — Practice Bar', outlet_name: 'Practice counter', owner_name: 'Practice owner', owner_email: 'practice-owner@bar.invalid', owner_password: `Practice-${state.setupSecret}`, device_name: 'Practice till', currency: 'BWP', timezone: 'Africa/Gaborone', pin })
       }
       return this.status()
     } finally { this.busy = false }

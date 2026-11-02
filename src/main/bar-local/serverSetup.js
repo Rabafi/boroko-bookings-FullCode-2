@@ -88,7 +88,7 @@ const STATE_PHASE_LABELS = Object.freeze({
  *   phase: ServerSetupPhase,
  *   created_at: string,
  *   updated_at: string,
- *   owner: {business_name: string, outlet_name: string, owner_name: string, currency: string, timezone: string, device_name: string, business_profile: Record<string, string>},
+ *   owner: {business_name: string, outlet_name: string, owner_name: string, owner_email: string, currency: string, timezone: string, device_name: string, business_profile: Record<string, string>},
  *   install: {
  *     install_dir: string, data_dir: string, pg_data_dir: string, backup_dir: string,
  *     pg_bin: string, node_path: string, server_root: string, installer_script: string,
@@ -324,6 +324,8 @@ export function normalizeOwnerDraft(value) {
   }
   const pin = typeof input.pin === 'string' ? input.pin : ''
   if (!/^\d{4,12}$/.test(pin)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'The owner PIN must contain 4-12 digits.')
+  const ownerEmail = typeof input.owner_email === 'string' ? input.owner_email.trim().toLowerCase() : ''
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail) || ownerEmail.length > 254) throw new BarLocalAdapterError('VALIDATION_FAILED', 'Enter a valid owner email address.')
   const currency = typeof input.currency === 'string' && input.currency.trim() !== '' ? input.currency.trim().toUpperCase() : 'BWP'
   if (!/^[A-Z]{3}$/.test(currency)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'Currency must be a three-letter code such as BWP.')
   const timezone = typeof input.timezone === 'string' && input.timezone.trim() !== '' ? input.timezone.trim() : 'Africa/Gaborone'
@@ -342,6 +344,7 @@ export function normalizeOwnerDraft(value) {
     business_name: text('business_name', 200),
     outlet_name: text('outlet_name', 120),
     owner_name: text('owner_name', 120),
+    owner_email: ownerEmail,
     device_name: typeof input.device_name === 'string' && input.device_name.trim() !== '' ? text('device_name', 120) : 'Bar office till',
     currency,
     timezone,
@@ -590,7 +593,7 @@ export async function defaultElevatedRunner({ wrapperPath, cwd }) {  const comma
 export class ServerSetupOrchestrator {
   /**
    * @param {{
-   *   runtime: {status: () => Record<string, any>, assertNoSavedCloudBusiness: () => void, setupOwner: (request: Record<string, unknown>) => Promise<Record<string, any>>},
+   *   runtime: {status: () => Record<string, any>, assertNoSavedCloudBusiness: () => void, setupOwner: (request: Record<string, unknown>) => Promise<Record<string, any>>, recoverOwnerPassword?: (request: Record<string, unknown>) => Promise<Record<string, unknown>>},
    *   userDataPath: string,
    *   basePath: string,
    *   isPackaged: boolean,
@@ -828,6 +831,7 @@ export class ServerSetupOrchestrator {
           business_name: owner.business_name,
           outlet_name: owner.outlet_name,
           owner_name: owner.owner_name,
+          owner_email: owner.owner_email,
           currency: owner.currency,
           timezone: owner.timezone,
           device_name: owner.device_name,
@@ -931,6 +935,10 @@ export class ServerSetupOrchestrator {
       }
       const pin = typeof request.pin === 'string' ? request.pin : ''
       if (!/^\d{4,12}$/.test(pin)) throw new BarLocalAdapterError('PIN_REQUIRED', 'Enter the owner PIN to finish creating the local Bar. The PIN is not stored in the setup record.')
+      const ownerPassword = typeof request.owner_password === 'string' ? request.owner_password : ''
+      if (ownerPassword.length < 12 || ownerPassword.length > 128 || ownerPassword.trim() !== ownerPassword) {
+        throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to finish setup. The password is never saved in the setup record.')
+      }
       const live = await this.serviceLive(state.install.base_url).catch(() => false)
       if (!live) {
         throw new BarLocalAdapterError(
@@ -947,6 +955,8 @@ export class ServerSetupOrchestrator {
           business_name: state.owner.business_name,
           outlet_name: state.owner.outlet_name,
           owner_name: state.owner.owner_name,
+          owner_email: state.owner.owner_email,
+          owner_password: ownerPassword,
           pin,
           currency: state.owner.currency,
           timezone: state.owner.timezone,
@@ -955,11 +965,10 @@ export class ServerSetupOrchestrator {
           device_platform: 'modern'
         })
         this.#setPhase(state, 'complete')
-        // The committed authority profile is now the source of truth. Remove
-        // plaintext staging secrets but keep the protected setup record for
-        // diagnostics; it no longer contains usable credentials.
+        // Keep only the encrypted setup secret for local owner password
+        // recovery; remove installer staging copies and other secrets.
         try {
-          const clean = { ...state, secrets: { setup_secret: '', backup_key: state.secrets.backup_key, replication_password: '' } }
+          const clean = { ...state, secrets: { setup_secret: state.secrets.setup_secret, backup_key: state.secrets.backup_key, replication_password: '' } }
           this.#writeState(clean)
           rmSecretDirectory(state.staging.secret_dir)
         } catch {}
@@ -977,6 +986,18 @@ export class ServerSetupOrchestrator {
     } finally {
       this.busy = false
     }
+  }
+
+  async recoverOwnerPassword(request) {
+    const state = this.readState()
+    if (!state || state.phase !== 'complete' || !state.secrets.setup_secret || !this.runtime.recoverOwnerPassword) {
+      throw new BarLocalAdapterError('OWNER_RECOVERY_UNAVAILABLE', 'Use the Windows user profile that set up the main Bar computer. Its protected recovery credential is required.')
+    }
+    return this.runtime.recoverOwnerPassword({
+      owner_email: request?.owner_email,
+      new_password: request?.new_password,
+      recovery_secret: state.secrets.setup_secret
+    })
   }
 
   async cancel() {

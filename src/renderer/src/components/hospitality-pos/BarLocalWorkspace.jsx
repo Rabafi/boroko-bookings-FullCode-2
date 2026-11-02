@@ -168,8 +168,12 @@ function commandNotice(command) {
 
 /** @param {{status: Record<string, unknown>, onLogout: () => void, initialStaffId?: string, initialLoginNotice?: string}} props */
 export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '', initialLoginNotice = '' }) {
+  const [loginMode, setLoginMode] = useState('staff')
   const [staffId, setStaffId] = useState(initialStaffId)
   const [pin, setPin] = useState('')
+  const [ownerEmail, setOwnerEmail] = useState('')
+  const [ownerPassword, setOwnerPassword] = useState('')
+  const [recoveryPassword, setRecoveryPassword] = useState('')
   const [session, setSession] = useState(status.session ?? null)
   const [readiness, setReadiness] = useState(/** @type {{ready: boolean|null, blockers: string[], checkedAt: number, unavailable?: boolean}|null} */ (
     status.readiness && typeof status.readiness.ready === 'boolean'
@@ -756,9 +760,23 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
     event.preventDefault()
     setBusy(true); setError(''); setNotice('')
     try {
-      const result = await window.api.barLocal.login({ staff_id: staffId.trim(), pin })
+      const result = loginMode === 'owner'
+        ? await window.api.barLocal.login({ email: ownerEmail.trim(), password: ownerPassword })
+        : await window.api.barLocal.login({ staff_id: staffId.trim(), pin })
       clearSessionWorkspace()
       setSession(result.session)
+    } catch (cause) { setError(messageOf(cause)) }
+    finally { setBusy(false) }
+  }
+
+  const recoverOwnerPassword = async () => {
+    setBusy(true); setError(''); setNotice('')
+    try {
+      await window.api.barLocal.recoverOwnerPassword({ owner_email: ownerEmail.trim(), new_password: recoveryPassword })
+      setRecoveryPassword('')
+      setOwnerPassword('')
+      setLoginMode('owner')
+      setNotice('Owner password changed. Sign in with your new password on this main Bar computer.')
     } catch (cause) { setError(messageOf(cause)) }
     finally { setBusy(false) }
   }
@@ -1364,16 +1382,35 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
 
   if (!session) return (
     <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-      <form onSubmit={login} className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl">
+      <form onSubmit={loginMode === 'recover' ? (event) => { event.preventDefault(); void recoverOwnerPassword() } : login} className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Bar local authority</p>
-        <h1 className="mt-3 text-2xl font-bold">Local staff sign in</h1>
+        <h1 className="mt-3 text-2xl font-bold">Bar sign in</h1>
           {status.training !== true && <BarReplacementConnection onConnect={request => window.api.barLocal.reconnectServer(request)} />}
-        <p className="mt-2 text-sm text-slate-300">Sign in with the staff ID and PIN issued by your Bar owner. This screen uses the configured local service.</p>
+        <p className="mt-2 text-sm text-slate-300">Owner and staff sign-ins use the configured local Bar service and work without internet.</p>
         {initialLoginNotice && <p role="status" className="mt-4 rounded bg-amber-950 p-3 text-sm text-amber-100">{initialLoginNotice}</p>}
-        <label className="mt-6 block text-sm">Staff ID<input required value={staffId} onChange={(event) => setStaffId(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
-        <label className="mt-4 block text-sm">PIN<input required inputMode="numeric" pattern="[0-9]{4,12}" type="password" value={pin} onChange={(event) => setPin(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="current-password" /></label>
+        {loginMode !== 'recover' && <div className="mt-5 flex gap-2" role="tablist" aria-label="Bar sign in type">
+          <button type="button" role="tab" aria-selected={loginMode === 'staff'} onClick={() => { setLoginMode('staff'); setError('') }} className={`flex-1 rounded border p-2 text-sm ${loginMode === 'staff' ? 'border-amber-400 bg-amber-950' : 'border-slate-700'}`}>Staff PIN</button>
+          <button type="button" role="tab" aria-selected={loginMode === 'owner'} onClick={() => { setLoginMode('owner'); setError('') }} className={`flex-1 rounded border p-2 text-sm ${loginMode === 'owner' ? 'border-amber-400 bg-amber-950' : 'border-slate-700'}`}>Owner email</button>
+        </div>}
+        {loginMode === 'staff' && <>
+          <label className="mt-5 block text-sm">Staff ID<input required value={staffId} onChange={(event) => setStaffId(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
+          <label className="mt-4 block text-sm">PIN<input required inputMode="numeric" pattern="[0-9]{4,12}" type="password" value={pin} onChange={(event) => setPin(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="current-password" /></label>
+        </>}
+        {loginMode === 'owner' && <>
+          <label className="mt-5 block text-sm">Owner email<input required type="email" maxLength={254} value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
+          <label className="mt-4 block text-sm">Password<input required minLength={12} maxLength={128} type="password" value={ownerPassword} onChange={(event) => setOwnerPassword(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="current-password" /></label>
+          <button type="button" onClick={() => { setLoginMode('recover'); setError('') }} className="mt-3 text-left text-xs text-amber-200 underline">Forgot password? Use the main Bar computer to reset it.</button>
+        </>}
+        {loginMode === 'recover' && <div className="mt-5 space-y-4">
+          <p className="text-sm text-slate-300">Recovery must be done on the main Bar computer. It will sign out all other sessions.</p>
+          <label className="block text-sm">Owner email<input required type="email" maxLength={254} value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
+          <label className="block text-sm">New password<input required minLength={12} maxLength={128} type="password" value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="new-password" /></label>
+          <button type="button" onClick={() => void recoverOwnerPassword()} disabled={busy || recoveryPassword.length < 12 || !ownerEmail.trim()} className="w-full rounded-md bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Resetting…' : 'Reset owner password'}</button>
+          <button type="button" onClick={() => { setLoginMode('owner'); setError('') }} className="w-full rounded border border-slate-600 p-2 text-sm">Back to owner sign in</button>
+        </div>}
         {error && <HposNotice tone="error">{error}</HposNotice>}
-        <button disabled={busy} className="mt-5 w-full rounded-md bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Signing in…' : 'Sign in'}</button>
+        {notice && <p role="status" className="mt-3 rounded bg-emerald-950 p-3 text-sm text-emerald-100">{notice}</p>}
+        {loginMode !== 'recover' && <button disabled={busy} className="mt-5 w-full rounded-md bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Signing in…' : 'Sign in'}</button>}
       </form>
     </main>
   )

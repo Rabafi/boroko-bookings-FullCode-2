@@ -434,31 +434,42 @@ export class LegacyBarLocalClient {
   }
 
   async login(staffId, pin) {
-    if (!isUuid(staffId) || typeof pin !== 'string' || !/^\d{4,12}$/.test(pin)) {
-      throw new LegacyBarLocalError('VALIDATION_FAILED', 'Enter a valid local staff identity and numeric PIN.');
+    let body;
+    if (staffId && typeof staffId === 'object' && !Array.isArray(staffId)) {
+      const email = typeof staffId.email === 'string' ? staffId.email.trim().toLowerCase() : '';
+      const password = typeof staffId.password === 'string' ? staffId.password : '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || password.length < 12 || password.length > 128) {
+        throw new LegacyBarLocalError('VALIDATION_FAILED', 'Enter the owner email and password.');
+      }
+      body = { email, password, outlet_id: this.scope.outlet_id };
+    } else {
+      if (!isUuid(staffId) || typeof pin !== 'string' || !/^\d{4,12}$/.test(pin)) {
+        throw new LegacyBarLocalError('VALIDATION_FAILED', 'Enter a valid local staff identity and numeric PIN.');
+      }
+      body = { staff_id: staffId, pin, outlet_id: this.scope.outlet_id };
     }
     const response = await this.transport.request('POST', '/v1/sessions', {
       deviceToken: this.scope.deviceToken,
-      body: { staff_id: staffId, pin, outlet_id: this.scope.outlet_id }
+      body
     });
     const failure = serviceFailure(response.body, response.status);
     if (response.status < 200 || response.status >= 300 || !plainObject(response.body)) {
       throw new LegacyBarLocalError(failure ? failure.code : machineCode(response.body, response.status), failure ? failure.message : message(response.body), { status: response.status });
     }
-    const body = response.body;
-    if (body.ok !== true
-      || body.authority_epoch !== this.scope.authority_epoch
-      || body.business_id !== this.scope.business_id
-      || body.outlet_id !== this.scope.outlet_id) {
+    const responseBody = response.body;
+    if (responseBody.ok !== true
+      || responseBody.authority_epoch !== this.scope.authority_epoch
+      || responseBody.business_id !== this.scope.business_id
+      || responseBody.outlet_id !== this.scope.outlet_id) {
       throw new LegacyBarLocalError('WRONG_AUTHORITY', 'The local login response does not match this till’s committed authority scope.', { status: response.status });
     }
-    if (typeof body.session_token !== 'string' || body.session_token.length < 20
-      || !isUuid(body.session_id) || !plainObject(body.staff)) {
+    if (typeof responseBody.session_token !== 'string' || responseBody.session_token.length < 20
+      || !isUuid(responseBody.session_id) || !plainObject(responseBody.staff)) {
       throw new LegacyBarLocalError('LOGIN_RESPONSE_INVALID', 'The local service did not return a complete staff session.', { status: response.status });
     }
-    this.sessionToken = body.session_token;
-    this.sessionId = body.session_id;
-    return body;
+    this.sessionToken = responseBody.session_token;
+    this.sessionId = responseBody.session_id;
+    return responseBody;
   }
 
   async logout() {

@@ -233,7 +233,7 @@ test('Modern setup offers saved provisioning recovery and hides new setup forms 
   assert.match(app, /Resume saved \$\{currentAuthority\.provisioning_recovery\.kind/)
   assert.match(app, /currentAuthority\?\.provisioning_recovery\?\.pending/)
   assert.ok(app.includes('!currentAuthority?.provisioning_recovery?.pending && <>'))
-  assert.match(app, /resumeProvisioning\(\)/)
+  assert.match(app, /resumeProvisioning\(pendingKind/)
 })
 
 test('Modern and Legacy local Settings expose service-enforced discount threshold and maximum controls', () => {
@@ -318,8 +318,8 @@ test('Modern and Legacy local Bar workspaces render signed-out login without tou
     ])
     const modern = renderToString(React.createElement(Modern, { status: { session: null }, onLogout() {} }))
     const legacy = renderToString(React.createElement(Legacy, { authority: { outlet_id: 'outlet-test' } }))
-    assert.match(modern, /Local staff sign in/)
-    assert.match(legacy, /Local staff sign in/)
+    assert.match(modern, /Bar sign in/)
+    assert.match(legacy, /Local Bar sign in/)
   } finally {
     rmSync(temp, { recursive: true, force: true })
   }
@@ -559,6 +559,6 @@ test('owner sign-in retains the committed setup identity and recovery guidance',
     const html = renderToString(Workspace({ status: {}, onLogout() {}, initialStaffId: 'owner-123', initialLoginNotice: 'Your Bar was created. Sign in with the owner PIN.' }))
     assert.match(html, /owner-123/)
     assert.match(html, /Your Bar was created/)
-    assert.match(html, /Local staff sign in/)
+    assert.match(html, /Bar sign in/)
   } finally { rmSync(temp, { recursive: true, force: true }) }
 })

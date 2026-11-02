@@ -120,12 +120,12 @@ test('handoff carries bounded Bar contact details and currency without copying a
   })
   assert.deepEqual(normalized, {
     business_name: 'Town Bar', currency: 'BWP',
-    business_profile: { company_name: 'Town Bar Ltd', email: 'owner@townbar.example' }
+    business_profile: { company_name: 'Town Bar Ltd', email: 'owner@townbar.example' }, entry_mode: 'commission'
   })
   assert.deepEqual(normalizeLocalBarSetupRequest({ business_name: '', currency: 'x1' }), {
-    business_name: null, currency: 'BWP', business_profile: {}
+    business_name: null, currency: 'BWP', business_profile: {}, entry_mode: 'commission'
   })
-  assert.deepEqual(normalizeLocalBarSetupRequest(null), { business_name: null, currency: 'BWP', business_profile: {} })
+  assert.deepEqual(normalizeLocalBarSetupRequest(null), { business_name: null, currency: 'BWP', business_profile: {}, entry_mode: 'commission' })
   assert.equal(normalizeLocalBarSetupRequest({ currency: 'R' }).currency, 'ZAR')
   assert.equal(normalizeLocalBarSetupRequest({ business_name: 'a'.repeat(400) }).business_name.length, 200)
 
@@ -134,7 +134,8 @@ test('handoff carries bounded Bar contact details and currency without copying a
   assert.equal(prefill.business_name, 'Town Bar')
   assert.equal(prefill.currency, 'BWP')
   assert.deepEqual(prefill.business_profile, { company_name: 'Town Bar Ltd', email: 'owner@townbar.example' })
-  assert.deepEqual(Object.keys(prefill).sort(), ['business_name', 'business_profile', 'created_at', 'currency', 'version'])
+  assert.equal(prefill.entry_mode, 'commission')
+  assert.deepEqual(Object.keys(prefill).sort(), ['business_name', 'business_profile', 'created_at', 'currency', 'entry_mode', 'version'])
 
   // The prefill path lives inside the dedicated workspace subtree only.
   const prefillPath = dedicatedWorkspacePrefillPath('C:\\data\\app')
@@ -182,7 +183,7 @@ test('a dedicated window owns its own authority status and cannot switch to clou
     // userDataPath inside the real dedicated process).
     const prefillPath = join(dir, 'bar-local-setup-request.json')
     writeFileSync(prefillPath, JSON.stringify({ version: 1, business_name: 'Corner Pub', currency: 'ZAR', created_at: 'now' }))
-    assert.deepEqual(dedicated.status().setup_prefill, { business_name: 'Corner Pub', currency: 'ZAR', business_profile: {} })
+    assert.deepEqual(dedicated.status().setup_prefill, { business_name: 'Corner Pub', currency: 'ZAR', business_profile: {}, entry_mode: 'commission' })
     writeFileSync(prefillPath, JSON.stringify({ version: 3, business_name: 'Unsupported Format' }))
     assert.equal(dedicated.status().setup_prefill, null)
     // The prefill helper itself targets the dedicated workspace subtree.
@@ -260,7 +261,7 @@ test('the setup renderer and IPC wire the same guard', () => {
   assert.match(setup, /businessProfile=\{\{/)
   assert.match(setup, /company_name: form\.company_name[\s\S]*vat_number: form\.vat_number/)
   const handoff = readFileSync(new URL('../../src/renderer/src/components/hospitality-pos/BarLocalSetupHandoff.jsx', import.meta.url), 'utf8')
-  assert.match(handoff, /local owner sign-in using your name and a PIN/)
+  assert.match(handoff, /offline owner sign-in with an email address and password/)
   assert.doesNotMatch(handoff, /restaurant, hotel, lodge|existing cloud business/i)
 
   // The handoff is successful only after the dedicated window reports a

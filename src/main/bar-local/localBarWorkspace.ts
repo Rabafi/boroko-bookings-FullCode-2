@@ -18,6 +18,7 @@ export type NormalizedLocalBarSetupRequest = {
   business_name: string | null
   currency: string
   business_profile: Record<string, string>
+  entry_mode: 'commission' | 'join'
 }
 
 export const DEFAULT_LOCAL_BAR_CURRENCY = 'BWP'
@@ -38,7 +39,8 @@ export function normalizeLocalBarSetupRequest(request: unknown): NormalizedLocal
   return {
     business_name: rawName.length > 0 ? rawName : null,
     currency: currencyAliases[rawCurrency.toUpperCase()] || (/^[A-Za-z]{3}$/.test(rawCurrency) ? rawCurrency.toUpperCase() : DEFAULT_LOCAL_BAR_CURRENCY),
-    business_profile: profile
+    business_profile: profile,
+    entry_mode: record.entry_mode === 'join' ? 'join' : 'commission'
   }
 }
 
@@ -60,6 +62,7 @@ export function buildWorkspacePrefill(
     business_name: request.business_name,
     currency: request.currency,
     business_profile: request.business_profile,
+    entry_mode: request.entry_mode,
     created_at: nowIso
   }
 }

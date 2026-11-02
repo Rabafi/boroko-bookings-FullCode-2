@@ -79,6 +79,7 @@ function ownerDraft(overrides = {}) {
     business_name: 'River Bar',
     outlet_name: 'Main Bar',
     owner_name: 'Owner One',
+    owner_email: 'owner@example.test',
     pin: '1234',
     currency: 'bwp',
     timezone: 'Africa/Gaborone',
@@ -289,7 +290,7 @@ test('storage-only preflight gives an exact drive shortfall and a separate low-s
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('automatic setup installs, requires a PIN, commits the owner and clears setup secrets', async () => {
+test('automatic setup installs, requires owner credentials and keeps recovery proof only in protected state', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bar-setup-'))
   try {
     const fakeRuntime = runtime()
@@ -310,17 +311,23 @@ test('automatic setup installs, requires a PIN, commits the owner and clears set
     assert.equal(installed.pin_required, true)
 
     await assert.rejects(() => orchestrator.resume({ pin: '12' }), /PIN/)
-    const done = await orchestrator.resume({ pin: '9876' })
+    const done = await orchestrator.resume({ pin: '9876', owner_password: 'a test owner password 123' })
     assert.equal(done.phase, 'complete')
     assert.equal(fakeRuntime.calls.length, 1)
     assert.equal(fakeRuntime.calls[0].pin, '9876')
     assert.equal(fakeRuntime.calls[0].setup_secret.length, 64)
     assert.equal(fakeRuntime.calls[0].business_name, 'River Bar')
     const state = orchestrator.readState()
-    assert.equal(state.secrets.setup_secret, '')
+    assert.equal(state.secrets.setup_secret.length, 64, 'the setup recovery secret remains protected in OS-encrypted state')
     assert.equal(state.secrets.replication_password, '')
     assert.ok(state.secrets.backup_key.length > 0)
     assert.equal(existsSync(state.staging.secret_dir), false)
+    let recoveryRequest
+    fakeRuntime.recoverOwnerPassword = async (request) => { recoveryRequest = request; return { ok: true } }
+    const recovered = await orchestrator.recoverOwnerPassword({ owner_email: 'owner@example.test', new_password: 'a replacement owner password', recovery_secret: 'untrusted-renderer-input' })
+    assert.deepEqual(recovered, { ok: true })
+    assert.equal(recoveryRequest.recovery_secret, state.secrets.setup_secret)
+    assert.equal(JSON.stringify(await orchestrator.status()).includes(state.secrets.setup_secret), false)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 

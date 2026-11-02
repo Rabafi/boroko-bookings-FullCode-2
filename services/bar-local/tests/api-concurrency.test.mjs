@@ -20,7 +20,7 @@ test('100 simultaneous identical-key API requests produce one sale and one recei
   const deviceId = setup.body.device_id
   const login = await h.request('/v1/sessions', {
     deviceToken: setup.stagedDeviceToken,
-    body: { staff_id: setup.body.owner_staff_id, pin: '1234' }
+    body: { email: 'owner@example.test', password: 'test owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const auth = { token: login.body.session_token, deviceId }

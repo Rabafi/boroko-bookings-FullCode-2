@@ -12,7 +12,7 @@ test('shift opening through the API refuses an empty catalogue and preserves rep
   } })
   assert.equal(setup.status, 201, JSON.stringify(setup.body))
   const login = await h.request('/v1/sessions', {
-    deviceToken: setup.stagedDeviceToken, body: { staff_id: setup.body.owner_staff_id, pin: '1234' }
+    deviceToken: setup.stagedDeviceToken, body: { email: 'owner@example.test', password: 'test owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const auth = { token: login.body.session_token, deviceId: setup.body.device_id }

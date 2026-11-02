@@ -81,6 +81,10 @@ export async function createApiHarness(t, { env = {}, testOnlyWitnessController 
       body = { ...body }
       body.provisioning_id ??= randomUUID()
       body.device_token ??= `bld_${randomBytes(32).toString('base64url')}`
+      if (path === '/v1/setup/owner') {
+        body.owner_email ??= 'owner@example.test'
+        body.owner_password ??= 'test owner password 123'
+      }
       stagedDeviceToken = body.device_token
     }
     const requestHeaders = { ...headers }

@@ -762,21 +762,30 @@ export class BarLocalClient {
   }
 
   /**
-   * @param {{ staff_id?: string, staffId?: string, pin: string, outlet_id?: string, outletId?: string }} request
+   * @param {{ staff_id?: string, staffId?: string, pin?: string, email?: string, password?: string, outlet_id?: string, outletId?: string }} request
    * @returns {Promise<SessionState>}
    */
   async login(request) {
     const credential = await this.#credential()
-    const staffId = requireUuid(request.staff_id ?? request.staffId, 'staff_id')
-    const pin = requireString(request.pin, 'pin', { min: 4, max: 12 })
-    if (!/^\d+$/.test(pin)) {
-      throw new BarLocalAdapterError('VALIDATION_FAILED', 'pin must be numeric.')
+    let body
+    if (request.email !== undefined || request.password !== undefined) {
+      if (request.staff_id !== undefined || request.staffId !== undefined || request.pin !== undefined) {
+        throw new BarLocalAdapterError('VALIDATION_FAILED', 'Use either owner email and password or staff ID and PIN.')
+      }
+      body = {
+        email: requireString(request.email, 'email', { min: 3, max: 254 }).trim().toLowerCase(),
+        password: requireString(request.password, 'password', { min: 12, max: 128 })
+      }
+    } else {
+      const staffId = requireUuid(request.staff_id ?? request.staffId, 'staff_id')
+      const pin = requireString(request.pin, 'pin', { min: 4, max: 12 })
+      if (!/^\d+$/.test(pin)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'pin must be numeric.')
+      body = { staff_id: staffId, pin }
     }
     // Readiness is authenticated: requiring it here makes first login (and
     // login after restart) impossible. The server authenticates this device
     // and staff; final trading still has its separate readiness/DB guards.
     const route = this.#localRoute('session.create', false)
-    const body = { staff_id: staffId, pin }
     const outletId = request.outlet_id ?? request.outletId
     if (outletId !== undefined && outletId !== null) body.outlet_id = requireUuid(outletId, 'outlet_id')
     const response = await this.transport.post('/v1/sessions', body, {
@@ -806,8 +815,25 @@ export class BarLocalClient {
       throw new BarLocalAdapterError('TENANT_SCOPE_MISMATCH', 'The local session business does not match the committed scope.')
     }
     this.session = session
-    this.#log('info', { event: 'bar_local.login', staff_id: staffId })
+    this.#log('info', { event: 'bar_local.login', staff_id: session.staff.staff_id ?? session.staff.id })
     return session
+  }
+
+  async recoverOwnerPassword(request) {
+    if (!isLoopbackHostname(this.transport.endpoint.hostname)) {
+      throw new BarLocalAdapterError('OWNER_RECOVERY_LOCAL_ONLY', 'Owner password recovery must be started on the main Bar computer.')
+    }
+    const payload = requirePayload(request, 'owner password recovery request')
+    const body = {
+      owner_email: requireString(payload.owner_email, 'owner_email', { min: 3, max: 254 }).trim().toLowerCase(),
+      new_password: requireString(payload.new_password, 'new_password', { min: 12, max: 128 }),
+      recovery_secret: requireString(payload.recovery_secret, 'recovery_secret', { min: 16, max: 200 })
+    }
+    const response = await this.transport.post('/v1/owner/password/recover', body, { correlationId: this.#newCorrelationId() })
+    const responseBody = this.#expectObject(response.body, 'owner recovery response')
+    const error = normalizeErrorEnvelope(responseBody, { status: response.status })
+    if (error) throw error
+    return responseBody
   }
 
   /**

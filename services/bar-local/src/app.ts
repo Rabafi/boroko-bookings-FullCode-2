@@ -29,6 +29,7 @@ import { approvalHashFor, executeCommand } from './commands.js'
 import { callFunction, query } from './db.js'
 import type { JsonRecord } from './db.js'
 import { dummyPinVerify, hashPin, verifyPin, verifyPinAsync } from './pin.js'
+import { assertOwnerPassword, dummyOwnerPasswordVerify, hashOwnerPassword, normalizeOwnerEmail, verifyOwnerPassword } from './password.js'
 import {
   applyCors, bearerToken, correlationId, deviceIdHeader, deviceTokenHeader,
   isLoopbackRequest, readJson, sendError, sendJson
@@ -244,6 +245,7 @@ export function createApp(options: AppOptions) {
   const setupLimiter: RateLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 })
   const handleAdmin = createAdminHandler(authenticate, { cloudSync, failover, requestRestart: options.requestRestart })
   const sessionLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
+  const ownerRecoveryLimiter: RateLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 })
   const replacementChallengeLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
   const pairingLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
   const approvalLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
@@ -259,7 +261,7 @@ export function createApp(options: AppOptions) {
     const body = await readJson(req, { limitBytes: config.http.bodyLimitBytes })
     keys(body, 'body', [
       'setup_secret', 'provisioning_id', 'device_token', 'business_name', 'outlet_name', 'owner_name', 'pin',
-      'currency', 'timezone', 'device_name', 'device_platform', 'business_profile'
+      'currency', 'timezone', 'device_name', 'device_platform', 'business_profile', 'owner_email', 'owner_password'
     ])
     const setupSecret = string(body.setup_secret, 'setup_secret', { min: 16, max: 200 })
     const provisioningId = uuid(body.provisioning_id, 'provisioning_id')
@@ -267,6 +269,14 @@ export function createApp(options: AppOptions) {
     const businessName = string(body.business_name, 'business_name', { min: 1, max: 200, trim: true })
     const outletName = string(body.outlet_name, 'outlet_name', { min: 1, max: 120, trim: true })
     const ownerName = string(body.owner_name, 'owner_name', { min: 1, max: 120, trim: true })
+    let ownerEmail: string
+    let ownerPassword: string
+    try {
+      ownerEmail = normalizeOwnerEmail(body.owner_email)
+      ownerPassword = assertOwnerPassword(body.owner_password, 'owner_password')
+    } catch (error) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, error instanceof Error ? error.message : 'The owner email or password is invalid.', { httpStatus: 400 })
+    }
     const ownerPin = validatePin(body.pin)
     const currency = body.currency === undefined ? 'BWP' : string(body.currency, 'currency', { min: 3, max: 3, pattern: CURRENCY_RE })
     const timezone = body.timezone === undefined ? 'Africa/Gaborone' : string(body.timezone, 'timezone', { min: 1, max: 80, pattern: TIMEZONE_RE })
@@ -287,12 +297,13 @@ export function createApp(options: AppOptions) {
     const businessId = randomUUID()
     const outletId = randomUUID()
     const verifier = hashPin(ownerPin, config.security.pinIterations)
-    const requestHash = sha256Hex(JSON.stringify([
+    const passwordVerifier = await hashOwnerPassword(ownerPassword)
+    const requestHash = createHmac('sha256', setupSecret).update(JSON.stringify([
       setupSecret, businessName, outletName, ownerName,
       sha256Hex(`${deviceToken}:${ownerPin}`), currency, timezone, deviceName,
-      devicePlatform, config.http.tls ? fingerprint : null, businessProfile
-    ]))
-    const result = await callFunction<JsonRecord>(pool, 'bar_local.commission_owner_profile_recoverable', [
+      devicePlatform, config.http.tls ? fingerprint : null, businessProfile, ownerEmail, ownerPassword
+    ])).digest('hex')
+    const result = await callFunction<JsonRecord>(pool, 'bar_local.commission_owner_credentials_profile_recoverable', [
       { value: provisioningId, cast: 'uuid' },
       { value: requestHash },
       { value: tokenHash(deviceToken) },
@@ -311,7 +322,11 @@ export function createApp(options: AppOptions) {
       { value: deviceName },
       { value: devicePlatform },
       { value: fingerprint },
-      { value: JSON.stringify(businessProfile), cast: 'jsonb' }
+      { value: JSON.stringify(businessProfile), cast: 'jsonb' },
+      { value: ownerEmail },
+      { value: passwordVerifier.password_hash },
+      { value: passwordVerifier.password_salt },
+      { value: passwordVerifier.password_iterations }
     ])
     if (!result) {
       throw new BarLocalError(BAR_LOCAL_ERROR_CODES.INTERNAL_ERROR, 'The local authority returned no commissioning result.', { httpStatus: 500 })
@@ -378,29 +393,68 @@ export function createApp(options: AppOptions) {
       throw new BarLocalError(BAR_LOCAL_ERROR_CODES.DEVICE_REVOKED, 'This device has been revoked.', { httpStatus: 401 })
     }
     const body = await readJson(req, { limitBytes: config.http.bodyLimitBytes })
-    keys(body, 'body', ['staff_id', 'pin', 'outlet_id'])
-    const staffId = uuid(body.staff_id, 'staff_id')
-    const suppliedPin = validatePin(body.pin)
+    keys(body, 'body', ['staff_id', 'pin', 'outlet_id', 'email', 'password'])
     const outletId = body.outlet_id === undefined ? device.outlet_id : uuid(body.outlet_id, 'outlet_id')
-    const staff = await loadStaff(pool, device.business_id, staffId)
-    if (!staff || staff.status !== 'active') {
-      dummyPinVerify(suppliedPin, config.security.pinIterations)
-      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The operator credential is invalid.', { httpStatus: 401 })
+    let staff: StaffRecord | null = null
+    let ownerPasswordHash: string | null = null
+    if (body.email !== undefined || body.password !== undefined) {
+      if (body.staff_id !== undefined || body.pin !== undefined || typeof body.email !== 'string' || typeof body.password !== 'string') {
+        await dummyOwnerPasswordVerify(body.password)
+        throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The owner email or password is invalid.', { httpStatus: 401 })
+      }
+      let email = ''
+      try { email = normalizeOwnerEmail(body.email) } catch { await dummyOwnerPasswordVerify(body.password) }
+      const credential = email ? await callFunction<JsonRecord>(pool, 'bar_local.service_owner_credential', [
+        { value: device.business_id, cast: 'uuid' }, { value: email }
+      ]) : null
+      if (!credential || credential.role !== 'owner' || typeof credential.staff_id !== 'string') {
+        await dummyOwnerPasswordVerify(body.password)
+        throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The owner email or password is invalid.', { httpStatus: 401 })
+      }
+      staff = {
+        id: credential.staff_id,
+        display_name: String(credential.display_name ?? ''),
+        role: String(credential.role),
+        capabilities: Array.isArray(credential.capabilities) ? credential.capabilities.map(String) : [],
+        pin_hash: '', pin_salt: '', pin_iterations: config.security.pinIterations,
+        status: String(credential.status ?? ''),
+        locked_until: typeof credential.locked_until === 'string' ? credential.locked_until : null
+      }
+      assertNotLocked(staff)
+      if (staff.status !== 'active' || !await verifyOwnerPassword(body.password, credential)) {
+        await recordLoginOutcome(pool, staff.id, false)
+        throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The owner email or password is invalid.', { httpStatus: 401 })
+      }
+      await recordLoginOutcome(pool, staff.id, true)
+      ownerPasswordHash = String(credential.password_hash)
+    } else {
+      const staffId = uuid(body.staff_id, 'staff_id')
+      const suppliedPin = validatePin(body.pin)
+      staff = await loadStaff(pool, device.business_id, staffId)
+      if (!staff || staff.status !== 'active') {
+        dummyPinVerify(suppliedPin, config.security.pinIterations)
+        throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The operator credential is invalid.', { httpStatus: 401 })
+      }
+      assertNotLocked(staff)
+      const ownerUsesPassword = staff.role === 'owner' && !config.training && !!await callFunction<JsonRecord>(pool, 'bar_local.service_owner_credential_by_staff', [
+        { value: device.business_id, cast: 'uuid' }, { value: staff.id, cast: 'uuid' }
+      ])
+      if (ownerUsesPassword || !verifyPin(suppliedPin, staff)) {
+        await recordLoginOutcome(pool, staff.id, false)
+        throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The operator credential is invalid.', { httpStatus: 401 })
+      }
+      await recordLoginOutcome(pool, staff.id, true)
     }
-    assertNotLocked(staff)
-    if (!verifyPin(suppliedPin, staff)) {
-      await recordLoginOutcome(pool, staff.id, false)
-      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The operator credential is invalid.', { httpStatus: 401 })
-    }
-    await recordLoginOutcome(pool, staff.id, true)
     const sessionToken = newSessionToken()
-    const session = await callFunction<SessionRecord>(pool, 'bar_local.service_create_session', [
-      { value: staffId, cast: 'uuid' },
+    const sessionArgs = [
+      { value: staff.id, cast: 'uuid' },
       { value: device.device_id, cast: 'uuid' },
       { value: outletId, cast: 'uuid' },
       { value: tokenHash(sessionToken) },
       { value: config.security.sessionTtlSeconds }
-    ])
+    ]
+    if (ownerPasswordHash !== null) sessionArgs.push({ value: ownerPasswordHash })
+    const session = await callFunction<SessionRecord>(pool, ownerPasswordHash !== null ? 'bar_local.service_create_owner_session' : 'bar_local.service_create_session', sessionArgs)
     if (!session) {
       throw new BarLocalError(BAR_LOCAL_ERROR_CODES.INTERNAL_ERROR, 'The local authority returned no session.', { httpStatus: 500 })
     }
@@ -415,6 +469,71 @@ export function createApp(options: AppOptions) {
       device: { device_id: device.device_id, name: device.name, platform: device.platform },
       staff: normalizeStaff(staff)
     }, id)
+  }
+
+  async function ownerPasswordChange(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+    const auth = await authenticate(ctx, req)
+    const body = await readJson(req, { limitBytes: config.http.bodyLimitBytes })
+    keys(body, 'body', ['current_password', 'new_password'])
+    let currentPassword: string
+    let newPassword: string
+    try {
+      currentPassword = assertOwnerPassword(body.current_password, 'current_password')
+      newPassword = assertOwnerPassword(body.new_password, 'new_password')
+    } catch (error) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, error instanceof Error ? error.message : 'The owner password is invalid.', { httpStatus: 400 })
+    }
+    const credential = await callFunction<JsonRecord>(ctx.pool, 'bar_local.service_owner_credential_by_staff', [
+      { value: auth.context.business_id, cast: 'uuid' }, { value: auth.context.staff_id, cast: 'uuid' }
+    ])
+    if (auth.context.role !== 'owner' || !credential) {
+      await dummyOwnerPasswordVerify(currentPassword)
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.CAPABILITY_DENIED, 'Only the signed-in owner can change the owner password.', { httpStatus: 403 })
+    }
+    const lockStaff: StaffRecord = {
+      id: auth.context.staff_id, display_name: auth.context.display_name, role: auth.context.role,
+      capabilities: auth.context.capabilities, pin_hash: '', pin_salt: '', pin_iterations: 0,
+      status: String(credential.status ?? ''),
+      locked_until: typeof credential.locked_until === 'string' ? credential.locked_until : null
+    }
+    assertNotLocked(lockStaff)
+    if (!await verifyOwnerPassword(currentPassword, credential)) {
+      await recordLoginOutcome(ctx.pool, auth.context.staff_id, false)
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The current owner password is incorrect.', { httpStatus: 401 })
+    }
+    const verifier = await hashOwnerPassword(newPassword)
+    const result = await callFunction<JsonRecord>(ctx.pool, 'bar_local.service_owner_password_change', [
+      { value: auth.tokenHash }, { value: auth.deviceId, cast: 'uuid' },
+      { value: verifier.password_hash }, { value: verifier.password_salt }, { value: verifier.password_iterations },
+      { value: credential.password_hash }
+    ])
+    sendJson(res, 200, { ok: true, ...result }, id)
+  }
+
+  async function ownerPasswordRecover(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+    if (!isLoopbackRequest(req)) throw new BarLocalError('SETUP_LOCAL_ONLY', 'Password recovery is available only on the main Bar computer.', { httpStatus: 403 })
+    ownerRecoveryLimiter.check(clientKey(req))
+    if (!config.setupSecret) throw new BarLocalError('SETUP_UNAVAILABLE', 'The main Bar computer has no protected owner recovery credential.', { httpStatus: 503 })
+    const body = await readJson(req, { limitBytes: config.http.bodyLimitBytes })
+    keys(body, 'body', ['owner_email', 'new_password', 'recovery_secret'])
+    const recoverySecret = string(body.recovery_secret, 'recovery_secret', { min: 16, max: 200 })
+    if (!safeEqualHex(sha256Hex(recoverySecret), sha256Hex(config.setupSecret))) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.AUTH_INVALID, 'The protected main-computer recovery credential is invalid.', { httpStatus: 401 })
+    }
+    let ownerEmail: string
+    let newPassword: string
+    try {
+      ownerEmail = normalizeOwnerEmail(body.owner_email)
+      newPassword = assertOwnerPassword(body.new_password, 'new_password')
+    } catch (error) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, error instanceof Error ? error.message : 'The owner email or password is invalid.', { httpStatus: 400 })
+    }
+    const verifier = await hashOwnerPassword(newPassword)
+    const result = await callFunction<JsonRecord>(ctx.pool, 'bar_local.service_owner_password_recover', [
+      { value: sha256Hex(recoverySecret) }, { value: ownerEmail },
+      { value: verifier.password_hash }, { value: verifier.password_salt }, { value: verifier.password_iterations }
+    ])
+    sendJson(res, 200, { ok: true, ...result }, id)
   }
 
   async function refreshSession(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
@@ -781,6 +900,14 @@ export function createApp(options: AppOptions) {
       }
       if (req.method === 'POST' && pathname === '/v1/sessions') {
         await createSession(ctx, req, res, id)
+        return
+      }
+      if (req.method === 'POST' && pathname === '/v1/owner/password/change') {
+        await ownerPasswordChange(ctx, req, res, id)
+        return
+      }
+      if (req.method === 'POST' && pathname === '/v1/owner/password/recover') {
+        await ownerPasswordRecover(ctx, req, res, id)
         return
       }
       if (req.method === 'POST' && pathname === '/v1/sessions/refresh') {

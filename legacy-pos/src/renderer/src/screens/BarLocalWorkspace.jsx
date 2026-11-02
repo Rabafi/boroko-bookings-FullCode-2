@@ -212,8 +212,11 @@ async function loadCompleteCatalogue(authority) {
 
 /** @param {{authority: BarLocalAuthorityExpectedView}} props */
 export default function BarLocalWorkspace({ authority }) {
+  const [loginMode, setLoginMode] = useState('staff');
   const [staffId, setStaffId] = useState('');
   const [pin, setPin] = useState('');
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [ownerPassword, setOwnerPassword] = useState('');
   const [staff, setStaff] = useState(/** @type {BarLocalStaffExpectedView | null} */ (null));
   const [readiness, setReadiness] = useState(/** @type {BarLocalReadinessView | null} */ (null));
   const [products, setProducts] = useState(/** @type {BarLocalProductExpectedView[]} */ ([]));
@@ -690,7 +693,9 @@ export default function BarLocalWorkspace({ authority }) {
   const signIn = async (event) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const result = await window.api.pos.barLocal.login(staffId.trim(), pin);
+      const result = loginMode === 'owner'
+        ? await window.api.pos.barLocal.login({ email: ownerEmail.trim(), password: ownerPassword })
+        : await window.api.pos.barLocal.login(staffId.trim(), pin);
       setStaff(result.staff); setPin('');
       await refresh();
     } catch (cause) { setError(getMessage(cause)); }
@@ -1295,15 +1300,24 @@ export default function BarLocalWorkspace({ authority }) {
     <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
       <form onSubmit={signIn} className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-xl">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Legacy · local Bar authority</p>
-        <h1 className="mt-3 text-2xl font-bold">Local staff sign in</h1>
+        <h1 className="mt-3 text-2xl font-bold">Local Bar sign in</h1>
         <BarReplacementConnection onConnect={request => window.api.pos.barLocal.reconnectServer(request)} />
-        <p className="mt-2 text-sm text-slate-300">Use the staff ID and PIN issued by the Bar owner. This till is paired with outlet {authority.outlet_id}.</p>
+        <p className="mt-2 text-sm text-slate-300">Owner and staff sign-ins work offline through the paired Bar service. This till is paired with outlet {authority.outlet_id}.</p>
         {authority?.blocked_reason && <p role="alert" className="mt-4 rounded border border-red-700 bg-red-950 p-3 text-sm text-red-100">{String(authority.blocked_reason.message || 'The local Bar authority is blocked. Trading is paused until it is repaired.')}</p>}
         {pending && <p role="status" className="mt-4 rounded border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">Saved operation {pending.operation_id} ({pending.command}) from earlier is unresolved. After signing in, use Check status or Retry same operation before trading. Do not start a new sale.</p>}
-        <label className="mt-5 block text-sm">Staff ID<input required value={staffId} onChange={(event) => setStaffId(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="username" /></label>
-        <label className="mt-3 block text-sm">PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" value={pin} onChange={(event) => setPin(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="current-password" /></label>
+        <div className="mt-5 flex gap-2" role="tablist" aria-label="Local Bar sign in type">
+          <button type="button" role="tab" aria-selected={loginMode === 'staff'} onClick={() => { setLoginMode('staff'); setError(''); }} className={`flex-1 rounded border p-2 text-sm ${loginMode === 'staff' ? 'border-amber-400 bg-amber-950' : 'border-slate-700'}`}>Staff PIN</button>
+          <button type="button" role="tab" aria-selected={loginMode === 'owner'} onClick={() => { setLoginMode('owner'); setError(''); }} className={`flex-1 rounded border p-2 text-sm ${loginMode === 'owner' ? 'border-amber-400 bg-amber-950' : 'border-slate-700'}`}>Owner email</button>
+        </div>
+        {loginMode === 'staff' ? <>
+          <label className="mt-4 block text-sm">Staff ID<input required value={staffId} onChange={(event) => setStaffId(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="username" /></label>
+          <label className="mt-3 block text-sm">PIN<input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" value={pin} onChange={(event) => setPin(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="current-password" /></label>
+        </> : <>
+          <label className="mt-4 block text-sm">Owner email<input required type="email" maxLength={254} value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="username" /></label>
+          <label className="mt-3 block text-sm">Password<input required type="password" minLength={12} maxLength={128} value={ownerPassword} onChange={(event) => setOwnerPassword(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-3" autoComplete="current-password" /></label>
+        </>}
         {error && <p role="alert" className="mt-4 rounded bg-red-950 p-3 text-sm text-red-200">{error}</p>}
-        <button disabled={busy || Boolean(authority?.blocked_reason)} className="mt-5 w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Signing in…' : 'Sign in'}</button>
+        <button disabled={busy || Boolean(authority?.blocked_reason) || (loginMode === 'owner' && ownerPassword.length < 12)} className="mt-5 w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>
     </main>
   );

@@ -33,7 +33,7 @@ async function bootstrap(t) {
   }
   const login = await h.request('/v1/sessions', {
     deviceToken: setup.device_token,
-    body: { staff_id: setup.owner_staff_id, pin: OWNER_PIN }
+    body: { email: 'owner@example.test', password: 'test owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const auth = { token: login.body.session_token, deviceId: setup.device_id }

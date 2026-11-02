@@ -1360,7 +1360,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const [setupDraft, setSetupDraft] = useState({
     business_name: typeof setupPrefill?.business_name === 'string' ? setupPrefill.business_name : '',
     outlet_name: '',
-    owner_name: '', pin: '',
+    owner_name: '', owner_email: '', pin: '',
     currency: typeof setupPrefill?.currency === 'string' ? setupPrefill.currency : 'BWP',
     company_name: typeof setupPrefill?.business_profile?.company_name === 'string' ? setupPrefill.business_profile.company_name : '',
     address: typeof setupPrefill?.business_profile?.address === 'string' ? setupPrefill.business_profile.address : '',
@@ -1379,6 +1379,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const [serverPreflight, setServerPreflight] = useState(null)
   const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
   const [serverPin, setServerPin] = useState('')
+  const [serverPassword, setServerPassword] = useState('')
 
   const refreshServerSetup = useCallback(async () => {
     if (!window.api?.barLocal?.serverSetupStatus) return
@@ -1406,6 +1407,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   useEffect(() => {
     const prefill = authority?.setup_prefill
     if (!prefill) return
+    if (prefill.entry_mode === 'join' || prefill.entry_mode === 'commission') setSetupMode(prefill.entry_mode)
     setSetupDraft((draft) => {
       if (draft.business_name || draft.pin) return draft
       return {
@@ -1464,6 +1466,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
         business_name: setupDraft.business_name.trim(),
         outlet_name: setupDraft.outlet_name.trim(),
         owner_name: setupDraft.owner_name.trim(),
+        owner_email: setupDraft.owner_email.trim(),
         pin: setupDraft.pin,
         currency: setupDraft.currency,
         business_profile: {
@@ -1492,9 +1495,9 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const resumeServerSetup = async () => {
     setSetupBusy(true); setSetupError('')
     try {
-      const needsPin = ['installed', 'owner_pending'].includes(serverSetup?.phase)
-      const result = await window.api.barLocal.serverSetupResume(needsPin ? { pin: serverPin } : {})
-      setServerPin('')
+      const needsOwnerCredentials = ['installed', 'owner_pending'].includes(serverSetup?.phase)
+      const result = await window.api.barLocal.serverSetupResume(needsOwnerCredentials ? { pin: serverPin, owner_password: serverPassword } : {})
+      setServerPin(''); setServerPassword('')
       if (result?.available) setServerSetup(result)
       const status = await window.api.barLocal.getStatus().catch(() => null)
       if (status?.restart_required) { setCurrentAuthority(status); return }
@@ -1542,7 +1545,9 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     const pendingKind = currentAuthority?.provisioning_recovery?.kind
     setSetupBusy(true); setSetupError('')
     try {
-      const result = await window.api.barLocal.resumeProvisioning()
+      if (pendingKind === 'owner' && serverPassword.length < 12) throw new Error('Re-enter the owner password to resume this setup safely. The password was not saved.')
+      const result = await window.api.barLocal.resumeProvisioning(pendingKind === 'owner' ? { owner_password: serverPassword } : {})
+      setServerPassword('')
       const status = await window.api.barLocal.getStatus()
       if (status?.restart_required) {
         setCommittedSetup({ staffId: result?.owner_staff_id || '', paired: pendingKind === 'pairing' })
@@ -1586,7 +1591,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
             try {
               const status = await window.api.barLocal.getStatus()
               if (!status?.configured || status.authority_mode !== 'bar_local') throw new Error('Local authority status is not yet available. Restart this till and contact your administrator if it remains unavailable.')
-              setSetupRecovery({ staffId: committedSetup.staffId, notice: committedSetup.paired ? 'This till was paired. Sign in with your staff ID and PIN.' : 'Your Bar was created. Sign in with the owner PIN.' })
+              setSetupRecovery({ staffId: committedSetup.staffId, notice: committedSetup.paired ? 'This till was paired. Sign in with your staff ID and PIN.' : 'Your Bar was created. Sign in with the owner email and password.' })
               setCurrentAuthority(status)
             } catch (error) { setSetupError(error?.message || 'Could not verify local authority status. Restart this till.') }
             finally { setSetupBusy(false) }
@@ -1597,8 +1602,9 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
         {currentAuthority?.provisioning_recovery?.pending && !unavailable && <section role="status" className="mt-5 rounded border border-amber-700 bg-amber-950/40 p-4 text-sm text-amber-100">
           <p className="font-semibold">{currentAuthority.provisioning_recovery.kind === 'owner' ? 'A saved local Bar setup needs to be resumed.' : currentAuthority.provisioning_recovery.kind === 'pairing' ? 'A saved till pairing needs to be resumed.' : 'A saved local setup record needs recovery.'}</p>
           <p className="mt-1">The protected request and device credential were saved before contacting the service. Resume uses that same request; do not create another Bar or request a replacement pairing code.</p>
+          {currentAuthority.provisioning_recovery.kind === 'owner' && <label className="mt-3 block text-sm">Re-enter owner password<input type="password" minLength={12} maxLength={128} autoComplete="new-password" value={serverPassword} onChange={(event) => setServerPassword(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>}
           {currentAuthority.provisioning_recovery.recoverable === true
-            ? <button type="button" disabled={setupBusy} onClick={() => void resumeSavedProvisioning()} className="mt-3 rounded border border-amber-400 px-3 py-2 font-semibold disabled:opacity-50">{setupBusy ? 'Checking saved setup…' : `Resume saved ${currentAuthority.provisioning_recovery.kind === 'pairing' ? 'pairing' : 'setup'}`}</button>
+            ? <button type="button" disabled={setupBusy || (currentAuthority.provisioning_recovery.kind === 'owner' && serverPassword.length < 12)} onClick={() => void resumeSavedProvisioning()} className="mt-3 rounded border border-amber-400 px-3 py-2 font-semibold disabled:opacity-50">{setupBusy ? 'Checking saved setup…' : `Resume saved ${currentAuthority.provisioning_recovery.kind === 'pairing' ? 'pairing' : 'setup'}`}</button>
             : <p className="mt-3">The recovery record could not be opened. Keep this till and its user profile intact and contact your administrator.</p>}
           {setupError && <p role="alert" className="mt-3 rounded bg-red-950 p-3">{setupError}</p>}
         </section>}
@@ -1623,9 +1629,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
               {serverSetup.installer_status?.message && <p className="text-xs text-slate-300">{serverSetup.installer_status.message}</p>}
               {serverSetup.phase === 'installing' && <p className="text-sm text-slate-200">Windows is installing the local database and Bar service. Approve the Windows administrator prompt if it is waiting. Keep this window open.</p>}
               {['installed', 'owner_pending'].includes(serverSetup.phase) && <div className="space-y-2 rounded border border-amber-700 p-3">
-                <p className="text-sm text-amber-100">The service is installed. Enter the owner PIN to create the first owner and finish setup. The PIN is not saved.</p>
+                <p className="text-sm text-amber-100">The service is installed. Enter the owner PIN and owner password to finish setup. The password is never saved; re-enter it if setup is interrupted.</p>
                 <label className="block text-sm">Owner PIN<input type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={serverPin} onChange={(event) => setServerPin(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
-                <button type="button" disabled={setupBusy || !/^\d{4,12}$/.test(serverPin)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Creating the first owner…' : 'Finish creating the local Bar'}</button>
+                <label className="block text-sm">Owner password<input type="password" minLength={12} maxLength={128} autoComplete="new-password" value={serverPassword} onChange={(event) => setServerPassword(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Use at least 12 characters. Owner sign-in works offline with this email and password.</span></label>
+                <button type="button" disabled={setupBusy || !/^\d{4,12}$/.test(serverPin) || serverPassword.length < 12} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Creating the first owner…' : 'Finish creating the local Bar'}</button>
               </div>}
               {['prepared', 'failed'].includes(serverSetup.phase) && <button type="button" disabled={setupBusy || Boolean(serverPreflight && !serverPreflight.ready)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Starting the installer…' : serverSetup.phase === 'failed' ? 'Retry the local Bar installer' : 'Install the local Bar service'}</button>}
               {serverSetup.can_cancel && <button type="button" disabled={setupBusy} onClick={() => void cancelServerSetup()} className="w-full rounded border border-slate-600 p-2 text-sm disabled:opacity-50">Cancel this prepared setup</button>}
@@ -1643,7 +1650,8 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
                   <label className="block text-sm">Business name <span className="text-slate-300">(required)</span><input required maxLength={200} value={setupDraft.business_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, business_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
                   <label className="block text-sm">Bar or counter name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.outlet_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, outlet_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs leading-5 text-slate-300">An outlet is a trading area, not each till. For one counter, enter Main Bar. If you have several, use names like Pool Bar; tills serving the same counter share its outlet.</span></label>
                   <label className="block text-sm">Owner name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.owner_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, owner_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Enter the owner’s name as it should appear in Bar records.</span></label>
-                  <label className="block text-sm">Owner PIN <span className="text-slate-300">(required)</span><input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={setupDraft.pin} onChange={(event) => setSetupDraft((draft) => ({ ...draft, pin: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Choose 4–12 digits. Use it for local owner sign-in and keep it private.</span></label>
+                  <label className="block text-sm">Owner email <span className="text-slate-300">(required)</span><input required type="email" maxLength={254} autoComplete="email" value={setupDraft.owner_email} onChange={(event) => setSetupDraft((draft) => ({ ...draft, owner_email: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Used to sign in to this local Bar. No internet connection is required.</span></label>
+                  <label className="block text-sm">Owner PIN <span className="text-slate-300">(required)</span><input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={setupDraft.pin} onChange={(event) => setSetupDraft((draft) => ({ ...draft, pin: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Choose 4–12 digits for in-person approvals. The owner signs in with email and password.</span></label>
                   <label className="block text-sm">Currency <span className="text-slate-300">(required)</span><input required maxLength={3} value={setupDraft.currency} onChange={(event) => setSetupDraft((draft) => ({ ...draft, currency: event.target.value.toUpperCase() }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Use a 3-letter code, such as BWP for Botswana pula.</span></label>
                   <label className="block text-sm">Timezone <span className="text-slate-300">(required)</span><input required maxLength={80} value={setupDraft.timezone} onChange={(event) => setSetupDraft((draft) => ({ ...draft, timezone: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Used for Bar opening times and reports. Botswana uses Africa/Gaborone.</span></label>
                 </div>

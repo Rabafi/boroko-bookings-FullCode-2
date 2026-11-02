@@ -156,6 +156,7 @@ test('HTTP command routing reaches validators for every registered command', asy
   const h = await createApiHarness(t)
   const ownerSetupBody = {
       provisioning_id: randomUUID(),
+      device_token: `bld_${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`,
       setup_secret: TEST_SETUP_SECRET,
       business_name: 'Contract Parity Bar',
       outlet_name: 'Main Bar',
@@ -189,7 +190,7 @@ test('HTTP command routing reaches validators for every registered command', asy
 
   const login = await h.request('/v1/sessions', {
     deviceToken: setup.device_token,
-    body: { staff_id: setup.owner_staff_id, pin: OWNER_PIN }
+    body: { email: 'owner@example.test', password: 'test owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const auth = { token: login.body.session_token, deviceId: setup.device_id }

@@ -9,7 +9,8 @@ test('replacement binding requires original Bar/device, fresh owner proof and pr
   const credential = { device_id: '44444444-4444-4444-8444-444444444444', device_token: 'original protected device credential' }
   const request = { staff_id: '55555555-5555-4555-8555-555555555555', pin: '1234', confirm: 'RECONNECT_SERVER' }
   const endpoint = { base_url: 'http://127.0.0.1:4317', fingerprint: null }
-  for (const variant of ['valid', 'wrong-proof-business', 'wrong-proof-device', 'wrong-proof-port', 'wrong-proof-signature', 'challenge-unavailable', 'wrong-business', 'wrong-device', 'cashier', 'old-epoch', 'wrong-authority', 'fenced', 'standby', 'unpromoted']) {
+  for (const variant of ['valid', 'valid-password', 'wrong-proof-business', 'wrong-proof-device', 'wrong-proof-port', 'wrong-proof-signature', 'challenge-unavailable', 'wrong-business', 'wrong-device', 'cashier', 'old-epoch', 'wrong-authority', 'fenced', 'standby', 'unpromoted']) {
+    const loginRequest = variant === 'valid-password' ? { confirm: 'RECONNECT_SERVER', email: 'owner@example.test', password: 'replacement owner password 123' } : request
     const revoked = []
     const routes = []
     let releasedSecrets = 0
@@ -34,13 +35,18 @@ test('replacement binding requires original Bar/device, fresh owner proof and pr
         }
       }
       if (route === '/v1/sessions') {
+        if (variant === 'valid-password') {
+          assert.equal(options.body.email, loginRequest.email)
+          assert.equal(options.body.password, loginRequest.password)
+          assert.equal(options.body.pin, undefined)
+        }
         releasedSecrets += Number(options.deviceToken === credential.device_token && options.body.pin === request.pin)
         return { status: 201, body: { session_token: 'a'.repeat(32), session_id: 'session', authority_epoch: variant === 'old-epoch' ? 1 : 2, business_id: variant === 'wrong-business' ? 'other' : current.business_id, outlet_id: current.outlet_id, staff: { staff_id: request.staff_id, role: variant === 'cashier' ? 'cashier' : 'owner' }, device: { device_id: variant === 'wrong-device' ? 'other' : credential.device_id } } }
       }
       return { status: 200, body: { replacement: { ...current, authority_id: variant === 'wrong-authority' ? 'other' : current.authority_id, authority_epoch: 2, promoted_epoch: variant === 'unpromoted' ? 0 : 2, fenced: variant === 'fenced', in_recovery: variant === 'standby' } } }
     }
-    if (variant === 'valid') assert.equal((await verifyBarReplacement(current, credential, request, exchange, endpoint)).authority_epoch, 2)
-    else await assert.rejects(verifyBarReplacement(current, credential, request, exchange, endpoint), { code: 'REPLACEMENT_NOT_VERIFIED' }, variant)
+    if (variant === 'valid' || variant === 'valid-password') assert.equal((await verifyBarReplacement(current, credential, loginRequest, exchange, endpoint)).authority_epoch, 2)
+    else await assert.rejects(verifyBarReplacement(current, credential, loginRequest, exchange, endpoint), { code: 'REPLACEMENT_NOT_VERIFIED' }, variant)
     if (['wrong-proof-business', 'wrong-proof-device', 'wrong-proof-port', 'wrong-proof-signature', 'challenge-unavailable'].includes(variant)) {
       assert.equal(releasedSecrets, 0, 'no device token or owner PIN is released without a valid endpoint-bound challenge')
       assert.deepEqual(revoked, [])

@@ -6,6 +6,7 @@ import {
   propertyTypeToBusinessType,
   resolveLockedPropertyType
 } from '../../shared/propertyTypes.js';
+import { BAR_LOCAL_SETUP_MESSAGE, isLocalBarSetupRequest } from '../../shared/barLocalCompanySetup.js';
 import { state } from '../state.js';
 import { readAuthCache, upsertCachedUser, writeAuthCache } from './authCache.js';
 import {
@@ -677,6 +678,14 @@ export async function updateOperatingProfile(profile) {
 }
 
 export async function initializeCompanySetup({ settings, admin }) {
+  // A Bar is commissioned through the local Bar server, never as a cloud
+  // company. This runs before any profile, queue or Supabase work so a renderer
+  // that bypasses the visible setup UI still cannot create a cloud Bar.
+  if (isLocalBarSetupRequest(settings)) {
+    throw createAppError('bar_local_setup_required', BAR_LOCAL_SETUP_MESSAGE, {
+      required_flow: 'bar_local_commissioning'
+    });
+  }
   const activeProfile = getActiveProfile();
   if (!activeProfile) {
     throw createAppError('no_draft_profile_selected', 'Create a new lodge profile on this computer before running setup.');

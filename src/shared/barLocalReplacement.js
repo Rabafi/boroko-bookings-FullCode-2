@@ -6,16 +6,20 @@ function object(value) { return value && typeof value === 'object' && !Array.isA
 function refuse(message) { throw Object.assign(new Error(message), { code: 'REPLACEMENT_NOT_VERIFIED' }) }
 
 /**
- * Verify with the original device credential plus a fresh owner PIN before
+ * Verify with the original device credential plus fresh owner credentials before
  * changing any protected profile. Never returns or saves the temporary token.
  * @param {{authority_id:string,authority_epoch:number,business_id:string,outlet_id:string}} current
  * @param {{device_id:string,device_token:string}} credential
- * @param {{confirm:string,staff_id:string,pin:string}} request
+ * @param {{confirm:string,staff_id?:string,pin?:string,email?:string,password?:string}} request
  * @param {(method:string,pathname:string,options:Record<string,any>)=>Promise<any>} exchange
  * @param {{base_url:string,fingerprint:string|null}} endpoint
  */
 export async function verifyBarReplacement(current, credential, request, exchange, endpoint) {
-  if (request.confirm !== 'RECONNECT_SERVER' || !/^[a-f0-9-]{36}$/i.test(request.staff_id) || !/^\d{4,12}$/.test(request.pin)) refuse('Enter the owner staff ID and PIN, then confirm RECONNECT_SERVER.')
+  const passwordMode = request.email !== undefined || request.password !== undefined
+  const validCredential = passwordMode
+    ? typeof request.email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(request.email.trim()) && request.email.length <= 254 && typeof request.password === 'string' && request.password.length >= 12 && request.password.length <= 128 && request.staff_id === undefined && request.pin === undefined
+    : typeof request.staff_id === 'string' && /^[a-f0-9-]{36}$/i.test(request.staff_id) && typeof request.pin === 'string' && /^\d{4,12}$/.test(request.pin)
+  if (request.confirm !== 'RECONNECT_SERVER' || !validCredential) refuse('Enter the owner email and password, or the original owner staff ID and PIN, then confirm RECONNECT_SERVER.')
   if (!endpoint) refuse('A pinned replacement endpoint is required before releasing any credential.')
   const address = new URL(endpoint.base_url)
   const host = address.hostname.replace(/^\[|\]$/g, '')
@@ -43,11 +47,12 @@ export async function verifyBarReplacement(current, credential, request, exchang
   if (challenge.status !== 200 || !validSignature || payload.client_nonce !== nonce || payload.device_id !== credential.device_id || payload.authority_id !== current.authority_id || payload.business_id !== current.business_id || payload.outlet_id !== current.outlet_id || payload.server_port !== expectedPort || !endpointPinMatches || address.protocol === 'http:' && !exactLoopback) refuse('The selected server did not prove possession of this Bar’s replicated device secret at this endpoint. No PIN or device credential was sent.')
   let token = null, sessionId = null
   try {
-    const response = await exchange('POST', '/v1/sessions', { deviceToken: credential.device_token, body: { staff_id: request.staff_id, pin: request.pin, outlet_id: current.outlet_id } })
+    const login = passwordMode ? { email: request.email?.trim().toLowerCase(), password: request.password } : { staff_id: request.staff_id, pin: request.pin }
+    const response = await exchange('POST', '/v1/sessions', { deviceToken: credential.device_token, body: { ...login, outlet_id: current.outlet_id } })
     const body = object(response.body), staff = object(body.staff), device = object(body.device)
     token = typeof body.session_token === 'string' ? body.session_token : null
     sessionId = body.session_id
-    if (response.status !== 201 || !token || token.length < 20 || staff.role !== 'owner' || staff.staff_id !== request.staff_id || device.device_id !== credential.device_id || body.business_id !== current.business_id || body.outlet_id !== current.outlet_id || !Number.isSafeInteger(body.authority_epoch) || body.authority_epoch <= current.authority_epoch) refuse('The replacement did not authenticate this Bar owner, original device and a newer authority epoch. The saved profile was not changed.')
+    if (response.status !== 201 || !token || token.length < 20 || staff.role !== 'owner' || !/^[a-f0-9-]{36}$/i.test(staff.staff_id) || !passwordMode && staff.staff_id !== request.staff_id || device.device_id !== credential.device_id || body.business_id !== current.business_id || body.outlet_id !== current.outlet_id || !Number.isSafeInteger(body.authority_epoch) || body.authority_epoch <= current.authority_epoch) refuse('The replacement did not authenticate this Bar owner, original device and a newer authority epoch. The saved profile was not changed.')
     const proof = await exchange('GET', '/v1/admin/replacement', { sessionToken: token, deviceId: credential.device_id })
     const identity = object(object(proof.body).replacement)
     if (proof.status !== 200 || identity.authority_id !== current.authority_id || identity.business_id !== current.business_id || identity.authority_epoch !== body.authority_epoch || identity.promoted_epoch !== body.authority_epoch || identity.fenced !== false || identity.in_recovery !== false) refuse('This server is not the promoted, unfenced copy of your original Bar. No profile or saved operation was changed.')

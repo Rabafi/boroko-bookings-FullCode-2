@@ -93,7 +93,7 @@ test('admin HTTP routes enforce capability, expose honest status and create veri
 
   const login = await h.request('/v1/sessions', {
     deviceToken: setup.stagedDeviceToken,
-    body: { staff_id: setup.body.owner_staff_id, pin: '1234' }
+    body: { email: 'owner@example.test', password: 'test owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const ownerToken = login.body.session_token

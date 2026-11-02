@@ -9,6 +9,7 @@ import { getProductDefinition, getRuntimeProductId } from '../../../shared/produ
 import { getPropertyPresentation, toSupportedLodgingType } from '../../../shared/propertyPresentation'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
 import { ErrorNotice } from './shared/ErrorNotice'
+import BarLocalSetupHandoff from './hospitality-pos/BarLocalSetupHandoff'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const ALLOWED_PROPERTY_TYPES = new Set(BUILD_PRODUCT.allowedPropertyTypes)
@@ -179,6 +180,11 @@ export default function Setup({ onComplete }) {
 
   const setOA = (key, value) => setOperatingAnswers(prev => ({ ...prev, [key]: value }))
 
+  // A Bar is a local-first business: it is never registered as a cloud
+  // company and never writes a cloud operating profile. Everything after the
+  // product choice leads to local Bar commissioning or joining instead.
+  const isBarLocal = IS_HOSPITALITY_POS_PRODUCT && hospitalityMode === HOSPITALITY_MODES.BAR_ONLY
+
   const OPERATING_QUESTIONS = IS_HOTEL_PRODUCT
     ? HOTEL_OPERATING_QUESTIONS
     : IS_HOSPITALITY_POS_PRODUCT
@@ -209,6 +215,13 @@ export default function Setup({ onComplete }) {
   }
 
   const handleContinueOperating = async () => {
+    if (isBarLocal) {
+      // A Bar has no cloud company yet, so there is nothing to write to on the
+      // server. The answers stay in this form and are only used for the visible
+      // summary; the local Bar service owns the Bar's real configuration.
+      setStep(3)
+      return
+    }
     try {
       await window.api.settings.updateOperatingProfile(buildHospitalityOperatingProfile())
     } catch (e) {
@@ -248,6 +261,9 @@ export default function Setup({ onComplete }) {
 
     if (code === 'profile_already_ready') {
       return `This ${BUSINESS_NOUN} profile on this computer is already set up. Go back to the chooser and sign in instead.`
+    }
+    if (code === 'bar_local_setup_required') {
+      return 'Open Bar setup and choose “Set up a new Bar on this computer” or “Connect this till to my Bar”.'
     }
     if (code === 'remote_lodge_already_exists') {
       return `This draft ${BUSINESS_NOUN} ID already exists in Supabase. Go back to the chooser and create a fresh draft.`
@@ -302,6 +318,13 @@ export default function Setup({ onComplete }) {
 
   const handleFinish = async () => {
     setAdminError('')
+
+    if (isBarLocal) {
+      // Defence in depth: the Bar journey never reaches cloud company
+      // initialization, and the main process refuses it as well.
+      setAdminError('A Bar is created by the local Bar server. Use “Open local Bar setup window” above.')
+      return
+    }
 
     if (!admin.name.trim() || !admin.email.trim() || !admin.password) {
       setAdminError('All fields are required.')
@@ -362,7 +385,7 @@ export default function Setup({ onComplete }) {
   const STEP_LABELS = IS_HOTEL_PRODUCT
     ? ['Property type', 'Hotel operations', 'Hotel identity', 'Contact', 'Admin access']
     : IS_HOSPITALITY_POS_PRODUCT
-      ? ['Product', 'Operations', 'Business info', 'Contact', 'Admin access']
+      ? ['Product', 'Operations', 'Business info', 'Contact', isBarLocal ? 'Local Bar setup' : 'Admin access']
       : ['Property Type', 'Operating Questions', 'Property Info', 'Contact Details', 'Admin Account']
 
   const stepSubtitle = IS_HOTEL_PRODUCT ? {
@@ -372,13 +395,15 @@ export default function Setup({ onComplete }) {
     4: 'Front desk and guest contact details for this property.',
     5: 'Create the hotel admin login. You can add front-desk staff after setup.'
   } : IS_HOSPITALITY_POS_PRODUCT ? {
-    1: 'Register a restaurant or a bar. These are different products with different pricing — choose once.',
+    1: isBarLocal ? 'Set up your Bar with records kept on a computer at your venue.' : 'Set up a restaurant or a Bar. A new Bar keeps its records on a computer at your venue.',
     2: hospitalityMode === HOSPITALITY_MODES.BAR_ONLY
       ? 'Answer a few questions about how this bar operates.'
       : 'Answer a few questions to shape POS, kitchen, stock and service modules.',
     3: 'Business identity for receipts and reports.',
     4: 'Where customers and staff can reach you.',
-    5: 'Create your administrator login. Add team members after setup.'
+    5: isBarLocal
+      ? 'Create your local Bar owner sign-in and start the Bar on its main computer.'
+      : 'Create your administrator login. Add team members after setup.'
   } : {
     1: 'What do you operate? This shapes your default modules and navigation.',
     2: 'Answer a few questions about your operations to customise your experience.',
@@ -432,17 +457,17 @@ export default function Setup({ onComplete }) {
   const companyPlaceholder = IS_HOTEL_PRODUCT
     ? 'e.g. Cresta Hospitality (Pty) Ltd'
     : IS_HOSPITALITY_POS_PRODUCT
-      ? 'e.g. River Bistro (Pty) Ltd'
+      ? (isBarLocal ? 'e.g. Town Bar (Pty) Ltd' : 'e.g. River Bistro (Pty) Ltd')
       : (setupKnownType ? `e.g. Sunset ${setupBusinessLabel} (Pty) Ltd` : 'e.g. Sunset Property (Pty) Ltd')
   const emailPlaceholder = IS_HOTEL_PRODUCT
     ? 'reservations@yourhotel.com'
     : IS_HOSPITALITY_POS_PRODUCT
-      ? 'info@yourrestaurant.com'
+      ? (isBarLocal ? 'owner@yourbar.com' : 'info@yourrestaurant.com')
       : 'info@yourlodge.com'
   const websitePlaceholder = IS_HOTEL_PRODUCT
     ? 'www.yourhotel.com'
     : IS_HOSPITALITY_POS_PRODUCT
-      ? 'www.yourrestaurant.com'
+      ? (isBarLocal ? 'www.yourbar.com' : 'www.yourrestaurant.com')
       : 'www.yourlodge.com'
   const adminEmailPlaceholder = IS_HOTEL_PRODUCT
     ? 'gm@yourhotel.com'
@@ -534,6 +559,7 @@ export default function Setup({ onComplete }) {
                               property_type: 'restaurant',
                               business_type: 'restaurant'
                             }))
+                            if (mode === HOSPITALITY_MODES.BAR_ONLY) setStep(5)
                           }}
                           className={`flex items-start gap-3 border-2 p-4 text-left transition-all rounded-xl ${isSelected ? THEME.selectOn : THEME.selectOff}`}
                         >
@@ -551,6 +577,12 @@ export default function Setup({ onComplete }) {
                       )
                     })}
                   </div>
+                  {isBarLocal && (
+                    <div className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-[#7a2e1c]">
+                      Your Bar keeps its records on a <strong>main computer at your venue</strong>. You can make this the
+                      main computer or connect another till.
+                    </div>
+                  )}
                   <button
                     onClick={() => {
                       setForm((f) => ({
@@ -712,7 +744,7 @@ export default function Setup({ onComplete }) {
                 </div>
               </div>
 
-              <div>
+              {!isBarLocal ? <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <Image size={14} className={`inline mr-1 ${THEME.icon}`} />
                   {IS_HOTEL_PRODUCT ? 'Hotel logo (optional)' : 'Logo (optional)'}
@@ -742,7 +774,7 @@ export default function Setup({ onComplete }) {
                   <input ref={fileInputRef} type="file" accept="image/*"
                     onChange={(e) => processImageFile(e.target.files[0])} className="hidden" />
                 </div>
-              </div>
+              </div> : <p className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-[#7a2e1c]">Bar logo setup will be available after the local Bar is created. Your name, contact details and tax number will be saved locally now.</p>}
 
               <div className="flex gap-3 pt-1">
                 <button onClick={() => setStep(2)} className="btn-secondary flex-1">← Back</button>
@@ -841,7 +873,23 @@ export default function Setup({ onComplete }) {
             </div>
           )}
 
-          {step === 5 && (
+          {step === 5 && (isBarLocal ? (
+            <BarLocalSetupHandoff
+              businessName={form.lodge_name}
+              currency={form.currency}
+              businessProfile={{
+                company_name: form.company_name,
+                address: form.address,
+                city: form.city,
+                country: form.country,
+                phone: form.phone,
+                email: form.email,
+                website: form.website,
+                vat_number: form.vat_number
+              }}
+              onBackToDetails={() => setStep(1)}
+            />
+          ) : (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -925,7 +973,7 @@ export default function Setup({ onComplete }) {
                 </button>
               </div>
             </div>
-          )}
+          ))}
         </div>
 
         <p className="text-center text-xs text-gray-400 pb-4">

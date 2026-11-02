@@ -27,6 +27,7 @@ const SERVICE_FUNCTIONS = [
   'service_session',
   'service_set_entitlement',
   'service_staff'
+  , 'service_owner_credential', 'service_owner_credential_by_staff', 'service_owner_password_change', 'service_owner_password_recover', 'service_create_owner_session'
 ]
 
 // Reviewed privileged entry points added outside the command/service registry.
@@ -48,7 +49,7 @@ const CLOUD_SYNC_FUNCTIONS = [
   'cloud_sync_status',
   'cloud_sync_config_set'
 ]
-const PROVISIONING_FUNCTIONS = ['commission_owner_profile_recoverable', 'service_complete_pairing_recoverable']
+const PROVISIONING_FUNCTIONS = ['commission_owner_profile_recoverable', 'commission_owner_credentials_profile_recoverable', 'service_complete_pairing_recoverable']
 
 function expectedAllowlist() {
   return new Set([

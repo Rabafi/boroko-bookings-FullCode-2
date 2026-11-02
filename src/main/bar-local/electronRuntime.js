@@ -166,7 +166,7 @@ export class BarLocalElectronRuntime {
         if (typeof value === 'string' && value.trim()) business_profile[key] = value.trim().slice(0, max)
       }
       if (!businessName && !currency && !Object.keys(business_profile).length) return null
-      return { business_name: businessName || null, currency, business_profile }
+      return { business_name: businessName || null, currency, business_profile, entry_mode: prefill.entry_mode === 'join' ? 'join' : 'commission' }
     } catch { return null }
   }
 
@@ -457,7 +457,7 @@ export class BarLocalElectronRuntime {
     }
   }
 
-  /** @param {{base_url:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>}} request */
+  /** @param {{base_url:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,owner_email?:string,owner_password?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>}} request */
   async setupOwner({ base_url, setup_secret, ...request }) {
     if (this.buildProductId !== 'hospitality-pos') throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Owner setup is only available in Restaurant & Bar POS.')
     if (this.adapter !== null) throw new BarLocalAdapterError('SETUP_ALREADY_COMMISSIONED', 'This installation already has a committed authority profile.')
@@ -468,12 +468,14 @@ export class BarLocalElectronRuntime {
     let pending = this.#readProvisioning()
     if (pending && pending.kind !== 'owner') throw new BarLocalAdapterError('PROVISIONING_IN_PROGRESS', 'A saved pairing must be resumed before owner setup can begin.')
     if (pending) {
+      const ownerPassword = request.owner_password
       base_url = pending.request.base_url
-      request = pending.request
+      request = { ...pending.request, ...(typeof ownerPassword === 'string' ? { owner_password: ownerPassword } : {}) }
       setup_secret = pending.request.setup_secret
     } else {
       const tokenBytes = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
-      pending = { kind: 'owner', request: { ...request, base_url, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } }
+      const { owner_password: _transientPassword, ...protectedRequest } = request
+      pending = { kind: 'owner', request: { ...protectedRequest, base_url, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } }
       this.#saveProvisioning(pending)
     }
     const transport = createHttpTransport({ base_url, request_timeout_ms: 15000, connect_timeout_ms: 5000 })
@@ -487,8 +489,9 @@ export class BarLocalElectronRuntime {
         journal: this.#openJournal(),
         logger: null
       })
+      if (typeof request.owner_password !== 'string') throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to safely resume this setup attempt.')
       const { base_url: _baseUrl, setup_secret: stagedSetupSecret, ...stagedPayload } = pending.request
-      const result = await bootstrap.requireClient().setupOwner({ setup_secret: stagedSetupSecret, ...stagedPayload })
+      const result = await bootstrap.requireClient().setupOwner({ setup_secret: stagedSetupSecret, ...stagedPayload, owner_password: request.owner_password })
       /** @type {BarLocalAuthorityPersistExpectedData} */
       const authority = {
         authority_mode: 'bar_local',
@@ -620,14 +623,14 @@ export class BarLocalElectronRuntime {
     }
   }
 
-  async resumeProvisioning() {
+  async resumeProvisioning(request = {}) {
     const pending = this.#readProvisioning()
     if (!pending) {
       throw new BarLocalAdapterError('PROVISIONING_NOT_FOUND', 'There is no saved local setup or pairing attempt to resume.')
     }
     // Both methods reload the protected pending request and replace these
     // values before using them. Keep the original empty runtime arguments.
-    if (pending.kind === 'owner') return this.setupOwner(/** @type {Parameters<BarLocalElectronRuntime['setupOwner']>[0]} */ ({}))
+    if (pending.kind === 'owner') return this.setupOwner(/** @type {Parameters<BarLocalElectronRuntime['setupOwner']>[0]} */ ({ owner_password: request.owner_password }))
     if (pending.kind === 'pairing') return this.pairDevice(/** @type {Parameters<BarLocalElectronRuntime['pairDevice']>[0]} */ ({}))
     throw new BarLocalAdapterError('PROVISIONING_STATE_CORRUPT', 'The saved local setup type is invalid. Preserve this till for recovery.')
   }
@@ -650,6 +653,11 @@ export class BarLocalElectronRuntime {
       throw error
     }
     return this.status()
+  }
+
+  async recoverOwnerPassword(request) {
+    const client = this.#requireClient()
+    return client.recoverOwnerPassword(request)
   }
 
   async logout() {
@@ -1092,8 +1100,9 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:setupOwner', (_event, request) => provisionAndRestart(() => runtime.setupOwner(request)))
   ipcMain.handle('barLocal:pairDevice', (_event, request) => provisionAndRestart(() => runtime.pairDevice(request)))
   ipcMain.handle('barLocal:reconnectServer', (_event, request) => provisionAndRestart(() => runtime.reconnectServer(request)))
-  ipcMain.handle('barLocal:resumeProvisioning', () => provisionAndRestart(() => runtime.resumeProvisioning()))
+  ipcMain.handle('barLocal:resumeProvisioning', (_event, request) => provisionAndRestart(() => runtime.resumeProvisioning(request)))
   ipcMain.handle('barLocal:login', (_event, request) => runtime.login(request))
+  ipcMain.handle('barLocal:recoverOwnerPassword', (_event, request) => serverSetup.recoverOwnerPassword(request))
   ipcMain.handle('barLocal:logout', () => runtime.logout())
   ipcMain.handle('barLocal:startPairing', (_event, request) => runtime.startPairing(request))
   ipcMain.handle('barLocal:query', (_event, name, filters) => runtime.query(name, filters))

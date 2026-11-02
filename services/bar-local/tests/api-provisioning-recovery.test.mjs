@@ -12,6 +12,8 @@ test('owner setup retry returns the original authority only with the original st
     business_name: 'Recoverable Bar',
     outlet_name: 'Main Bar',
     owner_name: 'Owner',
+    owner_email: 'owner@recoverable.example.test',
+    owner_password: 'recoverable owner password 123',
     pin: '1234',
     device_name: 'Owner till',
     device_platform: 'modern'
@@ -28,6 +30,42 @@ test('owner setup retry returns the original authority only with the original st
   assert.equal(first.body.device_token, undefined, 'service response must not reveal the staged secret')
   assert.equal(first.stagedDeviceToken, setupRequest.device_token)
 
+  const ownerLogin = await h.request('/v1/sessions', {
+    body: { email: setupRequest.owner_email, password: setupRequest.owner_password },
+    deviceToken: setupRequest.device_token
+  })
+  assert.equal(ownerLogin.status, 201, JSON.stringify(ownerLogin.body))
+  assert.equal(ownerLogin.body.staff.role, 'owner')
+  const ownerPinLogin = await h.request('/v1/sessions', {
+    body: { staff_id: first.body.owner_staff_id, pin: setupRequest.pin },
+    deviceToken: setupRequest.device_token
+  })
+  assert.equal(ownerPinLogin.status, 401, 'owner must use email/password for sign-in')
+
+  const invalidReset = await h.request('/v1/owner/password/recover', {
+    body: { owner_email: setupRequest.owner_email, new_password: 'replacement owner password 456', recovery_secret: 'incorrect-recovery-secret' }
+  })
+  assert.equal(invalidReset.status, 401, 'loopback alone must not authorize password recovery')
+  const passwordReset = await h.request('/v1/owner/password/recover', {
+    body: { owner_email: setupRequest.owner_email, new_password: 'replacement owner password 456', recovery_secret: TEST_SETUP_SECRET }
+  })
+  assert.equal(passwordReset.status, 200, JSON.stringify(passwordReset.body))
+  const oldPasswordLogin = await h.request('/v1/sessions', {
+    body: { email: setupRequest.owner_email, password: setupRequest.owner_password },
+    deviceToken: setupRequest.device_token
+  })
+  assert.equal(oldPasswordLogin.status, 401)
+  const newPasswordLogin = await h.request('/v1/sessions', {
+    body: { email: setupRequest.owner_email, password: 'replacement owner password 456' },
+    deviceToken: setupRequest.device_token
+  })
+  assert.equal(newPasswordLogin.status, 201, JSON.stringify(newPasswordLogin.body))
+  const changedPassword = await h.request('/v1/owner/password/change', {
+    token: newPasswordLogin.body.session_token, deviceId: first.body.device_id,
+    body: { current_password: 'replacement owner password 456', new_password: 'third local owner password 789' }
+  })
+  assert.equal(changedPassword.status, 200, JSON.stringify(changedPassword.body))
+
   // Model the client losing the successful response and retrying its durable,
   // unchanged setup intent after restart.
   const replay = await h.request('/v1/setup/owner', { body: setupRequest })
@@ -35,6 +73,11 @@ test('owner setup retry returns the original authority only with the original st
   for (const field of ['authority_id', 'authority_epoch', 'business_id', 'outlet_id', 'device_id', 'owner_staff_id']) {
     assert.equal(replay.body[field], first.body[field], `${field} must be the original committed result`)
   }
+  const afterReplayLogin = await h.request('/v1/sessions', {
+    body: { email: setupRequest.owner_email, password: 'third local owner password 789' },
+    deviceToken: setupRequest.device_token
+  })
+  assert.equal(afterReplayLogin.status, 201, 'setup replay must not restore an old password')
 
   const changedPayload = await h.request('/v1/setup/owner', {
     body: { ...setupRequest, business_name: 'Changed Bar' }
@@ -63,6 +106,8 @@ test('pairing retry with staged proof returns one device and arbitrary reuse is 
       business_name: 'Pair Recovery Bar',
       outlet_name: 'Main',
       owner_name: 'Owner',
+      owner_email: 'owner@pairing.example.test',
+      owner_password: 'pairing owner password 123',
       pin: '1234',
       device_name: 'Primary'
     }
@@ -70,7 +115,7 @@ test('pairing retry with staged proof returns one device and arbitrary reuse is 
   assert.equal(setup.status, 201, JSON.stringify(setup.body))
   const login = await h.request('/v1/sessions', {
     deviceToken: setup.stagedDeviceToken,
-    body: { staff_id: setup.body.owner_staff_id, pin: '1234' }
+    body: { email: 'owner@pairing.example.test', password: 'pairing owner password 123' }
   })
   assert.equal(login.status, 201, JSON.stringify(login.body))
   const code = await h.request('/v1/pairing/start', {

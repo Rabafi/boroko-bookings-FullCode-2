@@ -47,6 +47,29 @@ test('Legacy retains the original operation when both commit and uncertainty che
   }finally{env.cleanup()}
 })
 
+test('Legacy owner email/password login uses the shared local service contract', async () => {
+  const env = setup();
+  let posted = null;
+  const transport = {
+    request: async (_method, path, options) => {
+      if (path === '/v1/sessions') {
+        posted = options;
+        return { status: 201, body: { ok: true, session_token: 'local-session-token-1234567890', session_id: 'e1000000-0000-4000-8000-000000000001', authority_epoch: 1, business_id: scope.business_id, outlet_id: scope.outlet_id, staff: { staff_id: 'f1000000-0000-4000-8000-000000000001', role: 'owner' } } };
+      }
+      return { status: 200, body: { ok: true } };
+    },
+    close() {}
+  };
+  try {
+    const client = new LegacyBarLocalClient({ scope, journal: env.journal, transport });
+    const session = await client.login({ email: ' OWNER@example.test ', password: 'a local owner password 123' });
+    assert.equal(posted.body.email, 'owner@example.test');
+    assert.equal(posted.body.password, 'a local owner password 123');
+    assert.equal(posted.body.staff_id, undefined);
+    assert.equal(session.staff.role, 'owner');
+  } finally { env.cleanup(); }
+});
+
 function validReceipt(operationId, overrides = {}) {
   return {
     operation_id: operationId, outcome: 'committed_local', authority_id: scope.authority_id,

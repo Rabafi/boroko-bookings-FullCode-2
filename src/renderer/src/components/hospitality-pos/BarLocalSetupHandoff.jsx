@@ -15,9 +15,10 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [opened, setOpened] = useState(false)
+  const [openedMode, setOpenedMode] = useState('commission')
   const [dedicatedWindow, setDedicatedWindow] = useState(false)
 
-  const openWorkspace = async () => {
+  const openWorkspace = async (entryMode) => {
     setBusy(true)
     setError('')
     try {
@@ -29,11 +30,13 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
       const result = await window.api.barLocal.openLocalBarWorkspace({
         business_name: businessName,
         currency,
+        entry_mode: entryMode,
         ...businessProfile
       })
       if (!result || result.opened !== true) {
         throw new Error('The local Bar setup window did not open. Try again, or restart the application.')
       }
+      setOpenedMode(entryMode)
       setOpened(true)
     } catch (e) {
       setError(
@@ -51,9 +54,7 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
       <div className="space-y-4">
         <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
           <p className="text-sm font-semibold text-[#7a2e1c]">This is your local Bar setup window</p>
-          <p className="mt-1 text-xs text-[#7a2e1c]">
-            Continue here to set up your Bar or connect this till to its main computer.
-          </p>
+          <p className="mt-1 text-xs text-[#7a2e1c]">Choose whether to set up a new Bar or connect to your existing Bar in the local workspace.</p>
         </div>
         {onBackToDetails && (
           <button type="button" onClick={onBackToDetails} className="btn-secondary w-full">← Back to business details</button>
@@ -67,16 +68,16 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
       <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
         <p className="text-sm font-semibold text-[#7a2e1c]">Your Bar records stay on the main computer at your venue</p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[#7a2e1c]">
-          <li>This starts a <strong>new Bar</strong>. Its sales, stock and payments are stored on the main Bar computer.</li>
-          <li>Your Bar name, contact details and currency from the previous steps are saved with the local Bar setup.</li>
-          <li>You will create a local owner sign-in using your name and a PIN. No email or password is needed to run this Bar.</li>
+          <li>Choose a <strong>new Bar</strong> to install its records on this main computer, or connect this till to an existing Bar.</li>
+          <li>Enter the business details during local setup. Existing Bars use their saved records on the main Bar computer.</li>
+          <li>You will create an offline owner sign-in with an email address and password, plus a PIN for in-person approvals.</li>
           <li>Choose whether this is the main Bar computer or a till that connects to it.</li>
         </ul>
       </div>
 
       {opened ? (
         <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-          <p className="text-sm font-semibold text-emerald-800">Your Bar setup window is ready</p>
+          <p className="text-sm font-semibold text-emerald-800">{openedMode === 'join' ? 'Your existing-Bar connection window is ready' : 'Your new-Bar setup window is ready'}</p>
           <p className="mt-1 text-xs text-emerald-800">
             Continue in the Bar window to finish setup.
           </p>
@@ -86,9 +87,10 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
           </p>
         </div>
       ) : (
-        <button type="button" onClick={openWorkspace} disabled={busy} className="btn-primary w-full">
-          {busy ? 'Opening the local Bar setup window…' : 'Open local Bar setup window'}
-        </button>
+        <div className="space-y-2">
+          <button type="button" onClick={() => void openWorkspace('commission')} disabled={busy} className="btn-primary w-full">{busy ? 'Opening local Bar setup…' : 'Set up a new Bar'}</button>
+          <button type="button" onClick={() => void openWorkspace('join')} disabled={busy} className="btn-secondary w-full">Connect to an existing Bar</button>
+        </div>
       )}
 
       {error && <ErrorNotice className="text-red-500 text-sm">{error}</ErrorNotice>}

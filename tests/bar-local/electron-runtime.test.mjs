@@ -136,6 +136,7 @@ test('loopback owner commissioning persists a local-only profile and OS-protecte
       base_url: `http://127.0.0.1:${address.port}`,
       setup_secret: 'a-local-setup-secret-that-is-long',
       business_name: 'Test Bar', outlet_name: 'Main', owner_name: 'Owner',
+      owner_email: 'owner@example.test', owner_password: 'a test owner password 123',
       pin: '482915', device_name: 'Till 1', device_platform: 'modern'
     })
     assert.equal(result.authority_mode, 'bar_local')
@@ -185,6 +186,7 @@ test('Modern owner setup resumes the same staged identity after a lost committed
     base_url: `http://127.0.0.1:${address.port}`,
     setup_secret: 'a-local-setup-secret-that-is-long',
     business_name: 'Recoverable Bar', outlet_name: 'Main', owner_name: 'Owner',
+    owner_email: 'owner@example.test', owner_password: 'a test owner password 123',
     pin: '482915', device_name: 'Till 1', device_platform: 'modern'
   }
   let runtime = new BarLocalElectronRuntime({ userDataPath, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos' })
@@ -196,7 +198,10 @@ test('Modern owner setup resumes the same staged identity after a lost committed
     runtime.close()
     runtime = new BarLocalElectronRuntime({ userDataPath, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos' })
     assert.deepEqual(runtime.status().provisioning_recovery, pending)
-    const result = await runtime.resumeProvisioning()
+    const encryptedPending = readFileSync(join(userDataPath, 'bar-local', 'provisioning.bin')).toString('utf8')
+    assert.equal(encryptedPending.includes(request.owner_password), false, 'raw owner password must not be persisted for retry')
+    await assert.rejects(runtime.resumeProvisioning(), { code: 'OWNER_PASSWORD_REQUIRED' })
+    const result = await runtime.resumeProvisioning({ owner_password: request.owner_password })
     assert.equal(result.authority_id, authorityId)
     assert.equal(result.device_token, undefined)
     assert.equal(attempts, 2)
@@ -391,7 +396,7 @@ test('preload IPC exposes only the fixed local adapter operations', async () => 
     assert.deepEqual([...handlers.keys()], [
       'barLocal:getStatus', 'barLocal:adminRecoveryStatus', 'barLocal:adminCopyRecoverySet', 'barLocal:adminChooseRecoveryDestination', 'barLocal:adminRecoveryJob', 'barLocal:adminCreateRecoveryBase', 'barLocal:adminVerifyRecoveryPoint', 'barLocal:adminExportRecoveryKeys', 'barLocal:trainingLaunch', 'barLocal:trainingBegin', 'barLocal:trainingReset',
       'barLocal:serverSetupPreflight', 'barLocal:serverSetupStatus', 'barLocal:serverSetupBegin', 'barLocal:serverSetupResume', 'barLocal:serverSetupCancel',
-      'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:logout',
+      'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
       'barLocal:startPairing',
       'barLocal:query', 'barLocal:requestApprovalForCommand', 'barLocal:command', 'barLocal:retryOperation',
       'barLocal:getOpenIntents', 'barLocal:getOperation',
@@ -644,7 +649,7 @@ test('commissioning requests a fresh process and fences local and cloud IPC if r
   const runtime = registerBarLocalIpc({ ipcMain, app: { getPath: () => userDataPath, once: () => {}, relaunch: () => { relaunches++; throw new Error('unavailable') }, exit: () => {} }, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos' })
   try {
     ipcMain.handle('pos:createOrder', () => { throw new Error('cloud handler reached') })
-    await handlers.get('barLocal:setupOwner')({}, { base_url: `http://127.0.0.1:${service.address().port}`, setup_secret: 'a-local-setup-secret-that-is-long', business_name: 'Test Bar', outlet_name: 'Main', owner_name: 'Owner', pin: '482915', device_name: 'Till 1', device_platform: 'modern' })
+    await handlers.get('barLocal:setupOwner')({}, { base_url: `http://127.0.0.1:${service.address().port}`, setup_secret: 'a-local-setup-secret-that-is-long', business_name: 'Test Bar', outlet_name: 'Main', owner_name: 'Owner', owner_email: 'owner@example.test', owner_password: 'a test owner password 123', pin: '482915', device_name: 'Till 1', device_platform: 'modern' })
     assert.equal(relaunches, 1)
     assert.equal((await handlers.get('barLocal:getStatus')()).restart_required, true)
     await assert.rejects(handlers.get('barLocal:login')({}, {}), { code: 'LOCAL_RESTART_REQUIRED' })
