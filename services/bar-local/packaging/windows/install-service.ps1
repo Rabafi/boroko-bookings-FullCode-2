@@ -127,6 +127,12 @@ function Set-ServiceAccount {
         'nt authority\networkservice'
     ) -contains $Account.ToLowerInvariant()
 
+    $configured = Get-CimInstance -ClassName Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+    if ($null -ne $configured -and [string]::Equals([string]$configured.StartName, $Account, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Note "Service $Name already runs as $Account; keeping its current account."
+        return
+    }
+
     if ($builtIn) {
         Invoke-External -FilePath 'sc.exe' -ArgumentList @('config', $Name, 'obj=', $Account) -FailureMessage "Could not set the service account to $Account" | Out-Null
         return
@@ -253,10 +259,27 @@ if ($null -eq $existing) {
     Write-Note "Created service $ServiceName."
 }
 else {
-    Invoke-External -FilePath 'sc.exe' -ArgumentList @('config', $ServiceName, 'binPath=', $binaryPath, 'start=', 'auto', 'DisplayName=', $DisplayName) -FailureMessage "Could not update service $ServiceName" | Out-Null
-    Write-Note "Updated existing service $ServiceName."
+    $configured = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+    $sameConfiguration = $null -ne $configured -and
+        [string]::Equals([string]$configured.PathName, $binaryPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals([string]$configured.DisplayName, $DisplayName, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals([string]$configured.StartMode, 'Auto', [System.StringComparison]::OrdinalIgnoreCase)
+    if ($sameConfiguration) {
+        Write-Note "Service $ServiceName already has the requested command, account settings and start mode."
+    }
+    else {
+        Invoke-External -FilePath 'sc.exe' -ArgumentList @('config', $ServiceName, 'binPath=', $binaryPath, 'start=', 'auto', 'DisplayName=', $DisplayName) -FailureMessage "Could not update service $ServiceName" | Out-Null
+        Write-Note "Updated existing service $ServiceName."
+    }
 }
-Invoke-External -FilePath 'sc.exe' -ArgumentList @('description', $ServiceName, 'Tsa Bonno local Bar authority service (PostgreSQL-backed).') -FailureMessage "Could not set the description for $ServiceName" | Out-Null
+$expectedDescription = 'Tsa Bonno local Bar authority service (PostgreSQL-backed).'
+$configured = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+if ($null -ne $configured -and [string]::Equals([string]$configured.Description, $expectedDescription, [System.StringComparison]::Ordinal)) {
+    Write-Note "Service $ServiceName already has the requested description."
+}
+else {
+    Invoke-External -FilePath 'sc.exe' -ArgumentList @('description', $ServiceName, $expectedDescription) -FailureMessage "Could not set the description for $ServiceName" | Out-Null
+}
 
 try {
     Set-ServiceAccount -Name $ServiceName -Account $ServiceAccount -Password $ServiceAccountPassword

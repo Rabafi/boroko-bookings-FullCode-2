@@ -251,7 +251,9 @@ function Write-TextFileAtomic {
     try {
         [System.IO.File]::WriteAllText($temporary, $Content, $encoding)
         if (Test-Path -LiteralPath $Path) {
-            [System.IO.File]::Replace($temporary, $Path, $null)
+            # Windows PowerShell 5.1 converts $null to an empty string for
+            # this .NET string parameter, which File.Replace rejects as a path.
+            [System.IO.File]::Replace($temporary, $Path, [System.Management.Automation.Language.NullString]::Value)
         }
         else {
             [System.IO.File]::Move($temporary, $Path)

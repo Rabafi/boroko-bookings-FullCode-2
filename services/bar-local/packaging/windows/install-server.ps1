@@ -46,6 +46,7 @@ param(
     [string]$AllowedOrigins = '',
     [switch]$InitDb,
     [switch]$Upgrade,
+    [switch]$ResumeExisting,
     [switch]$SkipFirewall,
     [switch]$LoopbackDatabase,
     [switch]$RequirePrivateFirewall,
@@ -275,7 +276,7 @@ function Set-PgOwnedFileAcl {
 }
 
 function Set-PgDataDirectoryAcl {
-    param([string]$Path, [string]$Account)
+    param([string]$Path, [string]$Account, [switch]$AllowInstaller)
     [void][System.IO.Directory]::CreateDirectory($Path)
     $effectiveAccount = $Account.Trim()
     switch ($effectiveAccount.ToLowerInvariant()) {
@@ -287,6 +288,9 @@ function Set-PgDataDirectoryAcl {
     $rights['BUILTIN\Administrators'] = 'FullControl'
     $rights['NT AUTHORITY\SYSTEM'] = 'FullControl'
     $rights[$effectiveAccount] = 'FullControl'
+    if ($AllowInstaller) {
+        $rights[[System.Security.Principal.WindowsIdentity]::GetCurrent().Name] = 'FullControl'
+    }
     Set-PathAcl -Path $Path -RightsByAccount $rights -Container -NoInherit
     & icacls.exe $Path /grant ($effectiveAccount + ':(OI)(CI)F') /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -595,6 +599,24 @@ Assert-FreeSpace -Path $PgDataDir -MinimumGB 1 -Name 'PgDataDir working reserve'
 Assert-FreeSpace -Path $BackupDir -MinimumGB 1 -Name 'BackupDir initial snapshot reserve'
 
 $pgInitialized = Test-Path -LiteralPath (Join-Path $PgDataDir 'PG_VERSION')
+if ($ResumeExisting) {
+    if ($Upgrade) {
+        throw 'Use either -ResumeExisting for the same saved setup or -Upgrade for an explicit database upgrade, not both.'
+    }
+    # A retry of the protected saved attempt may have completed initdb and
+    # provisioning before a later Windows stage failed. The main app cannot
+    # inspect this admin-only directory, so make the fresh/resume choice here.
+    # This never reinitializes an existing cluster and remains scoped to the
+    # same saved setup identity; explicit product upgrades still require -Upgrade.
+    if ($pgInitialized) {
+        $Upgrade = $true
+        $InitDb = $false
+    }
+    else {
+        $Upgrade = $false
+        $InitDb = $true
+    }
+}
 if ($pgInitialized -and -not $Upgrade) {
     throw "The PostgreSQL data directory is already populated: $PgDataDir. Re-run with -Upgrade only after reviewing the upgrade and taking a verified backup."
 }
@@ -749,10 +771,15 @@ if ($firstListenAddress -ne '*' -and $firstListenAddress -ne '0.0.0.0' -and $fir
 try {
     if (-not $pgInitialized) {
         Write-Step "Initialising PostgreSQL 17 at $PgDataDir"
-        Set-PgDataDirectoryAcl -Path $PgDataDir -Account $PgServiceAccount
+        Set-PgDataDirectoryAcl -Path $PgDataDir -Account $PgServiceAccount -AllowInstaller
         $initPasswordFile = Join-Path $DataDir 'secrets\initdb-password.tmp'
         Write-TextFileAtomic -Path $initPasswordFile -Content ($bootstrapPlain + "`n")
         Set-AdminOnlyFileAcl -Path $initPasswordFile
+        # initdb intentionally re-executes with admin rights removed.
+        $initAcl = Get-Acl -LiteralPath $initPasswordFile
+        $initRule = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'Read', 'Allow')
+        [void]$initAcl.AddAccessRule($initRule)
+        Set-Acl -LiteralPath $initPasswordFile -AclObject $initAcl
         try {
             $initdbArgs = @(
                 '-D', $PgDataDir,
@@ -769,6 +796,7 @@ try {
         }
         finally {
             if (Test-Path -LiteralPath $initPasswordFile) { Remove-Item -LiteralPath $initPasswordFile -Force }
+            Set-PgDataDirectoryAcl -Path $PgDataDir -Account $PgServiceAccount
         }
         Write-Note 'PostgreSQL cluster initialised with UTF8 encoding and data checksums.'
     }

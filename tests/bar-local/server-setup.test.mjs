@@ -353,6 +353,9 @@ test('installer failure is recoverable with the same attempt and secrets', async
     assert.equal(failed.phase, 'failed')
     assert.match(failed.last_error.message, /Access denied|installer exited/)
     const setupSecret = orchestrator.readState().secrets.setup_secret
+    const savedWrapper = orchestrator.readState().staging.wrapper_path
+    const legacyWrapper = "# saved legacy wrapper\n$arguments = @('-DbPort','55432')\n"
+    writeFileSync(savedWrapper, legacyWrapper)
 
     const resumed = await orchestrator.resume()
     assert.equal(resumed.phase, 'installing')
@@ -360,6 +363,10 @@ test('installer failure is recoverable with the same attempt and secrets', async
     assert.equal((await orchestrator.status()).phase, 'installed')
     assert.equal(orchestrator.readState().secrets.setup_secret, setupSecret)
     assert.equal(attempts, 2)
+    assert.equal(readFileSync(`${savedWrapper}.before-typed-parameters`, 'utf8'), legacyWrapper)
+    assert.match(readFileSync(savedWrapper, 'utf8'), /\$arguments = @\{/)
+    assert.match(readFileSync(savedWrapper, 'utf8'), /DbPort = \[int\]55432/)
+    assert.match(readFileSync(savedWrapper, 'utf8'), /ResumeExisting = \$true/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
@@ -459,10 +466,12 @@ test('generated PowerShell wrapper parses on Windows without executing', { skip:
 })
 
 test('log redaction removes secrets, hashes and bearer-style tokens', () => {
+  const utf16HashDecodedAsUtf8 = [...'b'.repeat(64)].join('\u0000')
   const text = [
     'setup-secret: abcdef123456',
     'password= hunter2',
     `token ${'a'.repeat(64)}`,
+    `token ${utf16HashDecodedAsUtf8}`,
     'device bld_abcdefghijklmnopqrstuvwxyz012345',
     'normal installer line'
   ].join('\n')
@@ -470,6 +479,8 @@ test('log redaction removes secrets, hashes and bearer-style tokens', () => {
   assert.ok(!redacted.includes('abcdef123456'))
   assert.ok(!redacted.includes('hunter2'))
   assert.ok(!redacted.includes('a'.repeat(64)))
+  assert.ok(!redacted.includes('b'.repeat(64)))
+  assert.ok(!redacted.includes('\u0000'))
   assert.ok(!redacted.includes('bld_abcdefghijklmnopqrstuvwxyz012345'))
   assert.match(redacted, /normal installer line/)
 })

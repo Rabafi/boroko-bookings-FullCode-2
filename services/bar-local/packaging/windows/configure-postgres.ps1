@@ -140,9 +140,34 @@ function Backup-ConfigFiles {
 function Test-PostgresConfig {
     param([string]$Bin, [string]$DataDirectory)
     $postgres = Join-Path $Bin 'postgres.exe'
-    $output = & $postgres '-D' $DataDirectory '-C' 'wal_level' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw ("PostgreSQL rejected the new configuration: " + (($output | ForEach-Object { [string]$_ }) -join ' '))
+    if ($null -eq ('BarRestrictedPostgresValidation' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'lib\RestrictedPostgresValidation.cs')
+    }
+    # The installed cluster grants access to its service identity, not the
+    # installer's filtered user token. Lend read access to configuration only
+    # for this bounded probe, then restore each exact DACL. No database files
+    # or permanent account/machine permissions are opened.
+    $savedAcls = New-Object System.Collections.Generic.List[object]
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        foreach ($file in @($DataDirectory, (Join-Path $DataDirectory 'PG_VERSION'), (Join-Path $DataDirectory 'postgresql.conf'), (Join-Path $DataDirectory 'postgresql.auto.conf'), (Join-Path $DataDirectory 'pg_hba.conf'))) {
+            if (-not (Test-Path -LiteralPath $file)) { continue }
+            $original = Get-Acl -LiteralPath $file
+            $working = Get-Acl -LiteralPath $file
+            $savedAcls.Add([pscustomobject]@{ Path = $file; Acl = $original })
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'ReadAndExecute', 'Allow')
+            [void]$working.AddAccessRule($rule)
+            Set-Acl -LiteralPath $file -AclObject $working
+        }
+        $code = [BarRestrictedPostgresValidation]::Validate($postgres, $DataDirectory)
+    }
+    finally {
+        for ($index = $savedAcls.Count - 1; $index -ge 0; $index--) {
+            Set-Acl -LiteralPath $savedAcls[$index].Path -AclObject $savedAcls[$index].Acl
+        }
+    }
+    if ($code -ne 0) {
+        throw "PostgreSQL rejected the new configuration (read-only validation exit code $code). The previous configuration will be restored; preserve the backup for support."
     }
 }
 

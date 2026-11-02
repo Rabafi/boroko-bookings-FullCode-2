@@ -386,18 +386,32 @@ export function buildInstallerArguments(install) {
     ['DbName', 'bar_local'],
     ...(install.tls_cert_file && install.tls_key_file ? [
       ['HttpHost', '0.0.0.0'], ['TlsCertFile', install.tls_cert_file], ['TlsKeyFile', install.tls_key_file], ['LoopbackDatabase', null], ['RequirePrivateFirewall', null]
-    ] : [['HttpHost', '127.0.0.1'], ['SkipFirewall', null]]),
-    [install.upgrade ? 'Upgrade' : 'InitDb', null]
+    ] : [['HttpHost', '127.0.0.1'], ['SkipFirewall', null], ['LoopbackDatabase', null]]),
+    ...(install.resume_existing
+      ? [['ResumeExisting', null]]
+      : [[install.upgrade ? 'Upgrade' : 'InitDb', null]])
   ]
+}
+
+/** Named script parameters must be splatted as a hashtable, not a string
+ * array: PowerShell binds array elements positionally for .ps1 scripts.
+ * @param {ServerSetupState['install']} install
+ */
+export function buildInstallerParameterSplat(install) {
+  const entries = buildInstallerArguments(install).map(([name, value]) => {
+    if (name === 'DbPort' || name === 'HttpPort') {
+      const port = Number(value)
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new BarLocalAdapterError('SETUP_STATE_CORRUPT', `${name} in the saved setup is invalid. Preserve the attempt and contact support.`)
+      return `    ${name} = [int]${port}`
+    }
+    return `    ${name} = ${value === null ? '$true' : psQuote(value)}`
+  })
+  return `$arguments = @{\n${entries.join('\n')}\n  }`
 }
 
 /** @param {ServerSetupState} state */
 export function buildInstallerWrapper(state) {
-  const args = buildInstallerArguments(state.install)
   const secretsDir = installSecretsDir(state.install)
-  const argumentLines = args.map(([name, value]) => value === null
-    ? `  '-${name}'`
-    : `  '-${name}', ${psQuote(value)}`).join('\n')
   const secretCopies = [
     ['setup-secret.txt', state.secrets.setup_secret],
     ['backup-key.txt', state.secrets.backup_key],
@@ -413,7 +427,7 @@ $secretsDir = ${psQuote(secretsDir)}
 $installer = ${psQuote(state.install.installer_script)}
 $payloadDir = ${psQuote(state.payload.dir)}
 $pgSource = ${psQuote(join(state.payload.dir, 'postgres'))}
-$pgTarget = ${psQuote(dirname(dirname(state.install.pg_bin)))}
+$pgTarget = ${psQuote(dirname(state.install.pg_bin))}
 $nodeSource = ${psQuote(join(state.payload.dir, 'node', 'node.exe'))}
 $nodeTarget = ${psQuote(state.install.node_path)}
 $script:certificateInfo = $null
@@ -463,7 +477,7 @@ function Copy-RuntimeIfMissing {
   param([string]$Source, [string]$Destination, [string]$Probe)
   if (Test-Path -LiteralPath (Join-Path $Destination $Probe)) { return }
   if (-not (Test-Path -LiteralPath $Source)) { throw "The packaged server runtime is missing: $Source" }
-  if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Recurse -Force }
+  if (Test-Path -LiteralPath $Destination) { throw 'A partial packaged runtime already exists. Preserve it and contact support; setup will not delete or replace it automatically.' }
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
   Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
   if (-not (Test-Path -LiteralPath (Join-Path $Destination $Probe))) {
@@ -500,9 +514,13 @@ ${state.install.tls_cert_file ? `  Write-SetupStatus 'installing' 'Creating the 
   if ($script:certificateInfo.fingerprint -notmatch '^[a-f0-9]{64}$') { throw 'The Bar certificate fingerprint is invalid.' }
 ` : ''}
   Write-SetupStatus 'installing' 'Running the local Bar server installer'
-  $arguments = @(
-${argumentLines}
-  )
+  ${buildInstallerParameterSplat(state.install)}
+  $parameterEvidence = @($arguments.Keys | Sort-Object | ForEach-Object {
+    $name = [string]$_
+    $value = $arguments[$name]
+    [pscustomobject]@{ name = $name; type = $value.GetType().Name; value = if ($name -match 'Password|Secret|Key') { '[protected file]' } else { $value } }
+  })
+  [System.IO.File]::WriteAllText((Join-Path (Split-Path -Parent $statusPath) 'installer-parameters.json'), ($parameterEvidence | ConvertTo-Json -Depth 3), (New-Object System.Text.UTF8Encoding($false)))
   & $installer @arguments *>&1 | Tee-Object -FilePath $logPath
   if ($LASTEXITCODE -ne 0) { throw "The local Bar installer exited with code $LASTEXITCODE." }
   Write-SetupStatus 'installed' 'The local Bar service was installed'
@@ -523,12 +541,25 @@ catch {
 
 /** @param {string} text @param {number} [maxLines] */
 export function redactLogTail(text, maxLines = 40) {
-  const lines = String(text || '').split(/\r?\n/).filter(Boolean).slice(-maxLines)
+  // PowerShell 5.1 Tee-Object can produce UTF-16 logs. Even an older caller
+  // decoding that file as UTF-8 must not evade secret redaction via NULs.
+  const lines = String(text || '').replace(/\u0000/g, '').split(/\r?\n/).filter(Boolean).slice(-maxLines)
   return lines.map((line) => line
     .replace(/\b[a-f0-9]{64}\b/gi, '[redacted]')
     .replace(/\b(bld_[A-Za-z0-9_-]{20,})\b/g, '[redacted]')
     .replace(/(setup[_ -]?secret|password|token)\s*[:=]\s*\S+/gi, '$1: [redacted]')
   ).join('\n')
+}
+
+/** Extract actual PowerShell errors; progress CLIXML is not an error.
+ * @param {unknown} value
+ */
+export function installerErrorMessage(value) {
+  const text = typeof value === 'string' ? value : ''
+  if (!/#<\s*CLIXML|<Objs\b/.test(text)) return redactLogTail(text, 12)
+  const errors = [...text.matchAll(/<S\b[^>]*\bS="Error"[^>]*>([\s\S]*?)<\/S>/g)].map((match) => match[1])
+  return redactLogTail(errors.join('').replace(/_x([0-9a-f]{4})_/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&'), 12)
 }
 
 /** @param {ServerSetupState} state */
@@ -827,6 +858,10 @@ export class ServerSetupOrchestrator {
     return {
       available: true,
       ...publicState,
+      last_error: publicState.last_error ? {
+        code: publicState.last_error.code,
+        message: installerErrorMessage(statusFile?.phase === 'failed' ? statusFile.message : '') || installerErrorMessage(publicState.last_error.message) || 'Installation could not complete. Open Support details and preserve this saved setup.'
+      } : null,
       progress: {
         task: state.phase === 'owner_pending' ? 'Creating the local owner account' : state.phase === 'installed' ? 'Checking that the Bar service is ready' : String(progress?.task || statusFile?.message || (state.phase === 'installing' ? 'Waiting for Windows administrator permission or installer activity' : STATE_PHASE_LABELS[state.phase])).slice(0, 240),
         started_at: state.created_at,
@@ -961,14 +996,14 @@ export class ServerSetupOrchestrator {
             this.#setPhase(state, 'installing', { code: 'INSTALLATION_STATUS_UNCERTAIN', message: result.stderr })
             return
           }
-          const message = result.stderr.trim()
-            || (status && typeof status.message === 'string' ? status.message : '')
+          const message = installerErrorMessage(status?.message)
+            || installerErrorMessage(result.stderr)
             || `The elevated local Bar installer exited with code ${result.exitCode}.`
           const code = /cancel(?:l)?ed by the user|operation was canceled/i.test(message)
             ? 'ELEVATION_DENIED'
             : (status && typeof status.code === 'string' && status.code ? status.code : 'ELEVATION_LAUNCH_FAILED')
           this.#setPhase(state, 'failed', { code, message: code === 'ELEVATION_LAUNCH_FAILED' ? "Windows couldn't start installation with administrator permission. Retry this saved setup once Windows is ready. If it happens again, share the support details; do not create another Bar." : message })
-          writeDurableAtomic(join(state.staging.root, 'launcher-diagnostic.txt'), redactLogTail(message))
+          writeDurableAtomic(join(state.staging.root, 'launcher-diagnostic.txt'), redactLogTail(result.stderr || message))
           return
         }
         this.#acceptInstalled(state, status)
@@ -1008,7 +1043,18 @@ export class ServerSetupOrchestrator {
         if (previous?.phase === 'installing') {
           throw new BarLocalAdapterError('INSTALLATION_STATUS_UNCERTAIN', 'An installer has started but has not confirmed its outcome. Preserve this attempt and contact support before retrying.')
         }
-        state.install.upgrade = existsSync(join(state.install.pg_data_dir, 'PG_VERSION'))
+        // The application cannot read the installer-owned PostgreSQL directory.
+        // Let the elevated installer decide whether this same failed attempt
+        // already initialized its cluster; never infer from a sandboxed stat.
+        state.install.resume_existing = true
+        state.install.upgrade = false
+        const wrapper = buildInstallerWrapper(state)
+        const oldWrapper = readFileSync(state.staging.wrapper_path, 'utf8')
+        if (oldWrapper !== wrapper) {
+          const backup = `${state.staging.wrapper_path}.before-typed-parameters`
+          if (!existsSync(backup)) writeFileSync(backup, oldWrapper, { flag: 'wx', mode: 0o600 })
+          writeDurableAtomic(state.staging.wrapper_path, wrapper)
+        }
         this.#writeState(state)
         this.#startInstall(state)
         return await this.status()

@@ -23,21 +23,26 @@ namespace TsaBonno.BarLocal
     public sealed class BarLocalService : ServiceBase
     {
         private const string EventSource = "BarLocalService";
+        private readonly string[] _configuredArguments;
         private ServiceHost _host;
 
-        public BarLocalService()
+        public BarLocalService(string[] configuredArguments)
         {
             ServiceName = "BarLocalService";
             CanStop = true;
             CanShutdown = true;
             AutoLog = false;
+            _configuredArguments = configuredArguments ?? new string[0];
         }
 
         protected override void OnStart(string[] args)
         {
             try
             {
-                ServiceOptions options = ServiceOptions.Parse(args);
+                // ServiceBase.OnStart receives arguments passed to StartService,
+                // not the options embedded in this service's ImagePath. Keep the
+                // process arguments supplied to Main for the installed service.
+                ServiceOptions options = ServiceOptions.Parse(_configuredArguments);
                 _host = new ServiceHost(options);
                 _host.Start();
             }
@@ -73,7 +78,7 @@ namespace TsaBonno.BarLocal
                 RunConsole(args);
                 return;
             }
-            ServiceBase.Run(new BarLocalService());
+            ServiceBase.Run(new BarLocalService(args));
         }
 
         private static bool HasFlag(string[] args, string flag)
