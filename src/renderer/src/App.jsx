@@ -23,6 +23,7 @@ import { ToastProvider } from './components/shared/Toast'
 import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
+import { boundedSetupRead, classifyBarSetupStatus } from './utils/barSetupStatus.js'
 import { productLogoColor, productLogoLight } from './assets/productLogos'
 import { CustomerDisplay, PrepDisplay } from './components/POSDisplays'
 import {
@@ -1376,27 +1377,45 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     base_url: '', certificate_fingerprint: '', pairing_code: '', device_name: 'Bar till'
   })
   const [serverSetup, setServerSetup] = useState(null)
+  const [serverSetupCheck, setServerSetupCheck] = useState('checking')
+  const [serverSetupCheckError, setServerSetupCheckError] = useState('')
+  const serverStatusRead = useRef(false)
+  const serverPreflightRead = useRef(false)
   const [setupClock, setSetupClock] = useState(Date.now())
   const [serverPreflight, setServerPreflight] = useState(null)
   const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
   const [serverPin, setServerPin] = useState('')
   const [serverPassword, setServerPassword] = useState('')
 
-  const refreshServerSetup = useCallback(async () => {
-    if (!window.api?.barLocal?.serverSetupStatus) return
-    setServerPreflightBusy(true)
+  const refreshServerSetup = useCallback(async ({ checkPreflight = true } = {}) => {
+    if (!window.api?.barLocal?.serverSetupStatus) {
+      setServerSetupCheck('error')
+      setServerSetupCheckError('Saved setup checks are unavailable. Preserve this Windows profile and contact support.')
+      return
+    }
+    // Preflight hashes the entire payload. It must neither delay the saved
+    // attempt display nor run again on every 2.5-second status poll.
+    if (checkPreflight && !serverPreflightRead.current) {
+      serverPreflightRead.current = true
+      setServerPreflightBusy(true)
+      void boundedSetupRead(window.api.barLocal.serverSetupPreflight(), 120000)
+        .then(setServerPreflight)
+        .catch((error) => setServerPreflight({ ready: false, blockers: [{ code: 'PREFLIGHT_FAILED', message: error?.message || 'Computer readiness could not be checked.' }], warnings: [] }))
+        .finally(() => { serverPreflightRead.current = false; setServerPreflightBusy(false) })
+    }
+    if (serverStatusRead.current) return
+    serverStatusRead.current = true
     try {
-      const [status, preflight] = await Promise.all([
-        window.api.barLocal.serverSetupStatus().catch(() => null),
-        window.api.barLocal.serverSetupPreflight().catch((error) => ({
-          ready: false,
-          blockers: [{ code: 'PREFLIGHT_FAILED', message: error?.message || 'Server setup readiness could not be checked.' }],
-          warnings: []
-        }))
-      ])
-      setServerSetup(status?.available ? status : null)
-      setServerPreflight(preflight)
-    } finally { setServerPreflightBusy(false) }
+      const status = await boundedSetupRead(window.api.barLocal.serverSetupStatus())
+      const checked = classifyBarSetupStatus(status)
+      setServerSetupCheck(checked)
+      setServerSetupCheckError('')
+      setServerSetup(checked === 'present' ? status : null)
+    } catch (error) {
+      // Retain a previously displayed saved attempt on transient IPC errors.
+      setServerSetupCheck('error')
+      setServerSetupCheckError(error?.message || 'The saved Bar setup could not be read. Preserve it and contact support.')
+    } finally { serverStatusRead.current = false }
   }, [])
 
   const serverSetupAvailable = !unavailable && !hasSavedCloudBusiness
@@ -1420,7 +1439,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   }, [authority?.setup_prefill])
   useEffect(() => {
     if (!serverSetup || !['prepared', 'installing', 'owner_pending'].includes(serverSetup.phase)) return undefined
-    const timer = setInterval(() => { void refreshServerSetup() }, 2500)
+    const timer = setInterval(() => { void refreshServerSetup({ checkPreflight: false }) }, 2500)
     const clock = setInterval(() => setSetupClock(Date.now()), 1000)
     return () => { clearInterval(timer); clearInterval(clock) }
   }, [serverSetup?.phase, refreshServerSetup])
@@ -1616,6 +1635,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
             <button type="button" role="tab" aria-selected={setupMode === 'join'} onClick={() => { setSetupMode('join'); setSetupError('') }} className={`rounded px-3 py-2 text-sm ${setupMode === 'join' ? 'bg-amber-500 font-semibold text-slate-950' : 'border border-slate-600'}`}>Connect this till to my Bar</button>
           </div>
           {setupMode === 'commission' ? <div className="mt-4 space-y-3">
+            {serverSetupCheck !== 'absent' && serverSetupCheck !== 'present' && <div role={serverSetupCheck === 'error' ? 'alert' : 'status'} className="rounded border border-amber-700 p-3 text-sm"><p>{serverSetupCheck === 'checking' ? 'Checking for your saved Bar setup…' : serverSetupCheckError}</p><p className="mt-2">Your saved setup is preserved. New Bar registration is locked until this check succeeds.</p><button type="button" onClick={() => void refreshServerSetup({ checkPreflight: false })} className="mt-2 rounded border border-slate-500 px-3 py-2">Check saved setup again</button></div>}
             {serverSetup ? <section role="status" aria-live="polite" className="space-y-3 rounded-lg border border-amber-800 bg-slate-950/60 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="font-semibold text-amber-200">{serverSetup.phase_label || serverSetup.phase}</p>
@@ -1647,7 +1667,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
               {serverSetup.can_cancel && <button type="button" disabled={setupBusy} onClick={() => void cancelServerSetup()} className="w-full rounded border border-slate-600 p-2 text-sm disabled:opacity-50">Cancel this prepared setup</button>}
               {serverSetup.phase === 'complete' && <p className="text-sm text-emerald-200">Setup is complete. Restart the application to open the local Bar workspace.</p>}
               {(serverSetup.log_tail || serverSetup.launcher_diagnostic) && <details className="text-xs text-slate-400"><summary className="cursor-pointer">Support details (redacted)</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2">{serverSetup.launcher_diagnostic}{'\n'}{serverSetup.log_tail}</pre></details>}
-            </section> : <>
+            </section> : serverSetupCheck === 'absent' ? <>
               <p className="text-xs text-slate-400">This will be the main Bar computer. It keeps the Bar’s records and must stay on while other tills are using the Bar.</p>
               <p className="text-xs text-amber-200">Windows will ask for administrator approval once. This starts a new Bar with no imported sales. Choose a computer that will stay at the venue.</p>
               {serverPreflightBusy && !serverPreflight && <p className="text-sm text-slate-300">Checking this computer and the packaged server files…</p>}
@@ -1678,7 +1698,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
                 <label className="flex gap-2 text-sm"><input type="checkbox" checked={newBusinessConfirmed} onChange={(event) => setNewBusinessConfirmed(event.target.checked)} />This is a new Bar on this computer, not an existing cloud business.</label>
                 <button disabled={setupBusy || !newBusinessConfirmed || !serverPreflight?.ready} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Preparing secure setup…' : 'Set up this computer as the Bar server'}</button>
               </form>
-            </>}
+            </> : null}
           </div> : <form onSubmit={joinAuthority} className="mt-4 space-y-3">
             <p className="text-xs text-slate-400">On the main Bar computer, open Bar setup and create a one-use connection code. Enter the address and security code shown there.</p>
             <p className="text-xs text-slate-400">This computer will connect to the main Bar computer. Keep the main computer on while the Bar is open.</p>

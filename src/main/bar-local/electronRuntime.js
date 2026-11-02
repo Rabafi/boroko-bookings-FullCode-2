@@ -1043,11 +1043,16 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   // acknowledgement before reporting success.
   ipcMain.handle('barLocal:openLocalBarWorkspace', async (_event, request) => {
     runtime.assertCanOpenLocalBarWorkspace()
-    const prefill = normalizeLocalBarSetupRequest(request)
-    writeDurableAtomic(
-      dedicatedWorkspacePrefillPath(app.getPath('userData')),
-      JSON.stringify(buildWorkspacePrefill(prefill, new Date().toISOString()))
-    )
+    if (request?.resume_existing === true) {
+      const saved = join(dirname(dedicatedWorkspacePrefillPath(app.getPath('userData'))), 'bar-local', 'server-setup', 'server-setup.bin')
+      if (!existsSync(saved)) throw new BarLocalAdapterError('SETUP_NOT_FOUND', 'No saved local Bar installation was found in this Windows profile. No new Bar was created. Contact support if you used another profile.')
+    } else {
+      const prefill = normalizeLocalBarSetupRequest(request)
+      writeDurableAtomic(
+        dedicatedWorkspacePrefillPath(app.getPath('userData')),
+        JSON.stringify(buildWorkspacePrefill(prefill, new Date().toISOString()))
+      )
+    }
     const handoffToken = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
     let acknowledge
     let rejectReady

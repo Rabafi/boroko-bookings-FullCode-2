@@ -32,6 +32,18 @@ export default function LodgeChooser() {
 
   const [workingId, setWorkingId] = useState('')
   const [error, setError] = useState('')
+  const [localBarOpened, setLocalBarOpened] = useState(false)
+
+  const openSavedLocalBar = async () => {
+    setWorkingId('local-bar')
+    setError('')
+    try {
+      const result = await window.api?.barLocal?.openLocalBarWorkspace?.({ resume_existing: true })
+      if (result?.opened !== true) throw new Error('The saved Bar window could not be confirmed. Your existing setup is preserved.')
+      setLocalBarOpened(true)
+    } catch (e) { setError(e?.message || 'Could not open the saved local Bar. Do not create another business; contact support.') }
+    finally { setWorkingId('') }
+  }
 
   const sortedProfiles = useMemo(() => {
     return [...profiles].sort((a, b) => {
@@ -284,6 +296,12 @@ export default function LodgeChooser() {
         </div>
 
         <div className="px-8 py-6">
+          {IS_HPOS && <section className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4">
+            <h2 className="font-semibold text-gray-900">Already started a local Bar setup?</h2>
+            <p className="mt-1 text-sm text-gray-700">Open its separate Bar window to continue the same saved installation. Your Restaurant profiles stay as they are.</p>
+            <button type="button" disabled={Boolean(workingId)} onClick={() => void openSavedLocalBar()} className="mt-3 rounded-lg bg-amber-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{workingId === 'local-bar' ? 'Opening saved Bar…' : 'Open saved local Bar setup'}</button>
+            {localBarOpened && <p role="status" className="mt-2 text-sm text-gray-700">The saved Bar window is open. Use that window to check or continue its existing attempt.</p>}
+          </section>}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
             <div>
               <p className="text-sm font-medium text-gray-700">Local {BUSINESS_NOUN} profiles</p>

@@ -14,4 +14,4 @@ writeFileSync(wrapperPath, `$ErrorActionPreference='Stop'\n$p = New-Object Secur
 const result = await defaultElevatedRunner({ wrapperPath, cwd })
 assert.equal(result.exitCode, 0, result.stderr)
 assert.equal(readFileSync(marker, 'utf8'), 'elevated-marker-only')
-console.log('PASS: canonical Windows PowerShell RunAs, encoded command, spaces/apostrophes, elevated harmless marker. No service/database actions.')
+console.log('PASS: single-UAC Windows command host, canonical PowerShell child, encoded command, spaces/apostrophes, elevated harmless marker. No service/database actions.')

@@ -1,5 +1,11 @@
 # Bar local authority implementation report
 
+## 2 November 2026 — Windows elevation resolved in executable smoke
+
+EV-174 supersedes the unresolved source checkpoint below: the production runner now uses a single Windows command-host UAC launch and invokes the canonical PowerShell executable with an encoded fixed wrapper command. The actual harmless smoke passed with an administrator-token assertion, exact marker, and spaces/apostrophes in the path. Direct PowerShell RunAs still reproduced the original error; cmd.exe RunAs and the corrected runner succeeded. No UAC/security-policy changes, cashier elevation or Bar data changes were made.
+
+Saved-attempt visibility no longer waits for payload hashing or treats status-read failures as absent setup. New registration stays locked until verified absent; errors retain the previous attempt. Status polling does not repeat preflight hashing. The shared chooser can reopen the same saved local Bar workspace without another company draft or overwriting prefill. Focused tests passed 40/40, main/helper no-emit checks passed and JSX parsed. The protected attempt remains on disk in the dedicated profile. Exact live IPC errors were not observable without an existing debug endpoint; no state deletion/corruption is asserted. The running app was not rebuilt/restarted. Loading the launcher fix and completing the user's existing installation require the next authorized app restart; do not repeatedly retry its old loaded launcher. Other remote-owner/release qualifications retain their pending status.
+
 ## 2 November 2026 — installation visibility and LAN source checkpoint
 
 Automatic setup now generates a protected server certificate, pins its identity before local owner provisioning, binds the API to HTTPS for private-LAN pairing, restricts its firewall rule to Private/LocalSubnet, and keeps PostgreSQL on loopback. Native certificate creation/reuse and real pinned HTTPS passed 2/2 in isolation before the live-install investigation. This does not qualify installed multi-PC pairing.

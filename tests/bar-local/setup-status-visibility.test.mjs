@@ -1,0 +1,32 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { boundedSetupRead, classifyBarSetupStatus } from '../../src/renderer/src/utils/barSetupStatus.js'
+
+test('only a positively verified absent status unlocks new registration', () => {
+  assert.equal(classifyBarSetupStatus({ available: false, phase: null, can_resume: false }), 'absent')
+  assert.equal(classifyBarSetupStatus({ available: true, attempt_id: 'saved-original', phase: 'failed' }), 'present')
+  for (const unknown of [null, undefined, {}, {available:false}, {available:true, phase:'failed'}]) assert.throws(() => classifyBarSetupStatus(unknown))
+})
+test('protected-record rejection and slow status never become absent', async () => {
+  await assert.rejects(() => boundedSetupRead(Promise.reject(new Error('SETUP_STATE_CORRUPT'))), /SETUP_STATE_CORRUPT/)
+  await assert.rejects(() => boundedSetupRead(new Promise(() => {}), 10), /Do not create another Bar/)
+})
+test('saved status can display independently of slow preflight', async () => {
+  const status = await boundedSetupRead(Promise.resolve({available:true,attempt_id:'original',phase:'failed'}))
+  assert.equal(classifyBarSetupStatus(status), 'present')
+  const app = readFileSync('src/renderer/src/App.jsx', 'utf8')
+  const refresh = app.slice(app.indexOf('const refreshServerSetup'), app.indexOf('const serverSetupAvailable'))
+  assert.doesNotMatch(refresh, /Promise\.all|catch\(\(\) => null\)/)
+  assert.match(app, /refreshServerSetup\(\{ checkPreflight: false \}\)/)
+  assert.match(app, /serverSetupCheck === 'absent' \? <>/)
+})
+test('chooser opens the saved workspace without selecting or creating a company', () => {
+  const chooser = readFileSync('src/renderer/src/components/LodgeChooser.jsx','utf8')
+  const handler = chooser.slice(chooser.indexOf('const openSavedLocalBar'), chooser.indexOf('const sortedProfiles'))
+  assert.match(handler, /resume_existing: true/)
+  assert.doesNotMatch(handler, /createDraftProfile|selectProfile/)
+  const runtime = readFileSync('src/main/bar-local/electronRuntime.js','utf8')
+  assert.match(runtime, /request\?\.resume_existing === true/)
+  assert.match(runtime, /if \(!existsSync\(saved\)\) throw/)
+})

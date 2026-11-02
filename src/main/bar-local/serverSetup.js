@@ -587,12 +587,19 @@ export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs 
 /** @type {SetupRunner} */
 export async function defaultElevatedRunner({ wrapperPath, cwd }) {
   const executable = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const elevationHost = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe')
+  if (/["%\r\n]/.test(executable)) throw new Error('The Windows installation path cannot be safely used for the installer launcher.')
   // Encode the inner script: Start-Process joins ArgumentList into a native
   // command line and does not preserve quoting around a -File path.
   const inner = Buffer.from(`$ErrorActionPreference='Stop'; & ${psQuote(wrapperPath)}; exit $LASTEXITCODE`, 'utf16le').toString('base64')
+  // On affected Windows hosts ShellExecute(runas, powershell.exe) fails with
+  // 0xffffffff before the wrapper starts. Elevate the signed Windows command
+  // host once, then run the fixed PowerShell executable in that same elevated
+  // child. UAC remains required; the cashier process stays non-elevated.
+  const nativeArguments = `/d /v:off /s /c ""${executable}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${inner}"`
   const command = [
     "$ErrorActionPreference='Stop'",
-    `$p = Start-Process -FilePath ${psQuote(executable)} -WorkingDirectory ${psQuote(cwd)} -ArgumentList '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${inner}' -Verb RunAs -PassThru -Wait -WindowStyle Hidden`,
+    `$p = Start-Process -FilePath ${psQuote(elevationHost)} -WorkingDirectory ${psQuote(cwd)} -ArgumentList ${psQuote(nativeArguments)} -Verb RunAs -PassThru -Wait -WindowStyle Hidden`,
     'exit $p.ExitCode'
   ].join('; ')
   return await new Promise((resolvePromise, reject) => {
