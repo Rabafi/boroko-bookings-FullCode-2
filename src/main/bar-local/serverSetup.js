@@ -27,7 +27,7 @@
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { connect } from 'node:net'
 import { BarLocalAdapterError } from './authority.js'
@@ -591,7 +591,7 @@ export async function defaultElevatedRunner({ wrapperPath, cwd }) {
   if (/["%\r\n]/.test(executable)) throw new Error('The Windows installation path cannot be safely used for the installer launcher.')
   // Encode the inner script: Start-Process joins ArgumentList into a native
   // command line and does not preserve quoting around a -File path.
-  const inner = Buffer.from(`$ErrorActionPreference='Stop'; & ${psQuote(wrapperPath)}; exit $LASTEXITCODE`, 'utf16le').toString('base64')
+  const inner = Buffer.from(`$ErrorActionPreference='Stop'; $env:BAR_LOCAL_SETUP_PROGRESS_FILE=${psQuote(join(dirname(wrapperPath), 'progress.json'))}; & ${psQuote(wrapperPath)}; exit $LASTEXITCODE`, 'utf16le').toString('base64')
   // On affected Windows hosts ShellExecute(runas, powershell.exe) fails with
   // 0xffffffff before the wrapper starts. Elevate the signed Windows command
   // host once, then run the fixed PowerShell executable in that same elevated
@@ -816,6 +816,11 @@ export class ServerSetupOrchestrator {
     let progress = null
     try { progress = JSON.parse(readFileSync(join(state.staging.root, 'progress.json'), 'utf8')) } catch {}
     if (!progress || typeof progress.task !== 'string' || !Number.isFinite(Date.parse(progress.updated_at))) progress = null
+    if (!progress && state.phase === 'installing') {
+      // Older saved wrappers still emit the installer's real Write-Step log.
+      const step = logTail.split('\n').filter((line) => /^==\s/.test(line.trim())).at(-1)
+      if (step) { try { progress = { task: step.trim().replace(/^==\s*/, ''), updated_at: statSync(state.staging.log_path).mtime.toISOString() } } catch {} }
+    }
     if (progress && Date.parse(statusFile?.updated_at) > Date.parse(progress.updated_at)) progress = null
     const activity = ['owner_pending', 'complete'].includes(state.phase) ? state.updated_at : progress?.updated_at || statusFile?.updated_at || state.updated_at
     const lastActivity = Number.isFinite(Date.parse(activity)) ? activity : state.updated_at

@@ -1,5 +1,9 @@
 # Bar local authority implementation report
 
+## 2 November 2026 — fix applied with approval; saved Rabafi attempt restored onscreen
+
+The user approved rebuilding and reopening. Both product/service builds passed and the refreshed payload verified 1,974 files. The dedicated Bar window was normally reopened on its existing userData; the shared Restaurant app remained running. Actual read-only IPC now confirms Rabafi Pub's original attempt, with its historic failed phase, a visible/enabled **Retry the local Bar installer** button and no new-registration form. Protected setup and Restaurant profile checksums are unchanged. This supersedes the earlier pending application/live-IPC status. The fixed launcher is loaded, including progress compatibility for older wrappers. Actual installation/owner commissioning has not been retried automatically and is not claimed complete. See EV-175.
+
 ## 2 November 2026 — Windows elevation resolved in executable smoke
 
 EV-174 supersedes the unresolved source checkpoint below: the production runner now uses a single Windows command-host UAC launch and invokes the canonical PowerShell executable with an encoded fixed wrapper command. The actual harmless smoke passed with an administrator-token assertion, exact marker, and spaces/apostrophes in the path. Direct PowerShell RunAs still reproduced the original error; cmd.exe RunAs and the corrected runner succeeded. No UAC/security-policy changes, cashier elevation or Bar data changes were made.
