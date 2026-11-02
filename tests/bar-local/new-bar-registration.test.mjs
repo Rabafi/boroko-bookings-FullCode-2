@@ -274,6 +274,14 @@ test('the setup renderer and IPC wire the same guard', () => {
   assert.match(app, /Bar or counter name[\s\S]*An outlet is a trading area, not each till[\s\S]*Main Bar[\s\S]*Pool Bar/)
   assert.match(app, /Main computer name[\s\S]*Other tills connect to this main computer/)
   assert.match(app, /Owner PIN[\s\S]*Choose 4–12 digits/)
+  assert.match(app, /Create your owner sign-in[\s\S]*Choose your owner PIN and password to finish setting up/)
+  assert.match(app, /I confirm the saved owner email above is correct/)
+  assert.match(app, /serverSetupUpdateOwnerEmail[\s\S]*Save corrected email/)
+  assert.match(app, /password is not retained while setup is unfinished[\s\S]*protected sign-in check/)
+  assert.match(app, /Confirm owner password/)
+  assert.match(app, /ownerPasswordConfirmValid[\s\S]*ownerFormReady/)
+  assert.match(app, /aria-pressed=\{showServerPassword\}[\s\S]*aria-pressed=\{showServerPasswordConfirm\}/)
+  assert.match(app, /Before you can continue:[\s\S]*ownerFormReasons/)
   assert.match(app, /Currency[\s\S]*3-letter code, such as BWP/)
   assert.match(app, /Timezone[\s\S]*Africa\/Gaborone/)
   assert.match(app, /More storage space is needed[\s\S]*Check again/)
@@ -293,4 +301,12 @@ test('the setup renderer and IPC wire the same guard', () => {
     'the domain guard must run before profile work'
   )
   assert.match(preload, /openLocalBarWorkspace: \(request\) => invoke\('barLocal:openLocalBarWorkspace', request\)/)
+})
+
+test('owner sign-in and recovery password visibility controls are accessible and reset when the form changes', () => {
+  const workspace = readFileSync(new URL('../../src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx', import.meta.url), 'utf8')
+  assert.match(workspace, /aria-label=\{showOwnerPassword \? 'Hide owner password' : 'Show owner password'\}/)
+  assert.match(workspace, /aria-label=\{showRecoveryPassword \? 'Hide new password' : 'Show new password'\}/)
+  assert.match(workspace, /type="button" aria-label=\{showOwnerPassword/)
+  assert.match(workspace, /useEffect\(\(\) => \{\s*setShowOwnerPassword\(false\)\s*setShowRecoveryPassword\(false\)\s*\}, \[loginMode\]\)/)
 })

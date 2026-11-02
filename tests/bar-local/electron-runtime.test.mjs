@@ -395,7 +395,7 @@ test('preload IPC exposes only the fixed local adapter operations', async () => 
     })
     assert.deepEqual([...handlers.keys()], [
       'barLocal:getStatus', 'barLocal:adminRecoveryStatus', 'barLocal:adminCopyRecoverySet', 'barLocal:adminChooseRecoveryDestination', 'barLocal:adminRecoveryJob', 'barLocal:adminCreateRecoveryBase', 'barLocal:adminVerifyRecoveryPoint', 'barLocal:adminExportRecoveryKeys', 'barLocal:trainingLaunch', 'barLocal:trainingBegin', 'barLocal:trainingReset',
-      'barLocal:serverSetupPreflight', 'barLocal:serverSetupStatus', 'barLocal:serverSetupBegin', 'barLocal:serverSetupResume', 'barLocal:serverSetupCancel',
+      'barLocal:serverSetupPreflight', 'barLocal:serverSetupStatus', 'barLocal:serverSetupBegin', 'barLocal:serverSetupUpdateOwnerEmail', 'barLocal:serverSetupResume', 'barLocal:serverSetupCancel',
       'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
       'barLocal:startPairing',
       'barLocal:query', 'barLocal:requestApprovalForCommand', 'barLocal:command', 'barLocal:retryOperation',

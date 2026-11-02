@@ -11,6 +11,8 @@ This candidate quick-start is built by the candidate-only layout inputs in `buil
 
 Use this five-page card at the Till. Keep your PIN private. Stop if the business, outlet, operator or payment result is not clear.
 
+When creating a new local Bar, confirm the saved owner email and choose a 4–12 digit approval PIN and a 12–128 character owner password. If asked to resume, use the same saved owner identity and password; do not start setup again or reset the database. Ask support if the saved identity or original password is unknown.
+
 ## Page 2 — saved receipt printing
 
 Never collect payment again because paper did not print. Open My sales (cashier's own history) or Manage > Sales (authorized manager/finance access), find the saved record and choose Print receipt. In the overlay, verify the saved receipt number and total, then choose Print receipt. If printing fails, check the selected printer and paper and print the same saved receipt again. Ask a manager or support only if the record is missing, Print receipt is unavailable, or printing keeps failing.

@@ -1386,6 +1386,12 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
   const [serverPin, setServerPin] = useState('')
   const [serverPassword, setServerPassword] = useState('')
+  const [serverPasswordConfirm, setServerPasswordConfirm] = useState('')
+  const [serverEmailDraft, setServerEmailDraft] = useState('')
+  const [serverEmailConfirmed, setServerEmailConfirmed] = useState(false)
+  const [showServerPin, setShowServerPin] = useState(false)
+  const [showServerPassword, setShowServerPassword] = useState(false)
+  const [showServerPasswordConfirm, setShowServerPasswordConfirm] = useState(false)
 
   const refreshServerSetup = useCallback(async ({ checkPreflight = true } = {}) => {
     if (!window.api?.barLocal?.serverSetupStatus) {
@@ -1443,6 +1449,18 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     const clock = setInterval(() => setSetupClock(Date.now()), 1000)
     return () => { clearInterval(timer); clearInterval(clock) }
   }, [serverSetup?.phase, refreshServerSetup])
+  useEffect(() => {
+    setServerEmailDraft(serverSetup?.owner_email || '')
+    setServerEmailConfirmed(false)
+  }, [serverSetup?.attempt_id, serverSetup?.owner_email])
+  useEffect(() => {
+    const ownerStep = serverSetup?.owner_setup_stage && ['installed', 'owner_pending', 'failed'].includes(serverSetup.phase)
+      && setupMode === 'commission'
+    if (ownerStep) return
+    setServerPin(''); setServerPassword(''); setServerPasswordConfirm('')
+    setShowServerPin(false); setShowServerPassword(false); setShowServerPasswordConfirm(false)
+    setServerEmailConfirmed(false)
+  }, [serverSetup?.attempt_id, serverSetup?.phase, serverSetup?.owner_setup_stage, setupMode])
 
   /** @param {'open'|'save'} action @param {string} documentId @param {string} label */
   const useGuide = async (action, documentId, label) => {
@@ -1474,6 +1492,24 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     { id: 'bar-manual', label: 'Bar customer manual' },
     { id: 'bar-quick-start', label: 'Bar quick-start' }
   ]
+
+  const ownerSetupNeedsRecovery = Boolean(serverSetup?.owner_setup_stage === 'resume' && serverSetup.phase === 'failed')
+  const ownerSetupFormVisible = Boolean(serverSetup?.owner_setup_stage && ['installed', 'owner_pending'].includes(serverSetup.phase))
+  const firstOwnerCreation = serverSetup?.phase === 'installed' && serverSetup?.owner_setup_stage !== 'resume'
+  const ownerPinValid = /^[0-9]{4,12}$/.test(serverPin)
+  const ownerPasswordValid = serverPassword.length >= 12 && serverPassword.length <= 128 && serverPassword.trim() === serverPassword
+  const ownerPasswordConfirmValid = serverPasswordConfirm === serverPassword && serverPasswordConfirm.length > 0
+  const ownerEmailMatches = serverEmailDraft.trim().toLowerCase() === String(serverSetup?.owner_email || '').toLowerCase()
+  const ownerEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(serverEmailDraft.trim()) && serverEmailDraft.trim().length <= 254
+  const ownerFormReady = ownerPinValid && ownerPasswordValid && ownerPasswordConfirmValid && serverEmailConfirmed && ownerEmailMatches
+  const ownerFormReasons = [
+    !ownerPinValid && (serverPin ? 'Use a PIN containing 4–12 digits.' : 'Enter a PIN containing 4–12 digits.'),
+    !ownerPasswordValid && (serverPassword.length > 128 ? 'Use no more than 128 password characters.' : serverPassword.trim() !== serverPassword ? 'Remove spaces at the beginning or end of the password.' : 'Use a password containing 12–128 characters.'),
+    !ownerPasswordConfirmValid && (serverPasswordConfirm ? 'The password confirmation does not match.' : 'Re-enter the password to confirm it.'),
+    !ownerEmailValid && 'Enter a valid owner email address.',
+    ownerEmailValid && !ownerEmailMatches && 'Save the corrected owner email before continuing.',
+    !serverEmailConfirmed && 'Confirm that the displayed owner email is correct.'
+  ].filter(Boolean)
 
   if (!unavailable && currentAuthority?.configured && !currentAuthority?.restart_required) {
     return <Lazy><BarLocalWorkspace status={currentAuthority} onLogout={() => {}} initialStaffId={setupRecovery?.staffId || (currentAuthority?.training ? currentAuthority.setup_owner_staff_id : undefined)} initialLoginNotice={setupRecovery?.notice} /></Lazy>
@@ -1515,10 +1551,18 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
 
   const resumeServerSetup = async () => {
     setSetupBusy(true); setSetupError('')
+    let submittedOwnerCredentials = false
     try {
       const needsOwnerCredentials = ['installed', 'owner_pending'].includes(serverSetup?.phase)
+      if (needsOwnerCredentials && (!/^[0-9]{4,12}$/.test(serverPin) || serverPassword.length < 12 || serverPassword.length > 128 || serverPassword.trim() !== serverPassword || serverPasswordConfirm !== serverPassword)) {
+        throw new Error('Check the owner PIN and password requirements below before continuing.')
+      }
+      if (serverSetup?.phase === 'installed' && (!serverEmailConfirmed || serverEmailDraft.trim().toLowerCase() !== String(serverSetup.owner_email || '').toLowerCase())) {
+        throw new Error('Confirm the saved owner email before creating the owner sign-in.')
+      }
+      submittedOwnerCredentials = needsOwnerCredentials
       const result = await window.api.barLocal.serverSetupResume(needsOwnerCredentials ? { pin: serverPin, owner_password: serverPassword } : {})
-      setServerPin(''); setServerPassword('')
+      setServerPin(''); setServerPassword(''); setServerPasswordConfirm('')
       if (result?.available) setServerSetup(result)
       const status = await window.api.barLocal.getStatus().catch(() => null)
       if (status?.restart_required) { setCurrentAuthority(status); return }
@@ -1527,6 +1571,25 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
       setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
         ? error.message : 'The local Bar server setup could not be resumed. Do not start a second setup.')
       await refreshServerSetup()
+    } finally {
+      if (submittedOwnerCredentials) {
+        setServerPin(''); setServerPassword(''); setServerPasswordConfirm('')
+        setShowServerPin(false); setShowServerPassword(false); setShowServerPasswordConfirm(false)
+      }
+      setSetupBusy(false)
+    }
+  }
+
+  const saveServerOwnerEmail = async () => {
+    setSetupBusy(true); setSetupError('')
+    try {
+      const result = await window.api.barLocal.serverSetupUpdateOwnerEmail({ owner_email: serverEmailDraft })
+      if (!result?.available) throw new Error('The saved owner email could not be verified. Refresh this saved setup before continuing.')
+      setServerSetup(result)
+      setServerEmailConfirmed(false)
+    } catch (error) {
+      setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message : 'The owner email could not be saved to this setup.')
     } finally { setSetupBusy(false) }
   }
 
@@ -1657,13 +1720,24 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
               </div>}
               {serverSetup.installer_status?.message && <p className="text-xs text-slate-300">{serverSetup.installer_status.message}</p>}
               {serverSetup.phase === 'installing' && <p className="text-sm text-slate-200">Windows is installing the local database and Bar service. Approve the Windows administrator prompt if it is waiting. Keep this window open.</p>}
-              {['installed', 'owner_pending'].includes(serverSetup.phase) && <div className="space-y-2 rounded border border-amber-700 p-3">
-                <p className="text-sm text-amber-100">The service is installed. Enter the owner PIN and owner password to finish setup. The password is never saved; re-enter it if setup is interrupted.</p>
-                <label className="block text-sm">Owner PIN<input type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={serverPin} onChange={(event) => setServerPin(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>
-                <label className="block text-sm">Owner password<input type="password" minLength={12} maxLength={128} autoComplete="new-password" value={serverPassword} onChange={(event) => setServerPassword(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Use at least 12 characters. Owner sign-in works offline with this email and password.</span></label>
-                <button type="button" disabled={setupBusy || !/^\d{4,12}$/.test(serverPin) || serverPassword.length < 12} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Creating the first owner…' : 'Finish creating the local Bar'}</button>
+              {ownerSetupFormVisible && <div className="space-y-3 rounded border border-amber-700 p-3">
+                <h2 className="text-lg font-semibold text-amber-100">{firstOwnerCreation ? 'Create your owner sign-in' : 'Resume the saved owner setup'}</h2>
+                <p className="text-sm text-amber-100">{firstOwnerCreation ? `Choose your owner PIN and password to finish setting up ${serverSetup.business_name}.` : 'This saved setup may already have reached the local service. Continue with the same owner identity, PIN, and password so the original setup attempt can be safely completed.'}</p>
+                <dl className="grid gap-2 rounded bg-slate-950/50 p-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-slate-400">Owner name</dt><dd>{serverSetup.owner_name}</dd></div><div><dt className="text-xs text-slate-400">Saved owner email</dt><dd className="break-all">{serverSetup.owner_email}</dd></div></dl>
+                {firstOwnerCreation ? <div className="space-y-2">
+                  <label className="block text-sm">Owner email<input type="email" maxLength={254} autoComplete="email" value={serverEmailDraft} onChange={(event) => { setServerEmailDraft(event.target.value); setServerEmailConfirmed(false) }} className="mt-1 w-full rounded bg-slate-800 p-2" aria-describedby="owner-email-help" /></label>
+                  <p id="owner-email-help" className="text-xs text-slate-300">You can correct this before owner setup starts. After that, this saved identity is locked to the setup attempt.</p>
+                  {!ownerEmailMatches && <button type="button" disabled={setupBusy || !ownerEmailValid} onClick={() => void saveServerOwnerEmail()} className="rounded border border-amber-300 px-3 py-2 text-sm disabled:opacity-50">{setupBusy ? 'Saving…' : 'Save corrected email'}</button>}
+                </div> : <p className="text-xs text-slate-300">The owner identity is locked because this setup has started. If the saved email or original password is unknown, stop and contact support; do not start another setup or reset the local database.</p>}
+                <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={serverEmailConfirmed && ownerEmailMatches} disabled={!ownerEmailMatches} onChange={(event) => setServerEmailConfirmed(event.target.checked)} /><span>I confirm the saved owner email above is correct.</span></label>
+                <label className="block text-sm">Owner PIN<div className="mt-1 flex gap-2"><input type={showServerPin ? 'text' : 'password'} inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={serverPin} onChange={(event) => setServerPin(event.target.value)} className="min-w-0 flex-1 rounded bg-slate-800 p-2" aria-describedby="owner-pin-help" /><button type="button" aria-label={showServerPin ? 'Hide owner PIN' : 'Show owner PIN'} aria-pressed={showServerPin} onClick={() => setShowServerPin((shown) => !shown)} className="rounded border border-slate-600 px-3">{showServerPin ? 'Hide' : 'Show'}</button></div><span id="owner-pin-help" className="mt-1 block text-xs text-slate-300">Use 4–12 digits. This PIN is for in-person approvals.</span></label>
+                <label className="block text-sm">Owner password<div className="mt-1 flex gap-2"><input type={showServerPassword ? 'text' : 'password'} minLength={12} maxLength={128} autoComplete="new-password" value={serverPassword} onChange={(event) => setServerPassword(event.target.value)} className="min-w-0 flex-1 rounded bg-slate-800 p-2" aria-describedby="owner-password-help" /><button type="button" aria-label={showServerPassword ? 'Hide owner password' : 'Show owner password'} aria-pressed={showServerPassword} onClick={() => setShowServerPassword((shown) => !shown)} className="rounded border border-slate-600 px-3">{showServerPassword ? 'Hide' : 'Show'}</button></div><span id="owner-password-help" className="mt-1 block text-xs text-slate-300">Use 12–128 characters with no spaces at the beginning or end. {firstOwnerCreation ? 'Owner sign-in also works offline.' : 'Re-enter the same password chosen when this owner setup first started.'}</span></label>
+                <label className="block text-sm">Confirm owner password<div className="mt-1 flex gap-2"><input type={showServerPasswordConfirm ? 'text' : 'password'} minLength={12} maxLength={128} autoComplete="new-password" value={serverPasswordConfirm} onChange={(event) => setServerPasswordConfirm(event.target.value)} className="min-w-0 flex-1 rounded bg-slate-800 p-2" aria-describedby="owner-password-confirm-help" /><button type="button" aria-label={showServerPasswordConfirm ? 'Hide password confirmation' : 'Show password confirmation'} aria-pressed={showServerPasswordConfirm} onClick={() => setShowServerPasswordConfirm((shown) => !shown)} className="rounded border border-slate-600 px-3">{showServerPasswordConfirm ? 'Hide' : 'Show'}</button></div><span id="owner-password-confirm-help" className="mt-1 block text-xs text-slate-300">Enter the same password again.</span></label>
+                <div aria-live="polite" className="rounded bg-slate-950/60 p-3 text-xs text-slate-200">{ownerFormReasons.length ? <><p className="font-semibold">Before you can continue:</p><ul className="mt-1 list-disc space-y-1 pl-5">{ownerFormReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <p role="status">All owner details are ready.</p>}{serverPassword.length > 0 && ownerPasswordValid && <p className="mt-2">Your password is not retained while setup is unfinished. After the owner is created, Bar stores a protected sign-in check, not a readable copy of your password.</p>}</div>
+                <button type="button" disabled={setupBusy || !ownerFormReady} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Saving owner setup…' : firstOwnerCreation ? 'Create owner sign-in and finish setup' : 'Resume saved owner setup'}</button>
               </div>}
-              {['prepared', 'failed'].includes(serverSetup.phase) && <button type="button" disabled={setupBusy || Boolean(serverPreflight && !serverPreflight.ready)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Starting the installer…' : serverSetup.phase === 'failed' ? 'Retry the local Bar installer' : 'Install the local Bar service'}</button>}
+              {ownerSetupNeedsRecovery && <div className="space-y-2 rounded border border-amber-700 p-3 text-sm"><p className="font-semibold text-amber-200">Check the saved owner setup before entering credentials</p><p>The last attempt did not confirm whether owner creation finished. Keep this saved setup and use the button to check its recovery state. The identity cannot be changed now.</p><button type="button" disabled={setupBusy} onClick={() => void resumeServerSetup()} className="rounded bg-amber-500 px-3 py-2 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Checking saved setup…' : 'Check saved owner setup'}</button></div>}
+              {['prepared', 'failed'].includes(serverSetup.phase) && !ownerSetupNeedsRecovery && <button type="button" disabled={setupBusy || Boolean(serverPreflight && !serverPreflight.ready)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Starting the installer…' : serverSetup.phase === 'failed' ? 'Retry the local Bar installer' : 'Install the local Bar service'}</button>}
               {serverSetup.can_cancel && <button type="button" disabled={setupBusy} onClick={() => void cancelServerSetup()} className="w-full rounded border border-slate-600 p-2 text-sm disabled:opacity-50">Cancel this prepared setup</button>}
               {serverSetup.phase === 'complete' && <p className="text-sm text-emerald-200">Setup is complete. Restart the application to open the local Bar workspace.</p>}
               {(serverSetup.log_tail || serverSetup.launcher_diagnostic) && <details className="text-xs text-slate-400"><summary className="cursor-pointer">Support details (redacted)</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2">{serverSetup.launcher_diagnostic}{'\n'}{serverSetup.log_tail}</pre></details>}

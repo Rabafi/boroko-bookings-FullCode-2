@@ -47,6 +47,7 @@ const api = {
     trainingBegin: (request) => invoke('barLocal:trainingBegin', request),
     trainingReset: (request) => invoke('barLocal:trainingReset', request),
     serverSetupBegin: (request) => invoke('barLocal:serverSetupBegin', request),
+    serverSetupUpdateOwnerEmail: (request) => invoke('barLocal:serverSetupUpdateOwnerEmail', request),
     serverSetupResume: (request) => invoke('barLocal:serverSetupResume', request),
     serverSetupCancel: () => invoke('barLocal:serverSetupCancel'),
     selectCloudWorkspace: () => invoke('barLocal:selectCloudWorkspace'),

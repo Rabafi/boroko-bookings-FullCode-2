@@ -1027,6 +1027,7 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:serverSetupPreflight', () => serverSetup.preflight())
   ipcMain.handle('barLocal:serverSetupStatus', () => serverSetup.status())
   ipcMain.handle('barLocal:serverSetupBegin', (_event, request) => serverSetup.begin(request))
+  ipcMain.handle('barLocal:serverSetupUpdateOwnerEmail', (_event, request) => serverSetup.updateOwnerEmail(request))
   ipcMain.handle('barLocal:serverSetupResume', (_event, request) => provisionAndRestart(() => serverSetup.resume(request)))
   ipcMain.handle('barLocal:serverSetupCancel', () => serverSetup.cancel())
   ipcMain.handle('barLocal:selectCloudWorkspace', () => {

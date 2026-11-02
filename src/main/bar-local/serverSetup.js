@@ -328,8 +328,7 @@ export function normalizeOwnerDraft(value) {
   }
   const pin = typeof input.pin === 'string' ? input.pin : ''
   if (!/^\d{4,12}$/.test(pin)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'The owner PIN must contain 4-12 digits.')
-  const ownerEmail = typeof input.owner_email === 'string' ? input.owner_email.trim().toLowerCase() : ''
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail) || ownerEmail.length > 254) throw new BarLocalAdapterError('VALIDATION_FAILED', 'Enter a valid owner email address.')
+  const ownerEmail = normalizeOwnerEmail(input.owner_email)
   const currency = typeof input.currency === 'string' && input.currency.trim() !== '' ? input.currency.trim().toUpperCase() : 'BWP'
   if (!/^[A-Z]{3}$/.test(currency)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'Currency must be a three-letter code such as BWP.')
   const timezone = typeof input.timezone === 'string' && input.timezone.trim() !== '' ? input.timezone.trim() : 'Africa/Gaborone'
@@ -355,6 +354,13 @@ export function normalizeOwnerDraft(value) {
     business_profile,
     pin
   }
+}
+
+/** @param {unknown} value */
+function normalizeOwnerEmail(value) {
+  const email = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw new BarLocalAdapterError('VALIDATION_FAILED', 'Enter a valid owner email address.')
+  return email
 }
 
 /**
@@ -574,6 +580,8 @@ export function publicSetupState(state) {
     business_name: state.owner.business_name,
     outlet_name: state.owner.outlet_name,
     owner_name: state.owner.owner_name,
+    owner_email: state.owner.owner_email,
+    owner_setup_stage: state.phase === 'installed' && state.installed_at ? 'first' : state.installed_at && ['owner_pending', 'failed'].includes(state.phase) ? 'resume' : null,
     base_url: state.install.base_url,
     install_dir: state.install.install_dir,
     data_dir: state.install.data_dir,
@@ -1017,6 +1025,23 @@ export class ServerSetupOrchestrator {
       .finally(() => { this.installPromise = null })
   }
 
+  /** @param {Record<string, unknown>} request */
+  async updateOwnerEmail(request) {
+    if (this.busy) throw new BarLocalAdapterError('SETUP_IN_PROGRESS', 'Another Bar server setup operation is already running.')
+    this.busy = true
+    try {
+      const state = this.readState()
+      if (!state || state.phase !== 'installed' || !state.installed_at) {
+        throw new BarLocalAdapterError('OWNER_IDENTITY_LOCKED', 'The owner email is locked because owner setup has already started. Resume the saved setup with the same owner identity.')
+      }
+      const email = normalizeOwnerEmail(request?.owner_email)
+      state.owner.owner_email = email
+      state.updated_at = this.now().toISOString()
+      this.#writeState(state)
+      return await this.status()
+    } finally { this.busy = false }
+  }
+
   /** @param {Record<string, unknown>} [request] */
   async resume(request = {}) {
     if (this.busy) throw new BarLocalAdapterError('SETUP_IN_PROGRESS', 'Another Bar server setup operation is already running.')
@@ -1063,7 +1088,7 @@ export class ServerSetupOrchestrator {
       if (!/^\d{4,12}$/.test(pin)) throw new BarLocalAdapterError('PIN_REQUIRED', 'Enter the owner PIN to finish creating the local Bar. The PIN is not stored in the setup record.')
       const ownerPassword = typeof request.owner_password === 'string' ? request.owner_password : ''
       if (ownerPassword.length < 12 || ownerPassword.length > 128 || ownerPassword.trim() !== ownerPassword) {
-        throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to finish setup. The password is never saved in the setup record.')
+        throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to finish setup. It is not retained while setup is unfinished.')
       }
       const live = await this.serviceLive(state.install.base_url, { certificate_fingerprint: state.install.certificate_fingerprint }).catch(() => false)
       if (!live) {

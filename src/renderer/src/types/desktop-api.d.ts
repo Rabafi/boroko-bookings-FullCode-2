@@ -330,6 +330,7 @@ export interface DesktopApi {
       trainingBegin(request: unknown): Promise<unknown>;
       trainingReset(request: unknown): Promise<unknown>;
     serverSetupBegin(request: unknown): Promise<unknown>;
+    serverSetupUpdateOwnerEmail(request: { owner_email: string }): Promise<unknown>;
     serverSetupResume(request?: unknown): Promise<unknown>;
     serverSetupCancel(): Promise<unknown>;
     selectCloudWorkspace(): Promise<unknown>;

@@ -333,6 +333,33 @@ test('automatic setup installs, requires owner credentials and keeps recovery pr
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+test('owner email can be corrected only before owner creation is staged', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bar-owner-identity-'))
+  try {
+    const fakeRuntime = runtime({
+      setupOwner: async () => { throw new Error('owner setup response was interrupted') },
+      status: () => ({ provisioning_recovery: { pending: true } })
+    })
+    const orchestrator = orchestratorFor(root, { runtime: fakeRuntime })
+    await orchestrator.begin(ownerDraft())
+    await orchestrator.installPromise
+    const installed = await orchestrator.status()
+    assert.equal(installed.owner_setup_stage, 'first')
+    assert.equal(installed.owner_email, 'owner@example.test')
+    const corrected = await orchestrator.updateOwnerEmail({ owner_email: ' Owner+Bar@example.test ' })
+    assert.equal(corrected.owner_email, 'owner+bar@example.test')
+    assert.equal(corrected.owner_setup_stage, 'first')
+
+    await assert.rejects(() => orchestrator.resume({ pin: '1234', owner_password: 'a safe test password' }), /interrupted/)
+    const pending = await orchestrator.status()
+    assert.equal(pending.phase, 'owner_pending')
+    assert.equal(pending.owner_setup_stage, 'resume')
+    await assert.rejects(() => orchestrator.updateOwnerEmail({ owner_email: 'different@example.test' }), { code: 'OWNER_IDENTITY_LOCKED' })
+    assert.equal((await orchestrator.status()).owner_email, 'owner+bar@example.test')
+    assert.equal(JSON.stringify(await orchestrator.status()).includes('a safe test password'), false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
 test('installer failure is recoverable with the same attempt and secrets', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bar-setup-fail-'))
   try {

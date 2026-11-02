@@ -174,6 +174,8 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
   const [ownerEmail, setOwnerEmail] = useState('')
   const [ownerPassword, setOwnerPassword] = useState('')
   const [recoveryPassword, setRecoveryPassword] = useState('')
+  const [showOwnerPassword, setShowOwnerPassword] = useState(false)
+  const [showRecoveryPassword, setShowRecoveryPassword] = useState(false)
   const [session, setSession] = useState(status.session ?? null)
   const [readiness, setReadiness] = useState(/** @type {{ready: boolean|null, blockers: string[], checkedAt: number, unavailable?: boolean}|null} */ (
     status.readiness && typeof status.readiness.ready === 'boolean'
@@ -253,6 +255,11 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
   const [staffDraft, setStaffDraft] = useState({ display_name: '', role: 'cashier', pin: '' })
   const [pairingCode, setPairingCode] = useState(/** @type {{code: string, expiresAt: number, fingerprint: string, addresses: string[]}|null} */ (null))
   const [pairingBusy, setPairingBusy] = useState(false)
+
+  useEffect(() => {
+    setShowOwnerPassword(false)
+    setShowRecoveryPassword(false)
+  }, [loginMode])
 
   useEffect(() => {
     if (!pairingCode) return undefined
@@ -1398,13 +1405,13 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
         </>}
         {loginMode === 'owner' && <>
           <label className="mt-5 block text-sm">Owner email<input required type="email" maxLength={254} value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
-          <label className="mt-4 block text-sm">Password<input required minLength={12} maxLength={128} type="password" value={ownerPassword} onChange={(event) => setOwnerPassword(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="current-password" /></label>
+          <label className="mt-4 block text-sm">Password<div className="mt-1 flex gap-2"><input required minLength={12} maxLength={128} type={showOwnerPassword ? 'text' : 'password'} value={ownerPassword} onChange={(event) => setOwnerPassword(event.target.value)} className="min-w-0 flex-1 rounded-md bg-slate-800 p-3" autoComplete="current-password" /><button type="button" aria-label={showOwnerPassword ? 'Hide owner password' : 'Show owner password'} aria-pressed={showOwnerPassword} onClick={() => setShowOwnerPassword((shown) => !shown)} className="rounded border border-slate-600 px-3">{showOwnerPassword ? 'Hide' : 'Show'}</button></div></label>
           <button type="button" onClick={() => { setLoginMode('recover'); setError('') }} className="mt-3 text-left text-xs text-amber-200 underline">Forgot password? Use the main Bar computer to reset it.</button>
         </>}
         {loginMode === 'recover' && <div className="mt-5 space-y-4">
           <p className="text-sm text-slate-300">Recovery must be done on the main Bar computer. It will sign out all other sessions.</p>
           <label className="block text-sm">Owner email<input required type="email" maxLength={254} value={ownerEmail} onChange={(event) => setOwnerEmail(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="username" /></label>
-          <label className="block text-sm">New password<input required minLength={12} maxLength={128} type="password" value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} className="mt-1 w-full rounded-md bg-slate-800 p-3" autoComplete="new-password" /></label>
+          <label className="block text-sm">New password<div className="mt-1 flex gap-2"><input required minLength={12} maxLength={128} type={showRecoveryPassword ? 'text' : 'password'} value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} className="min-w-0 flex-1 rounded-md bg-slate-800 p-3" autoComplete="new-password" /><button type="button" aria-label={showRecoveryPassword ? 'Hide new password' : 'Show new password'} aria-pressed={showRecoveryPassword} onClick={() => setShowRecoveryPassword((shown) => !shown)} className="rounded border border-slate-600 px-3">{showRecoveryPassword ? 'Hide' : 'Show'}</button></div></label>
           <button type="button" onClick={() => void recoverOwnerPassword()} disabled={busy || recoveryPassword.length < 12 || !ownerEmail.trim()} className="w-full rounded-md bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{busy ? 'Resetting…' : 'Reset owner password'}</button>
           <button type="button" onClick={() => { setLoginMode('owner'); setError('') }} className="w-full rounded border border-slate-600 p-2 text-sm">Back to owner sign in</button>
         </div>}
