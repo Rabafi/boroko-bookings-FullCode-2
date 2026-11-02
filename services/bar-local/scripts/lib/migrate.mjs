@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { reportSetupProgress } from './setup-progress.mjs'
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'db', 'migrations')
 
@@ -35,7 +36,10 @@ export async function runMigrations(client, { log = () => {} } = {}) {
 
 async function runMigrationsLocked(client, { log }) {
   const applied = []
-  for (const fileName of await listMigrations()) {
+  const files = await listMigrations()
+  let completed = 0
+  for (const fileName of files) {
+    reportSetupProgress(`Checking database migration ${fileName}`, completed, files.length)
     const sql = await readFile(path.join(MIGRATIONS_DIR, fileName), 'utf8')
     const checksum = checksumOf(sql)
     const hasTable = await migrationsTableExists(client)
@@ -45,10 +49,12 @@ async function runMigrationsLocked(client, { log }) {
         if (existing.rows[0].checksum !== checksum) {
           throw new Error(`Migration checksum mismatch for ${fileName}. The local database was built from different bytes.`)
         }
+        completed++
         continue
       }
     }
     log(`applying ${fileName}`)
+    reportSetupProgress(`Applying database migration ${fileName}`, completed, files.length)
     await client.query('BEGIN')
     try {
       await client.query('SELECT pg_advisory_xact_lock(173552001)')
@@ -59,6 +65,8 @@ async function runMigrationsLocked(client, { log }) {
       )
       await client.query('COMMIT')
       applied.push(fileName)
+      completed++
+      reportSetupProgress('Database migration committed', completed, files.length)
     } catch (error) {
       await client.query('ROLLBACK')
       const diagnostics = [

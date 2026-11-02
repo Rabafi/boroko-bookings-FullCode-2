@@ -47,7 +47,7 @@ import { barLocalOperatorError, barLocalReadinessMessage, canVoidRemainingBarSal
 /** @typedef {{sale_line_id: string, name: string, quantity: string | number, line_total: string | number, modifiers?: unknown[]}} BarLocalReceiptLineExpectedView */
 /** @typedef {{sale_id: string, receipt_number: string | number, total: string | number, lines: BarLocalReceiptLineExpectedView[]}} BarLocalReceiptExpectedView */
 /** @typedef {{shift_id: string, expected_cash?: string | number, counted_cash?: string | number, variance?: string | number}} BarLocalClosedShiftView */
-/** @typedef {{code: string, expiresAt: number}} BarLocalPairingCodeView */
+/** @typedef {{code: string, expiresAt: number, fingerprint: string, addresses: string[]}} BarLocalPairingCodeView */
 /** @typedef {{staff_id: string, display_name: string, role: string, status: string}} BarLocalStaffListExpectedView */
 /** @typedef {{id?: string | number, operation_id?: string, action?: string, created_at?: string, actor_staff_id?: string, before?: unknown, after?: unknown}} BarLocalAuditRowExpectedView */
 
@@ -1269,7 +1269,8 @@ export default function BarLocalWorkspace({ authority }) {
       if (result?.ok !== true || typeof result.pairing_code !== 'string' || !Number.isSafeInteger(result.expires_in)) {
         throw new Error('The local authority returned an invalid pairing response. No code was shown.');
       }
-      setPairingCode({ code: result.pairing_code, expiresAt: Date.now() + result.expires_in * 1000 });
+      if (typeof result.server_certificate_fingerprint !== 'string' || !result.server_certificate_fingerprint) throw new Error('A secure LAN certificate is required before another till can join. Use the main Bar computer to finish network setup.');
+      setPairingCode({ code: result.pairing_code, expiresAt: Date.now() + result.expires_in * 1000, fingerprint: result.server_certificate_fingerprint, addresses: Array.isArray(result.server_addresses) ? result.server_addresses : [] });
       setNotice('A single-use pairing code is ready. Share it only with the till being paired.');
     } catch (cause) { setError(getMessage(cause)); }
     finally { setPairingBusy(false); }
@@ -1573,7 +1574,7 @@ export default function BarLocalWorkspace({ authority }) {
             <h2 className="font-semibold">Pair another till</h2>
             <p className="mt-1 text-sm text-slate-300">The local service issues a single-use code bound to this Bar authority. Pairing requires the office server HTTPS address and certificate fingerprint on the new till.</p>
             <button type="button" disabled={busy || Boolean(pending) || pairingBusy} onClick={() => void generatePairingCode()} className="mt-4 rounded bg-sky-600 px-4 py-2 text-sm font-semibold disabled:opacity-50">{pairingBusy ? 'Generating…' : 'Generate 5-minute pairing code'}</button>
-            {pairingCode && <div role="status" className="mt-4 rounded border border-sky-700 bg-sky-950/40 p-4"><p className="text-xs uppercase tracking-wide text-sky-200">Single-use pairing code</p><p className="mt-2 font-mono text-3xl tracking-[0.3em]">{pairingCode.code}</p><p className="mt-2 text-xs text-slate-300">This code expires automatically. Share it only with the intended till.</p></div>}
+            {pairingCode && <div role="status" className="mt-4 rounded border border-sky-700 bg-sky-950/40 p-4"><p className="text-xs uppercase tracking-wide text-sky-200">Single-use pairing code</p><p className="mt-2 font-mono text-3xl tracking-[0.3em]">{pairingCode.code}</p><p className="mt-2 text-xs text-slate-300">This code expires automatically. Share it only with the intended till.</p>{pairingCode.addresses.length ? pairingCode.addresses.map(address => <p key={address} className="mt-2 select-all font-mono text-sm">{address}</p>) : <p className="mt-2 text-amber-200">No private LAN address is available. Connect the main computer to the venue network and set that Windows network to Private.</p>}<p className="mt-2 text-xs">Certificate fingerprint</p><p className="mt-1 select-all break-all font-mono text-xs">{pairingCode.fingerprint}</p></div>}
           </div>
         </section>}{canManageSettings && <BarLocalDiscountPolicy policy={discountPolicy} busy={busy} blocked={Boolean(pending)} onCommand={runCommand} />}
         {activeTab === 'audit' && canManageSettings && <section className="mt-5 rounded-xl border border-slate-700 bg-slate-900 p-4">

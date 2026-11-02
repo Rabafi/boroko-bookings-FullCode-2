@@ -1376,6 +1376,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     base_url: '', certificate_fingerprint: '', pairing_code: '', device_name: 'Bar till'
   })
   const [serverSetup, setServerSetup] = useState(null)
+  const [setupClock, setSetupClock] = useState(Date.now())
   const [serverPreflight, setServerPreflight] = useState(null)
   const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
   const [serverPin, setServerPin] = useState('')
@@ -1418,9 +1419,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     })
   }, [authority?.setup_prefill])
   useEffect(() => {
-    if (!serverSetup || !['prepared', 'installing'].includes(serverSetup.phase)) return undefined
+    if (!serverSetup || !['prepared', 'installing', 'owner_pending'].includes(serverSetup.phase)) return undefined
     const timer = setInterval(() => { void refreshServerSetup() }, 2500)
-    return () => clearInterval(timer)
+    const clock = setInterval(() => setSetupClock(Date.now()), 1000)
+    return () => { clearInterval(timer); clearInterval(clock) }
   }, [serverSetup?.phase, refreshServerSetup])
 
   /** @param {'open'|'save'} action @param {string} documentId @param {string} label */
@@ -1574,7 +1576,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   return (
     <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
       <section className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Bar local authority</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Your Bar on this computer</p>
         <h1 className="mt-3 text-2xl font-bold">{unavailable ? 'Authority state unavailable' : dedicatedLocalBarWorkspace ? 'Set up this new local Bar' : 'Set up or join a local Bar'}</h1>
         {onBack && !committedSetup && !dedicatedLocalBarWorkspace && <button type="button" disabled={setupBusy} onClick={onBack} className="mt-3 text-sm text-amber-300 underline disabled:opacity-50">Back to application choices</button>}
         <p className="mt-3 text-sm leading-6 text-slate-300">
@@ -1625,7 +1627,14 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
                 <div><dt className="text-slate-500">Service version</dt><dd>{serverSetup.service_version}</dd></div>
                 <div><dt className="text-slate-500">PostgreSQL</dt><dd>{serverSetup.postgres_version}</dd></div>
               </dl>
-              {serverSetup.last_error && <div role="alert" className="rounded bg-red-950 p-3 text-sm text-red-100"><p className="font-semibold">{serverSetup.last_error.code}</p><p className="mt-1">{serverSetup.last_error.message}</p></div>}
+              {serverSetup.last_error && <div role="alert" className="rounded bg-red-950 p-3 text-sm text-red-100"><p className="mt-1">{/Start-Process|0xffffffff/.test(serverSetup.last_error.message || '') ? "Windows couldn't start installation with administrator permission. Keep this saved setup and contact support before retrying." : serverSetup.last_error.message}</p><details className="mt-2"><summary>Support details</summary><p>{serverSetup.last_error.code}</p><pre className="whitespace-pre-wrap text-xs">{serverSetup.last_error.message}</pre>{serverSetup.log_tail && <pre className="whitespace-pre-wrap text-xs">{serverSetup.log_tail}</pre>}</details></div>}
+              {['installing', 'owner_pending'].includes(serverSetup.phase) && serverSetup.progress && <div className="space-y-2">
+                <p>{serverSetup.progress.task}</p>
+                <progress aria-label="Bar installation progress" className="w-full" />
+                {serverSetup.progress.total > 0 && serverSetup.progress.completed <= serverSetup.progress.total && <div><progress aria-label="Database migrations checked or committed" className="w-full" value={serverSetup.progress.completed} max={serverSetup.progress.total} /><p className="text-xs">Database migrations: {serverSetup.progress.completed} of {serverSetup.progress.total}</p></div>}
+                <p className="text-xs text-slate-300">Elapsed: {Math.max(0, Math.floor((setupClock - Date.parse(serverSetup.progress.started_at)) / 1000))} seconds. Last activity: {new Date(serverSetup.progress.last_activity_at).toLocaleTimeString()}.</p>
+                {serverSetup.progress.waiting && <p className="text-sm text-amber-200">No new activity has been reported for over two minutes. Keep this setup open. Check for a Windows permission prompt, then use Refresh or share Support details. Do not start another Bar installation.</p>}
+              </div>}
               {serverSetup.installer_status?.message && <p className="text-xs text-slate-300">{serverSetup.installer_status.message}</p>}
               {serverSetup.phase === 'installing' && <p className="text-sm text-slate-200">Windows is installing the local database and Bar service. Approve the Windows administrator prompt if it is waiting. Keep this window open.</p>}
               {['installed', 'owner_pending'].includes(serverSetup.phase) && <div className="space-y-2 rounded border border-amber-700 p-3">
@@ -1637,7 +1646,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
               {['prepared', 'failed'].includes(serverSetup.phase) && <button type="button" disabled={setupBusy || Boolean(serverPreflight && !serverPreflight.ready)} onClick={() => void resumeServerSetup()} className="w-full rounded bg-amber-500 p-3 font-semibold text-slate-950 disabled:opacity-50">{setupBusy ? 'Starting the installer…' : serverSetup.phase === 'failed' ? 'Retry the local Bar installer' : 'Install the local Bar service'}</button>}
               {serverSetup.can_cancel && <button type="button" disabled={setupBusy} onClick={() => void cancelServerSetup()} className="w-full rounded border border-slate-600 p-2 text-sm disabled:opacity-50">Cancel this prepared setup</button>}
               {serverSetup.phase === 'complete' && <p className="text-sm text-emerald-200">Setup is complete. Restart the application to open the local Bar workspace.</p>}
-              {serverSetup.log_tail && <details className="text-xs text-slate-400"><summary className="cursor-pointer">Installer log (redacted)</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2">{serverSetup.log_tail}</pre></details>}
+              {(serverSetup.log_tail || serverSetup.launcher_diagnostic) && <details className="text-xs text-slate-400"><summary className="cursor-pointer">Support details (redacted)</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2">{serverSetup.launcher_diagnostic}{'\n'}{serverSetup.log_tail}</pre></details>}
             </section> : <>
               <p className="text-xs text-slate-400">This will be the main Bar computer. It keeps the Bar’s records and must stay on while other tills are using the Bar.</p>
               <p className="text-xs text-amber-200">Windows will ask for administrator approval once. This starts a new Bar with no imported sales. Choose a computer that will stay at the venue.</p>

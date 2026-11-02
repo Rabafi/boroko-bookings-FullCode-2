@@ -251,7 +251,7 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
   const [supportReportsError, setSupportReportsError] = useState('')
   const [supportDraft, setSupportDraft] = useState({ category: 'operations', severity: 'normal', subject: '', message: '' })
   const [staffDraft, setStaffDraft] = useState({ display_name: '', role: 'cashier', pin: '' })
-  const [pairingCode, setPairingCode] = useState(/** @type {{code: string, expiresAt: number, fingerprint: string}|null} */ (null))
+  const [pairingCode, setPairingCode] = useState(/** @type {{code: string, expiresAt: number, fingerprint: string, addresses: string[]}|null} */ (null))
   const [pairingBusy, setPairingBusy] = useState(false)
 
   useEffect(() => {
@@ -1017,7 +1017,7 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
         throw new Error('The local service returned an invalid pairing response. No code was shown.')
       }
       if (typeof result.server_certificate_fingerprint !== 'string' || !result.server_certificate_fingerprint) throw new Error('The security details are not available yet. Refresh the Bar and try again.')
-      setPairingCode({ code: result.pairing_code, expiresAt: Date.now() + result.expires_in * 1000, fingerprint: result.server_certificate_fingerprint })
+      setPairingCode({ code: result.pairing_code, expiresAt: Date.now() + result.expires_in * 1000, fingerprint: result.server_certificate_fingerprint, addresses: Array.isArray(result.server_addresses) ? result.server_addresses.filter(address => typeof address === 'string') : [] })
       setNotice('A single-use pairing code is ready. Give it only to the till being paired; it expires shortly.')
     } catch (cause) { setError(messageOf(cause)) }
     finally { setPairingBusy(false) }
@@ -1635,7 +1635,7 @@ export default function BarLocalWorkspace({ status, onLogout, initialStaffId = '
             <h2 className="font-semibold">Pair another till</h2>
             <p className="mt-1 text-sm text-slate-300">Use this to connect another till. Enter the address, security details and one-use code on that till.</p>
             <button type="button" disabled={commandBlocked || pairingBusy} onClick={() => void generatePairingCode()} className="mt-4 rounded bg-sky-600 px-4 py-2 text-sm font-semibold disabled:opacity-50">{pairingBusy ? 'Generating…' : 'Show till connection details'}</button>
-            {pairingCode && <div className="mt-4 rounded border border-emerald-700 bg-emerald-950/40 p-4"><p className="text-xs text-emerald-200">One-use code · expires in {Math.max(0, Math.ceil((pairingCode.expiresAt - Date.now()) / 1000))} seconds</p><p className="mt-2 select-all font-mono text-3xl tracking-[0.25em]">{pairingCode.code}</p><details className="mt-3"><summary className="cursor-pointer text-xs text-emerald-200">Connection security details</summary><p className="mt-2 break-all font-mono text-xs">{pairingCode.fingerprint}</p></details></div>}
+            {pairingCode && <div className="mt-4 rounded border border-emerald-700 bg-emerald-950/40 p-4"><p className="text-xs text-emerald-200">One-use code · expires in {Math.max(0, Math.ceil((pairingCode.expiresAt - Date.now()) / 1000))} seconds</p><p className="mt-2 select-all font-mono text-3xl tracking-[0.25em]">{pairingCode.code}</p>{pairingCode.addresses.length ? <div className="mt-3 text-sm"><p>On the other till, choose Connect to an existing Bar and enter one of these main-computer addresses:</p>{pairingCode.addresses.map(address => <p key={address} className="mt-1 select-all font-mono">{address}</p>)}</div> : <p className="mt-3 text-sm text-amber-200">No private LAN address is available. Connect the main computer to your venue network, set that Windows network to Private, then create a new code.</p>}<details className="mt-3"><summary className="cursor-pointer text-xs text-emerald-200">Connection security details</summary><p className="mt-2 break-all font-mono text-xs">{pairingCode.fingerprint}</p></details></div>}
             <p className="mt-3 text-xs text-slate-400">Do not send this code outside the Bar team. The service accepts it once and binds the new device to this authority and outlet.</p>
           </div>
         </section>}{canManageSettings && <BarLocalDiscountPolicy policy={discountPolicy} busy={busy} blocked={commandBlocked} onCommand={submitCommand} />}

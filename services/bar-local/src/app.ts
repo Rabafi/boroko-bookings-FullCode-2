@@ -29,6 +29,7 @@ import { approvalHashFor, executeCommand } from './commands.js'
 import { callFunction, query } from './db.js'
 import type { JsonRecord } from './db.js'
 import { dummyPinVerify, hashPin, verifyPin, verifyPinAsync } from './pin.js'
+import { lanEndpoints } from './network.js'
 import { assertOwnerPassword, dummyOwnerPasswordVerify, hashOwnerPassword, normalizeOwnerEmail, verifyOwnerPassword } from './password.js'
 import {
   applyCors, bearerToken, correlationId, deviceIdHeader, deviceTokenHeader,
@@ -615,7 +616,8 @@ export function createApp(options: AppOptions) {
       ok: true,
       pairing_code: code,
       expires_in: result?.expires_in ?? ttl,
-      server_certificate_fingerprint: fingerprint
+      server_certificate_fingerprint: fingerprint,
+      server_addresses: lanEndpoints(config.http.host, config.http.port, !!config.http.tls)
     }, id)
   }
 

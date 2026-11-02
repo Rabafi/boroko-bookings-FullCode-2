@@ -37,7 +37,7 @@ import {
  * These records are written only by this module into the protected provisioning
  * file. The read path keeps its existing shallow corruption check; this view
  * describes the locally produced encrypted record and does not validate JSON.
- * @typedef {{kind:'owner',request:{base_url:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>,provisioning_id:string,device_token:string}}|{kind:'pairing',request:{base_url:string,certificate_fingerprint?:string|undefined,pairing_code:string,device_name:string,provisioning_id:string,device_token:string}}} PendingProvisioning
+ * @typedef {{kind:'owner',request:{base_url:string,certificate_fingerprint?:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>,provisioning_id:string,device_token:string}}|{kind:'pairing',request:{base_url:string,certificate_fingerprint?:string|undefined,pairing_code:string,device_name:string,provisioning_id:string,device_token:string}}} PendingProvisioning
  */
 
 const CONFIG_NAME = 'authority.bin'
@@ -457,8 +457,8 @@ export class BarLocalElectronRuntime {
     }
   }
 
-  /** @param {{base_url:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,owner_email?:string,owner_password?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>}} request */
-  async setupOwner({ base_url, setup_secret, ...request }) {
+  /** @param {{base_url:string,certificate_fingerprint?:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,owner_email?:string,owner_password?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>}} request */
+  async setupOwner({ base_url, certificate_fingerprint, setup_secret, ...request }) {
     if (this.buildProductId !== 'hospitality-pos') throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Owner setup is only available in Restaurant & Bar POS.')
     if (this.adapter !== null) throw new BarLocalAdapterError('SETUP_ALREADY_COMMISSIONED', 'This installation already has a committed authority profile.')
     if (this.provisioning) throw new BarLocalAdapterError('SETUP_IN_PROGRESS', 'Another local authority provisioning operation is already running.')
@@ -470,15 +470,16 @@ export class BarLocalElectronRuntime {
     if (pending) {
       const ownerPassword = request.owner_password
       base_url = pending.request.base_url
+      certificate_fingerprint = pending.request.certificate_fingerprint
       request = { ...pending.request, ...(typeof ownerPassword === 'string' ? { owner_password: ownerPassword } : {}) }
       setup_secret = pending.request.setup_secret
     } else {
       const tokenBytes = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
       const { owner_password: _transientPassword, ...protectedRequest } = request
-      pending = { kind: 'owner', request: { ...protectedRequest, base_url, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } }
+      pending = { kind: 'owner', request: { ...protectedRequest, base_url, certificate_fingerprint, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } }
       this.#saveProvisioning(pending)
     }
-    const transport = createHttpTransport({ base_url, request_timeout_ms: 15000, connect_timeout_ms: 5000 })
+    const transport = createHttpTransport({ base_url, certificate_fingerprint, request_timeout_ms: 15000, connect_timeout_ms: 5000 })
     this.provisioning = true
     let bootstrap
     try {
@@ -490,7 +491,7 @@ export class BarLocalElectronRuntime {
         logger: null
       })
       if (typeof request.owner_password !== 'string') throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to safely resume this setup attempt.')
-      const { base_url: _baseUrl, setup_secret: stagedSetupSecret, ...stagedPayload } = pending.request
+      const { base_url: _baseUrl, certificate_fingerprint: _serverPin, setup_secret: stagedSetupSecret, ...stagedPayload } = pending.request
       const result = await bootstrap.requireClient().setupOwner({ setup_secret: stagedSetupSecret, ...stagedPayload, owner_password: request.owner_password })
       /** @type {BarLocalAuthorityPersistExpectedData} */
       const authority = {
@@ -503,7 +504,8 @@ export class BarLocalElectronRuntime {
         authority_epoch: result.authority_epoch,
         commissioning_id: result.commissioning_id ?? null,
         contract_version: 1,
-        base_url
+        base_url,
+        certificate_fingerprint
       }
       const validated = validateAuthorityConfig(authority)
       this.setupOwnerStaffId = result.owner_staff_id == null ? null : requireUuid(result.owner_staff_id, 'owner_staff_id')

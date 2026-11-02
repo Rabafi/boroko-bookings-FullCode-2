@@ -1,5 +1,13 @@
 # Bar local authority implementation report
 
+## 2 November 2026 — installation visibility and LAN source checkpoint
+
+Automatic setup now generates a protected server certificate, pins its identity before local owner provisioning, binds the API to HTTPS for private-LAN pairing, restricts its firewall rule to Private/LocalSubnet, and keeps PostgreSQL on loopback. Native certificate creation/reuse and real pinned HTTPS passed 2/2 in isolation before the live-install investigation. This does not qualify installed multi-PC pairing.
+
+Installation source now exposes current work, elapsed time, last activity and actual migration counters. Unknown duration is indeterminate. It preserves a timed-out/unconfirmed installer and blocks duplicate starts; refresh can observe a late completion. Windows administrator-launch errors have plain guidance with redacted diagnostics in Support details. The fixed canonical executable/encoded arguments avoid native path-quoting mistakes, but the real harmless elevated marker smoke **still fails with Windows 0xffffffff on this workstation**. The actual elevation path is not fixed or release-qualified. UAC remains enabled, Appinfo running, interactive session 1, non-elevated test context. No UAC bypass, whole-app elevation, service reset or database reinitialization was attempted.
+
+Read-only inspection of the current saved attempt found protected state and its wrapper, no installer status or log, and no default ProgramData install root. Existing draft, secrets, operation identity, app process and services were preserved. Source/runtime regression checks passed 36/36, service/main no-emit checks passed and JSX parsed. Current app binaries were not rebuilt/relaunched. Remote owner software, real installed elevation, installed workflow/updates and remaining recovery qualification are still open. Deferred PDFs and physical/Supabase tasks retain their earlier status.
+
 ## 1 November 2026 — setup handoff and local storage safeguards
 
 **Software completeness remains partial and customer readiness remains NO-GO.** This continuation completed the source work for the setup handoff and storage safeguards; it did not qualify a customer installation.
@@ -13,7 +21,7 @@
 - `npm.cmd run build:hospitality-pos` and `npm.cmd run bar-local:build` passed. The Windows service payload staged and verified **1,957 files** for service 0.1.0, PostgreSQL 17.6 and Node 24.14.0; the staged tree contains `server/db/migrations/0077_local_business_profile.sql`.
 - The guarded disposable service suite is not green: recent Windows runs hit a Node/libuv assertion while closing HTTP test servers. Failed run data and logs were preserved; PostgreSQL processes were confirmed stopped. Historical isolated results do not establish the current service suite.
 
-Offline owner email/password authentication, a read-only remote owner interface with trustworthy sync timestamps, a hosted idempotent receiver and business link, installed second-PC reconnection, and independent WAL/PITR/replacement-host qualification remain open. Hosted work requires separately authorized Supabase deployment and is not represented by local export receipts. Physical multi-PC, Windows 7, printer/power checks, and customer PDFs remain pending. No Bar customer was created, no app was relaunched, and no hosted migration or deployment occurred.
+Offline owner email/password authentication is implemented and verified in source/disposable tests (2 November checkpoint below). A read-only remote owner interface with trustworthy sync timestamps, a hosted idempotent receiver and verified business link, installed second-PC reconnection, and independent WAL/PITR/replacement-host qualification remain open. Hosted deployment remains deferred and is not represented by local export receipts. Physical multi-PC, Windows 7, printer/power checks, and customer PDFs remain pending. No customer installation is qualified by these software checks.
 
 ## 30 October 2026 — current continuation status
 

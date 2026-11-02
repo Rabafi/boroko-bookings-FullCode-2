@@ -516,7 +516,9 @@ export class LegacyBarLocalClient {
       || !Number.isSafeInteger(body.expires_in) || body.expires_in < 1) {
       throw new LegacyBarLocalError('INVALID_RESPONSE', 'The local service returned an invalid pairing code response.', { status: response.status });
     }
-    return { ok: true, pairing_code: body.pairing_code, expires_in: body.expires_in };
+    return { ok: true, pairing_code: body.pairing_code, expires_in: body.expires_in,
+      server_certificate_fingerprint: typeof body.server_certificate_fingerprint === 'string' ? body.server_certificate_fingerprint : null,
+      server_addresses: Array.isArray(body.server_addresses) ? body.server_addresses.filter(value => typeof value === 'string' && /^https:\/\//.test(value)).slice(0, 32) : [] };
   }
 
   async adminStatus() {

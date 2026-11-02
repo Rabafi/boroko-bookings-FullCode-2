@@ -23,6 +23,8 @@ const REQUIRED = [
   'server/package.json',
   'server/scripts/provision-local.mjs',
   'server/scripts/bar-operations.mjs',
+  'server/scripts/write-api-certificate.mjs',
+  'server/packaging/windows/create-api-certificate.ps1',
   'server/packaging/windows/install-server.ps1',
   'server/packaging/windows/configure-postgres.ps1',
   'server/packaging/windows/install-service.ps1',
@@ -110,7 +112,7 @@ function orchestratorFor(root, options = {}) {
   const { payload } = options.payloadFixture ?? fixture(root)
   const state = {
     runner: async ({ cwd }) => {
-      writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'installed', message: 'ok', updated_at: new Date().toISOString() }))
+      writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'installed', certificate_fingerprint: 'a'.repeat(64), message: 'ok', updated_at: new Date().toISOString() }))
       return { exitCode: 0, stdout: '', stderr: '' }
     },
     ...options
@@ -341,7 +343,7 @@ test('installer failure is recoverable with the same attempt and secrets', async
         writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'failed', message: 'Access denied', code: 'INSTALLER_FAILED' }))
         return { exitCode: 1, stdout: '', stderr: '' }
       }
-      writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'installed', message: 'ok' }))
+      writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'installed', certificate_fingerprint: 'a'.repeat(64), message: 'ok' }))
       return { exitCode: 0, stdout: '', stderr: '' }
     }
     const orchestrator = orchestratorFor(root, { runner })
@@ -358,6 +360,43 @@ test('installer failure is recoverable with the same attempt and secrets', async
     assert.equal((await orchestrator.status()).phase, 'installed')
     assert.equal(orchestrator.readState().secrets.setup_secret, setupSecret)
     assert.equal(attempts, 2)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('progress reports actual migration counters and uncertain installs cannot launch twice', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bar-setup-progress-'))
+  try {
+    let launches = 0
+    const orchestrator = orchestratorFor(root, { runner: async ({ cwd }) => {
+      launches++
+      writeFileSync(join(cwd, 'status.json'), JSON.stringify({ phase: 'installing', message: 'Provisioning the database', updated_at: new Date().toISOString() }))
+      writeFileSync(join(cwd, 'progress.json'), JSON.stringify({ task: 'Applying database migration', completed: 5, total: 78, updated_at: new Date().toISOString() }))
+      return { exitCode: 124, stdout: '', stderr: 'Awaiting confirmation; preserve this attempt.' }
+    } })
+    await orchestrator.begin(ownerDraft())
+    await orchestrator.installPromise
+    const status = await orchestrator.status()
+    assert.equal(status.phase, 'installing')
+    assert.equal(status.progress.completed, 5)
+    assert.equal(status.progress.total, 78)
+    assert.match(status.progress.task, /Applying/)
+    await assert.rejects(() => orchestrator.resume(), { code: 'INSTALLATION_STATUS_UNCERTAIN' })
+    assert.equal(launches, 1)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('prelaunch failure has plain guidance and redacted support detail', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bar-setup-launch-'))
+  try {
+    const orchestrator = orchestratorFor(root, { runner: async () => ({ exitCode: 1, stdout: '', stderr: 'Start-Process: Unknown error (0xffffffff). password=private' }) })
+    await orchestrator.begin(ownerDraft())
+    await orchestrator.installPromise
+    const status = await orchestrator.status()
+    assert.equal(status.last_error.code, 'ELEVATION_LAUNCH_FAILED')
+    assert.match(status.last_error.message, /administrator permission/)
+    assert.doesNotMatch(status.last_error.message, /Start-Process/)
+    assert.match(status.launcher_diagnostic, /0xffffffff/)
+    assert.doesNotMatch(status.launcher_diagnostic, /private/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 

@@ -595,6 +595,14 @@ function Write-Step {
     param([Parameter(Mandatory = $true)][string]$Message)
     Write-Host ""
     Write-Host "== $Message" -ForegroundColor Cyan
+    if ($env:BAR_LOCAL_SETUP_PROGRESS_FILE) {
+        try {
+            $progress = @{ task = $Message; updated_at = (Get-Date).ToUniversalTime().ToString('o'); completed = $null; total = $null } | ConvertTo-Json -Compress
+            $temporary = "$($env:BAR_LOCAL_SETUP_PROGRESS_FILE).$PID.tmp"
+            [System.IO.File]::WriteAllText($temporary, $progress, (New-Object System.Text.UTF8Encoding($false)))
+            Move-Item -LiteralPath $temporary -Destination $env:BAR_LOCAL_SETUP_PROGRESS_FILE -Force
+        } catch { Write-Warning 'Installation progress could not be written. Preserve the installer log for support.' }
+    }
 }
 
 function Write-Note {

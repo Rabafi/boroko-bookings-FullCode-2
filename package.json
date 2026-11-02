@@ -152,7 +152,7 @@
     "bar-local:typecheck": "npm --prefix services/bar-local run typecheck",
     "bar-local:test": "npm --prefix services/bar-local test",
     "bar-local:test:isolated": "node services/bar-local/scripts/run-isolated-db.mjs",
-    "test:bar-local-electron": "node --test tests/bar-local/journal-protection.test.mjs tests/bar-local/complete-list.test.mjs tests/bar-local/electron-runtime.test.mjs tests/bar-local/cash-estimate.test.mjs tests/bar-local/renderer-recovery.test.mjs tests/bar-local/tender-workflows.test.mjs tests/bar-local/sqlite-frame-store.test.mjs tests/bar-local/sqlite-intents.test.mjs tests/bar-local/sqlite-runtime.test.mjs tests/bar-local/operator-messages.test.mjs tests/bar-local/post-close-corrections-ui.test.mjs tests/bar-local/backup-recovery-ui.test.mjs tests/bar-local/readiness-status.test.mjs tests/bar-local/startup-authority-gate.test.mjs"
+    "test:bar-local-electron": "node --test tests/bar-local/journal-protection.test.mjs tests/bar-local/complete-list.test.mjs tests/bar-local/electron-runtime.test.mjs tests/bar-local/cash-estimate.test.mjs tests/bar-local/renderer-recovery.test.mjs tests/bar-local/tender-workflows.test.mjs tests/bar-local/sqlite-frame-store.test.mjs tests/bar-local/sqlite-intents.test.mjs tests/bar-local/sqlite-runtime.test.mjs tests/bar-local/operator-messages.test.mjs tests/bar-local/post-close-corrections-ui.test.mjs tests/bar-local/backup-recovery-ui.test.mjs tests/bar-local/readiness-status.test.mjs tests/bar-local/startup-authority-gate.test.mjs tests/bar-local/secure-lan-setup.test.mjs"
   },
   "workspaces": [
     "apps/*",

@@ -1,5 +1,13 @@
 # Bar local authority evidence log
 
+## EV-173 — 2 November 2026 secure LAN source and install visibility
+
+- Native Windows certificate reuse, protected key material, real HTTPS server/commissioning, wrong-pin refusal and LAN plan guards passed **2/2** before the live setup investigation. No real firewall/service/database was changed by this check.
+- Setup/runtime regression selection passed **36/36**. Service and main no-emit checks passed; JSX parsed. Added actual per-migration counters, fixed-stage installer telemetry, indeterminate work indicator, elapsed/last activity, slow-activity guidance, bounded observation without terminating an installer, duplicate-start refusal and late-completion observation.
+- The explicitly enabled `tests/bar-local/elevated-launch-smoke.mjs` used a harmless elevated-marker-only script with spaces/apostrophes in its path. **FAILED: RunAs reports Windows unknown error 0xffffffff**, including with canonical executable, encoded command and a separate native ProcessStartInfo ShellExecute probe. UAC enabled, Appinfo running, interactive session 1, non-elevated. Launcher qualification remains open; no claim that encoding fixes the actual workstation failure.
+- Read-only current-attempt inspection found encrypted setup state and wrapper, no status.json/install.log and no default `C:\ProgramData\Tsa Bonno\BarLocal` root. This does not prove absence of unrelated PostgreSQL installations. No current app/installer/service was stopped, reset, relaunched or reinitialized. No Bar draft or protected credentials were changed.
+- Remote owner portal/link work remains incomplete/unactivated. Current source was not rebuilt into the running application. Installed walkthrough, physical PCs/peripherals, production/Supabase and customer PDF work retain their deferred status; PDF deferral remains non-blocking for this software checkpoint.
+
 ## EV-171 — 1 November 2026 setup, storage and recovery sizing
 
 - `node --test --test-concurrency=1 tests/bar-local/new-bar-registration.test.mjs tests/bar-local/server-setup.test.mjs tests/bar-local/startup-authority-gate.test.mjs tests/bar-local/replacement-proof.test.mjs` — **32/32 passed**.

@@ -47,6 +47,8 @@ param(
     [switch]$InitDb,
     [switch]$Upgrade,
     [switch]$SkipFirewall,
+    [switch]$LoopbackDatabase,
+    [switch]$RequirePrivateFirewall,
     [switch]$SkipBackupTask,
     [switch]$SkipServiceStart
 )
@@ -503,6 +505,7 @@ if (Test-PathWithin -Child $DataDir -Parent $InstallDir) {
     throw 'DataDir must not be nested under InstallDir; service data must survive binary replacement.'
 }
 
+if ($LoopbackDatabase) { $AllowedCidrs = @(); $DbListenAddresses = 'localhost' }
 $tlsFilesSupplied = -not [string]::IsNullOrWhiteSpace($TlsCertFile) -or -not [string]::IsNullOrWhiteSpace($TlsKeyFile)
 if (-not $tlsFilesSupplied) {
     $existingCert = Get-EnvValue -Values $existingEnvironment -Name 'BAR_LOCAL_TLS_CERT_FILE'
@@ -515,6 +518,9 @@ if (-not $tlsFilesSupplied) {
     }
 }
 $httpIsLoopback = Test-LoopbackHost -HostName $HttpHost
+if ($RequirePrivateFirewall -and -not $httpIsLoopback -and ($SkipFirewall -or $null -eq (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue))) {
+    throw 'Secure automatic LAN setup requires Windows NetSecurity firewall controls. Restore that Windows component and retry; a public or unscoped firewall rule is not supported.'
+}
 $hasTls = $tlsFilesSupplied
 if (-not $httpIsLoopback -and -not $hasTls) {
     throw 'A non-loopback HTTP bind requires -TlsCertFile and -TlsKeyFile.'
@@ -894,10 +900,12 @@ try {
                 $ruleName = 'Tsa Bonno BarLocal HTTP ' + [string]$HttpPort
                 $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
                 if ($null -eq $existingRule) {
-                    New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $HttpPort -Action Allow -Profile Private -RemoteAddress LocalSubnet -Description 'Tsa Bonno local Bar API (private profile, local subnet only).' | Out-Null
+                    New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $HttpPort -Program $NodePath -Action Allow -Profile Private -RemoteAddress LocalSubnet -Description 'Tsa Bonno local Bar API (private profile, local subnet only).' | Out-Null
                 }
                 else {
                     Set-NetFirewallRule -DisplayName $ruleName -Enabled True -Profile Private -Action Allow -RemoteAddress LocalSubnet -ErrorAction Stop
+                    Get-NetFirewallRule -DisplayName $ruleName | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort $HttpPort -ErrorAction Stop
+                    Get-NetFirewallRule -DisplayName $ruleName | Get-NetFirewallApplicationFilter | Set-NetFirewallApplicationFilter -Program $NodePath -ErrorAction Stop
                 }
                 Write-Note "Firewall rule '$ruleName' allows TCP $HttpPort on the Private profile from LocalSubnet only."
             }

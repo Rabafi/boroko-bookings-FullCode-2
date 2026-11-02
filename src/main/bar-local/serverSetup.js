@@ -31,6 +31,7 @@ import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readd
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { connect } from 'node:net'
 import { BarLocalAdapterError } from './authority.js'
+import { createHttpTransport } from './client.js'
 
 export const SERVER_SETUP_STATE_VERSION = 1
 export const SERVER_SETUP_PHASES = Object.freeze([
@@ -49,6 +50,8 @@ const REQUIRED_PAYLOAD_FILES = Object.freeze([
   'server/package.json',
   'server/scripts/provision-local.mjs',
   'server/scripts/bar-operations.mjs',
+  'server/scripts/write-api-certificate.mjs',
+  'server/packaging/windows/create-api-certificate.ps1',
   'server/packaging/windows/install-server.ps1',
   'server/packaging/windows/configure-postgres.ps1',
   'server/packaging/windows/install-service.ps1',
@@ -92,7 +95,8 @@ const STATE_PHASE_LABELS = Object.freeze({
  *   install: {
  *     install_dir: string, data_dir: string, pg_data_dir: string, backup_dir: string,
  *     pg_bin: string, node_path: string, server_root: string, installer_script: string,
- *     http_port: number, db_port: number, base_url: string, upgrade: boolean
+ *     http_port: number, db_port: number, base_url: string, upgrade: boolean,
+ *     tls_cert_file?: string, tls_key_file?: string, certificate_fingerprint?: string
  *   },
  *   secrets: {setup_secret: string, backup_key: string, replication_password: string},
  *   staging: {root: string, secret_dir: string, wrapper_path: string, status_path: string, log_path: string},
@@ -380,8 +384,9 @@ export function buildInstallerArguments(install) {
     ['ReplicationPasswordFile', join(secretsDir, 'replication-password.txt')],
     ['BackupDir', install.backup_dir],
     ['DbName', 'bar_local'],
-    ['HttpHost', '127.0.0.1'],
-    ['SkipFirewall', null],
+    ...(install.tls_cert_file && install.tls_key_file ? [
+      ['HttpHost', '0.0.0.0'], ['TlsCertFile', install.tls_cert_file], ['TlsKeyFile', install.tls_key_file], ['LoopbackDatabase', null], ['RequirePrivateFirewall', null]
+    ] : [['HttpHost', '127.0.0.1'], ['SkipFirewall', null]]),
     [install.upgrade ? 'Upgrade' : 'InitDb', null]
   ]
 }
@@ -411,6 +416,10 @@ $pgSource = ${psQuote(join(state.payload.dir, 'postgres'))}
 $pgTarget = ${psQuote(dirname(dirname(state.install.pg_bin)))}
 $nodeSource = ${psQuote(join(state.payload.dir, 'node', 'node.exe'))}
 $nodeTarget = ${psQuote(state.install.node_path)}
+$script:certificateInfo = $null
+$env:BAR_LOCAL_SETUP_PROGRESS_FILE = Join-Path (Split-Path -Parent $statusPath) 'progress.json'
+$attemptMutex = New-Object System.Threading.Mutex($false, ${psQuote(`Global\\TsaBonnoBarSetup-${state.attempt_id}`)})
+if (-not $attemptMutex.WaitOne(0)) { throw 'This Bar installation attempt is already running. Keep its existing window open.' }
 
 function Write-SetupStatus {
   param([string]$Phase, [string]$Message, [string]$Code = '')
@@ -419,6 +428,7 @@ function Write-SetupStatus {
     message = $Message
     code = $Code
     updated_at = (Get-Date).ToUniversalTime().ToString('o')
+    certificate_fingerprint = if ($null -ne $script:certificateInfo) { $script:certificateInfo.fingerprint } else { $null }
   }
   $temporary = "$statusPath.tmp"
   $json = $payload | ConvertTo-Json -Compress
@@ -483,6 +493,12 @@ ${secretCopies}
     Move-Item -LiteralPath $nodeTemp -Destination $nodeTarget -Force
   }
   if (-not (Test-Path -LiteralPath $nodeTarget)) { throw "The packaged Node runtime could not be copied to $nodeTarget" }
+${state.install.tls_cert_file ? `  Write-SetupStatus 'installing' 'Creating the protected Bar network identity'
+  $certificateJson = & ${psQuote(join(state.payload.dir, 'server', 'packaging', 'windows', 'create-api-certificate.ps1'))} -NodePath $nodeTarget -OutputDir ${psQuote(dirname(state.install.tls_cert_file))}
+  if ($LASTEXITCODE -ne 0) { throw 'The protected Bar network identity could not be created.' }
+  $script:certificateInfo = $certificateJson | ConvertFrom-Json
+  if ($script:certificateInfo.fingerprint -notmatch '^[a-f0-9]{64}$') { throw 'The Bar certificate fingerprint is invalid.' }
+` : ''}
   Write-SetupStatus 'installing' 'Running the local Bar server installer'
   $arguments = @(
 ${argumentLines}
@@ -549,18 +565,17 @@ export function publicSetupState(state) {
 
 /**
  * @param {string} baseUrl
- * @param {{timeoutMs?: number, intervalMs?: number}} [options]
+ * @param {{timeoutMs?: number, intervalMs?: number, certificate_fingerprint?: string}} [options]
  */
-export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs = 1200 } = {}) {
+export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs = 1200, certificate_fingerprint } = {}) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/v1/health/live`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(3000)
-      })
-      if (response.ok) {
-        const body = await response.json().catch(() => null)
+      const transport = createHttpTransport({ base_url: baseUrl, certificate_fingerprint, request_timeout_ms: 3000 })
+      let response
+      try { response = await transport.get('/v1/health/live') } finally { transport.close() }
+      if (response.status === 200) {
+        const body = response.body
         if (body && body.ok === true && body.status === 'live') return true
       }
     } catch {}
@@ -570,23 +585,32 @@ export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs 
 }
 
 /** @type {SetupRunner} */
-export async function defaultElevatedRunner({ wrapperPath, cwd }) {  const command = [
+export async function defaultElevatedRunner({ wrapperPath, cwd }) {
+  const executable = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  // Encode the inner script: Start-Process joins ArgumentList into a native
+  // command line and does not preserve quoting around a -File path.
+  const inner = Buffer.from(`$ErrorActionPreference='Stop'; & ${psQuote(wrapperPath)}; exit $LASTEXITCODE`, 'utf16le').toString('base64')
+  const command = [
     "$ErrorActionPreference='Stop'",
-    `$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',${psQuote(wrapperPath)}) -Verb RunAs -PassThru -Wait -WindowStyle Hidden`,
+    `$p = Start-Process -FilePath ${psQuote(executable)} -WorkingDirectory ${psQuote(cwd)} -ArgumentList '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${inner}' -Verb RunAs -PassThru -Wait -WindowStyle Hidden`,
     'exit $p.ExitCode'
   ].join('; ')
   return await new Promise((resolvePromise, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    const child = spawn(executable, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
       cwd,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let stdout = ''
     let stderr = ''
-    child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
-    child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
-    child.once('error', reject)
-    child.once('exit', (code) => resolvePromise({ exitCode: code ?? 1, stdout, stderr }))
+    child.stdout?.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-32768) })
+    child.stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-32768) })
+    const timer = setTimeout(() => {
+      // Do not terminate an elevated installer or PostgreSQL on a timeout.
+      resolvePromise({ exitCode: 124, stdout, stderr: 'Installation is still awaiting confirmation. Preserve this attempt and inspect its progress; do not start another installation.' })
+    }, 30 * 60 * 1000)
+    child.once('error', (error) => { clearTimeout(timer); reject(error) })
+    child.once('exit', (code) => { clearTimeout(timer); resolvePromise({ exitCode: code ?? 1, stdout, stderr }) })
   })
 }
 
@@ -608,7 +632,7 @@ export class ServerSetupOrchestrator {
    *   isPortFree?: (port: number, host: string) => Promise<boolean>,
    *   diskFree?: (path: string) => bigint | null,
    *   serviceDetected?: () => Promise<boolean>,
-   *   serviceLive?: (baseUrl: string) => Promise<boolean>
+   *   serviceLive?: (baseUrl: string, options?: {certificate_fingerprint?: string}) => Promise<boolean>
    * }} options
    */
   constructor(options) {
@@ -737,7 +761,7 @@ export class ServerSetupOrchestrator {
     if (!state) {
       try {
         ports = {
-          http: await chooseFreePort({ start: DEFAULT_HTTP_PORT, isFree: this.isPortFree }),
+          http: await chooseFreePort({ start: DEFAULT_HTTP_PORT, host: '0.0.0.0', isFree: this.isPortFree }),
           db: await chooseFreePort({ start: DEFAULT_DB_PORT, isFree: this.isPortFree })
         }
       } catch (error) {
@@ -772,13 +796,34 @@ export class ServerSetupOrchestrator {
   async status() {
     const state = this.readState()
     if (!state) return { available: false, phase: null, can_resume: false }
-    const publicState = publicSetupState(state)
     const logTail = this.#readLogTail(state.staging.log_path)
     let statusFile = null
     try { statusFile = JSON.parse(readFileSync(state.staging.status_path, 'utf8')) } catch {}
+    // Observe late completion after the bounded launcher wait without starting
+    // another installer or changing any database state.
+    if (state.phase === 'installing' && !this.installPromise) {
+      if (statusFile?.phase === 'installed') this.#acceptInstalled(state, statusFile)
+      else if (statusFile?.phase === 'failed') this.#setPhase(state, 'failed', { code: String(statusFile.code || 'INSTALLER_FAILED'), message: String(statusFile.message || 'Installation needs attention.') })
+    }
+    const publicState = publicSetupState(state)
+    let progress = null
+    try { progress = JSON.parse(readFileSync(join(state.staging.root, 'progress.json'), 'utf8')) } catch {}
+    if (!progress || typeof progress.task !== 'string' || !Number.isFinite(Date.parse(progress.updated_at))) progress = null
+    if (progress && Date.parse(statusFile?.updated_at) > Date.parse(progress.updated_at)) progress = null
+    const activity = ['owner_pending', 'complete'].includes(state.phase) ? state.updated_at : progress?.updated_at || statusFile?.updated_at || state.updated_at
+    const lastActivity = Number.isFinite(Date.parse(activity)) ? activity : state.updated_at
     return {
       available: true,
       ...publicState,
+      progress: {
+        task: state.phase === 'owner_pending' ? 'Creating the local owner account' : state.phase === 'installed' ? 'Checking that the Bar service is ready' : String(progress?.task || statusFile?.message || (state.phase === 'installing' ? 'Waiting for Windows administrator permission or installer activity' : STATE_PHASE_LABELS[state.phase])).slice(0, 240),
+        started_at: state.created_at,
+        last_activity_at: lastActivity,
+        waiting: state.phase === 'installing' && this.now().getTime() - Date.parse(lastActivity) > 120000,
+        completed: Number.isInteger(progress?.completed) && progress.completed >= 0 ? progress.completed : null,
+        total: Number.isInteger(progress?.total) && progress.total > 0 ? progress.total : null
+      },
+      launcher_diagnostic: (() => { try { return redactLogTail(readFileSync(join(state.staging.root, 'launcher-diagnostic.txt'), 'utf8')) } catch { return null } })(),
       installer_status: statusFile ? {
         phase: typeof statusFile.phase === 'string' ? statusFile.phase : null,
         message: typeof statusFile.message === 'string' ? statusFile.message : null,
@@ -848,7 +893,9 @@ export class ServerSetupOrchestrator {
           installer_script: join(this.payloadDir, 'server', 'packaging', 'windows', 'install-server.ps1'),
           http_port: pre.suggested_http_port,
           db_port: pre.suggested_db_port,
-          base_url: `http://127.0.0.1:${pre.suggested_http_port}`,
+          base_url: `https://127.0.0.1:${pre.suggested_http_port}`,
+          tls_cert_file: join(dirname(dataDir), 'secrets', 'api-tls', 'api.crt'),
+          tls_key_file: join(dirname(dataDir), 'secrets', 'api-tls', 'api.key'),
           upgrade: existsSync(join(pgDataDir, 'PG_VERSION'))
         },
         secrets: { setup_secret: setupSecret, backup_key: backupKey, replication_password: replicationPassword },
@@ -880,6 +927,17 @@ export class ServerSetupOrchestrator {
   }
 
   /** @param {ServerSetupState} state */
+  #acceptInstalled(state, status) {
+    if (state.install.tls_cert_file) {
+      if (typeof status?.certificate_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(status.certificate_fingerprint)) {
+        throw new BarLocalAdapterError('TLS_IDENTITY_UNAVAILABLE', 'The installer did not return a verified Bar network identity. Preserve this setup and retry repair; no unpinned connection will be used.')
+      }
+      state.install.certificate_fingerprint = status.certificate_fingerprint
+    }
+    this.#setPhase(state, 'installed')
+  }
+
+  /** @param {ServerSetupState} state */
   #startInstall(state) {
     this.#setPhase(state, 'installing')
     this.installPromise = this.runner({ wrapperPath: state.staging.wrapper_path, cwd: state.staging.root })
@@ -887,16 +945,21 @@ export class ServerSetupOrchestrator {
         const status = (() => { try { return JSON.parse(readFileSync(state.staging.status_path, 'utf8')) } catch { return null } })()
         const failed = result.exitCode !== 0 || !status || status.phase !== 'installed'
         if (failed) {
+          if (result.exitCode === 124) {
+            this.#setPhase(state, 'installing', { code: 'INSTALLATION_STATUS_UNCERTAIN', message: result.stderr })
+            return
+          }
           const message = result.stderr.trim()
             || (status && typeof status.message === 'string' ? status.message : '')
             || `The elevated local Bar installer exited with code ${result.exitCode}.`
           const code = /cancel(?:l)?ed by the user|operation was canceled/i.test(message)
             ? 'ELEVATION_DENIED'
-            : (status && typeof status.code === 'string' && status.code ? status.code : 'INSTALLER_FAILED')
-          this.#setPhase(state, 'failed', { code, message })
+            : (status && typeof status.code === 'string' && status.code ? status.code : 'ELEVATION_LAUNCH_FAILED')
+          this.#setPhase(state, 'failed', { code, message: code === 'ELEVATION_LAUNCH_FAILED' ? "Windows couldn't start installation with administrator permission. Retry this saved setup once Windows is ready. If it happens again, share the support details; do not create another Bar." : message })
+          writeDurableAtomic(join(state.staging.root, 'launcher-diagnostic.txt'), redactLogTail(message))
           return
         }
-        this.#setPhase(state, 'installed')
+        this.#acceptInstalled(state, status)
       })
       .catch((error) => {
         this.#setPhase(state, 'failed', {
@@ -918,16 +981,21 @@ export class ServerSetupOrchestrator {
       if (state.phase === 'installing') {
         if (this.installPromise) return await this.status()
         const installerStatus = (() => { try { return JSON.parse(readFileSync(state.staging.status_path, 'utf8')) } catch { return null } })()
-        if (installerStatus?.phase === 'installed') this.#setPhase(state, 'installed')
+        if (installerStatus?.phase === 'installed') this.#acceptInstalled(state, installerStatus)
         else if (installerStatus?.phase === 'failed') this.#setPhase(state, 'failed', { code: String(installerStatus.code || 'INSTALLER_FAILED'), message: String(installerStatus.message || 'The installer reported a failure.') })
         else {
-          state.install.upgrade = existsSync(join(state.install.pg_data_dir, 'PG_VERSION'))
-          this.#writeState(state)
-          this.#startInstall(state)
-          return await this.status()
+          throw new BarLocalAdapterError('INSTALLATION_STATUS_UNCERTAIN', 'The previous installation has not reported completion. Keep this saved setup and inspect its progress with support before retrying; do not start a second database installation.')
         }
       }
       if (state.phase === 'prepared' || state.phase === 'failed') {
+        if (state.installed_at) {
+          this.#setPhase(state, 'owner_pending')
+          return await this.status()
+        }
+        const previous = (() => { try { return JSON.parse(readFileSync(state.staging.status_path, 'utf8')) } catch { return null } })()
+        if (previous?.phase === 'installing') {
+          throw new BarLocalAdapterError('INSTALLATION_STATUS_UNCERTAIN', 'An installer has started but has not confirmed its outcome. Preserve this attempt and contact support before retrying.')
+        }
         state.install.upgrade = existsSync(join(state.install.pg_data_dir, 'PG_VERSION'))
         this.#writeState(state)
         this.#startInstall(state)
@@ -939,7 +1007,7 @@ export class ServerSetupOrchestrator {
       if (ownerPassword.length < 12 || ownerPassword.length > 128 || ownerPassword.trim() !== ownerPassword) {
         throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to finish setup. The password is never saved in the setup record.')
       }
-      const live = await this.serviceLive(state.install.base_url).catch(() => false)
+      const live = await this.serviceLive(state.install.base_url, { certificate_fingerprint: state.install.certificate_fingerprint }).catch(() => false)
       if (!live) {
         throw new BarLocalAdapterError(
           'SERVICE_NOT_READY',
@@ -951,6 +1019,7 @@ export class ServerSetupOrchestrator {
       try {
         await this.runtime.setupOwner({
           base_url: state.install.base_url,
+          certificate_fingerprint: state.install.certificate_fingerprint,
           setup_secret: state.secrets.setup_secret,
           business_name: state.owner.business_name,
           outlet_name: state.owner.outlet_name,
