@@ -1,4 +1,4 @@
-import type { AdminNotificationRecord, DesktopApi, IpcFailure } from '../../../src/renderer/src/types/desktop-api';
+import type { AdminNotificationRecord, DesktopApi, IpcFailure, SyncClearFailedResult, SyncRetryResult } from '../../../src/renderer/src/types/desktop-api';
 
 declare const api: DesktopApi;
 
@@ -19,6 +19,13 @@ api.restaurantAccountingV2.invoke('getManualJournalSubmissionStatus');
 
 const badVersion: number = api.app.getVersion();
 void badVersion;
+
+declare const settingsSave: Awaited<ReturnType<typeof api.settings.save>>;
+if (settingsSave.success) {
+  // @ts-expect-error -- saved settings stay unknown until the renderer validates their shape.
+  const uncheckedSavedSettings: Record<string, unknown> = settingsSave.data;
+  void uncheckedSavedSettings;
+}
 
 declare const ipcFailure: IpcFailure;
 // @ts-expect-error -- caught error messages are unknown until narrowed.
@@ -77,6 +84,19 @@ if ('financialPendingBookingIds' in syncStatusResult) {
   // @ts-expect-error -- IDs selected from persisted queue data remain unknown.
   const unvalidatedBookingId: string = syncStatusResult.financialPendingBookingIds[0];
   void unvalidatedBookingId;
+}
+
+declare const syncRetryContract: SyncRetryResult;
+if (syncRetryContract.success) {
+  // @ts-expect-error -- retry counts are produced as numbers.
+  const invalidRetryCount: string = syncRetryContract.retried;
+  void invalidRetryCount;
+}
+declare const syncClearContract: SyncClearFailedResult;
+if (syncClearContract.success) {
+  // @ts-expect-error -- clear counts are produced as numbers.
+  const invalidClearCount: string = syncClearContract.removed;
+  void invalidClearCount;
 }
 
 // @ts-expect-error -- Node globals are excluded from the browser renderer profile.

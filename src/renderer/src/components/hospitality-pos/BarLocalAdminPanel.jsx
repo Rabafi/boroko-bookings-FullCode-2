@@ -96,6 +96,8 @@ export default function BarLocalAdminPanel({ blocked, canExport = false, refresh
   const [cloudDailyAt, setCloudDailyAt] = useState('23:30')
   const [cloudBatchLimit, setCloudBatchLimit] = useState('200')
   const [cloudSigningKeyId, setCloudSigningKeyId] = useState('')
+  const [ownerReceiverBaseUrl, setOwnerReceiverBaseUrl] = useState('')
+  const [ownerEnrollmentCode, setOwnerEnrollmentCode] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -337,6 +339,24 @@ export default function BarLocalAdminPanel({ blocked, canExport = false, refresh
       () => window.api.barLocal.adminCloudSyncConfig(payload),
       'Cloud synchronisation settings were saved by the local authority. Enabling upload does not acknowledge any batch until a receiver reports ingested.'
     )
+  }
+
+  const claimOwnerLink = async () => {
+    if (busy || blocked) return
+    setBusy('owner-link')
+    try {
+      await window.api.barLocal.adminCloudSyncClaimOwnerLink({
+        receiver_base_url: ownerReceiverBaseUrl.trim(),
+        enrollment_code: ownerEnrollmentCode.trim()
+      })
+      setOwnerEnrollmentCode('')
+      onNotice('The Bar connection request was sent. The owner must approve it in Manager PWA before uploads can start.')
+      await load()
+    } catch (error) {
+      onError(messageOf(error))
+    } finally {
+      setBusy('')
+    }
   }
 
   const syncCloudNow = async () => {
@@ -697,6 +717,15 @@ export default function BarLocalAdminPanel({ blocked, canExport = false, refresh
             <label className="text-xs">Batch limit per pass<input inputMode="numeric" value={cloudBatchLimit} onChange={(event) => setCloudBatchLimit(event.target.value)} className="mt-1 w-full rounded bg-slate-800 p-2 text-sm" /></label>
           </div>
           <button type="button" disabled={blocked || busy !== ''} onClick={saveCloudSyncConfig} className="mt-3 rounded bg-sky-600 px-4 py-2 text-sm font-semibold disabled:opacity-50">{busy === 'cloud-config' ? 'Saving…' : 'Save upload settings'}</button>
+          {cloudTransport === 'local_test' && <div className="mt-4 rounded-lg border border-indigo-800 bg-indigo-950/30 p-3">
+            <h4 className="text-sm font-semibold">Connect this Bar to its owner account</h4>
+            <p className="mt-1 text-xs text-slate-300">In Manager PWA, sign in to the owner account and create a Bar connection code. Enter it here with the receiver address. The Bar sends its identity and protected signing secret directly to the receiver over this local test connection. Uploads remain off until the owner approves the connection in Manager PWA and an authorised operator enables uploads here.</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="text-xs">Receiver address<input maxLength={500} value={ownerReceiverBaseUrl} onChange={(event) => setOwnerReceiverBaseUrl(event.target.value)} placeholder="http://127.0.0.1:port" className="mt-1 w-full rounded bg-slate-800 p-2 text-sm" /></label>
+              <label className="text-xs">One-time owner connection code<input maxLength={100} autoComplete="off" value={ownerEnrollmentCode} onChange={(event) => setOwnerEnrollmentCode(event.target.value)} placeholder="bol_…" className="mt-1 w-full rounded bg-slate-800 p-2 font-mono text-sm" /></label>
+            </div>
+            <button type="button" disabled={blocked || busy !== '' || !ownerReceiverBaseUrl.trim() || !ownerEnrollmentCode.trim()} onClick={() => void claimOwnerLink()} className="mt-3 rounded bg-indigo-600 px-4 py-2 text-sm font-semibold disabled:opacity-50">{busy === 'owner-link' ? 'Connecting…' : 'Request owner approval'}</button>
+          </div>}
         </div>}
       </article>
 

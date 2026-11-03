@@ -6,6 +6,8 @@ import type { AdminExportApi } from './admin-export.js';
 import type {
   DesktopIpcResult,
   ShellOpenExternalResult,
+  SyncClearFailedResult,
+  SyncRetryResult,
 } from '../../../shared/desktopIpcContracts.js';
 import type { BarcodeScannerVerificationResult, PosHardwareSettingsResult, SyncDetailsResult, SyncStatusSnapshot } from '../../../shared/desktopIpcContracts.js';
 export type {
@@ -25,6 +27,8 @@ export type {
   PosHardwareSettings,
   PosHardwareSettingsResult,
   BarcodeScannerVerificationResult,
+  SyncClearFailedResult,
+  SyncRetryResult,
 } from '../../../shared/desktopIpcContracts.js';
 
 export type IpcFailure = { success: false; error: unknown; code?: unknown };
@@ -90,14 +94,6 @@ export type InventoryAdjustmentResult =
 export type PosCreateOrderResult =
   | { success: true; id: string; offline: true; provisional: true; receipt_number: string; order: Record<string, unknown>; tab_close_warning?: unknown }
   | (Record<string, unknown> & { success: unknown })
-  | IpcFailure;
-
-export type SyncRetryResult =
-  | { success: true; retried: number; remaining: number }
-  | IpcFailure;
-
-export type SyncClearFailedResult =
-  | { success: true; removed: number; financialCleared: number; integrityAlertsRecorded: number; remaining: number }
   | IpcFailure;
 
 export interface IpcMetadataRowsEnvelope {
@@ -340,6 +336,7 @@ export interface DesktopApi {
     resumeProvisioning(request?: unknown): Promise<unknown>;
     recoverOwnerPassword(request: unknown): Promise<unknown>;
     login(request: unknown): Promise<unknown>;
+    consumePostSetupNotice(): Promise<{ consumed: boolean }>;
     logout(): Promise<unknown>;
     startPairing(request?: unknown): Promise<unknown>;
     query(name: string, filters?: unknown): Promise<unknown>;
@@ -370,6 +367,7 @@ export interface DesktopApi {
     adminApplyUpdate(request: unknown): Promise<unknown>;
     adminCloudSyncStatus(): Promise<unknown>;
     adminCloudSyncConfig(request: unknown): Promise<unknown>;
+    adminCloudSyncClaimOwnerLink(request: { receiver_base_url: string; enrollment_code: string }): Promise<unknown>;
     adminCloudSyncRun(request?: unknown): Promise<unknown>;
     refreshReadiness(): Promise<unknown>;
     getCatalogueSnapshot(options?: unknown): Promise<unknown>;
@@ -403,22 +401,22 @@ export interface DesktopApi {
     createStaffDepartment(name: string, description: unknown, color: unknown): Promise<unknown>;
     updateStaffDepartment(id: string, payload: unknown): Promise<unknown>;
     deleteStaffDepartment(id: string): Promise<unknown>;
-    getShiftTemplates(departmentId: string): Promise<unknown>;
+    getShiftTemplates(departmentId?: string): Promise<unknown>;
     createShiftTemplate(payload: unknown): Promise<unknown>;
     updateShiftTemplate(id: string, payload: unknown): Promise<unknown>;
     deleteShiftTemplate(id: string): Promise<unknown>;
     getTaskCategories(): Promise<unknown>;
     createTaskCategory(name: string, color: unknown): Promise<unknown>;
-    getTaskAssignments(staffId: string, status: string, date: string): Promise<unknown>;
+    getTaskAssignments(staffId?: string, status?: string, date?: string): Promise<unknown>;
     createTaskAssignment(payload: unknown): Promise<unknown>;
     updateTaskAssignment(id: string, payload: unknown): Promise<unknown>;
     completeTaskAssignment(id: string, notes: unknown): Promise<unknown>;
-    getTrainingChecklists(departmentId: string): Promise<unknown>;
+    getTrainingChecklists(departmentId?: string): Promise<unknown>;
     createTrainingChecklist(payload: unknown): Promise<unknown>;
     recordTrainingCompletion(staffId: string, checklistId: string, notes: unknown): Promise<unknown>;
-    getTrainingRecords(staffId: string): Promise<unknown>;
+    getTrainingRecords(staffId?: string): Promise<unknown>;
     createShiftHandover(payload: unknown): Promise<unknown>;
-    getShiftHandovers(date: string): Promise<unknown>;
+    getShiftHandovers(date?: string): Promise<unknown>;
     getStaffProductivityDashboard(startDate: string, endDate: string): Promise<unknown>;
     publishWeeklySchedule(weekStart: unknown): Promise<unknown>;
     getScheduleConflicts(weekStart: unknown): Promise<unknown>;
@@ -467,7 +465,7 @@ export interface DesktopApi {
     getAll(): Promise<unknown>;
     create(data: unknown): Promise<unknown>;
     update(id: string, data: unknown): Promise<unknown>;
-    resolve(id: string, roomId: string): Promise<unknown>;
+    resolve(id: string, roomId: string | null | undefined): Promise<unknown>;
   };
   receipts: {
     savePDF(payload: unknown): Promise<unknown>;
@@ -485,7 +483,7 @@ export interface DesktopApi {
   bookings: {
     getAll(): Promise<unknown>;
     getCachedByDateRange(start: unknown, end: unknown): Promise<unknown>;
-    getByDateRange(start: unknown, end: unknown): Promise<unknown>;
+    getByDateRange(start: string, end: string): Promise<unknown>;
     create(data: unknown): Promise<unknown>;
     createMultiRoom(data: unknown): Promise<unknown>;
     update(id: string, data: unknown): Promise<unknown>;
@@ -661,7 +659,7 @@ export interface DesktopApi {
   settings: {
     get(): Promise<unknown>;
     getOutletContext(): Promise<unknown>;
-    save(data: unknown): Promise<unknown>;
+    save(data: unknown): Promise<DesktopIpcResult<'settings:save'>>;
     updateOperatingProfile(profile: unknown): Promise<unknown>;
     previewPropertyTypeChange(targetType: unknown): Promise<unknown>;
     commitPropertyTypeChange(payload: unknown): Promise<unknown>;
@@ -678,8 +676,8 @@ export interface DesktopApi {
     getOfflineMode(): Promise<import('../../../shared/desktopIpcContracts.js').SyncOfflineModeResult>;
     setOfflineMode(payload: unknown): Promise<import('../../../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult>;
     exportOfflineOperations(): Promise<unknown>;
-    retryFailed(queueIds?: string[]): Promise<unknown>;
-    clearFailed(queueIds?: string[]): Promise<unknown>;
+    retryFailed(queueIds?: string[]): Promise<DesktopIpcResult<'sync:retryFailed'>>;
+    clearFailed(queueIds?: string[]): Promise<DesktopIpcResult<'sync:clearFailed'>>;
     runNow(): Promise<unknown>;
     clearHealthFault(id: string): Promise<unknown>;
     getDeviceHealthRollup(): Promise<unknown>;
@@ -806,7 +804,7 @@ export interface DesktopApi {
     attachCashupProof(data: unknown): Promise<unknown>;
     getCashupProofAttachments(submissionId: string): Promise<unknown>;
     createCashupProofSignedUrl(submissionId: string, attachmentId: string): Promise<unknown>;
-    getCurrentShift(outletId: string, cashierId: string): Promise<unknown>;
+    getCurrentShift(outletId: string, cashierId: string | null): Promise<unknown>;
     getStaffOpenShift(staffId: string): Promise<unknown>;
     getStaffCashupSubmission(shiftId: string): Promise<unknown>;
     activateSharedTillOperator(data: unknown): Promise<unknown>;
@@ -859,7 +857,7 @@ export interface DesktopApi {
     clockOutStaffWithAttendancePin(data: unknown): Promise<unknown>;
     getActiveShifts(): Promise<unknown>;
     getBarActiveShifts(): Promise<unknown>;
-    getRestaurantShiftPlans(startDate: string, endDate: string): Promise<unknown>;
+    getRestaurantShiftPlans(startDate?: string | null, endDate?: string | null): Promise<unknown>;
     saveRestaurantShiftPlan(data: unknown): Promise<unknown>;
     deleteRestaurantShiftPlan(id: string): Promise<unknown>;
     openCashDrawerSession(data: unknown): Promise<unknown>;
@@ -875,14 +873,14 @@ export interface DesktopApi {
     approvePurchaseOrder(orderId: string): Promise<unknown>;
     receivePurchaseOrder(orderId: string, stockLocationId: string): Promise<unknown>;
     createStockTransfer(data: unknown): Promise<unknown>;
-    createChecklist(data: unknown): Promise<unknown>;
+    createChecklist(data: unknown): Promise<DesktopIpcResult<'pos:createChecklist'>>;
     completeChecklistItem(data: unknown): Promise<unknown>;
-    getActiveAlerts(filters: unknown): Promise<unknown>;
+    getActiveAlerts(filters?: unknown): Promise<unknown>;
     getAlertHistory(filters: unknown): Promise<unknown>;
-    recordAlert(data: unknown): Promise<unknown>;
+    recordAlert(data: unknown): Promise<DesktopIpcResult<'pos:recordAlert'>>;
     acknowledgeAlert(alertId: string, reason: string, operationId: string): Promise<unknown>;
-    resolveAlert(alertId: string, reason: string, operationId: string): Promise<unknown>;
-    getPurchaseOrders(startDate: string, endDate: string): Promise<unknown>;
+    resolveAlert(alertId: string, reason: string, operationId: string): Promise<DesktopIpcResult<'pos:resolveAlert'>>;
+    getPurchaseOrders(startDate?: string | null, endDate?: string | null): Promise<unknown>;
     getPurchasingSnapshot(): Promise<unknown>;
     getShiftHistory(startDate: string, endDate: string): Promise<unknown>;
     getCashDrawerSessions(startDate: string, endDate: string): Promise<unknown>;
@@ -891,7 +889,7 @@ export interface DesktopApi {
     getBarChecklistTemplates(): Promise<unknown>;
     createBarChecklistFromTemplate(data: unknown): Promise<unknown>;
     getExceptionAlerts(): Promise<unknown>;
-    generateOwnerDigest(): Promise<unknown>;
+    generateOwnerDigest(): Promise<DesktopIpcResult<'pos:generateOwnerDigest'>>;
     getRestaurantReservations(startDate: string, endDate: string, outletId: string): Promise<unknown>;
     createRestaurantReservation(data: unknown): Promise<unknown>;
     updateRestaurantReservation(id: string, data: unknown): Promise<unknown>;
@@ -907,16 +905,16 @@ export interface DesktopApi {
     getRestaurantCombos(outletId: string): Promise<unknown>;
     saveRestaurantCombo(data: unknown): Promise<unknown>;
     deleteRestaurantCombo(comboId: string): Promise<unknown>;
-    getRecipeVarianceReport(startDate: string, endDate: string, outletId: string): Promise<unknown>;
-    getRecipePreparationLosses(startDate: string, endDate: string, outletId: string): Promise<unknown>;
-    getRecipePreparationLossIngredientSummary(startDate: string, endDate: string, outletId: string): Promise<unknown>;
+    getRecipeVarianceReport(startDate?: string | null, endDate?: string | null, outletId?: string | null): Promise<unknown>;
+    getRecipePreparationLosses(startDate?: string | null, endDate?: string | null, outletId?: string | null): Promise<unknown>;
+    getRecipePreparationLossIngredientSummary(startDate?: string | null, endDate?: string | null, outletId?: string | null): Promise<unknown>;
     getRestaurantPrepItems(): Promise<unknown>;
     saveRestaurantPrepItem(data: unknown): Promise<unknown>;
-    getRestaurantPrepBatches(startDate: string, endDate: string, outletId: string): Promise<unknown>;
+    getRestaurantPrepBatches(startDate?: string | null, endDate?: string | null, outletId?: string | null): Promise<unknown>;
     createRestaurantPrepBatch(data: unknown): Promise<unknown>;
     postRestaurantPrepBatch(batchId: string): Promise<unknown>;
     recordTicketStatusEvent(data: unknown): Promise<unknown>;
-    getKitchenTimingReport(startDate: string, endDate: string, outletId: string, station: unknown): Promise<unknown>;
+    getKitchenTimingReport(startDate?: string | null, endDate?: string | null, outletId?: string | null, station?: string | null): Promise<unknown>;
     getLowStockPurchaseSuggestions(outletId: string): Promise<unknown>;
     setPreferredSupplierForInventoryItem(inventoryItemId: string, supplierId: string, lastUnitCost: unknown): Promise<unknown>;
     convertPurchaseSuggestionsToPo(supplierId: string, suggestions: unknown, notes: unknown): Promise<unknown>;

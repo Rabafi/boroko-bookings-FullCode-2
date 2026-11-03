@@ -232,9 +232,9 @@ export function normalizeErrorEnvelope(payload, options = {}) {
  *   baseUrl?: string,
  *   certificate_fingerprint?: string|null|undefined,
  *   certificateFingerprint?: string|null|undefined,
- *   request_timeout_ms?: number,
+ *   request_timeout_ms?: number|undefined,
  *   timeoutMs?: number,
- *   connect_timeout_ms?: number,
+ *   connect_timeout_ms?: number|undefined,
  *   max_response_bytes?: number
  * }} options
  */
@@ -341,6 +341,7 @@ export function createHttpTransport(options) {
 
     return new Promise((resolve, reject) => {
       let settled = false
+      /** @type {ReturnType<typeof setTimeout>|undefined} */
       let connectTimer
       /** @param {BarLocalAdapterError} error */
       const fail = (error) => {
@@ -360,6 +361,7 @@ export function createHttpTransport(options) {
         agent
       }
       const onResponse = (/** @type {import('node:http').IncomingMessage} */ res) => {
+        /** @type {Buffer[]} */
         const chunks = []
         let size = 0
         let tooLarge = false
@@ -1578,6 +1580,20 @@ export class BarLocalClient {
     return this.#adminRequest('POST', '/v1/admin/cloud-sync/config', body)
   }
 
+  /** @param {{receiver_base_url: string, enrollment_code: string}} request */
+  async adminCloudSyncClaimOwnerLink(request) {
+    const payload = requirePayload(request, 'owner connection request')
+    const receiverBaseUrl = requireString(payload.receiver_base_url, 'receiver_base_url', { max: 500 })
+    const enrollmentCode = requireString(payload.enrollment_code, 'enrollment_code', { min: 44, max: 100 })
+    if (!/^bol_[A-Za-z0-9_-]{40,96}$/.test(enrollmentCode)) {
+      throw new BarLocalAdapterError('VALIDATION_FAILED', 'The one-time owner connection code is invalid.')
+    }
+    return this.#adminRequest('POST', '/v1/admin/cloud-sync/link', {
+      receiver_base_url: receiverBaseUrl,
+      enrollment_code: enrollmentCode
+    })
+  }
+
   /**
    * Requests one bounded upload pass. It never blocks local trade and never
    * converts a timeout into a new identity.
@@ -1662,7 +1678,10 @@ export class BarLocalClient {
    * @returns {Promise<Record<string, unknown>>}
    */
   async events(options = {}) {
-    const route = this.#localRoute('events', true)
+    // Menu discovery remains available during first-run setup. The database
+    // readiness contract still blocks all trading/financial commands until
+    // the first active catalogue item exists.
+    const route = this.#localRoute('events', false)
     const { session, credential } = await this.#requireAuth()
     this.#assertSessionScope(session, route)
     const after = requireInteger(options.after ?? 0, 'after', { min: 0 })
@@ -1856,7 +1875,7 @@ export class BarLocalClient {
       'max_pages',
       { min: 1, max: MAX_CATALOGUE_REFRESH_PAGES }
     )
-    const route = this.#localRoute('catalogue.refresh', true)
+    const route = this.#localRoute('catalogue.refresh', false)
     const { session, credential } = await this.#requireAuth()
     this.#assertSessionScope(session, route)
     if (this.resyncRequired) {
@@ -1933,7 +1952,7 @@ export class BarLocalClient {
         catalogue_version: options.catalogue_version
       }
     )
-    const confirmed = this.#localRoute('catalogue.refresh', true)
+    const confirmed = this.#localRoute('catalogue.refresh', false)
     this.#assertSessionScope(session, confirmed)
     if (
       confirmed.authority_id !== route.authority_id

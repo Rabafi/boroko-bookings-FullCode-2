@@ -311,6 +311,8 @@ No customer workflow or UI behavior changed in this follow-up. A test-only envir
 Setup now uses the labels “Set up a new Bar on this computer” and “Connect this till to my Bar” and explains that the main computer stores the Bar records. The one-use till code and certificate fingerprint are shown as connection details. This changes first-run/setup and pairing guidance, so the customer manual and quick-start need a later update and an installed workflow review. Per the user's direction, PDFs, screenshots, approved-manifest/checksums and packaged offline-guide checks remain pending and non-blocking for a software release. No PDF was edited or approved. This UI wording does not establish that LAN TLS, server installation, multi-PC pairing or customer commissioning is qualified.
 ## 2 November 2026 — installation progress and secure LAN pairing
 
+Binding follow-up: continue the same saved attempt, without another registration. Primary errors show the actual installer failure; raw PowerShell diagnostics remain in Support details. Typed parameters, runtime-path and temporary initialization/validation permission corrections add no customer controls. Manual impact: include this recovery/error guidance in the already pending installation section. PDFs/quick-start/screenshots/approved-manifest/packaged-guide work remain deferred and non-blocking by user direction; no PDF changed.
+
 Follow-up: the shared profile chooser now offers **Open saved local Bar setup**. It opens the dedicated Bar window without creating/selecting another company and preserves the saved attempt/prefill. A failed or incomplete saved-status check blocks new registration and provides a retry-status action. The Windows installer uses one administrator permission prompt via the Windows command host; the cashier app remains non-elevated. Customer PDF/quick-start/screenshots/packaged-guide updates remain deferred and non-blocking by user direction. The real harmless elevation smoke passed; applying the fix to the already-running app and completing its saved installation remain pending.
 
 Manual impact: setup displays actual stages, elapsed time, last activity and migration counts; an activity warning explains preserving the same attempt. Administrator-launch failures give concise guidance and collapsed support diagnostics. Pairing displays private HTTPS addresses plus the certificate fingerprint to compare on the connecting till. The main database remains private to the server. Customer manual/quick-start, screenshots, approved checksum manifest and packaged offline guide checks remain pending and non-blocking for this source checkpoint by user direction. No PDF was changed. Installed elevation and physical LAN qualification remain unverified; do not describe this checkpoint as a commissioned customer setup.
@@ -320,3 +322,39 @@ Manual impact: setup displays actual stages, elapsed time, last activity and mig
 Manual impact: owner setup now collects an email address and password for offline sign-in; owner PIN remains for in-person approvals. Both Modern and Legacy sign-in screens provide owner email/password and staff ID/PIN modes. Existing commissioned owners without a password credential and isolated practice accounts retain PIN compatibility. Password reset requires the main computer's protected setup credential and signs out other sessions. Customer PDFs and quick-start, screenshots, approved document manifest/checksums, and packaged offline guide Open/Save verification are pending by user direction and do not block this software checkpoint. Customer commissioning evidence remains separate and unqualified.
 
 Replacement-server reconnection now accepts owner email/password after the authenticated-device endpoint challenge, with an explicit original staff-ID/PIN option for existing accounts. Both workspaces use the same shared proof and screen, retain saved operations, and revoke the temporary verification session.
+
+The installer diagnostic reader now strips NUL bytes before redacting secret-like values, covering PowerShell UTF-16 logs decoded as UTF-8. This internal error-handling change has no customer-visible workflow effect, so no separate manual update is required. Installation recovery guidance remains pending with the already deferred manual/quick-start update described above.
+
+The saved-attempt recovery path now resumes a protected PostgreSQL cluster after an interrupted install and avoids running `initdb` over it. The Windows service startup also now reads its configured launch options correctly. The customer-facing prompt still requires the owner to enter their PIN and choose a password. Manual impact is required for this setup/recovery behavior; update the manual and quick-start during the already deferred guide pass, with screenshots, approved checksums and packaged offline-guide checks. No PDF was edited, and these guide tasks remain pending and non-blocking for this software release by user direction.
+## First-use follow-up (2026-11-02)
+
+- Bar manual impact: Required. First-run sign-in guidance, empty-menu messaging, product tax entry and opening-stock sequence changed.
+- Customer manuscript and quick-start: Updated with the owner sign-in after restart and first product / opening stock steps.
+- Screenshots and PDFs: Pending by user direction. Re-capture the normal workspace flow, rebuild both approved PDFs, inspect pagination, and update evidence/manifest before release.
+- Verification performed: Local Bar Electron/browser and isolated synthetic service checks passed as recorded in EV-180; manual visual verification remains pending until approved screenshots/PDFs resume.
+
+## Normal Hpos route shell and Manager PWA Bar boundary (2026-11-02)
+
+- Bar manual impact: Required. The normal Hospitality POS navigation now opens local Bar Sell, Menu, Stock, Tabs, Cash/cash-up, Returns, Reports, workforce, expense, customer, control, admin and settings panels under the local authority profile. Some routes without a local implementation now show an explicit unavailable message. The later manual update must explain the local mode, capability-dependent visibility, and where unsupported work is completed.
+- Manager PWA impact: Bar labels/freshness were corrected and old hosted Bar POS/stock pages are withheld until a verified local projection is available. The online owner projection, charts and last-successful-sync UI are not complete and must not be described as active.
+- PDFs, quick-starts, screenshots, approved-manifest/checksum and packaged offline-guide verification: Pending by user direction and non-blocking for a software release. No customer PDF or approved document was changed in this work.
+- Verification performed: EV-181. The current running Rabafi app/database and customer records were not touched or restarted.
+
+## Manager PWA Bar notifications follow-up (2026-11-02)
+
+- Bar manual impact: Required. The Manager PWA notification drawer now explicitly says Bar sync alerts are not connected and does not show the older accommodation/runtime notifications as Bar alerts. The support preference uses Bar Support wording. A later guide update should explain that owner sync alerts appear only after verified sync is enabled.
+- PDFs, quick-starts, screenshots, approved-manifest/checksum and packaged offline-guide verification: Pending by user direction and non-blocking for a software release. No customer guide was changed.
+- Verification performed: Focused PWA projection and membership tests passed 22/22; Manager PWA production build passed. See EV-182.
+
+# 2026-11-02 owner projection checkpoint
+
+The new Command Central owner-link form is available only for a loopback `local_test` receiver. It is not enabled in customer/hosted profiles and does not authorize or change local trading. No approved customer PDF update is required for this test-only control. The user directed PDF, quick-start, screenshot, manifest and packaged-guide changes to remain pending and non-blocking; reassess before any customer activation.
+
+
+
+## Owner projection read surface (2026-11-03)
+
+- Bar manual impact: Required before customer activation. The uncommissioned Manager PWA owner view can show sales, stock movement history and submitted cash-up records after a verified owner link is approved. It explicitly does not show live stock-on-hand or card settlement and must not be used as the trading authority.
+- Customer guides: No customer manual change is required for this test-only, non-deployed receiver in the current software checkpoint. Before enabling it for customers, update the manual and quick-start with owner linking, freshness, movement-history versus stock-balance distinctions, cash-up scope and safe recovery guidance.
+- PDFs, screenshots, approved-manifest/checksum and packaged offline-guide verification: Pending by user direction and non-blocking for the software changes.
+- Verification performed: EV-184. No hosted receiver, mail provider, Supabase deployment or customer Bar was used.

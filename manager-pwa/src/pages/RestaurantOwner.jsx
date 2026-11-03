@@ -7,7 +7,12 @@ import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productS
 import { money } from '../lib/format'
 import DataFreshness from '../components/DataFreshness'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
+import BarOwnerProjection from '../components/BarOwnerProjection'
 
+/** @typedef {{id: string, items_count?: number | null, financial_complete?: boolean, tender_detail_complete?: boolean, payment_breakdown?: unknown, total?: number | null}} RestaurantOwnerTransactionExpectedView */
+/** @typedef {{id: string, current_stock?: number | null, reorder_level?: number | null}} RestaurantOwnerInventoryExpectedView */
+/** @typedef {import('../lib/api').ManagerPosSnapshotExpectedData & {returns_total?: number, discount_total?: number, sale_count: number}} RestaurantOwnerSnapshotExpectedView */
+/** @param {{icon?: import('lucide-react').LucideIcon, label: string, value: import('react').ReactNode, sub?: import('react').ReactNode, color?: 'slate' | 'green' | 'blue' | 'amber' | 'red', to?: string}} props */
 const KpiCard = ({ icon: Icon, label, value, sub, color = 'slate', to }) => {
   const inner = (
     <div className={`rounded-xl border border-${color}-200 bg-${color}-50 p-3`}>
@@ -23,12 +28,13 @@ const KpiCard = ({ icon: Icon, label, value, sub, color = 'slate', to }) => {
 }
 
 export default function RestaurantOwner() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const [loading, setLoading] = useState(true)
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [posSnapshot, setPosSnapshot] = useState(null)
-  const [posTransactions, setPosTransactions] = useState([])
-  const [lowStockCount, setLowStockCount] = useState(0)
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string | null} */ (null))
+  const [posSnapshot, setPosSnapshot] = useState(/** @type {RestaurantOwnerSnapshotExpectedView | null} */ (null))
+  const [posTransactions, setPosTransactions] = useState(/** @type {RestaurantOwnerTransactionExpectedView[]} */ ([]))
+  const [lowStockCount, setLowStockCount] = useState(/** @type {number | null} */ (0))
   const [loadError, setLoadError] = useState('')
 
   // Server product_family on the session is authoritative — not client settings inference.
@@ -39,6 +45,15 @@ export default function RestaurantOwner() {
     if (!user?.lodge_id) return
     setLoading(true)
     setLoadError('')
+    if (barOnly) {
+      setPosSnapshot(null)
+      setPosTransactions([])
+      setLowStockCount(null)
+      setLastUpdated(null)
+      setLoadError('This Bar is not linked to a verified local sync projection yet. No cloud POS or stock records are shown here.')
+      setLoading(false)
+      return
+    }
     try {
       const [posSnap, transactions, inventory] = await Promise.all([
         getManagerPosSnapshot(user.lodge_id),
@@ -47,18 +62,20 @@ export default function RestaurantOwner() {
       ])
 
       setPosSnapshot(posSnap)
-      setPosTransactions(Array.isArray(transactions?.transactions) ? transactions.transactions : [])
-      setLowStockCount(Array.isArray(inventory) ? inventory.filter((i) => (i.current_stock || 0) <= (i.reorder_level || 0) && (i.reorder_level || 0) > 0).length : null)
+      setPosTransactions(Array.isArray(transactions?.transactions) ? /** @type {RestaurantOwnerTransactionExpectedView[]} */ (transactions.transactions) : [])
+      // listInventory may read unvalidated persisted cache rows; the page keeps
+      // its existing array check and expected fields without validating rows.
+      setLowStockCount(Array.isArray(inventory) ? /** @type {RestaurantOwnerInventoryExpectedView[]} */ (inventory).filter((i) => (i.current_stock || 0) <= (i.reorder_level || 0) && (i.reorder_level || 0) > 0).length : null)
       setLastUpdated(new Date().toISOString())
     } catch (error) {
       setPosSnapshot(null)
       setPosTransactions([])
       setLowStockCount(null)
-      setLoadError(error?.message || 'Bar owner data could not be loaded from the server.')
+      setLoadError((/** @type {{message?: string} | null | undefined} */ (error))?.message || 'Bar owner data could not be loaded from the server.')
     } finally {
       setLoading(false)
     }
-  }, [user?.lodge_id])
+  }, [barOnly, user?.lodge_id])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -71,20 +88,23 @@ export default function RestaurantOwner() {
   const kpis = useMemo(() => {
     const todaySales = posSnapshot?.net_sales
     const todayOrders = posSnapshot?.sale_count
-    const avgOrder = todayOrders > 0 ? todaySales / todayOrders : 0
+    const avgOrder = posSnapshot && posSnapshot.sale_count > 0 ? posSnapshot.net_sales / posSnapshot.sale_count : 0
     return { todaySales, todayOrders, avgOrder }
   }, [posSnapshot])
 
   const snapshotReady = posSnapshot?.complete === true
   const paymentMix = useMemo(() => {
     if (!Array.isArray(posTransactions) || posTransactions.length === 0) return []
+    /** @type {Record<string, number>} */
     const counts = {}
     posTransactions.filter((t) => snapshotReady && t.financial_complete === true && t.tender_detail_complete === true).forEach((t) => {
-      const m = t.payment_breakdown?.[0]?.method || 'tender unavailable'
+      // The SQL producer sets tender_detail_complete only after checking the payment JSON array and its method/amount fields.
+      const m = /** @type {Array<{method?: string | null}> | null | undefined} */ (t.payment_breakdown)?.[0]?.method || 'tender unavailable'
       counts[m] = (counts[m] || 0) + 1
     })
     return Object.entries(counts).sort((a, b) => b[1] - a[1])
   }, [posTransactions, snapshotReady])
+  if (barOnly) return <BarOwnerProjection />
   if (!restaurantMode) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
@@ -103,7 +123,7 @@ export default function RestaurantOwner() {
           <p className="text-xs text-slate-500">Today's {barOnly ? 'bar' : 'restaurant'} overview</p>
         </div>
         <div className="flex items-center gap-2">
-          <DataFreshness lastUpdated={lastUpdated} />
+        <DataFreshness lastUpdated={lastUpdated} loading={loading} error={loadError} />
           <button onClick={loadData} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100" title="Refresh">
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -116,8 +136,8 @@ export default function RestaurantOwner() {
       <div className="grid grid-cols-2 gap-3">
         <KpiCard icon={ShoppingCart} label="POS Sales" value={snapshotReady ? money(kpis.todaySales) : 'Unavailable'} color="green" to="/pos" />
         <KpiCard icon={BarChart3} label="Completed sales" value={snapshotReady ? kpis.todayOrders : 'Unavailable'} sub={snapshotReady ? `Avg ${money(kpis.avgOrder)}` : 'Server confirmation required'} color="blue" to="/pos" />
-        <KpiCard icon={AlertTriangle} label="Outstanding" value="Not in Bar view" sub="Lodging receivables are outside this workspace" color="amber" />
-        <KpiCard icon={Package} label="Low Stock" value={lowStockCount === null ? 'Unavailable' : lowStockCount} color={lowStockCount > 0 ? 'red' : 'slate'} to="/inventory" />
+        {!barOnly && <KpiCard icon={AlertTriangle} label="Outstanding" value="Unavailable" sub="Receivables require a verified server snapshot" color="amber" />}
+        <KpiCard icon={Package} label="Low Stock" value={lowStockCount === null ? 'Unavailable' : lowStockCount} color={lowStockCount !== null && lowStockCount > 0 ? 'red' : 'slate'} to="/inventory" />
       </div>
 
       {paymentMix.length > 0 && (
@@ -148,7 +168,7 @@ export default function RestaurantOwner() {
         </div>
       )}
 
-      <MobileBoundaryNotice />
+      <MobileBoundaryNotice productFamily={user.product_family} hospitalityMode={user.hospitality_mode} />
     </div>
   )
 }

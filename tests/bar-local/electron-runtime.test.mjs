@@ -142,9 +142,17 @@ test('loopback owner commissioning persists a local-only profile and OS-protecte
     assert.equal(result.authority_mode, 'bar_local')
     assert.equal(result.device_token, undefined)
     assert.equal(runtime.status().configured, true)
+    assert.equal(runtime.status().post_setup_notice_pending, true)
     const credential = readFileSync(join(userDataPath, 'bar-local', 'device-credential.bin'))
     assert.notEqual(credential.toString('utf8')[0], '{')
     assert.equal(credential.toString('utf8').includes(token), false)
+    runtime.close()
+    const restarted = new BarLocalElectronRuntime({ userDataPath, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos' })
+    assert.equal(restarted.status().post_setup_notice_pending, true, 'the first owner sign-in notice survives app restart')
+    assert.deepEqual(restarted.consumePostSetupNotice(), { consumed: true })
+    assert.equal(restarted.status().post_setup_notice_pending, false)
+    assert.deepEqual(restarted.consumePostSetupNotice(), { consumed: false })
+    restarted.close()
   } finally {
     runtime.close()
     await new Promise((resolve) => service.close(resolve))
@@ -396,14 +404,14 @@ test('preload IPC exposes only the fixed local adapter operations', async () => 
     assert.deepEqual([...handlers.keys()], [
       'barLocal:getStatus', 'barLocal:adminRecoveryStatus', 'barLocal:adminCopyRecoverySet', 'barLocal:adminChooseRecoveryDestination', 'barLocal:adminRecoveryJob', 'barLocal:adminCreateRecoveryBase', 'barLocal:adminVerifyRecoveryPoint', 'barLocal:adminExportRecoveryKeys', 'barLocal:trainingLaunch', 'barLocal:trainingBegin', 'barLocal:trainingReset',
       'barLocal:serverSetupPreflight', 'barLocal:serverSetupStatus', 'barLocal:serverSetupBegin', 'barLocal:serverSetupUpdateOwnerEmail', 'barLocal:serverSetupResume', 'barLocal:serverSetupCancel',
-      'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
+      'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:consumePostSetupNotice', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
       'barLocal:startPairing',
       'barLocal:query', 'barLocal:requestApprovalForCommand', 'barLocal:command', 'barLocal:retryOperation',
       'barLocal:getOpenIntents', 'barLocal:getOperation',
       'barLocal:adminStatus', 'barLocal:adminBackups', 'barLocal:adminRunBackup', 'barLocal:adminVerifyBackup',
       'barLocal:adminRestoreDrill',
       'barLocal:adminReplicationStatus', 'barLocal:adminSetDurability', 'barLocal:adminSwitchover', 'barLocal:adminUpdateStatus', 'barLocal:adminImportUpdatePackage', 'barLocal:adminStageUpdate', 'barLocal:adminApplyUpdate',
-      'barLocal:adminCloudSyncStatus', 'barLocal:adminCloudSyncConfig', 'barLocal:adminCloudSyncRun',
+      'barLocal:adminCloudSyncStatus', 'barLocal:adminCloudSyncConfig', 'barLocal:adminCloudSyncClaimOwnerLink', 'barLocal:adminCloudSyncRun',
       'barLocal:refreshReadiness', 'barLocal:getCatalogueSnapshot'
     ])
     assert.equal((await handlers.get('barLocal:getStatus')()).authority_mode, 'cloud')
@@ -650,6 +658,8 @@ test('commissioning requests a fresh process and fences local and cloud IPC if r
   try {
     ipcMain.handle('pos:createOrder', () => { throw new Error('cloud handler reached') })
     await handlers.get('barLocal:setupOwner')({}, { base_url: `http://127.0.0.1:${service.address().port}`, setup_secret: 'a-local-setup-secret-that-is-long', business_name: 'Test Bar', outlet_name: 'Main', owner_name: 'Owner', owner_email: 'owner@example.test', owner_password: 'a test owner password 123', pin: '482915', device_name: 'Till 1', device_platform: 'modern' })
+    assert.equal(relaunches, 0, 'the renderer gets time to show the saved setup confirmation')
+    await new Promise((resolve) => setTimeout(resolve, 950))
     assert.equal(relaunches, 1)
     assert.equal((await handlers.get('barLocal:getStatus')()).restart_required, true)
     await assert.rejects(handlers.get('barLocal:login')({}, {}), { code: 'LOCAL_RESTART_REQUIRED' })

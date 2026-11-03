@@ -1,0 +1,6 @@
+{
+ "extends":"./tsconfig.typecheck-pilot.json",
+ "compilerOptions":{"types":["node"],"module":"NodeNext","moduleResolution":"NodeNext","allowImportingTsExtensions":true},
+ "files":["src/main/bar-local/sqliteFrameStore.ts"],
+ "include":[]
+}

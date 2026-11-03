@@ -66,7 +66,7 @@ function accountsFor(rows, types) {
  *   onApprovedCommand: (command: string, payload: Record<string, unknown>, pin: string) => Promise<unknown>|unknown
  * }} props
  */
-export default function BarLocalOperationsPanel({ session, capabilities, shift, staffRows, customers, version, blocked, localReady, onCommand, onApprovedCommand }) {
+export default function BarLocalOperationsPanel({ session, capabilities, shift, staffRows, customers, version, blocked, localReady, onCommand, onApprovedCommand, initialTab = '' }) {
   const canInventoryView = capabilities.includes('inventory.view')
   const canInventoryManage = capabilities.includes('inventory.manage')
   const canCustomers = capabilities.includes('customers.manage')
@@ -87,6 +87,9 @@ export default function BarLocalOperationsPanel({ session, capabilities, shift, 
     ...(canPosManage ? [{ id: 'control', label: 'Control' }] : [])
   ]
   const [activeTab, setActiveTab] = useState(tabs[0]?.id ?? 'stock')
+  useEffect(() => {
+    if (initialTab && tabs.some((tab) => tab.id === initialTab)) setActiveTab(initialTab)
+  }, [initialTab, capabilityKey])
   const [refreshKey, setRefreshKey] = useState(0)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')

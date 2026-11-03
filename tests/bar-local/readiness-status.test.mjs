@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { fileURLToPath } from 'node:url'
+import { barLocalReadinessMessage } from '../../src/shared/barLocalOperatorMessages.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const workspace = readFileSync(join(root, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx'), 'utf8')
@@ -26,8 +27,11 @@ test('only a current positive local readiness response enables readiness-gated o
   assert.match(workspace, /const localReady = readinessState === 'ready'/)
   assert.match(workspace, /disabled=\{readinessChecking\}/)
   assert.match(workspace, /'Checking…' : 'Check connection'/)
-  assert.match(workspace, /barLocalReadinessMessage\(readinessState\)/)
+  assert.match(workspace, /barLocalReadinessMessage\(readinessState, readiness\?\.blockers \|\| \[\]\)/)
   assert.match(workspace, /canManageSettings && readinessState === 'blocked'/)
+  assert.match(workspace, /catalogueVerified && catalogueEmpty === true/)
+  assert.match(workspace, /!menuDraft\.productId && !catalogueVerified/)
+  assert.match(barLocalReadinessMessage('blocked', ['empty_catalogue']), /Add your first product and opening stock/)
 })
 
  test('returns and voids refuse stale readiness before requesting approval', () => {

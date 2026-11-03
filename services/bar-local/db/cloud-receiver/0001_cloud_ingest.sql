@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS cloud_ingest.events (
   authority_epoch bigint NOT NULL,
   business_id uuid NOT NULL,
   outlet_id uuid NOT NULL,
+  business_date date NOT NULL,
   payload jsonb NOT NULL,
   payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
   received_at timestamptz NOT NULL DEFAULT now(),
@@ -148,6 +149,9 @@ BEGIN
     IF (v_event->>'commit_sequence')::bigint < (p_batch->>'from_sequence')::bigint
        OR (v_event->>'commit_sequence')::bigint > (p_batch->>'to_sequence')::bigint THEN
       RAISE EXCEPTION 'An event is outside the declared sequence range.' USING ERRCODE = 'BL001', DETAIL = 'BATCH_EVENT_OUT_OF_RANGE';
+    END IF;
+    IF COALESCE(v_event->>'business_date', '') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+      RAISE EXCEPTION 'An event has no valid business date.' USING ERRCODE = 'BL001', DETAIL = 'BATCH_EVENT_BUSINESS_DATE_INVALID';
     END IF;
     IF cloud_ingest.sha256_hex(cloud_ingest.canonical_jsonb_text(v_event->'payload')) <> v_event->>'payload_hash' THEN
       RAISE EXCEPTION 'An event payload hash does not match its payload.' USING ERRCODE = 'BL001', DETAIL = 'BATCH_EVENT_HASH_MISMATCH';
@@ -275,13 +279,13 @@ BEGIN
     END IF;
     INSERT INTO cloud_ingest.events
       (authority_id, event_id, batch_id, commit_sequence, event_index, event_type,
-       operation_id, authority_epoch, business_id, outlet_id, payload, payload_hash)
+       operation_id, authority_epoch, business_id, outlet_id, business_date, payload, payload_hash)
     VALUES
       (v_receipt.authority_id, (v_event->>'event_id')::uuid, v_receipt.batch_id,
        (v_event->>'commit_sequence')::bigint, (v_event->>'event_index')::integer,
        v_event->>'event_type', (v_event->>'operation_id')::uuid,
        (v_event->>'authority_epoch')::bigint, v_receipt.business_id, v_receipt.outlet_id,
-       v_event->'payload', v_event->>'payload_hash');
+       (v_event->>'business_date')::date, v_event->'payload', v_event->>'payload_hash');
     v_inserted := v_inserted + 1;
   END LOOP;
 

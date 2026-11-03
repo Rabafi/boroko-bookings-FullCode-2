@@ -1,4 +1,4 @@
-import type { DesktopApi, AuthLoginResult, InventoryItemsReadStatus, ProductInfo } from '../../../src/renderer/src/types/desktop-api';
+import type { DesktopApi, AuthLoginResult, InventoryItemsReadStatus, ProductInfo, SyncClearFailedResult, SyncRetryResult } from '../../../src/renderer/src/types/desktop-api';
 
 declare const api: DesktopApi;
 
@@ -8,14 +8,17 @@ const payment: Promise<unknown> = api.bookings.updatePayment('booking-1', 10, 'c
 const refund: Promise<unknown> = api.bookings.refund('booking-1', { approver_pin: '1234' });
 const stockRead: Promise<InventoryItemsReadStatus> = api.inventory.getItemsWithReadStatus();
 const adjustment = api.inventory.adjustStock('item-1', -1, 'count correction', '1234', 'adjust-op-1');
-const retry = api.sync.retryFailed(['queue-1']);
-const clear = api.sync.clearFailed();
+const retry: Promise<SyncRetryResult> = api.sync.retryFailed(['queue-1']);
+const clear: Promise<SyncClearFailedResult> = api.sync.clearFailed();
 const notificationRows: Promise<unknown> = api.admin.getNotifications({ unread_only: true });
 const unreadCount: Promise<unknown> = api.admin.getUnreadCount();
 const notificationRead: Promise<{ count: unknown }> = api.admin.markNotificationsRead(null);
 const notificationCleanup: Promise<{ ok: true; count: unknown } | { ok: false; count: 0; error: unknown }> = api.admin.cleanupNotifications(90);
 const version: Promise<string> = api.app.getVersion();
 const product: Promise<ProductInfo> = api.app.getProduct();
+const settingsSave = api.settings.save({});
+const settingsSaveResult: Promise<Awaited<ReturnType<typeof api.settings.save>>> = settingsSave;
+void settingsSaveResult;
 const updateVersion: Promise<string> = api.updates.getVersion();
 const updateCheck = api.updates.check();
 const updateDownload = api.updates.download();

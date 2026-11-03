@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.typecheck-renderer-ipc.json",
+  "compilerOptions": {
+    "checkJs": true
+  },
+  "files": [
+    "src/renderer/src/components/hospitality-pos/BarLocalFinanceWorkspace.jsx",
+    "src/renderer/src/components/hospitality-pos/BarLocalStaffStatus.jsx",
+    "src/renderer/src/components/hospitality-pos/BarLocalLoyaltyAdjustment.jsx",
+    "src/renderer/src/components/hospitality-pos/BarLocalTipActions.jsx",
+    "src/shared/barLocalInvoiceMath.js",
+    "src/shared/barLocalPagination.js",
+    "src/renderer/src/components/hospitality-pos/BarLocalDrawerHandover.jsx"
+  ],
+  "include": []
+}

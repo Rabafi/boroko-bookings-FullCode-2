@@ -16,6 +16,7 @@
     "replication:status": "node scripts/bar-replication.mjs status",
     "wal-archive": "node scripts/wal-archive.mjs",
     "witness": "node dist/witnessServer.js",
+    "owner-receiver": "node dist/ownerReceiverServer.js",
     "start": "node dist/server.js",
     "test": "npm run build && node scripts/run-suite.mjs"
   },

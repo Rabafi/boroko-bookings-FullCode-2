@@ -291,6 +291,67 @@ html.light-mode .shadow-2xl {
   margin-inline: auto;
 }
 
+/* Keep the same authenticated PWA useful in ordinary desktop browsers. */
+@media (min-width: 1024px) {
+  .pwa-bottom-nav {
+    top: 5.75rem;
+    right: auto;
+    bottom: 1rem;
+    left: 1rem;
+    display: flex !important;
+    width: 13.5rem;
+    max-width: none !important;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    overflow-y: auto;
+    border: 1px solid var(--pwa-line);
+    border-radius: 1.25rem;
+    padding: 0.75rem !important;
+  }
+
+  .pwa-bottom-nav a {
+    min-height: 2.75rem;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 0.8rem;
+    padding: 0.65rem 0.8rem;
+    text-align: left;
+  }
+
+  .pwa-bottom-nav a > span {
+    font-size: 0.8rem;
+  }
+
+  .pwa-page-shell {
+    width: auto;
+    max-width: 1600px;
+    margin: 1.25rem 2rem 1rem 16rem;
+  }
+
+  .pwa-page-shell > * {
+    max-width: none;
+    padding-inline: 1rem;
+    padding-bottom: 1rem !important;
+  }
+
+  .pwa-page-shell .grid.grid-cols-2 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media print {
+  .pwa-bottom-nav {
+    display: none !important;
+  }
+  .pwa-page-shell {
+    width: auto;
+    max-width: none;
+    margin: 0;
+  }
+}
+
 .pwa-card {
   border: 1px solid var(--pwa-line);
   border-radius: var(--pwa-radius);
@@ -445,4 +506,21 @@ html.light-mode .pwa-action-row {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+}
+@keyframes bar-projection-draw {
+  from { stroke-dashoffset: 1600; opacity: 0.45; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+
+.bar-projection-chart-gross,
+.bar-projection-chart-net {
+  stroke-dasharray: 1600;
+  animation: bar-projection-draw 900ms ease-out both;
+}
+
+.bar-projection-chart-net { animation-delay: 90ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-projection-chart-gross,
+  .bar-projection-chart-net { animation: none; }
 }

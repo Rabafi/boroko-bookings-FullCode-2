@@ -92,7 +92,7 @@ function assertNoDuplicateKeys(text: string): void {
   }
 }
 
-export async function readJson(req: IncomingMessage, options: { limitBytes: number }): Promise<JsonObject> {
+export async function readJsonWithText(req: IncomingMessage, options: { limitBytes: number }): Promise<{ value: JsonObject; rawText: string }> {
   const type = String(req.headers['content-type'] || '')
   if (!type.toLowerCase().startsWith('application/json')) {
     throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'Content-Type must be application/json.', { httpStatus: 415 })
@@ -125,7 +125,11 @@ export async function readJson(req: IncomingMessage, options: { limitBytes: numb
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'The request body must be a JSON object.')
   }
-  return parsed as JsonObject
+  return { value: parsed as JsonObject, rawText: text }
+}
+
+export async function readJson(req: IncomingMessage, options: { limitBytes: number }): Promise<JsonObject> {
+  return (await readJsonWithText(req, options)).value
 }
 
 export function bearerToken(req: IncomingMessage): string | null {

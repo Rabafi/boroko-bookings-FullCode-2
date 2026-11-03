@@ -1,5 +1,6 @@
-import { createHmac } from 'node:crypto'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Pool, PoolClient } from 'pg'
+import { canonicalJson } from '@tsa-bonno/bar-contracts'
 import type { ServiceConfig } from '../config.js'
 import { callFunction } from '../db.js'
 import type { JsonRecord } from '../db.js'
@@ -277,6 +278,20 @@ export function buildSignedBundleText(manifestText: string, fields: Record<strin
   return inner === '' ? `{${prefix}}` : `{${prefix},${inner}}`
 }
 
+function withManifestScope(batch: CloudSyncBatch): CloudSyncBatch {
+  let manifest = batch.manifest
+  if (typeof manifest === 'string') {
+    try { manifest = JSON.parse(manifest) } catch { manifest = null }
+  }
+  const source = isRecord(manifest) ? manifest : {}
+  return {
+    ...batch,
+    authority_id: stringValue(batch.authority_id) ?? stringValue(source.authority_id),
+    business_id: stringValue(batch.business_id) ?? stringValue(source.business_id) ?? '',
+    outlet_id: stringValue(batch.outlet_id) ?? stringValue(source.outlet_id)
+  }
+}
+
 export function signManifestHash(secret: string, keyId: string, batchId: string, manifestHash: string): string {
   return createHmac('sha256', secret).update(`${keyId}.${batchId}.${manifestHash}`, 'utf8').digest('hex')
 }
@@ -425,6 +440,47 @@ export function createCloudSyncController(options: CloudSyncControllerOptions): 
         return { ok: false, code: 'CLOUD_SYNC_BATCH_INVALID', message: 'The prepared batch has no canonical manifest text.' }
       }
 
+      const linkNonce = randomUUID()
+      const linkRequest = { key_id: keyId, nonce: linkNonce }
+      const linkSignature = createHmac('sha256', secret).update(canonicalJson(linkRequest), 'utf8').digest('hex')
+      const linkUrl = new URL('/v1/links/status', receiverUrl)
+      const linkAbort = new AbortController()
+      const linkTimer = setTimeout(() => linkAbort.abort(), config.cloudSync.requestTimeoutMs)
+      let linkResponse: Response
+      let linkText: string
+      try {
+        linkResponse = await fetch(linkUrl, {
+          method: 'POST', redirect: 'error',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...linkRequest, signature: linkSignature }),
+          signal: linkAbort.signal
+        })
+        linkText = await readBoundedResponse(linkResponse, linkAbort.signal)
+      } catch {
+        return { ok: false, code: 'CLOUD_SYNC_OWNER_LINK_UNAVAILABLE', message: 'The owner approval status could not be verified. No local Bar data was sent; retry when the receiver is reachable.' }
+      } finally {
+        clearTimeout(linkTimer)
+      }
+      let linkBody: unknown
+      try { linkBody = linkText ? JSON.parse(linkText) : null } catch { linkBody = null }
+      if (!linkResponse.ok || !isRecord(linkBody)) {
+        return { ok: false, code: 'CLOUD_SYNC_OWNER_LINK_UNAVAILABLE', message: 'The receiver could not verify this Bar connection. No local Bar data was sent.' }
+      }
+      const { signature: proofSignature, ...proof } = linkBody
+      const expectedProofSignature = createHmac('sha256', secret).update(canonicalJson(proof), 'utf8').digest('hex')
+      const validProofSignature = typeof proofSignature === 'string'
+        && /^[0-9a-f]{64}$/.test(proofSignature)
+        && timingSafeEqual(Buffer.from(proofSignature, 'hex'), Buffer.from(expectedProofSignature, 'hex'))
+      if (!validProofSignature || proof.key_id !== keyId || proof.nonce !== linkNonce) {
+        return { ok: false, code: 'CLOUD_SYNC_OWNER_LINK_INVALID', message: 'The receiver approval could not be matched to this local Bar. No local Bar data was sent.' }
+      }
+      if (proof.authority_id !== batch.authority_id) return { ok: false, code: 'CLOUD_SYNC_OWNER_AUTHORITY_MISMATCH', message: 'The receiver owner link does not match this local Bar authority. No local Bar data was sent.' }
+      if (proof.business_id !== batch.business_id) return { ok: false, code: 'CLOUD_SYNC_OWNER_BUSINESS_MISMATCH', message: 'The receiver owner link does not match this local Bar business. No local Bar data was sent.' }
+      if (proof.outlet_id !== batch.outlet_id) return { ok: false, code: 'CLOUD_SYNC_OWNER_OUTLET_MISMATCH', message: 'The receiver owner link does not match this local Bar outlet. No local Bar data was sent.' }
+      if (proof.active !== true || proof.revoked !== false) {
+        return { ok: false, code: proof.revoked === true ? 'CLOUD_SYNC_OWNER_LINK_REVOKED' : 'CLOUD_SYNC_OWNER_APPROVAL_REQUIRED', message: 'The Bar owner has not approved this connection. No local Bar data was sent.' }
+      }
+
       const signature = signManifestHash(secret, keyId, batchId, manifestHash)
       await callFunction(pool, 'bar_local.cloud_sync_mark_signed', [
         { value: batchId, cast: 'uuid' },
@@ -566,6 +622,11 @@ export function createCloudSyncController(options: CloudSyncControllerOptions): 
         batch = taken
       }
       if (!batch) break
+      batch = withManifestScope(batch)
+      if (!batch.authority_id || !batch.business_id || !batch.outlet_id) {
+        const failure = { ok: false as const, code: 'CLOUD_SYNC_BATCH_SCOPE_MISSING', message: 'The committed batch is missing its Bar scope. No data was sent; preserve the outbox and contact support.' }
+        return { uploaded, pending: null, failure, pendingState }
+      }
       const outcome = await uploadBatch(batch, worker, secret, keyId, receiverUrl)
       if (!outcome.ok) {
         return { uploaded, pending: null, failure: outcome, pendingState }

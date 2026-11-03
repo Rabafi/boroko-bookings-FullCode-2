@@ -57,7 +57,7 @@ export async function checkMasterAdmin(email, password) {
     data = result.data;
     error = result.error;
   } catch (e) {
-    console.warn('[MASTER] Admin lookup timed out:', e.message);
+    console.warn('[MASTER] Admin lookup timed out:', (/** @type {{message?: unknown}} */ (e)).message);
     return null;
   }
   if (error) console.error('[MASTER] DB error during admin lookup:', error.message);
@@ -65,7 +65,8 @@ export async function checkMasterAdmin(email, password) {
   if (admin) {
     const limit = masterAdminLoginLimiter.get(admin.email)
     if (limit.blocked) {
-      const locked = new Error(`Master administrator sign-in is temporarily locked. Try again in ${Math.max(1, Math.ceil(limit.retryAfterMs / 60000))} minute(s).`)
+      // This is the Error constructed here; the extra code property is its existing lock result marker.
+      const locked = /** @type {Error & {code?: string}} */ (new Error(`Master administrator sign-in is temporarily locked. Try again in ${Math.max(1, Math.ceil(limit.retryAfterMs / 60000))} minute(s).`))
       locked.code = 'MASTER_ADMIN_LOCKED'
       throw locked
     }
@@ -93,6 +94,7 @@ export async function masterAdminExists() {
   return (count || 0) > 0;
 }
 
+/** @param {string} name @param {string} email @param {string} password */
 export async function createMasterAdmin(name, email, password) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { count } = await requireAdmin().from('master_admins').select('id', { count: 'exact', head: true });
@@ -113,6 +115,18 @@ const COMPANY_SETTINGS_SELECT = 'lodge_id, lodge_name, company_name, business_ty
 const COMPANY_SETTINGS_LEGACY_SELECT = 'lodge_id, lodge_name, company_name, business_type, updated_at, trial_started_at';
 const COMPANY_SETTINGS_MINIMAL_SELECT = 'lodge_id, lodge_name, company_name';
 
+/**
+ * Supabase projection used by the Command Central company loader. The legacy
+ * and minimal queries omit fields; this view documents expected data and does
+ * not validate the returned RPC/database row.
+ * @typedef {{lodge_id?: string | null, lodge_name?: string | null, company_name?: string | null, business_type?: string | null, property_type?: string | null, operating_profile?: unknown, city?: string | null, country?: string | null, email?: string | null, phone?: string | null, updated_at?: string | null, setup_complete?: unknown, trial_started_at?: string | null, deleted?: unknown}} CompanySettingsRowExpectedData
+ */
+/**
+ * Shape produced by the existing company settings normalization/fallbacks.
+ * @typedef {{lodge_id: string | null, lodge_name: string, company_name: string, business_type: string, property_type: string, operating_profile: object, city: string, country: string, email: string, phone: string, updated_at: string | null, setup_complete: boolean, trial_started_at: string | null, deleted: boolean}} NormalizedCompanySettingsExpectedData
+ */
+
+/** @param {{message?: unknown, details?: unknown}|null|undefined} error */
 function isSettingsColumnError(error) {
   const message = String(error?.message || error?.details || '').toLowerCase();
   return (message.includes('column') || message.includes('schema cache')) && message.includes('settings') && (
@@ -132,6 +146,7 @@ function isSettingsColumnError(error) {
   );
 }
 
+/** @param {CompanySettingsRowExpectedData} [row] @returns {NormalizedCompanySettingsExpectedData} */
 function normalizeCompanySettingsRow(row = {}) {
   return {
     lodge_id: normalizeLodgeId(row.lodge_id),
@@ -153,6 +168,7 @@ function normalizeCompanySettingsRow(row = {}) {
   };
 }
 
+/** @param {NormalizedCompanySettingsExpectedData[]} [companies] */
 function sortCompaniesByUpdatedAt(companies = []) {
   return [...companies].sort((a, b) => {
     const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
@@ -161,6 +177,7 @@ function sortCompaniesByUpdatedAt(companies = []) {
   });
 }
 
+/** @param {ReturnType<typeof requireAdmin>} db @param {string} selectClause @param {boolean} [orderByUpdatedAt] */
 async function queryCompanySettings(db, selectClause, orderByUpdatedAt = true) {
   let query = db.from('settings').select(selectClause).limit(1000);
   if (orderByUpdatedAt) {
@@ -169,6 +186,7 @@ async function queryCompanySettings(db, selectClause, orderByUpdatedAt = true) {
   return query;
 }
 
+/** @param {ReturnType<typeof requireAdmin>} db */
 async function loadCompanySettingsRows(db) {
   const attempts = [
     () => queryCompanySettings(db, COMPANY_SETTINGS_SELECT),
@@ -192,15 +210,17 @@ export async function getAllCompanies() {
   const data = await loadCompanySettingsRows(db);
   return sortCompaniesByUpdatedAt((data || [])
     .map(normalizeCompanySettingsRow)
-    .filter((company) => company.lodge_id));
+    .filter((/** @type {NormalizedCompanySettingsExpectedData} */ company) => company.lodge_id));
 }
 
+/** @param {string} lodgeId @param {Record<string, unknown>} updates */
 async function updateCompanyRow(lodgeId, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('settings').update(updates).eq('lodge_id', lodgeId);
   if (error) throw error;
 }
 
+/** @param {unknown} lodgeId @param {Record<string, unknown>} [updates] */
 export async function updateCompany(lodgeId, updates = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (String(updates?.reason || '').trim().length < 8) {
@@ -219,6 +239,7 @@ export async function updateCompany(lodgeId, updates = {}) {
   return data;
 }
 
+/** @param {string} targetLodgeId */
 export async function archiveCompany(targetLodgeId) {
   if (!targetLodgeId) throw new Error('Company lodge_id is required');
   await updateCompanyRow(targetLodgeId, { deleted: true, updated_at: new Date().toISOString() });
@@ -229,6 +250,7 @@ export async function archiveCompany(targetLodgeId) {
   return { success: true };
 }
 
+/** @param {string} targetLodgeId */
 export async function restoreCompany(targetLodgeId) {
   if (!targetLodgeId) throw new Error('Company lodge_id is required');
   await updateCompanyRow(targetLodgeId, { deleted: false, updated_at: new Date().toISOString() });
@@ -239,6 +261,7 @@ export async function restoreCompany(targetLodgeId) {
   return { success: true, audit };
 }
 
+/** @param {Record<string, unknown>} [payload] */
 export async function recordCommandCentralHealthRun(payload = {}) {
   const { data, error } = await requireAdmin().rpc('admin_record_command_central_health_run', {
     p_actor_id: payload.actor_id,
@@ -259,6 +282,7 @@ export async function listCommandCentralHealthRuns(limit = 20) {
   return Array.isArray(data) ? data : []
 }
 
+/** @param {Record<string, unknown>} [payload] Expected IPC payload; the existing RPC remains authoritative. */
 export async function applyCompanyLifecycle(payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (!payload || typeof payload !== 'object' || !String(payload.operation_id || '').trim()) {
@@ -314,6 +338,7 @@ const COMPANY_PURGE_TABLES = [
 'broadcasts',
 'activity_logs'];
 
+/** @param {{code?: unknown, message?: unknown}|null|undefined} error */
 function shouldIgnorePurgeDeleteError(error) {
   const code = String(error?.code || '');
   const message = String(error?.message || '');
@@ -323,6 +348,7 @@ function shouldIgnorePurgeDeleteError(error) {
   /column .* does not exist/i.test(message);
 }
 
+/** @param {ReturnType<typeof requireAdmin>} adminClient @param {string} tableName @param {string} targetLodgeId */
 async function deleteLodgeScopedRows(adminClient, tableName, targetLodgeId) {
   const { count, error } = await adminClient.
   from(tableName).
@@ -336,6 +362,7 @@ async function deleteLodgeScopedRows(adminClient, tableName, targetLodgeId) {
   return { table: tableName, deleted: count || 0, skipped: false };
 }
 
+/** @param {string} targetLodgeId */
 export async function permanentlyDeleteCompany(targetLodgeId) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   if (!normalizedId) throw new Error('Company lodge_id is required');
@@ -373,6 +400,7 @@ export async function permanentlyDeleteCompany(targetLodgeId) {
   };
 }
 
+/** @param {string|null} [targetLodgeId] */
 export async function repairDuplicateEventBookings(targetLodgeId = null) {
   await checkOnline();
   if (!state.isOnline) throw new Error('Requires internet connection');
@@ -387,6 +415,7 @@ export async function repairDuplicateEventBookings(targetLodgeId = null) {
   };
 }
 
+/** @param {string} lodgeId */
 export async function getCompanyUsers(lodgeId) {
   if (!state.isOnline) return [];
   const { data } = await requireAdmin().
@@ -397,6 +426,7 @@ export async function getCompanyUsers(lodgeId) {
   return data || [];
 }
 
+/** @param {string} targetLodgeId @param {string} userId @param {string} password */
 export async function resetCompanyUserPassword(targetLodgeId, userId, password) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (!password || password.length < 6) throw new Error('Password must be at least 6 characters.');
@@ -426,6 +456,7 @@ export async function resetCompanyUserPassword(targetLodgeId, userId, password) 
   return { success: true, audit };
 }
 
+/** @param {string} targetLodgeId @param {string} userId @param {string} pin */
 export async function resetCompanyUserPin(targetLodgeId, userId, pin) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const digits = String(pin || '').trim();
@@ -459,6 +490,7 @@ export async function resetCompanyUserPin(targetLodgeId, userId, pin) {
   return { success: true, audit };
 }
 
+/** @param {string} targetLodgeId @param {string} userId @param {Record<string, unknown>} [payload] */
 export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
 
@@ -495,6 +527,7 @@ export async function updateCompanyUserPwaAccess(targetLodgeId, userId, payload 
 
 // ─── ADMIN: ACTIVITY LOGS ──────────────────────────────────────────────────────
 
+/** @param {string|null} targetLodgeId @param {string|null} targetLodgeName @param {string} action @param {Record<string, unknown>} [details] */
 export async function logAdminActivity(targetLodgeId, targetLodgeName, action, details = {}) {
   if (!state.isOnline || !state.adminDb) return { recorded: false, reason: 'audit_service_unavailable' };
   const actor = state.currentUser || {};
@@ -513,6 +546,7 @@ export async function logAdminActivity(targetLodgeId, targetLodgeName, action, d
   return { recorded: true };
 }
 
+/** @param {{lodge_id?: unknown, actor_id?: unknown, action?: unknown, start?: unknown, end?: unknown, limit?: unknown, offset?: unknown}} [filters] Expected IPC filter fields are forwarded to the existing RPC without validation. */
 export async function getActivityLogs(filters = {}) {
   if (!state.isOnline) throw new Error('Command Central audit history requires an online connection');
   const db = requireAdmin();
@@ -529,6 +563,7 @@ export async function getActivityLogs(filters = {}) {
   return data || [];
 }
 
+/** @param {{start?: unknown, end?: unknown}} [filters] Expected IPC filter fields are forwarded to the existing RPC without validation. */
 export async function getAuditSummary(filters = {}) {
   if (!state.isOnline) throw new Error('Command Central audit summary requires an online connection');
   const db = requireAdmin();
@@ -542,6 +577,7 @@ export async function getAuditSummary(filters = {}) {
 
 // ─── ADMIN: COMPANY STATS ──────────────────────────────────────────────────────
 
+/** @param {string} targetLodgeId */
 export async function getCompanyStats(targetLodgeId) {
   if (!state.isOnline) throw new Error('Company statistics require an online connection');
   const db = requireAdmin();
@@ -583,16 +619,21 @@ export async function getCompanyStats(targetLodgeId) {
   db.from('expenses').select('amount').eq('lodge_id', targetLodgeId).gte('date', thirtyDaysAgo),
   db.from('maintenance_tickets').select('id', { count: 'exact', head: true }).eq('lodge_id', targetLodgeId).eq('status', 'open')]
   );
-  const queryFailures = [
+  // The array literal below is a list of [query label, awaited Supabase result] pairs.
+  const queryFailures = /** @type {Array<[string, {error?: {message: string}|null}]>} */ ([
     ['rooms', rooms], ['users', users], ['bookings', bookings],
     ['monthly confirmed bookings', monthlyConfirmedBookings],
     ['monthly created bookings', monthlyCreatedBookings],
     ['latest booking activity', latestCreatedBooking],
     ['latest stay activity', latestCheckInBooking],
     ['expenses', expenses], ['maintenance', maintenance]
-  ].filter(([, result]) => result?.error);
+  ].filter(([, result]) => result?.error));
   if (queryFailures.length > 0) {
-    throw new Error(`Company statistics are unavailable: ${queryFailures.map(([label, result]) => `${label}: ${result.error.message}`).join('; ')}`);
+    throw new Error(`Company statistics are unavailable: ${queryFailures.map(([label, result]) => {
+      // The preceding filter selects results with a truthy error; this view does not alter that existing path.
+      const queryError = /** @type {{message: string}} */ (result.error);
+      return `${label}: ${queryError.message}`;
+    }).join('; ')}`);
   }
   const expenseTotal = (expenses.data || []).reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const latestBookingCreatedAt = latestCreatedBooking?.data?.[0]?.created_at || null;
@@ -624,7 +665,8 @@ export async function getCompanyStats(targetLodgeId) {
     },
     warning: buildUsageWarning(usageSummary),
     recommendation: usageSummary.recommendation,
-    next_recommended_plan: usageSummary.recommendation?.recommendedPlan || getNextSubscriptionPlan(plan),
+    // buildUsageSummary delegates recommendation construction to getPlanRecommendation.
+    next_recommended_plan: (/** @type {{recommendedPlan?: string}|null} */ (usageSummary.recommendation))?.recommendedPlan || getNextSubscriptionPlan(plan),
     monthly_reset_copy: MONTHLY_USAGE_RESET_COPY,
     expenses_30d: expenseTotal,
     open_maintenance: maintenance.count || 0,
@@ -642,8 +684,8 @@ export async function getCompanyStats(targetLodgeId) {
  * @typedef {{status: unknown, payment_status: unknown, subscription_state?: unknown, access_allowed?: unknown, allowed?: unknown, lodge_id?: unknown, source_license_id?: unknown, license_id?: unknown, id?: unknown, lodge_name?: unknown, plan?: unknown, subscription_plan?: unknown, license_key?: unknown, source_license_key?: unknown, monthly_fee?: unknown, currency?: unknown, issued_at?: unknown, expires_at?: unknown, next_due_date?: unknown, last_payment_date?: unknown, notes?: unknown, created_at?: unknown, updated_at?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown}} AdminEntitlementExpectedData
  * @typedef {{entitlement?: unknown}} AdminEntitlementEnvelopeExpectedData
  * @typedef {{lodge_id: string|null, lodge_name: string, company_name: string, business_type: string, property_type: string}} AdminCompanyLicenseExpectedData
- * @typedef {{lodge_id?: unknown, lodge_name?: unknown, business_type?: unknown, expires_at?: unknown, notes?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, next_due_date?: unknown, last_payment_date?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown}} AdminCreateLicenseExpectedData
- * @typedef {{operation_id: unknown, lodge_id: unknown, product_id: unknown, activation_reason: unknown, actor_id: unknown, actor_email: unknown, activated_by: unknown, license_id?: unknown, lodge_name?: unknown, business_type?: unknown, commercial_package_key?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, selected_addon_keys?: unknown, expires_at?: unknown, next_due_date?: unknown, notes?: unknown}} AdminCommercialSubscriptionAssignmentExpectedData
+ * @typedef {{lodge_id?: unknown, lodge_name?: unknown, business_type?: unknown, expires_at?: unknown, notes?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, next_due_date?: unknown, last_payment_date?: unknown, product_id?: unknown, commercial_package_key?: unknown, commercial_catalog_version?: unknown, commercial_pricing_snapshot?: unknown, grace_period_days?: unknown, offline_lease_days?: unknown}} AdminCreateLicenseExpectedData
+ * @typedef {{operation_id?: unknown, lodge_id?: unknown, product_id?: unknown, activation_reason?: unknown, actor_id?: unknown, actor_email?: unknown, activated_by?: unknown, license_id?: unknown, lodge_name?: unknown, business_type?: unknown, commercial_package_key?: unknown, subscription_plan?: unknown, payment_status?: unknown, monthly_fee?: unknown, currency?: unknown, selected_addon_keys?: unknown, expires_at?: unknown, next_due_date?: unknown, notes?: unknown}} AdminCommercialSubscriptionAssignmentExpectedData
  * @typedef {{license?: AdminCreateLicenseExpectedData, invoice?: unknown}} AdminSubscriptionContractExpectedData
  */
 
@@ -889,7 +931,7 @@ async function persistCommercialIdentity(db, licenseId, source = {}) {
   if (error) throw new Error(error.message);
 }
 
-/** @param {AdminCommercialSubscriptionAssignmentExpectedData} [payload] */
+/** @param {AdminCommercialSubscriptionAssignmentExpectedData} [payload] Expected IPC/RPC data; only operation_id is checked locally. */
 export async function assignCommercialSubscription(payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection')
   if (!String(payload.operation_id || '').trim()) throw new Error('A stable operation ID is required for subscription assignment')
@@ -941,8 +983,9 @@ export async function issueSubscriptionContract({ license = {}, invoice = null }
     await persistCommercialIdentity(requireAdmin(), data?.license_id || data?.license?.id, license);
     return data;
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-    console.warn('[License] issue_subscription_contract RPC not available, falling back to direct insert:', error.message);
+    // Keep the existing .message read; this view does not validate the thrown value.
+    if (!isMissingEntitlementRpcError(error)) throw new Error((/** @type {{message?: string}} */ (error)).message);
+    console.warn('[License] issue_subscription_contract RPC not available, falling back to direct insert:', (/** @type {{message?: unknown}} */ (error)).message);
   }
 
   const createdLicense = await createLicense({
@@ -964,6 +1007,7 @@ export async function issueSubscriptionContract({ license = {}, invoice = null }
   };
 }
 
+/** @param {string} id @param {Record<string, unknown>} updates */
 export async function updateLicense(id, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const db = requireAdmin();
@@ -998,8 +1042,8 @@ export async function updateLicense(id, updates) {
       await persistCommercialIdentity(db, id, update);
       return { success: true };
     } catch (error) {
-      if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-      console.warn('[License] update_subscription_contract RPC not available, falling back to direct update:', error.message);
+      if (!isMissingEntitlementRpcError(error)) throw new Error((/** @type {{message?: string}} */ (error)).message);
+      console.warn('[License] update_subscription_contract RPC not available, falling back to direct update:', (/** @type {{message?: unknown}} */ (error)).message);
     }
   }
   const { error } = await db.from('licenses').update(update).eq('id', id);
@@ -1007,6 +1051,7 @@ export async function updateLicense(id, updates) {
   return { success: true };
 }
 
+/** @param {string} id */
 export async function deleteLicense(id) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('licenses').delete().eq('id', id);
@@ -1016,6 +1061,7 @@ export async function deleteLicense(id) {
 
 // ─── ADMIN: BILLING ────────────────────────────────────────────────────────────
 
+/** @param {string} id @param {Record<string, unknown>} data */
 export async function updateLicenseBilling(id, data) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const update = { ...data };
@@ -1031,8 +1077,8 @@ export async function updateLicenseBilling(id, data) {
     if (result?.success === false) throw new Error(result.error || 'Could not update subscription');
     return { success: true };
   } catch (error) {
-    if (!isMissingEntitlementRpcError(error)) throw new Error(error.message);
-    console.warn('[License] update_subscription_contract RPC not available, falling back to direct update:', error.message);
+      if (!isMissingEntitlementRpcError(error)) throw new Error((/** @type {{message?: string}} */ (error)).message);
+      console.warn('[License] update_subscription_contract RPC not available, falling back to direct update:', (/** @type {{message?: unknown}} */ (error)).message);
   }
   const { error } = await requireAdmin().from('licenses').update(update).eq('id', id);
   if (error) throw new Error(error.message);
@@ -1055,7 +1101,9 @@ export async function getOverdueLicenses() {
 
 // ─── ADMIN: SUPPORT TICKETS ────────────────────────────────────────────────────
 
+/** @param {string} [surface] */
 function getSupportAuthor(surface = 'desktop') {
+  /** @type {{isMasterAdmin?: unknown, role?: unknown, name?: unknown, email?: unknown, id?: unknown}} */
   const user = state.currentUser || {};
   const isCommandCentral = user?.isMasterAdmin || String(user?.role || '').toLowerCase() === 'super_admin';
   return {
@@ -1067,6 +1115,7 @@ function getSupportAuthor(surface = 'desktop') {
   };
 }
 
+/** @param {Array<{id?: unknown, ticket_id?: unknown, messages?: unknown}>} [tickets] */
 async function attachSupportMessages(tickets = []) {
   if (!tickets.length) return [];
   try {
@@ -1089,10 +1138,12 @@ async function attachSupportMessages(tickets = []) {
       messages: byTicket.get(ticket.id) || ticket.messages || []
     })));
   } catch (error) {
-    throw new Error(error?.message || 'Support ticket messages are unavailable');
+    throw new Error((/** @type {{message?: string}} */ (error))?.message || 'Support ticket messages are unavailable');
   }
 }
 
+/** @typedef {{status?: unknown, priority?: unknown, lodge_id?: unknown}} SupportTicketFiltersExpectedData */
+/** @param {SupportTicketFiltersExpectedData} [filters] Expected IPC filter data; fields are not runtime-validated here. */
 export async function getSupportTickets(filters = {}) {
   if (!state.isOnline) throw new Error('Support tickets require an online connection');
   let q = requireAdmin().from('support_tickets').select('id, lodge_id, lodge_name, title, description, status, priority, category, created_at, updated_at');
@@ -1104,12 +1155,14 @@ export async function getSupportTickets(filters = {}) {
   return attachSupportMessages(data || []);
 }
 
+/** @param {{lodge_id?: unknown, lodge_name?: unknown, title?: unknown, description?: unknown, category?: unknown, priority?: unknown}} input Expected IPC data; fields are forwarded without runtime validation. */
 export async function createSupportTicket({ lodge_id, lodge_name, title, description, category, priority }) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const targetLodgeId = lodge_id || state.lodgeId;
   const author = getSupportAuthor('desktop');
   if (!state.adminDb) {
-    const { data, error } = await state.supabase.rpc('create_support_ticket', {
+    // initDatabase creates the client before its online probe; resetState clears both client and online state.
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_support_ticket', {
       payload: {
         lodge_id: targetLodgeId,
         lodge_name: lodge_name || null,
@@ -1162,9 +1215,10 @@ export async function createSupportTicket({ lodge_id, lodge_name, title, descrip
   return { success: true, id: data?.id || null };
 }
 
+/** @param {number} [limit] */
 export async function getLodgeSupportTickets(limit = 20) {
   if (!state.isOnline) return [];
-  const { data, error } = await state.supabase.rpc('get_lodge_support_tickets', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_lodge_support_tickets', {
     p_lodge_id: state.lodgeId,
     p_limit: Math.min(Math.max(Number(limit) || 20, 1), 100)
   });
@@ -1172,15 +1226,17 @@ export async function getLodgeSupportTickets(limit = 20) {
   return normalizeSupportTickets(data);
 }
 
+/** @param {string} id */
 export async function getLodgeSupportTicketById(id) {
   if (!id || !state.isOnline) return null;
   const tickets = await getLodgeSupportTickets(100);
   return tickets.find((ticket) => ticket.id === id) || null;
 }
 
+/** @param {string} id @param {string} [audience] @param {string|null} [messageId] */
 export async function markLodgeSupportTicketRead(id, audience = 'front_desk', messageId = null) {
   if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data, error } = await state.supabase.rpc('mark_lodge_support_ticket_read', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('mark_lodge_support_ticket_read', {
     p_ticket_id: id,
     p_lodge_id: state.lodgeId,
     p_audience: audience,
@@ -1191,9 +1247,10 @@ export async function markLodgeSupportTicketRead(id, audience = 'front_desk', me
   return data || { success: true };
 }
 
+/** @param {string} id @param {{status?: unknown, admin_notes?: unknown}} [updates] */
 export async function updateLodgeSupportTicket(id, updates = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
-  const { data, error } = await state.supabase.rpc('update_lodge_support_ticket', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_lodge_support_ticket', {
     p_ticket_id: id,
     p_lodge_id: state.lodgeId,
     p_status: updates.status || null,
@@ -1202,7 +1259,7 @@ export async function updateLodgeSupportTicket(id, updates = {}) {
     null
   });
   if ((error?.message || data?.error || '').toLowerCase().includes('invalid request status') && String(updates.status || '').toLowerCase() === 'closed') {
-    const retry = await state.supabase.rpc('update_lodge_support_ticket', {
+    const retry = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('update_lodge_support_ticket', {
       p_ticket_id: id,
       p_lodge_id: state.lodgeId,
       p_status: 'resolved',
@@ -1219,10 +1276,19 @@ export async function updateLodgeSupportTicket(id, updates = {}) {
   return { success: true };
 }
 
+/**
+ * Dashboard and AdminCentral producers send body-based payloads; the message
+ * alias remains supported for legacy callers. IPC does not validate either
+ * shape, and both handlers preserve the existing payload || {} fallback.
+ * @typedef {{status?: unknown, metadata?: unknown, lodge_id?: unknown, sender_type?: unknown, sender_name?: unknown, sender_role?: unknown, sender_user_id?: unknown, sender_surface?: unknown}} SupportTicketMessagePayloadFields
+ * @typedef {(SupportTicketMessagePayloadFields & ({body: unknown, message?: unknown} | {body?: unknown, message: unknown})) | Record<string, never>} SupportTicketMessagePayloadReadView
+ */
+
+/** @param {unknown} id @param {SupportTicketMessagePayloadReadView} [payload] */
 export async function addLodgeSupportTicketMessage(id, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const author = getSupportAuthor('desktop');
-  const { data, error } = await state.supabase.rpc('add_lodge_support_ticket_message', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_lodge_support_ticket_message', {
     p_ticket_id: id,
     p_lodge_id: state.lodgeId,
     p_body: payload.body || payload.message || '',
@@ -1235,7 +1301,7 @@ export async function addLodgeSupportTicketMessage(id, payload = {}) {
     p_status: payload.status || null
   });
   if ((error?.message || data?.error || '').toLowerCase().includes('invalid request status') && String(payload.status || '').toLowerCase() === 'closed') {
-    const retry = await state.supabase.rpc('add_lodge_support_ticket_message', {
+    const retry = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('add_lodge_support_ticket_message', {
       p_ticket_id: id,
       p_lodge_id: state.lodgeId,
       p_body: payload.body || payload.message || '',
@@ -1256,6 +1322,7 @@ export async function addLodgeSupportTicketMessage(id, payload = {}) {
   return { success: true };
 }
 
+/** @param {string} id @param {{status?: unknown, resolved_at?: unknown, admin_notes?: unknown}} updates */
 export async function updateSupportTicket(id, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const payload = { ...updates, updated_at: new Date().toISOString() };
@@ -1291,6 +1358,7 @@ export async function updateSupportTicket(id, updates) {
   return { success: true };
 }
 
+/** @param {unknown} id @param {SupportTicketMessagePayloadReadView} [payload] */
 export async function addSupportTicketMessage(id, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const ticketLodgeId = payload.lodge_id || (await requireAdmin().
@@ -1334,6 +1402,7 @@ export async function addSupportTicketMessage(id, payload = {}) {
   return { success: true };
 }
 
+/** @param {string} id */
 export async function deleteSupportTicket(id) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('support_tickets').delete().eq('id', id);
@@ -1353,7 +1422,7 @@ export async function getBroadcasts() {
 export async function getActiveBroadcasts() {
   if (!state.isOnline) return [];
   const now = new Date().toISOString();
-  const { data } = await state.supabase.
+  const { data } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).
   from('broadcasts').
   select('id, title, message, is_active, expires_at, created_at, updated_at').
   eq('is_active', true).
@@ -1363,6 +1432,7 @@ export async function getActiveBroadcasts() {
   return data || [];
 }
 
+/** @param {{title?: unknown, message?: unknown, expires_at?: unknown}} input Expected IPC data forwarded to the existing RPC. */
 export async function createBroadcast({ title, message, expires_at }) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data: result, error } = await requireAdmin().rpc('create_broadcast', {
@@ -1378,6 +1448,7 @@ export async function createBroadcast({ title, message, expires_at }) {
   return result;
 }
 
+/** @param {string} id @param {Record<string, unknown>} updates */
 export async function updateBroadcast(id, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data: result, error } = await requireAdmin().rpc('update_broadcast', {
@@ -1389,6 +1460,7 @@ export async function updateBroadcast(id, updates) {
   return { success: true };
 }
 
+/** @param {string} id */
 export async function deleteBroadcast(id) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data: result, error } = await requireAdmin().rpc('delete_broadcast', {
@@ -1401,12 +1473,14 @@ export async function deleteBroadcast(id) {
 
 // ─── ADMIN: FEATURE FLAGS ──────────────────────────────────────────────────────
 
+/** @param {unknown} reason @param {string} [action] */
 function requireCommercialOverrideReason(reason, action = 'override') {
   const normalized = String(reason || '').trim()
   if (normalized.length < 8) throw new Error(`A ${action} reason of at least 8 characters is required`)
   return normalized
 }
 
+/** @param {string} targetLodgeId @param {string|null} productId */
 export async function getCommercialEntitlementOverrides(targetLodgeId, productId) {
   if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
   const { data, error } = await requireAdmin().rpc('get_commercial_entitlement_overrides', {
@@ -1417,6 +1491,7 @@ export async function getCommercialEntitlementOverrides(targetLodgeId, productId
   return Array.isArray(data) ? data : []
 }
 
+/** @param {string} targetLodgeId @param {string} productId @param {string} targetPackageKey @param {string|null} [referenceDate] */
 export async function getCommercialTransitionPreview(targetLodgeId, productId, targetPackageKey, referenceDate = null) {
   if (!state.isOnline) throw new Error('Commercial transition preview requires an online connection')
   const { data, error } = await requireAdmin().rpc('get_commercial_transition_preview', {
@@ -1430,6 +1505,7 @@ export async function getCommercialTransitionPreview(targetLodgeId, productId, t
   return data
 }
 
+/** @param {Record<string, unknown>} [payload] Expected IPC data; only reason and generated operation_id are handled locally. */
 export async function setCommercialEntitlementOverride(payload = {}) {
   if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
   const reason = requireCommercialOverrideReason(payload.reason)
@@ -1445,6 +1521,7 @@ export async function setCommercialEntitlementOverride(payload = {}) {
   return data
 }
 
+/** @param {Record<string, unknown>} [payload] Expected IPC data; only reason and generated operation_id are handled locally. */
 export async function revokeCommercialEntitlementOverride(payload = {}) {
   if (!state.isOnline) throw new Error('Commercial entitlement overrides require an online connection')
   const reason = requireCommercialOverrideReason(payload.reason, 'revoke')
@@ -1460,6 +1537,7 @@ export async function revokeCommercialEntitlementOverride(payload = {}) {
   return data
 }
 
+/** @param {Record<string, unknown>} [payload] Expected IPC data; only reason, operation_id, and keep_user_ids are handled locally. */
 export async function applyCommercialUserRemediation(payload = {}) {
   if (!state.isOnline) throw new Error('Commercial user remediation requires an online connection')
   const reason = requireCommercialOverrideReason(payload.reason, 'remediation')
@@ -1476,6 +1554,7 @@ export async function applyCommercialUserRemediation(payload = {}) {
   return data
 }
 
+/** @param {string} targetLodgeId */
 export async function getLodgeFeatures(targetLodgeId) {
   if (!state.isOnline) throw new Error('Lodge feature overrides require an online connection');
   const { data, error } = await requireAdmin().
@@ -1502,6 +1581,7 @@ export async function expireOverdueFeatures() {
   return data || 0
 }
 
+/** @param {string} targetLodgeId @param {string} featureName @param {boolean} enabled @param {{reason?: unknown, expires_at?: unknown, review_at?: unknown}} [metadata] */
 export async function setLodgeFeature(targetLodgeId, featureName, enabled, metadata = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   try {
@@ -1520,7 +1600,7 @@ export async function setLodgeFeature(targetLodgeId, featureName, enabled, metad
     if (isMissingEntitlementRpcError(error)) {
       throw new Error('The authoritative feature-override contract is unavailable. No feature change was made. Deploy the required migration before retrying.');
     }
-    throw new Error(error.message);
+    throw new Error((/** @type {{message?: string}} */ (error)).message);
   }
   const audit = await logAdminActivity(targetLodgeId, null, 'feature_override_set', {
     entity_type: 'feature',
@@ -1534,6 +1614,7 @@ export async function setLodgeFeature(targetLodgeId, featureName, enabled, metad
   return { success: true, audit };
 }
 
+/** @param {string} targetLodgeId @param {string} featureName */
 export async function clearLodgeFeature(targetLodgeId, featureName) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   try {
@@ -1547,7 +1628,7 @@ export async function clearLodgeFeature(targetLodgeId, featureName) {
     if (isMissingEntitlementRpcError(error)) {
       throw new Error('The authoritative feature-override contract is unavailable. No feature change was made. Deploy the required migration before retrying.');
     }
-    throw new Error(error.message);
+    throw new Error((/** @type {{message?: string}} */ (error)).message);
   }
   const audit = await logAdminActivity(targetLodgeId, null, 'feature_override_cleared', {
     entity_type: 'feature',
@@ -1569,6 +1650,7 @@ export async function getAllLodgeFeatures() {
 
 // ─── ADMIN: TEST RESET ────────────────────────────────────────────────────────
 
+/** @param {string} targetLodgeId @param {{mode?: unknown, days?: unknown}} [payload] Expected IPC data forwarded to the existing preview RPC. */
 export async function getTestDataResetPreview(targetLodgeId, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data, error } = await requireAdmin().rpc('get_test_data_reset_preview', {
@@ -1581,6 +1663,7 @@ export async function getTestDataResetPreview(targetLodgeId, payload = {}) {
   return data;
 }
 
+/** @param {string} targetLodgeId @param {{mode?: unknown, days?: unknown, confirmation?: unknown, reason?: unknown, lodge_name?: unknown}} [payload] Expected IPC data; reset authorization remains enforced by the RPC. */
 export async function runTestDataReset(targetLodgeId, payload = {}) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data, error } = await requireAdmin().rpc('reset_test_data', {
@@ -1593,7 +1676,9 @@ export async function runTestDataReset(targetLodgeId, payload = {}) {
   });
   if (error) throw new Error(error.message);
   if (data?.success === false) throw new Error(data.error || 'Could not reset test data');
-  const audit = await logAdminActivity(targetLodgeId, payload?.lodge_name || null, 'test_data_reset', {
+  // AdminCentral sends the selected company display name; this view does not validate IPC data.
+  const lodgeName = /** @type {string|null} */ (payload?.lodge_name || null);
+  const audit = await logAdminActivity(targetLodgeId, lodgeName, 'test_data_reset', {
     entity_type: 'lodge',
     entity_id: targetLodgeId,
     mode: payload?.mode || 'full_demo_reset',
@@ -1624,6 +1709,7 @@ export async function runTestDataReset(targetLodgeId, payload = {}) {
   return { ...data, audit };
 }
 
+/** @param {string} targetLodgeId @param {number} [limit] */
 export async function getTestDataResetAudit(targetLodgeId, limit = 20) {
   if (!state.isOnline) return [];
   const { data, error } = await requireAdmin().rpc('get_test_data_reset_audit', {
@@ -1636,6 +1722,8 @@ export async function getTestDataResetAudit(targetLodgeId, limit = 20) {
 
 // ─── ADMIN: MARKETING LEADS ──────────────────────────────────────────────────
 
+/** @typedef {{status?: unknown, stage?: unknown, interest?: unknown, follow_up_before?: unknown, limit?: unknown}} MarketingLeadFiltersExpectedData */
+/** @param {MarketingLeadFiltersExpectedData} [filters] Expected IPC filter data; fields are not runtime-validated here. */
 export async function getMarketingLeads(filters = {}) {
   if (!state.isOnline) return [];
   const db = requireAdmin();
@@ -1660,6 +1748,7 @@ export async function getMarketingLeads(filters = {}) {
   return Array.isArray(data) ? data : [];
 }
 
+/** @param {string} id @param {string} status */
 export async function updateMarketingLeadStatus(id, status) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data, error } = await requireAdmin()
@@ -1672,6 +1761,7 @@ export async function updateMarketingLeadStatus(id, status) {
   return data;
 }
 
+/** @param {string} id @param {{stage?: unknown, follow_up_at?: unknown, sales_notes?: unknown, estimated_value?: unknown, probability?: unknown, lost_reason?: unknown, converted_lodge_id?: unknown}} fields Expected IPC fields forwarded without runtime validation. */
 export async function updateLeadCrm(id, fields) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const update = {}

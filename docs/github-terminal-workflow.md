@@ -33,8 +33,10 @@ npm run pwa:deploy
 The production alias should be:
 
 ```text
-https://boroko-bookings.vercel.app
+https://manager.tsabonno.com
 ```
+
+The legacy `https://boroko-bookings.vercel.app` alias remains attached until installed-PWA and offline migration behavior has been assessed.
 
 ## Build Desktop Installer Locally
 

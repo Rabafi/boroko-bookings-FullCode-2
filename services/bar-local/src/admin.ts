@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, open, readdir, rm, stat, statfs } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { BAR_LOCAL_ERROR_CODES, BarLocalError, CONTRACT_VERSION, enumeration, string } from '@tsa-bonno/bar-contracts'
+import { BAR_LOCAL_ERROR_CODES, BarLocalError, CONTRACT_VERSION, canonicalJson, enumeration, string } from '@tsa-bonno/bar-contracts'
 import type { BarLocalErrorCode } from '@tsa-bonno/bar-contracts'
 import type { Pool } from 'pg'
 import type { BackupSettings, ServiceConfig } from './config.js'
@@ -857,6 +858,42 @@ function cloudSyncStatusView(status: CloudSyncStatus | null, transport: string, 
   }
 }
 
+async function boundedFetchJson(url: URL, body: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, {
+      method: 'POST', redirect: 'error', signal: controller.signal,
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    })
+    const contentLength = response.headers.get('content-length')
+    if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > 16 * 1024) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new Error('The owner receiver returned an oversized response.')
+    }
+    const reader = response.body?.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    if (reader) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.byteLength
+          if (total > 16 * 1024) { await reader.cancel().catch(() => undefined); throw new Error('The owner receiver returned an oversized response.') }
+          chunks.push(value)
+        }
+      } finally { reader.releaseLock() }
+    }
+    let payload: unknown
+    try { payload = JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')) } catch { payload = null }
+    if (!response.ok || !isRecord(payload) || payload.ok !== true) {
+      throw Object.assign(new Error(isRecord(payload) && typeof payload.message === 'string' ? payload.message : 'The owner receiver refused the Bar connection.'), { httpStatus: response.status || 502 })
+    }
+    return payload
+  } finally { clearTimeout(timeout) }
+}
+
 export function createAdminHandler(authenticate: AdminAuthenticate, options: AdminHandlerOptions = {}) {
   return async function handleAdmin(
     ctx: AdminRequestContext,
@@ -891,6 +928,7 @@ export function createAdminHandler(authenticate: AdminAuthenticate, options: Adm
       (method === 'POST' && pathname === '/v1/admin/failover/fence') ||
       (method === 'GET' && pathname === '/v1/admin/cloud-sync') ||
       (method === 'POST' && pathname === '/v1/admin/cloud-sync/config') ||
+      (method === 'POST' && pathname === '/v1/admin/cloud-sync/link') ||
       (method === 'POST' && pathname === '/v1/admin/cloud-sync/run') ||
       (method === 'GET' && pathname === '/v1/admin/update') ||
       (method === 'POST' && pathname === '/v1/admin/update/stage') ||
@@ -1226,6 +1264,99 @@ export function createAdminHandler(authenticate: AdminAuthenticate, options: Adm
           ok: true,
           command: 'cloud-sync-status',
           status: cloudSyncStatusView(status, options.cloudSync.transport, Boolean(ctx.config.cloudSync.secret && ctx.config.cloudSync.secret.length >= 32))
+        }, correlationId)
+        return true
+      }
+
+      if (pathname === '/v1/admin/cloud-sync/link' && method === 'POST') {
+        requireCapability(auth, ADMIN_CAPABILITY)
+        if (ctx.config.cloudSync.transport !== 'local_test') {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.SERVICE_UNAVAILABLE, 'Owner linking is currently enabled only for the isolated local-test receiver. Hosted transport requires its separate deployment authorisation.', { httpStatus: 503 })
+        }
+        const secret = ctx.config.cloudSync.secret
+        if (!secret || secret.length < 32) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.SERVICE_UNAVAILABLE, 'The Bar server has no protected cloud signing secret. Ask the server administrator to provision it; no owner code was sent.', { httpStatus: 503 })
+        }
+        const body = await readJson(req, { limitBytes: 4096 })
+        allowOnlyKeys(body, ['receiver_base_url', 'enrollment_code'])
+        const receiverBase = stringField(body, 'receiver_base_url', { max: 500 })
+        const enrollmentCode = stringField(body, 'enrollment_code', { min: 44, max: 100 })
+        if (!receiverBase || !/^bol_[A-Za-z0-9_-]{40,96}$/.test(enrollmentCode ?? '')) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'Enter a valid owner receiver address and one-time connection code.')
+        }
+        let base: URL
+        try { base = new URL(receiverBase) } catch { throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'Enter a valid owner receiver address.') }
+        if (base.protocol !== 'https:' && base.protocol !== 'http:') {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'The owner receiver address must use HTTPS.')
+        }
+        if (base.username || base.password || base.search || base.hash) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'The owner receiver address cannot include credentials, a query or a fragment.')
+        }
+        const host = base.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+        const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
+        if (!loopback && base.protocol !== 'https:') {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'A remote owner receiver must use HTTPS.')
+        }
+        if (!loopback) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.SERVICE_UNAVAILABLE, 'Remote owner receivers are not enabled in this release. Use only a loopback disposable receiver for local verification.', { httpStatus: 503 })
+        }
+        const current = await callFunction<Record<string, unknown>>(ctx.pool, 'bar_local.cloud_sync_status', [])
+        if (!current) throw new BarLocalError(BAR_LOCAL_ERROR_CODES.SERVICE_UNAVAILABLE, 'The local Bar upload status could not be read.', { httpStatus: 503 })
+        if (current.enabled === true) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'An active cloud receiver is already configured. Resolve that link before requesting another owner connection.', { httpStatus: 409 })
+        }
+        const worker = await callFunction<Record<string, unknown>>(ctx.pool, 'bar_local.cloud_sync_worker_config', [])
+        if (!worker || worker.configured !== true || typeof worker.authority_id !== 'string' || typeof worker.business_id !== 'string') {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'Commission this local Bar before linking an owner view.')
+        }
+        const keyId = (typeof current.signing_key_id === 'string' ? current.signing_key_id.trim() : '') || ctx.config.cloudSync.keyId || randomUUID()
+        if (!/^[A-Za-z0-9._:-]{1,120}$/.test(keyId)) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'The configured cloud signing key identifier is not supported by the owner receiver.')
+        }
+        if (ctx.config.cloudSync.keyId && ctx.config.cloudSync.keyId !== keyId) {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.VALIDATION_FAILED, 'The service signing key identifier differs from the local Bar configuration. Reconcile the server configuration before linking.', { httpStatus: 409 })
+        }
+        const uploadUrl = new URL('/v1/cloud/batches', base).toString()
+        // Persist a stable key ID and disabled receiver before the network call.
+        // A lost claim response can then be retried with the same exact identity.
+        await callFunction(ctx.pool, 'bar_local.cloud_sync_config_set', [
+          { value: auth.tokenHash, cast: 'text' },
+          { value: auth.deviceId, cast: 'uuid' },
+          { value: JSON.stringify({ enabled: false, receiver_url: uploadUrl, signing_key_id: keyId }), cast: 'jsonb' }
+        ])
+        let businessName = 'Local Bar'
+        try {
+          const bootstrap = await callFunction<Record<string, unknown>>(ctx.pool, 'bar_local.query_dispatch', [
+            { value: auth.tokenHash, cast: 'text' }, { value: auth.deviceId, cast: 'uuid' },
+            { value: worker.authority_id, cast: 'uuid' }, { value: worker.authority_epoch, cast: 'bigint' },
+            { value: 'bootstrap', cast: 'text' }, { value: '{}', cast: 'jsonb' }
+          ])
+          const data = bootstrap && isRecord(bootstrap.data) ? bootstrap.data : null
+          const business = data && isRecord(data.business) ? data.business : null
+          if (business && typeof business.name === 'string' && business.name.trim()) businessName = business.name.trim().slice(0, 120)
+        } catch { /* The generic label is safer than broadening the caller's capability to read the whole Bar bootstrap. */ }
+        const claimUrl = new URL('/v1/links/claim', base)
+        let claim: Record<string, unknown>
+        try {
+          claim = await boundedFetchJson(claimUrl, {
+            enrollment_code: enrollmentCode,
+            key_id: keyId,
+            authority_id: worker.authority_id,
+            business_id: worker.business_id,
+            outlet_id: auth.context.outlet_id,
+            secret,
+            business_name: businessName
+          }, Math.min(ctx.config.cloudSync.requestTimeoutMs, 15000))
+        } catch {
+          throw new BarLocalError(BAR_LOCAL_ERROR_CODES.SERVICE_UNAVAILABLE, 'The owner receiver did not confirm this connection request. The local Bar remains unchanged and upload stays disabled; retry with the same code if it is still valid.', { httpStatus: 502 })
+        }
+        sendJson(res, 200, {
+          ok: true,
+          command: 'cloud-sync-owner-link',
+          key_id: keyId,
+          pending_approval: claim.pending_approval === true,
+          enabled: false,
+          message: 'The owner connection request was sent. Approve this Bar in Manager before enabling upload.'
         }, correlationId)
         return true
       }

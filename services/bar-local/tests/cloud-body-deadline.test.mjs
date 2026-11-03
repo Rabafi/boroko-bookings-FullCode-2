@@ -1,18 +1,38 @@
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import http from 'node:http'
 import test from 'node:test'
+import { canonicalJson } from '@tsa-bonno/bar-contracts'
 import { loadConfig } from '../dist/config.js'
 import { createCloudSyncController } from '../dist/operations/cloudSync.js'
 
 const BATCH_ID = 'e9b20d88-4a32-426e-a620-9c3a1b79aec2'
 const HASH = 'a'.repeat(64)
+const SECRET = 'local-cloud-sync-test-secret-0123456789'
+const LINK_IDENTITY = {
+  authority_id: 'a84ed73a-7f4d-44b1-b79d-3b456d358b64',
+  business_id: '2b0f02b8-1383-41a5-bbc2-27c086e8f3b8',
+  outlet_id: 'c8eef181-08d1-49fe-9c62-117add474a0a'
+}
+
+async function answerOwnerLinkStatus(req, res) {
+  if (req.url !== '/v1/links/status') return false
+  const chunks = []
+  for await (const chunk of req) chunks.push(Buffer.from(chunk))
+  const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  const proofBase = { key_id: 'test-key', nonce: body.nonce, ...LINK_IDENTITY, active: true, revoked: false }
+  const signature = createHmac('sha256', SECRET).update(canonicalJson(proofBase), 'utf8').digest('hex')
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ...proofBase, signature }))
+  return true
+}
 
 function testConfig(timeoutMs = 1_000) {
   return loadConfig({
     BAR_LOCAL_ALLOW_TEST_DB: '1',
     BAR_LOCAL_NETWORK_ROLE: 'single_host',
     BAR_LOCAL_CLOUD_SYNC_TRANSPORT: 'local_test',
-    BAR_LOCAL_CLOUD_SYNC_KEY: 'local-cloud-sync-test-secret-0123456789',
+    BAR_LOCAL_CLOUD_SYNC_KEY: SECRET,
     BAR_LOCAL_CLOUD_SYNC_KEY_ID: 'test-key',
     BAR_LOCAL_CLOUD_SYNC_TIMEOUT_MS: String(timeoutMs),
     BAR_LOCAL_CLOUD_SYNC_MAX_BATCHES: '1'
@@ -100,7 +120,8 @@ async function listen(handler) {
 
 test('cloud response body is covered by the request deadline and failure is durable before lock release', async (t) => {
   let responseClosed = false
-  const receiver = await listen((_req, res) => {
+  const receiver = await listen(async (req, res) => {
+    if (await answerOwnerLinkStatus(req, res)) return
     res.writeHead(200, { 'content-type': 'application/json' })
     res.write('{"ok":true,')
     res.on('close', () => { responseClosed = true })
@@ -126,7 +147,8 @@ test('cloud response body is covered by the request deadline and failure is dura
 
 test('cloud response body is byte-bounded and cancelled when a chunk crosses the acknowledgement limit', async (t) => {
   let responseClosed = false
-  const receiver = await listen((_req, res) => {
+  const receiver = await listen(async (req, res) => {
+    if (await answerOwnerLinkStatus(req, res)) return
     res.writeHead(200, { 'content-type': 'application/json' })
     res.write(Buffer.alloc(64 * 1024, 0x20))
     res.write(Buffer.alloc(1024, 0x20))
@@ -148,7 +170,8 @@ test('cloud response body is byte-bounded and cancelled when a chunk crosses the
 
 test('worker shutdown aborts a stalled response body, records failure and releases the uploader lock', async (t) => {
   let responseClosed = false
-  const receiver = await listen((_req, res) => {
+  const receiver = await listen(async (req, res) => {
+    if (await answerOwnerLinkStatus(req, res)) return
     res.writeHead(200, { 'content-type': 'application/json' })
     res.write('{"ok":true,')
     res.on('close', () => { responseClosed = true })

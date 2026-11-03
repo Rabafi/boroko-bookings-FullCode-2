@@ -6,6 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
+import { canonicalJson } from '@tsa-bonno/bar-contracts'
 import { createHarness } from './harness.mjs'
 import { connectionConfig } from '../scripts/lib/db-target.mjs'
 import { loadConfig } from '../dist/config.js'
@@ -21,10 +22,23 @@ function receiverContractSql() {
   return readFileSync(path.join(here, '..', 'db', 'cloud-receiver', '0001_cloud_ingest.sql'), 'utf8')
 }
 
-function startReceiver(client, { secret = SECRET, keyId = KEY_ID } = {}) {
-  const state = { mode: 'ingest', bodies: [], requests: 0 }
+function startReceiver(client, { secret = SECRET, keyId = KEY_ID, identity } = {}) {
+  const state = { mode: 'ingest', bodies: [], requests: 0, linkProofs: [] }
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
+    if (req.method === 'POST' && url.pathname === '/v1/links/status') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(Buffer.from(chunk))
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const expected = createHmac('sha256', secret).update(canonicalJson({ key_id: body.key_id, nonce: body.nonce }), 'utf8').digest('hex')
+      if (body.key_id !== keyId || body.signature !== expected) {
+        res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false })); return
+      }
+      const proof = { key_id: keyId, nonce: body.nonce, ...identity, active: state.linkActive !== false, revoked: false }
+      const signature = createHmac('sha256', secret).update(canonicalJson(proof), 'utf8').digest('hex')
+      state.linkProofs.push({ request: body, proof })
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ...proof, signature })); return
+    }
     if (req.method !== 'POST' || url.pathname !== '/v1/cloud/batches') {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: false, code: 'NOT_FOUND' }))
@@ -190,7 +204,7 @@ test('cloud sync uploads committed events through the receiver contract, is boun
     maintenance: false
   }))
   await receiverClient.connect()
-  const receiver = startReceiver(receiverClient)
+  const receiver = startReceiver(receiverClient, { identity: { authority_id: h.authorityId, business_id: h.businessId, outlet_id: h.outletId } })
   const receiverUrl = await receiver.start()
   t.after(async () => {
     await receiver.close()
@@ -208,7 +222,7 @@ test('cloud sync uploads committed events through the receiver contract, is boun
   })
 
   const first = await controller.runNow({ reason: 'test' })
-  assert.equal(first.status, 'ok', JSON.stringify(first))
+  assert.equal(first.status, 'ok', JSON.stringify({ first, linkProofs: receiver.state.linkProofs, expectedIdentity: { authority_id: h.authorityId, business_id: h.businessId, outlet_id: h.outletId } }))
   assert.equal(first.uploaded_batches, 1, 'max_batches_per_run must bound the work')
   assert.equal(first.pending_events > 0, true, 'events beyond the bounded batch must remain pending')
   assert.equal(first.final_state, null)
@@ -402,6 +416,7 @@ test('receiver records late sequences and rejects duplicate events or changed ba
       event_type: 'sale.committed',
       operation_id: randomUUID(),
       authority_epoch: epoch,
+      business_date: '2026-10-27',
       payload,
       payload_hash: payloadHash,
       created_at: '2026-10-27T10:00:00.000Z'

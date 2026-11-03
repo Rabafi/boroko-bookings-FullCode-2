@@ -37,7 +37,7 @@ import {
  * These records are written only by this module into the protected provisioning
  * file. The read path keeps its existing shallow corruption check; this view
  * describes the locally produced encrypted record and does not validate JSON.
- * @typedef {{kind:'owner',request:{base_url:string,certificate_fingerprint?:string,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>,provisioning_id:string,device_token:string}}|{kind:'pairing',request:{base_url:string,certificate_fingerprint?:string|undefined,pairing_code:string,device_name:string,provisioning_id:string,device_token:string}}} PendingProvisioning
+ * @typedef {{kind:'owner',request:{base_url:string,certificate_fingerprint?:string|undefined,setup_secret:string,business_name?:string,outlet_name?:string,owner_name?:string,pin?:string,device_platform?:string,business_profile?:Record<string,string>,provisioning_id:string,device_token:string}}|{kind:'pairing',request:{base_url:string,certificate_fingerprint?:string|undefined,pairing_code:string,device_name:string,provisioning_id:string,device_token:string}}} PendingProvisioning
  */
 
 const CONFIG_NAME = 'authority.bin'
@@ -106,6 +106,7 @@ export class BarLocalElectronRuntime {
     // local-authority process may open a local session or execute commands.
     this.restartRequired = false
     this.setupOwnerStaffId = null
+    this.postSetupNoticePending = false
     this.training = process.argv.includes('--bar-training')
     // A dedicated local Bar workspace is the separate profile/process an owner
     // with an existing cloud business uses to create a new local Bar. It owns a
@@ -198,6 +199,10 @@ export class BarLocalElectronRuntime {
       }
       const raw = JSON.parse(this.safeStorage.decryptString(encrypted))
       this.setupOwnerStaffId = raw?.setup_owner_staff_id == null ? null : requireUuid(raw.setup_owner_staff_id, 'setup_owner_staff_id')
+      if (raw?.post_setup_notice_pending !== undefined && typeof raw.post_setup_notice_pending !== 'boolean') {
+        throw new BarLocalAdapterError('AUTHORITY_PROFILE_INVALID', 'The saved Bar sign-in notice state is invalid. Preserve this profile and contact support.')
+      }
+      this.postSetupNoticePending = raw?.post_setup_notice_pending === true
       if(raw?.authority_mode===AUTHORITY_MODES.BAR_LOCAL&&raw.journal_storage!==undefined){
         if(raw.journal_storage!=='local_sqlite_v1')throw new BarLocalAdapterError('INTENT_JOURNAL_CORRUPT','This authority profile requires an unsupported saved-operation storage version. Preserve this till for recovery.')
         if(!existsSync(this.journalPath))throw new BarLocalAdapterError('INTENT_JOURNAL_CORRUPT','The initialized SQLite operation journal is missing. Preserve the authority profile and recover the original SQLite storage; an older JSONL file must not be used as fallback.')
@@ -317,7 +322,7 @@ export class BarLocalElectronRuntime {
     if (!this.safeStorage.isEncryptionAvailable()) {
       throw new BarLocalAdapterError('SECURE_STORAGE_UNAVAILABLE', 'OS secure storage is unavailable; the local authority profile was not saved.')
     }
-    const protectedConfig=config.authority_mode===AUTHORITY_MODES.BAR_LOCAL?{...config,journal_storage:'local_sqlite_v1',setup_owner_staff_id:this.setupOwnerStaffId}:config
+    const protectedConfig=config.authority_mode===AUTHORITY_MODES.BAR_LOCAL?{...config,journal_storage:'local_sqlite_v1',setup_owner_staff_id:this.setupOwnerStaffId,post_setup_notice_pending:this.postSetupNoticePending}:config
     const encrypted = this.safeStorage.encryptString(`${JSON.stringify(protectedConfig, null, 2)}\n`)
     writeDurableAtomic(this.configPath, encrypted)
   }
@@ -398,6 +403,7 @@ export class BarLocalElectronRuntime {
       setup_prefill: this.dedicatedLocalWorkspace ? this.#readSetupPrefill() : null,
       has_saved_cloud_business: this.hasSavedCloudBusiness(),
       restart_required: this.restartRequired,
+      post_setup_notice_pending: this.postSetupNoticePending,
       provisioning_recovery: this.#provisioningRecoveryStatus(),
       setup_owner_staff_id: this.setupOwnerStaffId,
       session_active: this.session !== null,
@@ -468,17 +474,21 @@ export class BarLocalElectronRuntime {
     let pending = this.#readProvisioning()
     if (pending && pending.kind !== 'owner') throw new BarLocalAdapterError('PROVISIONING_IN_PROGRESS', 'A saved pairing must be resumed before owner setup can begin.')
     if (pending) {
+      const savedOwnerAttempt = pending
       const ownerPassword = request.owner_password
-      base_url = pending.request.base_url
-      certificate_fingerprint = pending.request.certificate_fingerprint
-      request = { ...pending.request, ...(typeof ownerPassword === 'string' ? { owner_password: ownerPassword } : {}) }
-      setup_secret = pending.request.setup_secret
+      base_url = savedOwnerAttempt.request.base_url
+      certificate_fingerprint = savedOwnerAttempt.request.certificate_fingerprint
+      request = { ...savedOwnerAttempt.request, ...(typeof ownerPassword === 'string' ? { owner_password: ownerPassword } : {}) }
+      setup_secret = savedOwnerAttempt.request.setup_secret
     } else {
       const tokenBytes = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
       const { owner_password: _transientPassword, ...protectedRequest } = request
-      pending = { kind: 'owner', request: { ...protectedRequest, base_url, certificate_fingerprint, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } }
-      this.#saveProvisioning(pending)
+      const newOwnerAttempt = /** @type {Extract<PendingProvisioning, {kind:'owner'}>} */ ({ kind: 'owner', request: { ...protectedRequest, base_url, certificate_fingerprint, setup_secret, provisioning_id: randomUUID(), device_token: `bld_${tokenBytes}` } })
+      pending = newOwnerAttempt
+      this.#saveProvisioning(newOwnerAttempt)
     }
+    // The preceding branch either retains the saved owner attempt or creates one.
+    const ownerAttempt = /** @type {Extract<PendingProvisioning, {kind:'owner'}>} */ (pending)
     const transport = createHttpTransport({ base_url, certificate_fingerprint, request_timeout_ms: 15000, connect_timeout_ms: 5000 })
     this.provisioning = true
     let bootstrap
@@ -491,7 +501,7 @@ export class BarLocalElectronRuntime {
         logger: null
       })
       if (typeof request.owner_password !== 'string') throw new BarLocalAdapterError('OWNER_PASSWORD_REQUIRED', 'Enter the owner password again to safely resume this setup attempt.')
-      const { base_url: _baseUrl, certificate_fingerprint: _serverPin, setup_secret: stagedSetupSecret, ...stagedPayload } = pending.request
+      const { base_url: _baseUrl, certificate_fingerprint: _serverPin, setup_secret: stagedSetupSecret, ...stagedPayload } = ownerAttempt.request
       const result = await bootstrap.requireClient().setupOwner({ setup_secret: stagedSetupSecret, ...stagedPayload, owner_password: request.owner_password })
       /** @type {BarLocalAuthorityPersistExpectedData} */
       const authority = {
@@ -509,6 +519,7 @@ export class BarLocalElectronRuntime {
       }
       const validated = validateAuthorityConfig(authority)
       this.setupOwnerStaffId = result.owner_staff_id == null ? null : requireUuid(result.owner_staff_id, 'owner_staff_id')
+      this.postSetupNoticePending = true
       mkdirSync(this.root, { recursive: true })
       this.#persistConfig(authority)
       this.#clearProvisioning()
@@ -523,6 +534,22 @@ export class BarLocalElectronRuntime {
     } finally {
       this.provisioning = false
     }
+  }
+
+  consumePostSetupNotice() {
+    if (!this.postSetupNoticePending) return { consumed: false }
+    if (!this.safeStorage.isEncryptionAvailable()) {
+      throw new BarLocalAdapterError('SECURE_STORAGE_UNAVAILABLE', 'OS secure storage is unavailable; the Bar sign-in notice was not changed.')
+    }
+    const raw = JSON.parse(this.safeStorage.decryptString(readFileSync(this.configPath)))
+    if (raw?.post_setup_notice_pending !== true) {
+      this.postSetupNoticePending = false
+      return { consumed: false }
+    }
+    raw.post_setup_notice_pending = false
+    writeDurableAtomic(this.configPath, this.safeStorage.encryptString(`${JSON.stringify(raw, null, 2)}\n`))
+    this.postSetupNoticePending = false
+    return { consumed: true }
   }
 
   /** @param {{base_url:string,certificate_fingerprint?:string,pairing_code:string,device_name:string}} request */
@@ -625,6 +652,7 @@ export class BarLocalElectronRuntime {
     }
   }
 
+  /** @param {{owner_password?: string}} [request] */
   async resumeProvisioning(request = {}) {
     const pending = this.#readProvisioning()
     if (!pending) {
@@ -878,6 +906,11 @@ export class BarLocalElectronRuntime {
     return this.#requireClient().adminCloudSyncConfig(request)
   }
 
+  /** @param {Parameters<BarLocalClient['adminCloudSyncClaimOwnerLink']>[0]} request */
+  async adminCloudSyncClaimOwnerLink(request) {
+    return this.#requireClient().adminCloudSyncClaimOwnerLink(request)
+  }
+
   /** @param {Parameters<BarLocalClient['adminCloudSyncRun']>[0]} [request] */
   async adminCloudSyncRun(request) {
     return this.#requireClient().adminCloudSyncRun(request)
@@ -924,7 +957,7 @@ export class BarLocalElectronRuntime {
  * enforces actor, outlet, entitlement and capabilities for every operation.
  */
 /**
- * @param {{ ipcMain: import('electron').IpcMain, app: import('electron').App, safeStorage: import('electron').SafeStorage, buildProductId: string }} options
+ * @param {{ ipcMain: import('electron').IpcMain, app: import('electron').App, safeStorage: import('electron').SafeStorage, dialog?: import('electron').Dialog, buildProductId: string }} options
  */
 export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildProductId }) {
   const runtime = new BarLocalElectronRuntime({
@@ -1097,11 +1130,12 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
       return await operation()
     } finally {
       if (runtime.restartRequired) {
-        // Exit immediately after the protected profile is committed. If the
-        // OS refuses relaunch/exit, the IPC fence remains active and the UI
-        // instructs the operator to close and reopen instead of trading here.
-        try { app.relaunch(); app.exit(0) }
-        catch (error) { runtime.logger.error?.('[BarLocal] Restart required after local setup.', error) }
+        // Let the IPC reply reach the renderer so it can show the committed
+        // setup/restart message before the protected profile is reopened.
+        setTimeout(() => {
+          try { app.relaunch(); app.exit(0) }
+          catch (error) { runtime.logger.error?.('[BarLocal] Restart required after local setup.', error) }
+        }, 900)
       }
     }
   }
@@ -1110,6 +1144,7 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:reconnectServer', (_event, request) => provisionAndRestart(() => runtime.reconnectServer(request)))
   ipcMain.handle('barLocal:resumeProvisioning', (_event, request) => provisionAndRestart(() => runtime.resumeProvisioning(request)))
   ipcMain.handle('barLocal:login', (_event, request) => runtime.login(request))
+  ipcMain.handle('barLocal:consumePostSetupNotice', () => runtime.consumePostSetupNotice())
   ipcMain.handle('barLocal:recoverOwnerPassword', (_event, request) => serverSetup.recoverOwnerPassword(request))
   ipcMain.handle('barLocal:logout', () => runtime.logout())
   ipcMain.handle('barLocal:startPairing', (_event, request) => runtime.startPairing(request))
@@ -1172,6 +1207,7 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:adminApplyUpdate', (_event, request) => runtime.adminApplyUpdate(request))
   ipcMain.handle('barLocal:adminCloudSyncStatus', () => runtime.adminCloudSyncStatus())
   ipcMain.handle('barLocal:adminCloudSyncConfig', (_event, request) => runtime.adminCloudSyncConfig(request))
+  ipcMain.handle('barLocal:adminCloudSyncClaimOwnerLink', (_event, request) => runtime.adminCloudSyncClaimOwnerLink(request))
   ipcMain.handle('barLocal:adminCloudSyncRun', (_event, request) => runtime.adminCloudSyncRun(request))
   ipcMain.handle('barLocal:refreshReadiness', () => runtime.refreshReadiness())
   ipcMain.handle('barLocal:getCatalogueSnapshot', (_event, options) => runtime.catalogue(options))
