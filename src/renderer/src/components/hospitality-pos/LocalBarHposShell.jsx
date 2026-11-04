@@ -1,9 +1,11 @@
 // @ts-check
-import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router'
 import { APP_FEATURES, buildCapabilitySnapshot } from '../../../../shared/accessControl.js'
 import { AccessContext, AuthContext, FeaturesContext, OnlineRequestsContext, ProfilesContext, SettingsContext, UnsavedChangesContext } from '../../app-context.jsx'
 import BarLocalWorkspace from './BarLocalWorkspace.jsx'
+import Login from '../Login.jsx'
+import BarLocalNativeMenu from './BarLocalNativeMenu.jsx'
 
 const HposLayout = lazy(() => import('./HposLayout.jsx'))
 
@@ -22,8 +24,21 @@ function LocalBarRouteUnavailable() {
 /** @param {{status: Record<string, unknown>, onLogout: () => void, initialLoginNotice?: string}} props */
 export default function LocalBarHposShell({ status, onLogout, initialLoginNotice = '' }) {
   const [session, setSession] = useState(status.session ?? null)
-  const onLocalSessionChange = useCallback((next) => setSession(next), [])
+  const [bootstrap, setBootstrap] = useState(null)
+  const [bootstrapError, setBootstrapError] = useState('')
   const handleLocalLogout = useCallback(() => { setSession(null); onLogout() }, [onLogout])
+  useEffect(() => {
+    let active = true
+    setBootstrap(null)
+    setBootstrapError('')
+    if (!session?.staff?.staff_id || !Array.isArray(session.staff.capabilities) || !session.staff.capabilities.includes('pos.view')) return () => { active = false }
+    window.api.barLocal.query('bootstrap', {}).then((result) => {
+      if (active) setBootstrap(result?.data || null)
+    }).catch((error) => {
+      if (active) setBootstrapError(error?.message || 'Local Bar business details are unavailable.')
+    })
+    return () => { active = false }
+  }, [session?.staff?.staff_id, session?.staff?.capabilities])
   const staff = session?.staff && typeof session.staff === 'object' ? session.staff : null
   const capabilityNames = Array.isArray(staff?.capabilities)
     ? staff.capabilities.filter((name) => typeof name === 'string') : []
@@ -32,11 +47,11 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
     email: typeof staff.email === 'string' ? staff.email : null,
     name: String(staff.display_name || 'Bar staff'),
     role: String(staff.role || 'cashier'),
-    lodge_id: String(session?.business_id || status.business_id || ''),
+    lodge_id: String(bootstrap?.scope?.business_id || status.business_id || ''),
     capability_overrides: {},
     allowed_outlet_ids: [String(session?.outlet_id || status.active_outlet_id || '')].filter(Boolean),
     localAuthority: true
-  }) : null, [staff, session?.business_id, session?.outlet_id, status.business_id, status.active_outlet_id])
+  }) : null, [staff, session?.business_id, session?.outlet_id, status.business_id, status.active_outlet_id, bootstrap?.scope?.business_id])
   const localAccess = useMemo(() => {
     const base = buildCapabilitySnapshot({ role: localUser?.role || 'cashier', productId: 'hospitality-pos' })
     const capabilities = Object.fromEntries(Object.keys(base.capabilities).map((name) => [name, capabilityNames.includes(name)]))
@@ -50,49 +65,88 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
       refreshEntitlement: async () => null
     }
   }, [localUser, capabilityNames.join('|')])
+  const business = bootstrap?.business || {}
+  const outlet = bootstrap?.outlet || {}
+  const businessId = String(business.id || bootstrap?.scope?.business_id || status.business_id || '')
   const localSettings = useMemo(() => ({
     product_id: 'hospitality-pos',
-    business_name: String(status.business_name || status.session?.business_name || 'Bar'),
+    authority_mode: 'bar_local',
+    can_switch_business: status.workspace_isolation === 'dedicated_bar' || status.can_switch_workspace === true,
+    id: businessId,
+    lodge_id: businessId,
+    business_name: String(business.name || status.business_name || 'Bar'),
     property_type: 'bar',
     hospitality_mode: 'bar_only',
-    outlet_id: String(session?.outlet_id || status.active_outlet_id || ''),
-    outlet_name: String(session?.outlet_name || status.active_outlet_name || 'Bar'),
-    currency: String(status.currency || 'BWP')
-  }), [status.business_name, status.session?.business_name, status.active_outlet_id, status.active_outlet_name, status.currency, session?.outlet_id, session?.outlet_name])
+    outlet_id: String(outlet.id || session?.outlet_id || status.active_outlet_id || ''),
+    outlet_name: String(outlet.name || status.active_outlet_name || 'Bar'),
+    currency: String(business.currency || status.currency || 'BWP'),
+    timezone: String(business.timezone || '')
+  }), [businessId, business.name, business.currency, business.timezone, status.business_name, status.active_outlet_id, status.active_outlet_name, status.currency, outlet.id, outlet.name, session?.outlet_id])
   const authValue = useMemo(() => ({
     user: localUser,
-    login: async () => null,
+    login: async (result) => {
+      const nextSession = result?.session
+      if (!nextSession?.staff || !nextSession?.outlet_id) {
+        throw new Error('The local Bar service returned an incomplete staff session. Sign-in was not completed.')
+      }
+      setSession(nextSession)
+      return nextSession.staff
+    },
     logout: async () => {
       await window.api.barLocal.logout()
       handleLocalLogout()
       return null
     }
   }), [localUser, handleLocalLogout])
-  const emptyProfiles = useMemo(() => ({ profiles: [], activeProfile: null, loading: false, profilesLoading: false }), [])
-  const localFeatures = useMemo(() => Object.fromEntries(APP_FEATURES.map((feature) => [feature, false])), [])
+  const localProfile = useMemo(() => businessId ? ({
+    lodge_id: businessId,
+    lodge_name: String(business.name || status.business_name || 'Bar'),
+    business_name: String(business.name || status.business_name || 'Bar'),
+    property_type: 'bar',
+    product_id: 'hospitality-pos',
+    authority_mode: 'bar_local',
+    status: 'ready'
+  }) : null, [businessId, business.name, status.business_name])
+  const localProfiles = useMemo(() => ({
+    profiles: localProfile ? [localProfile] : [],
+    activeProfile: localProfile,
+    loading: Boolean(session && !bootstrap && !bootstrapError),
+    profilesLoading: Boolean(session && !bootstrap && !bootstrapError),
+    reloadProfiles: async () => localProfile ? [localProfile] : [],
+    selectProfile: async (profileId) => String(profileId) === businessId ? localProfile : null,
+    createDraftProfile: async () => { throw new Error('Create or switch businesses from the Hospitality POS business chooser.') },
+    removeDraftProfile: async () => null
+  }), [localProfile, session, bootstrap, bootstrapError, businessId])
+  const localFeatures = useMemo(() => {
+    const features = bootstrap?.authority?.entitlement_features
+    const enabled = new Set(Array.isArray(features) ? features.filter((entry) => typeof entry === 'string') : [])
+    const featureMap = Object.fromEntries(APP_FEATURES.map((feature) => [feature, enabled.has(feature)]))
+    if (features && !Array.isArray(features) && typeof features === 'object') {
+      for (const feature of APP_FEATURES) featureMap[feature] = features[feature] === true
+    }
+    return featureMap
+  }, [bootstrap?.authority?.entitlement_features])
   const emptyUnsaved = useMemo(() => ({ isDirty: false, confirmLeave: null }), [])
   const statusWithSession = useMemo(() => ({ ...status, session }), [status, session])
 
   return <AuthContext.Provider value={authValue}>
-    <ProfilesContext.Provider value={emptyProfiles}>
+    <ProfilesContext.Provider value={localProfiles}>
       <AccessContext.Provider value={localAccess}>
         <FeaturesContext.Provider value={localFeatures}>
           <OnlineRequestsContext.Provider value={{ count: 0, requests: [], refresh: () => {} }}>
             <SettingsContext.Provider value={{ settings: localSettings, setSettings: () => {} }}>
               <UnsavedChangesContext.Provider value={emptyUnsaved}>
                 <HashRouter>
-                  {!session ? <BarLocalWorkspace
-                    status={statusWithSession}
-                    onLogout={handleLocalLogout}
-                    onSessionChange={onLocalSessionChange}
-                    initialLoginNotice={initialLoginNotice}
-                  /> : <Suspense fallback={<LocalBarLoading />}>
+                  {!session ? <div className="min-h-screen bg-slate-50">
+                    {initialLoginNotice && <div role="status" className="mx-auto max-w-xl px-4 pt-5 text-sm text-emerald-800">{initialLoginNotice}</div>}
+                    <Login />
+                  </div> : <Suspense fallback={<LocalBarLoading />}>
                     <Routes>
                       <Route element={<HposLayout />}>
                         <Route index element={<Navigate to="/hpos/pos" replace />} />
                         <Route path="hpos" element={<Navigate to="/hpos/pos" replace />} />
                         <Route path="hpos/pos" element={<BarLocalWorkspace status={statusWithSession} onLogout={handleLocalLogout} embeddedShell embeddedPanel="counter" />} />
-                        <Route path="hpos/menu" element={<BarLocalWorkspace status={statusWithSession} onLogout={handleLocalLogout} embeddedShell embeddedPanel="menu" />} />
+                        <Route path="hpos/menu" element={<BarLocalNativeMenu />} />
                         <Route path="hpos/stock" element={<BarLocalWorkspace status={statusWithSession} onLogout={handleLocalLogout} embeddedShell embeddedPanel="stock" />} />
                         <Route path="hpos/checks" element={<BarLocalWorkspace status={statusWithSession} onLogout={handleLocalLogout} embeddedShell embeddedPanel="tabs" />} />
                         <Route path="hpos/cash" element={<BarLocalWorkspace status={statusWithSession} onLogout={handleLocalLogout} embeddedShell embeddedPanel="drawer" />} />

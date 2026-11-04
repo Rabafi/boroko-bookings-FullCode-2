@@ -1,5 +1,17 @@
 # Bar manual impact record
 
+## 3 November 2026 — pre-login business selection and isolated workspace switch
+
+**Impact: customer start-up and business-switch instructions change; approved guide edits remain pending by user direction.** Hospitality POS now asks the operator to choose Restaurant or a saved local Bar before credentials are entered. The choice is persisted locally. A new Bar setup reopens the same application in an isolated local profile; returning to Restaurant requires no unresolved Bar operation and ends the local session first. The owner must choose the intended business even when the same email exists in both. New setup now shows its actual business-details, install, database-verification, owner-sign-in and ready stages, and the temporary setup PIN has an explicit show/hide control. Manual/quick-start wording, chooser and setup screenshots, manifest and packaged offline-guide verification are pending and non-blocking by the user's PDF deferral. This source verification does not establish legacy setup migration, customer commissioning, or release readiness.
+
+## 3 November 2026 — shared local Bar sign-in and session bootstrap
+
+**Impact: customer sign-in guidance changes; approved guide updates remain pending by user direction.** A selected local Bar now presents the familiar Hospitality POS login form, authenticates owner email/password or staff ID/PIN only against the local Bar service, and builds the active business profile and feature gates from the authenticated local bootstrap response. Cloud password reset, company selection, and saved cloud-session controls are hidden in this local sign-in. Staff access recovery remains a manager action in Team. The native Menu, Stock, and Till screens are not yet integrated with local IPC; local operations still use the existing local Bar workflow panels until their service adapters and disposable rendered acceptance pass. Do not describe the normal Hpos integration as complete. Update the manual/quick-start and screenshots when the screen flow is stable; PDFs and packaged-guide checks remain pending and non-blocking under the user's instruction.
+
+## 3 November 2026 — single local Bar chooser entry
+
+**Impact: customer navigation and recovery wording changed; approved guide edits remain pending by user direction.** The shared business chooser now shows a completed local Bar by its saved business name with **Open Bar**, and an explicitly linked unfinished setup as one **Continue setup** card. A protected completion record or committed local authority keeps the entry Ready across app restarts and temporary service outages. Unmatched or unreadable saved attempts remain visible as a saved Bar setup for recovery. Existing Restaurant/hotel/lodge profiles and unlinked drafts are preserved; the chooser never matches or removes a draft by its display name. When an older draft has no saved association, the operator may explicitly confirm **This is the same Bar**; the chooser stores only a protected profile-ID link and keeps the draft data. Update the manual/quick-start, capture the chooser states, update the approved manifest, and verify the packaged offline guides when documentation work resumes. PDF/guide work remains pending and non-blocking for this software checkpoint per user direction; customer commissioning remains separate.
+
 ## 1 November 2026 — local setup storage guidance
 
 **Impact: customer instructions need a future update; source PDFs remain pending by user direction.** Setup now explains the main computer versus another till, outlet naming, optional contact fields, local owner PIN, and the disk-space check. A low-space warning recommends more operating headroom; a hard installation-space shortfall blocks setup and gives an exact amount and recovery action. Recovery copies and drills show a calculated space requirement. These changes affect setup and recovery instructions, so the approved manual and quick-start must be revised after the UI is stable, then screenshots, manifest/checksums and packaged offline-guide access must be verified. Per the user’s instruction, PDF and screenshot work remains pending and is non-blocking for the software-only review; it remains required before customer commissioning.
@@ -349,6 +361,12 @@ The saved-attempt recovery path now resumes a protected PostgreSQL cluster after
 # 2026-11-02 owner projection checkpoint
 
 The new Command Central owner-link form is available only for a loopback `local_test` receiver. It is not enabled in customer/hosted profiles and does not authorize or change local trading. No approved customer PDF update is required for this test-only control. The user directed PDF, quick-start, screenshot, manifest and packaged-guide changes to remain pending and non-blocking; reassess before any customer activation.
+
+## Normal Hpos local Menu route (2026-11-04)
+
+- Manual impact: Required. The regular Menu navigation now opens a local-authority page for product create/edit, outlet availability and archive. It uses version checks, preserves history through archive, and blocks additional edits until an unknown operation is retried under its original ID. Stock and Till still use their local Bar workspace panels.
+- Customer PDF, quick-start, screenshot, approved-manifest/checksum and packaged offline-guide work: Pending by the user's instruction; recorded as non-blocking for this software checkpoint. No PDF was edited.
+- Verification: route/authority tests passed 8/8; renderer typecheck and Hospitality POS production build passed. Two disposable PostgreSQL catalogue/availability tests passed, and a rendered Chromium Menu flow passed 1/1 against real PostgreSQL query/command contracts. The test uses a renderer bridge, so Electron IPC/service transport acceptance remains pending before commissioning.
 
 
 

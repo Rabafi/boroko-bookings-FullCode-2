@@ -1,0 +1,39 @@
+# Normal Hospitality POS integration for local Bar authority
+
+Status: implementation in progress. This is an engineering handoff and does not qualify local Bar for release. Rabafi's live local database was not read or modified as part of this source review.
+
+## Current entry and session path
+
+| Stage | Current path | Required local path / guard |
+|---|---|---|
+| Saved Bar selection | `App.jsx` recognizes a configured, non-restarting local authority and mounts `LocalBarHposShell` | Keep the explicit authority decision in the main process. Do not fall through to cloud login when local mode is selected. |
+| Business chooser | The Hospitality POS startup chooser reads a sanitized saved-Bar status before auth. Choosing Restaurant persists `cloud`; choosing a saved Bar persists `local_bar` and reopens the same app using an isolated user-data profile. | The saved Bar choice is implemented. Keep authority selection explicit and before credentials; do not select by email or network state. Validate legacy saved setup compatibility before moving existing data into the new isolated profile. |
+| Sign-in | `LocalBarHposShell` now renders the shared `Login.jsx` form. It has explicit owner email/password and staff-ID/PIN modes; both call `window.api.barLocal.login` and return before cloud auth. Cloud status/diagnostics effects are skipped. | Keep the local credential method explicit. Do not route a Bar identity through Supabase, even if the email matches a Restaurant user. No cloud trusted-session restore or cloud password reset for Bar. |
+| Session and identity | `barLocal.login` -> `BarLocalElectronRuntime.login` -> service staff session; local shell derives user, role, business, outlet and capabilities from the returned session | Keep session in the local shell context. Capabilities/outlet come from authenticated service response, never renderer form choices. Logout calls only `barLocal.logout`. |
+| Layout/navigation | `HposLayout` is shared; it has a local-authority indicator and suppresses some cloud polling | Audit every effect and action reachable from local routes. The renderer guard is not authorization; service capability/scope checks remain authoritative. |
+
+## Screen-to-contract map
+
+| Familiar screen | Existing cloud IPC used | Local service contract available | Integration status / guardrail |
+|---|---|---|---|
+| Sell / Till (`HposTerminal`) | `pos.getMenuItems`, `getCustomers`, `getPromotions`, `getTabs`, `getRecipes`, `getStaff`, `getMenuStockReadiness`, `getModifierGroups`, `getTablesWithStatus`, `getCurrentShift`, drawer/till state, `pos.openShift`, `pos.createOrder` | `menu.list`, `menu.availability`, `menu.promotions`, `menu.modifiers`, `customers.list`, `tabs.list`, `shift.current`, `bootstrap`; `shift.open`, `sale.commit`, `tab.open/add/settle/...`, `drawer.movement` | `/hpos/pos` uses the service-backed local Bar workspace counter with atomic local sale/shift commands and the operation journal. It is not the regular `HposTerminal` page. Keep the cloud IPC fence closed; normal Hpos page parity and rendered sale recovery acceptance remain pending. |
+| Menu (`HposMenu`) | `pos.getMenuItems`, inventory item reads, modifiers/recipes/outlets and menu/pack create, update, delete calls | `menu.list`, `menu.availability`; `catalogue.upsert`, `catalogue.availability.set` | `/hpos/menu` renders `BarLocalNativeMenu`, which uses only authenticated `barLocal` IPC, complete paginated reads, version-guarded edits/archive, outlet availability, and same-operation retry for unknown outcomes. Unsupported pack/outlet/recipe/modifier controls are not exposed. Rendered and disposable-database acceptance for this new page is still pending. |
+| Stock (`HposStock`) | `inventory.getItemsWithReadStatus`, movement/history reads, item create/update, adjust, physical count, delivery, barcode, label printing | `stock.list`, `stock.lot_expiry`, `stock.lot_balances`; `stock.receive`, `stock.adjust`, `stock.stocktake`, `stock.waste`, lot and transfer commands | `/hpos/stock` uses the service-backed local Bar workspace panel with strict query/command contracts. It is not the regular `HposStock` page. Barcode/printing and unsupported cloud-only item mutations stay unavailable in local mode. Native-page parity and rendered regression acceptance remain pending. |
+| Open checks | `pos.getTabs` and tab detail/mutations | `tabs.list`, `tab.get`; `tab.open/add/settle/transfer/split/merge` | Local workspace currently covers this. Native page needs the same scope and retry protections before routing. |
+| Cash, shift close and cash-up | drawer, current-shift, cash-up, close and review IPC | `shift.current`, `cashup.summary`; `shift.close`, `drawer.movement`, `cashup.submit/review/reopen` | Local workspace has service-backed paths. Native parity not qualified. |
+| Sales, reports, system health | POS/report/sync IPC | `sales.list`, `sale.get`, `reports.sales_summary`, `reports.stock`, `reports.cashup`, `outbox.status`, `audit.search` | Local reports must retain service completeness and “as of” labels. Cloud sync/hosted projection is not an authority fallback. |
+
+## IPC boundary
+
+`src/preload/index.js` exposes a separate `barLocal` API. `src/main/bar-local/electronRuntime.js` registers local login/query/command handlers and rejects ordinary IPC in local authority mode with `LOCAL_WORKSPACE_NOT_ROUTED`. Preserve that fail-closed gate. Do not broadly allow existing `pos:*` or `inventory:*` channels: their handlers are cloud-backed and a generic bypass would mix authorities. Implement any native-screen adapter as a narrow, explicit main-process allowlist that calls the local runtime and returns a documented view model; commands must map one-to-one to atomic Bar service commands and retain stable operation IDs across retries.
+
+## Remaining acceptance work
+
+1. Persisted pre-login authority selection and the same-app isolated Bar setup/reopen flow are implemented. Restaurant and local Bar data roots remain separate for new setups; switching from Bar refuses to leave while a local intent is unresolved, logs out the Bar session and reopens the saved Restaurant root. Still validate legacy saved-attempt compatibility and prove that Restaurant cached offline login and queue replay survive both directions of switching.
+2. Standard login uses local email/password and local service errors only; wrong credentials do not call cloud auth. Restaurant login keeps Supabase and cached offline-session rules. Equal email addresses across the two authorities remain independent.
+3. Native Menu, Stock, and Till render with local fixture data. Every button is mapped to an allowlisted local query/command or visibly unavailable with a recovery explanation.
+4. Wrong role/outlet is refused server-side. An ambiguous sale timeout retains and retries the same operation ID; it never submits a new sale.
+5. Disposable local fixtures exercise mixed Bar+Restaurant chooser -> login -> menu -> stock -> shift -> sale -> restart, account/business switch, Restaurant queue replay, and zero Bar cloud auth/trading traffic, with database effect and audit assertions. Rabafi is excluded from destructive or synthetic tests.
+6. Build/typecheck and focused regression coverage pass. Manual impact stays pending under the user's PDF deferral; that does not waive internal operator/error guidance.
+
+Physical second-PC and Supabase/hosted verification remain excluded by the user's instruction. This document does not imply commissioning, production deployment, or release qualification.

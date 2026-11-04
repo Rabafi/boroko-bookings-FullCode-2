@@ -10,6 +10,7 @@ const shell = read('src/renderer/src/components/hospitality-pos/LocalBarHposShel
 const layout = read('src/renderer/src/components/hospitality-pos/HposLayout.jsx')
 const nav = read('src/renderer/src/components/hospitality-pos/HposNav.jsx')
 const app = read('src/renderer/src/App.jsx')
+const nativeMenu = read('src/renderer/src/components/hospitality-pos/BarLocalNativeMenu.jsx')
 
 const routePanels = [
   ['hpos/pos', 'counter'], ['hpos/menu', 'menu'], ['hpos/stock', 'stock'],
@@ -23,14 +24,40 @@ const routePanels = [
   ['hpos/system-health', 'admin'], ['hpos/setup-readiness', 'admin'], ['settings', 'settings'],
 ]
 
-test('configured local Bar starts in the normal Hpos shell and maps approved routes to local panels', () => {
+test('configured local Bar uses the shared login and binds its profile/providers to authenticated local bootstrap data', () => {
   assert.match(app, /<LocalBarHposShell status=\{currentAuthority\}/)
-  for (const [route, panel] of routePanels) {
+  assert.match(shell, /<Login \/>/)
+  assert.match(read('src/renderer/src/components/Login.jsx'), /if \(localBarAuthority\)[\s\S]*?window\.api\.barLocal\.login\(\{ email: email\.trim\(\)\.toLowerCase\(\), password \}\)/)
+  assert.match(read('src/renderer/src/components/Login.jsx'), /window\.api\.barLocal\.login\(\{ staff_id: staffId\.trim\(\), pin: staffPin \}\)/)
+  assert.match(read('src/renderer/src/components/Login.jsx'), /Staff PIN/)
+  assert.match(shell, /window\.api\.barLocal\.query\('bootstrap', \{\}\)/)
+  assert.match(shell, /authority_mode: 'bar_local'/)
+  assert.match(shell, /activeProfile: localProfile/)
+  assert.match(shell, /bootstrap\?\.authority\?\.entitlement_features/)
+  for (const [route, panel] of routePanels.filter(([route]) => route !== 'hpos/menu')) {
     assert.match(shell, new RegExp(`<Route path="${route}" element=\\{<BarLocalWorkspace[^\\n]*embeddedPanel="${panel}"`), `${route} must use its local workflow panel`)
   }
+  assert.match(shell, /<Route path="hpos\/menu" element=\{<BarLocalNativeMenu \/>\}/)
   assert.match(shell, /<Route path="\*" element=\{<LocalBarRouteUnavailable \/>\}/)
   assert.match(shell, /localAuthority: true/)
-  assert.match(shell, /APP_FEATURES\.map\(\(feature\) => \[feature, false\]\)/)
+})
+
+test('regular Bar menu adapter reads and mutates through the local authority only', () => {
+  assert.match(nativeMenu, /loadCompleteBarList\(verifiedQuery, 'menu\.list', \{ include_inactive: true \}\)/)
+  assert.match(nativeMenu, /loadCompleteBarList\(verifiedQuery, 'menu\.availability', \{ include_inactive: true \}\)/)
+  assert.match(nativeMenu, /window\.api\.barLocal\.command\(\{ command, payload, operation_id: operationId \}\)/)
+  assert.match(nativeMenu, /window\.api\.barLocal\.retryOperation\(operationId\)/)
+  assert.match(nativeMenu, /catalogue\.availability\.set/)
+  assert.match(nativeMenu, /catalogue\.upsert/)
+  assert.doesNotMatch(nativeMenu, /window\.api\.(?:pos|inventory)\./)
+})
+
+test('authority chooser hides cached cloud identity without deleting Restaurant offline-session state', () => {
+  const marker = "if (!authority || authority.authority_mode === 'bar_local' || authority.workspace_choice_required === true)"
+  const start = app.indexOf(marker)
+  const chooserStartup = app.slice(start, app.indexOf('setLocalAuthorityState(authority)', start))
+  assert.match(chooserStartup, /setUser\(null\)/)
+  assert.doesNotMatch(chooserStartup, /localStorage\.removeItem\(['"]bb_user|localStorage\.removeItem\(USER_SCOPE_KEY/)
 })
 
 test('local Hpos layout never polls cloud POS or sync and bypasses cloud PIN/support gating', () => {
