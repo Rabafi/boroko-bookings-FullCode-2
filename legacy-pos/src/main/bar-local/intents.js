@@ -389,6 +389,17 @@ export class IntentJournal {
     this.intents = new Map();
     this.lastRecovery = null;
     this._load();
+    this._recoverInterruptedSubmissions();
+  }
+
+  _recoverInterruptedSubmissions() {
+    for (const intent of this.intents.values()) {
+      if (intent.state !== 'submitting') continue;
+      this.markUncertain(intent.operation_id, {
+        code: 'PROCESS_RESTART',
+        message: 'The till restarted while this operation was being sent. Retry the same saved operation to check its result.'
+      });
+    }
   }
 
   _load() {

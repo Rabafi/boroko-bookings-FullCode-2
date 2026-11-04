@@ -23,7 +23,7 @@ test('committed Modern startup migrates the original uncertain journal into tran
  const f=fixture(t);f.profile();const legacy=new IntentJournal({filePath:f.options.legacyFilePath,protection:f.options.protection});legacy.createIntent(f.env);legacy.markSending(f.env.operation_id);legacy.close()
  const runtime=f.open();assert.equal(runtime.mode,'bar_local');assert.equal(runtime.adapter.journal.filePath,f.options.filePath)
  assert.equal(runtime.adapter.journal.storage.constructor.name,'SqliteFrameStore')
- assert.deepEqual(runtime.getOpenIntents().map(row=>row.operation_id),[f.env.operation_id]);assert.equal(runtime.adapter.journal.get(f.env.operation_id).state,'sending')
+ assert.deepEqual(runtime.getOpenIntents().map(row=>row.operation_id),[f.env.operation_id]);assert.equal(runtime.adapter.journal.get(f.env.operation_id).state,'outcome_unknown')
 })
 test('Modern startup refuses orphaned SQLite intents instead of defaulting to cloud',t=>{
  const f=fixture(t),journal=openSqliteIntentJournal(f.options);journal.createIntent(f.env);journal.close()

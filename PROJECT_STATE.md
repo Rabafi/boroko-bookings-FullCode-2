@@ -1,3 +1,10 @@
+## 2026-11-04 — Bar local-first crash recovery follow-up
+
+- Modern SQLite and JSONL journals now durably convert an interrupted `sending` operation to `outcome_unknown` with `PROCESS_RESTART`; Legacy JSONL similarly converts interrupted `submitting` operations to `uncertain`. Both preserve the exact original command envelope and operation ID for safe replay.
+- Modern journal regressions passed **9/9** and `npm.cmd --prefix legacy-pos test` passed the full Legacy regression plus **54/54** Node tests. The Modern actual HTTP post-commit/process-kill test passed in the earlier guarded isolated PostgreSQL run. A standalone rerun here stopped at the explicit isolated-DB safety gate because no isolated test cluster was configured; no database was contacted.
+- A04 is now **partial**, not verified: post-commit/pre-client-checkpoint recovery and journal restart normalization are covered, while pre-send, printer, service restart, power-loss and full fault-window qualification remain open. Internal-only journal behavior change; no manual update required. PDF and approved guide work remains pending by user direction.
+- Branch commits remain local; push is blocked by the previously recorded automatic-review destination-trust rejection (EV-192). Preserve all unrelated worktree edits.
+
 ## 2026-11-04 — normal Hpos local Bar Menu adapter
 
 - `/hpos/menu` now mounts `BarLocalNativeMenu` in local Bar authority mode. The page uses only authenticated `barLocal` queries/commands, rejects incomplete or cross-snapshot reads, carries version preconditions, performs catalogue archive rather than deleting history, uses exact percentage-to-rate conversion and keeps unknown operations on their original retry ID. Cloud Restaurant menu flows are unchanged.

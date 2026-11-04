@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, realpathSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createApiHarness } from './api-harness.mjs'
 import { TEST_SETUP_SECRET } from './harness.mjs'
 import { createModernBarLocalAdapter, createHttpTransport, BarLocalAdapterError } from '../../../src/main/bar-local/index.js'
@@ -12,7 +14,9 @@ import { IntentJournal } from '../../../legacy-pos/src/main/bar-local/intents.js
 import { loadCompleteBarList } from '../../../src/shared/barLocalPagination.js'
 import { openSqliteIntentJournal } from '../../../src/main/bar-local/sqliteIntents.js'
 
-test('production Modern and Legacy clients trade through HTTP and recover a lost committed reply using the original journal',async(t)=>{
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..')
+
+test('production Modern and Legacy clients trade through HTTP and recover lost replies and a process crash using original journals',{timeout:120000},async(t)=>{
  const h=await createApiHarness(t)
  const temp=mkdtempSync(path.join(os.tmpdir(),'bar-real-clients-'))
  let modern,legacy
@@ -72,8 +76,59 @@ test('production Modern and Legacy clients trade through HTTP and recover a lost
  assert.equal(legacySale.outcome,'committed_local')
  const afterLegacySale=await loadCompleteBarList((name,filters)=>legacy.query(name,filters),'stock.lot_balances')
  assert.equal(afterLegacySale.find((row)=>row.product_id===productId&&row.lot_code==='REAL-LOT')?.remaining_quantity,'8.000000')
+ const crashOperationId=randomUUID()
+ const crashJournalPath=path.join(temp,'crashed-modern.sqlite')
+ const crashSpec={
+  baseUrl:h.baseUrl,authority,device:s,operationId:crashOperationId,payload,
+  journalPath:crashJournalPath,
+  mainModule:new URL('../../../src/main/bar-local/index.js',import.meta.url).href,
+  sqliteModule:new URL('../../../src/main/bar-local/sqliteIntents.js',import.meta.url).href
+ }
+ const childSource=`
+  const spec=${JSON.stringify(crashSpec)};
+  const {createModernBarLocalAdapter,createHttpTransport}=await import(spec.mainModule);
+  const {openSqliteIntentJournal}=await import(spec.sqliteModule);
+  const base=createHttpTransport({base_url:spec.baseUrl});
+  const transport={...base,async post(url,body,options){
+   const response=await base.post(url,body,options);
+   if(url==='/v1/commands'&&body.command==='sale.commit'&&body.operation_id===spec.operationId&&response.body?.ok===true)process.exit(77);
+   return response;
+  }};
+  const adapter=createModernBarLocalAdapter({
+   authority_config:spec.authority,
+   journal:openSqliteIntentJournal({filePath:spec.journalPath,legacyFilePath:spec.journalPath+'.jsonl'}),
+   device_credential:{device_id:spec.device.device_id,device_token:spec.device.device_token},
+   transport
+  });
+  const client=adapter.requireClient();
+  await client.login({email:'owner@example.test',password:'test owner password 123'});
+  await client.healthReady();
+  await client.command({command:'sale.commit',operation_id:spec.operationId,payload:spec.payload});
+  process.exit(78);
+ `
+ const childResult=await new Promise((resolve,reject)=>{
+  const child=spawn(process.execPath,['--input-type=module','-e',childSource],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']})
+  let stdout='';let stderr=''
+  child.stdout.on('data',(chunk)=>{stdout+=chunk})
+  child.stderr.on('data',(chunk)=>{stderr+=chunk})
+  child.once('error',reject)
+  child.once('exit',(code,signal)=>resolve({code,signal,stdout,stderr}))
+ })
+ assert.equal(childResult.code,77,JSON.stringify(childResult))
+ const crashedModern=createModernBarLocalAdapter({
+  authority_config:authority,
+  journal:openSqliteIntentJournal({filePath:crashJournalPath,legacyFilePath:crashJournalPath+'.jsonl'}),
+  device_credential:{device_id:s.device_id,device_token:s.device_token},
+  transport:createHttpTransport({base_url:h.baseUrl})
+ })
+ await crashedModern.requireClient().login({email:'owner@example.test',password:'test owner password 123'})
+ const crashRecovery=await crashedModern.requireClient().retryOperation(crashOperationId)
+ assert.equal(crashRecovery.outcome,'committed_local')
+ assert.equal(crashRecovery.replayed,true)
+ assert.equal(crashRecovery.receipt.operation_id,crashOperationId)
+ crashedModern.close()
  const count=await h.migrator.query('SELECT count(*)::int AS n FROM bar_local.sales')
- assert.equal(count.rows[0].n,2)
+ assert.equal(count.rows[0].n,3)
  const balance=(await h.migrator.query('SELECT quantity::text FROM bar_local.stock_balances WHERE product_id=$1',[productId])).rows[0]
- assert.equal(Number(balance.quantity),8)
+ assert.equal(Number(balance.quantity),7)
 })

@@ -28,12 +28,21 @@ test('Modern SQLite migration preserves original uncertain envelopes, secret pro
  assert.equal(fs.readFileSync(f.filePath).includes(Buffer.from('synthetic-secret-pin')),false)
  assert.throws(()=>reopened.createIntent({...env,payload:{...env.payload,display_name:'Changed'}}),error=>error.code==='IDEMPOTENCY_PAYLOAD_CONFLICT')
 })
-test('SQLite receipt checkpoint failures fence further dispatch and reopening recovers the last durable identity',t=>{
+test('SQLite receipt checkpoint failures fence further dispatch and reopening marks an interrupted send uncertain',t=>{
  const f=fixture(t),env=envelope(),journal=f.open();journal.createIntent(env);journal.markSending(env.operation_id)
  journal.storage.append=()=>{throw Error('Synthetic disk failure')}
  assert.throws(()=>journal.markCommitted(env.operation_id,{operation_id:env.operation_id}),error=>error.code==='JOURNAL_WRITE_FAILED')
  assert.equal(journal.closed,true);assert.throws(()=>journal.createIntent(envelope()))
- journal.close();const recovered=f.open();assert.equal(recovered.get(env.operation_id).state,'sending');assert.equal(recovered.get(env.operation_id).payload_hash,journal.get(env.operation_id).payload_hash)
+ journal.close();const recovered=f.open();assert.equal(recovered.get(env.operation_id).state,'outcome_unknown');assert.equal(recovered.get(env.operation_id).last_error_code,'PROCESS_RESTART');assert.equal(recovered.get(env.operation_id).payload_hash,journal.get(env.operation_id).payload_hash)
+})
+test('reopening a JSONL journal also marks an interrupted send uncertain without changing its envelope',t=>{
+ const f=fixture(t),env=envelope(),journal=new IntentJournal({filePath:f.legacyFilePath,fsync:true,protection})
+ journal.createIntent(env);journal.markSending(env.operation_id);journal.close()
+ const recovered=new IntentJournal({filePath:f.legacyFilePath,fsync:true,protection})
+ assert.equal(recovered.get(env.operation_id).state,'outcome_unknown')
+ assert.equal(recovered.get(env.operation_id).last_error_code,'PROCESS_RESTART')
+ assert.deepEqual(recovered.get(env.operation_id).envelope,{...env,expected_versions:{},dependencies:[],client_occurred_at:null})
+ recovered.close()
 })
 test('damaged SQLite operation frames never fall back to the retained valid legacy journal',t=>{
  const f=fixture(t),env=envelope(),legacy=new IntentJournal({filePath:f.legacyFilePath,protection});legacy.createIntent(env);legacy.close()

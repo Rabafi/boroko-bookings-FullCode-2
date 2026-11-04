@@ -500,7 +500,7 @@ test('Legacy local transport uses the service device headers required for authen
   }
 });
 
-test('Legacy restart re-attempts an intent left submitting with the same operation ID', async () => {
+test('Legacy restart marks interrupted submissions uncertain and retries the same operation ID', async () => {
   const env = setup();
   try {
     const operationId = '33333333-3333-4333-8333-333333333333';
@@ -512,10 +512,11 @@ test('Legacy restart re-attempts an intent left submitting with the same operati
     env.journal.createIntent({ operationId, envelope });
     env.journal.beginAttempt(operationId);
 
-    // A crash between the durable `submitting` record and the reply must not
-    // strand the till: reopening the journal keeps the attempt and the same ID.
+    // A crash between the durable `submitting` record and the reply must be
+    // surfaced as unknown while retaining the same envelope and operation ID.
     const reopened = new IntentJournal({ filePath: join(env.dir, 'intents.jsonl') });
-    assert.equal(reopened.getIntent(operationId).state, 'submitting');
+    assert.equal(reopened.getIntent(operationId).state, 'uncertain');
+    assert.equal(reopened.getIntent(operationId).error.code, 'PROCESS_RESTART');
     assert.equal(reopened.listOpenIntents().length, 1);
 
     const requests = [];

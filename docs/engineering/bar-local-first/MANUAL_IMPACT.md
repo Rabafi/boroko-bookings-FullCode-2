@@ -380,6 +380,12 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Customer PDFs and approved guide/package work: Pending by user's instruction and non-blocking. No PDF was edited.
 - Verification: EV-194, isolated PostgreSQL sale replay passed 1/1.
 
+## Interrupted client submission recovery (2026-11-04)
+
+- Manual impact: None. The Modern SQLite/JSONL and Legacy JSONL journals now record an interrupted send as outcome-unknown/uncertain after restart while retaining its original operation and retry path. No operator-visible workflow or guidance changed.
+- Customer PDF, quick-start, screenshot, approved-manifest/checksum and packaged offline-guide work: Pending by the user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: Modern journal regressions passed 9/9 and the full Legacy test command passed 54/54. The DB/API post-commit process-kill case passed in the prior guarded isolated run; its standalone rerun in this execution was blocked by the missing explicit isolated-test cluster configuration (no database connection was made). See EV-199.
+
 
 
 ## Owner projection read surface (2026-11-03)

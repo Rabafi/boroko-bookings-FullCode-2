@@ -341,8 +341,17 @@ export class IntentJournal {
     this.closed = false
     if (this.filePath !== null) {
       if(this.storage){
-        try{this.#loadStoredFrames()}catch(error){this.closed=true;this.storage.close();throw error}
-      }else this.#load()
+        try{this.#loadStoredFrames();this.#recoverInterruptedSends()}catch(error){this.closed=true;this.storage.close();throw error}
+      }else{
+        this.#load()
+        this.#recoverInterruptedSends()
+      }
+    }
+  }
+
+  #recoverInterruptedSends() {
+    for(const record of this.records.values()){
+      if(record.state===INTENT_STATES.SENDING)this.markOutcomeUnknown(record.operation_id,'PROCESS_RESTART')
     }
   }
 
