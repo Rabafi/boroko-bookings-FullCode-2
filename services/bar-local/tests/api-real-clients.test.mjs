@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { createApiHarness } from './api-harness.mjs'
 import { TEST_SETUP_SECRET } from './harness.mjs'
 import { createModernBarLocalAdapter, createHttpTransport, BarLocalAdapterError } from '../../../src/main/bar-local/index.js'
-import { LegacyBarLocalClient } from '../../../legacy-pos/src/main/bar-local/client.js'
+import { createLegacyBarLocalTransport, LegacyBarLocalClient } from '../../../legacy-pos/src/main/bar-local/client.js'
 import { IntentJournal } from '../../../legacy-pos/src/main/bar-local/intents.js'
 import { loadCompleteBarList } from '../../../src/shared/barLocalPagination.js'
 import { openSqliteIntentJournal } from '../../../src/main/bar-local/sqliteIntents.js'
@@ -127,8 +127,50 @@ test('production Modern and Legacy clients trade through HTTP and recover lost r
  assert.equal(crashRecovery.replayed,true)
  assert.equal(crashRecovery.receipt.operation_id,crashOperationId)
  crashedModern.close()
+ const crashLegacyOperationId=randomUUID()
+ const crashLegacyJournalPath=path.join(temp,'crashed-legacy.jsonl')
+ const legacyScope={authority_id:s.authority_id,authority_epoch:s.authority_epoch,business_id:s.business_id,outlet_id:s.outlet_id,device_id:s.device_id,deviceToken:s.device_token}
+ const legacyCrashSpec={
+  baseUrl:h.baseUrl,scope:legacyScope,operationId:crashLegacyOperationId,payload,
+  journalPath:crashLegacyJournalPath,
+  clientModule:new URL('../../../legacy-pos/src/main/bar-local/client.js',import.meta.url).href,
+  journalModule:new URL('../../../legacy-pos/src/main/bar-local/intents.js',import.meta.url).href
+ }
+ const legacyChildSource=`
+  const spec=${JSON.stringify(legacyCrashSpec)};
+  const {createLegacyBarLocalTransport,LegacyBarLocalClient}=await import(spec.clientModule);
+  const {IntentJournal}=await import(spec.journalModule);
+  const base=createLegacyBarLocalTransport({baseUrl:spec.baseUrl});
+  const transport={...base,async request(method,path,options){
+   const response=await base.request(method,path,options);
+   if(path==='/v1/commands'&&options.body?.operation_id===spec.operationId&&response.body?.ok===true)process.exit(77);
+   return response;
+  }};
+  const client=new LegacyBarLocalClient({scope:spec.scope,journal:new IntentJournal({filePath:spec.journalPath}),transport});
+  await client.login({email:'owner@example.test',password:'test owner password 123'});
+  await client.command('sale.commit',spec.payload,{operationId:spec.operationId});
+  process.exit(78);
+ `
+ const legacyChildResult=await new Promise((resolve,reject)=>{
+  const child=spawn(process.execPath,['--input-type=module','-e',legacyChildSource],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']})
+  let stdout='';let stderr=''
+  child.stdout.on('data',(chunk)=>{stdout+=chunk})
+  child.stderr.on('data',(chunk)=>{stderr+=chunk})
+  child.once('error',reject)
+  child.once('exit',(code,signal)=>resolve({code,signal,stdout,stderr}))
+ })
+ assert.equal(legacyChildResult.code,77,JSON.stringify(legacyChildResult))
+ const recoveredLegacyJournal=new IntentJournal({filePath:crashLegacyJournalPath})
+ assert.equal(recoveredLegacyJournal.getIntent(crashLegacyOperationId).state,'uncertain')
+ assert.equal(recoveredLegacyJournal.getIntent(crashLegacyOperationId).error.code,'PROCESS_RESTART')
+ const recoveredLegacy=new LegacyBarLocalClient({scope:legacyScope,journal:recoveredLegacyJournal,baseUrl:h.baseUrl})
+ await recoveredLegacy.login({email:'owner@example.test',password:'test owner password 123'})
+ const legacyCrashRecovery=await recoveredLegacy.retry(crashLegacyOperationId)
+ assert.equal(legacyCrashRecovery.outcome,'committed_local')
+ assert.equal(legacyCrashRecovery.replayed,true)
+ assert.equal(legacyCrashRecovery.receipt.operation_id,crashLegacyOperationId)
  const count=await h.migrator.query('SELECT count(*)::int AS n FROM bar_local.sales')
- assert.equal(count.rows[0].n,3)
+ assert.equal(count.rows[0].n,4)
  const balance=(await h.migrator.query('SELECT quantity::text FROM bar_local.stock_balances WHERE product_id=$1',[productId])).rows[0]
- assert.equal(Number(balance.quantity),7)
+ assert.equal(Number(balance.quantity),6)
 })
