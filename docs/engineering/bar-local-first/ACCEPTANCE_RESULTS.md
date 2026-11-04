@@ -10,9 +10,10 @@
 | Stock completeness/FEFO, shift-readiness and tabs/cash-up contracts | Passed, 6/6 | Identity-checked disposable PostgreSQL 17.6; no Rabafi or hosted database. |
 | Rendered local Menu create/edit/availability/archive workflow | Passed, 1/1 | Chromium page commands were forwarded through a test `barLocal` bridge to real PostgreSQL query/command contracts. This did not run Electron IPC or the service HTTP listener. |
 | Shared owner first-use notice and local Electron regression suite | Focused checks passed 6/6; `npm.cmd run test:bar-local-electron` passed 109/109 | The owner notice clears only after successful owner authentication. This does not represent a rendered login against the installed local service. |
-| Daily focused commit | `0925339b` plus evidence commit `7ff4d298` | Only focused Bar local-first files were committed. Push was rejected by automatic review because the configured origin is not verified as a trusted private organization repository; see EV-192 for exact remaining action. |
+| Committed-sale replay after catalogue price/version change | Passed, 1/1 | Disposable identity-checked PostgreSQL 17.6, all 81 migrations. Replaying the same operation returned the original receipt/price, kept one sale, and depleted stock once. Closed-shift and uncommitted-work recovery remain untested. |
+| Daily focused commits | `0925339b`, `7ff4d298`, `5c231cb0`, `35092aca`, `1e6bc7c6` | Focused Bar implementation/evidence commits are local. Push was rejected by automatic review because the configured origin is not verified as a trusted private organization repository; see EV-192 for exact remaining action. |
 
-Local Bar commissioning remains **NO-GO**. Stock and Till continue through local service-backed Bar workspace panels and do not yet use the regular `HposStock`/`HposTerminal` components. Electron IPC/service-transport rendered acceptance, legacy saved-setup migration, broad renderer/workspace isolation, installed Windows/customer qualification, physical multi-PC work and Supabase/hosted work remain open or excluded. PDF and approved guide/package work remains pending by user direction and is non-blocking for this software checkpoint. See EV-191/192 and `NORMAL_HPOS_LOCAL_AUTHORITY_INTEGRATION_2026-11-03.md`.
+Local Bar commissioning remains **NO-GO**. Stock and Till continue through local service-backed Bar workspace panels and do not yet use the regular `HposStock`/`HposTerminal` components. Electron IPC/service-transport rendered acceptance, legacy saved-setup migration, broad renderer/workspace isolation, installed Windows/customer qualification, physical multi-PC work and Supabase/hosted work remain open or excluded. PDF and approved guide/package work remains pending by user direction and is non-blocking for this software checkpoint. See EV-191–194 and `NORMAL_HPOS_LOCAL_AUTHORITY_INTEGRATION_2026-11-03.md`.
 
 ## 30 October 2026 — continuation verification (supersedes older status for this checkpoint)
 
@@ -118,7 +119,7 @@ Current SHA-256 values for this continuation are in `CHANGED_FILE_HASHES.csv`; t
 
 Earlier service/database evidence remains dated in `EVIDENCE_LOG.md`. It includes 96/96 isolated service tests against the test cluster available at that checkpoint; it is not a fresh run against a customer install and does not qualify the current host/service lifecycle.
 
-The isolated `db-catalogue-product-version.test.mjs` regression was added but not run: the required loopback-only target variables (`BAR_LOCAL_TEST_DB`, explicit non-default port/database, and matching cluster-data path) are not configured in this workspace. The suite's `loadTarget()` guard refuses to run without them, so no database target was inferred or improvised. The full isolated PostgreSQL/API suite was not rerun. Existing modifier SQL/API evidence remains dated evidence, not proof of a live UI click-through.
+The 4 November catalogue, stock, shift-readiness, tabs/cash-up and sale-replay tests ran against explicitly identified disposable loopback PostgreSQL clusters bootstrapped through all 81 local migrations; see EV-191 and EV-194. The full isolated PostgreSQL/API suite was not rerun. Existing modifier SQL/API evidence remains dated evidence, not proof of a live UI click-through.
 
 ## Acceptance status summary
 
