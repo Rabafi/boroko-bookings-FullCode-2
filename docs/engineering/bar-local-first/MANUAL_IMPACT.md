@@ -386,6 +386,12 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Customer PDF, quick-start, screenshot, approved-manifest/checksum and packaged offline-guide work: Pending by the user's instruction and non-blocking for this software checkpoint. No PDF was edited.
 - Verification: Modern journal regressions passed 9/9 and the full Legacy test command passed 54/54. The DB/API post-commit process-kill case passed in the prior guarded isolated run; its standalone rerun in this execution was blocked by the missing explicit isolated-test cluster configuration (no database connection was made). See EV-199.
 
+## Isolated practice Bar audit (2026-11-04)
+
+- Manual impact: Required before customer use. The app exposes a separate practice window with a persistent TRAINING banner, separate owner PIN and practice-only reset. Customer guidance must explain the separation from live Bars, practice-only receipts/data, safe reset and return to the live window.
+- Customer PDFs, quick-start, screenshots, approved-manifest/checksum and packaged offline-guide work: Pending by the user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: Isolation/reset unit tests passed 3/3; the real practice-cluster integration test was skipped because it is opt-in and the required 4 GiB free-space reserve is unavailable. See EV-201.
+
 
 
 ## Owner projection read surface (2026-11-03)
