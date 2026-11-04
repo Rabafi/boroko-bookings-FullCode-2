@@ -1,5 +1,18 @@
 # Bar local authority acceptance results
 
+## 4 November 2026 — normal Hpos local Menu checkpoint
+
+| Check | Result | Scope and limits |
+|---|---|---|
+| Local chooser, Menu route, complete menu snapshot and local-default regressions | Passed, 13/13 | Renderer/test contract checks. They do not substitute for Electron IPC transport. |
+| Renderer typecheck and Hospitality POS production build | Passed | Production build emitted existing mixed static/dynamic import warnings only. |
+| Menu availability and optimistic catalogue versions | Passed, 2/2 | Identity-checked disposable PostgreSQL 17.6, all 81 migrations. Stale product versions were refused and outlet availability was enforced. |
+| Stock completeness/FEFO, shift-readiness and tabs/cash-up contracts | Passed, 6/6 | Identity-checked disposable PostgreSQL 17.6; no Rabafi or hosted database. |
+| Rendered local Menu create/edit/availability/archive workflow | Passed, 1/1 | Chromium page commands were forwarded through a test `barLocal` bridge to real PostgreSQL query/command contracts. This did not run Electron IPC or the service HTTP listener. |
+| Daily focused commit | `0925339b` plus evidence commit `7ff4d298` | Only focused Bar local-first files were committed. Push was rejected by automatic review because the configured origin is not verified as a trusted private organization repository; see EV-192 for exact remaining action. |
+
+Local Bar commissioning remains **NO-GO**. Stock and Till continue through local service-backed Bar workspace panels and do not yet use the regular `HposStock`/`HposTerminal` components. Electron IPC/service-transport rendered acceptance, legacy saved-setup migration, broad renderer/workspace isolation, installed Windows/customer qualification, physical multi-PC work and Supabase/hosted work remain open or excluded. PDF and approved guide/package work remains pending by user direction and is non-blocking for this software checkpoint. See EV-191/192 and `NORMAL_HPOS_LOCAL_AUTHORITY_INTEGRATION_2026-11-03.md`.
+
 ## 30 October 2026 — continuation verification (supersedes older status for this checkpoint)
 
 | Check | Result | Limit |
