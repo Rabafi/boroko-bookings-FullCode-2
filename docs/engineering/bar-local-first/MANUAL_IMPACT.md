@@ -374,6 +374,12 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Customer PDFs, quick-start, screenshots, approved-manifest/checksum and packaged offline-guide changes: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
 - Verification: focused first-use/local-route checks passed 6/6 and `npm.cmd run test:bar-local-electron` passed 109/109. Rendered authenticated owner-login acceptance remains pending.
 
+## A08 committed-sale catalogue-change regression (2026-11-04)
+
+- Manual impact: None for this change. It adds database regression coverage and updates internal acceptance evidence; it does not change operator-visible behavior.
+- Customer PDFs and approved guide/package work: Pending by user's instruction and non-blocking. No PDF was edited.
+- Verification: EV-194, isolated PostgreSQL sale replay passed 1/1.
+
 
 
 ## Owner projection read surface (2026-11-03)
