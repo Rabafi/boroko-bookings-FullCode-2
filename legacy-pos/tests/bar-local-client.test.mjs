@@ -351,14 +351,22 @@ test('Legacy client starts pairing only through the authenticated thin transport
   const transport = { request: async (method, path, options) => {
     requests.push({ method, path, options });
     if (path === '/v1/sessions') return { status: 201, body: { ok: true, session_token: 'local-session-token-1234567890', session_id: 'e1000000-0000-4000-8000-000000000001', authority_epoch: 1, business_id: scope.business_id, outlet_id: scope.outlet_id, staff: { id: 'f1000000-0000-4000-8000-000000000001' } } };
-    if (path === '/v1/pairing/start') return { status: 201, body: { ok: true, pairing_code: '12345678', expires_in: 300 } };
+    if (path === '/v1/pairing/start') return { status: 201, body: {
+      ok: true, pairing_code: '12345678', expires_in: 300,
+      server_certificate_fingerprint: 'sha256:test-fingerprint',
+      server_addresses: ['https://bar.example.test:55444', 'http://insecure.example.test:55444']
+    } };
     throw new Error(`Unexpected path ${path}`);
   }, close() {} };
   try {
     const client = new LegacyBarLocalClient({ scope, journal: env.journal, transport });
     await client.login('f1000000-0000-4000-8000-000000000001', '482915');
     const pairing = await client.startPairing({ ttl_seconds: 300 });
-    assert.deepEqual(pairing, { ok: true, pairing_code: '12345678', expires_in: 300 });
+    assert.deepEqual(pairing, {
+      ok: true, pairing_code: '12345678', expires_in: 300,
+      server_certificate_fingerprint: 'sha256:test-fingerprint',
+      server_addresses: ['https://bar.example.test:55444']
+    });
     const call = requests.find((item) => item.path === '/v1/pairing/start');
     assert.equal(call.options.sessionToken, 'local-session-token-1234567890');
     assert.equal(call.options.deviceToken, scope.deviceToken);
