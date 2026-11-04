@@ -44,6 +44,8 @@ test('rendered local Menu creates, edits, changes availability and archives thro
     platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"development"' }
   })
   const bundle = build.outputFiles[0].text
+  const retryEnvelopes = new Map()
+  let loseFirstCreateReply = true
   const executable = process.env.BAR_LOCAL_CHROMIUM_EXECUTABLE_PATH
   const browser = await chromium.launch({ headless: true, ...(executable ? { executablePath: executable } : {}) })
   t.after(() => browser.close())
@@ -58,31 +60,49 @@ test('rendered local Menu creates, edits, changes availability and archives thro
         window.api={barLocal:{
           query:async(name,filters)=>{const r=await fetch('/query',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,filters})});return r.json()},
           command:async(request)=>{const r=await fetch('/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(request)});return r.json()},
-          getOpenIntents:async()=>[],retryOperation:async()=>({outcome:'refused',error:{message:'No open local operation.'}})
+          getOpenIntents:async()=>[],retryOperation:async(operationId)=>{const r=await fetch('/retry',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({operation_id:operationId})});return r.json()}
         }}
       </script><script src="/app.js"></script>`)
     } else if (req.url === '/app.js' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/javascript' }).end(bundle)
-    } else if (req.method === 'POST' && (req.url === '/query' || req.url === '/command')) {
+    } else if (req.method === 'POST' && (req.url === '/query' || req.url === '/command' || req.url === '/retry')) {
       let raw = ''
       for await (const part of req) raw += part
       const body = JSON.parse(raw)
       const auth = { token: session.body.session_token, deviceId: setup.body.device_id }
       let result
+      let commandName = null
+      let operationId = null
       if (req.url === '/query') {
         result = await h.request(`/v1/queries/${encodeURIComponent(body.name)}`, {
           ...auth,
           body: { contract_version: 1, authority_id: scope.authority_id, authority_epoch: scope.authority_epoch,
             query: body.name, query_version: 1, filters: body.filters }
         })
+      } else if (req.url === '/command') {
+        const envelope = { contract_version: 1, ...scope, operation_id: body.operation_id || randomUUID(),
+          command: body.command, payload: body.payload }
+        commandName = envelope.command
+        operationId = envelope.operation_id
+        retryEnvelopes.set(envelope.operation_id, envelope)
+        result = await h.request('/v1/commands', { ...auth, body: envelope })
+        if (loseFirstCreateReply && result.status === 200 && body.command === 'catalogue.upsert' && !body.payload.product_id) {
+          loseFirstCreateReply = false
+          serviceResponses.push({ route: 'simulated-lost-create-reply', command: commandName, operation_id: operationId, status: result.status, body: result.body })
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ outcome: 'unknown', error: { message: 'The create reply was lost after commit.' } }))
+          return
+        }
       } else {
-        result = await h.request('/v1/commands', {
-          ...auth,
-          body: { contract_version: 1, ...scope, operation_id: body.operation_id || randomUUID(),
-            command: body.command, payload: body.payload }
-        })
+        const envelope = retryEnvelopes.get(body.operation_id)
+        if (!envelope) {
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ outcome: 'refused', error: { message: 'No durable test operation exists.' } }))
+          return
+        }
+        commandName = envelope.command
+        operationId = envelope.operation_id
+        result = await h.request('/v1/commands', { ...auth, body: envelope })
       }
-      serviceResponses.push({ route: req.url, status: result.status, body: result.body })
+      serviceResponses.push({ route: req.url, command: commandName, operation_id: operationId, status: result.status, body: result.body })
       const response = result.status >= 400 && req.url === '/command'
         ? { outcome: 'refused', error: { code: result.body?.code, message: result.body?.message } }
         : result.body
@@ -101,6 +121,8 @@ test('rendered local Menu creates, edits, changes availability and archives thro
   await page.getByLabel('Price').fill('12.50')
   await page.getByLabel('Tax (%)').fill('14')
   await page.getByRole('button', { name: 'Save locally' }).click()
+  await page.getByText(/Retry this same operation before starting another change/).waitFor()
+  await page.getByRole('button', { name: 'Retry saved operation' }).click()
   const row = page.getByRole('row').filter({ hasText: 'BROWSER-MENU-1' })
   try { await row.waitFor({ timeout: 8000 }) } catch {
     const alerts = await page.getByRole('alert').allTextContents()
@@ -112,6 +134,12 @@ test('rendered local Menu creates, edits, changes availability and archives thro
   assert.ok(product)
   assert.equal(product.tax_rate, '0.1400')
   assert.equal(Number(product.version), 1)
+  const createAttempts = serviceResponses.filter((entry) => entry.command === 'catalogue.upsert' && entry.operation_id)
+  assert.equal(createAttempts.length, 2)
+  assert.equal(createAttempts[0].operation_id, createAttempts[1].operation_id)
+  assert.equal(createAttempts[1].body.replayed, true)
+  const creates = await h.migrator.query("SELECT count(*)::int AS count FROM bar_local.operations WHERE business_id=$1 AND command='catalogue.upsert' AND payload->>'sku'='BROWSER-MENU-1' AND status='committed'", [setup.body.business_id])
+  assert.equal(creates.rows[0].count, 1)
 
   await row.getByRole('button', { name: 'Mark sold out' }).click()
   await row.getByRole('button', { name: 'Make available' }).waitFor()
