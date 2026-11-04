@@ -24,6 +24,7 @@ function LocalBarRouteUnavailable() {
 /** @param {{status: Record<string, unknown>, onLogout: () => void, initialLoginNotice?: string}} props */
 export default function LocalBarHposShell({ status, onLogout, initialLoginNotice = '' }) {
   const [session, setSession] = useState(status.session ?? null)
+  const [postSetupNoticePending, setPostSetupNoticePending] = useState(status.post_setup_notice_pending === true)
   const [bootstrap, setBootstrap] = useState(null)
   const [bootstrapError, setBootstrapError] = useState('')
   const handleLocalLogout = useCallback(() => { setSession(null); onLogout() }, [onLogout])
@@ -128,6 +129,9 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
   }, [bootstrap?.authority?.entitlement_features])
   const emptyUnsaved = useMemo(() => ({ isDirty: false, confirmLeave: null }), [])
   const statusWithSession = useMemo(() => ({ ...status, session }), [status, session])
+  const ownerSignInNotice = initialLoginNotice || (postSetupNoticePending
+    ? 'Your Bar is ready. Sign in with the owner email and password you chose during setup.'
+    : '')
 
   return <AuthContext.Provider value={authValue}>
     <ProfilesContext.Provider value={localProfiles}>
@@ -138,8 +142,12 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
               <UnsavedChangesContext.Provider value={emptyUnsaved}>
                 <HashRouter>
                   {!session ? <div className="min-h-screen bg-slate-50">
-                    {initialLoginNotice && <div role="status" className="mx-auto max-w-xl px-4 pt-5 text-sm text-emerald-800">{initialLoginNotice}</div>}
-                    <Login />
+                    <Login
+                      initialLoginNotice={ownerSignInNotice}
+                      initialStaffId={status.training === true ? String(status.setup_owner_staff_id || '') : ''}
+                      consumeLocalSetupNotice={postSetupNoticePending}
+                      onLocalSetupNoticeConsumed={() => setPostSetupNoticePending(false)}
+                    />
                   </div> : <Suspense fallback={<LocalBarLoading />}>
                     <Routes>
                       <Route element={<HposLayout />}>

@@ -39,11 +39,13 @@ function initials(email) {
   return email.split('@')[0].slice(0, 2).toUpperCase()
 }
 
-export default function Login() {
+/** @param {{initialLoginNotice?: string, initialStaffId?: string, consumeLocalSetupNotice?: boolean, onLocalSetupNoticeConsumed?: () => void}} props */
+export default function Login({ initialLoginNotice = '', initialStaffId = '', consumeLocalSetupNotice = false, onLocalSetupNoticeConsumed = () => {} }) {
   const { login } = useAuth()
   const { activeProfile, profiles, createDraftProfile } = useProfiles()
   const { settings } = useSettings()
   const navigate = useNavigate()
+  const localBarAuthority = settings?.authority_mode === 'bar_local'
 
   const barOnly = IS_HOSPITALITY_POS && isBarOnlyMode(settings)
   const vocab = useMemo(
@@ -78,6 +80,9 @@ export default function Login() {
   }, [barOnly])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [localLoginMethod, setLocalLoginMethod] = useState('owner')
+  const [staffId, setStaffId] = useState(initialStaffId)
+  const [staffPin, setStaffPin] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
@@ -103,7 +108,7 @@ export default function Login() {
   const passwordRef = useRef(null)
   const loginInFlightRef = useRef(false)
 
-  const emailStorageKey = getEmailStorageKey(activeProfile?.lodge_id)
+  const emailStorageKey = getEmailStorageKey(activeProfile?.lodge_id || (localBarAuthority ? settings?.lodge_id : null))
   const hasProfiles = profiles.length > 0
   const hasReadyProfile = activeProfile?.status === 'ready'
   const hasDraftProfile = activeProfile?.status === 'draft'
@@ -128,6 +133,10 @@ export default function Login() {
   }, [emailStorageKey])
 
   useEffect(() => {
+    if (localBarAuthority) {
+      setAuthStatus({ online: true, hasOfflineAccess: false, hasTrustedSession: false, message: 'Local Bar sign-in' })
+      return undefined
+    }
     let cancelled = false
     const timer = setTimeout(async () => {
       try {
@@ -149,11 +158,12 @@ export default function Login() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [email, activeProfile?.lodge_id])
+  }, [email, activeProfile?.lodge_id, localBarAuthority])
 
   useEffect(() => {
+    if (localBarAuthority) return
     loadDiagnostics()
-  }, [activeProfile?.lodge_id])
+  }, [activeProfile?.lodge_id, localBarAuthority])
 
   const selectSavedEmail = (saved) => {
     setEmail(saved)
@@ -176,6 +186,37 @@ export default function Login() {
     setError('')
     setWarning('')
     setResetMessage('')
+
+    if (localBarAuthority) {
+      setLoading(true)
+      try {
+        const result = localLoginMethod === 'staff_pin'
+          ? await window.api.barLocal.login({ staff_id: staffId.trim(), pin: staffPin })
+          : await window.api.barLocal.login({ email: email.trim().toLowerCase(), password })
+        if (!result?.session?.staff) {
+          setError('The local Bar service did not return a staff session. No cloud sign-in was attempted.')
+          return
+        }
+        if (localLoginMethod === 'owner') {
+          saveEmail(emailStorageKey, email.trim().toLowerCase())
+          setSavedEmails(getSavedEmails(emailStorageKey))
+        }
+        await login(result)
+        if (localLoginMethod === 'owner' && consumeLocalSetupNotice) {
+          try {
+            await window.api.barLocal.consumePostSetupNotice()
+            onLocalSetupNoticeConsumed()
+          } catch { /* A transient notice cannot undo an authenticated local session. */ }
+        }
+        navigate('/hpos/pos', { replace: true })
+      } catch (e) {
+        setError(e?.message || (localLoginMethod === 'staff_pin' ? 'Local staff sign-in failed. Check the staff ID and PIN.' : 'Local Bar sign-in failed. Check the email and password, then try again.'))
+      } finally {
+        loginInFlightRef.current = false
+        setLoading(false)
+      }
+      return
+    }
 
     let latestStatus = authStatus
     try {
@@ -345,7 +386,13 @@ export default function Login() {
           <p className={`mt-1 text-sm ${IS_HOTEL ? HOTEL_CHROME.mute : 'text-slate-500'}`}>{loginTagline}</p>
         </div>
 
-        {activeProfile ? (
+        {localBarAuthority ? (
+          <div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3" data-testid="selected-lodge-panel">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected Bar</p>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{settings?.business_name || 'Local Bar'}</p>
+            <p className="mt-1 text-xs text-slate-600">Sign-in and Bar records stay on this local authority.</p>
+          </div>
+        ) : activeProfile ? (
           <div
             className={`mb-4 rounded-xl border px-4 py-3 ${
             hasDraftProfile
@@ -388,6 +435,8 @@ export default function Login() {
           </div>
         )}
 
+        {localBarAuthority && initialLoginNotice && <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{initialLoginNotice}</div>}
+
         <div
           className={`mb-5 rounded-2xl border px-4 py-3 text-sm ${
           authStatus.online
@@ -401,8 +450,13 @@ export default function Login() {
           {authStatus.message}
         </div>
 
+        {localBarAuthority && <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
+          <button type="button" onClick={() => { setLocalLoginMethod('owner'); setError('') }} aria-pressed={localLoginMethod === 'owner'} className={`rounded-lg px-3 py-2 text-sm font-semibold ${localLoginMethod === 'owner' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>Owner / manager</button>
+          <button type="button" onClick={() => { setLocalLoginMethod('staff_pin'); setError('') }} aria-pressed={localLoginMethod === 'staff_pin'} className={`rounded-lg px-3 py-2 text-sm font-semibold ${localLoginMethod === 'staff_pin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>Staff PIN</button>
+        </div>}
+
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
+          {(!localBarAuthority || localLoginMethod === 'owner') && <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
             <input
               type="email"
@@ -442,9 +496,14 @@ export default function Login() {
                 ))}
               </div>
             )}
-          </div>
+          </div>}
 
-          <div>
+          {localBarAuthority && localLoginMethod === 'staff_pin' && <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Staff ID</label>
+            <input type="text" value={staffId} onChange={(e) => setStaffId(e.target.value)} className="input" autoComplete="username" required />
+          </div>}
+
+          {(!localBarAuthority || localLoginMethod === 'owner') && <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
             <div className="relative">
                 <input
@@ -466,7 +525,12 @@ export default function Login() {
                 {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
               </button>
             </div>
-          </div>
+          </div>}
+
+          {localBarAuthority && localLoginMethod === 'staff_pin' && <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Staff PIN</label>
+            <input type="password" inputMode="numeric" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={staffPin} onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, '').slice(0, 8))} className="input" autoComplete="current-password" required />
+          </div>}
 
         {error && (
             <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
@@ -496,13 +560,13 @@ export default function Login() {
               ? 'Signing in…'
               : !authStatus.online && authStatus.hasTrustedSession
               ? 'Open Saved Session'
-              : hasReadyProfile
+              : localBarAuthority || hasReadyProfile
               ? 'Sign In'
               : 'Sign In / Command Central'}
           </button>
         </form>
 
-        {!authStatus.online && authStatus.hasTrustedSession && (
+        {!localBarAuthority && !authStatus.online && authStatus.hasTrustedSession && (
           <button
             type="button"
             onClick={handleOpenSavedSession}
@@ -513,7 +577,7 @@ export default function Login() {
           </button>
         )}
 
-        {companyChoices.length > 0 && (
+        {!localBarAuthority && companyChoices.length > 0 && (
           <div className={`mb-5 rounded-xl border p-4 ${
             IS_HOTEL ? `${HOTEL_CHROME.softPanelBorder} ${HOTEL_CHROME.softPanelBg}` : 'border-emerald-200 bg-emerald-50'
           }`}>
@@ -546,7 +610,7 @@ export default function Login() {
           </div>
         )}
 
-        <button
+        {!localBarAuthority && <button
           type="button"
           onClick={handleForgotPassword}
           disabled={resetLoading}
@@ -556,9 +620,9 @@ export default function Login() {
         >
           {resetLoading ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
           {resetLoading ? 'Sending reset email...' : 'Forgot password?'}
-        </button>
+        </button>}
 
-        <div className="mt-6 text-center">
+        {!localBarAuthority && <div className="mt-6 text-center">
           <p className="text-sm text-slate-500">
             {hasProfiles ? `Need another ${BUSINESS_NOUN} on this computer?` : 'New to Tsa Bonno?'}{' '}
             <button
@@ -579,10 +643,12 @@ export default function Login() {
               )}
             </button>
           </p>
-        </div>
+        </div>}
 
         <p className="mt-3 text-center text-xs text-slate-400">
-          Use the email and password created for the selected {BUSINESS_NOUN}. If a staff member still cannot sign in, a manager can reset access from Team.
+          {localBarAuthority
+            ? 'Sign in with the staff email and password created for this local Bar. A manager can reset staff access from Team.'
+            : `Use the email and password created for the selected ${BUSINESS_NOUN}. If a staff member still cannot sign in, a manager can reset access from Team.`}
         </p>
 
         <div className="mt-5 border-t border-slate-100 pt-4">
@@ -596,7 +662,7 @@ export default function Login() {
               <RefreshCw size={14} className={updateStatus.checking ? 'animate-spin' : ''} />
               {updateStatus.checking ? 'Checking for updates...' : 'Update Software'}
             </button>
-            <span className="text-[10px] text-slate-400 font-mono">v{diagnostics?.app_version || '...'}</span>
+            {!localBarAuthority && <span className="text-[10px] text-slate-400 font-mono">v{diagnostics?.app_version || '...'}</span>}
           </div>
 
           {updateStatus.error && (

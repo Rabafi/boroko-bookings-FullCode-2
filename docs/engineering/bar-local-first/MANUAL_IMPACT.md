@@ -368,6 +368,12 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Customer PDF, quick-start, screenshot, approved-manifest/checksum and packaged offline-guide work: Pending by the user's instruction; recorded as non-blocking for this software checkpoint. No PDF was edited.
 - Verification: route/authority tests passed 8/8; renderer typecheck and Hospitality POS production build passed. Two disposable PostgreSQL catalogue/availability tests passed, and a rendered Chromium Menu flow passed 1/1 against real PostgreSQL query/command contracts. The test uses a renderer bridge, so Electron IPC/service transport acceptance remains pending before commissioning.
 
+## Local Bar owner first-use sign-in notice (2026-11-04)
+
+- Manual impact: Required. After Bar setup, the shared login shows the saved owner email/password instruction; it clears only after owner sign-in succeeds. Staff PIN entry does not consume the owner notice. A notice-storage error does not block successful local sign-in.
+- Customer PDFs, quick-start, screenshots, approved-manifest/checksum and packaged offline-guide changes: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: focused first-use/local-route checks passed 6/6 and `npm.cmd run test:bar-local-electron` passed 109/109. Rendered authenticated owner-login acceptance remains pending.
+
 
 
 ## Owner projection read surface (2026-11-03)
