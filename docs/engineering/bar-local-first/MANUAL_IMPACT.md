@@ -1,5 +1,9 @@
 # Bar manual impact record
 
+## 5 November 2026 — restored established local Bar navigation
+
+**Impact: customer navigation and workflow guidance change; approved PDF and quick-start edits remain pending by user direction.** The local shell now restores the established Manage label and page, original Hpos routes, Stock Pro and Accounting Pro routes, Growth Tools, and existing restaurant route aliases. Open Checks and Sales Report read through the local Bar authority. The original Accounts Payable screen now captures invoice drafts and exposes manager-approved local invoice approval and payment commands; these controls still need real local database acceptance before customer use. Split, waiter transfer, voids, exports, corrections, and other unconnected accounting workflows remain unavailable. The restored routes are not yet customer-release qualified. No PDF, screenshot, manifest checksum or packaged-guide artifact was changed. The current app was not restarted.
+
 ## 3 November 2026 — pre-login business selection and isolated workspace switch
 
 **Impact: customer start-up and business-switch instructions change; approved guide edits remain pending by user direction.** Hospitality POS now asks the operator to choose Restaurant or a saved local Bar before credentials are entered. The choice is persisted locally. A new Bar setup reopens the same application in an isolated local profile; returning to Restaurant requires no unresolved Bar operation and ends the local session first. The owner must choose the intended business even when the same email exists in both. New setup now shows its actual business-details, install, database-verification, owner-sign-in and ready stages, and the temporary setup PIN has an explicit show/hide control. Manual/quick-start wording, chooser and setup screenshots, manifest and packaged offline-guide verification are pending and non-blocking by the user's PDF deferral. This source verification does not establish legacy setup migration, customer commissioning, or release readiness.
@@ -400,3 +404,143 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Customer guides: No customer manual change is required for this test-only, non-deployed receiver in the current software checkpoint. Before enabling it for customers, update the manual and quick-start with owner linking, freshness, movement-history versus stock-balance distinctions, cash-up scope and safe recovery guidance.
 - PDFs, screenshots, approved-manifest/checksum and packaged offline-guide verification: Pending by user direction and non-blocking for the software changes.
 - Verification performed: EV-184. No hosted receiver, mail provider, Supabase deployment or customer Bar was used.
+
+## Original Manage PIN and cash-up recovery (2026-11-05)
+
+- Manual impact: Required. The familiar Manage sign-in now accepts the full supported 4–12 digit local manager PIN. Cash Close shows pending local cash-up reviews and recovery status. My Cash-up records a counted cash amount and atomically hands over the current shift; the displayed guidance explains that the amount is entered by the cashier and expected cash/variance are server-derived. An unresolved result must be recovered using its original operation; staff must not create a second handover or review decision. Shared-drawer close, cash-up proof upload and PDF/export are not available in local mode yet.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-206. Rendered smoke checks and disposable PostgreSQL/API tests passed. Installed-app acceptance and owner sign-in remain pending; do not infer that this source fix is loaded into the saved installation.
+
+## My Shift local authority and cash projection (2026-11-05)
+
+- Manual impact: Required. The established My Shift page now shows the signed-in staff member's shift from the local database and opens the Till shift using a local database command. It keeps cash-up submission status visible while withholding expected and counted reconciliation totals. Staff attendance clock-out and PIN changes remain unavailable in local mode until those local workflows are implemented; use the local Staff/Manage workflow and explain that attendance and PIN changes are not recorded by this page yet.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-207. Source adapter, route, typecheck and builds passed. Migration 0087's PostgreSQL behavior is unverified because the guarded test runner refused to start below its 4 GiB disk reserve. Installed-app acceptance remains pending.
+
+## Shared shift close in local mode (2026-11-05)
+
+- Manual impact: Required. Shared shift close, attendance clock-in/out and shared drawer close are not yet available for locally operated Bars. The original screen explains that it sent no request and points staff to My Shift/My Cash-up for the local personal Till shift flow. Operators should not use the hosted attendance/drawer flow from a local Bar.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-209. Source boundary, typecheck, local Bar tests and builds passed. Local attendance/shared drawer contracts remain outstanding.
+
+## Local Team board reads (2026-11-05)
+
+- Manual impact: Required. The existing Team board now shows active staff and attendance from the local Bar database. In local mode the board is read-only: clock-in, clock-out and handover note actions are disabled until a local staff PIN workflow is available. Do not use a hosted attendance action for this Bar; follow the site's approved manual attendance process until the local screen supports it.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-211. Rendered original-page acceptance, local adapter/route checks, renderer typecheck and Hospitality POS build passed. Installed-app acceptance remains pending.
+
+## My Sales local receipt history (2026-11-05)
+
+- Manual impact: Required. The existing My Sales page displays the signed-in cashier's complete local receipt history and recorded receipt detail. It does not expose hosted sale correction or void actions in local mode; those actions remain unavailable until the local atomic correction workflow is complete. The operator should use receipt detail/print for supported historical lookup and must not retry a correction through a cloud path.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-214. Adapter/contract/route checks, rendered original-page smoke, renderer typecheck, Hospitality POS build and Modern/Legacy regression suites passed. PostgreSQL execution of migration 0088 remains pending below the guarded disk reserve; installed-app acceptance remains pending.
+
+## Expenses and Customer creation in local Bar (2026-11-05)
+
+- Manual impact: Required. The existing Expenses page can record a dated expense only after an operator with accounting manage access selects an active expense account and a distinct active payment account. The local authority posts both journal lines atomically and blocks closed periods. Reversing a posted expense requires a reason and approval by a different authorised manager using their PIN; the authority checks the loaded version and posts a balanced compensating journal entry. Expense exports and payment processing are unavailable in this page. The existing Customers page can create a name and optional phone/email record. Notes, marketing permission, customer edits, credit changes, loyalty and visit/spend history are unavailable in local mode. Operators must not repeat an unresolved submission; use its saved-operation retry.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-215. Original Expenses and Customers rendered smokes, focused route/operation tests, Modern/Legacy regressions, renderer typecheck and production build passed. PostgreSQL execution remains pending below the guarded disk reserve; installed-app acceptance remains pending.
+
+## Approved local expense reversal (2026-11-05)
+
+- Manual impact: Required. A posted expense can now be reversed from the original Expenses page. Enter the reason and ask a different authorised manager to enter their PIN. The local authority validates the loaded version, consumes a one-time approval and posts a balanced compensating entry; the original remains in the ledger. If the result is uncertain, use the saved reversal retry and do not submit a second reversal.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-216. The original Expenses rendered smoke exercised post and approved reversal; focused operation tests, full Modern Bar regression, renderer typecheck and Hospitality POS build passed. PostgreSQL and installed-app acceptance remain pending.
+
+## Empty event-feed compatibility (2026-11-05)
+
+- Manual impact: No manual update required. The service now interprets a null `max(commit_sequence)` as zero only when the local event feed is empty. This preserves the existing customer-visible event behavior while allowing older local schemas to return a valid empty feed.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-219. Validator/route tests, Modern and Legacy suites, staged local-service verification, renderer typecheck and production build passed. PostgreSQL and installed-app acceptance remain pending.
+
+## Original Team attendance commands (2026-11-05)
+
+- Manual impact: Required. Managers with local staff-management capability can clock active staff in and close open attendance from the original Team page. The local authority records attendance and audit events. Local handover notes remain unavailable; no hosted attendance request is sent in local mode.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-220. Rendered original Team smoke exercised both idempotent local commands with cloud IPC rejected. PostgreSQL migration/command execution and installed-app acceptance remain pending.
+
+## Original route inventory refresh (2026-11-05)
+
+- Manual impact: No additional manual change for this checkpoint. The new build returns to the existing Bar page shell, navigation and Manage PIN flow; all feature actions continue to be documented alongside their workflow wiring.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-221. Static route inventory reports two existing POS display routes missing from the local shell; behavior acceptance remains pending for every route and wrapper.
+
+## Reopen packaging attempt (2026-11-05)
+
+- Manual impact: No additional operator change. The previous running app remains unchanged because package creation failed before an installer was produced.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-222. Root cause is the workspace path containing spaces plus no Python interpreter for node-gyp. Resume from the already successful Hospitality POS source build; do not touch saved app data.
+
+## Original Staff page local identities (2026-11-05)
+
+- Manual impact: Required. The established Staff screen lists local identities and creates manager/cashier accounts in the local Bar authority. Staff ID and PIN are handed to the operator in person. Local identity edits, PIN resets, suspension and archive remain unsupported in this screen.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline-guide verification: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-223. Original Staff page Chromium smoke and local adapter tests passed. Full regression/build evidence is appended when final verification finishes.
+
+
+## Original Accounting Pro Chart of Accounts (2026-11-05)
+
+- Manual impact: Required. The original chart page can list accounts, create/deactivate versioned accounts, and post a balanced dated opening journal locally when the local service readiness check passes. Explain normal debit/credit behavior and safe retry. Other Accounting Pro subledgers remain unavailable locally and explicitly show that no hosted request was made.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-224. Adapter 9/9, rendered page 1/1, combined local tests 40/40, full Bar regression 110/110, renderer typecheck and production build passed. SQL-level and installed-app acceptance remain pending.
+
+
+## Local route availability boundaries (2026-11-05)
+
+- Manual impact: Required. Local Bar navigation keeps unsupported Restaurant/Stock Pro/Accounting Pro screens visible but explains that their local workflow is not available and no hosted request was made. Cloud Restaurant behavior is unchanged. Display links are similarly guarded pending their local contract and multi-device qualification.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-225. Route mapping, Modern Bar suite, renderer typecheck and production build passed.
+
+## Floor Plan and Kitchen Display local availability (2026-11-05)
+
+- Manual impact: Required. In local Bar mode, Floor Plan and Kitchen Display now explain that a verified local workflow is not available and no hosted request was sent. Their existing cloud Restaurant behavior is unchanged.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking; no PDF was edited.
+- Verification: EV-227. Route mapping tests passed 13/13, combined event/Open tabs/route tests passed 50/50, renderer typecheck passed, and the final Hospitality POS production build passed.
+
+## Original General Ledger local read path (2026-11-05)
+
+- Manual impact: Required. Accounting Pro's original General Ledger now displays outlet-scoped local journal entries and trial balance in read-only mode. Manual journals, reversals, POS mappings/posting and exports remain unavailable locally. Do not switch to hosted Accounting to perform these actions for a local Bar. Refresh the ledger before relying on page totals; paging stops with a visible error if the ledger changes mid-session.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-228. Original-page rendered smoke passed 1/1; combined route/adapter/rendered tests passed 19/19; renderer typecheck and Hospitality POS production build passed. Migration 0089 database test was blocked by the isolated PostgreSQL guard because no configured isolated cluster was available.
+
+## Removed unused replacement Modern Bar page (2026-11-05)
+
+- Manual impact: No manual update required. The deleted `BarLocalWorkspace.jsx` page was already unrouted and absent from the built renderer; the original POS and Manage pages remain active. Local authority and saved setup code remains in place.
+- Customer PDFs, quick-start, screenshots, and packaged guide work remain pending by the user's instruction and non-blocking. No PDF was edited.
+- Verification: EV-235. Source reference scan is clean; route and production build verification is pending.
+
+## Original Accounts Payable local draft capture (2026-11-05)
+
+- Manual impact: Required. In local Bar mode, managers with accounting management access can capture invoice drafts from active suppliers and local chart accounts. Invoice tax is entered as a percentage per line; the local authority calculates totals. A different manager must approve the invoice before it posts to the ledger. A different manager also approves each payment; the local authority enforces the current outstanding balance and commits the payment and ledger entry atomically. Credit notes, supplier statement reconciliation, payment reversal and export actions remain unavailable locally. The original page explicitly says that no hosted request is made.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking. No PDF was edited.
+- Verification: EV-234. Adapter and rendered draft-capture original-screen checks passed; adapter approval/payment retry checks and renderer typecheck passed. Database command, installer and saved-setup acceptance remain pending.
+
+## Original Accounts Payable local read path (2026-11-05)
+
+- Manual impact: Required. The original Accounts Payable page now displays local supplier invoices and locally derived paid/outstanding totals. It is read-only in local Bar mode. Invoice approval, recording payments, credit notes, supplier statement reconciliation and exports are not connected locally; do not use hosted Accounting as a fallback for a local Bar.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-229. AP adapter and route/rendered checks passed 16/16; original page Chromium smoke passed 1/1; renderer typecheck passed. No new SQL was added.
+
+## Original Stock Pro stock control local path (2026-11-05)
+
+- Manual impact: Required. The existing Stock Pro workspace now reads local stock health, movement history and posted count history, and supports local item creation/editing and positive stock receipts. Count creation/posting and manager-approved waste are directed to the established Hpos Stock screen, which already has the local count/recovery and waste command workflows. The local Stock Pro screen does not create cloud drafts and must not fall back to hosted inventory.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-230. Original-page Chromium smoke passed 1/1; route/adapter/rendered checks passed 17/17; renderer typecheck passed; full `test:bar-local-electron` passed 110/110; and the Hospitality POS production build passed. The output includes the original Stock Pro page and contains no replacement `BarLocalWorkspace` chunk.
+
+## Original Lots & Expiry local history (2026-11-05)
+
+- Manual impact: Required. The original Lots & Expiry screen shows outlet-scoped receipt history for dated lots from the local authority. It labels quantities as received quantities because local Bar does not allocate sales to lots or track per-lot remaining balances. Lot registration, expiry corrections and lot-specific write-offs are hidden; use the original Stock page for manager-approved waste.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-231. Combined adapter/route/rendered checks passed 19/19 (including the local receipt-history adapter and Chromium screen); renderer typecheck passed; full `test:bar-local-electron` passed 110/110; and the Hospitality POS production build passed. No replacement `BarLocalWorkspace` output chunk was emitted.
+
+## Original Purchasing Pro local read path (2026-11-05)
+
+- Manual impact: Required. The established Purchasing page reads local suppliers, outlet purchase-order summaries and complete order/line details from the local authority. It labels the local outlet scope and displays authoritative ordered/received quantities and costs. Supplier edits, order creation/approval/receiving, email and export remain unavailable in this page; do not use cloud Purchasing for a local Bar.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-232. Purchasing/Stock adapter, route and rendered checks passed 21/21; renderer typecheck passed; full `test:bar-local-electron` passed 110/110; and the Hospitality POS production build passed. The built renderer has the original Purchasing and Lots & Expiry chunks and no `BarLocalWorkspace` reference.
+
+## Original Purchase Suggestions local read path (2026-11-05)
+
+- Manual impact: Required. The existing Suggestions page now calculates local reorder gaps from outlet stock and reorder points. It labels the values as suggestions and does not assign a supplier or create a purchase order. Preferred supplier assignment and approved order creation remain pending local contracts; no cloud Purchasing fallback is available in local Bar.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
+- Verification: EV-233. Adapter, route and rendered original-screen checks passed 23/23; renderer typecheck passed; full `test:bar-local-electron` passed 110/110; and the Hospitality POS production build passed. The original suggestions chunk is present and the renderer has no `BarLocalWorkspace` reference.

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -10,23 +10,25 @@ const shell = read('src/renderer/src/components/hospitality-pos/LocalBarHposShel
 const layout = read('src/renderer/src/components/hospitality-pos/HposLayout.jsx')
 const nav = read('src/renderer/src/components/hospitality-pos/HposNav.jsx')
 const app = read('src/renderer/src/App.jsx')
-const nativeMenu = read('src/renderer/src/components/hospitality-pos/BarLocalNativeMenu.jsx')
+const hposMenu = read('src/renderer/src/components/hospitality-pos/HposMenu.jsx')
+const hposWizard = read('src/renderer/src/components/hospitality-pos/HposProductWizard.jsx')
+const hposAdapter = read('src/main/bar-local/nativeHposMenu.js')
+const stockAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/nativeStockApi.js')
+const hposStock = read('src/renderer/src/components/hospitality-pos/HposStock.jsx')
+const hposReports = read('src/renderer/src/components/hospitality-pos/HposReports.jsx')
+const hposExpenses = read('src/renderer/src/components/hospitality-pos/HposExpenses.jsx')
+const hposCustomers = read('src/renderer/src/components/hospitality-pos/HposCustomers.jsx')
+const hposSharedShiftClose = read('src/renderer/src/components/hospitality-pos/HposSharedShiftClose.jsx')
+const hposMyShift = read('src/renderer/src/components/hospitality-pos/HposMyShift.jsx')
+const myShiftAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposMyShiftApi.js')
+const hposTeam = read('src/renderer/src/components/hospitality-pos/HposTeam.jsx')
+const teamAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposTeamLocalApi.js')
+const hposMySales = read('src/renderer/src/components/hospitality-pos/HposMySales.jsx')
+const mySalesAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposMySalesApi.js')
 
-const routePanels = [
-  ['hpos/pos', 'counter'], ['hpos/menu', 'menu'], ['hpos/stock', 'stock'],
-  ['hpos/checks', 'tabs'], ['hpos/cash', 'drawer'], ['hpos/my-cashup', 'cashup'],
-  ['hpos/shared-cashup', 'cashup'], ['hpos/shift-close', 'cashup'],
-  ['hpos/my-shift', 'operations'], ['hpos/attendance', 'operations'], ['hpos/team', 'operations'],
-  ['hpos/my-sales', 'reports'], ['hpos/sale-correction', 'returns'],
-  ['hpos/reports', 'reports'], ['hpos/expenses', 'operations'], ['hpos/customers', 'operations'],
-  ['hpos/growth-tools', 'operations'], ['hpos/control', 'operations'],
-  ['hpos/business-control', 'reports'], ['hpos/manage', 'operations'],
-  ['hpos/system-health', 'admin'], ['hpos/setup-readiness', 'admin'], ['settings', 'settings'],
-]
-
-test('configured local Bar uses the shared login and binds its profile/providers to authenticated local bootstrap data', () => {
+test('local Bar restores the established operational routes and its Stock Pro and Accounting Pro add-on routes', () => {
   assert.match(app, /<LocalBarHposShell status=\{currentAuthority\}/)
-  assert.match(shell, /<Login \/>/)
+  assert.match(shell, /<Login\s+initialLoginNotice=\{ownerSignInNotice\}/)
   assert.match(read('src/renderer/src/components/Login.jsx'), /if \(localBarAuthority\)[\s\S]*?window\.api\.barLocal\.login\(\{ email: email\.trim\(\)\.toLowerCase\(\), password \}\)/)
   assert.match(read('src/renderer/src/components/Login.jsx'), /window\.api\.barLocal\.login\(\{ staff_id: staffId\.trim\(\), pin: staffPin \}\)/)
   assert.match(read('src/renderer/src/components/Login.jsx'), /Staff PIN/)
@@ -34,22 +36,95 @@ test('configured local Bar uses the shared login and binds its profile/providers
   assert.match(shell, /authority_mode: 'bar_local'/)
   assert.match(shell, /activeProfile: localProfile/)
   assert.match(shell, /bootstrap\?\.authority\?\.entitlement_features/)
-  for (const [route, panel] of routePanels.filter(([route]) => route !== 'hpos/menu')) {
-    assert.match(shell, new RegExp(`<Route path="${route}" element=\\{<BarLocalWorkspace[^\\n]*embeddedPanel="${panel}"`), `${route} must use its local workflow panel`)
+  assert.match(shell, /function LocalBarAddonGate[\s\S]*access\.entitlement\.enterprise_addons\.includes\(addonKey\)/)
+  assert.match(shell, /const addonGranted = \(addon\) => enabled\.has\(addon\.addonKey\)/)
+  assert.match(shell, /<Route path="hpos\/pos" element=\{<HposTerminal \/>\}/)
+  assert.match(shell, /<Route path="hpos\/menu" element=\{<HposMenu \/>\}/)
+  assert.match(shell, /<Route path="hpos\/stock" element=\{<HposStock \/>\}/)
+  assert.match(shell, /<Route path="hpos\/manage" element=\{<HposManageHub \/>\}/)
+  for (const [route, component] of [
+    ['hpos/checks', 'HposOpenChecks'], ['hpos/cash', 'HposCashClose'], ['hpos/my-cashup', 'HposMyCashup'],
+    ['hpos/shift-close', 'HposSharedShiftClose'], ['hpos/team', 'HposTeam'], ['hpos/my-sales', 'HposMySales'],
+    ['hpos/reports', 'HposReports'], ['hpos/expenses', 'HposExpenses'], ['hpos/customers', 'HposCustomers'],
+    ['hpos/control', 'HposControl'],
+    ['hpos/system-health', 'HposSystemHealth'], ['hpos/setup-readiness', 'HposSetupReadiness'],
+    ['restaurant/chart-of-accounts', 'RestaurantChartOfAccounts'],
+    ['restaurant/general-ledger', 'RestaurantGeneralLedger'],
+    ['restaurant/accounts-payable', 'RestaurantAccountsPayable'],
+  ]) {
+    const routeAt = shell.indexOf(`<Route path="${route}"`)
+    const nextRouteAt = shell.indexOf('<Route path=', routeAt + 1)
+    const routeSource = routeAt < 0 ? '' : shell.slice(routeAt, nextRouteAt < 0 ? undefined : nextRouteAt)
+    assert.match(routeSource, new RegExp(`<${component}\\b`), `${route} must render its established page`)
   }
-  assert.match(shell, /<Route path="hpos\/menu" element=\{<BarLocalNativeMenu \/>\}/)
+  assert.match(shell, /<Route path="hpos\/growth-tools" element=\{<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><LocalBarRouteUnavailable area="Growth tools"/)
+  assert.match(shell, /<Route path="hpos\/attendance" element=\{<Navigate to="\/hpos\/shift-close" replace \/>/)
+  assert.match(shell, /<Route path="restaurant\/accounting-setup" element=\{<LocalBarAddonGate addonKey="bar_accounting_workforce">/)
+  assert.doesNotMatch(shell, /BarLocalWorkspace/)
+  assert.doesNotMatch(app, /BarLocalWorkspace/, 'the replacement workspace is excluded from the packaged application')
   assert.match(shell, /<Route path="\*" element=\{<LocalBarRouteUnavailable \/>\}/)
   assert.match(shell, /localAuthority: true/)
 })
 
-test('regular Bar menu adapter reads and mutates through the local authority only', () => {
-  assert.match(nativeMenu, /loadCompleteBarList\(verifiedQuery, 'menu\.list', \{ include_inactive: true \}\)/)
-  assert.match(nativeMenu, /loadCompleteBarList\(verifiedQuery, 'menu\.availability', \{ include_inactive: true \}\)/)
-  assert.match(nativeMenu, /window\.api\.barLocal\.command\(\{ command, payload, operation_id: operationId \}\)/)
-  assert.match(nativeMenu, /window\.api\.barLocal\.retryOperation\(operationId\)/)
-  assert.match(nativeMenu, /catalogue\.availability\.set/)
-  assert.match(nativeMenu, /catalogue\.upsert/)
-  assert.doesNotMatch(nativeMenu, /window\.api\.(?:pos|inventory)\./)
+test('original Hpos Menu and Product Wizard use the narrow local adapter in Bar authority mode', () => {
+  assert.match(hposMenu, /window\.api\.barLocal\.readHposMenu\('menu'\), window\.api\.barLocal\.readHposMenu\('stock'\)/)
+  assert.match(hposMenu, /localModifierResult\?\.complete === true && localResult\?\.snapshot !== localModifierResult\.snapshot/)
+  assert.match(hposMenu, /recipeMenuItemIds\.has\(wizardProduct\.id\)/, 'wizard reopen uses the adapter recipe projection after load and refresh')
+  assert.match(hposMenu, /setRecipeMenuItemIds\(new Set\(\(Array\.isArray\(localModifierResult\.recipes\)/, 'post-mutation refresh replaces recipe classification from the local snapshot')
+  assert.match(hposMenu, /if \(localAuthority\) \{[\s\S]*?sendLocalMenuCommand\(`archive:/)
+  assert.match(hposMenu, /if \(localAuthority\) \{[\s\S]*?catalogue\.availability\.set/)
+  assert.match(hposMenu, /<BarLocalModifierManager[\s\S]*?onCommand=\{sendLocalModifierCommand\}/)
+  assert.match(hposMenu, /retryOperation\(localModifierPending\.operationId\)/)
+  assert.match(hposAdapter, /stock_linked: menu\.rows\.some/)
+  assert.match(hposWizard, /if \(localAuthority\) \{[\s\S]*?readHposMenu\('menu'\)/)
+  assert.match(hposWizard, /window\.api\.barLocal\.saveHposBarProduct/)
+  assert.match(hposWizard, /window\.api\.barLocal\.retryHposBarProduct/)
+  assert.match(hposAdapter, /catalogue\.bar_product\.save/)
+  assert.match(hposAdapter, /runtime\.retryOperation\(operationId\)/)
+  assert.doesNotMatch(hposAdapter, /window\.api\.(?:pos|inventory)\./)
+})
+
+test('original Hpos Stock route records batches and approved waste through the local command bridge', () => {
+  assert.match(shell, /<Route path="hpos\/stock" element=\{<HposStock \/>\}/)
+  assert.match(hposStock, /createLocalHposStockApi\(window\.api\.barLocal/)
+  assert.match(stockAdapter, /command\('stock\.batch\.record'/)
+  assert.match(stockAdapter, /command\('catalogue\.stock_item\.save'/)
+  assert.match(stockAdapter, /command\('stock\.waste'/)
+  assert.match(hposStock, /Approving manager PIN/)
+  assert.match(hposStock, /getOpenIntents\(\)/)
+  assert.match(hposStock, /retryOperation\(operationId\)/)
+  assert.doesNotMatch(stockAdapter, /window\.api\.(?:pos|inventory|sync)\b/)
+})
+
+test('the original Till is connected to the authenticated local command bridge and stable shift recovery', () => {
+  const till = read('src/renderer/src/components/hospitality-pos/bar-local/nativeTillApi.js')
+  assert.match(shell, /<Route path="hpos\/pos" element=\{<HposTerminal \/>\}/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx'), /createLocalHposTillApi\(window\.api\.barLocal/)
+  assert.match(till, /command: 'sale\.commit'/)
+  assert.match(till, /bridge\.retryOperation\(pending\.operation_id\)/)
+  assert.match(till, /command: 'shift\.open'/)
+  assert.doesNotMatch(till, /window\.api\.(?:pos|inventory|sync)\b/)
+})
+
+test('original Sales Report and Expenses read through local queries and fence unsupported cloud actions', () => {
+  assert.match(hposReports, /if \(localAuthority\) \{[\s\S]*?barLocal\?\.query\('sales\.list'/)
+  assert.match(hposReports, /correctionMode \|\| sharedTillHistoryMode[\s\S]*staff-scoped correction history contract/)
+  assert.match(hposReports, /if \(localAuthority\) \{[\s\S]*No cloud export was requested/)
+  assert.match(hposReports, /Voiding is unavailable in this local report[\s\S]*No change was made/)
+  assert.match(hposExpenses, /loadCompleteBarList\(\(name, filters\) => window\.api\.barLocal\.query\(name, filters\), 'expenses\.list'/)
+  assert.match(hposExpenses, /command: \(intent\) => window\.api\.barLocal\.command\(intent\)/)
+  assert.match(hposExpenses, /localAuthority && <HposNotice/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/bar-local/hposExpenseApi.js'), /storage\?\.setItem\(PENDING_KEY, JSON\.stringify\(intent\)\)/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/bar-local/hposExpenseApi.js'), /saved\.operation_id/)
+})
+
+test('original Customers reads scoped local records without inventing history or consent fields', () => {
+  assert.match(hposCustomers, /window\.api\.barLocal\.query\(name, filters\), 'customers\.list'/)
+  assert.match(hposCustomers, /total_visits: null[\s\S]*total_spent: null[\s\S]*loyalty_points: null/)
+  assert.match(hposCustomers, /Outstanding credit/)
+  assert.match(hposCustomers, /window\.api\.barLocal\.command\(intent\)/)
+  assert.match(hposCustomers, /Notes, marketing consent, history, loyalty changes, credit changes and editing existing customers are not available/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/bar-local/hposCustomerApi.js'), /saved submission; do not create the customer again/)
 })
 
 test('authority chooser hides cached cloud identity without deleting Restaurant offline-session state', () => {
@@ -60,17 +135,116 @@ test('authority chooser hides cached cloud identity without deleting Restaurant 
   assert.doesNotMatch(chooserStartup, /localStorage\.removeItem\(['"]bb_user|localStorage\.removeItem\(USER_SCOPE_KEY/)
 })
 
-test('local Hpos layout never polls cloud POS or sync and bypasses cloud PIN/support gating', () => {
+test('local Hpos layout keeps the original Manage PIN gate on the local service and never routes it through cloud IPC', () => {
   assert.match(layout, /if \(isLocalBarAuthority\) return;/)
-  assert.match(layout, /if \(isLocalBarAuthority\) \{\s*navigate\(route\);\s*return;/)
-  assert.match(layout, /if \(isLocalBarAuthority\) return;\s*if \(isGatedManageRoute/)
-  assert.match(layout, /isGatedManageRoute && !isLocalBarAuthority && !isManageUnlocked/)
+  assert.match(layout, /barLocal\?\.verifyManagerPin/)
+  assert.match(layout, /slice\(0, 12\)/)
+  assert.match(layout, /Local Manage PIN verification is unavailable in this app build/)
+  assert.match(layout, /isGatedManageRoute && isLocalBarAuthority && !isManageUnlocked/)
+  assert.match(layout, /<span>Manage<\/span>/)
+  assert.match(layout, /className=\{`hpos-manage-trigger/)
+  assert.doesNotMatch(layout, /if \(isLocalBarAuthority\) \{\s*navigate\(route\);\s*return;/)
   assert.match(layout, /!isLocalBarAuthority && syncStatus\?\.isOnline === false/)
   assert.match(nav, /localAuthority\s*=\s*false/)
   assert.match(nav, /Bar transactions are stored on this local database/)
-  assert.match(layout, /if \(isLocalBarAuthority\) \{\s*return \[/)
+  assert.doesNotMatch(layout, /if \(isLocalBarAuthority\) \{\s*return \[/)
   assert.match(layout, /Data, imports & backups/)
   assert.match(layout, /!isLocalBarAuthority && canAccessCapability\(access, 'data.import'\)/)
-  assert.match(shell, /embeddedOperationsTab="accounting"/)
-  assert.match(shell, /embeddedOperationsTab="workforce"/)
+  assert.match(read('services/bar-local/src/app.ts'), /manager-pin\/verify/)
+  assert.match(read('src/main/bar-local/client.js'), /verifyManagerPin\(request\)/)
+})
+
+test('replacement local Bar workspace page source is removed from the restored original app', () => {
+  assert.equal(existsSync(join(root, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx')), false)
+  assert.doesNotMatch(shell, /BarLocalWorkspace/)
+  assert.doesNotMatch(app, /BarLocalWorkspace/)
+})
+
+test('My Shift uses local reads and atomic start, while hosted attendance and shared-drawer calls are fenced', () => {
+  assert.match(shell, /<Route path="hpos\/my-shift" element=\{<HposMyShift localAuthority \/>\}/)
+  assert.match(hposMyShift, /createLocalHposMyShiftApi\(window\.api\?\.barLocal/)
+  assert.match(hposMyShift, /localApi\.readMine\(\)/)
+  assert.match(hposMyShift, /localApi\.openShift\(/)
+  assert.match(myShiftAdapter, /bridge\.command\(\{ command: 'shift\.open'/)
+  assert.match(myShiftAdapter, /bridge\.query\('cashup\.mine'/)
+  assert.match(hposMyShift, /if \(localAuthority\) throw new Error\('Local attendance clock-out/)
+  assert.match(hposSharedShiftClose, /settings\?\.authority_mode === 'bar_local'[\s\S]*?<CloudHposSharedShiftClose \/>/)
+  assert.match(hposSharedShiftClose, /Local staff attendance is available in Team/)
+  assert.match(hposSharedShiftClose, /href="#\/hpos\/team">Open Team and attendance/)
+  assert.match(hposSharedShiftClose, /href="#\/hpos\/my-cashup">Open My Cash-up/)
+  assert.match(hposSharedShiftClose, /href="#\/hpos\/cash">Open Cash &amp; close/)
+  assert.match(hposSharedShiftClose, /Shared drawer close and staff-entered PIN handover are still pending their local atomic workflow/)
+})
+
+test('original Team board reads local workforce data and routes attendance mutations through local commands', () => {
+  assert.match(hposTeam, /loadLocalHposTeam\(window\.api\?\.barLocal/)
+  assert.match(teamAdapter, /bridge\.query\('staff\.list'/)
+  assert.match(teamAdapter, /bridge\.query\('workforce\.attendance\.current'/)
+  assert.match(hposTeam, /Attendance changes are recorded by the local Bar authority/)
+  assert.match(hposTeam, /command: 'workforce\.clock\.in'/)
+  assert.match(hposTeam, /command: 'workforce\.clock\.out'/)
+  assert.match(hposTeam, /localAuthority \? 'staff\.manage' : 'pos\.manage'/)
+})
+
+test('original My Sales reads only own local receipts and fences hosted sale correction', () => {
+  assert.match(shell, /<Route path="hpos\/my-sales" element=\{<HposMySales \/>\}/)
+  assert.match(hposMySales, /createLocalHposMySalesApi\(window\.api\?\.barLocal/)
+  assert.match(mySalesAdapter, /loadCompleteBarList[\s\S]*?'sales\.mine'/)
+  assert.match(mySalesAdapter, /row\.actor_staff_id !== staffId/)
+  assert.match(hposMySales, /if \(localAuthority\) \{ setVoidError\('Sale corrections are not wired to the local Bar database yet/)
+  assert.match(hposMySales, /Local sale corrections are pending/)
+})
+
+test('local Bar routes fence hosted Restaurant workspaces, unsupported operations and second-display links', () => {
+  for (const [route, area] of [['hpos/floor','Floor & tables'],['hpos/kitchen','Kitchen display'],['hpos/service','Reservations & waitlist'],['hpos/business-control','Business Control'],['restaurant/recipes','Stock Pro'],['restaurant/finance-close','Finance & close'],['restaurant/team-workspace','Accounting & Workforce'],['pos/customer-display','Customer display'],['pos/bar-display','Bar display']]) {
+    const line = shell.split(/\r?\n/).find(value => value.includes('<Route path=\"'+route+'\"')) || ''
+    assert.match(line, new RegExp('<LocalBarRouteUnavailable area=\"'+area+'\"'), route+' must never invoke a hosted page in local mode')
+  }
+  assert.match(shell, /<Route path="restaurant\/inventory" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="stock" defaultTab="stock" enabledTabs=\{\['stock', 'purchasing', 'suggestions'\]\} \/><\/LocalBarAddonGate>\}/)
+  assert.match(shell, /<Route path="restaurant\/purchasing" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantPurchasing \/><\/LocalBarAddonGate>\}/)
+  assert.match(shell, /<Route path="restaurant\/lots-expiry" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantInventoryLots \/><\/LocalBarAddonGate>\}/)
+  assert.match(read('src/renderer/src/components/restaurant/RestaurantInventoryLots.jsx'), /getLotExpirySnapshot\(horizon\)/)
+  assert.match(read('src/renderer/src/components/restaurant/RestaurantInventoryLots.jsx'), /does not allocate sales to lots or track remaining quantity by lot/)
+  assert.match(shell, /<Route path="restaurant\/purchase-suggestions" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantPurchaseSuggestions \/><\/LocalBarAddonGate>\}/)
+  const suggestions = read('src/renderer/src/components/restaurant/RestaurantPurchaseSuggestions.jsx')
+  assert.match(suggestions, /getPurchaseSuggestionsSnapshot\(\)/)
+  assert.match(suggestions, /Preferred supplier assignment is not connected to local Bar yet/)
+  const purchasing = read('src/renderer/src/components/restaurant/RestaurantPurchasing.jsx')
+  assert.match(purchasing, /getPurchasingSnapshot\(\)/)
+  assert.match(purchasing, /if \(localAuthority\) \{ setError\('Purchase order creation is not connected/)
+  assert.match(purchasing, /No hosted request is made/)
+})
+
+test('original Staff page and local Accounting chart never use hosted APIs from local Bar routes', () => {
+  const staff = read('src/renderer/src/components/Staff.jsx')
+  const staffApi = read('src/renderer/src/components/hospitality-pos/bar-local/hposStaffLocalApi.js')
+  const accounting = read('src/renderer/src/components/restaurant-accounting/RestaurantChartOfAccounts.jsx')
+  const accountingApi = read('src/renderer/src/components/restaurant-accounting/barLocalAccountingApi.js')
+  const generalLedger = read('src/renderer/src/components/restaurant-accounting/RestaurantGeneralLedger.jsx')
+  const ledgerApi = read('src/renderer/src/components/restaurant-accounting/barLocalGeneralLedgerApi.js')
+  assert.match(shell, /<Route path="staff" element=\{<Staff \/>\}/)
+  assert.match(staff, /localStaffApi\.list\(\)/)
+  assert.match(staffApi, /command: 'staff\.create'/)
+  assert.match(staff, /canManageThisStaff && !localAuthority/)
+  assert.match(accounting, /localApi\.list\(true\)/)
+  assert.match(accounting, /localApi\.postOpening/)
+  assert.match(accountingApi, /accounting\.account\.upsert/)
+  assert.match(accountingApi, /accounting\.journal\.post/)
+  assert.match(generalLedger, /localLedgerApi\.loadFirstPage\(/)
+  assert.match(generalLedger, /localAuthorityReady=\{localAuthority\}/)
+  assert.match(generalLedger, /canManage&&!localAuthority/)
+  assert.match(ledgerApi, /bridge\.query\('accounting\.journal_entries'/)
+  const apApi = read('src/renderer/src/components/restaurant-accounting/barLocalAccountsPayableApi.js')
+  const apPage = read('src/renderer/src/components/restaurant-accounting/RestaurantAccountsPayable.jsx')
+  assert.match(apApi, /business_id !== scope\.business_id/)
+  assert.match(apApi, /watermark !== suppliers\.watermark/)
+  assert.match(apPage, /createBarLocalAccountsPayableApi/)
+  assert.match(apPage, /canManage && !localAuthority/)
+  assert.match(apPage, /canPay && !localAuthority/)
+  assert.match(ledgerApi, /bridge\.query\('accounting\.trial_balance'/)
+  for (const route of ['restaurant/accounts-payable','restaurant/bank-reconciliation','restaurant/tax-returns','restaurant/budgets','restaurant/balance-sheet','restaurant/payroll']) {
+    const start = shell.indexOf('<Route path="'+route+'"')
+    const end = shell.indexOf('</Route>', start)
+    assert.match(shell.slice(start, end), /<LocalBarRouteUnavailable area="Accounting Pro" \/>/, route+' must be visibly fenced and send no hosted request')
+  }
 })

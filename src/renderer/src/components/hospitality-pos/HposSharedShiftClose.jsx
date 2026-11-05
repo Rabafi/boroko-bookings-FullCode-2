@@ -18,6 +18,22 @@ import { clearCashupSubmissionRound, getCashupSubmissionRound } from '../../util
 //   cash-up; the server + offline domain enforce this. The UI only offers
 //   "clock out without cash-up" when no open Till shift was found.
 export default function HposSharedShiftClose() {
+  const { settings } = useSettings()
+  if (settings?.authority_mode === 'bar_local') return <div className="hpos-page">
+    <HposPageHero eyebrow="Staff and shared drawer" title="Staff shift close" description="Use the existing local Staff and Cash & close screens. This page does not send attendance or drawer requests." />
+    <section className="hpos-my-shift-card" role="status">
+      <HposNotice tone="warning">Local staff attendance is available in Team. Personal blind cash-up is available in My Cash-up. Shared drawer close and staff-entered PIN handover are still pending their local atomic workflow; no cloud request was sent.</HposNotice>
+      <nav aria-label="Local staff and cash-up workflows" className="mt-4 flex flex-wrap gap-3">
+        <a className="hpos-button hpos-button-primary" href="#/hpos/team">Open Team and attendance</a>
+        <a className="hpos-button" href="#/hpos/my-cashup">Open My Cash-up</a>
+        <a className="hpos-button" href="#/hpos/cash">Open Cash &amp; close</a>
+      </nav>
+    </section>
+  </div>
+  return <CloudHposSharedShiftClose />
+}
+
+function CloudHposSharedShiftClose() {
   const { user } = useAuth()
   const { settings } = useSettings()
   const barOnly = isBarOnlyMode(settings)
