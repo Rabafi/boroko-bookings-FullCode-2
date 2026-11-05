@@ -544,3 +544,15 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Manual impact: Required. The existing Suggestions page now calculates local reorder gaps from outlet stock and reorder points. It labels the values as suggestions and does not assign a supplier or create a purchase order. Preferred supplier assignment and approved order creation remain pending local contracts; no cloud Purchasing fallback is available in local Bar.
 - Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by user's instruction and non-blocking for this software checkpoint. No PDF was edited.
 - Verification: EV-233. Adapter, route and rendered original-screen checks passed 23/23; renderer typecheck passed; full `test:bar-local-electron` passed 110/110; and the Hospitality POS production build passed. The original suggestions chunk is present and the renderer has no `BarLocalWorkspace` reference.
+
+## Staff shift close local guidance (2026-11-06)
+
+- Manual impact: Required. The existing Staff shift close page now links to the established local Team/attendance, My Cash-up and Cash & close screens, and accurately identifies shared drawer close and staff-entered PIN handover as pending local atomic workflows. No cloud request is sent from the local boundary.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by the user's instruction and non-blocking for software work. No PDF was edited.
+- Verification: EV-239. Local route checks passed 14/14, renderer typecheck passed, and the Hospitality POS production build passed. This does not qualify the installed service or the pending shared-drawer workflow.
+
+## Accounting Pro General Ledger local query schema repair (2026-11-06)
+
+- Manual impact: Required. Migration 0090 repairs the original read-only General Ledger and trial-balance local query against the existing global account-code schema. Journal records remain business/outlet-scoped through their originating operations; no financial mutation or customer-visible ledger controls were added.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide: Pending by the user's instruction and non-blocking for software work. No PDF was edited.
+- Verification: EV-240. The AP, banking, tax, payroll, budget, ledger/trial-balance and source-to-GL disposable PostgreSQL checks passed 11/11 after all 90 migrations; contract-surface and HTTP routing checks passed 6/6 on a separate fresh disposable cluster; service typecheck passed; and staged-server verification checked 1,988 files. The installed saved service has not been upgraded.
