@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Copy, RefreshCw, Save } from 'lucide-react'
-import { useAccess } from '../../app-context'
+import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { createBarLocalBudgetsApi } from './barLocalBudgetsApi.js'
 import { AccountingButton, AccountingExportButton, AccountingLoading, AccountingNotice, AccountingPage, AccountingPanel, EmptyState, accountingInvoke, inputClass, labelClass, money, runIdempotent, unwrap } from './RestaurantAccountingUi'
 import { normalizeBudgetResponse } from './budgetResponse'
 
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const emptyData = { matrix: [], templates: [], version_id: null, version_status: null, complete: false }
 
-export default function RestaurantBudgets() {
+function CloudRestaurantBudgets() {
   const access = useAccess()
   const canManage = canAccessCapability(access, 'accounting.manage')
   const [year, setYear] = useState(new Date().getFullYear())
@@ -170,4 +171,37 @@ export default function RestaurantBudgets() {
       </div>}
     </div>}
   </AccountingPage>
+}
+
+function LocalBarBudgets(){
+ const {user}=useAuth(),{settings}=useSettings(),access=useAccess()
+ const canManage=canAccessCapability(access,'accounting.manage')
+ const api=useMemo(()=>{try{return createBarLocalBudgetsApi(window.api?.barLocal,{businessId:settings?.lodge_id||user?.lodge_id,outletId:settings?.outlet_id,staffId:user?.id})}catch{return null}},[settings?.lodge_id,settings?.outlet_id,user?.id,user?.lodge_id])
+ const year=String(new Date().getFullYear())
+ const [data,setData]=useState({budgets:[],accounts:[]}),[selectedId,setSelectedId]=useState(''),[detail,setDetail]=useState(null)
+ const [form,setForm]=useState({name:`Operating budget ${year}`,period_start:`${year}-01-01`,period_end:`${year}-12-31`}),[amounts,setAmounts]=useState({})
+ const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
+ const load=useCallback(async()=>{setLoading(true);setError('');try{if(!api)throw new Error('Local accounting scope is unavailable. Sign in again before continuing.');setData(await api.load())}catch(err){setError(err.message)}finally{setLoading(false)}},[api])
+ useEffect(()=>{void load()},[load])
+ const clear=()=>{setSelectedId('');setDetail(null);setForm({name:`Operating budget ${year}`,period_start:`${year}-01-01`,period_end:`${year}-12-31`});setAmounts({});setNotice('')}
+ const select=async(id)=>{setSelectedId(id);setDetail(null);setError('');setNotice('');if(!id){clear();return}setLoading(true);try{const row=await api.loadBudget(id);setDetail(row);setForm({name:row.name,period_start:row.period_start,period_end:row.period_end});setAmounts(Object.fromEntries(row.lines.map(line=>[line.account_code,line.amount])))}catch(err){setError(err.message)}finally{setLoading(false)}}
+ const save=async(e)=>{e.preventDefault();if(!api)return;setBusy(true);setError('');setNotice('');try{const lines=data.accounts.filter(account=>account.active&&['revenue','expense'].includes(account.type)&&String(amounts[account.code]??'').trim()!=='').map(account=>{const raw=String(amounts[account.code]).trim();if(!/^\d{1,12}(?:\.\d{1,2})?$/.test(raw))throw new Error(`Enter a non-negative amount with at most two decimals for ${account.code}.`);const [whole,fraction='']=raw.split('.');return{account_code:account.code,amount:`${whole}.${fraction.padEnd(2,'0')}`,description:account.name}});const payload={...(detail?{budget_id:detail.id,expected_version:detail.version}:{}),name:form.name.trim(),period_start:form.period_start,period_end:form.period_end,active:true,lines};const operationKey=`${detail?.id||form.name.trim().toLowerCase()}:${form.period_start}:v${detail?.version||0}`;const result=await api.submit(payload,operationKey);if(result.outcome==='refused')throw new Error(result.error?.message||'The local authority refused this budget.');const id=result.result?.budget_id||result.receipt?.budget_id;setNotice('Budget version saved locally. Actuals are calculated from the complete outlet-scoped posted journal snapshot.');await load();if(id)await select(id)}catch(err){setError(err.message)}finally{setBusy(false)}}
+ const eligibleAccounts=data.accounts.filter(account=>account.active&&['revenue','expense'].includes(account.type))
+ return <AccountingPage title="Budgets" description="Create versioned outlet budgets and compare them with posted local journal actuals." actions={<AccountingButton tone="secondary" onClick={()=>void load()}><RefreshCw size={15}/>Refresh</AccountingButton>}>
+  <AccountingNotice type="warning">Local budgets are versioned plans. This screen does not support separate approval, monthly matrix templates or exports. Actuals include only complete local posted-journal data for this business and outlet; hosted budget data is never used.</AccountingNotice>
+  {error&&<AccountingNotice type="error">{error}</AccountingNotice>}{notice&&<AccountingNotice type="success">{notice}</AccountingNotice>}
+  {loading?<AccountingLoading/>:<div className="space-y-4">
+   <AccountingPanel title="Saved local budgets"><div className="flex flex-wrap items-end gap-3"><label className={`${labelClass} min-w-72`}>Budget<select className={inputClass} value={selectedId} onChange={e=>void select(e.target.value)}><option value="">Create a new budget</option>{data.budgets.map(row=><option key={row.id} value={row.id}>{row.name} · {row.period_start}–{row.period_end} · v{row.version}</option>)}</select></label><span className="text-xs text-slate-500">{data.budgets.length} local budget{data.budgets.length===1?'':'s'}</span></div></AccountingPanel>
+   {canManage&&<AccountingPanel title={detail?`Revise ${detail.name} (v${detail.version})`:'Create local budget'} description="Saving a change creates a historical version; the server checks the expected version and retains an audit event."><form className="space-y-4" onSubmit={save}><div className="grid gap-3 sm:grid-cols-3"><label className={labelClass}>Budget name<input required maxLength="120" className={inputClass} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label className={labelClass}>Period start<input required type="date" className={inputClass} value={form.period_start} onChange={e=>setForm({...form,period_start:e.target.value})}/></label><label className={labelClass}>Period end<input required type="date" className={inputClass} value={form.period_end} onChange={e=>setForm({...form,period_end:e.target.value})}/></label></div>
+    {!eligibleAccounts.length?<EmptyState title="No active revenue or expense accounts" description="Create suitable accounts in the local Chart of Accounts before budgeting."/>:<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs text-slate-500"><th className="py-2">Account</th><th>Type</th><th>Budget amount</th></tr></thead><tbody>{eligibleAccounts.map(account=><tr key={account.code} className="border-b border-slate-100"><td className="py-2">{account.code} · {account.name}</td><td>{account.type}</td><td><input aria-label={`Budget amount ${account.code}`} type="number" min="0" step="0.01" className={`${inputClass} max-w-48`} value={amounts[account.code]??''} onChange={e=>setAmounts({...amounts,[account.code]:e.target.value})}/></td></tr>)}</tbody></table></div>}
+    <div className="flex gap-2"><AccountingButton busy={busy} disabled={!api||!canManage||!eligibleAccounts.length} type="submit"><Save size={15}/>Save budget version</AccountingButton><AccountingButton tone="secondary" onClick={clear} type="button">New budget</AccountingButton></div></form></AccountingPanel>}
+   {detail&&<AccountingPanel title="Budget actuals" description={`${detail.period_start} through ${detail.period_end} · local snapshot ${detail.snapshot_watermark}`}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs text-slate-500"><th className="py-2">Account</th><th>Type</th><th className="text-right">Budget</th><th className="text-right">Actual</th><th className="text-right">Actual − budget</th></tr></thead><tbody>{detail.lines.map(line=><tr key={line.account_code} className="border-b border-slate-100"><td className="py-2">{line.account_code} · {line.account_name}</td><td>{line.account_type}</td><td className="text-right">{money(line.amount)}</td><td className="text-right">{money(line.actual_amount)}</td><td className="text-right">{money(line.variance)}</td></tr>)}</tbody></table></div></AccountingPanel>}
+   {!data.budgets.length&&<EmptyState title="No local budgets" description="Create the first versioned budget from active revenue and expense accounts."/>}
+  </div>}
+ </AccountingPage>
+}
+
+export default function RestaurantBudgets(){
+ const {user}=useAuth()
+ return user?.localAuthority===true?<LocalBarBudgets/>:<CloudRestaurantBudgets/>
 }

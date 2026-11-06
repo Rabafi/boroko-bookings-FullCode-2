@@ -242,11 +242,19 @@ test('original Staff page and local Accounting chart never use hosted APIs from 
   assert.match(apPage, /canManage && !localAuthority/)
   assert.match(apPage, /canPay && !localAuthority/)
   assert.match(ledgerApi, /bridge\.query\('accounting\.trial_balance'/)
-  for (const route of ['restaurant/budgets','restaurant/balance-sheet','restaurant/payroll']) {
+  for (const route of ['restaurant/balance-sheet','restaurant/payroll']) {
     const start = shell.indexOf('<Route path="'+route+'"')
     const end = shell.indexOf('</Route>', start)
     assert.match(shell.slice(start, end), /<LocalBarRouteUnavailable area="Accounting Pro" \/>/, route+' must be visibly fenced and send no hosted request')
   }
+  const budgetRouteStart = shell.indexOf('<Route path="restaurant/budgets"')
+  const budgetRouteEnd = shell.indexOf('</Route>', budgetRouteStart)
+  assert.match(shell.slice(budgetRouteStart, budgetRouteEnd), /<RestaurantBudgets \/>/)
+  const budgetPage = read('src/renderer/src/components/restaurant-accounting/RestaurantBudgets.jsx')
+  const budgetApi = read('src/renderer/src/components/restaurant-accounting/barLocalBudgetsApi.js')
+  assert.match(budgetPage, /user\?\.localAuthority===true\?<LocalBarBudgets/)
+  assert.match(budgetApi, /accounting\.budget\.upsert/)
+  assert.match(budgetApi, /snapshot_watermark/)
   const taxRouteStart = shell.indexOf('<Route path="restaurant/tax-returns"')
   const taxRouteEnd = shell.indexOf('</Route>', taxRouteStart)
   assert.match(shell.slice(taxRouteStart, taxRouteEnd), /<RestaurantTaxReturns \/>/)

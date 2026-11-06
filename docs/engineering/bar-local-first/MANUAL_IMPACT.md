@@ -569,3 +569,10 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Local Bar does not supply jurisdiction-specific tax advice, adjustment/debit/credit-note entry, independent review/approval, filing evidence or export in this route. No hosted Accounting request is made. Confirm tax treatment and complete external review/filing with the tax authority or adviser.
 - Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide remain pending per user direction; no PDF was edited.
 - Verification: EV-242. Tax adapter and original-route tests passed 20/20 together with bank checks; the isolated extended Accounting suite (EV-241) covers tax draft snapshot/hash and idempotency; renderer typecheck passed. A proposed rendered Chromium smoke exceeded its 60-second timeout and was removed; no rendered result is claimed.
+
+## Accounting Pro local budget workflow (2026-11-06)
+
+- Manual impact: Required. The original Budgets page now supports versioned budgets for a selected period, using active local revenue/expense accounts, and shows actual amounts from complete local journal entries scoped to the same outlet and consistent database watermark. Updates carry the expected budget version and a stable recoverable operation.
+- Local Bar does not provide the cloud annual monthly matrix, templates, separate budget approval or export in this workflow. Users should compare the displayed budget/actual/variance for the named period; the app does not use hosted figures.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide remain pending per user direction; no PDF was edited.
+- Verification: EV-243. Budget adapter and original-route tests passed 17/17; renderer typecheck and Hospitality POS production build passed. No local database mutation was used for these UI checks; the versioned budget SQL/actual calculation contract is covered by the isolated PostgreSQL accounting suite in EV-241.

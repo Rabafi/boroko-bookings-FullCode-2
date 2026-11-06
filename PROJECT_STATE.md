@@ -4863,3 +4863,8 @@ The full contract-surface and HTTP validation routing suite then passed **6/6** 
 
 - The original tax working-papers page now routes local Bar sessions to scope-checked local tax-code and monthly tax-draft reads. Managers can version tax codes and generate a monthly source-hashed draft through the local atomic command with stable retry recovery. The screen clearly limits local behavior to drafts and reference tax codes; adjustments, independent review/approval, filing evidence, statutory submission and export are still unavailable.
 - Tax adapter and original route plus bank tests passed **21/21**, renderer typecheck passed. The PostgreSQL tax draft/source-hash/idempotency contract was reverified as part of EV-241's isolated Accounting suite after all 91 migrations. A rendered Chromium smoke attempt timed out and was removed; rendered Tax page acceptance is not claimed. Evidence EV-242.
+
+## 2026-11-06 — original Accounting Pro budget route
+
+- The original Budgets page now supports local period budgets and account-level actuals from complete same-outlet journal results at the same local database watermark. Versioned writes use `accounting.budget.upsert`, expected-version checks and exact retry recovery. No hosted calls are made. The monthly matrix/templates, separate approval and export are still unavailable locally.
+- Budget adapter and original-route checks passed **17/17**, renderer typecheck passed, and the Hospitality POS production build passed before the final disabled-state guard adjustment (rerun at final verification). Existing PostgreSQL budget SQL was covered in EV-241; no Rabafi or hosted database was used. Evidence EV-243.
