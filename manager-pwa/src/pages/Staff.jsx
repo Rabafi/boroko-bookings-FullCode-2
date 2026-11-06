@@ -12,6 +12,9 @@ import {
   normalizeStaffStatus
 } from '@shared/accessControl'
 
+/** @typedef {{id: string, name: string, email?: string | null, role: string, status?: string | null, created_at: string, pwa_enabled?: boolean, capability_overrides?: Record<string, boolean> | null, last_desktop_sign_in_at?: string | null, last_pwa_sign_in_at?: string | null, last_activity_at?: string | null, invite_sent_at?: string | null, last_sign_in_at?: string | null, password_updated_at?: string | null}} StaffExpectedView */
+
+/** @param {string | null | undefined} status */
 function toneForStatus(status) {
   return {
     active: 'bg-green-900/50 text-green-300',
@@ -20,6 +23,7 @@ function toneForStatus(status) {
   }[normalizeStaffStatus(status)] || 'bg-gray-800 text-gray-300'
 }
 
+/** @param {string | null | undefined} value */
 function formatDateTime(value) {
   if (!value) return ''
   return new Date(value).toLocaleString([], {
@@ -31,6 +35,7 @@ function formatDateTime(value) {
   })
 }
 
+/** @param {StaffExpectedView} member */
 function buildSignals(member) {
   const signals = []
   if (member.last_desktop_sign_in_at) signals.push(`Desk ${formatDateTime(member.last_desktop_sign_in_at)}`)
@@ -43,12 +48,15 @@ function buildSignals(member) {
 }
 
 export default function Staff() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const { roleMeta, access } = useFeatures()
-  const [staff, setStaff] = useState([])
+  const [staff, setStaff] = useState(/** @type {StaffExpectedView[]} */ ([]))
 
   useEffect(() => {
-    listStaff(user.lodge_id).then(setStaff).catch(() => setStaff([]))
+    // listStaff may read persisted rows; this consumer retains its existing
+    // expected staff view without validating that response.
+    listStaff(user.lodge_id).then((rows) => setStaff(/** @type {StaffExpectedView[]} */ (rows))).catch(() => setStaff([]))
   }, [user.lodge_id])
 
   const summary = useMemo(() => ({
@@ -61,7 +69,7 @@ export default function Staff() {
     <div className="min-h-screen bg-gray-950 pb-24">
       <div className="bg-gray-900 px-4 pt-12 pb-4">
         <h1 className="text-lg font-bold text-white">Staff</h1>
-        <p className="text-xs text-gray-400">Current mobile role: {roleMeta?.label || titleCase(user.role)}</p>
+        <p className="text-xs text-gray-400">Current mobile role: {/** @type {{label?: string} | null | undefined} */ (roleMeta)?.label || titleCase(user.role)}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <span className="rounded-full bg-green-900/50 px-2.5 py-1 text-[11px] text-green-300">{summary.active} active</span>
           {summary.suspended > 0 && <span className="rounded-full bg-amber-900/50 px-2.5 py-1 text-[11px] text-amber-300">{summary.suspended} suspended</span>}
@@ -74,7 +82,10 @@ export default function Staff() {
         {staff.map((member) => {
           const snapshot = buildCapabilitySnapshot({
             role: member.role,
-            features: access?.features || {},
+            // Keep the existing `features` read and fallback. The shared access
+            // contract currently exposes `capabilities` instead; do not replace
+            // this page's behavior with the similarly named field.
+            features: (/** @type {{features?: Record<string, boolean>} | null | undefined} */ (access))?.features || {},
             capabilityOverrides: member.capability_overrides || {}
           })
           const role = ROLE_DEFINITIONS[normalizeAppRole(member.role)] || ROLE_DEFINITIONS.receptionist

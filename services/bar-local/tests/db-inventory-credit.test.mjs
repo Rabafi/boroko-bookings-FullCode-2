@@ -62,6 +62,10 @@ test('stock, credit, vouchers and settings stay consistent locally', async (t) =
   const customer = await h.call('cmd_customer_create', customerEnvelope)
   assert.equal(customer.ok, true, JSON.stringify(customer.error))
   const customerId = customer.result.customer_id
+  const customerList = await h.query('customers.list', {})
+  const listedCustomer = customerList.data.find((row) => row.customer_id === customerId)
+  assert.equal(listedCustomer.name, 'Credit Customer')
+  assert.equal(Number(listedCustomer.outstanding), 0)
 
   const creditSaleEnvelope = h.envelope('sale.commit', {
     shift_id: shiftId,
@@ -78,6 +82,8 @@ test('stock, credit, vouchers and settings stay consistent locally', async (t) =
   const payment = await h.call('cmd_credit_payment', paymentEnvelope)
   assert.equal(payment.ok, true, JSON.stringify(payment.error))
   assert.equal(Number(payment.result.outstanding), 24.2)
+  const creditAfterPayment = await h.query('customers.list', {})
+  assert.equal(Number(creditAfterPayment.data.find((row) => row.customer_id === customerId).outstanding), 24.2)
 
   const voucherEnvelope = h.envelope('voucher.issue', {
     amount: '50.00', customer_id: customerId, expires_on: null

@@ -34,6 +34,8 @@
  * @property {{ token?: unknown, expires_at?: unknown, session_type?: unknown } | null} backendSession
  * @property {number} consecutiveConnectivityFailures
  * @property {boolean} connectivityCheckInProgress
+ * @property {boolean} [historicalReplayContractAvailable]
+ * @property {number} [historicalReplayContractCheckedAt]
  * @property {{ stale: boolean, names: string[], attempts: number, lastError: string, lastFailedAt: string | number | null }} syncRefreshState
  * @property {string | null} lastSuccessfulSyncAt
  * @property {ReturnType<typeof setTimeout> | null} syncRefreshRetryTimer
@@ -44,6 +46,7 @@
  * @property {(type: string, table: string, data: unknown, id?: unknown, meta?: Record<string, unknown>) => unknown} [queueOperation]
  * @property {string} [reviewBookingId]
  * @property {string} [collectPaymentBookingId]
+ * @property {number} [posSubmitDeadlineMs] Optional test-only POS network deadline override; production falls back to the module's fixed deadline.
  */
 /** @type {MainState} */
 export const state = {

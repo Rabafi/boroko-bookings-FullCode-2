@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useSearchParams } from 'react-router'
 import { useAuth } from '../contexts/AuthContext'
@@ -8,6 +9,11 @@ import { readCacheEntry } from '../lib/runtime'
 import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
+
+/** @typedef {'today'|'in_house'|'arrivals'|'departures'|'pending_online'|'overdue'|'upcoming'|'all'} BookingFilter */
+/** @typedef {{id: string|number, room_id?: string|number|null, guest_name?: string|null, check_in: string, check_out: string, status: keyof typeof STATUS_COLOR, source?: string|null, payment_status: keyof typeof PAY_COLOR, total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null}} BookingExpectedView */
+/** @typedef {{id: string|number, room_number: string|number}} BookingRoomExpectedView */
+/** @typedef {{label: string, rows: BookingExpectedView[]}} BookingGroup */
 
 const STATUS_COLOR = {
   confirmed: 'bg-blue-900/50 text-blue-300',
@@ -24,7 +30,7 @@ const PAY_COLOR = {
   unpaid: 'bg-red-900/30 text-red-400'
 }
 
-const FILTERS = [
+const FILTERS = /** @type {const} */ ([
   ['today', 'Today'],
   ['in_house', 'In-house'],
   ['arrivals', 'Arrivals'],
@@ -33,12 +39,14 @@ const FILTERS = [
   ['overdue', 'Overdue'],
   ['upcoming', 'Upcoming'],
   ['all', 'All']
-]
+])
 
+/** @param {string|null} value @returns {BookingFilter} */
 function normalizeFilter(value) {
-  return FILTERS.some(([id]) => id === value) ? value : 'today'
+  return FILTERS.some(([id]) => id === value) ? /** @type {BookingFilter} */ (value) : 'today'
 }
 
+/** @param {BookingExpectedView} booking @param {BookingFilter} filter @param {string} today */
 function matchesFilter(booking, filter, today) {
   const status = booking.status || ''
   const active = status !== 'cancelled'
@@ -52,12 +60,14 @@ function matchesFilter(booking, filter, today) {
   return true
 }
 
+/** @param {string} dayKey @param {number} days */
 function addDaysKey(dayKey, days) {
   const value = new Date(`${dayKey}T00:00:00`)
   value.setDate(value.getDate() + days)
   return value.toISOString().slice(0, 10)
 }
 
+/** @param {BookingExpectedView} booking @param {string} today @param {string} tomorrow */
 function getBookingGroup(booking, today, tomorrow) {
   const status = booking.status || ''
   if (status === 'checked_in' && booking.check_out < today) return 'Overdue'
@@ -79,9 +89,11 @@ function FrontDeskNotice({ compact = false }) {
   )
 }
 
+/** @param {{booking: BookingExpectedView, onClose: () => void}} props */
 function BookingSheet({ booking, onClose }) {
   const nights = booking.check_in && booking.check_out
-    ? Math.round((new Date(booking.check_out) - new Date(booking.check_in)) / 86400000)
+    // Date subtraction applies number-hint conversion to these built-in Date values; getTime returns the same time value, including NaN for invalid dates.
+    ? Math.round((new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000)
     : 0
 
   return (
@@ -116,6 +128,7 @@ function BookingSheet({ booking, onClose }) {
   )
 }
 
+/** @param {{bookings: BookingExpectedView[], rooms: BookingRoomExpectedView[], onSelectBooking: (booking: BookingExpectedView) => void}} props */
 function CalendarView({ bookings, rooms, onSelectBooking }) {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -190,6 +203,7 @@ function CalendarView({ bookings, rooms, onSelectBooking }) {
   )
 }
 
+/** @param {{booking: BookingExpectedView, onSelectBooking: (booking: BookingExpectedView) => void}} props */
 function BookingRow({ booking, onSelectBooking }) {
   return (
     <button key={booking.id} onClick={() => onSelectBooking(booking)} className="w-full bg-gray-800 rounded-2xl p-4 text-left active:scale-[0.98] transition-transform">
@@ -212,17 +226,19 @@ function BookingRow({ booking, onSelectBooking }) {
 }
 
 export default function Bookings() {
-  const { user } = useAuth()
+  const { user: routeUser } = useAuth()
+  /** AppShell's authenticated route guard establishes a non-null session here; the source view remains nullable and this assertion does not validate its contents. @type {NonNullable<typeof routeUser>} */
+  const user = /** @type {NonNullable<typeof routeUser>} */ (routeUser)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [bookings, setBookings] = useState([])
-  const [rooms, setRooms] = useState([])
-  const [view, setView] = useState('list')
+  const [bookings, setBookings] = useState(/** @type {BookingExpectedView[]} */ ([]))
+  const [rooms, setRooms] = useState(/** @type {BookingRoomExpectedView[]} */ ([]))
+  const [view, setView] = useState(/** @type {'list'|'calendar'} */ ('list'))
   const [tab, setTab] = useState(() => normalizeFilter(searchParams.get('filter')))
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [selected, setSelected] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
+  const [selected, setSelected] = useState(/** @type {BookingExpectedView|null} */ (null))
   const today = new Date().toISOString().slice(0, 10)
   const tomorrow = addDaysKey(today, 1)
 
@@ -238,24 +254,26 @@ export default function Bookings() {
         listBookings(user.lodge_id).catch(() => []),
         listRooms(user.lodge_id).catch(() => [])
       ])
-      setBookings(bookingRows || [])
-      setRooms((roomRows || []).map((room) => ({ id: room.id, room_number: room.room_number })))
+      // Booking/cache JSON is unvalidated; this view documents the fields selected by the existing query.
+      setBookings(/** @type {BookingExpectedView[]} */ (bookingRows || []))
+      // Room cache/query result is likewise consumed under its existing SELECT shape, without runtime validation.
+      setRooms(/** @type {BookingRoomExpectedView[]} */ ((/** @type {BookingRoomExpectedView[]} */ (roomRows || [])).map((room) => ({ id: room.id, room_number: room.room_number }))))
       const cacheTimes = [
-        readCacheEntry(user.lodge_id, 'bookings', null)?.updatedAt,
-        readCacheEntry(user.lodge_id, 'rooms', null)?.updatedAt
+        (/** @type {{updatedAt?: string|null}|null} */ (readCacheEntry(user.lodge_id, 'bookings', null)))?.updatedAt,
+        (/** @type {{updatedAt?: string|null}|null} */ (readCacheEntry(user.lodge_id, 'rooms', null)))?.updatedAt
       ].filter(Boolean).sort()
       setLastUpdated(cacheTimes.at(-1) || null)
     } catch (error) {
-      setLoadError(error?.message || 'Bookings could not load.')
+      setLoadError((/** @type {{message?: string}|null|undefined} */ (error))?.message || 'Bookings could not load.')
     }
     setLoading(false)
   }, [user.lodge_id])
 
   useEffect(() => { load() }, [load])
 
-  const filterCounts = useMemo(() => Object.fromEntries(
+  const filterCounts = useMemo(() => /** @type {Record<BookingFilter, number>} */ (Object.fromEntries(
     FILTERS.map(([id]) => [id, bookings.filter((booking) => matchesFilter(booking, id, today)).length])
-  ), [bookings, today])
+  )), [bookings, today])
 
   const filtered = bookings.filter((booking) => {
     const matchSearch = !search || (booking.guest_name || '').toLowerCase().includes(search.toLowerCase())
@@ -263,11 +281,12 @@ export default function Bookings() {
   })
 
   const groupedBookings = useMemo(() => {
-    const groups = new Map()
+    const groups = /** @type {Map<string, BookingExpectedView[]>} */ (new Map())
     filtered.forEach((booking) => {
       const group = getBookingGroup(booking, today, tomorrow)
-      if (!groups.has(group)) groups.set(group, [])
-      groups.get(group).push(booking)
+      if (!groups.has(group)) groups.set(group, []);
+      // The preceding has/set sequence guarantees this in-memory Map entry for ordinary Map semantics.
+      (/** @type {BookingExpectedView[]} */ (groups.get(group))).push(booking)
     })
     return [...groups.entries()]
       .sort(([left], [right]) => GROUP_ORDER.indexOf(left) - GROUP_ORDER.indexOf(right))
@@ -279,6 +298,7 @@ export default function Bookings() {
 
   const activeFilterLabel = FILTERS.find(([id]) => id === tab)?.[1] || 'Today'
 
+  /** @param {BookingFilter} id */
   function changeFilter(id) {
     setTab(id)
     const next = new URLSearchParams(searchParams)

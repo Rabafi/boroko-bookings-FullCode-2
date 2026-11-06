@@ -8,26 +8,33 @@ import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 
+/** @typedef {{id: string, company_name: string}} HotelRevenueAccountExpectedView */
+/** @typedef {{id: string, name: string, description?: string | null, status?: string | null, rate_amount: number | string, currency?: string | null, valid_from?: string | null, valid_to?: string | null, min_stay?: number | null, corporate_account_id?: string | null}} HotelRatePlanExpectedView */
+/** @typedef {{id: string, company_name: string, contact_name?: string | null, contact_email?: string | null, contact_phone?: string | null, status?: string | null, credit_limit: number | string, payment_terms_days?: number | null}} HotelRevenueAccountDetailExpectedView */
+
+/** @param {{plans: HotelRatePlanExpectedView[], accounts: HotelRevenueAccountExpectedView[]}} props */
 function RatePlans({ plans, accounts }) {
   const accountNames = useMemo(() => new Map(accounts.map((account) => [account.id, account.company_name])), [accounts])
   if (plans.length === 0) return <EmptyState icon={TrendingUp} title="No rate plans" message="Active seasonal, corporate, and package rates will appear here." />
   return <div className="space-y-2">{plans.map((plan) => <div key={plan.id} className="rounded-2xl bg-gray-800 px-4 py-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{plan.name}</p><p className="mt-1 text-xs text-gray-500">{plan.description || 'Hotel rate plan'} · {titleCase(plan.status || 'active')}</p></div><p className="shrink-0 text-sm font-bold text-amber-200">{money(plan.rate_amount, plan.currency || 'P')}</p></div><p className="mt-2 text-xs text-gray-400">{plan.valid_from ? shortDate(plan.valid_from) : 'Any date'} → {plan.valid_to ? shortDate(plan.valid_to) : 'Open ended'} · Min. {plan.min_stay || 1} night{Number(plan.min_stay || 1) === 1 ? '' : 's'}{plan.corporate_account_id ? ` · ${accountNames.get(plan.corporate_account_id) || 'Corporate rate'}` : ''}</p></div>)}</div>
 }
 
+/** @param {{accounts: HotelRevenueAccountDetailExpectedView[]}} props */
 function CorporateAccounts({ accounts }) {
   if (accounts.length === 0) return <EmptyState icon={Building2} title="No corporate accounts" message="Company accounts configured at Front Desk will appear here." />
   return <div className="space-y-2">{accounts.map((account) => <div key={account.id} className="rounded-2xl bg-gray-800 px-4 py-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{account.company_name}</p><p className="mt-1 truncate text-xs text-gray-500">{account.contact_name || account.contact_email || account.contact_phone || 'No contact detail'}</p></div><p className="shrink-0 text-xs font-semibold text-gray-300">{titleCase(account.status || 'active')}</p></div><p className="mt-2 text-xs text-gray-400">Credit limit {money(account.credit_limit)} · {account.payment_terms_days || 30}-day terms</p></div>)}</div>
 }
 
 export default function HotelRevenue() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const { can } = useFeatures()
   const [tab, setTab] = useState(can('rate_plans.view') ? 'rates' : 'corporate')
-  const [plans, setPlans] = useState([])
-  const [accounts, setAccounts] = useState([])
+  const [plans, setPlans] = useState(/** @type {HotelRatePlanExpectedView[]} */ ([]))
+  const [accounts, setAccounts] = useState(/** @type {HotelRevenueAccountDetailExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string | null} */ (null))
   const showRates = can('rate_plans.view')
   const showCorporate = can('corporate_accounts.view')
 
@@ -35,8 +42,9 @@ export default function HotelRevenue() {
     setLoading(true); setError('')
     try {
       const [nextPlans, nextAccounts] = await Promise.all([showRates ? listHotelRatePlans(user.lodge_id) : Promise.resolve([]), showCorporate ? listCorporateAccountsPwa(user.lodge_id) : Promise.resolve([])])
-      setPlans(nextPlans); setAccounts(nextAccounts); setUpdatedAt(new Date().toISOString())
-    } catch (loadError) { setError(loadError?.message || 'Hotel revenue data could not load.') } finally { setLoading(false) }
+      // Both helpers may read cached rows; this page consumes selected fields without validating cache JSON.
+      setPlans(/** @type {HotelRatePlanExpectedView[]} */ (nextPlans)); setAccounts(/** @type {HotelRevenueAccountDetailExpectedView[]} */ (nextAccounts)); setUpdatedAt(new Date().toISOString())
+    } catch (loadError) { setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || 'Hotel revenue data could not load.') } finally { setLoading(false) }
   }, [showCorporate, showRates, user.lodge_id])
 
   useEffect(() => { load() }, [load])

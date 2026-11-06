@@ -15,17 +15,30 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
+/** @typedef {{id: string|undefined, guest: string, room: string|null, balance: number, bucket?: string|null, status: string|null, check_in?: string|null, check_out?: string|null}} AiActionPreviewItemExpectedView */
+/** @typedef {{success?: boolean, error?: string, items?: {booking_id?: string, id?: string, guest?: string, room_number?: string|null, room?: string|null, amount?: number, balance?: number, bucket?: string|null, status?: string|null, check_in?: string|null, check_out?: string|null}[], bookings?: {id?: string, guest?: string, room?: string|null, balance?: number, check_in?: string|null, check_out?: string|null, status?: string|null}[], count?: number, total?: number, toolResult?: {result?: unknown}|null, fraudData?: unknown, summary?: {critical?: number, high?: number, medium?: number, low?: number}|null, clusters?: {user?: string, severity?: string, risk_score?: number, alerts?: unknown[]}[]}} AiActionPreviewExpectedView */
+/** @typedef {{items: AiActionPreviewItemExpectedView[], total: number, count: number}} AiActionNormalizedExpectedView */
+/** @typedef {{type: string, booking_id?: string, index?: number, timestamp?: number, amount?: number, error?: string, reason?: string}} AiActionProgressExpectedView */
+/** @typedef {{booking_id?: string, status?: string, error?: string, reason?: string}} AiActionResultRowExpectedView */
+/** @typedef {{success?: boolean, error?: string, results?: AiActionResultRowExpectedView[]}} AiActionExecutionResultExpectedView */
+/** @typedef {{id: string, label: string, status: 'loading'|'success'|'error'|'warn', sub?: string, amount?: number, timestamp: number}} AiActionFeedItemExpectedView */
+/** @typedef {{preview: () => Promise<unknown>, execute: ((payload: unknown) => Promise<unknown>)|null, subscribe: ((cb: (event: unknown) => void) => (() => unknown))|null, normalize: (data: unknown) => AiActionNormalizedExpectedView, buildPayload: ((selectedIds: (string|undefined)[], items: AiActionPreviewItemExpectedView[]) => unknown)|null}} AiActionHandlerExpectedView */
+
+/** @param {unknown} val */
 function fmt(val) {
   return `P ${Number(val || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @type {Partial<Record<string, AiActionHandlerExpectedView>>} */
 const ACTION_HANDLERS = {
   fix_unpaid: {
     preview: () => window.api.ai.collections.preview({}),
     execute: (payload) => window.api.ai.collections.execute(payload),
     subscribe: (cb) => window.api.ai.collections.onProgress(cb),
     normalize: (data) => {
-      const items = (data?.items || []).map(b => ({
+      // The existing IPC preview producer returns these fields; this expected-data view does not validate them.
+      const preview = /** @type {AiActionPreviewExpectedView|null|undefined} */ (data)
+      const items = (preview?.items || []).map(b => ({
         id: b.booking_id || b.id,
         guest: b.guest || 'Guest',
         room: b.room_number || b.room || null,
@@ -35,7 +48,7 @@ const ACTION_HANDLERS = {
         check_in: b.check_in || null,
         check_out: b.check_out || null
       }))
-      return { items, total: data?.total || 0, count: data?.count || items.length }
+      return { items, total: preview?.total || 0, count: preview?.count || items.length }
     },
     buildPayload: (selectedIds, items) => ({
       items: items.filter(i => selectedIds.includes(i.id)),
@@ -47,7 +60,9 @@ const ACTION_HANDLERS = {
     execute: (payload) => window.api.ai.overdue.execute(payload),
     subscribe: (cb) => window.api.ai.overdue.onProgress(cb),
     normalize: (data) => {
-      const items = (data?.bookings || []).map(b => ({
+      // The existing IPC preview producer returns these fields; this expected-data view does not validate them.
+      const preview = /** @type {AiActionPreviewExpectedView|null|undefined} */ (data)
+      const items = (preview?.bookings || []).map(b => ({
         id: b.id,
         guest: b.guest || 'Guest',
         room: b.room || null,
@@ -56,7 +71,7 @@ const ACTION_HANDLERS = {
         check_out: b.check_out || null,
         status: b.status || null
       }))
-      return { items, total: items.reduce((s, i) => s + i.balance, 0), count: data?.count || items.length }
+      return { items, total: items.reduce((s, i) => s + i.balance, 0), count: preview?.count || items.length }
     },
     buildPayload: (selectedIds) => ({ booking_ids: [...new Set(selectedIds)] })
   },
@@ -69,6 +84,7 @@ const ACTION_HANDLERS = {
   }
 }
 
+/** @param {{item: AiActionFeedItemExpectedView}} props */
 function FeedItem({ item }) {
   const Icon =
     item.status === 'success' ? CheckCircle2 :
@@ -96,6 +112,7 @@ function FeedItem({ item }) {
   )
 }
 
+/** @param {{items: AiActionPreviewItemExpectedView[], total: number, count: number, selectedIds: (string|undefined)[], toggleSelect: (id: string|undefined) => void, selectAll: () => void, clearAll: () => void, allSelected: boolean, selectedTotal: number, onConfirm: () => void, onCancel: () => void, busy: boolean, executing: boolean}} props */
 function CollectionsPreview({ items, total, count, selectedIds, toggleSelect, selectAll, clearAll, allSelected, selectedTotal, onConfirm, onCancel, busy, executing }) {
   return (
     <div className="space-y-4">
@@ -178,6 +195,7 @@ function CollectionsPreview({ items, total, count, selectedIds, toggleSelect, se
   )
 }
 
+/** @param {{items: AiActionPreviewItemExpectedView[], count: number, selectedIds: (string|undefined)[], toggleSelect: (id: string|undefined) => void, selectAll: () => void, clearAll: () => void, allSelected: boolean, onConfirm: () => void, onCancel: () => void, busy: boolean, executing: boolean}} props */
 function OverduePreview({ items, count, selectedIds, toggleSelect, selectAll, clearAll, allSelected, onConfirm, onCancel, busy, executing }) {
   return (
     <div className="space-y-4">
@@ -262,6 +280,7 @@ function OverduePreview({ items, count, selectedIds, toggleSelect, selectAll, cl
   )
 }
 
+/** @param {{data: AiActionPreviewExpectedView, onOpenInAi: () => void, onCancel: () => void}} props */
 function FraudPreview({ data, onOpenInAi, onCancel }) {
   const summary = data?.summary || {}
   const clusters = data?.clusters || []
@@ -325,6 +344,7 @@ function FraudPreview({ data, onOpenInAi, onCancel }) {
   )
 }
 
+/** @param {{feed: AiActionFeedItemExpectedView[], onRetryFailed: () => void, onDone: () => void}} props */
 function ResultSummary({ feed, onRetryFailed, onDone }) {
   const successCount = feed.filter(f => f.status === 'success').length
   const errorCount = feed.filter(f => f.status === 'error').length
@@ -375,23 +395,25 @@ function ResultSummary({ feed, onRetryFailed, onDone }) {
   )
 }
 
+/** @param {{action?: {type?: string, label?: string}|null, onClose: () => void, onRefreshData?: () => void}} props */
 export default function InlineAiExecutionPanel({ action, onClose, onRefreshData }) {
   const navigate = useNavigate()
   const panelRef = useRef(null)
   const executingRef = useRef(false)
-  const autoCloseRef = useRef(null)
+  const autoCloseRef = useRef(/** @type {ReturnType<typeof setTimeout>|null} */ (null))
 
-  const [phase, setPhase] = useState('loading')
-  const [normalized, setNormalized] = useState({ items: [], total: 0, count: 0 })
-  const [rawData, setRawData] = useState(null)
-  const [selectedIds, setSelectedIds] = useState([])
-  const [feed, setFeed] = useState([])
-  const [error, setError] = useState(null)
-  const [finalResult, setFinalResult] = useState(null)
+  const [phase, setPhase] = useState(/** @type {'loading'|'empty'|'preview'|'executing'|'result'|'error'} */ ('loading'))
+  const [normalized, setNormalized] = useState(/** @type {AiActionNormalizedExpectedView} */ ({ items: [], total: 0, count: 0 }))
+  const [rawData, setRawData] = useState(/** @type {unknown|null} */ (null))
+  const [selectedIds, setSelectedIds] = useState(/** @type {(string|undefined)[]} */ ([]))
+  const [feed, setFeed] = useState(/** @type {AiActionFeedItemExpectedView[]} */ ([]))
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [finalResult, setFinalResult] = useState(/** @type {AiActionExecutionResultExpectedView|null} */ (null))
 
   const actionType = action?.type
-  const handler = ACTION_HANDLERS[actionType]
+  const handler = ACTION_HANDLERS[/** @type {string} */ (actionType)]
 
+  /** @param {string|undefined} id */
   const toggleSelect = useCallback((id) => {
     setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -424,10 +446,12 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
     let cancelled = false
 
     handler.preview()
-      .then(res => {
+      .then((/** @type {unknown} */ res) => {
         if (cancelled) return
-        if (!res?.success && res?.error) {
-          setError(res.error)
+        // IPC preview envelopes are expected to carry these fields; no response validation is performed here.
+        const preview = /** @type {AiActionPreviewExpectedView|null|undefined} */ (res)
+        if (!preview?.success && preview?.error) {
+          setError(preview.error)
           setPhase('error')
           return
         }
@@ -453,9 +477,9 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
           setPhase('preview')
         }
       })
-      .catch(e => {
+      .catch((/** @type {unknown} */ e) => {
         if (cancelled) return
-        setError(e?.message || 'Failed to load preview')
+        setError((/** @type {{message?: string}|null|undefined} */ (e))?.message || 'Failed to load preview')
         setPhase('error')
       })
 
@@ -468,62 +492,64 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
 
     const unsubscribe = handler.subscribe((event) => {
       if (!event) return
-      const id = `${event.type}-${event.booking_id || event.index || ''}-${event.timestamp || Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      if (event.type === 'started') return
-      if (event.type === 'complete') return
-      if (event.type === 'processing') {
-        const match = normalized.items.find(i => i.id === event.booking_id)
+      // The IPC producer sends progress objects; this expected-data view does not validate them.
+      const progress = /** @type {AiActionProgressExpectedView} */ (event)
+      const id = `${progress.type}-${progress.booking_id || progress.index || ''}-${progress.timestamp || Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+      if (progress.type === 'started') return
+      if (progress.type === 'complete') return
+      if (progress.type === 'processing') {
+        const match = normalized.items.find(i => i.id === progress.booking_id)
         setFeed(prev => {
           const next = [...prev, {
             id,
-            label: match?.guest || `Booking ${String(event.booking_id || '').slice(-6)}`,
-            status: 'loading',
+            label: match?.guest || `Booking ${String(progress.booking_id || '').slice(-6)}`,
+            status: /** @type {'loading'} */ ('loading'),
             sub: 'Processing\u2026',
-            timestamp: event.timestamp || Date.now()
+            timestamp: progress.timestamp || Date.now()
           }]
           return next.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
         })
         return
       }
-      if (event.type === 'success') {
-        const match = normalized.items.find(i => i.id === event.booking_id)
-        const amount = match?.balance || event.amount || 0
+      if (progress.type === 'success') {
+        const match = normalized.items.find(i => i.id === progress.booking_id)
+        const amount = match?.balance || progress.amount || 0
         setFeed(prev => {
           const next = [...prev, {
             id,
-            label: match?.guest || `Booking ${String(event.booking_id || '').slice(-6)}`,
-            status: 'success',
+            label: match?.guest || `Booking ${String(progress.booking_id || '').slice(-6)}`,
+            status: /** @type {'success'} */ ('success'),
             sub: actionType === 'fix_unpaid' ? 'Payment recorded' : 'Checked out',
             amount: actionType === 'fix_unpaid' ? amount : undefined,
-            timestamp: event.timestamp || Date.now()
+            timestamp: progress.timestamp || Date.now()
           }]
           return next.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
         })
         return
       }
-      if (event.type === 'error') {
-        const match = normalized.items.find(i => i.id === event.booking_id)
+      if (progress.type === 'error') {
+        const match = normalized.items.find(i => i.id === progress.booking_id)
         setFeed(prev => {
           const next = [...prev, {
             id,
-            label: match?.guest || `Booking ${String(event.booking_id || '').slice(-6)}`,
-            status: 'error',
-            sub: event.error || 'Failed',
-            timestamp: event.timestamp || Date.now()
+            label: match?.guest || `Booking ${String(progress.booking_id || '').slice(-6)}`,
+            status: /** @type {'error'} */ ('error'),
+            sub: progress.error || 'Failed',
+            timestamp: progress.timestamp || Date.now()
           }]
           return next.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
         })
         return
       }
-      if (event.type === 'skipped') {
-        const match = normalized.items.find(i => i.id === event.booking_id)
+      if (progress.type === 'skipped') {
+        const match = normalized.items.find(i => i.id === progress.booking_id)
         setFeed(prev => {
           const next = [...prev, {
             id,
-            label: match?.guest || `Booking ${String(event.booking_id || '').slice(-6)}`,
-            status: 'warn',
-            sub: event.reason || 'Skipped',
-            timestamp: event.timestamp || Date.now()
+            label: match?.guest || `Booking ${String(progress.booking_id || '').slice(-6)}`,
+            status: /** @type {'warn'} */ ('warn'),
+            sub: progress.reason || 'Skipped',
+            timestamp: progress.timestamp || Date.now()
           }]
           return next.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
         })
@@ -556,8 +582,9 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
     setError(null)
 
     try {
-      const payload = handler.buildPayload(uniqueIds, normalized.items)
-      const result = await handler.execute(payload)
+      const payload = /** @type {(selectedIds: (string|undefined)[], items: AiActionPreviewItemExpectedView[]) => unknown} */ (handler.buildPayload)(uniqueIds, normalized.items)
+      // The main IPC handler returns a summary/results envelope; this is an expected view, not runtime validation.
+      const result = /** @type {AiActionExecutionResultExpectedView} */ (await handler.execute(payload))
 
       if (!result?.success && result?.error) {
         setError(result.error)
@@ -576,7 +603,7 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
         const items = normalized.items.filter(i => uniqueIds.includes(i.id))
         items.forEach((i, idx) => {
           const matchResult = (result.results || []).find(r => r.booking_id === i.id)
-          let status = 'success'
+          let status = /** @type {'success'|'error'|'warn'} */ ('success')
           let sub = actionType === 'fix_unpaid' ? 'Payment recorded' : 'Checked out'
           if (matchResult) {
             if (matchResult.status === 'error') { status = 'error'; sub = matchResult.error || 'Failed' }
@@ -599,7 +626,7 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
       setPhase('result')
       if (onRefreshData) onRefreshData()
     } catch (e) {
-      setError(e?.message || 'Execution failed')
+      setError((/** @type {{message?: string}|null|undefined} */ (e))?.message || 'Execution failed')
       setPhase('error')
     } finally {
       executingRef.current = false
@@ -608,12 +635,13 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
 
   const handleRetryFailed = useCallback(() => {
     if (!finalResult) return
-    const failedIds = [...new Set(
+    // Main execution producers echo booking_id from submitted preview rows/IDs into error results; this view does not validate result data.
+    const failedIds = /** @type {string[]} */ ([...new Set(
       (finalResult.results || [])
         .filter(r => r.status === 'error')
         .map(r => r.booking_id)
         .filter(Boolean)
-    )]
+    )])
     if (failedIds.length === 0) return
     setSelectedIds(failedIds)
     setPhase('preview')
@@ -650,7 +678,9 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
     fix_unpaid:        { icon: DollarSign,  bg: 'bg-emerald-600', label: 'Collect Payments' },
     resolve_overdue:   { icon: Clock,       bg: 'bg-orange-600',  label: 'Check Out Rooms' },
     investigate_fraud: { icon: ShieldAlert, bg: 'bg-rose-600',    label: 'Fraud Intelligence' },
-  }[actionType] || { icon: Sparkles, bg: 'bg-slate-800', label: action?.label || 'Action' }
+  }[/** @type {string} */ (actionType)] || { icon: Sparkles, bg: 'bg-slate-800', label: action?.label || 'Action' }
+  // The fraud preview stores the AI turn envelope without validating its tool data.
+  const fraudPreview = /** @type {AiActionPreviewExpectedView|null} */ (rawData)
 
   const ThemeIcon = theme.icon
   const allSelected = normalized.items.length > 0 && selectedIds.length === normalized.items.length
@@ -661,7 +691,7 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
   return (
     <div
       className="fixed inset-0 z-[9990] flex items-end justify-center p-4 sm:p-6 bg-slate-950/40 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget && phase !== 'executing') onClose?.() }}
+      onClick={(/** @type {import('react').MouseEvent<HTMLDivElement>} */ e) => { if (e.target === e.currentTarget && phase !== 'executing') onClose?.() }}
     >
       <div
         ref={panelRef}
@@ -765,7 +795,7 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
               onConfirm={handleConfirm}
               onCancel={onClose}
               busy={false}
-              executing={phase === 'executing'}
+              executing={/** @type {'loading'|'empty'|'preview'|'executing'|'result'|'error'} */ (phase) === 'executing'}
             />
           )}
 
@@ -781,13 +811,13 @@ export default function InlineAiExecutionPanel({ action, onClose, onRefreshData 
               onConfirm={handleConfirm}
               onCancel={onClose}
               busy={false}
-              executing={phase === 'executing'}
+              executing={/** @type {'loading'|'empty'|'preview'|'executing'|'result'|'error'} */ (phase) === 'executing'}
             />
           )}
 
-          {phase === 'preview' && !error && actionType === 'investigate_fraud' && rawData && (
+          {phase === 'preview' && !error && actionType === 'investigate_fraud' && /** @type {import('react').ReactNode} */ (rawData) && (
             <FraudPreview
-              data={rawData?.toolResult?.result || rawData?.fraudData || rawData}
+              data={/** @type {AiActionPreviewExpectedView} */ (fraudPreview?.toolResult?.result || fraudPreview?.fraudData || fraudPreview)}
               onOpenInAi={handleOpenInAi}
               onCancel={onClose}
             />

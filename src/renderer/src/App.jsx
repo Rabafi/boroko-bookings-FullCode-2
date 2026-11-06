@@ -24,6 +24,7 @@ import { Modal } from './components/shared/Modal'
 import { extractReleaseHighlights, formatReleaseDate, toReleaseSections } from './utils/updatePresentation'
 import { applyThemeMode, getStoredThemeMode } from './utils/themeMode'
 import { boundedSetupRead, classifyBarSetupStatus } from './utils/barSetupStatus.js'
+import { clearBarLocalSetupDraft, loadBarLocalSetupDraft, saveBarLocalSetupDraft } from '../../shared/barLocalSetupDraft.js'
 import { productLogoColor, productLogoLight } from './assets/productLogos'
 import { CustomerDisplay, PrepDisplay } from './components/POSDisplays'
 import {
@@ -176,7 +177,7 @@ const HposMySales      = lazy(() => import('./components/hospitality-pos/HposMyS
 const HposExpenses     = lazy(() => import('./components/hospitality-pos/HposExpenses'))
 const HposManageHub    = lazy(() => import('./components/hospitality-pos/HposManageHub'))
 const HposSetupReadiness = lazy(() => import('./components/hospitality-pos/HposSetupReadiness'))
-const BarLocalWorkspace = lazy(() => import('./components/hospitality-pos/BarLocalWorkspace'))
+const LocalBarHposShell = lazy(() => import('./components/hospitality-pos/LocalBarHposShell.jsx'))
 
 // ── Loading fallback for lazy routes ─────────────────────────────────────────
 function PageLoader() {
@@ -208,7 +209,7 @@ const INPUT_FOCUS_DEBUG = false
 const DEFAULT_TRIAL_STATUS = { status: 'trial', daysLeft: 30, expired: false }
 const USER_SCOPE_KEY = 'bb_user_scope'
 
-/** @param {EventTarget | null} target */
+/** @param {EventTarget | null} target @returns {target is Element} */
 function isEditableFieldTarget(target) {
   if (!(target instanceof Element)) return false
   const editable = target.closest('input, textarea, [contenteditable="true"], [contenteditable=""], [contenteditable]')
@@ -231,14 +232,18 @@ const PRODUCT_THEME_COLORS = Object.freeze({
 })
 
 // ── Upgrade Wall ───────────────────────────────────────────────────────────────
+/** Entitlement fields consumed by these route guards. Context data remains unvalidated IPC/cache state.
+ * @typedef {{commercial_package_key?: string|null, enterprise_addons?: unknown[], lodge_id?: string|null, product_id?: string|null, plan?: string|null}} AppEntitlementReadView
+ */
 /** @param {{feature: string, children: import('react').ReactNode}} props */
 function UpgradeWall({ feature, children }) {
   const features = useContext(FeaturesContext)
   const access = useContext(AccessContext)
+  const entitlement = /** @type {AppEntitlementReadView|null|undefined} */ (access?.entitlement)
   const location = useLocation()
-  const commercialPackageKey = access?.entitlement?.commercial_package_key || null
-  const commercialAddonKeys = access?.entitlement?.enterprise_addons || []
-  const commercialLodgeId = access?.entitlement?.lodge_id || null
+  const commercialPackageKey = entitlement?.commercial_package_key || null
+  const commercialAddonKeys = entitlement?.enterprise_addons || []
+  const commercialLodgeId = entitlement?.lodge_id || null
   const commercialBlocked = IS_HPOS_PRODUCT && commercialPackageKey
     ? !isCommercialFeatureIncluded(BUILD_PRODUCT.id, commercialPackageKey, feature, commercialAddonKeys, access?.entitlement, commercialLodgeId)
     : false
@@ -260,7 +265,7 @@ function UpgradeWall({ feature, children }) {
         feature={feature}
         requiredPlan={requiredTier}
         requiredPackage={requiredCommercialPackage}
-        currentPlan={access?.entitlement?.plan || 'Starter'}
+        currentPlan={entitlement?.plan || 'Starter'}
         productId={BUILD_PRODUCT.id}
         module={catalogModule}
         routePath={location.pathname}
@@ -350,6 +355,7 @@ const RESTAURANT_EXCLUDED_PATHS = [
 function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   const { settings } = useContext(SettingsContext)
   const access = useContext(AccessContext)
+  const entitlement = /** @type {AppEntitlementReadView|null|undefined} */ (access?.entitlement)
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const barOnlyMode = isRestaurantOnly(propertyType) && isBarOnlyMode(settings)
   // Router-owned location: reading the URL hash during render misses
@@ -360,11 +366,11 @@ function BarOnlyBlockedRedirect({ children, redirectTo = '/hpos/pos' }) {
   const appPath = normalizeAppPath(routerLocation.pathname || '/')
 
   const enabledFeatures = getCommercialFeatureSet(
-    access?.entitlement?.product_id || BUILD_PRODUCT.id,
-    access?.entitlement?.commercial_package_key,
-    access?.entitlement?.enterprise_addons || [],
-    access?.entitlement,
-    access?.entitlement?.lodge_id || null
+    entitlement?.product_id || BUILD_PRODUCT.id,
+    entitlement?.commercial_package_key ?? null,
+    entitlement?.enterprise_addons || [],
+    entitlement,
+    entitlement?.lodge_id || null
   )
   if (barOnlyMode && isBarOnlyBlockedPath(appPath, enabledFeatures)) {
     return <Navigate to={redirectTo} replace />
@@ -806,7 +812,9 @@ function SyncFailBanner() {
       setSyncStatus(/** @type {SyncFailBannerStatusExpectedView} */ (status || { failed: 0, cacheStale: { active: false, names: [] } }))
     })
 
-    return () => unsubscribe?.()
+    // Preserve the cleanup function's actual return value from Electron's off
+    // call while typing this effect cleanup for React's void contract.
+    return /** @type {() => void} */ (() => unsubscribe?.())
   }, [])
 
   const failedCount = Number(syncStatus?.failed || 0)
@@ -1344,21 +1352,38 @@ function ProtectedRoute({ children, fallbackPath = '/login', isTransitioning = f
   return children
 }
 
+/** Expected local-authority status forwarded by `barLocal:getStatus`; it is not runtime-validated here.
+ * @typedef {{authority_mode?: string, training?: boolean, configured?: boolean, workspace_choice_required?: boolean, workspace_isolation?: string, setup_prefill?: {entry_mode?: string, business_name?: string, currency?: string, business_profile?: {company_name?: string, address?: string, city?: string, country?: string, phone?: string, email?: string, website?: string, vat_number?: string}}|null, has_saved_cloud_business?: boolean, restart_required?: boolean, post_setup_notice_pending?: boolean, provisioning_recovery?: {pending?: boolean, kind?: string|null, recoverable?: boolean}|null, setup_owner_staff_id?: string|null, blocked_reason?: {message?: string}|null, error?: string}} LocalAuthorityStatusExpectedView
+ * @typedef {{unavailable?: boolean, message?: string, authority?: LocalAuthorityStatusExpectedView|null, hasSavedCloudBusiness?: boolean, onBack?: () => void}} LocalAuthorityBoundaryProps
+ * @typedef {{available: true, phase: string, attempt_id: string, phase_label: string, owner_setup_stage: string|null, owner_email: string, owner_name: string, business_name: string, outlet_name: string, base_url: string, service_version: string, postgres_version: string, can_resume: boolean, can_cancel: boolean, last_error: {code?: string, message?: string}|null, progress: {task: string, started_at: string, last_activity_at: string, waiting: boolean, completed: number|null, total: number|null}, launcher_diagnostic: string|null, installer_status: {phase: string|null, message: string|null, updated_at: string|null}|null, log_tail: string}} BarServerSetupPresentExpectedView
+ * @typedef {{available: false, phase: null, can_resume: false}} BarServerSetupAbsentExpectedView
+ * @typedef {BarServerSetupPresentExpectedView|BarServerSetupAbsentExpectedView} BarServerSetupStatusExpectedView
+ * @typedef {{ready: boolean, blockers: {code: string, message: string}[], warnings: string[], storage?: {status?: string}}} BarServerSetupPreflightExpectedView
+ * @typedef {{business_name: string, outlet_name: string, owner_name: string, owner_email: string, pin: string, currency: string, company_name: string, address: string, city: string, country: string, phone: string, email: string, website: string, vat_number: string, timezone: string, device_name: string}} BarSetupDraft
+ * @typedef {{base_url: string, certificate_fingerprint: string, pairing_code: string, device_name: string}} BarJoinDraft
+ * @typedef {{staffId: string, paired: boolean}} CommittedBarSetup
+ * @typedef {{staffId: string, notice: string}} BarSetupRecoveryNotice
+ * @typedef {{owner_staff_id?: string|null}} BarProvisioningResultExpectedView
+ * @typedef {'company_name'|'address'|'city'|'country'|'phone'|'email'|'website'|'vat_number'} BarSetupBusinessProfileKey
+ * @typedef {{message?: string}|null|undefined} LocalSetupErrorMessageExpectedView
+ */
+/** @param {LocalAuthorityBoundaryProps} props */
 function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloudBusiness = false, onBack }) {
   const dedicatedLocalBarWorkspace = authority?.workspace_isolation === 'dedicated_bar'
   const [guideStatus, setGuideStatus] = useState('')
   const [guideBusy, setGuideBusy] = useState('')
-  const [currentAuthority, setCurrentAuthority] = useState(authority)
-  const [setupRecovery, setSetupRecovery] = useState(null)
-  const [committedSetup, setCommittedSetup] = useState(null)
-  const [setupMode, setSetupMode] = useState('commission')
+  const [currentAuthority, setCurrentAuthority] = useState(/** @type {LocalAuthorityStatusExpectedView|null|undefined} */ (authority))
+  const [setupRecovery, setSetupRecovery] = useState(/** @type {BarSetupRecoveryNotice|null} */ (null))
+  const [committedSetup, setCommittedSetup] = useState(/** @type {CommittedBarSetup|null} */ (null))
+  const [setupMode, setSetupMode] = useState(/** @type {'commission'|'join'} */ ('commission'))
   const [setupBusy, setSetupBusy] = useState(false)
   const [setupError, setSetupError] = useState('')
   const [newBusinessConfirmed, setNewBusinessConfirmed] = useState(false)
+  const [showSetupDraftPin, setShowSetupDraftPin] = useState(false)
   // A dedicated local Bar workspace is handed the business name and currency
   // chosen in the ordinary setup journey. Nothing else crosses over.
   const setupPrefill = authority?.setup_prefill || null
-  const [setupDraft, setSetupDraft] = useState({
+  const [setupDraft, setSetupDraft] = useState(/** @type {BarSetupDraft} */ (() => loadBarLocalSetupDraft(window.localStorage, {
     business_name: typeof setupPrefill?.business_name === 'string' ? setupPrefill.business_name : '',
     outlet_name: '',
     owner_name: '', owner_email: '', pin: '',
@@ -1372,17 +1397,18 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     website: typeof setupPrefill?.business_profile?.website === 'string' ? setupPrefill.business_profile.website : '',
     vat_number: typeof setupPrefill?.business_profile?.vat_number === 'string' ? setupPrefill.business_profile.vat_number : '',
     timezone: 'Africa/Gaborone', device_name: 'Bar office till'
-  })
-  const [joinDraft, setJoinDraft] = useState({
+  })))
+  const [joinDraft, setJoinDraft] = useState(/** @type {BarJoinDraft} */ ({
     base_url: '', certificate_fingerprint: '', pairing_code: '', device_name: 'Bar till'
-  })
-  const [serverSetup, setServerSetup] = useState(null)
-  const [serverSetupCheck, setServerSetupCheck] = useState('checking')
+  }))
+  // This slot stores only an available saved attempt; absence is tracked by serverSetupCheck.
+  const [serverSetup, setServerSetup] = useState(/** @type {BarServerSetupPresentExpectedView|null} */ (null))
+  const [serverSetupCheck, setServerSetupCheck] = useState(/** @type {'checking'|'error'|'present'|'absent'} */ ('checking'))
   const [serverSetupCheckError, setServerSetupCheckError] = useState('')
   const serverStatusRead = useRef(false)
   const serverPreflightRead = useRef(false)
   const [setupClock, setSetupClock] = useState(Date.now())
-  const [serverPreflight, setServerPreflight] = useState(null)
+  const [serverPreflight, setServerPreflight] = useState(/** @type {BarServerSetupPreflightExpectedView|null} */ (null))
   const [serverPreflightBusy, setServerPreflightBusy] = useState(false)
   const [serverPin, setServerPin] = useState('')
   const [serverPassword, setServerPassword] = useState('')
@@ -1393,6 +1419,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const [showServerPassword, setShowServerPassword] = useState(false)
   const [showServerPasswordConfirm, setShowServerPasswordConfirm] = useState(false)
 
+  /** @param {{checkPreflight?: boolean}} [options] */
   const refreshServerSetup = useCallback(async ({ checkPreflight = true } = {}) => {
     if (!window.api?.barLocal?.serverSetupStatus) {
       setServerSetupCheck('error')
@@ -1404,23 +1431,23 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     if (checkPreflight && !serverPreflightRead.current) {
       serverPreflightRead.current = true
       setServerPreflightBusy(true)
-      void boundedSetupRead(window.api.barLocal.serverSetupPreflight(), 120000)
+      void boundedSetupRead(/** @type {Promise<BarServerSetupPreflightExpectedView>} */ (window.api.barLocal.serverSetupPreflight()), 120000)
         .then(setServerPreflight)
-        .catch((error) => setServerPreflight({ ready: false, blockers: [{ code: 'PREFLIGHT_FAILED', message: error?.message || 'Computer readiness could not be checked.' }], warnings: [] }))
+        .catch((error) => setServerPreflight({ ready: false, blockers: [{ code: 'PREFLIGHT_FAILED', message: (/** @type {LocalSetupErrorMessageExpectedView} */ (error))?.message || 'Computer readiness could not be checked.' }], warnings: [] }))
         .finally(() => { serverPreflightRead.current = false; setServerPreflightBusy(false) })
     }
     if (serverStatusRead.current) return
     serverStatusRead.current = true
     try {
-      const status = await boundedSetupRead(window.api.barLocal.serverSetupStatus())
+      const status = /** @type {BarServerSetupStatusExpectedView} */ (await boundedSetupRead(window.api.barLocal.serverSetupStatus()))
       const checked = classifyBarSetupStatus(status)
       setServerSetupCheck(checked)
       setServerSetupCheckError('')
-      setServerSetup(checked === 'present' ? status : null)
+      setServerSetup(checked === 'present' ? /** @type {BarServerSetupPresentExpectedView} */ (status) : null)
     } catch (error) {
       // Retain a previously displayed saved attempt on transient IPC errors.
       setServerSetupCheck('error')
-      setServerSetupCheckError(error?.message || 'The saved Bar setup could not be read. Preserve it and contact support.')
+      setServerSetupCheckError((/** @type {LocalSetupErrorMessageExpectedView} */ (error))?.message || 'The saved Bar setup could not be read. Preserve it and contact support.')
     } finally { serverStatusRead.current = false }
   }, [])
 
@@ -1443,6 +1470,17 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
       }
     })
   }, [authority?.setup_prefill])
+  useEffect(() => {
+    try {
+      if (serverSetup || committedSetup || currentAuthority?.configured) {
+        clearBarLocalSetupDraft(window.localStorage)
+      } else if (serverSetupCheck === 'absent' && !unavailable) {
+        saveBarLocalSetupDraft(window.localStorage, setupDraft)
+      }
+    } catch {
+      // Saved attempt machinery remains authoritative; renderer draft storage is best effort.
+    }
+  }, [setupDraft, serverSetup, serverSetupCheck, committedSetup, currentAuthority?.configured, unavailable])
   useEffect(() => {
     if (!serverSetup || !['prepared', 'installing', 'owner_pending'].includes(serverSetup.phase)) return undefined
     const timer = setInterval(() => { void refreshServerSetup({ checkPreflight: false }) }, 2500)
@@ -1496,6 +1534,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const ownerSetupNeedsRecovery = Boolean(serverSetup?.owner_setup_stage === 'resume' && serverSetup.phase === 'failed')
   const ownerSetupFormVisible = Boolean(serverSetup?.owner_setup_stage && ['installed', 'owner_pending'].includes(serverSetup.phase))
   const firstOwnerCreation = serverSetup?.phase === 'installed' && serverSetup?.owner_setup_stage !== 'resume'
+  const setupStage = serverSetup?.phase === 'complete' ? 4
+    : ['installed', 'owner_pending'].includes(serverSetup?.phase) || (serverSetup?.phase === 'failed' && Boolean(serverSetup?.installed_at)) ? 3
+      : serverSetup ? 1 : 0
+  const setupStageLabels = ['Business details', 'Install Bar service', 'Verify database', 'Create owner sign-in', 'Ready to open']
   const ownerPinValid = /^[0-9]{4,12}$/.test(serverPin)
   const ownerPasswordValid = serverPassword.length >= 12 && serverPassword.length <= 128 && serverPassword.trim() === serverPassword
   const ownerPasswordConfirmValid = serverPasswordConfirm === serverPassword && serverPasswordConfirm.length > 0
@@ -1512,14 +1554,15 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   ].filter(Boolean)
 
   if (!unavailable && currentAuthority?.configured && !currentAuthority?.restart_required) {
-    return <Lazy><BarLocalWorkspace status={currentAuthority} onLogout={() => {}} initialStaffId={setupRecovery?.staffId || (currentAuthority?.training ? currentAuthority.setup_owner_staff_id : undefined)} initialLoginNotice={setupRecovery?.notice} /></Lazy>
+    return <Lazy><LocalBarHposShell status={currentAuthority} onLogout={() => {}} initialLoginNotice={setupRecovery?.notice} /></Lazy>
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const startServerSetup = async (event) => {
     event.preventDefault()
     setSetupBusy(true); setSetupError('')
     try {
-      const result = await window.api.barLocal.serverSetupBegin({
+      const result = /** @type {BarServerSetupStatusExpectedView} */ (await window.api.barLocal.serverSetupBegin({
         business_name: setupDraft.business_name.trim(),
         outlet_name: setupDraft.outlet_name.trim(),
         owner_name: setupDraft.owner_name.trim(),
@@ -1538,9 +1581,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
         },
         timezone: setupDraft.timezone,
         device_name: setupDraft.device_name.trim()
-      })
+      }))
       setServerSetup(result?.available ? result : null)
       setSetupDraft((draft) => ({ ...draft, pin: '' }))
+      setShowSetupDraftPin(false)
       await refreshServerSetup()
     } catch (error) {
       setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
@@ -1561,10 +1605,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
         throw new Error('Confirm the saved owner email before creating the owner sign-in.')
       }
       submittedOwnerCredentials = needsOwnerCredentials
-      const result = await window.api.barLocal.serverSetupResume(needsOwnerCredentials ? { pin: serverPin, owner_password: serverPassword } : {})
+      const result = /** @type {BarServerSetupStatusExpectedView} */ (await window.api.barLocal.serverSetupResume(needsOwnerCredentials ? { pin: serverPin, owner_password: serverPassword } : {}))
       setServerPin(''); setServerPassword(''); setServerPasswordConfirm('')
       if (result?.available) setServerSetup(result)
-      const status = await window.api.barLocal.getStatus().catch(() => null)
+      const status = /** @type {LocalAuthorityStatusExpectedView|null} */ (await window.api.barLocal.getStatus().catch(() => null))
       if (status?.restart_required) { setCurrentAuthority(status); return }
       await refreshServerSetup()
     } catch (error) {
@@ -1583,7 +1627,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
   const saveServerOwnerEmail = async () => {
     setSetupBusy(true); setSetupError('')
     try {
-      const result = await window.api.barLocal.serverSetupUpdateOwnerEmail({ owner_email: serverEmailDraft })
+      const result = /** @type {BarServerSetupStatusExpectedView} */ (await window.api.barLocal.serverSetupUpdateOwnerEmail({ owner_email: serverEmailDraft }))
       if (!result?.available) throw new Error('The saved owner email could not be verified. Refresh this saved setup before continuing.')
       setServerSetup(result)
       setServerEmailConfirmed(false)
@@ -1605,6 +1649,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     } finally { setSetupBusy(false) }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const joinAuthority = async (event) => {
     event.preventDefault()
     setSetupBusy(true); setSetupError('')
@@ -1612,13 +1657,13 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
       await window.api.barLocal.pairDevice(joinDraft)
       setCommittedSetup({ staffId: '', paired: true })
       setJoinDraft((draft) => ({ ...draft, pairing_code: '' }))
-      const status = await window.api.barLocal.getStatus()
+      const status = /** @type {LocalAuthorityStatusExpectedView} */ (await window.api.barLocal.getStatus())
       if (status?.restart_required) { setCurrentAuthority(status); return }
       if (!status?.configured || status.authority_mode !== 'bar_local') throw new Error('Pairing was committed but the local authority status could not be verified. Restart this till; do not reuse the pairing code.')
       setCurrentAuthority(status)
       setJoinDraft((draft) => ({ ...draft, pairing_code: '' }))
     } catch (error) {
-      const status = await window.api.barLocal.getStatus().catch(() => null)
+      const status = /** @type {LocalAuthorityStatusExpectedView|null} */ (await window.api.barLocal.getStatus().catch(() => null))
       if (status?.restart_required) { setCommittedSetup({ staffId: '', paired: true }); setCurrentAuthority(status); return }
       setSetupError(error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
         ? error.message : 'This till could not join the local Bar service. Check the server address, certificate fingerprint and unused pairing code.')
@@ -1630,9 +1675,9 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
     setSetupBusy(true); setSetupError('')
     try {
       if (pendingKind === 'owner' && serverPassword.length < 12) throw new Error('Re-enter the owner password to resume this setup safely. The password was not saved.')
-      const result = await window.api.barLocal.resumeProvisioning(pendingKind === 'owner' ? { owner_password: serverPassword } : {})
+      const result = /** @type {BarProvisioningResultExpectedView} */ (await window.api.barLocal.resumeProvisioning(pendingKind === 'owner' ? { owner_password: serverPassword } : {}))
       setServerPassword('')
-      const status = await window.api.barLocal.getStatus()
+      const status = /** @type {LocalAuthorityStatusExpectedView} */ (await window.api.barLocal.getStatus())
       if (status?.restart_required) {
         setCommittedSetup({ staffId: result?.owner_staff_id || '', paired: pendingKind === 'pairing' })
         setCurrentAuthority(status)
@@ -1643,7 +1688,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
       }
       setCurrentAuthority(status)
     } catch (error) {
-      const status = await window.api.barLocal.getStatus().catch(() => null)
+      const status = /** @type {LocalAuthorityStatusExpectedView|null} */ (await window.api.barLocal.getStatus().catch(() => null))
       if (status?.restart_required) {
         setCommittedSetup({ staffId: '', paired: pendingKind === 'pairing' })
         setCurrentAuthority(status)
@@ -1667,17 +1712,17 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
             : currentAuthority?.blocked_reason?.message || 'Create your Bar on its main computer, or connect this till to the Bar computer. Bar records stay local.'}
         </p>
         {unavailable && <button type="button" className="mt-4 rounded bg-amber-500 px-4 py-2 font-semibold text-slate-950" onClick={() => window.location.reload()}>Try opening the Bar again</button>}
-        {currentAuthority?.restart_required && <p role="alert" className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">Setup was committed. Close and reopen the application to start the local Bar workspace. Do not repeat setup or reuse a pairing code. If the app cannot restart, keep this till for support.</p>}
+        {currentAuthority?.restart_required && <p role="status" aria-live="polite" className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">Your Bar setup is saved. The app is reopening now so you can sign in with the owner email and password you chose. Do not repeat setup or reuse a pairing code. If the app does not reopen, close and start it again.</p>}
         {committedSetup && !currentAuthority?.configured && !currentAuthority?.restart_required && <div className="mt-5 rounded bg-amber-950 p-3 text-sm text-amber-100">
           <p>{committedSetup.paired ? 'Pairing was committed. Do not reuse the pairing code. Check this till’s local authority status or restart the application.' : 'Setup was committed. Do not create the Bar again. Check this till’s local authority status or restart the application.'}</p>
           <button type="button" disabled={setupBusy} className="mt-3 rounded border border-amber-500 px-3 py-2 disabled:opacity-50" onClick={async () => {
             setSetupBusy(true); setSetupError('')
             try {
-              const status = await window.api.barLocal.getStatus()
+              const status = /** @type {LocalAuthorityStatusExpectedView} */ (await window.api.barLocal.getStatus())
               if (!status?.configured || status.authority_mode !== 'bar_local') throw new Error('Local authority status is not yet available. Restart this till and contact your administrator if it remains unavailable.')
               setSetupRecovery({ staffId: committedSetup.staffId, notice: committedSetup.paired ? 'This till was paired. Sign in with your staff ID and PIN.' : 'Your Bar was created. Sign in with the owner email and password.' })
               setCurrentAuthority(status)
-            } catch (error) { setSetupError(error?.message || 'Could not verify local authority status. Restart this till.') }
+            } catch (error) { setSetupError((/** @type {LocalSetupErrorMessageExpectedView} */ (error))?.message || 'Could not verify local authority status. Restart this till.') }
             finally { setSetupBusy(false) }
           }}>Check local authority status</button>
           {setupError && <p role="alert" className="mt-3">{setupError}</p>}
@@ -1698,6 +1743,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
             <button type="button" role="tab" aria-selected={setupMode === 'join'} onClick={() => { setSetupMode('join'); setSetupError('') }} className={`rounded px-3 py-2 text-sm ${setupMode === 'join' ? 'bg-amber-500 font-semibold text-slate-950' : 'border border-slate-600'}`}>Connect this till to my Bar</button>
           </div>
           {setupMode === 'commission' ? <div className="mt-4 space-y-3">
+            {serverSetupCheck === 'absent' || serverSetup ? <ol aria-label="Local Bar setup steps" className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">{setupStageLabels.map((label, index) => <li key={label} aria-current={setupStage === index ? 'step' : undefined} className={`rounded border p-2 ${index < setupStage ? 'border-emerald-700 bg-emerald-950/40 text-emerald-200' : index === setupStage ? 'border-amber-500 bg-amber-950/40 font-semibold text-amber-100' : 'border-slate-700 text-slate-400'}`}><span className="mr-1">{index < setupStage ? '✓' : index + 1}</span>{label}</li>)}</ol> : null}
             {serverSetupCheck !== 'absent' && serverSetupCheck !== 'present' && <div role={serverSetupCheck === 'error' ? 'alert' : 'status'} className="rounded border border-amber-700 p-3 text-sm"><p>{serverSetupCheck === 'checking' ? 'Checking for your saved Bar setup…' : serverSetupCheckError}</p><p className="mt-2">Your saved setup is preserved. New Bar registration is locked until this check succeeds.</p><button type="button" onClick={() => void refreshServerSetup({ checkPreflight: false })} className="mt-2 rounded border border-slate-500 px-3 py-2">Check saved setup again</button></div>}
             {serverSetup ? <section role="status" aria-live="polite" className="space-y-3 rounded-lg border border-amber-800 bg-slate-950/60 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1754,7 +1800,7 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
                   <label className="block text-sm">Bar or counter name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.outlet_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, outlet_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs leading-5 text-slate-300">An outlet is a trading area, not each till. For one counter, enter Main Bar. If you have several, use names like Pool Bar; tills serving the same counter share its outlet.</span></label>
                   <label className="block text-sm">Owner name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.owner_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, owner_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Enter the owner’s name as it should appear in Bar records.</span></label>
                   <label className="block text-sm">Owner email <span className="text-slate-300">(required)</span><input required type="email" maxLength={254} autoComplete="email" value={setupDraft.owner_email} onChange={(event) => setSetupDraft((draft) => ({ ...draft, owner_email: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Used to sign in to this local Bar. No internet connection is required.</span></label>
-                  <label className="block text-sm">Owner PIN <span className="text-slate-300">(required)</span><input required type="password" inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={setupDraft.pin} onChange={(event) => setSetupDraft((draft) => ({ ...draft, pin: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Choose 4–12 digits for in-person approvals. The owner signs in with email and password.</span></label>
+                  <div className="block text-sm"><label htmlFor="local-bar-setup-pin">Owner PIN <span className="text-slate-300">(required)</span></label><div className="mt-1 flex gap-2"><input id="local-bar-setup-pin" required type={showSetupDraftPin ? 'text' : 'password'} inputMode="numeric" pattern="[0-9]{4,12}" autoComplete="new-password" value={setupDraft.pin} onChange={(event) => setSetupDraft((draft) => ({ ...draft, pin: event.target.value }))} className="min-w-0 flex-1 rounded bg-slate-800 p-2" /><button type="button" aria-label={showSetupDraftPin ? 'Hide setup PIN' : 'Show setup PIN'} aria-pressed={showSetupDraftPin} onClick={() => setShowSetupDraftPin((shown) => !shown)} className="rounded border border-slate-600 px-3">{showSetupDraftPin ? 'Hide' : 'Show'}</button></div><span className="mt-1 block text-xs text-slate-300">Choose 4–12 digits for in-person approvals. The owner signs in with email and password.</span></div>
                   <label className="block text-sm">Currency <span className="text-slate-300">(required)</span><input required maxLength={3} value={setupDraft.currency} onChange={(event) => setSetupDraft((draft) => ({ ...draft, currency: event.target.value.toUpperCase() }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Use a 3-letter code, such as BWP for Botswana pula.</span></label>
                   <label className="block text-sm">Timezone <span className="text-slate-300">(required)</span><input required maxLength={80} value={setupDraft.timezone} onChange={(event) => setSetupDraft((draft) => ({ ...draft, timezone: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Used for Bar opening times and reports. Botswana uses Africa/Gaborone.</span></label>
                 </div>
@@ -1762,10 +1808,10 @@ function LocalAuthorityBoundary({ unavailable, message, authority, hasSavedCloud
                   <summary className="cursor-pointer text-sm font-semibold">Bar contact details <span className="font-normal text-slate-300">(optional)</span></summary>
                   <p className="mt-2 text-xs text-slate-300">Every field here is optional. Details you enter are saved on this Bar computer with the Bar records.</p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    {[
+                    {/** @type {[BarSetupBusinessProfileKey, string][]} */ ([
                       ['company_name', 'Registered company name'], ['address', 'Street address'], ['city', 'City or town'], ['country', 'Country'],
                       ['phone', 'Phone'], ['email', 'Contact email'], ['website', 'Website'], ['vat_number', 'VAT or tax number']
-                    ].map(([key, label]) => <label key={key} className="block text-sm">{label}<input maxLength={key === 'address' ? 240 : key === 'email' ? 254 : key === 'company_name' ? 200 : key === 'phone' || key === 'vat_number' ? 80 : 120} type={key === 'email' ? 'email' : 'text'} value={setupDraft[key]} onChange={(event) => setSetupDraft((draft) => ({ ...draft, [key]: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>)}
+                    ]).map(([key, label]) => <label key={key} className="block text-sm">{label}<input maxLength={key === 'address' ? 240 : key === 'email' ? 254 : key === 'company_name' ? 200 : key === 'phone' || key === 'vat_number' ? 80 : 120} type={key === 'email' ? 'email' : 'text'} value={setupDraft[key]} onChange={(event) => setSetupDraft((draft) => ({ ...draft, [key]: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /></label>)}
                   </div>
                 </details>
                 <label className="block text-sm">Main computer name <span className="text-slate-300">(required)</span><input required maxLength={120} value={setupDraft.device_name} onChange={(event) => setSetupDraft((draft) => ({ ...draft, device_name: event.target.value }))} className="mt-1 w-full rounded bg-slate-800 p-2" /><span className="mt-1 block text-xs text-slate-300">Name this computer, for example Bar Office. Other tills connect to this main computer.</span></label>
@@ -1839,18 +1885,18 @@ export default function App() {
   // bootstrap. A committed local profile must never be ignored because the
   // existing cloud shell happened to load first.
   const [localAuthorityState, setLocalAuthorityState] = useState(/** @type {null | {authority_mode?: string, configured?: boolean, error?: string, workspace_choice_required?: boolean, has_saved_cloud_business?: boolean, provisioning_recovery?: {pending?: boolean, kind?: 'owner'|'pairing'|null, recoverable?: boolean, error_code?: string}|null}} */ (null))
-  // A fresh hospitality-pos install enters the local Bar setup path by default.
-  // Existing cloud workspaces remain available only through the explicit
-  // cloud-choice action; committed local authorities never reach that chooser.
-  const [entryChoice, setEntryChoice] = useState(IS_HPOS_PRODUCT ? 'local' : 'choose')
+  // Resolve the business authority before any credential entry. Restaurant is
+  // the ordinary cloud path; a saved local Bar is selected explicitly.
+  const [entryChoice, setEntryChoice] = useState('choose')
   const [entryChoiceError, setEntryChoiceError] = useState('')
+  const [savedLocalBarEntry, setSavedLocalBarEntry] = useState({ status: 'loading', label: null })
   const [settings, setSettings] = useState(/** @type {import('./app-context.jsx').SettingsRowView | null} */ (null))
   const [features, setFeatures] = useState(/** @type {import('./app-context.jsx').FeatureFlags} */ ({})) // feature flags keyed by feature name
   const [trialStatus, setTrialStatus] = useState(DEFAULT_TRIAL_STATUS)
   const [profileContextVersion, setProfileContextVersion] = useState(0)
-  const [onlineRequests, setOnlineRequests] = useState([])
+  const [onlineRequests, setOnlineRequests] = useState(/** @type {import('./types/desktop-api.js').PendingOnlineBookingReadView[]} */ ([]))
   const focusRecoveryQueuedRef = useRef(false)
-  const lastEditablePointerRef = useRef(null)
+  const lastEditablePointerRef = useRef(/** @type {Element|null} */ (null))
   const focusObservedRef = useRef(false)
   const lastRecoveryTimeRef = useRef(0)
   const restoreAttemptedRef = useRef(false)
@@ -1908,7 +1954,7 @@ export default function App() {
     }
   }, [activeProfile?.status, isBrowserPreview, refreshOnlineRequests, user])
 
-  const runFocusRecovery = useCallback((reason, preferredTarget = null) => {
+  const runFocusRecovery = useCallback((/** @type {string} */ reason, /** @type {EventTarget|null} */ preferredTarget = null) => {
     const now = Date.now()
     const RECOVERY_COOLDOWN_MS = 250
     if (now - lastRecoveryTimeRef.current < RECOVERY_COOLDOWN_MS) return
@@ -2052,7 +2098,8 @@ export default function App() {
     }
     const result = await window.api.profiles.select(lodgeId)
     if (!result?.success) {
-      throw new Error(result?.error || `Could not switch to that ${BUILD_PRODUCT.businessNoun || 'business'} on this computer.`)
+      // The handler forwards raw error.message values; this type-only view keeps Error's existing coercion.
+      throw new Error(/** @type {string} */ (result?.error) || `Could not switch to that ${BUILD_PRODUCT.businessNoun || 'business'} on this computer.`)
     }
     await reloadProfiles()
     return result.data
@@ -2064,7 +2111,7 @@ export default function App() {
     }
     const result = await window.api.profiles.createDraft()
     if (!result?.success) {
-      throw new Error(result?.error || `Could not create a new ${BUILD_PRODUCT.businessNoun || 'business'} profile.`)
+      throw new Error(/** @type {string} */ (result?.error) || `Could not create a new ${BUILD_PRODUCT.businessNoun || 'business'} profile.`)
     }
     await reloadProfiles()
     return result.data
@@ -2104,9 +2151,9 @@ export default function App() {
           setProfilesLoading(false)
           setSettingsLoading(false)
           setAuthRestoreLoading(false)
-          // A stale cloud user must not be restored against a local authority.
-          localStorage.removeItem('bb_user')
-          localStorage.removeItem(USER_SCOPE_KEY)
+          // Do not restore a cloud session into the chooser or local shell.
+          // Keep its disk cache intact so an explicit return to Restaurant can
+          // still use the existing offline session and queue in that profile.
           setUser(null)
           return
         }
@@ -2135,10 +2182,25 @@ export default function App() {
   }, [isBrowserPreview, reloadProfiles])
 
   useEffect(() => {
+    if (!IS_HPOS_PRODUCT || localAuthorityState?.workspace_choice_required !== true) {
+      setSavedLocalBarEntry({ status: 'none', label: null })
+      return undefined
+    }
+    let active = true
+    Promise.resolve(window.api?.barLocal?.getChooserEntry?.()).then((entry) => {
+      if (!active) return
+      const status = ['none', 'draft', 'ready', 'recovery'].includes(entry?.status) ? entry.status : 'recovery'
+      setSavedLocalBarEntry({ status, label: typeof entry?.label === 'string' && entry.label.trim() ? entry.label.trim() : status === 'none' ? null : 'Saved Bar setup' })
+    }).catch(() => { if (active) setSavedLocalBarEntry({ status: 'recovery', label: 'Saved Bar setup' }) })
+    return () => { active = false }
+  }, [localAuthorityState?.workspace_choice_required])
+
+  useEffect(() => {
     if (isBrowserPreview) return undefined
     if (profilesLoading) return undefined
 
     let cancelled = false
+    /** @type {ReturnType<typeof setInterval>|undefined} */
     let interval
 
     const loadProfileContext = async () => {
@@ -2437,25 +2499,44 @@ export default function App() {
   if (IS_HPOS_PRODUCT && !isBrowserPreview && localAuthorityState?.workspace_choice_required) {
     const dedicatedLocalBarWorkspace = localAuthorityState?.workspace_isolation === 'dedicated_bar'
     if (entryChoice === 'local') return <LocalAuthorityBoundary authority={localAuthorityState} hasSavedCloudBusiness={localAuthorityState.has_saved_cloud_business === true} onBack={dedicatedLocalBarWorkspace ? undefined : () => setEntryChoice('choose')} />
+    const chooseBar = async () => {
+      setEntryChoice('restarting')
+      setEntryChoiceError('')
+      try {
+        if (savedLocalBarEntry.status === 'ready' || savedLocalBarEntry.status === 'draft') {
+          const result = await window.api.barLocal.selectLocalBarWorkspace()
+          if (result?.restart_required !== true || result?.workspace !== 'local_bar') throw new Error('The saved Bar could not be selected. Its setup remains preserved.')
+        } else if (savedLocalBarEntry.status === 'recovery') {
+          const result = await window.api.barLocal.openLocalBarWorkspace({ resume_existing: true })
+          if (result?.restart_required !== true) throw new Error('The saved Bar recovery flow could not be opened. No new Bar was created.')
+        } else if (localAuthorityState.has_saved_cloud_business === true) {
+          const result = await window.api.barLocal.openLocalBarWorkspace({ business_name: '', currency: 'BWP', entry_mode: 'commission' })
+          if (result?.restart_required !== true) throw new Error('Bar setup could not be opened. Your existing business remains saved.')
+        } else {
+          setEntryChoice('local')
+        }
+      } catch (error) {
+        setEntryChoice('choose')
+        setEntryChoiceError(error?.message || 'The selected Bar could not be opened. Existing business and setup data are preserved.')
+      }
+    }
     return <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
       <section className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 p-8">
-        <h1 className="text-2xl font-bold">{dedicatedLocalBarWorkspace ? 'This window is a local Bar' : 'Choose your workspace'}</h1>
-        <p className="mt-3 text-sm text-slate-300">{dedicatedLocalBarWorkspace
-          ? 'This window creates or joins the local Bar. The other workspace stays separate and is not copied or changed.'
-          : 'For a new Bar, set up or join the local Bar server. Restaurant and existing cloud businesses can continue in their current workspace.'}</p>
-        <button type="button" onClick={() => setEntryChoice('local')} className="mt-6 w-full rounded bg-amber-500 p-3 text-left font-semibold text-slate-950">Bar: set up or join a local server</button>
+        <h1 className="text-2xl font-bold">{dedicatedLocalBarWorkspace ? 'Choose your Bar setup' : 'Choose a business'}</h1>
+        <p className="mt-3 text-sm text-slate-300">Select the business before signing in. Bar records stay on the local Bar computer. Restaurant keeps its existing cloud and offline-session behavior.</p>
+        {savedLocalBarEntry.status !== 'none' && <p className="mt-4 rounded border border-slate-700 bg-slate-800 p-3 text-sm text-slate-200">Saved Bar: <strong>{savedLocalBarEntry.label || 'Local Bar'}</strong>{savedLocalBarEntry.status === 'ready' ? ' · Ready' : savedLocalBarEntry.status === 'draft' ? ' · Setup in progress' : savedLocalBarEntry.status === 'recovery' ? ' · Recovery needed' : ''}</p>}
+        <button type="button" disabled={entryChoice === 'restarting' || savedLocalBarEntry.status === 'loading'} onClick={() => void chooseBar()} className="mt-6 w-full rounded bg-amber-500 p-3 text-left font-semibold text-slate-950 disabled:opacity-50">{entryChoice === 'restarting' ? 'Reopening this app…' : savedLocalBarEntry.status === 'ready' ? `Open ${savedLocalBarEntry.label || 'Bar'}` : savedLocalBarEntry.status === 'draft' ? 'Continue saved Bar setup' : savedLocalBarEntry.status === 'recovery' ? 'Recover saved Bar setup' : localAuthorityState.has_saved_cloud_business ? 'Set up a new local Bar' : 'Set up a local Bar on this computer'}</button>
         {!dedicatedLocalBarWorkspace && <button type="button" disabled={entryChoice === 'restarting'} onClick={async () => {
           setEntryChoice('restarting'); setEntryChoiceError('')
           try {
             await window.api.barLocal.selectCloudWorkspace()
-            setEntryChoiceError('Close and reopen the application to continue to the other workspace.')
           } catch {
             setEntryChoice('choose')
-            setEntryChoiceError('The workspace choice could not be completed. Try again, or close and reopen the application.')
+            setEntryChoiceError('The Restaurant workspace could not be selected. Your saved Bar remains unchanged.')
           }
-        }} className="mt-3 w-full rounded border border-slate-500 p-3 text-left disabled:opacity-50">{entryChoice === 'restarting' ? 'Restarting application…' : 'Continue to other workspace'}</button>}
+        }} className="mt-3 w-full rounded border border-slate-500 p-3 text-left disabled:opacity-50">Continue with Restaurant</button>}
         {entryChoiceError && <p role="status" className="mt-3 text-sm text-amber-200">{entryChoiceError}</p>}
-        <p className="mt-4 text-xs text-slate-400">Existing cloud Bars need a verified migration before local activation. Choosing local setup does not transfer cloud data.</p>
+        <p className="mt-4 text-xs text-slate-400">No account is chosen from the email address. Switching clears the running session and opens only the selected business.</p>
       </section>
     </main>
   }

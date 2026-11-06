@@ -18,6 +18,29 @@ import {
   setRuntimeMeta
 } from './runtime'
 
+/**
+ * Expected dashboard RPC/legacy consumer shape. The RPC object check and
+ * queryWithCache's persisted data are not runtime validation. Optional fields
+ * required keys are constructed by SQL/the legacy builder; arrays stay
+ * unknown until a concrete page consumer narrows their row shapes.
+ * @typedef {{totalRooms: number, occupied: number, occupancyPercent: number, openMaintenanceCount: number, urgentMaintenanceCount: number, lowStockCount: number, unpaidCount: number, outstandingTotal: number, monthExpenses: number, maintenanceCosts?: number, monthGrossCollected: number, monthRefunds: number, monthRevenue: number, monthNet: number, upcomingArrivals: unknown[], conferenceUpcoming: unknown[], quotationsOpenCount: number, dayUseRevenue: number, lowStock: unknown[], revenueTrend: {day: string, amount: number}[], occupancyTrend: {day: string, occupied: number, percent: number}[], topBalances: unknown[], source?: string, financial_truth?: string}} DashboardSnapshotExpectedData
+ * @typedef {Omit<DashboardSnapshotExpectedData, 'maintenanceCosts' | 'source' | 'financial_truth'>} DashboardRpcSnapshotExpectedData
+ */
+/**
+ * Expected reports RPC and legacy snapshot shape. SQL numeric aggregates and
+ * the legacy builder construct these numeric values. This is an expected-data
+ * assertion at the existing RPC/cache boundary, not validation of either.
+ * @typedef {{todayRev: number, weekRev: number, monthRev: number, lastMonthRev: number, monthRefunds: number, lastMonthRefunds: number, monthRetainedRevenue: number, lastMonthRetainedRevenue: number, monthRetainedCount: number, lastMonthRetainedCount: number, monthOcc: number, lastMonthOcc: number, currentOcc: number, totalRooms: number, unpaidTotal: number, unpaidCount: number, monthExpenses: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, maintenanceCosts: number, source: 'server' | 'fallback', financial_truth?: string}} ReportsSnapshotExpectedData
+ * @typedef {Omit<ReportsSnapshotExpectedData, 'maintenanceCosts' | 'source' | 'financial_truth'>} ReportsRpcSnapshotExpectedData
+ * @typedef {Omit<ReportsSnapshotExpectedData, 'maintenanceCosts' | 'source'> & {maintenanceCosts?: number, source: 'legacy_estimate', financial_truth: string}} LegacyReportsSnapshotExpectedData
+ */
+/**
+ * Expected Manager POS snapshot fields shared with report consumers. RPC and
+ * cached data stay unvalidated; API finality metadata is derived by existing
+ * checks below.
+ * @typedef {{as_of?: string | null, complete: boolean, unresolved_count: number | string | null, source_coverage_complete?: boolean, dataset_status: string, net_sales: number, sale_count: number, returns_total: number, open_count: number, by_payment: {method: string, amount: number}[], source: 'server' | 'server_cache', financial_truth: 'server_confirmed' | 'server_stale' | 'server_incomplete'}} ManagerPosSnapshotExpectedData
+ */
+
 function isOfflineMode() {
   return typeof navigator !== 'undefined' && navigator.onLine === false
 }
@@ -464,7 +487,7 @@ async function readRpcJson(rpcName, params, fallbackMessage) {
   return data
 }
 
-/** @param {string} lodgeId @param {string} [today] */
+/** @param {string} lodgeId @param {string} [today] @returns {Promise<DashboardSnapshotExpectedData>} */
 async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date())) {
   const monthStart = today.slice(0, 7) + '-01'
   const todayDate = new Date(`${today}T00:00:00`)
@@ -606,7 +629,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
   }
 }
 
-/** @param {string} lodgeId @param {string} [today] @returns {Promise<Record<string, unknown>>} */
+/** @param {string} lodgeId @param {string} [today] @returns {Promise<LegacyReportsSnapshotExpectedData>} */
 async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date())) {
   const todayDate = new Date(`${today}T00:00:00`)
   const weekStart = formatDate(addDays(todayDate, -(todayDate.getDay() === 0 ? 6 : todayDate.getDay() - 1)))
@@ -1160,10 +1183,10 @@ export async function getEntitlement(lodgeId, options = {}) {
   })
 }
 
-/** @param {string} lodgeId */
+/** @param {string} lodgeId @returns {Promise<DashboardSnapshotExpectedData|null>} */
 export async function getDashboardSnapshot(lodgeId) {
   assertCapability('dashboard.view')
-  return queryWithCache({
+  return /** @type {Promise<DashboardSnapshotExpectedData|null>} */ (queryWithCache({
     lodgeId,
     key: 'dashboard',
     fallback: null,
@@ -1178,7 +1201,9 @@ export async function getDashboardSnapshot(lodgeId) {
         if (!snapshot || typeof snapshot !== 'object') {
           throw new Error('Dashboard snapshot was empty.')
         }
-        return snapshot
+        // The existing object-only RPC check is retained. This expected-data
+        // view is not runtime validation of the RPC or persisted cache value.
+        return /** @type {DashboardRpcSnapshotExpectedData} */ (snapshot)
       } catch (rpcError) {
         try {
           return await buildDashboardSnapshotLegacy(lodgeId, today)
@@ -1188,17 +1213,17 @@ export async function getDashboardSnapshot(lodgeId) {
         }
       }
     }
-  })
+  }))
 }
 
-/** @param {string} lodgeId @param {{today?: string, forceFresh?: boolean}} [options] */
+/** @param {string} lodgeId @param {{today?: string, forceFresh?: boolean}} [options] @returns {Promise<ReportsSnapshotExpectedData|null>} */
 export async function getReportsSnapshot(lodgeId, options = {}) {
   assertCapability('dashboard.view')
   const today = options.today || formatDate(new Date())
   const todayDate = new Date(`${today}T00:00:00`)
   const monthStart = `${today.slice(0, 7)}-01`
   const monthEnd = formatDate(new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0))
-  return queryWithCache({
+  return /** @type {Promise<ReportsSnapshotExpectedData|null>} */ (queryWithCache({
     lodgeId,
     key: 'reports_snapshot',
     fallback: null,
@@ -1213,9 +1238,12 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
         if (!snapshot || typeof snapshot !== 'object') {
           throw new Error('Reports snapshot was empty.')
         }
+        // Keep the existing object-only guard. RPC fields are not validated;
+        // the return type describes fields produced by SQL and the legacy builder.
+        const reportData = /** @type {ReportsRpcSnapshotExpectedData} */ (snapshot)
         const maintenanceRows = await listMaintenanceTickets(lodgeId, { forceFresh: options.forceFresh === true }).catch(() => [])
         return {
-          ...snapshot,
+          ...reportData,
           maintenanceCosts: maintenanceCostsForRange(maintenanceRows, monthStart, monthEnd),
           source: 'server'
         }
@@ -1237,10 +1265,10 @@ export async function getReportsSnapshot(lodgeId, options = {}) {
         }
       }
     }
-  })
+  }))
 }
 
-/** @param {string} lodgeId @param {{startDate?: string, endDate?: string, outletId?: string | null, forceFresh?: boolean}} [options] */
+/** @param {string} lodgeId @param {{startDate?: string, endDate?: string, outletId?: string | null, forceFresh?: boolean}} [options] @returns {Promise<ManagerPosSnapshotExpectedData>} */
 export async function getManagerPosSnapshot(lodgeId, options = {}) {
   assertCapability('pos.reports')
   const today = formatDate(new Date())
@@ -1274,13 +1302,13 @@ export async function getManagerPosSnapshot(lodgeId, options = {}) {
     && readField(snapshot, 'complete') === true
     && (readField(snapshot, 'source_coverage_complete') === undefined || readField(snapshot, 'source_coverage_complete') === true)
     && (!datasetStatus || datasetStatus === 'certified')
-  return {
+  return /** @type {ManagerPosSnapshotExpectedData} */ ({
     ...Object(snapshot),
     source: offline ? 'server_cache' : 'server',
     financial_truth: serverComplete ? 'server_confirmed' : offline ? 'server_stale' : 'server_incomplete',
     complete: serverComplete,
     dataset_status: datasetStatus || (serverComplete ? 'certified' : offline ? 'stale' : 'incomplete')
-  }
+  })
 }
 
 /** @param {string} lodgeId @param {{startDate?: string, endDate?: string, outletId?: string | null, status?: string, transactionType?: string, search?: string, limit?: number, offset?: number, forceFresh?: boolean}} [options] */
@@ -1396,7 +1424,7 @@ function maintenanceTicketDate(ticket = {}) {
   return String(readDirectField(ticket, 'reported_date') || readDirectField(ticket, 'created_at') || readDirectField(ticket, 'date') || '').slice(0, 10)
 }
 
-/** @param {unknown} rows @param {string} startDate @param {string} endDate @returns {unknown} */
+/** @param {unknown} rows @param {string} startDate @param {string} endDate @returns {number} */
 function maintenanceCostsForRange(rows = [], startDate, endDate) {
   /** @type {(row: unknown) => boolean} */
   const inDateRange = (row) => {
@@ -1406,7 +1434,9 @@ function maintenanceCostsForRange(rows = [], startDate, endDate) {
   const filtered = callDirectMethod(rows || [], 'filter', [inDateRange], '(rows || []).filter')
   /** @type {(sum: number, row: unknown) => number} */
   const addCost = (sum, row) => sum + Number(readDirectField(row, 'total_cost') || 0)
-  return callDirectMethod(filtered, 'reduce', [addCost, 0], '(rows || []).filter(...).reduce')
+  // addCost returns a number and reduce starts at numeric zero. This assertion
+  // narrows the helper's unknown reflection result without changing its calls.
+  return /** @type {number} */ (callDirectMethod(filtered, 'reduce', [addCost, 0], '(rows || []).filter(...).reduce'))
 }
 
 /** @param {string} lodgeId @param {Record<string, unknown>} payload */

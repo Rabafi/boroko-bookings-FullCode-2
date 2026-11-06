@@ -1,3 +1,4 @@
+// @ts-check
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { createMaintenanceTicket, normalizeMaintenanceTicket } from '../lib/maintenance'
@@ -9,6 +10,12 @@ import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 
+/** @typedef {{id: string|number, lodge_id: string, room_number: string|number, room_type?: string|null, name?: string|null, status?: string|null, housekeeping_status?: string|null}} RoomExpectedView */
+/** @typedef {{id: string|number, room_id?: string|number|null, title?: string|null, issue?: string|null, description?: string|null, status?: string|null, priority?: string|null}} RoomMaintenanceExpectedView */
+/** @typedef {{id: string|number, room_id?: string|number|null, guest_name?: string|null, check_out: string, status: string, payment_status?: string|null}} RoomBookingExpectedView */
+/** @typedef {{room: RoomExpectedView, booking: RoomBookingExpectedView|null, maintenanceItems: RoomMaintenanceExpectedView[], status: keyof typeof STATUS_CONFIG}} RoomListItem */
+/** @typedef {'all'|'occupied'|'dirty'|'in_progress'|'out_of_service'|'maintenance'} RoomFilter */
+
 const STATUS_CONFIG = {
   clean: { label: 'Clean', bg: 'bg-green-800/60', border: 'border-green-600', dot: 'bg-green-400' },
   dirty: { label: 'Dirty', bg: 'bg-yellow-800/40', border: 'border-yellow-600', dot: 'bg-yellow-400' },
@@ -18,15 +25,16 @@ const STATUS_CONFIG = {
   maintenance: { label: 'Maintenance', bg: 'bg-orange-900/45', border: 'border-orange-600', dot: 'bg-orange-400' }
 }
 
-const FILTERS = [
+const FILTERS = /** @type {const} */ ([
   ['all', 'All'],
   ['occupied', 'Occupied'],
   ['dirty', 'Dirty'],
   ['in_progress', 'Cleaning'],
   ['out_of_service', 'OOS'],
   ['maintenance', 'Maintenance']
-]
+])
 
+/** @param {RoomListItem} item @param {RoomFilter} filter */
 function matchesRoomFilter(item, filter) {
   if (filter === 'all') return true
   if (filter === 'occupied') return Boolean(item.booking)
@@ -34,6 +42,7 @@ function matchesRoomFilter(item, filter) {
   return item.status === filter
 }
 
+/** @param {{room: RoomExpectedView, booking: RoomBookingExpectedView|null, maintenanceItems?: RoomMaintenanceExpectedView[], onClose: () => void, onUpdate?: () => void}} props */
 function RoomSheet({ room, booking, maintenanceItems = [], onClose, onUpdate }) {
   const { showToast } = useToast()
   const [maint, setMaint] = useState('')
@@ -44,7 +53,7 @@ function RoomSheet({ room, booking, maintenanceItems = [], onClose, onUpdate }) 
     if (!maint.trim()) return
     setSaving(true)
     try {
-      const result = await createMaintenanceTicket({
+      const result = /** @type {{queued?: boolean}|null} */ (await createMaintenanceTicket({
         room_id: room.id,
         lodge_id: room.lodge_id,
         title: maint,
@@ -52,7 +61,7 @@ function RoomSheet({ room, booking, maintenanceItems = [], onClose, onUpdate }) 
         description: '',
         status: 'open',
         priority: 'medium'
-      })
+      }))
       setDone('maint')
       setMaint('')
       onUpdate?.()
@@ -67,7 +76,7 @@ function RoomSheet({ room, booking, maintenanceItems = [], onClose, onUpdate }) 
     } catch (error) {
       showToast({
         title: 'Ticket was not raised',
-        message: error?.message || 'Please try again.',
+        message: (/** @type {{message?: string}|null|undefined} */ (error))?.message || 'Please try again.',
         tone: 'error'
       })
     } finally {
@@ -144,15 +153,17 @@ function RoomSheet({ room, booking, maintenanceItems = [], onClose, onUpdate }) 
 }
 
 export default function Rooms() {
-  const { user } = useAuth()
-  const [rooms, setRooms] = useState([])
-  const [bookings, setBookings] = useState([])
-  const [maintenance, setMaintenance] = useState([])
-  const [selected, setSelected] = useState(null)
-  const [filter, setFilter] = useState('all')
+  const { user: routeUser } = useAuth()
+  /** AppShell's authenticated route guard establishes a non-null session here; the source view remains nullable and this assertion does not validate its contents. @type {NonNullable<typeof routeUser>} */
+  const user = /** @type {NonNullable<typeof routeUser>} */ (routeUser)
+  const [rooms, setRooms] = useState(/** @type {RoomExpectedView[]} */ ([]))
+  const [bookings, setBookings] = useState(/** @type {RoomBookingExpectedView[]} */ ([]))
+  const [maintenance, setMaintenance] = useState(/** @type {RoomMaintenanceExpectedView[]} */ ([]))
+  const [selected, setSelected] = useState(/** @type {RoomListItem|null} */ (null))
+  const [filter, setFilter] = useState(/** @type {RoomFilter} */ ('all'))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -163,17 +174,18 @@ export default function Rooms() {
         listBookings(user.lodge_id).catch(() => []),
         listMaintenanceTickets(user.lodge_id).catch(() => [])
       ])
-      setRooms(roomRows || [])
-      setBookings((bookingRows || []).filter((booking) => booking.status === 'checked_in'))
-      setMaintenance((maintenanceRows || []).filter((ticket) => ticket.status !== 'resolved').map(normalizeMaintenanceTicket))
+      // These query/cache values are consumed as their existing SELECT views; persisted JSON is not validated here.
+      setRooms(/** @type {RoomExpectedView[]} */ (roomRows || []))
+      setBookings(/** @type {RoomBookingExpectedView[]} */ (bookingRows || []).filter((booking) => booking.status === 'checked_in'))
+      setMaintenance(/** @type {RoomMaintenanceExpectedView[]} */ ((/** @type {RoomMaintenanceExpectedView[]} */ (maintenanceRows || [])).filter((ticket) => ticket.status !== 'resolved').map(normalizeMaintenanceTicket)))
       const cacheTimes = [
-        readCacheEntry(user.lodge_id, 'rooms', null)?.updatedAt,
-        readCacheEntry(user.lodge_id, 'bookings', null)?.updatedAt,
-        readCacheEntry(user.lodge_id, 'maintenance', null)?.updatedAt
+        (/** @type {{updatedAt?: string|null}|null} */ (readCacheEntry(user.lodge_id, 'rooms', null)))?.updatedAt,
+        (/** @type {{updatedAt?: string|null} | null} */ (readCacheEntry(user.lodge_id, 'bookings', null)))?.updatedAt,
+        (/** @type {{updatedAt?: string|null} | null} */ (readCacheEntry(user.lodge_id, 'maintenance', null)))?.updatedAt
       ].filter(Boolean).sort()
       setLastUpdated(cacheTimes.at(-1) || null)
     } catch (error) {
-      setLoadError(error?.message || 'Rooms could not load.')
+      setLoadError((/** @type {{message?: string}|null|undefined} */ (error))?.message || 'Rooms could not load.')
     } finally {
       setLoading(false)
     }
@@ -189,7 +201,7 @@ export default function Rooms() {
       : booking
         ? 'occupied'
         : room.housekeeping_status || 'clean'
-    return { room, booking, maintenanceItems, status }
+    return { room, booking, maintenanceItems, status: /** @type {keyof typeof STATUS_CONFIG} */ (status) }
   }), [bookings, maintenance, rooms])
 
   const summary = useMemo(() => ({
@@ -199,9 +211,9 @@ export default function Rooms() {
     maintenance: roomItems.filter((item) => item.status === 'maintenance').length
   }), [roomItems])
 
-  const filterCounts = useMemo(() => Object.fromEntries(
+  const filterCounts = useMemo(() => /** @type {Record<RoomFilter, number>} */ (Object.fromEntries(
     FILTERS.map(([id]) => [id, roomItems.filter((item) => matchesRoomFilter(item, id)).length])
-  ), [roomItems])
+  )), [roomItems])
 
   const filteredRooms = filter === 'all'
     ? roomItems

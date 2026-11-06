@@ -2,7 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-import { BAR_POS_ADDON_CATALOG, getCommercialAddonOffers, getCommercialEntitlementKeys } from '../src/shared/commercialEntitlements.js'
+import {
+  BAR_POS_ADDON_CATALOG,
+  expandCommercialAddonKeys,
+  getCommercialAddonDependencyError,
+  getCommercialAddonOffers,
+  getCommercialEntitlementKeys
+} from '../src/shared/commercialEntitlements.js'
 import { getCommercialFeatureSet, isCommercialFeatureIncluded } from '../src/shared/commercialAccess.js'
 import { buildCommercialOfferSnapshot } from '../src/shared/commercialPackages.js'
 
@@ -14,8 +20,25 @@ test('Bar POS sells exactly three complete annual add-on bundles', () => {
     'bar_accounting_workforce',
     'bar_growth_multi_outlet'
   ])
-  assert.deepEqual(BAR_POS_ADDON_CATALOG.map((addon) => addon.annualPriceBwp), [3000, 6000, 5000])
+  assert.deepEqual(BAR_POS_ADDON_CATALOG.map((addon) => addon.annualPriceBwp), [2500, 3500, 2000])
   assert.equal(getCommercialAddonOffers('hospitality-pos', 'restaurant').length, 3)
+})
+
+test('Accounting & Workforce requires Stock & Purchasing Pro', () => {
+  assert.deepEqual(expandCommercialAddonKeys('hospitality-pos', ['bar_accounting_workforce']), [
+    'bar_stock_purchasing_pro',
+    'bar_accounting_workforce'
+  ])
+  assert.equal(getCommercialAddonDependencyError('hospitality-pos', ['bar_accounting_workforce']), 'Accounting & Workforce requires Stock & Purchasing Pro')
+  assert.equal(getCommercialAddonDependencyError('hospitality-pos', ['bar_stock_purchasing_pro', 'bar_accounting_workforce']), null)
+  assert.equal(getCommercialAddonDependencyError('hospitality-pos', ['bar_growth_multi_outlet']), null)
+  assert.throws(() => buildCommercialOfferSnapshot({
+    productId: 'hospitality-pos',
+    commercialPackageKey: 'bar_pos',
+    addonKeys: ['bar_accounting_workforce'],
+    operatingProfile: 'bar_only',
+    propertyType: 'restaurant'
+  }), /Accounting & Workforce requires Stock & Purchasing Pro/)
 })
 
 test('Bar POS Base documents counter essentials while keeping add-on depth isolated', () => {
@@ -41,6 +64,23 @@ test('bar add-ons extend Bar POS but never leak into restaurant packages', () =>
   assert.ok(getCommercialFeatureSet('hospitality-pos', 'bar_pos', BAR_POS_ADDON_CATALOG.map((addon) => addon.addonKey)).has('stock_transfers'))
 })
 
+test('Bar add-on combinations produce the approved annual totals', () => {
+  const total = (addonKeys) => buildCommercialOfferSnapshot({
+    productId: 'hospitality-pos',
+    commercialPackageKey: 'bar_pos',
+    addonKeys,
+    operatingProfile: 'bar_only',
+    propertyType: 'restaurant',
+    trialAlreadyUsed: true
+  }).totals.recurring_annual
+  assert.equal(total([]), 4500)
+  assert.equal(total(['bar_stock_purchasing_pro']), 7000)
+  assert.equal(total(['bar_stock_purchasing_pro', 'bar_accounting_workforce']), 10500)
+  assert.equal(total(['bar_growth_multi_outlet']), 6500)
+  assert.equal(total(['bar_stock_purchasing_pro', 'bar_growth_multi_outlet']), 9000)
+  assert.equal(total(['bar_stock_purchasing_pro', 'bar_accounting_workforce', 'bar_growth_multi_outlet']), 12500)
+})
+
 test('bar commercial snapshot contains the selected bundle features and annual totals', () => {
   const snapshot = buildCommercialOfferSnapshot({
     productId: 'hospitality-pos',
@@ -50,7 +90,7 @@ test('bar commercial snapshot contains the selected bundle features and annual t
     propertyType: 'restaurant'
   })
   assert.equal(snapshot.lines.length, 3)
-  assert.equal(snapshot.totals.recurring_annual, 13500)
+  assert.equal(snapshot.totals.recurring_annual, 10500)
   assert.ok(snapshot.included_features.includes('purchasing'))
   assert.ok(snapshot.included_features.includes('payroll'))
 })
@@ -62,6 +102,25 @@ test('authoritative migration mirrors bar prices, eligibility and entitlement un
     "array['bar_only']", 'v_included_features', 'commercial_package_entitlements',
     'calculate_commercial_quote'
   ]) assert.match(sql, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+})
+
+test('authoritative dependency migration stores prices and enforces every write path', () => {
+  const sql = read('supabase/migrations/20261021090000_bar_addon_dependencies_and_prices.sql')
+  assert.match(sql, /add column if not exists required_addon_keys text\[\]/)
+  assert.match(sql, /required_addon_keys = array\['bar_stock_purchasing_pro'\]::text\[\]/)
+  assert.match(sql, /when 'bar_stock_purchasing_pro' then 2500/)
+  assert.match(sql, /when 'bar_accounting_workforce' then 3500/)
+  assert.match(sql, /when 'bar_growth_multi_outlet' then 2000/)
+  assert.match(sql, /_commercial_addon_dependency_error/)
+  assert.match(sql, /create or replace function public\.calculate_commercial_quote/)
+  assert.match(sql, /create or replace function public\.activate_subscription_request/)
+  assert.match(sql, /create or replace function public\.admin_governed_assign_commercial_subscription/)
+  assert.doesNotMatch(sql, /v_settings public\.settings|into v_settings/)
+  assert.match(sql, /select property_type into v_property_type from public\.settings/)
+  assert.match(sql, /coalesce\(v_property_type, v_license\.business_type, ''\) not in \('restaurant', 'bar'\)/)
+  assert.match(sql, /POS quote can only be activated for a restaurant or bar company/)
+  assert.match(sql, /predates the add-on dependency rule; issue a replacement quote/)
+  assert.match(sql, /when sqlstate 'P0001'/)
 })
 
 test('Accounting & Workforce surfaces roster and controlled tip payouts', () => {

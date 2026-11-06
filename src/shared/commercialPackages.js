@@ -6,6 +6,7 @@ import {
   COMMERCIAL_BILLING_BASIS,
   COMMERCIAL_PACKAGE_CATALOG,
   COMMERCIAL_PRODUCT_IDS,
+  getCommercialAddonDependencyError,
   getCommercialAddonOffers,
   getCommercialEntitlementKeys,
   getCommercialOffer,
@@ -241,6 +242,8 @@ export function buildCommercialOfferSnapshot({
   if (selected.eligibleOperatingProfiles?.length && !selected.eligibleOperatingProfiles.includes(/** @type {string} */ (operatingProfile))) {
     throw new Error(`${selected.displayName} is not available for operating profile ${operatingProfile || 'unknown'}`)
   }
+  const dependencyError = getCommercialAddonDependencyError(productId, addonKeys)
+  if (dependencyError) throw new Error(dependencyError)
   const resolvedTrialEligible = trialEligible === null || trialEligible === undefined
     ? (TRIAL_POLICY.appliesToPlans.includes(selected.internalPlan) && trialAlreadyUsed !== true)
     : Boolean(trialEligible)

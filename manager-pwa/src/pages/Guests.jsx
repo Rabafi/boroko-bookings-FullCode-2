@@ -6,28 +6,34 @@ import { bookingStatusClass, money, shortDate, titleCase } from '../lib/format'
 
 const PAGE_SIZE = 50
 
+// The guest-lifetime RPC declares outstanding_balance and pos_charges numeric; the page keeps its raw rows unvalidated.
+/** @typedef {{customer_id: string, lodge_id: string, customer_name: string, customer_phone?: string | null, customer_email?: string | null, guest_status: string, is_blacklisted?: boolean, blacklist_reason?: string | null, total_stays: number, last_stay_date?: string | null, upcoming_stay_date?: string | null, accommodation_value: number | string, payments_received: number | string, outstanding_balance: number | string, average_completed_stay_value: number | string, pos_charges?: number | string}} GuestExpectedView */
+/** @typedef {{id: string, room_number?: string | null, check_in: string, check_out: string, status: string, total_amount: number | string}} GuestBookingHistoryExpectedView */
+
+/** @param {{status: string}} props */
 function GuestStatusBadge({ status }) {
-  const styles = {
+  const styles = /** @type {Record<string, string>} */ ({
     new: 'bg-blue-900/50 text-blue-300',
     returning: 'bg-green-900/50 text-green-300',
     frequent: 'bg-purple-900/50 text-purple-300',
     outstanding_balance: 'bg-red-900/50 text-red-300'
-  }
-  const labels = {
+  })
+  const labels = /** @type {Record<string, string>} */ ({
     new: 'New',
     returning: 'Returning',
     frequent: 'Frequent',
     outstanding_balance: 'Outstanding'
-  }
+  })
   return (
-    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${styles[status] || 'bg-gray-800 text-gray-400'}`}>
+      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${styles[status] || 'bg-gray-800 text-gray-400'}`}>
       {labels[status] || status}
     </span>
   )
 }
 
+/** @param {{guest: GuestExpectedView, isExpanded: boolean, onToggle: () => void}} props */
 function GuestSummaryCard({ guest, isExpanded, onToggle }) {
-  const [history, setHistory] = useState([])
+  const [history, setHistory] = useState(/** @type {GuestBookingHistoryExpectedView[]} */ ([]))
   const [historyLoading, setHistoryLoading] = useState(false)
 
   const loadHistory = useCallback(async () => {
@@ -35,7 +41,7 @@ function GuestSummaryCard({ guest, isExpanded, onToggle }) {
       setHistoryLoading(true)
       try {
         const rows = await getGuestHistory(guest.lodge_id || '', guest.customer_id)
-        setHistory(rows)
+        setHistory(/** @type {GuestBookingHistoryExpectedView[]} */ (rows))
       } catch {
         setHistory([])
       }
@@ -85,7 +91,7 @@ function GuestSummaryCard({ guest, isExpanded, onToggle }) {
             </div>
             <div className="bg-gray-900 rounded-xl px-3 py-2">
               <p className="text-[10px] text-gray-500 uppercase">Outstanding</p>
-              <p className={`text-sm font-bold ${guest.outstanding_balance > 0 ? 'text-red-400' : 'text-gray-400'}`}>{money(guest.outstanding_balance)}</p>
+              <p className={`text-sm font-bold ${/** @type {number} */ (guest.outstanding_balance) > 0 ? 'text-red-400' : 'text-gray-400'}`}>{money(guest.outstanding_balance)}</p>
             </div>
             <div className="bg-gray-900 rounded-xl px-3 py-2">
               <p className="text-[10px] text-gray-500 uppercase">Avg Stay</p>
@@ -93,7 +99,7 @@ function GuestSummaryCard({ guest, isExpanded, onToggle }) {
             </div>
           </div>
 
-          {guest.pos_charges > 0 && (
+          {/** @type {number} */ (guest.pos_charges) > 0 && (
             <div className="bg-gray-900 rounded-xl px-3 py-2">
               <p className="text-[10px] text-gray-500 uppercase">POS Charges (linked)</p>
               <p className="text-sm font-bold text-blue-400">{money(guest.pos_charges)}</p>
@@ -106,7 +112,7 @@ function GuestSummaryCard({ guest, isExpanded, onToggle }) {
             </div>
           )}
 
-          {guest.outstanding_balance > 0 && (
+          {/** @type {number} */ (guest.outstanding_balance) > 0 && (
             <div className="rounded-xl bg-amber-900/30 border border-amber-800/40 px-3 py-2">
               <p className="text-xs font-semibold text-amber-300">Outstanding balance of {money(guest.outstanding_balance)} needs follow-up</p>
             </div>
@@ -146,17 +152,19 @@ function GuestSummaryCard({ guest, isExpanded, onToggle }) {
 }
 
 export default function Guests() {
-  const { user } = useAuth()
-  const [guests, setGuests] = useState([])
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const [guests, setGuests] = useState(/** @type {GuestExpectedView[]} */ ([]))
   const [totalCount, setTotalCount] = useState(0)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [expanded, setExpanded] = useState(null)
+  const [expanded, setExpanded] = useState(/** @type {string | null} */ (null))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
 
+  /** @param {{reset?: boolean}} [options] */
   const load = useCallback(async ({ reset = false } = {}) => {
     setLoading(true)
     setLoadError('')
@@ -167,15 +175,17 @@ export default function Guests() {
         getGuestLifetimeCount(user.lodge_id, { search: debouncedSearch })
       ])
       if (reset) {
-        setGuests(rows)
+        // The RPC helper only checks that its outer value is an array; row
+        // objects are not validated before this page consumes its expected view.
+        setGuests(/** @type {GuestExpectedView[]} */ (rows))
         setPage(0)
       } else {
-        setGuests((current) => [...current, ...rows])
+        setGuests((current) => [...current, .../** @type {GuestExpectedView[]} */ (rows)])
       }
       setTotalCount(count)
       setHasMore(rows.length >= PAGE_SIZE)
     } catch (error) {
-      setLoadError(error?.message || 'Guests could not load.')
+      setLoadError((/** @type {{message?: string} | null | undefined} */ (error))?.message || 'Guests could not load.')
     }
     setLoading(false)
   }, [user.lodge_id, debouncedSearch, page])

@@ -877,6 +877,7 @@ export default function Setup({ onComplete }) {
             <BarLocalSetupHandoff
               businessName={form.lodge_name}
               currency={form.currency}
+              originProfileId={activeProfile?.status === 'draft' ? activeProfile.lodge_id : null}
               businessProfile={{
                 company_name: form.company_name,
                 address: form.address,

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SITES, SITE_PAGES, itemHref, siteConfig } from '../marketing-site/src/sites.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '..')
@@ -43,14 +44,70 @@ const thankYouHtml = read('marketing-site/thank-you.html')
 const managerAppHtml = read('marketing-site/manager-app.html')
 const brochureHtml = read('marketing-site/brochure.html')
 const marketingScript = read('marketing-site/script.js')
+const enterpriseQuoteScript = read('marketing-site/quote.js')
+const enterpriseComposed = enterpriseHtml + '\n' + enterpriseQuoteScript
 const netlifyToml = read('marketing-site/netlify.toml')
 
+/* The generated shell (topbar, mobile nav, footer) comes from the site
+   registry in marketing-site/src/sites.mjs, so the per-site navigation
+   contract lives there: every site must expose the whole product family
+   through its footer, every nav item must resolve to a page this build can
+   place, and every product site must route each product home to a real
+   subdomain origin. */
+const PRODUCT_LANDING_PAGES = ['lodge-app', 'restaurant-pos', 'bar-pos', 'hotel', 'property']
+const PRODUCT_IDS = ['lodge-camp', 'hospitality-pos', 'hotel', 'property-os']
+
+function siteHomeSource(siteId) {
+  const entry = SITE_PAGES[siteId].find((e) => (e.out || e.src) === 'index')
+  assert.ok(entry, `${siteId} should build a home page`)
+  return read(`marketing-site/${entry.src}.html`)
+}
+
+for (const [siteId, site] of Object.entries(SITES)) {
+  const footerPages = site.footerLinks.filter((item) => item.page).map((item) => item.page)
+  for (const landing of PRODUCT_LANDING_PAGES) {
+    assert.ok(footerPages.includes(landing), `${siteId} footer should link the ${landing} landing page`)
+  }
+
+  for (const [itemKind, items] of [
+    ['nav', site.nav],
+    ['mobile nav', site.mobileNav],
+    ['footer', site.footerLinks]
+  ]) {
+    for (const item of items) {
+      const href = itemHref(item, siteId)
+      assert.ok(href, `${siteId} ${itemKind} item "${item.label || item.page || item.href}" should resolve to a real page`)
+    }
+  }
+
+  const config = siteConfig(site)
+  assert.equal(config.id, siteId, `${siteId} site config identity`)
+  assert.equal(config.origin, site.origin, `${siteId} site config origin`)
+  for (const productId of PRODUCT_IDS) {
+    assert.match(
+      config.productPages[productId],
+      /^https:\/\/(?:[a-z-]+\.)?tsabonno\.com\/$/,
+      `${siteId} should route the ${productId} product home to a subdomain origin`
+    )
+  }
+
+  const homeSource = siteHomeSource(siteId)
+
+  // In-page anchors a site's own nav links to must exist in its home source.
+  for (const item of [...site.nav, ...site.mobileNav]) {
+    const anchor = (item.href || '').match(/^\.\/index\.html#(.+)$/)
+    if (anchor) assertIncludes(homeSource, `id="${anchor[1]}"`, `${siteId} home anchor for "${item.label}"`)
+  }
+
+  // Product sites must identify their default product on the home body.
+  if (site.defaultProduct) {
+    assertIncludes(homeSource, `data-product="${site.defaultProduct}"`, `${siteId} home product identity`)
+  }
+}
+
+// Every non-admin source page must stay free of the retired public brand.
 for (const page of readdirSync(resolve(root, 'marketing-site')).filter((name) => name.endsWith('.html') && name !== 'admin.html')) {
   const html = read(`marketing-site/${page}`)
-  assertIncludes(html, 'href="./lodge-app.html"', `${page} ecosystem Lodge navigation`)
-  assertIncludes(html, 'href="./hotel.html"', `${page} ecosystem Hotel navigation`)
-  assertIncludes(html, 'href="./restaurant-pos.html"', `${page} ecosystem Restaurant navigation`)
-  assertIncludes(html, 'href="./bar-pos.html"', `${page} ecosystem Bar navigation`)
   const withoutLegacyInstallerFilename = html.replaceAll('Boroko-Bookings-1.3.16-x64.exe', '')
   assert.ok(!/\bBoroko\b/.test(withoutLegacyInstallerFilename), `${page} must not leak the retired public brand`)
 }
@@ -65,13 +122,15 @@ assertIncludes(packagesHtml, 'id="bar-package"', 'separate Bar package section')
 assertIncludes(packagesHtml, 'Bar POS Base', 'Bar Base package name')
 assertIncludes(packagesHtml, 'Optional annual add-ons', 'Bar add-on disclosure')
 for (const [name, price] of [
-  ['Stock &amp; Purchasing Pro', 'P3,000'],
-  ['Accounting &amp; Workforce', 'P6,000'],
-  ['Growth &amp; Multi-Outlet', 'P5,000']
+  ['Stock &amp; Purchasing Pro', 'P2,500'],
+  ['Accounting &amp; Workforce', 'P3,500'],
+  ['Growth &amp; Multi-Outlet', 'P2,000']
 ]) {
   assertIncludes(packagesHtml, name, `${name} marketing name`)
   assertIncludes(packagesHtml, price, `${name} annual price`)
 }
+assertIncludes(packagesHtml, 'Requires Stock &amp; Purchasing Pro', 'Accounting dependency disclosure')
+assertIncludes(packagesHtml, 'P6,000/year combined', 'Accounting and Purchasing combined price')
 assertIncludes(packagesHtml, 'Manager mobile oversight', 'Bar package includes Manager mobile oversight')
 assertIncludes(packagesHtml, 'Basic Reports for today, 7-day, and 30-day views with print/PDF', 'Starter basic report boundary')
 assertIncludes(packagesHtml, 'Full Staff Management, full reports and exports', 'Standard full report boundary')
@@ -197,13 +256,17 @@ for (const [name, html, product] of [
 }
 
 assertIncludes(homeHtml, 'id="product-apps"', 'ecosystem application chooser')
-assertIncludes(homeHtml, 'Three hospitality applications. One trusted Tsa Bonno foundation.', 'home ecosystem positioning')
+assertIncludes(homeHtml, 'Four focused applications. One trusted Tsa Bonno foundation.', 'home ecosystem positioning')
 assertIncludes(homeHtml, 'Tsa Bonno LodgingOS', 'home LodgingOS identity')
 assertIncludes(homeHtml, 'Tsa Bonno HotelOS', 'home HotelOS identity')
 assertIncludes(homeHtml, 'Tsa Bonno Restaurant &amp; Bar POS', 'home Restaurant and Bar POS identity')
+assertIncludes(homeHtml, 'Tsa Bonno PropertyOS', 'home PropertyOS identity')
 assertIncludes(homeHtml, 'href="./lodge-app.html"', 'home Lodge landing link')
 assertIncludes(homeHtml, 'href="./hotel.html"', 'home Hotel landing link')
 assertIncludes(homeHtml, 'href="./restaurant-pos.html"', 'home Restaurant POS landing link')
+assertIncludes(homeHtml, 'href="./bar-pos.html"', 'home Bar POS landing link')
+assertIncludes(homeHtml, 'href="./property.html"', 'home PropertyOS landing link')
+assertIncludes(homeHtml, 'pricing and launch dates are not decided yet', 'home PropertyOS pricing honesty')
 assertIncludes(marketingScript, "BUSINESS_FIELD_LABEL", 'product-specific trial form labels')
 assertIncludes(marketingScript, "window.location.href = './hotel.html'", 'Hotel CTA routing')
 assertIncludes(marketingScript, "querySelector('[data-hotel-addon-builder]')", 'Hotel add-on calculator wiring')
@@ -260,12 +323,13 @@ assert.ok(!managerAppHtml.includes('included with the Pro package'), 'Manager Ap
 
 assertIncludes(enterpriseHtml, 'id="enterprise-quote-form"', 'legacy Hotel quote form id')
 assertIncludes(enterpriseHtml, 'data-product="hotel"', 'Hotel quotation product identity')
-assertIncludes(enterpriseHtml, 'submit_public_subscription_request', 'Hotel public request RPC')
+assertIncludes(enterpriseHtml, './quote.js', 'Hotel quote logic must be served as an external file (strict CSP)')
+assertIncludes(enterpriseComposed, 'submit_public_subscription_request', 'Hotel public request RPC')
 assertIncludes(enterpriseHtml, '<span>Hotel</span>', 'Hotel quotation summary')
-assertIncludes(enterpriseHtml, 'Hotel: { annual: null', 'Hotel quote-confirmed pricing snapshot')
-assertIncludes(enterpriseHtml, "payment_instructions: 'Manual payment only.", 'Hotel payment instructions')
-assertIncludes(enterpriseHtml, 'activation happens only after Tsa Bonno approves payment proof', 'Hotel activation copy')
-assert.ok(!enterpriseHtml.includes('<option value="Enterprise">'), 'Hotel quotation must not expose Enterprise as a selectable package')
+assertIncludes(enterpriseComposed, 'Hotel: { annual: null', 'Hotel quote-confirmed pricing snapshot')
+assertIncludes(enterpriseComposed, "payment_instructions: 'Manual payment only.", 'Hotel payment instructions')
+assertIncludes(enterpriseComposed, 'activation happens only after Tsa Bonno approves payment proof', 'Hotel activation copy')
+assert.ok(!enterpriseComposed.includes('<option value="Enterprise">'), 'Hotel quotation must not expose Enterprise as a selectable package')
 
 // Premium-only add-ons (basic rates/corporate/housekeeping readiness are Hotel Core)
 const expectedAddons = [
@@ -278,7 +342,7 @@ const expectedAddons = [
 
 for (const addon of expectedAddons) {
   assertIncludes(enterpriseHtml, `value="${addon}"`, `Enterprise add-on ${addon}`)
-  assertIncludes(enterpriseHtml, `${addon}: { annual:`, `Enterprise add-on pricing ${addon}`)
+  assertIncludes(enterpriseComposed, `${addon}: { annual:`, `Enterprise add-on pricing ${addon}`)
 }
 
 for (const coreNotAddon of ['rate_plans', 'corporate_accounts', 'advanced_housekeeping_mobile']) {
@@ -289,7 +353,7 @@ for (const coreNotAddon of ['rate_plans', 'corporate_accounts', 'advanced_housek
 }
 
 assert.ok(
-  !/payment\s+(?:is|was)\s+(?:confirmed|processed|successful)/i.test(enterpriseHtml),
+  !/payment\s+(?:is|was)\s+(?:confirmed|processed|successful)/i.test(enterpriseComposed),
   'Enterprise marketing page must not claim online payment is confirmed or processed'
 )
 

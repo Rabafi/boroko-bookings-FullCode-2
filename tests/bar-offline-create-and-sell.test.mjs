@@ -15,7 +15,14 @@ const sync = () => read('src/main/domains/infrastructure.js')
 
 test('offline product save queues a catalog snapshot behind the product', () => {
   const source = pos()
-  assert.match(source, /queueLocalPosCatalogSnapshot\(entry\.payload\?\.stock\?\.outlet_id \|\| null, `bar-product-stock-\$\{entry\.operation_key\}`\)/)
+  const productQueueId = source.indexOf('`bar-product-stock-${entry.operation_key}`')
+  const snapshotStart = source.indexOf('queueLocalPosCatalogSnapshot(', productQueueId)
+  const snapshotEnd = source.indexOf(');', snapshotStart)
+  assert.ok(productQueueId >= 0 && snapshotStart > productQueueId && snapshotEnd > snapshotStart, 'Product save must queue its dependent catalogue snapshot')
+  const snapshotCall = source.slice(snapshotStart, snapshotEnd)
+  assert.match(snapshotCall, /entry\.payload/, 'Snapshot scope comes from the saved product request')
+  assert.match(snapshotCall, /stock\?\.outlet_id \|\| null/, 'Snapshot stays scoped to the saved stock outlet')
+  assert.match(snapshotCall, /bar-product-stock-\$\{entry\.operation_key\}/, 'Snapshot depends on the product operation ID')
 })
 
 test('offline sales depend on their provisional products before replay', () => {

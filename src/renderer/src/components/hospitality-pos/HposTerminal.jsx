@@ -1,4 +1,5 @@
 // @ts-check
+import { createLocalHposTillApi, estimateNativeHposTill } from './bar-local/nativeTillApi.js'
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ErrorNotice } from "../shared/ErrorNotice";
@@ -48,6 +49,7 @@ import {
   shouldLoadTillTables,
 } from "../../../../shared/barModeProfile";
 import { isCommercialFeatureIncluded } from "../../../../shared/commercialAccess.js";
+import { resolveTillCoreReads } from "../../../../shared/tillFirstRun.js";
 import { canAccessCapability } from "../../../../shared/accessControl.js";
 import HposTillOperatorDialog from "./HposTillOperatorDialog";
 import { POSReceipt } from "../shared/POSReceipt";
@@ -220,6 +222,43 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
  *   active?: boolean,
  *   _virtual?: boolean
  * }} HposOutletRecord
+ * Rows from pos:getTablesWithStatus extend the table projection with an active tab or null;
+ * the alternate raw table reader omits tab. Cache and IPC rows remain unvalidated.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   name: string,
+ *   active?: boolean | null,
+ *   table_number?: unknown,
+ *   tab_name?: string | null,
+ *   tab?: (Record<string, unknown> & {id?: unknown, tab_version?: unknown, items?: unknown, waiter_name?: string | null}) | null
+ * }} HposTableStatusExpectedView
+ * The promotion query selects these fields, while its cache/IPC payload is not
+ * runtime-validated by this expected consumer view. Dates may still be invalid.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   name: string,
+ *   discount_type?: string | null,
+ *   discount_value?: string | number | null,
+ *   applies_to_category?: string | null,
+ *   active?: boolean | null,
+ *   starts_at?: string | null,
+ *   ends_at?: string | null,
+ *   minimum_spend?: string | number | null,
+ *   customer_segment?: unknown
+ * }} HposPromotionExpectedView
+ * The customer-account DTO supplies id/name and account fields; cached rows
+ * are not validated. Legacy loyalty/segment fields remain optional unknowns.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   name: string,
+ *   outstanding_balance?: unknown,
+ *   credit_limit?: unknown,
+ *   available_credit?: unknown,
+ *   account_status?: unknown,
+ *   loyalty_points?: unknown,
+ *   segment?: unknown,
+ *   customer_segment?: unknown
+ * }} HposCustomerAccountExpectedView
  * @typedef {Record<string, unknown> & {
  *   id: string | number,
  *   name: string,
@@ -236,16 +275,35 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
  * }} HposModifierGroup
  * @typedef {{qty: number, unit: string}} HposLowStockBadge
  * @typedef {Record<string, HposLowStockBadge>} HposLowStockMap
+ * Scanner feedback messages are created by the existing scan/outlet handlers.
+ * This expected UI shape does not validate the underlying scan or IPC values.
+ * @typedef {{level: 'success' | 'error', code: string, message: string}} HposScannerFeedback
  * @typedef {{qty: unknown, unit?: unknown}} HposStockCount
  * @typedef {Map<unknown, unknown>} HposStockReadinessMap
  * @typedef {Map<unknown, HposStockCount>} HposStockReadinessCounts
  * The shift producer returns a raw database/cache row or null; id is an
  * expected-data view from the pos_shifts primary key, not runtime validation.
  * @typedef {Record<string, unknown> & {id: string}} HposShiftExpected
+ * `pos:openShift` returns a successful shift row (including the explicitly
+ * provisional offline row) or its existing failure envelope. This consumer
+ * view documents those producer variants; it does not validate IPC data.
+ * @typedef {{success: true, shift: HposShiftExpected, row?: unknown, offline?: boolean} | {success: false, error?: string}} HposOpenShiftResultExpected
  * Shared-Till session fields come from the main-process session store. Staff
  * labels remain unknown because the helper preserves the database value.
  * @typedef {Record<string, unknown> & {staffId: string, staffName: unknown, outletId: string | null, shiftId: string | null, mode: 'strict' | 'shift', inactivityMinutes: number, lastActivityAt: number, expiresAt: number}} HposPublicTillOperatorSessionExpected
  * @typedef {Record<string, unknown> & ({success: true, session: HposPublicTillOperatorSessionExpected, shift: HposShiftExpected | null} | {success: false, session: null})} HposSharedTillSessionReadExpected
+ * pos:touchSharedTillOperator returns the session-store result. Its proof RPC
+ * leaf remains unvalidated; the consumer's expected error is a display string.
+ * @typedef {{success: true, session: HposPublicTillOperatorSessionExpected} | {success: false, error?: string, code?: unknown}} HposTouchSharedTillOperatorExpected
+ * mesh:lockTab forwards createTabLock's acquired/held/missing-reference result
+ * with success=true, or catches an error with success=false. IPC failures below
+ * remain null through the existing catch; this view does not validate payloads.
+ * @typedef {{success: true, acquired: true, held?: false, heldBy?: undefined, lockId: string}|{success: true, acquired: false, held: true, heldBy: unknown, lockId: unknown}|{success: true, acquired: false, held?: false, heldBy?: undefined, lockId?: undefined, error: unknown}|{success: false, acquired?: false, held?: false, heldBy?: undefined, lockId?: undefined, error: unknown}} HposTabLockExpected
+ * The main pos:saveTab handler forwards the existing domain result and may
+ * append the Shared-Till session. The nested tab row stays unknown; this view
+ * describes the expected IPC envelope without validating it at runtime. The
+ * domain can forward an unvalidated RPC error value, so keep error unknown.
+ * @typedef {{success: true, already_open?: boolean, error?: unknown, tab?: unknown, offline?: boolean, till_session?: HposPublicTillOperatorSessionExpected} | {success: false, already_open?: boolean, error?: unknown, code?: string, tab?: unknown}} HposSaveTabResultExpected
  * Staff records are passed through from the activation producer; this view
  * documents consumed identity without claiming IPC/cache runtime validation.
  * @typedef {Record<string, unknown> & {id: string, name?: unknown, email?: unknown}} HposVerifiedOperatorExpected
@@ -264,6 +322,20 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
  *   code?: unknown
  * }} HposStockReadinessState
  * @typedef {{status: 'ready' | 'stale' | 'local', map: HposStockReadinessMap, counts: HposStockReadinessCounts, cachedAt: unknown}} HposStockReadinessBase
+ * Main's readiness handler forwards the domain result; this is an expected
+ * IPC view only. The cache writer still checks the rows container at runtime.
+ * @typedef {{rows?: unknown, error?: string, code?: string}} HposStockReadinessFetchExpected
+ * Main's pos:getUnconfirmedPosUsage handler spreads this producer's counts;
+ * this expected IPC view does not validate payloads or persisted queue rows.
+ * @typedef {{usage?: unknown, orderCount?: unknown, meshOrderCount?: unknown, meshDeliveryCount?: unknown}} HposUnconfirmedPosUsageExpected
+ * @typedef {{rows?: unknown, items?: unknown}} HposInventoryItemsExpected
+ * @typedef {{menu_item_id?: unknown, ingredients?: Array<{quantity?: unknown}> | null}} HposRecipeExpected
+ * @typedef {Record<string, unknown> & {id?: unknown, name?: unknown, table_name?: unknown, tab_name?: unknown, customer_name?: unknown, customer_id?: unknown, outlet_id?: unknown, tab_version?: unknown, version?: unknown, waiter_name?: unknown, opened_by_name?: unknown, items?: unknown}} HposResumedTabExpected
+ * @typedef {{id?: unknown, menu_item_id?: unknown, item_name?: unknown, name?: unknown, unit_price?: unknown, price?: unknown, quantity?: unknown, modifiers?: unknown, modifier_total?: unknown, template_kind?: unknown, template_pack_size?: unknown}} HposResumedTabItemExpected
+ * @typedef {{period?: {status?: unknown} | null}} HposDrawerPeriodStateExpected
+ * @typedef {{success?: boolean, error?: unknown, offline?: boolean, staff?: HposVerifiedOperatorExpected | null, shift?: HposShiftExpected | null, session?: {outletId?: string | null, outlet_id?: string | null, expiresAt?: number | null, expires_at?: number | null, lastActivityAt?: number | null, last_activity_at?: number | null} | null}} HposActivateSharedTillOperatorExpected
+ * @typedef {{outletId?: string | null, outlet_id?: string | null}} HposPersistedHoldIntentExpected
+ * @typedef {{outcome: string, tab?: {name?: unknown} | null}} HposHoldIntentDecisionExpected
  * @typedef {Record<string, unknown> & {lines: unknown}} HposPersistedBasketDraftExpected
  * The recovery guard establishes that a recent non-empty lines array exists;
  * the remaining JSON fields stay unknown and are not validated by this view.
@@ -302,9 +374,9 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
  *   cashTender?: unknown
  * }} HposPendingSubmitEnvelope
  * The main recovery reader returns a failed lookup, an already-resolved
- * committed attempt, or a pending journal row. `readAttempts` checks journal
- * structure and required IDs/status/payload presence; payload content itself
- * is not validated. This expected IPC view does not add renderer validation.
+ * committed attempt, or a pending journal row. Its catch can forward an
+ * arbitrary truthy `message` value from a thrown object; this expected IPC view
+ * does not validate the returned error or payload.
  * @typedef {{
  *   success: false,
  *   error: unknown,
@@ -352,6 +424,15 @@ function writeTerminalOutletPreference(lodgeId, outletId) {
  * that producer and does not validate the IPC payload at runtime.
  * @typedef {import('../../../../shared/desktopIpcContracts.js').PosHardwareSettingsResult} HposTerminalHardwareSettingsExpectedView
  */
+/** @typedef {{id: string|null, name: string, outlet_id: string|null, updated_at: string|null}} HposOpenTabBrief */
+/** @typedef {{id: string|number|null, name: string, waiter?: unknown, found: boolean, versionOk: boolean}} HposResumedTabInfo */
+/** Expected row shape from pos_get_safe_staff and the locally cached projection; RPC/cache data remains unvalidated. */
+/** @typedef {Record<string, unknown> & {id: string, name?: string|null, email?: string|null, has_pin?: unknown, status?: string|null}} HposTillStaffExpectedView */
+/** @typedef {{staff_user_id?: string|null}} HposActiveShiftExpectedView */
+/** Expected commercial entitlement fields read by Till gating; context IPC/cache data is not validated by this view. */
+/** @typedef {{product_id?: string|null, commercial_package_key?: string|null, enterprise_addons?: string[], lodge_id?: string|null}} HposCommercialEntitlementExpectedView */
+/** Expected normalized payment-terminal result from main's adapter; bridge response fields are forwarded without renderer validation. */
+/** @typedef {{success?: boolean, approval_code?: unknown, reference?: unknown, message?: unknown, error?: unknown}} HposPaymentTerminalExpectedView */
 /**
  * @param {{
  *   item: HposTerminalMenuItem,
@@ -796,6 +877,7 @@ function packBadgeLabel(line) {
  * }} props
  */
 function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency, highlight = false, highlightFresh = false }) {
+  /** @param {unknown} n */
   const fmt = (n) => Number(n || 0).toFixed(2);
   const packLabel = packBadgeLabel(line);
   const isPoolLine = String(line.category || '').trim().toLowerCase() === 'pool';
@@ -951,14 +1033,19 @@ function CartLine({ line, onUpdateQty, onSetQty, onRemove, onCustomize, currency
   );
 }
 
+/** @typedef {'account' | 'voucher' | 'cash' | 'card' | 'mobile_money'} HposTenderLabelMethod */
+
+/** @param {HposTenderLabelMethod} method @returns {string} */
 function tenderLabel(method) {
-  return {
+  /** @type {Record<HposTenderLabelMethod, string>} */
+  const labels = {
     account: "Customer account",
     cash: "Cash",
     card: "Card",
     mobile_money: "Mobile money",
     voucher: "Voucher",
-  }[method] || method;
+  };
+  return labels[method] || method;
 }
 
 export default function HposTerminal() {
@@ -967,9 +1054,13 @@ export default function HposTerminal() {
   const { settings } = useSettings();
   const { user } = useAuth();
   const access = useAccess();
+  const localAuthority = settings?.authority_mode === 'bar_local';
+  const tillApi = useMemo(() => localAuthority ? createLocalHposTillApi(window.api.barLocal, user) : window.api, [localAuthority, user]);
+  const [localRecoveryBlocked, setLocalRecoveryBlocked] = useState(localAuthority);
+  const [localApprovalPin, setLocalApprovalPin] = useState('');
   const { allowedOutletIds } = access;
   const lodgeId = settings?.lodge_id || user?.lodge_id || null;
-  const sharedTerminalMode = [
+  const sharedTerminalMode = !localAuthority && [
     "manager",
     "admin",
     "supervisor",
@@ -977,12 +1068,13 @@ export default function HposTerminal() {
   ].includes(String(user?.role || "").toLowerCase());
   const currency = settings?.currency || "P";
   const barOnly = isBarOnlyMode(settings);
-  const commercialProductId = access?.entitlement?.product_id || null;
-  const commercialPackageKey = access?.entitlement?.commercial_package_key || null;
-  const commercialAddonKeys = Array.isArray(access?.entitlement?.enterprise_addons)
-    ? access.entitlement.enterprise_addons
+  const commercialProductId = (/** @type {HposCommercialEntitlementExpectedView|null|undefined} */ (access?.entitlement))?.product_id || null;
+  const commercialPackageKey = (/** @type {HposCommercialEntitlementExpectedView|null|undefined} */ (access?.entitlement))?.commercial_package_key || null;
+  const commercialAddonKeys = Array.isArray((/** @type {HposCommercialEntitlementExpectedView|null|undefined} */ (access?.entitlement))?.enterprise_addons)
+    ? (/** @type {HposCommercialEntitlementExpectedView} */ (access.entitlement)).enterprise_addons
     : [];
   const commercialContextKnown = commercialProductId === "hospitality-pos" && Boolean(commercialPackageKey);
+  /** @param {string} featureKey */
   const canUseBarCommercialFeature = (featureKey) => !barOnly || (
     commercialContextKnown && isCommercialFeatureIncluded(
       commercialProductId,
@@ -990,7 +1082,7 @@ export default function HposTerminal() {
       featureKey,
       commercialAddonKeys,
       access?.entitlement || null,
-      access?.entitlement?.lodge_id || null
+      (/** @type {HposCommercialEntitlementExpectedView|null|undefined} */ (access?.entitlement))?.lodge_id || null
     )
   );
   const canUseVoucher = canUseBarCommercialFeature("vouchers");
@@ -1006,7 +1098,7 @@ export default function HposTerminal() {
         packageKey: commercialPackageKey,
         addonKeys: commercialAddonKeys,
         entitlement: access?.entitlement || null,
-        lodgeId: access?.entitlement?.lodge_id || null,
+        lodgeId: (/** @type {HposCommercialEntitlementExpectedView|null|undefined} */ (access?.entitlement))?.lodge_id || null,
         barOnly,
       }),
     [commercialProductId, commercialPackageKey, commercialAddonKeys, access?.entitlement, barOnly],
@@ -1014,8 +1106,8 @@ export default function HposTerminal() {
   const barProfile = useMemo(() => getBarModeProfile(settings), [settings]);
   const tillOperatorPolicy = useMemo(() => getTillOperatorPolicy(settings), [settings]);
   const serviceModeOptions = useMemo(
-    () => getHposServiceModes(barOnly),
-    [barOnly],
+    () => getHposServiceModes(barOnly).filter((mode) => !localAuthority || mode.id === 'counter'),
+    [barOnly, localAuthority],
   );
   // RPC/cache menu rows retain their producer shape; this view is not a
   // runtime validation of the desktop transport response.
@@ -1027,7 +1119,7 @@ export default function HposTerminal() {
   // In-app destructive confirms (Clear sale / switch table) instead of
   // window.confirm: styled, keyboard-dismissable, screen-reader announced.
   const [pendingConfirm, setPendingConfirm] = useState(/** @type {null | "clear" | {type: "table", name: string}} */ (null));
-  const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(() => new Set());
+  const [recipeMenuItemIds, setRecipeMenuItemIds] = useState(/** @type {Set<unknown>} */ (new Set()));
   // Low-stock badges by inventory_item_id. Informational only: loaded idle
   // after the Till opens, capability-gated server-side (cashiers without
   // inventory.view simply see no badges), never blocking a sale.
@@ -1046,8 +1138,8 @@ export default function HposTerminal() {
   // refuses sales without one; this pill says so before the operator builds
   // a basket. Personal outlets never show it.
   const [drawerGateNeeded, setDrawerGateNeeded] = useState(false);
-  const [openTabsBrief, setOpenTabsBrief] = useState([]);
-  const [resumedTabInfo, setResumedTabInfo] = useState(null);
+  const [openTabsBrief, setOpenTabsBrief] = useState(/** @type {HposOpenTabBrief[]} */ ([]));
+  const [resumedTabInfo, setResumedTabInfo] = useState(/** @type {HposResumedTabInfo|null} */ (null));
   const [pendingRestore, setPendingRestore] = useState(/** @type {HposPendingBasketRestore | null} */ (null));
   const [recoveryReady, setRecoveryReady] = useState(false);
   const [outletReady, setOutletReady] = useState(false);
@@ -1070,11 +1162,11 @@ export default function HposTerminal() {
   // renderer-owned state. A failed reply is disclosed to main and marks the
   // archive incomplete; it never blocks Till work.
   useEffect(() => {
-    const api = window.api?.pos;
+    const api = tillApi?.pos;
     if (!api?.onTradingBackupCollectState) return undefined;
     const dispose = api.onTradingBackupCollectState((requestId) => {
       try {
-        const keys = {};
+        const keys = /** @type {Record<string, string>} */ ({});
         const storage = window.localStorage;
         if (storage && requestId) {
           for (let index = 0; index < storage.length; index += 1) {
@@ -1115,6 +1207,7 @@ export default function HposTerminal() {
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
     const query = window.matchMedia("(max-width: 1100px)");
+    /** @param {MediaQueryListEvent} event */
     const onChange = (event) => setNarrowViewport(event.matches);
     setNarrowViewport(query.matches);
     if (typeof query.addEventListener === "function") {
@@ -1124,7 +1217,7 @@ export default function HposTerminal() {
     return undefined;
   }, []);
   const restoreCheckedRef = useRef(false);
-  const undoTimerRef = useRef(null);
+  const undoTimerRef = useRef(/** @type {number | null} */ (null));
   const [search, setSearch] = useState("");
   const [selectedOutlet, setSelectedOutlet] = useState(/** @type {HposOutletRecord | null} */ (null));
   // Pinned Till favourites are per terminal outlet so each bar station keeps
@@ -1172,6 +1265,7 @@ export default function HposTerminal() {
   }, [lodgeId, selectedOutlet?.id]);
   const [activeCategory, setActiveCategory] = useState("All");
   const [serviceMode, setServiceMode] = useState(() => {
+    if (localAuthority) return 'counter';
     if (!location.state?.tabId) return getDefaultHposServiceMode(settings);
     // Bar tabs always carry table_name (= tab name), so a bar resume must
     // land on the tab mode. Otherwise the mode corrects to counter and the
@@ -1179,7 +1273,7 @@ export default function HposTerminal() {
     if (location.state?.tableName && !isBarOnlyMode(settings)) return "table";
     return "tab";
   });
-  const [customers, setCustomers] = useState([]);
+  const [customers, setCustomers] = useState(/** @type {HposCustomerAccountExpectedView[]} */ ([]));
   // This is the existing desktop/cache projection consumed by modifier UI and
   // sale checks; parsing/cache content is not validated by this annotation.
   const [modifierGroups, setModifierGroups] = useState(/** @type {HposModifierGroup[]} */ ([]));
@@ -1189,22 +1283,22 @@ export default function HposTerminal() {
   // Server-authoritative stock readiness per sellable (outcome only, no
   // recipe disclosure). Base Till never infers from recipe membership.
   const [stockReadiness, setStockReadiness] = useState(/** @type {HposStockReadinessState} */ ({ status: "loading", map: new Map(), counts: new Map() }));
-  const [modifierLineId, setModifierLineId] = useState(null);
+  const [modifierLineId, setModifierLineId] = useState(/** @type {string | number | null} */ (null));
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [deliveryNotes, setDeliveryNotes] = useState("");
   const [chargeToAccount, setChargeToAccount] = useState(false);
   const [voucherCode, setVoucherCode] = useState("");
   const [voucherAmount, setVoucherAmount] = useState("");
-  const [promotions, setPromotions] = useState([]);
+  const [promotions, setPromotions] = useState(/** @type {HposPromotionExpectedView[]} */ ([]));
   const [selectedPromotionId, setSelectedPromotionId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [splitCashAmount, setSplitCashAmount] = useState("");
   const [splitRemainderMethod, setSplitRemainderMethod] = useState("card");
-  const [paymentReferences, setPaymentReferences] = useState({
+  const [paymentReferences, setPaymentReferences] = useState(/** @type {Record<string, string>} */ ({
     card: "",
     mobile_money: "",
-  });
+  }));
   const [tipAmount, setTipAmount] = useState("");
   const [showPayment, setShowPayment] = useState(false);
   // Derived AFTER all state above: reading any useState binding before its
@@ -1216,7 +1310,7 @@ export default function HposTerminal() {
   const [multiAddItem, setMultiAddItem] = useState(/** @type {HposTerminalMenuItem | null} */ (null));
   const [multiAddQty, setMultiAddQty] = useState("2");
   // This shift's sold-item chips (device-local): max 12 unique product ids.
-  const [recentSold, setRecentSold] = useState([]);
+  const [recentSold, setRecentSold] = useState(/** @type {string[]} */ ([]));
   const [shiftPaceItems, setShiftPaceItems] = useState(0);
   // Payment open too long with an untaken tender: soft nudge after 90s.
   const [paymentIdleNudge, setPaymentIdleNudge] = useState(false);
@@ -1226,11 +1320,11 @@ export default function HposTerminal() {
   // a silent skeleton while the shift roster arrives.
   const [loadingStage, setLoadingStage] = useState("menu, stock and team");
   const [outlets, setOutlets] = useState(/** @type {HposOutletRecord[]} */ ([]));
-  const [tables, setTables] = useState([]);
+  const [tables, setTables] = useState(/** @type {HposTableStatusExpectedView[]} */ ([]));
   // Open-tab names for the Bar tab-name suggestions. Bar-only service has no
   // floor tables, so these come from the already-loaded tab list instead of
   // a separate floor-table read.
-  const [openTabNames, setOpenTabNames] = useState([]);
+  const [openTabNames, setOpenTabNames] = useState(/** @type {string[]} */ ([]));
   const [tableName, setTableName] = useState(
     () => location.state?.tableName || "",
   );
@@ -1274,19 +1368,19 @@ export default function HposTerminal() {
     const timer = window.setTimeout(() => setSuccessMessage(""), 6000);
     return () => window.clearTimeout(timer);
   }, [successMessage]);
-  const [scannerFeedback, setScannerFeedback] = useState(null);
-  const [lastNotFoundBarcode, setLastNotFoundBarcode] = useState(null);
+  const [scannerFeedback, setScannerFeedback] = useState(/** @type {HposScannerFeedback | null} */ (null));
+  const [lastNotFoundBarcode, setLastNotFoundBarcode] = useState(/** @type {string | null} */ (null));
   // Unknown-barcode creation is permission-gated: both catalog sides.
   const canCreateProduct =
     canAccessCapability(access, "pos.menu_manage") &&
     canAccessCapability(access, "inventory.manage");
   const [completedReceipt, setCompletedReceipt] = useState(/** @type {HposCompletedReceipt | null} */ (null));
-  const [serviceStaff, setServiceStaff] = useState([]);
+  const [serviceStaff, setServiceStaff] = useState(/** @type {HposTillStaffExpectedView[]} */ ([]));
   // Who is clocked in right now (staff_user_ids) + whether the terminal is
   // online, refreshed each time the unlock dialog opens. Both stay null when
   // unknown so the dialog fails open to today's full staff list.
-  const [unlockActiveStaffIds, setUnlockActiveStaffIds] = useState(null);
-  const [unlockIsOnline, setUnlockIsOnline] = useState(null);
+  const [unlockActiveStaffIds, setUnlockActiveStaffIds] = useState(/** @type {Array<string|null|undefined>|null} */ (null));
+  const [unlockIsOnline, setUnlockIsOnline] = useState(/** @type {boolean|null} */ (null));
   const [operatorStaffId, setOperatorStaffId] = useState("");
   const [operatorPin, setOperatorPin] = useState("");
   const [verifiedOperator, setVerifiedOperator] = useState(/** @type {HposVerifiedOperatorExpected | null} */ (null));
@@ -1295,24 +1389,26 @@ export default function HposTerminal() {
   const [tillSessionExpiresAt, setTillSessionExpiresAt] = useState(/** @type {number | null} */ (null));
   const [operatorBusy, setOperatorBusy] = useState(false);
   const [showOperatorUnlock, setShowOperatorUnlock] = useState(false);
-  const searchRef = useRef(null);
+  // This ref is attached to the product search input below and focused after
+  // scans and completed receipts restore the normal sale screen.
+  const searchRef = useRef(/** @type {HTMLInputElement | null} */ (null));
   // In-app search keyboard for touch-only tills (no physical keyboard, no
   // OSK dependency). Non-modal: product taps and barcode-wedge focus stay live.
   const [showSearchKeyboard, setShowSearchKeyboard] = useState(false);
-  const searchKeyboardRef = useRef(null);
-  const searchKeyboardToggleRef = useRef(null);
-  const searchClearRef = useRef(null);
+  const searchKeyboardRef = useRef(/** @type {HTMLDivElement | null} */ (null));
+  const searchKeyboardToggleRef = useRef(/** @type {HTMLButtonElement | null} */ (null));
+  const searchClearRef = useRef(/** @type {HTMLButtonElement | null} */ (null));
   // Dialog a11y refs for the shift-start and modifier overlays (item 11):
   // focus enters on open, Tab stays inside, focus returns to the opener.
-  const shiftDialogRef = useRef(null);
-  const modifierDialogRef = useRef(null);
-  const barcodeDecoderRef = useRef(null);
+  const shiftDialogRef = useRef(/** @type {HTMLDivElement | null} */ (null));
+  const modifierDialogRef = useRef(/** @type {HTMLDivElement | null} */ (null));
+  const barcodeDecoderRef = useRef(/** @type {ReturnType<typeof createBarcodeScannerDecoder> | null} */ (null));
   const [scannerSettings, setScannerSettings] = useState(/** @type {HposTerminalHardwareSettingsExpectedView} */ ({}));
   const [terminalHardware, setTerminalHardware] = useState(/** @type {HposTerminalHardwareSettingsExpectedView} */ ({}));
   const [terminalSending, setTerminalSending] = useState(false);
   const [terminalMessage, setTerminalMessage] = useState('');
-  const scannerIdleTimerRef = useRef(null);
-  const scannerFeedbackTimerRef = useRef(null);
+  const scannerIdleTimerRef = useRef(/** @type {number | null} */ (null));
+  const scannerFeedbackTimerRef = useRef(/** @type {number | null} */ (null));
   const tillActivityLastSentAtRef = useRef(0);
   const submitEnvelopeRef = useRef(/** @type {HposPendingSubmitEnvelope | null} */ (null));
   const [recoveredAttempt, setRecoveredAttempt] = useState(/** @type {HposPendingSubmitRecoveryAttempt|null} */ (null))
@@ -1348,7 +1444,7 @@ export default function HposTerminal() {
 
   useEffect(() => {
     let active = true;
-    Promise.resolve(window.api?.pos?.getHardwareSettings?.()).then((settings) => {
+    Promise.resolve(tillApi?.pos?.getHardwareSettings?.()).then((settings) => {
       if (active && settings && typeof settings === "object") {
         setScannerSettings(settings);
         setTerminalHardware(settings);
@@ -1365,11 +1461,13 @@ export default function HposTerminal() {
   // timeout reuses it instead of minting a fresh one, so the machine cannot
   // read the retry as a second charge. Thrown away when the payment ends or
   // the amount/method changes.
-  const terminalRequestRef = useRef({ key: null, fingerprint: '' });
+  // The key is null before a request, then comes from randomUUID or the local fallback.
+  const terminalRequestRef = useRef(/** @type {{key: string|null, fingerprint: string}} */ ({ key: null, fingerprint: '' }));
   useEffect(() => {
     if (!showPayment) terminalRequestRef.current = { key: null, fingerprint: '' };
   }, [showPayment]);
 
+  /** @param {unknown} amount */
   const sendTotalToCardMachine = async (amount) => {
     const due = Number(amount);
     if (!Number.isFinite(due) || due <= 0) {
@@ -1387,9 +1485,11 @@ export default function HposTerminal() {
           : `pos-terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         terminalRequestRef.current = { key: requestId, fingerprint };
       }
-      const result = await window.api?.pos?.sendPaymentTerminalTotal?.({ amount: due, request_id: requestId });
+      const result = /** @type {HposPaymentTerminalExpectedView|null|undefined} */ (await tillApi?.pos?.sendPaymentTerminalTotal?.({ amount: due, request_id: requestId }));
       if (result?.success) {
-        const approval = result.approval_code || result.reference || '';
+        // Main forwards these bridge values without runtime validation; the
+        // existing terminal UI expects text at this precise display/input use.
+        const approval = (/** @type {string|null|undefined} */ (result.approval_code)) || (/** @type {string|null|undefined} */ (result.reference)) || '';
         if (approval) {
           setPaymentReferences((previous) => {
             const target = paymentMethod === 'split' ? splitRemainderMethod : paymentMethod;
@@ -1397,12 +1497,12 @@ export default function HposTerminal() {
             return { ...previous, card: approval };
           });
         }
-        setTerminalMessage(result.message || `Total sent to the card machine${approval ? ` — approval ${approval}` : ''}.`);
+        setTerminalMessage((/** @type {string|null|undefined} */ (result.message)) || `Total sent to the card machine${approval ? ` — approval ${approval}` : ''}.`);
       } else {
-        setTerminalMessage(result?.error || 'The card machine did not approve the amount.');
+        setTerminalMessage((/** @type {string|null|undefined} */ (result?.error)) || 'The card machine did not approve the amount.');
       }
     } catch (terminalError) {
-      setTerminalMessage(terminalError?.message || 'Could not reach the card machine bridge.');
+      setTerminalMessage((/** @type {{message?: string}|null|undefined} */ (terminalError))?.message || 'Could not reach the card machine bridge.');
     } finally {
       setTerminalSending(false);
     }
@@ -1410,15 +1510,18 @@ export default function HposTerminal() {
 
   useEffect(() => {
     let active = true;
-    window.api?.pos?.getPendingPosSubmitAttempt?.()
+    tillApi?.pos?.getPendingPosSubmitAttempt?.()
       .then((rawAttempt) => {
         if (!active) return;
         const attempt = /** @type {HposSubmitRecoveryResult} */ (rawAttempt);
         if (attempt?.success === false) {
           // The main IPC forwards its caught message without validating its type.
-          setSubmitError(attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+          // The main recovery handler forwards its caught message value here;
+          // this expected display text preserves the existing fallback.
+          setSubmitError(/** @type {string} */ (attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt."));
           return;
         }
+        if (localAuthority) setLocalRecoveryBlocked(false);
         if (attempt?.resolved) {
           setSubmitNotice(attempt.message || "The original sale was already recorded and has been safely recovered.");
           return;
@@ -1434,7 +1537,7 @@ export default function HposTerminal() {
         setRecoveredAttempt(attempt);
       })
       .catch((error) => {
-        if (active) setSubmitError((/** @type {{message?: unknown}|null|undefined} */ (error))?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+        if (active) setSubmitError(/** @type {string} */ ((/** @type {{message?: unknown}|null|undefined} */ (error))?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt."));
       })
       .finally(() => {
         // Basket-restore waits for this: payment recovery always wins over
@@ -1453,19 +1556,21 @@ export default function HposTerminal() {
     if (recoveryChecking) return;
     setRecoveryChecking(true);
     try {
-      const attempt = /** @type {HposSubmitRecoveryResult} */ (await window.api?.pos?.getPendingPosSubmitAttempt?.());
+      const attempt = /** @type {HposSubmitRecoveryResult} */ (await tillApi?.pos?.getPendingPosSubmitAttempt?.());
       if (attempt?.success === false) {
         // Preserve the current message/fallback expression; this is not IPC validation.
-        setSubmitError(attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+        setSubmitError(/** @type {string} */ (attempt.error || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt."));
         return;
       }
       if (attempt?.resolved) {
+        if (localAuthority) setLocalRecoveryBlocked(false);
         submitEnvelopeRef.current = null;
         setRecoveredAttempt(null);
         setSubmitNotice(attempt.message || "The original sale was already recorded and has been safely recovered.");
         return;
       }
       if (!attempt?.submitIntentId) {
+        if (localAuthority) setLocalRecoveryBlocked(false);
         submitEnvelopeRef.current = null;
         setRecoveredAttempt(null);
         setSubmitNotice("Re-checked Sales: no unresolved earlier sale. You can continue selling.");
@@ -1480,7 +1585,7 @@ export default function HposTerminal() {
       };
       setRecoveredAttempt(attempt);
     } catch (error) {
-      setSubmitError((/** @type {{message?: unknown}|null|undefined} */ (error))?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt.");
+      setSubmitError(/** @type {string} */ ((/** @type {{message?: unknown}|null|undefined} */ (error))?.message || "Sale recovery is unavailable. Do not create a new sale; contact a manager to reconcile the original attempt."));
     } finally {
       setRecoveryChecking(false);
     }
@@ -1503,13 +1608,15 @@ export default function HposTerminal() {
 
   const outletRestricted = Array.isArray(allowedOutletIds);
   const outletIsAllowed = useCallback(
+    /** @param {string | null} outletId */
     (outletId) =>
       !outletRestricted ||
-      (Boolean(outletId) && allowedOutletIds.includes(outletId)),
+      // Outlet IDs are expected strings after this existing truthiness guard; this adds no runtime validation.
+      (Boolean(outletId) && allowedOutletIds.includes(/** @type {string} */ (outletId))),
     [allowedOutletIds, outletRestricted],
   );
 
-  const reportScanner = useCallback((feedback) => {
+  const reportScanner = useCallback((/** @type {HposScannerFeedback | null | undefined} */ feedback) => {
     if (scannerFeedbackTimerRef.current)
       window.clearTimeout(scannerFeedbackTimerRef.current);
     setScannerFeedback(feedback || null);
@@ -1531,7 +1638,7 @@ export default function HposTerminal() {
 
   const clearTillOperatorState = useCallback(
     ({ showUnlock = false, message = "", notifyMain = true } = {}) => {
-      if (notifyMain) void window.api?.pos?.lockSharedTillOperator?.();
+      if (notifyMain) void tillApi?.pos?.lockSharedTillOperator?.();
       setVerifiedOperator(null);
       setOperatorStaffId("");
       setOperatorPin("");
@@ -1558,11 +1665,14 @@ export default function HposTerminal() {
     const timestamp = Date.now();
     if (timestamp - tillActivityLastSentAtRef.current < 10000) return;
     tillActivityLastSentAtRef.current = timestamp;
-    void Promise.resolve(window.api?.pos?.touchSharedTillOperator?.({
+    void Promise.resolve(tillApi?.pos?.touchSharedTillOperator?.({
       outlet_id: selectedOutlet.id,
       staff_id: verifiedOperator.id,
       shift_id: currentShift?.id,
-    })).then((result) => {
+    })).then((rawResult) => {
+      // The main IPC forwards this result; the expected consumer view does
+      // not validate the session payload at runtime.
+      const result = /** @type {HposTouchSharedTillOperatorExpected|null|undefined} */ (rawResult);
       if (result?.success && result.session) {
         setOperatorLastActivityAt(result.session.lastActivityAt || timestamp);
         setTillSessionExpiresAt(result.session.expiresAt || null);
@@ -1629,6 +1739,7 @@ export default function HposTerminal() {
   }, [tillEntitlements]);
 
   const chooseTerminalOutlet = useCallback(
+    /** @param {string} outletId */
     (outletId) => {
       if (outletId && !outletIsAllowed(outletId)) {
         reportScanner({
@@ -1745,9 +1856,9 @@ export default function HposTerminal() {
       return;
     }
     const intentKey = holdIntentKey(lodgeId, selectedOutlet.id, draftOperatorId);
-    const intent = readJsonSetting(intentKey);
+    const intent = /** @type {HposPersistedHoldIntentExpected|null|undefined} */ (readJsonSetting(intentKey));
     if (intent && intent.outletId === selectedOutlet.id) {
-      const decision = reconcileHoldIntent(intent, openTabsBrief);
+      const decision = /** @type {HposHoldIntentDecisionExpected} */ (reconcileHoldIntent(intent, openTabsBrief));
       if (decision.outcome === "confirmed") {
         writeJsonSetting(intentKey, null);
         setSuccessMessage(`“${decision.tab.name || "Open tab"}” was held before the interruption. Resume it from Open tabs.`);
@@ -1798,9 +1909,11 @@ export default function HposTerminal() {
     setTabName(typeof draft.tabName === "string" ? draft.tabName : "");
     setTableName(typeof draft.tableName === "string" ? draft.tableName : "");
     if (draft.customerId && customers.some((customer) => customer.id === draft.customerId)) {
-      setSelectedCustomerId(draft.customerId);
+      setSelectedCustomerId(/** @type {string} */ (draft.customerId));
     }
-    setCart(lines);
+    // The helper drops unavailable items and refreshes prices but deliberately
+    // does not validate persisted quantity/modifier payloads.
+    setCart(/** @type {HposCartLine[]} */ (lines));
     writeJsonSetting(scope, null);
     setPendingRestore(null);
     const notes = [];
@@ -1817,49 +1930,40 @@ export default function HposTerminal() {
       setLoading(true);
       setLoadingStage("menu, stock and team");
       setMenuLoadFailed(false);
+      let catalogueLoaded = false;
       try {
-        const [
-          data,
-          outletRows,
-          customerRows,
-          promotionRows,
-          tabRows,
-          recipeRows,
-          staffRows,
-          readinessResult,
-        ] = await Promise.all([
-          window.api?.pos?.getMenuItems?.() ?? [],
-          window.api?.outlets?.getAll?.() ?? [],
-          tillEntitlements.canAccounts ? (window.api?.pos?.getCustomers?.() ?? []) : [],
-          tillEntitlements.canPromos ? (window.api?.pos?.getPromotions?.() ?? []) : [],
+        const results = await Promise.allSettled([
+          tillApi?.pos?.getMenuItems?.(),
+          tillApi?.outlets?.getAll?.() ?? [],
+          tillEntitlements.canAccounts ? (tillApi?.pos?.getCustomers?.() ?? []) : [],
+          tillEntitlements.canPromos ? (tillApi?.pos?.getPromotions?.() ?? []) : [],
           // Same authoritative read as Open Tabs, Cash & close and the rail
           // badge: active-filtered server truth plus pending local estimates.
           // An unfiltered read would also merge non-pending local orphans and
           // inflate this count past what Open Tabs shows.
-          window.api?.pos?.getTabs?.({ status: "active" }) ?? [],
+          tillApi?.pos?.getTabs?.({ status: "active" }) ?? [],
           // Recipes are an entitled capability: base Bar loads server
           // readiness instead (outcome only, no disclosure).
-          !barOnly || canUseRecipes ? (window.api?.pos?.getRecipes?.() ?? []) : [],
-          window.api?.pos?.getStaff?.() ?? [],
-          window.api?.pos?.getMenuStockReadiness?.() ?? { success: false },
+          !barOnly || canUseRecipes ? (tillApi?.pos?.getRecipes?.() ?? []) : [],
+          tillApi?.pos?.getStaff?.() ?? [],
+          tillApi?.pos?.getMenuStockReadiness?.() ?? { success: false },
         ]);
         if (!active) return;
-        const menuReadStatus = /** @type {Pick<import('../../../../shared/desktopIpcContracts.js').UnavailablePosRead, '_available' | '_source' | '_error'>} */ (data);
-        if (!Array.isArray(data) && menuReadStatus?._available === false && menuReadStatus._source === 'unavailable') {
-          // `_error` stays unknown at IPC; template coercion matches the
-          // existing Error-message conversion without validating the payload.
-          const readError = menuReadStatus._error;
-          throw new Error(`${readError || 'The product catalogue could not be verified. Refresh before selling.'}`);
-        }
-        setMenuItems(Array.isArray(data) ? data : []);
+        const coreRead = resolveTillCoreReads(results);
+        const data = coreRead.menu;
+        const [, outletRows, customerRows, promotionRows, tabRows, recipeRows, staffRows, readinessResult] = coreRead.values;
+        setMenuItems(data);
+        catalogueLoaded = true;
+        if (coreRead.serviceError) throw coreRead.serviceError;
         // Approved cached readiness: a failed read falls back to last
         // verified data (labeled stale); with no cache selling blocks.
-        const readinessCache = readJsonSetting(readinessCacheKey(lodgeId));
+        const readinessCache = localAuthority ? null : readJsonSetting(readinessCacheKey(lodgeId));
         const resolved = resolveReadinessState(readinessResult, readinessCache);
         if (resolved.status === "ready") {
+          const readinessRows = /** @type {HposStockReadinessFetchExpected} */ (readinessResult).rows;
           writeJsonSetting(readinessCacheKey(lodgeId), {
             at: Date.now(),
-            rows: Array.isArray(readinessResult.rows) ? readinessResult.rows : [],
+            rows: Array.isArray(readinessRows) ? readinessRows : [],
           });
         }
         if (resolved.status === "ready" || resolved.status === "stale") {
@@ -1867,20 +1971,29 @@ export default function HposTerminal() {
           // till's mesh-imported sales count from the first paint.
           // Promise.resolve: if this IPC binding is ever missing, resolve
           // empty instead of throwing and trapping the Till in "loading".
+          /** @type {HposStockReadinessBase} */
           const base = { status: resolved.status, map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt || null };
-          Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).then((usageResult) => {
+          Promise.resolve(tillApi?.pos?.getUnconfirmedPosUsage?.()).then((usageResult) => {
             if (!active) return;
-            const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
-            const orderCount = Number(usageResult?.orderCount || 0);
-            const meshOrderCount = Number(usageResult?.meshOrderCount || 0);
-            const meshDeliveryCount = Number(usageResult?.meshDeliveryCount || 0);
+            // Expected view from main's queue summarizer; count values remain
+            // unknown until Number preserves the existing coercion behavior.
+            const pendingUsage = /** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult);
+            const rawUsage = pendingUsage?.usage;
+            const usage = rawUsage && typeof rawUsage === 'object'
+              ? /** @type {Record<string, unknown>} */ (rawUsage)
+              : {};
+            const orderCount = Number(pendingUsage?.orderCount || 0);
+            const meshOrderCount = Number(pendingUsage?.meshOrderCount || 0);
+            const meshDeliveryCount = Number(pendingUsage?.meshDeliveryCount || 0);
             if (!(orderCount > 0)) {
               setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
               return;
             }
-            const counts = new Map();
+            const counts = new Map(base.counts || []);
             for (const [id, entry] of base.counts || []) {
-              const used = Number(usage[id] || 0);
+              // Menu IDs are SQL UUID strings; this expected lookup key does
+              // not validate IDs read from cache or the RPC response.
+              const used = Number(usage[/** @type {string} */ (id)] || 0);
               counts.set(id, used ? { ...entry, qty: Number(entry?.qty || 0) - used } : entry);
             }
             setStockReadiness({ ...base, counts, pendingOrders: orderCount, meshOrders: meshOrderCount, meshDeliveries: meshDeliveryCount });
@@ -1888,22 +2001,26 @@ export default function HposTerminal() {
             if (active) setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
           });
         } else {
+          if (localAuthority) throw new Error('The local Bar stock check could not be verified. Refresh before selling.');
           // First paint with no verified data: same local fallback so the
           // bar can sell immediately instead of pausing on an empty check.
           const fallbackRows = Array.isArray(data) ? data : [];
           const fallbackRecipes = new Set(
-            (Array.isArray(recipeRows) ? recipeRows : [])
+            (Array.isArray(recipeRows) ? /** @type {HposRecipeExpected[]} */ (recipeRows) : [])
               .filter((recipe) => recipe.menu_item_id && (recipe.ingredients || []).some((ingredient) => Number(ingredient.quantity || 0) > 0))
               .map((recipe) => recipe.menu_item_id),
           );
-          const invResult = await Promise.resolve(window.api?.inventory?.getItems?.()).catch(() => []);
-          const invRows = Array.isArray(invResult) ? invResult : (Array.isArray(invResult?.rows) ? invResult.rows : (Array.isArray(invResult?.items) ? invResult.items : []));
+          const invResult = await Promise.resolve(tillApi?.inventory?.getItems?.()).catch(() => []);
+          const inventoryResult = /** @type {HposInventoryItemsExpected|null|undefined} */ (invResult);
+          const invRows = Array.isArray(invResult) ? invResult : (Array.isArray(inventoryResult?.rows) ? inventoryResult.rows : (Array.isArray(inventoryResult?.items) ? inventoryResult.items : []));
           const stockById = new Map();
           for (const row of invRows) {
             const qty = Number(row?.current_stock);
             if (row?.id && Number.isFinite(qty)) stockById.set(String(row.id), qty);
           }
+          /** @type {HposStockReadinessMap} */
           const fallbackMap = new Map();
+          /** @type {HposStockReadinessCounts} */
           const fallbackCounts = new Map();
           for (const item of fallbackRows) {
             if (!item?.id) continue;
@@ -1915,20 +2032,28 @@ export default function HposTerminal() {
             fallbackCounts.set(item.id, { qty: stockById.get(stockId) });
           }
           if (fallbackCounts.size > 0) {
+            /** @type {HposStockReadinessBase} */
             const base = { status: "local", map: fallbackMap, counts: fallbackCounts, cachedAt: null };
-            const usageResult = await Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
+            const usageResult = await Promise.resolve(tillApi?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
             if (!active) return;
-            const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
+            // Expected view of main's queue summary only; its properties and
+            // persisted queue data are not runtime-validated here.
+            const usage = (/** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult))?.usage && typeof (/** @type {HposUnconfirmedPosUsageExpected} */ (usageResult)).usage === 'object'
+              ? /** @type {Record<string, unknown>} */ ((/** @type {HposUnconfirmedPosUsageExpected} */ (usageResult)).usage)
+              : {};
+            /** @type {HposStockReadinessCounts} */
             const adjusted = new Map();
             for (const [id, entry] of base.counts) {
-              const used = Number(usage[id] || 0);
+              // Menu IDs are SQL UUID strings; retain the original Map key
+              // and bracket lookup so malformed persisted values coerce as before.
+              const used = Number(usage[/** @type {string} */ (id)] || 0);
               adjusted.set(id, used ? { ...entry, qty: Number(entry?.qty || 0) - used } : entry);
             }
             setStockReadiness({
               ...base, counts: adjusted,
-              pendingOrders: Number(usageResult?.orderCount || 0),
-              meshOrders: Number(usageResult?.meshOrderCount || 0),
-              meshDeliveries: Number(usageResult?.meshDeliveryCount || 0),
+              pendingOrders: Number((/** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult))?.orderCount || 0),
+              meshOrders: Number((/** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult))?.meshOrderCount || 0),
+              meshDeliveries: Number((/** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult))?.meshDeliveryCount || 0),
             });
           } else {
             if (!active) return;
@@ -1937,7 +2062,7 @@ export default function HposTerminal() {
         }
         setRecipeMenuItemIds(
           new Set(
-            (Array.isArray(recipeRows) ? recipeRows : [])
+            (Array.isArray(recipeRows) ? /** @type {HposRecipeExpected[]} */ (recipeRows) : [])
               .filter(
                 (recipe) =>
                   recipe.menu_item_id &&
@@ -1955,7 +2080,7 @@ export default function HposTerminal() {
           ? /** @type {HposOutletRecord[]} */ (outletRows)
           : [];
         setOutlets(nextOutlets);
-        const resumedTab = (Array.isArray(tabRows) ? tabRows : []).find(
+        const resumedTab = (Array.isArray(tabRows) ? /** @type {HposResumedTabExpected[]} */ (tabRows) : []).find(
           (tab) => tab.id === location.state?.tabId,
         );
         setOpenTabNames(
@@ -2021,10 +2146,12 @@ export default function HposTerminal() {
         );
         if (preferredOutletId && !preferredOutlet)
           writeTerminalOutletPreference(lodgeId, null);
-        setCustomers(Array.isArray(customerRows) ? customerRows : []);
-        setPromotions(Array.isArray(promotionRows) ? promotionRows : []);
+        // Preserve the existing container guard; row contents stay unvalidated.
+        setCustomers(/** @type {HposCustomerAccountExpectedView[]} */ (Array.isArray(customerRows) ? customerRows : []));
+        // The existing array guard preserves the loader fallback; row contents remain unvalidated.
+        setPromotions(/** @type {HposPromotionExpectedView[]} */ (Array.isArray(promotionRows) ? promotionRows : []));
         setServiceStaff(
-          (Array.isArray(staffRows) ? staffRows : []).filter(
+          (Array.isArray(staffRows) ? /** @type {HposTillStaffExpectedView[]} */ (staffRows) : []).filter(
             (row) =>
               !["suspended", "inactive"].includes(
                 String(row.status || "active").toLowerCase(),
@@ -2042,7 +2169,7 @@ export default function HposTerminal() {
           );
           setSelectedCustomerId(resumedTab.customer_id || "");
           setCart(
-            (Array.isArray(resumedTab.items) ? resumedTab.items : []).map(
+            /** @type {HposCartLine[]} */ ((Array.isArray(resumedTab.items) ? /** @type {HposResumedTabItemExpected[]} */ (resumedTab.items) : []).map(
               (item, index) => ({
                 ...item,
                 id: item.id || `${resumedTab.id}-${index}`,
@@ -2055,7 +2182,7 @@ export default function HposTerminal() {
                 template_kind: item.template_kind || null,
                 template_pack_size: item.template_pack_size || null,
               }),
-            ),
+            )),
           );
           // Identity header for the resumed tab. The version decides the
           // copy: a missing version means the tab changed underneath this
@@ -2101,18 +2228,21 @@ export default function HposTerminal() {
           });
         }
         if (active) setLoadingStage("sale options");
-        const groups = (await window.api?.pos?.getModifierGroups?.()) ?? [];
+        const groups = (await tillApi?.pos?.getModifierGroups?.()) ?? [];
         if (active) {
           setModifierGroups(Array.isArray(groups) ? groups : []);
           setModifiersReady("ready");
         }
       } catch (error) {
         if (active) {
-          setMenuLoadFailed(true);
+          const loadDetail = error instanceof Error ? error.message : "The POS read could not be completed.";
+          setMenuLoadFailed(!catalogueLoaded);
           setModifiersReady("failed");
           setStockReadiness({ status: "failed", map: new Map() });
           setSubmitError(
-            "Could not load the POS service data. Please refresh.",
+            catalogueLoaded
+              ? `Products loaded, but another POS service could not load. Refresh before selling. ${loadDetail}`
+              : `Products could not load. Retry loading products; if access is denied, sign out and sign in to this business again. ${loadDetail}`,
           );
         }
       }
@@ -2138,6 +2268,7 @@ export default function HposTerminal() {
     // on return to the tab) so a tab settled elsewhere stops counting here.
     // Count/brief/names use the exact predicates as the initial load above.
     let active = true;
+    /** @type {(tab: HposTableStatusExpectedView) => boolean} */
     const isOpenTabRow = (tab) =>
       ["open", "running", "ready", "delivered"].includes(
         String(tab.status || "").toLowerCase(),
@@ -2145,9 +2276,9 @@ export default function HposTerminal() {
     const refreshOpenTabs = async () => {
       if (document.visibilityState === "hidden") return;
       try {
-        const rows = (await window.api?.pos?.getTabs?.({ status: "active" })) ?? [];
+        const rows = (await tillApi?.pos?.getTabs?.({ status: "active" })) ?? [];
         if (!active || !Array.isArray(rows)) return;
-        const open = rows.filter(isOpenTabRow);
+        const open = /** @type {HposTableStatusExpectedView[]} */ (rows).filter(isOpenTabRow);
         setOpenTabCount(open.length);
         setOpenTabsBrief(
           open
@@ -2206,7 +2337,7 @@ export default function HposTerminal() {
           if (active) setDrawerGateNeeded(false);
           return;
         }
-        const state = await window.api?.pos?.getDrawerPeriodState?.(outletId);
+        const state = /** @type {HposDrawerPeriodStateExpected|null|undefined} */ (await tillApi?.pos?.getDrawerPeriodState?.(outletId));
         if (!active) return;
         const period = state?.period || null;
         setDrawerGateNeeded(
@@ -2236,7 +2367,7 @@ export default function HposTerminal() {
     let active = true;
     const loadLowStock = async () => {
       try {
-        const rows = await window.api?.inventory?.getLowStock?.() ?? [];
+        const rows = await tillApi?.inventory?.getLowStock?.() ?? [];
         if (!active || !Array.isArray(rows)) return;
         const map = /** @type {HposLowStockMap} */ ({});
         rows.forEach((row) => {
@@ -2280,16 +2411,17 @@ export default function HposTerminal() {
     // keep Till startup fast. The current-shift read is independent and always
     // runs: Bar must still load the correct operator/outlet shift.
     const tablePromise = shouldLoadTillTables(barOnly)
-      ? (window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id) ?? [])
+      ? (tillApi?.pos?.getTablesWithStatus?.(selectedOutlet.id) ?? [])
       : Promise.resolve([]);
     Promise.all([
       tablePromise,
-      window.api?.pos?.getCurrentShift?.(selectedOutlet.id, shiftCashierId) ??
+      tillApi?.pos?.getCurrentShift?.(selectedOutlet.id, shiftCashierId) ??
         null,
     ])
       .then(([tableRows, shift]) => {
         if (!active) return;
-        setTables(Array.isArray(tableRows) ? tableRows : []);
+        // The existing array guard narrows only the container; table rows are expected data, not validated.
+        setTables(Array.isArray(tableRows) ? /** @type {HposTableStatusExpectedView[]} */ (tableRows) : []);
         // getCurrentPosShift returns the raw DB/cache row or null. This is an
         // expected-data view only; cache and IPC payloads are not validated.
         setCurrentShift((/** @type {HposShiftExpected | null} */ (shift)) || null);
@@ -2321,7 +2453,7 @@ export default function HposTerminal() {
     ) return undefined;
     let active = true;
     /** @type {Promise<HposSharedTillSessionReadExpected | null | undefined>} */ (
-      Promise.resolve(window.api?.pos?.getSharedTillOperatorSession?.({
+      Promise.resolve(tillApi?.pos?.getSharedTillOperatorSession?.({
         outlet_id: selectedOutlet.id,
       }))
     ).then((result) => {
@@ -2374,15 +2506,15 @@ export default function HposTerminal() {
     setOperatorBusy(true);
     setSubmitError("");
     try {
-      const activated = await window.api?.pos?.activateSharedTillOperator?.({
+      const activated = /** @type {HposActivateSharedTillOperatorExpected|null|undefined} */ (await tillApi?.pos?.activateSharedTillOperator?.({
         staff_id: operatorStaffId,
         outlet_id: selectedOutlet.id,
         pin: operatorPin,
         idempotency_key: crypto.randomUUID(),
-      });
+      }));
       if (!activated?.success)
         throw new Error(
-          activated?.error || "Could not unlock Till for this staff member.",
+          /** @type {string} */ (activated?.error || "Could not unlock Till for this staff member."),
         );
       const operator =
         activated.staff ||
@@ -2413,7 +2545,7 @@ export default function HposTerminal() {
       );
     } catch (error) {
       clearTillOperatorState({ notifyMain: false });
-      setSubmitError(error?.message || "Could not activate this staff member.");
+      setSubmitError(/** @type {string} */ (error?.message || "Could not activate this staff member."));
     } finally {
       setOperatorBusy(false);
     }
@@ -2429,12 +2561,15 @@ export default function HposTerminal() {
   // sell at the Till while the server is unreachable, at their entered
   // price and clearly marked. Once the server is reachable again
   // (readiness fresh) they block with "Syncing" until the replay lands.
+  /** @param {HposTerminalMenuItem | null | undefined} item */
   const isProvisionalMenuItem = (item) =>
     String(item?.id || "").startsWith("pending:") || Boolean(item?._operation_key);
+  /** @type {(item: HposTerminalMenuItem) => boolean} */
   const isProvisionalBlocked = useCallback((item) => {
     if (!isProvisionalMenuItem(item)) return false;
     return stockReadiness.status === "ready";
   }, [stockReadiness]);
+  /** @type {(item: HposTerminalMenuItem) => boolean} */
   const hasStockSetupIssue = useCallback(
     (item) => {
       if (String(item?.stock_method || "").toLowerCase() === "non_stock") return false;
@@ -2453,6 +2588,7 @@ export default function HposTerminal() {
   // Provisional (offline-created, unconfirmed) rows report 'provisional':
   // callers sell them while the server is unreachable and block them with a
   // syncing message once readiness is fresh again.
+  /** @type {(item: HposTerminalMenuItem) => 'provisional' | 'ok' | 'issue' | 'unknown'} */
   const getStockIssue = useCallback(
     (item) => {
       if (isProvisionalMenuItem(item)) return "provisional";
@@ -2470,6 +2606,7 @@ export default function HposTerminal() {
   // Counted on-hand per sellable from readiness rows (direct items only).
   // Missing counts (old server, recipe, non-stock) keep today's behavior;
   // the server remains the backstop at Pay.
+  /** @type {(menuItemId: string | null, depletionQty: string | number | null | undefined) => number | null} */
   const salesLeftForCount = useCallback((menuItemId, depletionQty) => {
     const entry = stockReadiness.counts?.get(menuItemId);
     if (!entry) return null;
@@ -2478,6 +2615,7 @@ export default function HposTerminal() {
     if (!Number.isFinite(qty) || !Number.isFinite(perSale) || perSale <= 0) return null;
     return Math.floor(qty / perSale + 1e-9);
   }, [stockReadiness]);
+  /** @type {(menuItemId: string | null, depletionQty: string | number | null | undefined, itemName: string, newQty: number, category?: string | null) => string | null} */
   const onHandRefusal = useCallback((menuItemId, depletionQty, itemName, newQty, category = null) => {
     // Pool tables are box cash, never counted stock — even a table product
     // created long ago with a stock link must keep selling. (Recreate it as
@@ -2489,6 +2627,7 @@ export default function HposTerminal() {
     if (Number(newQty) > left) return `Only ${left} ${itemName || "product"} left in stock.`;
     return null;
   }, [salesLeftForCount]);
+  /** @type {(item: HposTerminalMenuItem) => boolean} */
   const isFinishedStock = useCallback((item) => {
     if (isPoolCategory(item?.category)) return false;
     const left = salesLeftForCount(item?.id, item?.depletion_qty || 1);
@@ -2497,6 +2636,7 @@ export default function HposTerminal() {
   // Provisional rows (saved offline) sell while the server is unreachable.
   // Once readiness is fresh the server is back and the replay owns them, so
   // new taps wait for the sync instead of failing at Pay.
+  /** @type {(item: HposTerminalMenuItem) => string | null} */
   const provisionalBlock = useCallback((item) => {
     if (getStockIssue(item) !== "provisional") return null;
     if (stockReadiness.status === "ready") {
@@ -2510,14 +2650,17 @@ export default function HposTerminal() {
   // tills selling the last bottles fail closed early ("Finished") instead of
   // over-selling. Server-confirmed sales are never double-counted: success
   // removes queue rows, and the Pay-time server check remains the backstop.
-  /** @param {HposStockReadinessBase} base */
+  /** @type {(base: HposStockReadinessBase) => Promise<void>} */
   const applyPendingUsage = useCallback(async (base) => {
     try {
-      const usageResult = await Promise.resolve(window.api?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
-      const usage = usageResult?.usage && typeof usageResult.usage === 'object' ? usageResult.usage : {};
-      const orderCount = Number(usageResult?.orderCount || 0);
-      const meshOrderCount = Number(usageResult?.meshOrderCount || 0);
-      const meshDeliveryCount = Number(usageResult?.meshDeliveryCount || 0);
+      const usageResult = await Promise.resolve(tillApi?.pos?.getUnconfirmedPosUsage?.()).catch(() => null);
+      const expectedUsage = /** @type {HposUnconfirmedPosUsageExpected|null|undefined} */ (usageResult);
+      const usage = expectedUsage?.usage && typeof expectedUsage.usage === 'object'
+        ? /** @type {Record<string, unknown>} */ (expectedUsage.usage)
+        : {};
+      const orderCount = Number(expectedUsage?.orderCount || 0);
+      const meshOrderCount = Number(expectedUsage?.meshOrderCount || 0);
+      const meshDeliveryCount = Number(expectedUsage?.meshDeliveryCount || 0);
       if (!(orderCount > 0)) {
         setStockReadiness({ ...base, pendingOrders: 0, meshOrders: 0, meshDeliveries: 0 });
         return;
@@ -2538,13 +2681,14 @@ export default function HposTerminal() {
   // sales, deliveries, and counts. Labeled "local", never verified — but the
   // bar keeps selling on it instead of pausing. Unknown items stay out of the
   // map so their cards ask for Refresh rather than guessing.
-  /** @param {HposTerminalMenuItem[]} menuList @param {Set<unknown>} recipeIds */
+  /** @type {(menuList: HposTerminalMenuItem[], recipeIds: Set<unknown>) => Promise<{map: HposStockReadinessMap, counts: HposStockReadinessCounts}|null>} */
   const buildLocalFallback = useCallback(async (menuList, recipeIds) => {
     try {
-      const invResult = await Promise.resolve(window.api?.inventory?.getItems?.()).catch(() => []);
+      const invResult = await Promise.resolve(tillApi?.inventory?.getItems?.()).catch(() => []);
+      const inventoryResult = /** @type {HposInventoryItemsExpected|null|undefined} */ (invResult);
       const invRows = Array.isArray(invResult)
         ? invResult
-        : (Array.isArray(invResult?.rows) ? invResult.rows : (Array.isArray(invResult?.items) ? invResult.items : []));
+        : (Array.isArray(inventoryResult?.rows) ? inventoryResult.rows : (Array.isArray(inventoryResult?.items) ? inventoryResult.items : []));
       if (invRows.length === 0) return null;
       const stockById = new Map();
       for (const row of invRows) {
@@ -2587,17 +2731,19 @@ export default function HposTerminal() {
     if (!silent) setStockReadiness((current) => ({ status: "loading", map: new Map(), counts: new Map(), cachedAt: null }));
     if (!silent) setSubmitError("");
     try {
-      const result = await window.api?.pos?.getMenuStockReadiness?.();
-      const resolved = resolveReadinessState(result, readJsonSetting(readinessCacheKey(lodgeId)));
+      const result = await tillApi?.pos?.getMenuStockReadiness?.();
+      const readinessResult = /** @type {HposStockReadinessFetchExpected|null|undefined} */ (result);
+      const resolved = resolveReadinessState(readinessResult, localAuthority ? null : readJsonSetting(readinessCacheKey(lodgeId)));
       if (resolved.status === "ready") {
         writeJsonSetting(readinessCacheKey(lodgeId), {
           at: Date.now(),
-          rows: Array.isArray(result.rows) ? result.rows : [],
+          rows: Array.isArray(readinessResult?.rows) ? readinessResult.rows : [],
         });
         await applyPendingUsage({ status: "ready", map: resolved.map, counts: resolved.counts, cachedAt: null });
       } else if (resolved.status === "stale") {
         await applyPendingUsage({ status: "stale", map: resolved.map, counts: resolved.counts, cachedAt: resolved.cachedAt });
       } else {
+        if (localAuthority) throw new Error('The local Bar stock check could not be verified. Refresh before selling.');
         // Server check failed: fall back to this till's last-known stock so
         // the bar keeps selling, clearly labeled. Only a truly empty
         // computer (no stock data at all) still pauses selling.
@@ -2609,14 +2755,14 @@ export default function HposTerminal() {
           setSubmitError(
             resolved.code === "backend-update-required" && resolved.error
               ? resolved.error
-              : result?.error || "Stock status could not be verified. Refresh before selling.",
+              : readinessResult?.error || "Stock status could not be verified. Refresh before selling.",
           );
         }
       }
     } catch (error) {
-      if (silent) return;
+      if (silent && !localAuthority) return;
       setStockReadiness({ status: "failed", map: new Map(), counts: new Map() });
-      setSubmitError(error?.message || "Stock status could not be verified. Refresh before selling.");
+      setSubmitError(/** @type {string} */ (error?.message || "Stock status could not be verified. Refresh before selling."));
     }
   }, [applyPendingUsage, buildLocalFallback, lodgeId, menuItems, recipeMenuItemIds]);
 
@@ -2625,16 +2771,18 @@ export default function HposTerminal() {
   // on the merge marker so ordinary status traffic never triggers server reads.
   const lastMeshMergeRef = useRef(null);
   useEffect(() => {
-    const off = window.api?.sync?.onStatusChanged?.((next) => {
+    const off = tillApi?.sync?.onStatusChanged?.((next) => {
       const marker = next?.mesh?.lastQueueMergeAt || null;
       if (!marker || marker === lastMeshMergeRef.current) return;
       lastMeshMergeRef.current = marker;
       refreshReadiness({ silent: true }).catch(() => {});
     });
-    Promise.resolve(window.api?.sync?.getStatus?.()).then((status) => {
+    Promise.resolve(tillApi?.sync?.getStatus?.()).then((status) => {
       if (status?.mesh?.lastQueueMergeAt) lastMeshMergeRef.current = status.mesh.lastQueueMergeAt;
     }).catch(() => {});
-    return () => off?.();
+    // Keep the preload cleanup's actual return value and original listener;
+    // React ignores it, and this assertion is erased at runtime.
+    return () => /** @type {void} */ (off?.());
   }, [refreshReadiness]);
   // Category order is operator-driven (pins + measured sellers first), never
   // hardcoded per drink type: every business gets its own fast picks.
@@ -2657,7 +2805,9 @@ export default function HposTerminal() {
   // Live product counts per chip so the operator can judge a category
   // before scrolling into it (All always shows the full sellable set).
   const categoryCounts = useMemo(() => {
-    const counts = { All: tillMenuItems.length };
+    // Categories come from the current menu; special chips use the same map.
+    // Menu categories are dynamic and object keys may resolve inherited values.
+    const counts = /** @type {Record<string, unknown>} */ ({ All: tillMenuItems.length });
     for (const item of tillMenuItems) {
       const key = item.category;
       if (key) counts[key] = (counts[key] || 0) + 1;
@@ -2797,6 +2947,7 @@ export default function HposTerminal() {
 
   /** Resolve an exact barcode against the currently selected Till outlet. */
   const resolveBarcodeScan = useCallback(
+    /** @param {unknown} query */
     (query) => {
       const barcode = normalizeBarcode(query);
       if (!barcode) return { success: false, code: "empty_scan" };
@@ -2922,7 +3073,8 @@ export default function HposTerminal() {
   // A wedge scanner is a keyboard, so capture fast keystrokes at page level
   // when Till controls have focus. Editable payment/PIN fields suspend it.
   useEffect(() => {
-    const decoder = barcodeDecoderRef.current;
+    // The decoder is created synchronously before this effect is registered.
+    const decoder = /** @type {ReturnType<typeof createBarcodeScannerDecoder>} */ (barcodeDecoderRef.current);
     const suspended = () =>
       showPayment ||
       showShiftStart ||
@@ -2935,6 +3087,7 @@ export default function HposTerminal() {
         scannerIdleTimerRef.current = null;
       }
     };
+    /** @param {KeyboardEvent} event */
     const onKeyDown = (event) => {
       if (scannerSettings.barcode_scanner_enabled === false) {
         decoder.reset();
@@ -2954,10 +3107,12 @@ export default function HposTerminal() {
       if (outcome.type === "buffered") {
         if (event.key?.length === 1) event.preventDefault();
         clearIdleTimer();
+        // Keep the original value passed to setTimeout; its runtime coercion
+        // remains in place for settings supplied by the device configuration.
         scannerIdleTimerRef.current = window.setTimeout(() => {
           const idleResult = decoder.flush("idle");
           if (idleResult.type === "completed") handleCompletedScan(idleResult.result);
-        }, decoder.getOptions().idleCompleteMs);
+        }, /** @type {number} */ (decoder.getOptions().idleCompleteMs));
         return;
       }
       if (outcome.type === "completed") {
@@ -2978,6 +3133,7 @@ export default function HposTerminal() {
   // Barcode / exact name search: Enter completes a manual search or a scan
   // that happened while the search field was focused.
   const tryAddBySearch = useCallback(
+    /** @param {string} query */
     (query) => {
       const q = String(query || "").trim();
       if (!q) return false;
@@ -3129,8 +3285,8 @@ export default function HposTerminal() {
 
   // Successful payment: record recent sold chips + local shift-pace items
   // (device-local estimate only — never a financial report).
-  const noteSaleForShift = useCallback((lines) => {
-    const ids = [];
+  const noteSaleForShift = useCallback((/** @type {HposCartLine[]} */ lines) => {
+    const ids = /** @type {string[]} */ ([]);
     for (const line of lines || []) {
       const id = String(line?.menu_item_id || line?.id || "");
       if (id && !ids.includes(id)) ids.push(id);
@@ -3398,7 +3554,7 @@ export default function HposTerminal() {
             0,
           )
       : subtotal;
-  const promotionDiscount = selectedPromotion
+  const cloudPromotionDiscount = selectedPromotion
     ? Math.min(
         promotionBase,
         selectedPromotion.discount_type === "percent"
@@ -3407,11 +3563,17 @@ export default function HposTerminal() {
           : Number(selectedPromotion.discount_value || 0),
       )
     : 0;
+  const localPriceCheck = (() => {
+    if (!localAuthority || !cart.length) return { estimate: null, error: '' };
+    try { return { estimate: estimateNativeHposTill(cart, menuItems, selectedPromotion), error: '' }; }
+    catch (cause) { return { estimate: null, error: cause?.message || 'Refresh the current local prices before taking payment.' }; }
+  })();
+  const promotionDiscount = localAuthority ? Number(localPriceCheck.estimate?.promotionDiscountCents || 0n) / 100 : cloudPromotionDiscount;
   const taxRate =
     settings?.vat_enabled === true ? Number(settings?.vat_rate || 0) / 100 : 0;
-  const tax = (subtotal - promotionDiscount) * taxRate;
+  const tax = localAuthority ? Number(localPriceCheck.estimate?.taxCents || 0n) / 100 : (subtotal - promotionDiscount) * taxRate;
   const tipTotal = Math.max(0, Number(tipAmount || 0));
-  const total = subtotal - promotionDiscount + tax + tipTotal;
+  const total = localAuthority ? Number(localPriceCheck.estimate?.totalCents || 0n) / 100 + tipTotal : subtotal - promotionDiscount + tax + tipTotal;
 
   // Feed the guest-facing screen live: the Bar Till previously never pushed
   // its basket, so the customer display sat on Welcome all sale. Same local
@@ -3419,7 +3581,7 @@ export default function HposTerminal() {
   // the other effects) because the totals below must exist first.
   useEffect(() => {
     if (!selectedOutlet?.id) return;
-    window.api?.pos?.updateCustomerDisplay?.({
+    tillApi?.pos?.updateCustomerDisplay?.({
       outlet_id: selectedOutlet.id,
       table_name: tabName?.trim() || tableName?.trim() || null,
       staff_name: (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || null,
@@ -3482,12 +3644,14 @@ export default function HposTerminal() {
     ) || null;
   const selectedOpenTab = selectedTable?.tab || null;
 
+  /** @param {unknown} n Existing Number(...) coercion is retained for display values. */
   const fmt = (n) =>
     Number(n || 0).toLocaleString("en-US", {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
 
+  /** @param {string} nextTableName */
   const applyTableSwitch = (nextTableName) => {
     const table = tables.find(
       (row) => String(row.name || row.table_number || "") === nextTableName,
@@ -3518,6 +3682,7 @@ export default function HposTerminal() {
     }
   };
 
+  /** @param {string} nextTableName */
   const selectTable = (nextTableName) => {
     if (cart.length > 0 && nextTableName !== tableName) {
       // The <select> stays controlled by tableName, so it snaps back until
@@ -3539,24 +3704,28 @@ export default function HposTerminal() {
     setShiftBusy(true);
     setSubmitError("");
     try {
-      const result = await window.api?.pos?.openShift?.({
+      const rawResult = await tillApi?.pos?.openShift?.({
         outlet_id: selectedOutlet.id,
         cashier_id: user?.id || null,
         cashier_name: user?.name || user?.email || null,
         opening_float: Number(shiftFloat || 0),
       });
+      // Mirrors openPosShift's online/offline success variants and IPC failure envelope.
+      const result = /** @type {HposOpenShiftResultExpected | null | undefined} */ (/** @type {unknown} */ (rawResult));
       if (!result?.success)
         throw new Error(result?.error || "Could not start the shift.");
-      const shift = await window.api?.pos?.getCurrentShift?.(
+      const shift = await tillApi?.pos?.getCurrentShift?.(
         selectedOutlet.id,
         user?.id || null,
       );
-      setCurrentShift(shift || result.shift || result.row || null);
+      // Keep the historical row fallback; the current main producer returns shift.
+      const legacyRow = /** @type {HposShiftExpected | null | undefined} */ (result.row);
+      setCurrentShift(shift || result.shift || legacyRow || null);
       setShiftFloat("");
       setShowShiftStart(false);
       setSuccessMessage(result?.offline ? "Shift saved on this device. You can take payments offline; figures remain provisional until sync." : "Shift opened. You can now take payments.");
     } catch (error) {
-      setSubmitError(error?.message || "Could not start the shift.");
+      setSubmitError((/** @type {{message?: string} | null | undefined} */ (error))?.message || "Could not start the shift.");
     } finally {
       setShiftBusy(false);
     }
@@ -3621,7 +3790,7 @@ export default function HposTerminal() {
     setSubmitError("");
     setSuccessMessage("");
     try {
-      const result = await window.api?.pos?.saveTab?.({
+      const result = /** @type {HposSaveTabResultExpected|null|undefined} */ (await tillApi?.pos?.saveTab?.({
         id: holdTabId,
         expected_version: location.state?.tabVersion ?? selectedOpenTab?.tab_version ?? undefined,
         // Keep the loaded server version on the payload as well as the
@@ -3656,7 +3825,7 @@ export default function HposTerminal() {
           kitchen_station_id: line.kitchen_station_id,
         })),
         status: serviceMode === "table" ? "running" : "open",
-      });
+      }));
       if (result?.already_open && result?.tab)
         throw new Error(
           result.error ||
@@ -3688,9 +3857,9 @@ export default function HposTerminal() {
       );
       if (shouldLoadTillTables(barOnly)) {
         const latestTables = await Promise.resolve(
-          window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
+          tillApi?.pos?.getTablesWithStatus?.(selectedOutlet.id),
         ).catch(() => null);
-        if (Array.isArray(latestTables)) setTables(latestTables);
+        if (Array.isArray(latestTables)) setTables(/** @type {HposTableStatusExpectedView[]} */ (latestTables));
       }
     } catch (error) {
       setSubmitError(
@@ -3704,7 +3873,8 @@ export default function HposTerminal() {
   // Keyboard shortcuts — guarded by focus target and open overlays so a
   // keystroke aimed at an input or modal never hijacks the till (item 12).
   useEffect(() => {
-    const handler = (e) => {
+  /** @param {KeyboardEvent} e */
+  const handler = (e) => {
       const target = e.target;
       const tag = target?.tagName;
       const isEditable =
@@ -3806,6 +3976,7 @@ export default function HposTerminal() {
   // keyboard itself stay live so typing and barcode focus keep working.
   useEffect(() => {
     if (!showSearchKeyboard) return undefined;
+    /** @param {PointerEvent} event */
     const onPointerDown = (event) => {
       const target = event.target;
       if (searchKeyboardRef.current?.contains(target)) return;
@@ -3831,17 +4002,22 @@ export default function HposTerminal() {
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const raf = requestAnimationFrame(() => {
       const node = dialogRef.current;
-      const focusTarget = node?.querySelector(
+      // The authored modal contains only HTML form controls and HTML elements
+      // with tabindex matching this selector.
+      const focusTarget = /** @type {HTMLElement|null|undefined} */ (node?.querySelector(
         'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
+      ));
       focusTarget?.focus?.();
     });
+    /** @param {KeyboardEvent} event */
     const trapTab = (event) => {
       if (event.key !== "Tab" || !dialogRef.current) return;
+      // This selector is restricted to HTML controls/anchors and HTML tabindex
+      // elements rendered by the modal.
       const focusable = Array.from(
-        dialogRef.current.querySelectorAll(
+        /** @type {NodeListOf<HTMLElement>} */ (dialogRef.current.querySelectorAll(
           'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-        ),
+        )),
       ).filter((node) => node.offsetParent !== null || node === document.activeElement);
       if (focusable.length === 0) {
         event.preventDefault();
@@ -3880,6 +4056,10 @@ export default function HposTerminal() {
     if (cart.length === 0 && !retryingSubmit) return;
     if (retryingSubmit && !pendingEnvelope?.payload) return;
     if (!retryingSubmit) {
+      if (localAuthority && (localRecoveryBlocked || localPriceCheck.error)) {
+        setSubmitError(localPriceCheck.error || 'Saved local operations could not be checked. Re-check recovery before selling.');
+        return;
+      }
       if (!selectedOutlet?.id) {
         setSubmitError("Select an outlet before taking payment.");
         return;
@@ -4015,7 +4195,7 @@ export default function HposTerminal() {
       : null;
     if (!retryingSubmit && settlingTabId) {
       const operatorLabel = (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || 'Till';
-      const lock = await Promise.resolve(window.api?.mesh?.lockTab?.(settlingTabId, operatorLabel)).catch(() => null);
+      const lock = /** @type {HposTabLockExpected|null|undefined} */ (await Promise.resolve(tillApi?.mesh?.lockTab?.(settlingTabId, operatorLabel)).catch(() => null));
       if (lock?.held) {
         setSubmitError(`This tab is being settled on the other till${lock.heldBy ? ` by ${lock.heldBy}` : ''} — wait a moment, then check Open tabs.`);
         return;
@@ -4078,11 +4258,11 @@ export default function HposTerminal() {
         sharedTerminalMode &&
         tillOperatorPolicy.mode === TILL_OPERATOR_MODES.SHIFT
       ) {
-        const renewed = await window.api?.pos?.touchSharedTillOperator?.({
+        const renewed = /** @type {HposTouchSharedTillOperatorExpected|null|undefined} */ (await tillApi?.pos?.touchSharedTillOperator?.({
           outlet_id: selectedOutlet.id,
           staff_id: verifiedOperator.id,
           shift_id: currentShift.id,
-        });
+        }));
         if (!renewed?.success) {
           clearTillOperatorState({
             showUnlock: true,
@@ -4194,6 +4374,7 @@ export default function HposTerminal() {
             selectedCustomer?.customer_segment ||
             null,
           manual_discount: null,
+          ...(localAuthority ? { cash_received: cashTenderMeta?.cash_received } : {}),
         };
         submitEnvelopeRef.current = {
           status: "pending",
@@ -4207,7 +4388,7 @@ export default function HposTerminal() {
       // The renderer expects the documented offline envelope or SQL success
       // projection here; the direct preload forwarder does not validate it.
       const result = /** @type {HposCreateOrderExpectedResult | null | undefined} */ (
-        await window.api.pos.createOrder(orderPayload)
+        await tillApi.pos.createOrder(orderPayload, localApprovalPin)
       );
       if (!result?.success) {
         if (result?.code === "catalog_refresh_required" || /immutable catalog snapshot/i.test(result?.error || "")) {
@@ -4249,7 +4430,7 @@ export default function HposTerminal() {
         // receipt must not leave a stale resume behind.
         navigate(`${location.pathname}${location.search}`, { replace: true, state: {} });
       }
-      const hardware = await window.api?.pos
+      const hardware = await tillApi?.pos
         ?.getHardwareSettings?.()
         .catch(() => null);
       const provisional = result.offline === true || result.provisional === true;
@@ -4287,7 +4468,7 @@ export default function HposTerminal() {
       // Display-only tendering aids for this terminal's reprints. Separate
       // fields from the ledger allocation by construction.
       const receiptWithCash =
-        cashTenderMeta && cashTenderMeta.cash_received != null
+        !localAuthority && cashTenderMeta && cashTenderMeta.cash_received != null
           ? {
               ...receiptOrder,
               cash_received: cashTenderMeta.cash_received,
@@ -4316,7 +4497,7 @@ export default function HposTerminal() {
       // the customer sees it without crowding the till. The next basket
       // replaces it automatically via the live feed above.
       if (cashTenderMeta && cashTenderMeta.change_due != null && selectedOutlet?.id) {
-        window.api?.pos?.updateCustomerDisplay?.({
+        tillApi?.pos?.updateCustomerDisplay?.({
           outlet_id: selectedOutlet.id,
           table_name: tabName?.trim() || tableName?.trim() || null,
           staff_name: (verifiedOperator || user)?.name || (verifiedOperator || user)?.email || null,
@@ -4337,13 +4518,13 @@ export default function HposTerminal() {
           message: 'Thank you — please take your change.',
         }).catch(() => {});
       }
-      if (!retryingSubmit && selectedCustomerId && !result.offline && tillEntitlements.canAccounts) {
+      if (!localAuthority && !retryingSubmit && selectedCustomerId && !result.offline && tillEntitlements.canAccounts) {
         // Loyalty is a post-sale repair path, so it may only use the
         // server-confirmed sale total. Never derive points from the client cart.
         const points = Number.isFinite(Number(result.total)) ? Math.floor(Number(result.total) / 10) : 0;
         if (points > 0) {
           const loyaltyResult = await Promise.resolve(
-            window.api?.pos?.awardLoyalty?.({
+            tillApi?.pos?.awardLoyalty?.({
               customerId: selectedCustomerId,
               orderId: result.id,
               points,
@@ -4351,7 +4532,7 @@ export default function HposTerminal() {
             }),
           ).catch((error) => ({ success: false, error: error.message }));
           if (loyaltyResult?.success === false) {
-            const repair = await window.api?.pos?.queueLoyaltyRepair?.({
+            const repair = await tillApi?.pos?.queueLoyaltyRepair?.({
               customerId: selectedCustomerId,
               orderId: result.id,
               points,
@@ -4402,9 +4583,9 @@ export default function HposTerminal() {
       );
       if (shouldLoadTillTables(barOnly)) {
         const latestTables = await Promise.resolve(
-          window.api?.pos?.getTablesWithStatus?.(selectedOutlet.id),
+          tillApi?.pos?.getTablesWithStatus?.(selectedOutlet.id),
         ).catch(() => null);
-        if (Array.isArray(latestTables)) setTables(latestTables);
+        if (Array.isArray(latestTables)) setTables(/** @type {HposTableStatusExpectedView[]} */ (latestTables));
       }
       // Counts just moved on the server: re-read readiness quietly so newly
       // finished items grey out without another sale failing first. Silent
@@ -4417,13 +4598,19 @@ export default function HposTerminal() {
       );
     } finally {
       if (tabLockId) {
-        Promise.resolve(window.api?.mesh?.unlockTab?.(tabLockId)).catch(() => {});
+        Promise.resolve(tillApi?.mesh?.unlockTab?.(tabLockId)).catch(() => {});
         tabLockId = null;
       }
+      if (localAuthority) setLocalApprovalPin('');
       setSubmitting(false);
     }
   }, [
     cart,
+    localAuthority,
+    localRecoveryBlocked,
+    localPriceCheck.error,
+    localApprovalPin,
+    tillApi,
     barOnly,
     canUseTips,
     canUseVoucher,
@@ -4472,6 +4659,7 @@ export default function HposTerminal() {
 
   return (
     <>
+      {localAuthority && (localRecoveryBlocked || localPriceCheck.error) && <div role="alert" className="p-3 text-sm text-amber-900 bg-amber-50">{localPriceCheck.error || 'Checking saved local operations. Re-check recovery if this message remains.'}</div>}
       <div
         className="hpos-terminal"
         style={{ display: "flex", height: "100%", overflow: "hidden" }}
@@ -4935,10 +5123,13 @@ export default function HposTerminal() {
                     // Fresh attendance for the unlock list; failures fail open.
                     setUnlockActiveStaffIds(null);
                     setUnlockIsOnline(null);
-                    Promise.resolve(window.api?.pos?.getActiveShifts?.()).then((rows) => {
-                      setUnlockActiveStaffIds((Array.isArray(rows) ? rows : []).map((row) => row.staff_user_id));
+                    Promise.resolve(tillApi?.pos?.getActiveShifts?.()).then((rows) => {
+                      // getActiveShifts returns attendance rows; these are
+                      // expected UUID fields from the existing SQL/cache view.
+                      const activeShifts = Array.isArray(rows) ? /** @type {HposActiveShiftExpectedView[]} */ (rows) : [];
+                      setUnlockActiveStaffIds(activeShifts.map((row) => row.staff_user_id));
                     }).catch(() => setUnlockActiveStaffIds(null));
-                    Promise.resolve(window.api?.sync?.getStatus?.()).then((status) => {
+                    Promise.resolve(tillApi?.sync?.getStatus?.()).then((status) => {
                       setUnlockIsOnline(status?.isOnline !== false);
                     }).catch(() => setUnlockIsOnline(null));
                   }
@@ -5277,14 +5468,16 @@ export default function HposTerminal() {
                 }}
               >
                 <p style={{ margin: 0, fontSize: "14px", fontWeight: 800, color: "var(--bb-text)" }}>
-                  {menuLoadFailed ? "Products could not load" : "No items found"}
+                  {menuLoadFailed ? "Products could not load" : menuItems.length === 0 ? "Add your first product" : "No items found"}
                 </p>
                 <p style={{ margin: "6px 0 0", lineHeight: 1.5 }}>
                   {menuLoadFailed
                     ? "The catalogue read failed — do not assume the menu is empty. Retry when the connection is back."
                     : search || activeCategory !== "All"
                       ? "Nothing matches the current search and category."
-                      : "No products are linked for this outlet yet."}
+                      : menuItems.length === 0
+                        ? "Your product catalogue is empty. Add drinks or other products, then record opening stock for stock-tracked items before selling."
+                        : "No products are linked for this outlet yet."}
                 </p>
                 <div
                   style={{
@@ -5313,6 +5506,9 @@ export default function HposTerminal() {
                     >
                       Retry loading products
                     </button>
+                  )}
+                  {!menuLoadFailed && menuItems.length === 0 && canAccessCapability(access, "pos.menu_manage") && (
+                    <button type="button" onClick={() => navigate("/hpos/menu")} style={{ minHeight: 44, padding: "10px 16px", borderRadius: 10, border: "1px solid rgba(201,86,53,.35)", background: "var(--bb-accent)", color: "#fff", fontWeight: 800 }}>Add products</button>
                   )}
                   {!menuLoadFailed && (search || activeCategory !== "All") && (
                     <button
@@ -5627,7 +5823,7 @@ export default function HposTerminal() {
               </span>
             </div>
           )}
-          {barOnly && stockReadiness.status === "failed" && (
+          {barOnly && !menuLoadFailed && !loading && (menuItems.length > 0 || cart.length > 0) && stockReadiness.status === "failed" && (
             <ErrorNotice
               style={{
                 margin: "12px 16px 0",
@@ -6295,6 +6491,9 @@ export default function HposTerminal() {
                     </select>
                   </label>
                 )}
+                {localAuthority && selectedPromotion && <label className="mb-2 block text-xs font-semibold">Manager PIN (only if the discount policy requires approval)
+                  <input type="password" inputMode="numeric" autoComplete="off" value={localApprovalPin} onChange={(event) => setLocalApprovalPin(event.target.value)} className="mt-1 block w-full rounded border p-2" />
+                </label>}
                 <div
                   style={{
                     display: "flex",
@@ -6309,7 +6508,7 @@ export default function HposTerminal() {
                     {currency} {fmt(subtotal)}
                   </span>
                 </div>
-                {taxRate > 0 && (
+                {(localAuthority ? tax > 0 : taxRate > 0) && (
                   <div
                     style={{
                       display: "flex",
@@ -6319,7 +6518,7 @@ export default function HposTerminal() {
                       marginBottom: "4px",
                     }}
                   >
-                    <span>VAT ({(taxRate * 100).toFixed(0)}%)</span>
+                    <span>{localAuthority ? 'Tax / VAT' : `VAT (${(taxRate * 100).toFixed(0)}%)`}</span>
                     <span>
                       {currency} {fmt(tax)}
                     </span>
@@ -6810,7 +7009,8 @@ export default function HposTerminal() {
                           }}
                         >
                           <span>
-                            {tenderLabel(tender.method)}
+                            {/* Successful breakdowns come from the local builder, whose method validation and fixed account/voucher rows limit values to HposTenderLabelMethod. */}
+                            {tenderLabel(/** @type {HposTenderLabelMethod} */ (tender.method))}
                             {tender.code ? ` · ${tender.code}` : ""}
                             {tender.reference ? ` · Ref ${tender.reference}` : ""}
                           </span>
@@ -6850,6 +7050,7 @@ export default function HposTerminal() {
                     onClick={completeOrder}
                     disabled={
                       submitting ||
+                      (localAuthority && !recoveredAttempt && (localRecoveryBlocked || Boolean(localPriceCheck.error))) ||
                       !tenderBreakdownResult.ok ||
                       (drawerGateNeeded && !recoveredAttempt)
                     }
@@ -7034,6 +7235,7 @@ export default function HposTerminal() {
             const relevant = modifierGroups.filter(
               (group) =>
                 group.active !== false &&
+                (!Array.isArray(group.menu_item_ids) || group.menu_item_ids.includes(line?.menu_item_id)) &&
                 (!Array.isArray(group.applies_to_categories) ||
                   group.applies_to_categories.length === 0 ||
                   group.applies_to_categories.some(

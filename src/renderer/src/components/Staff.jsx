@@ -48,16 +48,30 @@ import {
   normalizeStaffStatus
 } from '../../../shared/accessControl'
 import { MONTHLY_USAGE_RESET_COPY, canCreateUser, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
+import { createLocalStaffApi } from './hospitality-pos/bar-local/hposStaffLocalApi.js'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 
 const HotelRolesConfig = lazy(() => import('./HotelRolesConfig'))
 const StaffProductivityPanel = lazy(() => import('./shared/StaffProductivityPanel'))
+
+/** Expected safe-user projection from users:getAll / getAllUsers; renderer IPC rows remain unvalidated. */
+/** @typedef {{id: unknown, name: unknown, email: string, role: unknown, status: string, created_at?: string|null, last_sign_in_at?: string|null, last_desktop_sign_in_at?: string|null, last_pwa_sign_in_at?: string|null, last_activity_at?: string|null, invite_sent_at?: string|null, password_updated_at?: string|null, pwa_password_set_at?: string|null, pwa_enabled?: boolean, pwa_disabled_reason?: string|null, allowed_outlet_ids?: unknown, capability_overrides?: Record<string, unknown>, local_capabilities?: string[], version?: number, has_pin?: unknown}} StaffUserExpectedView */
+/** Form fields sent to users:create/update; optional PWA fields preserve the existing omitted-property behavior. */
+/** @typedef {{name: string, email: string, pin: string, role: string, status: string, pwa_enabled: boolean, pwa_password: string, pwa_disabled_reason: string, allowed_outlet_ids: unknown[], capability_overrides: Record<string, unknown>}} StaffFormExpectedView */
+/** `usage:getSnapshot` forwards getUsageLimitSnapshot output or `{error}` on a caught failure; this view does not validate IPC. */
+/** @typedef {{plan?: string, limits?: Record<string, number>, statuses?: {users?: {isBlocked?: boolean, isAbovePlan?: boolean}}, usage?: {monthlyBookings?: number, rooms?: number, users?: number}, monthlyResetCopy?: string, recommendation?: unknown, error?: unknown}} StaffUsageSnapshotExpectedView */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').BackupInfoReadResult} StaffBackupInfoExpectedView */
+/** @typedef {{capabilities?: Record<string, boolean|undefined>}} StaffCapabilitySnapshotExpectedView */
+/** @typedef {{value: string, label?: string}} StaffRoleOptionExpectedView */
+/** Return value read by the existing Local Staff API from its browser storage key. */
+/** @typedef {ReturnType<ReturnType<typeof createLocalStaffApi>['pending']>} StaffPendingLocalOperationView */
 
 // Performance (staff activity) lives inside the Staff page for the lodging
 // app so Starter teams can see it. Other products keep the existing
 // Enterprise Workforce surface untouched.
 const IS_LODGE_APP = getProductDefinition(getRuntimeProductId()).id === 'lodge-camp'
 
+/** @type {StaffFormExpectedView} */
 const emptyForm = {
   name: '',
   email: '',
@@ -90,40 +104,45 @@ const RESTAURANT_CAPABILITY_KEYS = new Set([
   'accounting.payroll_view', 'accounting.payroll_manage', 'accounting.close'
 ])
 
+/** @param {string} role @param {boolean} [restaurantMode] */
 function staffRoleLabel(role, restaurantMode = false) {
   if (!restaurantMode) return ROLE_DEFINITIONS[role]?.label || role || 'Staff'
-  return {
+  return /** @type {Record<string, string>} */ ({
     cashier: 'Till operator / cashier',
     supervisor: 'Service supervisor',
     finance: 'Finance & reporting',
     manager: 'Service manager',
     admin: 'Business owner / admin'
-  }[role] || ROLE_DEFINITIONS[role]?.label || 'Restaurant staff'
+  })[role] || ROLE_DEFINITIONS[role]?.label || 'Restaurant staff'
 }
 
+/** @param {string} role @param {boolean} [restaurantMode] */
 function staffRoleHighlights(role, restaurantMode = false) {
   if (!restaurantMode) return ROLE_DEFINITIONS[role]?.highlights || []
-  return {
+  return /** @type {Record<string, string[]>} */ ({
     cashier: ['Take orders', 'Take payment', 'Assigned outlets'],
     supervisor: ['Service oversight', 'Voids & discounts', 'Cash close'],
     finance: ['Payment review', 'Expenses', 'Sales reports'],
     manager: ['Daily operations', 'Team access', 'Stock & cash control'],
     admin: ['Business setup', 'Access control', 'Recovery & subscription']
-  }[role] || ROLE_DEFINITIONS[role]?.highlights || []
+  })[role] || ROLE_DEFINITIONS[role]?.highlights || []
 }
 
+/** @param {StaffCapabilitySnapshotExpectedView|null|undefined} snapshot @param {boolean} [restaurantMode] */
 function visibleCapabilityEntries(snapshot, restaurantMode = false) {
   return Object.entries(snapshot?.capabilities || {}).filter(([capability, allowed]) => (
     allowed && (!restaurantMode || RESTAURANT_CAPABILITY_KEYS.has(capability))
   ))
 }
 
+/** @param {string} role */
 function isManagerManagedRole(role) {
   return MANAGER_MANAGED_ROLES.has(normalizeAppRole(role))
 }
 
+/** @param {string} role */
 function roleTone(role) {
-  return {
+  return /** @type {Record<string, string>} */ ({
     cashier: 'bg-orange-100 text-orange-700',
     supervisor: 'bg-teal-100 text-teal-700',
     receptionist: 'bg-emerald-100 text-emerald-700',
@@ -131,25 +150,28 @@ function roleTone(role) {
     finance: 'bg-sky-100 text-sky-700',
     manager: 'bg-violet-100 text-violet-700',
     admin: 'bg-rose-100 text-rose-700'
-  }[role] || 'bg-gray-100 text-gray-600'
+  })[role] || 'bg-gray-100 text-gray-600'
 }
 
+/** @param {string} role @param {boolean} restaurantMode */
 function roleDescription(role, restaurantMode) {
   if (!restaurantMode) return ROLE_DEFINITIONS[role]?.description || ROLE_DEFINITIONS.receptionist.description
-  return {
+  return /** @type {Record<string, string>} */ ({
     cashier: 'Takes orders, payments, and open tabs at assigned outlets.',
     supervisor: 'Supervises service, approves discounts and voids, and reviews outlet sales.',
     finance: 'Reviews payments, refunds, expenses, settlements, and sales reports.',
     manager: 'Runs daily service operations, staff access, stock, cash controls, and owner reporting.',
     admin: 'Owns business configuration, subscriptions, recovery tools, and high-risk controls.'
-  }[role] || ROLE_DEFINITIONS[role]?.description || 'Service operational access.'
+  })[role] || ROLE_DEFINITIONS[role]?.description || 'Service operational access.'
 }
 
+/** @param {string|number|null|undefined} value */
 function formatShortDate(value) {
   if (!value) return ''
   return new Date(value).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/** @param {string|number|null|undefined} value */
 function formatDateTime(value) {
   if (!value) return ''
   return new Date(value).toLocaleString([], {
@@ -161,14 +183,16 @@ function formatDateTime(value) {
   })
 }
 
+/** @param {string} status */
 function statusTone(status) {
   return {
     active: 'bg-emerald-100 text-emerald-700',
     suspended: 'bg-amber-100 text-amber-700',
     archived: 'bg-slate-200 text-slate-700'
-  }[normalizeStaffStatus(status)] || 'bg-slate-100 text-slate-600'
+  }[/** @type {'active'|'suspended'|'archived'} */ (normalizeStaffStatus(status))] || 'bg-slate-100 text-slate-600'
 }
 
+/** @param {StaffUserExpectedView} staffUser */
 function summarizeActivity(staffUser) {
   const items = []
   if (staffUser.last_desktop_sign_in_at) items.push(`Desktop sign-in ${formatDateTime(staffUser.last_desktop_sign_in_at)}`)
@@ -180,6 +204,8 @@ function summarizeActivity(staffUser) {
   return items
 }
 
+/** @param {StaffFormExpectedView} form @param {StaffUserExpectedView|null} [existingUser] */
+/** @param {StaffFormExpectedView} form @param {StaffUserExpectedView|null} [existingUser] @returns {Record<string, unknown>} */
 function buildUserPayload(form, existingUser = null) {
   const payload = {
     name: form.name,
@@ -229,14 +255,17 @@ function StaffMembers() {
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
   const barOnly = isBarOnlyMode(settings)
+  const localAuthority = settings?.authority_mode === 'bar_local'
+  const localStaffApi = useMemo(() => localAuthority ? createLocalStaffApi(window.api?.barLocal, { businessId: settings?.lodge_id || settings?.id, outletId: settings?.outlet_id, staffId: currentUser?.id }) : null, [localAuthority, settings?.lodge_id, settings?.id, settings?.outlet_id, currentUser?.id])
+  const [pendingLocalStaff, setPendingLocalStaff] = useState(/** @type {StaffPendingLocalOperationView} */ (null))
   const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
   const currentRole = normalizeAppRole(currentUser?.role)
   const canManageStaff = canAccessCapability(access, 'staff.manage')
   const canSetRoles = canManageStaff && !starterAccessLite && ['admin', 'super_admin'].includes(currentRole)
   const isLimitedStaffManager = canManageStaff && currentRole === 'manager'
 
-  const [users, setUsers] = useState([])
-  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [users, setUsers] = useState(/** @type {StaffUserExpectedView[]} */ ([]))
+  const [usageSnapshot, setUsageSnapshot] = useState(/** @type {StaffUsageSnapshotExpectedView|null} */ (null))
   const usageLimits = usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {})
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -245,7 +274,7 @@ function StaffMembers() {
   const [form, setForm] = useState(emptyForm)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {{id: string|null, name: string, type?: string|null}[]} */ ([]))
   const [outletsReady, setOutletsReady] = useState(false)
   const [resetTarget, setResetTarget] = useState(null)
   const [resetForm, setResetForm] = useState(emptyResetForm)
@@ -270,14 +299,21 @@ function StaffMembers() {
   const currentPlan = normalizeSubscriptionPlan(usageSnapshot?.plan || access?.entitlement?.plan || 'Starter')
 
   useEffect(() => {
+    if (localAuthority) {
+      setOutlets(settings?.outlet_id ? [{ id: settings.outlet_id, name: settings.outlet_name || 'Bar', type: 'bar' }] : [])
+      setOutletsReady(true)
+      setPendingLocalStaff(localStaffApi?.pending(window.localStorage) || null)
+      return
+    }
     window.api.outlets.getAll()
       .then(d => setOutlets(d || []))
       .catch(() => setOutlets([]))
       .finally(() => setOutletsReady(true))
-  }, [])
+  }, [localAuthority, localStaffApi, settings?.outlet_id, settings?.outlet_name])
 
   const availableRoles = useMemo(() => {
-    return getRoleOptions().filter((role) => {
+    return getRoleOptions().filter(/** @param {StaffRoleOptionExpectedView} role */ (role) => {
+      if (localAuthority && !['manager', 'cashier'].includes(role.value)) return false
       if (role.value === 'super_admin') return false
       if (starterAccessLite && !['receptionist', 'operations'].includes(role.value)) return false
       if (restaurantMode && ['receptionist', 'operations'].includes(role.value)) return false
@@ -285,24 +321,30 @@ function StaffMembers() {
       if (role.value === 'admin') return currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.isMasterAdmin
       return true
     })
-  }, [currentUser?.isMasterAdmin, currentUser?.role, isLimitedStaffManager, restaurantMode, starterAccessLite])
+  }, [currentUser?.isMasterAdmin, currentUser?.role, isLimitedStaffManager, localAuthority, restaurantMode, starterAccessLite])
 
   const load = useCallback(async () => {
     setLoadingUsers(true)
     setLoadError('')
     try {
+      if (localAuthority) {
+        const data = await localStaffApi.list()
+        setUsers(/** @type {StaffUserExpectedView[]} */ (data))
+        setPendingLocalStaff(localStaffApi.pending(window.localStorage))
+        return
+      }
       const data = await window.api.users.getAll()
-      setUsers(Array.isArray(data) ? data : [])
-      window.api.usage.getSnapshot?.().then((snapshot) => {
+      setUsers(/** @type {StaffUserExpectedView[]} */ (Array.isArray(data) ? data : []))
+      window.api.usage.getSnapshot?.().then(/** @param {StaffUsageSnapshotExpectedView|null|undefined} snapshot */ (snapshot) => {
         if (!snapshot?.error) setUsageSnapshot(snapshot)
       }).catch(() => {})
     } catch (loadFailure) {
       setUsers([])
-      setLoadError(loadFailure?.message || 'Could not load the service team. Check the connection, then try again.')
+      setLoadError((/** @type {{message?: string}|null|undefined} */ (loadFailure))?.message || 'Could not load the service team. Check the connection, then try again.')
     } finally {
       setLoadingUsers(false)
     }
-  }, [])
+  }, [localAuthority, localStaffApi])
 
   const adminCount = useMemo(
     () => users.filter((user) => normalizeAppRole(user.role) === 'admin' && ['active', 'suspended'].includes(normalizeStaffStatus(user.status))).length,
@@ -400,13 +442,13 @@ function StaffMembers() {
   }, [load])
 
   const openAdd = () => {
-    if (userLimitStatus.isBlocked) {
+    if (!localAuthority && userLimitStatus.isBlocked) {
       setShowUpgradePrompt(true)
       return
     }
     setEditingId(null)
     setEditingUser(null)
-    setForm({ ...emptyForm, role: restaurantMode ? 'cashier' : 'receptionist' })
+    setForm({ ...emptyForm, role: localAuthority ? 'cashier' : restaurantMode ? 'cashier' : 'receptionist' })
     setResetForm(emptyResetForm)
     setShowCreatePassword(false)
     setShowPin(false)
@@ -420,10 +462,13 @@ function StaffMembers() {
     setEditingId(user.id)
     setEditingUser(user)
     setForm({
-      name: user.name,
+      // users:getAll preserves the raw database/cache name; the edit form
+      // expects the producer's ordinary text value without validating it.
+      name: /** @type {string} */ (user.name),
       email: user.email,
       pin: '',
-      role: user.role || (restaurantMode ? 'cashier' : 'receptionist'),
+      // The role is passed through from the safe-user projection unchanged.
+      role: /** @type {string} */ (user.role || (restaurantMode ? 'cashier' : 'receptionist')),
       status: normalizeStaffStatus(user.status),
       pwa_enabled: user.pwa_enabled === true,
       pwa_password: '',
@@ -455,6 +500,19 @@ function StaffMembers() {
     event.preventDefault()
     setLoading(true)
     setError('')
+
+    if (localAuthority) {
+      if (editingId) { setLoading(false); setError('Editing local staff roles and PINs is not enabled. No hosted request was sent.'); return }
+      if (!form.name.trim()) { setLoading(false); setError('Enter the staff member’s name.'); return }
+      try {
+        await localStaffApi.create(window.localStorage, { display_name: form.name, role: form.role, pin: form.pin })
+        setPendingLocalStaff(null)
+        setInviteNotice(`${form.name.trim()} was created in the local Bar database. Give the staff member their ID from the list and their PIN in person.`)
+        setShowModal(false); setForm({ ...emptyForm, role: 'cashier' }); await load()
+      } catch (cause) { setError(cause?.message || 'The local staff operation remains unresolved. Retry its saved operation before creating another account.'); setPendingLocalStaff(localStaffApi.pending(window.localStorage)) }
+      finally { setLoading(false) }
+      return
+    }
 
     if (starterAccessLite) {
       const isExistingStarterOwner = editingUser && normalizeAppRole(editingUser.role) === 'admin' && normalizeAppRole(form.role) === 'admin'
@@ -557,8 +615,19 @@ function StaffMembers() {
     load()
   }
 
+  const retryLocalStaffCreate = async () => {
+    if (!localAuthority || !pendingLocalStaff || loading) return
+    setLoading(true); setError('')
+    try {
+      await localStaffApi.retry(window.localStorage)
+      setPendingLocalStaff(null); setInviteNotice('The saved local staff operation was confirmed by the local authority.'); await load()
+    } catch (cause) { setError(cause?.message || 'The saved local staff operation remains unresolved.'); setPendingLocalStaff(localStaffApi.pending(window.localStorage)) }
+    finally { setLoading(false) }
+  }
+
   const handleResetPassword = async (event) => {
     event.preventDefault()
+    if (localAuthority) { setResetError('Password reset is not available for local Bar identities. No hosted request was sent.'); return }
     setResetLoading(true)
     setResetError('')
 
@@ -589,6 +658,7 @@ function StaffMembers() {
   }
 
   const handleSendInvite = async (staffUser) => {
+    if (localAuthority) { setInviteNotice('Local Bar staff sign in with their staff ID and PIN. No hosted request was sent.'); return }
     setInviteLoadingId(staffUser.id)
     setInviteNotice('')
     try {
@@ -608,6 +678,7 @@ function StaffMembers() {
   }
 
   const handleDelete = async () => {
+    if (localAuthority) { setDeleteError('Deleting local staff identities is not available from this screen. No hosted request was sent.'); return }
     setDeleteLoading(true)
     setDeleteError('')
 
@@ -624,6 +695,7 @@ function StaffMembers() {
   }
 
   const handleStatusChange = async (staffUser, status) => {
+    if (localAuthority) { setInviteNotice('Local staff status changes are managed through the local Bar operations workflow. No hosted request was sent.'); return }
     const nextStatus = normalizeStaffStatus(status)
     const result = await window.api.users.update(staffUser.id, { status: nextStatus })
     if (result?.success === false) {
@@ -661,14 +733,14 @@ function StaffMembers() {
                 : `${users.length} staff member${users.length !== 1 ? 's' : ''}`}
           </p>
           <p className="mt-1 text-xs text-slate-400">{starterAccessLite ? 'Invite one additional lodge user with a safe Receptionist or Operations role. Suspend or reactivate access as needed.' : 'Role templates set who can serve, take payment, manage stock, close shifts, and approve exceptions.'}</p>
-          <div className="mt-2">
+          {!localAuthority && <div className="mt-2">
             <UsageLimitIndicator label="Users" used={usageSnapshot?.usage?.users ?? users.length} limit={usageLimits.users} />
-          </div>
-          <p className="mt-2 text-xs text-slate-400">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>
-          {userLimitMessage && (
+          </div>}
+          {!localAuthority && <p className="mt-2 text-xs text-slate-400">{usageSnapshot?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY}</p>}
+          {!localAuthority && userLimitMessage && (
             <p className="mt-2 text-xs text-rose-600">{userLimitMessage}</p>
           )}
-          <div className="mt-3">
+          {!localAuthority && <div className="mt-3">
             <UpgradeNudgeBanner
               visible={showStaffEarlyPrompt}
               message="You’re approaching your plan limits. Consider upgrading to avoid interruptions."
@@ -681,7 +753,9 @@ function StaffMembers() {
               trigger="banner"
               onUpgrade={() => setShowUpgradePrompt(true)}
             />
-          </div>
+          </div>}
+          {localAuthority && <p className="mt-2 text-xs text-slate-500">Staff identities, roles and PIN verifiers are stored by this Bar’s local authority.</p>}
+          {pendingLocalStaff && <div role="alert" className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><p>The last staff change has an unresolved result. Retry the same saved operation before creating another account.</p><button type="button" onClick={retryLocalStaffCreate} disabled={loading} className="mt-2 rounded-lg border border-amber-500 px-3 py-1.5 font-medium disabled:opacity-50">Retry saved operation</button></div>}
           {inviteNotice && (
             <p className={`mt-2 text-xs ${/could not|requires|failed|error/i.test(inviteNotice) ? 'text-red-600' : 'text-emerald-600'}`}>
               {inviteNotice}
@@ -707,7 +781,7 @@ function StaffMembers() {
             <option value="active">Active staff</option>
             <option value="all">All statuses</option>
             <option value="suspended">Suspended</option>
-            <option value="archived">Archived</option>
+            {!localAuthority && <option value="archived">Archived</option>}
           </select>
           <select
             className="input w-auto min-w-[170px]"
@@ -718,12 +792,12 @@ function StaffMembers() {
             <option value="name_asc">Name A-Z</option>
             <option value="name_desc">Name Z-A</option>
             <option value="created_desc">Newest added</option>
-            <option value="pwa_first">Manager mobile app enabled first</option>
+            {!localAuthority && <option value="pwa_first">Manager mobile app enabled first</option>}
           </select>
           {canManageStaff && (
             <button
               onClick={openAdd}
-              disabled={userLimitStatus.isBlocked}
+              disabled={!localAuthority && userLimitStatus.isBlocked}
               className="restaurant-staff-add btn-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Plus size={15} /> {starterAccessLite ? 'Add User' : 'Add Staff'}
@@ -771,6 +845,9 @@ function StaffMembers() {
             features: access?.features || {},
             capabilityOverrides: staffUser.capability_overrides || {}
           })
+          const capabilitiesForDisplay = localAuthority && Array.isArray(staffUser.local_capabilities)
+            ? Object.fromEntries(Object.keys(snapshot.capabilities).map((capability) => [capability, staffUser.local_capabilities.includes(capability)]))
+            : snapshot.capabilities
       const roleInfo = ROLE_DEFINITIONS[snapshot.role] || ROLE_DEFINITIONS[restaurantMode ? 'cashier' : 'receptionist']
           const pwaEligible = isPwaEligibleRole(staffUser.role)
           const pwaEnabled = pwaEligible && staffUser.pwa_enabled === true
@@ -797,8 +874,8 @@ function StaffMembers() {
                       : <User size={18} className="text-green-500" />}
                   </div>
                   <div>
-                    <p className="font-semibold text-slate-800">{staffUser.name}</p>
-                    <p className="mt-0.5 text-xs text-slate-500">{staffUser.email}</p>
+                    <p className="font-semibold text-slate-800">{/** @type {string} */ (staffUser.name)}</p>
+                    {!localAuthority ? <p className="mt-0.5 text-xs text-slate-500">{staffUser.email}</p> : <p className="mt-0.5 text-xs text-slate-500">Staff ID: {staffUser.id}</p>}
                     <div className="mt-2 flex items-center gap-2">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${roleTone(snapshot.role)}`}>
                         {staffRoleLabel(snapshot.role, restaurantMode)}
@@ -807,13 +884,13 @@ function StaffMembers() {
                         {STAFF_STATUS_LABELS[normalizeStaffStatus(staffUser.status)]}
                       </span>
                       <span className="text-xs text-slate-400">
-                        {Object.values(snapshot.capabilities).filter(Boolean).length} active permissions
+                        {Object.values(capabilitiesForDisplay).filter(Boolean).length} active permissions
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {canManageThisStaff && (
+                {canManageThisStaff && !localAuthority && (
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
                       onClick={() => openEdit(staffUser)}
@@ -872,14 +949,14 @@ function StaffMembers() {
                     Administrator-controlled account
                   </span>
                 )}
-                {pwaFeatureEnabled && pwaEligible && (
+                {!localAuthority && pwaFeatureEnabled && pwaEligible && (
                   <span className={`text-xs px-2 py-1 rounded-full ${
                     pwaEnabled ? 'bg-indigo-100 text-indigo-700' : 'bg-amber-100 text-amber-700'
                   }`}>
                     {pwaEnabled ? 'Manager mobile app ready' : 'Manager mobile app turned off'}
                   </span>
                 )}
-                {pwaFeatureEnabled && pwaEligible && staffUser.pwa_password_set_at && (
+                {!localAuthority && pwaFeatureEnabled && pwaEligible && staffUser.pwa_password_set_at && (
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
                     Mobile app password updated {formatShortDate(staffUser.pwa_password_set_at)}
                   </span>
@@ -892,13 +969,13 @@ function StaffMembers() {
                   </span>
                 ))}
               </div>
-              {pwaFeatureEnabled && pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
+              {!localAuthority && pwaFeatureEnabled && pwaEligible && !pwaEnabled && staffUser.pwa_disabled_reason && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mt-3">
                   {staffUser.pwa_disabled_reason}
                 </p>
               )}
 
-              {canManageThisStaff && (
+              {canManageThisStaff && !localAuthority && (
                 <div className="mt-4 flex flex-wrap gap-2">
                   {normalizeStaffStatus(staffUser.status) === 'active' && !isSelf && (
                     <button
@@ -930,7 +1007,7 @@ function StaffMembers() {
               <div className="mt-4 border-t border-slate-100 pt-4">
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Allowed actions</p>
                 <div className="flex flex-wrap gap-2">
-                  {Object.entries(snapshot.capabilities)
+                  {Object.entries(capabilitiesForDisplay)
                     .filter(([, allowed]) => allowed)
                     .slice(0, 8)
                     .map(([capability]) => (
@@ -972,7 +1049,7 @@ function StaffMembers() {
                 <User size={18} />
                 <div>
                   <p className="font-semibold">Set up a service account</p>
-                  <p>Choose a role first, then assign an outlet for anyone who will use the till.</p>
+                  <p>{localAuthority ? 'Create a staff identity in this Bar. The local authority protects the PIN and assigns access from the role.' : 'Choose a role first, then assign an outlet for anyone who will use the till.'}</p>
                 </div>
               </div>
             )}
@@ -980,11 +1057,11 @@ function StaffMembers() {
               <label className="mb-1 block text-sm font-medium text-slate-700">Full Name *</label>
               <input className="input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
             </div>
-            <div>
+            {!localAuthority && <div>
               <label className="mb-1 block text-sm font-medium text-slate-700">Email *</label>
               <input type="email" className="input" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
-            </div>
-            {!editingId && (
+            </div>}
+            {!localAuthority && !editingId && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-700">{restaurantMode ? 'Staff sign-in password *' : 'Desktop Password *'}</label>
                 <div className="relative">
@@ -1008,7 +1085,7 @@ function StaffMembers() {
             {(restaurantMode || ['supervisor', 'manager', 'admin'].includes(form.role)) && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-700">
-                  {restaurantMode ? 'Staff PIN' : 'Approval PIN'} <span className="font-normal text-slate-400">(4–6 digits)</span>
+                  {localAuthority ? 'Staff PIN' : restaurantMode ? 'Staff PIN' : 'Approval PIN'} <span className="font-normal text-slate-400">({localAuthority ? '4–12 digits' : '4–6 digits'})</span>
                 </label>
                 <div className="relative">
                   <input
@@ -1017,8 +1094,8 @@ function StaffMembers() {
                     className="input pr-10"
                     placeholder={editingId ? 'Leave blank to keep existing PIN' : restaurantMode ? 'Set a private numeric staff PIN' : 'Set a numeric PIN (optional)'}
                     value={form.pin}
-                    onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, '').slice(0, 6) })}
-                    maxLength={6}
+                    onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, '').slice(0, localAuthority ? 12 : 6) })}
+                    maxLength={localAuthority ? 12 : 6}
                   />
                   <button
                     type="button"
@@ -1029,7 +1106,7 @@ function StaffMembers() {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  {restaurantMode ? 'Used for private shared-terminal attendance. Supervisor and manager roles can also use it for approved POS actions.' : 'Used to approve POS actions without a full login.'}
+                  {localAuthority ? 'The local authority stores a protected verifier. Give the PIN to the staff member in person; it is never shown again.' : restaurantMode ? 'Used for private shared-terminal attendance. Supervisor and manager roles can also use it for approved POS actions.' : 'Used to approve POS actions without a full login.'}
                 </p>
               </div>
             )}
@@ -1060,7 +1137,7 @@ function StaffMembers() {
               </p>
             </div>
 
-            <div>
+            {!localAuthority && <div>
               <label className="mb-1 block text-sm font-medium text-slate-700">Account Status</label>
               <select
                 className="input"
@@ -1074,7 +1151,7 @@ function StaffMembers() {
               <p className="mt-2 text-xs text-slate-500">
                 Active staff can sign in. Suspended staff keep history but cannot use the app. Archived staff are hidden from day-to-day operations until restored.
               </p>
-            </div>
+            </div>}
 
             {!starterAccessLite && (rolePreview.gained.length > 0 || rolePreview.lost.length > 0) && (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1106,7 +1183,7 @@ function StaffMembers() {
               </div>
             )}
 
-            {canSetRoles && (
+            {!localAuthority && canSetRoles && (
               <div className="restaurant-staff-permissions rounded-2xl border border-slate-200 bg-slate-50">
                 <button
                   type="button"
@@ -1157,13 +1234,13 @@ function StaffMembers() {
             )}
 
             {/* POS Outlet Access — only shown for outlet-scoped roles (cashier / supervisor) */}
-            {isPosOutletScopedRole(form.role) && !outletsReady && (
+            {!localAuthority && isPosOutletScopedRole(form.role) && !outletsReady && (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
                 Loading POS outlets before this account can be assigned to service.
               </div>
             )}
 
-            {isPosOutletScopedRole(form.role) && outletsReady && outlets.length === 0 && (
+            {!localAuthority && isPosOutletScopedRole(form.role) && outletsReady && outlets.length === 0 && (
               <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
                 <div>
                   <p className="text-sm font-semibold text-amber-900">Set up an outlet before assigning service access</p>
@@ -1182,7 +1259,7 @@ function StaffMembers() {
               </div>
             )}
 
-            {isPosOutletScopedRole(form.role) && outletsReady && outlets.length > 0 && (
+            {!localAuthority && isPosOutletScopedRole(form.role) && outletsReady && outlets.length > 0 && (
               <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <p className="text-sm font-medium text-slate-800">POS Outlet Access</p>
@@ -1213,7 +1290,7 @@ function StaffMembers() {
               </div>
             )}
 
-            {pwaFeatureEnabled && isPwaEligibleRole(form.role) && (
+            {!localAuthority && pwaFeatureEnabled && isPwaEligibleRole(form.role) && (
               <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <p className="text-sm font-medium text-slate-800">Manager mobile app access</p>
@@ -1313,7 +1390,7 @@ function StaffMembers() {
 
       {resetTarget && (
         <Modal
-          title={`Reset Password — ${resetTarget.name}`}
+          title={`Reset Password — ${/** @type {string} */ (resetTarget.name)}`}
           onClose={() => {
             if (!resetLoading) {
               setResetTarget(null)
@@ -1378,7 +1455,7 @@ function StaffMembers() {
 
       {deleteTarget && (
         <Modal
-          title={`Delete Staff — ${deleteTarget.name}`}
+          title={`Delete Staff — ${/** @type {string} */ (deleteTarget.name)}`}
           onClose={() => {
             if (!deleteLoading) {
               setDeleteTarget(null)
@@ -1464,11 +1541,11 @@ function formatRestaurantAuditEntry(row) {
 
   switch (row?.action) {
     case 'staff_account_created':
-      return `${staffName} was added as ${staffRoleLabel(role, true)}.`
+      return `${staffName} was added as ${staffRoleLabel(/** @type {string} */ (role), true)}.`
     case 'staff_account_deleted':
       return `${staffName} was permanently removed after being archived.`
     case 'staff_role_changed':
-      return `${staffName}'s role changed from ${staffRoleLabel(before.role, true)} to ${staffRoleLabel(after.role, true)}.`
+      return `${staffName}'s role changed from ${staffRoleLabel(/** @type {string} */ (before.role), true)} to ${staffRoleLabel(/** @type {string} */ (after.role), true)}.`
     case 'staff_status_changed':
       return `${staffName}'s status changed from ${STAFF_STATUS_LABELS[normalizeStaffStatus(before.status)] || before.status || 'unknown'} to ${STAFF_STATUS_LABELS[normalizeStaffStatus(after.status)] || after.status || 'unknown'}.`
     case 'staff_outlet_access_changed':
@@ -1519,7 +1596,7 @@ function ActivityLog({ restaurantMode = false }) {
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
-  const [backupInfo, setBackupInfo] = useState(null)
+  const [backupInfo, setBackupInfo] = useState(/** @type {StaffBackupInfoExpectedView|null} */ (null))
   const [showBackups, setShowBackups] = useState(false)
   const [auditError, setAuditError] = useState('')
 
@@ -1698,7 +1775,8 @@ function ActivityLog({ restaurantMode = false }) {
             <p className="text-xs text-gray-500 mb-3">
               Backups run automatically on startup, every hour, and after each check-in or check-out. The 10 most recent backups are kept.
             </p>
-            {backupInfo?.backups?.length > 0 ? (
+            {/* Keep the original comparison: optional chaining yields undefined when absent, and JavaScript's `undefined > 0` is false. */}
+            {/** @type {number} */ (backupInfo?.backups?.length) > 0 ? (
               <div className="space-y-1.5 mb-3">
                 {backupInfo.backups.map((backup, index) => (
                   <div key={backup.name} className="flex items-center justify-between text-xs text-gray-600 bg-gray-50 rounded px-3 py-2">
@@ -1815,25 +1893,30 @@ export default function Staff() {
   const restaurantMode = isRestaurantOnly(propertyType)
   const barOnly = isBarOnlyMode(settings)
 
+  const localAuthority = settings?.authority_mode === 'bar_local'
   const propertyLabel = barOnly ? 'bar' : restaurantMode ? 'restaurant' : 'lodge'
   const canViewPerformance = IS_LODGE_APP && canAccessCapability(access, 'staff.view')
   const showPerformanceTab = IS_LODGE_APP && canViewPerformance
 
   useEffect(() => {
     const tabParam = searchParams.get('tab')
+    if (localAuthority) {
+      setTab('staff')
+      return
+    }
     if (starterAccessLite) {
       setTab(tabParam === 'performance' && showPerformanceTab ? 'performance' : 'staff')
       return
     }
     if (tabParam) setTab(tabParam)
-  }, [searchParams, starterAccessLite, showPerformanceTab])
+  }, [searchParams, starterAccessLite, showPerformanceTab, localAuthority])
 
   const tabs = [
     { key: 'staff', label: starterAccessLite ? 'User Accounts' : 'Staff Members', icon: User },
     ...(showPerformanceTab ? [{ key: 'performance', label: 'Performance', icon: BarChart3 }] : []),
-    ...(!starterAccessLite ? [{ key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck }] : []),
-    ...(!starterAccessLite && hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
-    ...(!starterAccessLite ? [{ key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }] : [])
+    ...(!localAuthority && !starterAccessLite ? [{ key: 'roles', label: restaurantMode ? 'Service roles & access' : 'Roles & Permissions', icon: ShieldCheck }] : []),
+    ...(!localAuthority && !starterAccessLite && hasHotelRoles && !restaurantMode ? [{ key: 'hotel-roles', label: 'Hotel Roles', icon: Briefcase }] : []),
+    ...(!localAuthority && !starterAccessLite ? [{ key: 'activity', label: restaurantMode ? 'Access audit' : 'Activity Log', icon: ClipboardList }] : [])
   ]
 
   return (
@@ -1873,9 +1956,9 @@ export default function Staff() {
 
       {tab === 'staff' && <StaffMembers />}
       {tab === 'performance' && showPerformanceTab && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading performance...</div>}><StaffProductivityPanel /></Suspense>}
-      {tab === 'roles' && <RolesAndPermissions restaurantMode={restaurantMode} />}
-      {tab === 'hotel-roles' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><HotelRolesConfig /></Suspense>}
-      {tab === 'activity' && <ActivityLog restaurantMode={restaurantMode} />}
+      {!localAuthority && tab === 'roles' && <RolesAndPermissions restaurantMode={restaurantMode} />}
+      {!localAuthority && tab === 'hotel-roles' && <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading...</div>}><HotelRolesConfig /></Suspense>}
+      {!localAuthority && tab === 'activity' && <ActivityLog restaurantMode={restaurantMode} />}
     </div>
   )
 }

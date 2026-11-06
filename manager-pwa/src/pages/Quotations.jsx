@@ -4,15 +4,20 @@ import { useAuth } from '../contexts/AuthContext'
 import { FRONT_DESK_ONLY_MESSAGE, listQuotations } from '../lib/api'
 import { bookingStatusClass, money, shortDate, titleCase } from '../lib/format'
 
+/** @typedef {{id: string, customer_name?: string | null, quotation_number?: string | null, valid_until?: string | null, created_at: string, quotation_type: string, event_name?: string | null, room_name?: string | null, total_amount: number, currency?: string | null, status: string}} QuotationExpectedView */
+
 export default function Quotations() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const [loading, setLoading] = useState(true)
-  const [quotations, setQuotations] = useState([])
+  const [quotations, setQuotations] = useState(/** @type {QuotationExpectedView[]} */ ([]))
   const [search, setSearch] = useState('')
 
   const load = async () => {
     setLoading(true)
-    const quotationRows = await listQuotations(user.lodge_id).catch(() => [])
+    // The list query selects the fields used below. Cached rows remain
+    // unvalidated; this records the page's existing expected view only.
+    const quotationRows = /** @type {QuotationExpectedView[]} */ (await listQuotations(user.lodge_id).catch(() => []))
     setQuotations(quotationRows)
     setLoading(false)
   }

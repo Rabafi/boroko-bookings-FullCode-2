@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, Check, ChevronDown, Clock3, Copy, Link2, LogOut, RefreshCw, ShoppingBag, TrendingUp } from 'lucide-react'
 import {
   approveBarOwnerLink,
@@ -29,6 +29,7 @@ function formatMoney(value) {
   return `BWP ${negative ? '-' : ''}${grouped}.${cents}`
 }
 
+/** @param {import('../lib/barOwner').BarOwnerTransaction['event_type']} type */
 function eventLabel(type) {
   return ({
     'sale.committed': 'Sale committed',
@@ -65,7 +66,9 @@ function SalesChart({ days }) {
   const pad = { top: 14, right: 12, bottom: 28, left: 12 }
   const plotWidth = width - pad.left - pad.right
   const plotHeight = height - pad.top - pad.bottom
+  /** @param {number} index */
   const x = (index) => pad.left + (points.length <= 1 ? plotWidth / 2 : index * plotWidth / (points.length - 1))
+  /** @param {number} value */
   const y = (value) => pad.top + plotHeight - Math.max(0, value / max) * plotHeight
   const netPath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(point.net)}`).join(' ')
   const grossPath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(point.gross)}`).join(' ')
@@ -109,6 +112,7 @@ function SalesChart({ days }) {
 }
 
 export default function BarOwnerProjection() {
+  const reportRequest = useRef(/** @type {AbortController|null} */ (null))
   const [session, setSession] = useState(() => getBarOwnerSession())
   const [bars, setBars] = useState(/** @type {import('../lib/barOwner').BarOwnerLink[]} */ ([]))
   const [selectedKey, setSelectedKey] = useState('')
@@ -127,6 +131,7 @@ export default function BarOwnerProjection() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
+  /** @type {(token: string) => Promise<void>} */
   const refreshBars = useCallback(async (token) => {
     const next = await getBarOwnerBars(token)
     setBars(next)
@@ -138,45 +143,78 @@ export default function BarOwnerProjection() {
   useEffect(() => {
     if (!session?.token) return
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
-    getBarOwnerBars(session.token).then((next) => {
+    getBarOwnerBars(session.token, controller.signal).then((next) => {
       if (cancelled) return
       setBars(next)
       setSelectedKey(next.find((bar) => bar.active && !bar.revoked)?.key_id || '')
       setError('')
-    }).catch((reason) => {
+    }).catch((/** @type {unknown} */ reason) => {
+      // The internal owner API rejects with Error or DOMException; retain its original message/name handling.
+      const failure = /** @type {{name?: string, message?: string}} */ (reason)
+      if (failure?.name === 'AbortError') return
       if (!cancelled) {
-        setError(reason.message || 'Could not load Bar owner data.')
+        setError(failure.message || 'Could not load Bar owner data.')
         if (!getBarOwnerSession()) setSession(null)
       }
     }).finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [session?.token])
 
   const selectedBar = bars.find((bar) => bar.key_id === selectedKey && bar.active && !bar.revoked) || null
 
   const loadSales = useCallback(async () => {
     if (!session?.token || !selectedBar) return
+    reportRequest.current?.abort()
+    const controller = new AbortController()
+    reportRequest.current = controller
+    const requestToken = session.token
+    const requestKey = selectedBar.key_id
+    const requestFrom = from
+    const requestTo = to
     setLoading(true)
     setError('')
+    setSales(null)
+    setOperations(null)
+    setOperationsError('')
     try {
       const [salesResult, operationsResult] = await Promise.allSettled([
-        getBarOwnerSales(session.token, selectedBar.key_id, from, to),
-        getBarOwnerOperations(session.token, selectedBar.key_id, from, to)
+        getBarOwnerSales(requestToken, requestKey, requestFrom, requestTo, controller.signal),
+        getBarOwnerOperations(requestToken, requestKey, requestFrom, requestTo, controller.signal)
       ])
+      if (controller.signal.aborted || reportRequest.current !== controller) return
       if (salesResult.status === 'fulfilled') setSales(salesResult.value)
-      else { setSales(null); setError(salesResult.reason.message || 'Bar sales could not be loaded.') }
+      else {
+        // The sales helper rejects with the owner API's preserved Error/DOMException values.
+        const failure = /** @type {{message?: string}} */ (salesResult.reason)
+        setSales(null); setError(failure.message || 'Bar sales could not be loaded.')
+      }
       if (operationsResult.status === 'fulfilled') { setOperations(operationsResult.value); setOperationsError('') }
-      else { setOperations(null); setOperationsError(operationsResult.reason.message || 'Bar stock and cash-up records could not be loaded.') }
+      else {
+        // The operations helper rejects with the owner API's preserved Error/DOMException values.
+        const failure = /** @type {{message?: string}} */ (operationsResult.reason)
+        setOperations(null); setOperationsError(failure.message || 'Bar stock and cash-up records could not be loaded.')
+      }
     } catch (reason) {
+      // All work in this block is the internal owner API, whose rejection values are Error/DOMException instances.
+      const failure = /** @type {{name?: string, message?: string}} */ (reason)
+      if (controller.signal.aborted || reportRequest.current !== controller || failure?.name === 'AbortError') return
       setSales(null)
       setOperations(null)
-      setError(reason.message || 'Bar sales could not be loaded.')
-    } finally { setLoading(false) }
+      setError(failure.message || 'Bar sales could not be loaded.')
+    } finally { if (reportRequest.current === controller) { reportRequest.current = null; setLoading(false) } }
   }, [from, selectedBar, session?.token, to])
 
-  useEffect(() => { setSales(null); setOperations(null); if (selectedBar) void loadSales() }, [loadSales, selectedBar])
+  useEffect(() => {
+    if (selectedBar) void loadSales()
+    else { reportRequest.current?.abort(); reportRequest.current = null; setSales(null); setOperations(null); setLoading(false) }
+    return () => { reportRequest.current?.abort() }
+  }, [loadSales, selectedBar])
 
+  useEffect(() => () => { reportRequest.current?.abort() }, [])
+
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submitOwnerAccess = async (event) => {
     event.preventDefault()
     setError(''); setNotice(''); setLoading(true)
@@ -190,7 +228,11 @@ export default function BarOwnerProjection() {
         setSession(next)
         setPassword('')
       }
-    } catch (reason) { setError(reason.message || 'Owner sign-in could not be completed.') }
+    } catch (reason) {
+      // Registration/login helpers preserve their service and fetch errors.
+      const failure = /** @type {{message?: string}} */ (reason)
+      setError(failure.message || 'Owner sign-in could not be completed.')
+    }
     finally { setLoading(false) }
   }
 
@@ -201,23 +243,37 @@ export default function BarOwnerProjection() {
       setEnrollment(await createBarOwnerEnrollment(session.token))
       await refreshBars(session.token)
       setNotice('Enter this one-time code in the local Bar Administration screen. The computer will ask you to approve the connection here before it sends data.')
-    } catch (reason) { setError(reason.message || 'A connection code could not be created.') }
+    } catch (reason) {
+      // Enrollment and refresh use the internal owner API error contract.
+      const failure = /** @type {{message?: string}} */ (reason)
+      setError(failure.message || 'A connection code could not be created.')
+    }
     finally { setLoading(false) }
   }
 
+  /** @param {string} keyId */
   const approve = async (keyId) => {
     if (!session?.token) return
     setBusyLink(keyId); setError('')
     try { await approveBarOwnerLink(session.token, keyId); await refreshBars(session.token); setNotice('The Bar connection is approved. Only committed local data can now upload.') }
-    catch (reason) { setError(reason.message || 'The Bar connection could not be approved.') }
+    catch (reason) {
+      // Approval helper preserves its service/fetch error value.
+      const failure = /** @type {{message?: string}} */ (reason)
+      setError(failure.message || 'The Bar connection could not be approved.')
+    }
     finally { setBusyLink('') }
   }
 
+  /** @param {string} keyId */
   const revoke = async (keyId) => {
     if (!session?.token || !window.confirm('Stop future uploads from this Bar and hide its remote data in this owner view? Local Bar trading will continue.')) return
     setBusyLink(keyId); setError('')
     try { await revokeBarOwnerLink(session.token, keyId); await refreshBars(session.token); setSales(null); setOperations(null); setNotice('The link is revoked. New uploads are refused; the local Bar is unchanged.') }
-    catch (reason) { setError(reason.message || 'The Bar link could not be revoked.') }
+    catch (reason) {
+      // Revocation helper preserves its service/fetch error value.
+      const failure = /** @type {{message?: string}} */ (reason)
+      setError(failure.message || 'The Bar link could not be revoked.')
+    }
     finally { setBusyLink('') }
   }
 
@@ -267,7 +323,7 @@ export default function BarOwnerProjection() {
 
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-slate-900">Your Bar connections</h2><p className="mt-1 text-xs text-slate-500">Each connection requires local setup and your approval here.</p></div><button type="button" disabled={loading} onClick={createCode} className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-60"><Link2 size={15} />Create connection code</button></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-slate-900">Your Bar connections</h2><p className="mt-1 text-xs text-slate-500">Each connection requires local setup and your approval here. Each connection covers one outlet; multi-outlet reporting is not available yet.</p></div><button type="button" disabled={loading} onClick={createCode} className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-60"><Link2 size={15} />Create connection code</button></div>
           {enrollment && <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-3"><p className="text-xs font-semibold text-blue-900">One-time code · expires in {Math.ceil(enrollment.expiresIn / 60)} min</p><div className="mt-2 flex flex-wrap items-center gap-2"><code className="min-w-0 flex-1 break-all rounded-lg bg-white px-3 py-2 font-mono text-sm text-blue-950">{enrollment.code}</code><button type="button" onClick={copyCode} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white">{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied' : 'Copy'}</button></div><p className="mt-2 text-xs leading-5 text-blue-900">Enter this code on the local Bar computer. The code only starts a request; no data uploads until you approve the connection below.</p></div>}
           <div className="mt-4 space-y-2">
             {bars.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No Bar computers are linked yet. Create a code, then enter it in the local Bar Administration screen.</p> : bars.map((bar) => <div key={bar.key_id} className="rounded-xl border border-slate-200 p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold text-slate-900">{bar.business_name}</p><p className="mt-1 text-xs text-slate-500">{bar.revoked ? 'Revoked' : bar.active ? 'Approved' : 'Waiting for owner approval'} · last accepted batch {bar.last_ingested_at ? new Date(bar.last_ingested_at).toLocaleString() : 'none yet'}</p></div><div className="flex gap-2">{!bar.active && !bar.revoked && <button type="button" disabled={busyLink === bar.key_id} onClick={() => approve(bar.key_id)} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-60">Approve</button>}{bar.active && !bar.revoked && <button type="button" disabled={busyLink === bar.key_id} onClick={() => revoke(bar.key_id)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-60">Revoke</button>}</div></div></div>)}
@@ -302,8 +358,8 @@ export default function BarOwnerProjection() {
             <Metric label="Cash-up variance" value={formatMoney(operations.summary.submitted_variance_total)} detail="Sum of submitted counted-cash minus expected-cash variance" tone="border-amber-200 bg-amber-50 text-amber-950" icon={Clock3} />
           </div>
           <div className="grid gap-3 xl:grid-cols-2">
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="bar-stock-movement-title"><h3 id="bar-stock-movement-title" className="font-bold text-slate-900">Stock movement history</h3><p className="mt-1 text-xs text-slate-500">Movement records only; this is not a current stock-on-hand balance.</p>{operations.stock_movements.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No stock movements were received in this period.</p> : <div className="mt-3 max-h-96 overflow-auto"><table className="w-full min-w-[500px] border-collapse text-left text-xs"><thead><tr className="border-b border-slate-200 text-slate-500"><th className="py-2 pr-2">Date</th><th className="px-2 py-2">Movement</th><th className="px-2 py-2">SKU / product</th><th className="px-2 py-2 text-right">Change</th><th className="py-2 pl-2 text-right">Recorded quantity</th></tr></thead><tbody>{operations.stock_movements.map((row) => <tr key={`${row.operation_id}:${row.event_type}`} className="border-b border-slate-100"><td className="py-2 pr-2 text-slate-600">{row.business_date}</td><td className="px-2 py-2 text-slate-700">{row.event_type.replace('stock.', '').replaceAll('.', ' ')}</td><td className="px-2 py-2 font-mono text-slate-600">{row.sku || row.product_id.slice(0, 8)}</td><td className="px-2 py-2 text-right tabular-nums">{row.delta}</td><td className="py-2 pl-2 text-right tabular-nums">{row.quantity}</td></tr>)}</tbody></table></div>}</section>
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="bar-cashup-history-title"><h3 id="bar-cashup-history-title" className="font-bold text-slate-900">Cash-up history</h3><p className="mt-1 text-xs text-slate-500">Local cash counts and expected cash; external card settlement is not included.</p>{operations.cashups.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No cash-up events were received in this period.</p> : <div className="mt-3 max-h-96 overflow-auto"><table className="w-full min-w-[500px] border-collapse text-left text-xs"><thead><tr className="border-b border-slate-200 text-slate-500"><th className="py-2 pr-2">Date</th><th className="px-2 py-2">Event</th><th className="px-2 py-2 text-right">Counted cash</th><th className="px-2 py-2 text-right">Expected cash</th><th className="py-2 pl-2 text-right">Variance</th></tr></thead><tbody>{operations.cashups.map((row) => <tr key={`${row.operation_id}:${row.event_type}`} className="border-b border-slate-100"><td className="py-2 pr-2 text-slate-600">{row.business_date}</td><td className="px-2 py-2 text-slate-700">{row.event_type.replace('cashup.', '')}</td><td className="px-2 py-2 text-right tabular-nums">{formatMoney(row.counted_cash)}</td><td className="px-2 py-2 text-right tabular-nums">{formatMoney(row.expected_cash)}</td><td className="py-2 pl-2 text-right font-semibold tabular-nums">{formatMoney(row.variance)}</td></tr>)}</tbody></table></div>}</section>
+            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="bar-stock-movement-title"><h3 id="bar-stock-movement-title" className="font-bold text-slate-900">Stock movement history</h3><p className="mt-1 text-xs text-slate-500">Movement records only; this is not a current stock-on-hand balance.</p>{operations.stock_movements.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No stock movements were received in this period.</p> : <div className="mt-3 max-h-96 overflow-auto"><table className="w-full min-w-[500px] border-collapse text-left text-xs"><thead><tr className="border-b border-slate-200 text-slate-500"><th className="py-2 pr-2">Date</th><th className="px-2 py-2">Movement</th><th className="px-2 py-2">SKU / product</th><th className="px-2 py-2 text-right">Change</th><th className="py-2 pl-2 text-right">Quantity after movement</th></tr></thead><tbody>{operations.stock_movements.map((row) => <tr key={`${row.operation_id}:${row.event_type}`} className="border-b border-slate-100"><td className="py-2 pr-2 text-slate-600">{row.business_date}</td><td className="px-2 py-2 text-slate-700">{row.event_type.replace('stock.', '').replaceAll('.', ' ')}</td><td className="px-2 py-2 font-mono text-slate-600">{row.sku || row.product_id.slice(0, 8)}</td><td className="px-2 py-2 text-right tabular-nums">{row.delta}</td><td className="py-2 pl-2 text-right tabular-nums">{row.quantity ?? (row.remaining_quantity === null ? '—' : `Remaining ${row.remaining_quantity}`)}</td></tr>)}</tbody></table></div>}</section>
+            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="bar-lot-history-title"><h3 id="bar-lot-history-title" className="font-bold text-slate-900">Stock lot inspection history</h3><p className="mt-1 text-xs text-slate-500">Lot releases change sale eligibility; they are not stock movements.</p>{operations.stock_lot_events.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No stock lot releases were received in this period.</p> : <ul className="mt-3 space-y-2">{operations.stock_lot_events.map((row) => <li key={row.operation_id} className="rounded-lg bg-slate-50 p-3 text-xs text-slate-700">{row.business_date} · Lot {(row.lot_id || "").slice(0, 8) || "record"} released for product {row.product_id.slice(0, 8)}</li>)}</ul>}</section><section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="bar-cashup-history-title"><h3 id="bar-cashup-history-title" className="font-bold text-slate-900">Cash-up history</h3><p className="mt-1 text-xs text-slate-500">Local cash counts and expected cash; external card settlement is not included.</p>{operations.cashups.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No cash-up events were received in this period.</p> : <div className="mt-3 max-h-96 overflow-auto"><table className="w-full min-w-[500px] border-collapse text-left text-xs"><thead><tr className="border-b border-slate-200 text-slate-500"><th className="py-2 pr-2">Date</th><th className="px-2 py-2">Event</th><th className="px-2 py-2 text-right">Counted cash</th><th className="px-2 py-2 text-right">Expected cash</th><th className="py-2 pl-2 text-right">Variance</th></tr></thead><tbody>{operations.cashups.map((row) => <tr key={`${row.operation_id}:${row.event_type}`} className="border-b border-slate-100"><td className="py-2 pr-2 text-slate-600">{row.business_date}</td><td className="px-2 py-2 text-slate-700">{row.event_type.replace('cashup.', '')}{row.status ? ` · ${row.status}` : ''}{row.reviewed_by ? ` · reviewed by ${row.reviewed_by.slice(0, 8)}` : ''}</td><td className="px-2 py-2 text-right tabular-nums">{formatMoney(row.counted_cash)}</td><td className="px-2 py-2 text-right tabular-nums">{formatMoney(row.expected_cash)}</td><td className="py-2 pl-2 text-right font-semibold tabular-nums">{formatMoney(row.variance)}</td></tr>)}</tbody></table></div>}</section>
           </div>
           <p className="text-[11px] leading-5 text-slate-500">Only committed events received by the owner receiver are shown. The stock table is an event history, not live inventory; the report does not infer profit or external card settlement.</p>
         </section>}

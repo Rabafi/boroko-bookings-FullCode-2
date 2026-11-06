@@ -34,7 +34,7 @@ test('fresh Bar defers cloud IPC until explicit choice and a new process, while 
     ipc.handle('auth:login', () => { cloudCalls += 1 })
     await assert.rejects(handlers.get('auth:login')({}), { code: 'LOCAL_WORKSPACE_NOT_ROUTED' })
     second.close()
-    const result = runtime.selectCloudWorkspace()
+    const result = await runtime.selectCloudWorkspace()
     assert.equal(result.restart_required, true)
     assert.equal(runtime.cloudStartupDeferred, true)
     const next = new BarLocalElectronRuntime({ userDataPath: dir, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos' })
@@ -44,7 +44,7 @@ test('fresh Bar defers cloud IPC until explicit choice and a new process, while 
     runtime.close()
     const local = writeLocalAuthority(dir)
     assert.equal(local.mode, 'bar_local')
-    assert.throws(() => local.selectCloudWorkspace(), { code: 'WRONG_AUTHORITY' })
+    await assert.rejects(local.selectCloudWorkspace(), { code: 'WRONG_AUTHORITY' })
     local.close()
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -64,6 +64,24 @@ test('a process that already opened the cloud workspace refuses local setup or p
       assert.equal(runtime.status().authority_mode, 'cloud')
     } finally { runtime.close() }
   } finally { rmSync(userDataPath, { recursive: true, force: true }) }
+})
+
+test('a local Bar returns to the parent Restaurant profile without leaving the Bar workspace', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'bar-switch-parent-'))
+  const barUserData = join(parent, 'local-bar-workspace')
+  mkdirSync(barUserData, { recursive: true })
+  const runtime = writeLocalAuthority(barUserData)
+  runtime.dedicatedLocalWorkspace = true
+  try {
+    const result = await runtime.selectCloudWorkspace()
+    assert.deepEqual(result, { restart_required: true, workspace: 'cloud' })
+    assert.equal(runtime.switchingWorkspace, true)
+    assert.equal(readFileSync(join(parent, 'bar-local', 'workspace-choice.json'), 'utf8'), '{"version":1,"workspace":"cloud"}')
+    assert.equal(existsSync(join(barUserData, 'bar-local', 'workspace-choice.json')), false)
+  } finally {
+    runtime.close()
+    rmSync(parent, { recursive: true, force: true })
+  }
 })
 
 test('hotel and lodge do not require the Bar workspace choice', () => {
@@ -402,11 +420,12 @@ test('preload IPC exposes only the fixed local adapter operations', async () => 
       buildProductId: 'hospitality-pos'
     })
     assert.deepEqual([...handlers.keys()], [
-      'barLocal:getStatus', 'barLocal:adminRecoveryStatus', 'barLocal:adminCopyRecoverySet', 'barLocal:adminChooseRecoveryDestination', 'barLocal:adminRecoveryJob', 'barLocal:adminCreateRecoveryBase', 'barLocal:adminVerifyRecoveryPoint', 'barLocal:adminExportRecoveryKeys', 'barLocal:trainingLaunch', 'barLocal:trainingBegin', 'barLocal:trainingReset',
+      'barLocal:getStatus', 'barLocal:getChooserEntry', 'barLocal:linkChooserDraft', 'barLocal:adminRecoveryStatus', 'barLocal:adminCopyRecoverySet', 'barLocal:adminChooseRecoveryDestination', 'barLocal:adminRecoveryJob', 'barLocal:adminCreateRecoveryBase', 'barLocal:adminVerifyRecoveryPoint', 'barLocal:adminExportRecoveryKeys', 'barLocal:trainingLaunch', 'barLocal:trainingBegin', 'barLocal:trainingReset',
       'barLocal:serverSetupPreflight', 'barLocal:serverSetupStatus', 'barLocal:serverSetupBegin', 'barLocal:serverSetupUpdateOwnerEmail', 'barLocal:serverSetupResume', 'barLocal:serverSetupCancel',
-      'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:consumePostSetupNotice', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
+      'barLocal:selectLocalBarWorkspace', 'barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:setupOwner', 'barLocal:pairDevice', 'barLocal:reconnectServer', 'barLocal:resumeProvisioning', 'barLocal:login', 'barLocal:verifyManagerPin', 'barLocal:consumePostSetupNotice', 'barLocal:recoverOwnerPassword', 'barLocal:logout',
       'barLocal:startPairing',
       'barLocal:query', 'barLocal:requestApprovalForCommand', 'barLocal:command', 'barLocal:retryOperation',
+      'barLocal:nativeHposProductSave', 'barLocal:nativeHposProductRetry', 'barLocal:nativeHposMenuRead',
       'barLocal:getOpenIntents', 'barLocal:getOperation',
       'barLocal:adminStatus', 'barLocal:adminBackups', 'barLocal:adminRunBackup', 'barLocal:adminVerifyBackup',
       'barLocal:adminRestoreDrill',

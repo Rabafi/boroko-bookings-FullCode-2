@@ -14,9 +14,8 @@ import {
 } from '../../src/renderer/src/components/hospitality-pos/bar-local/tenderMath.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const workspace = join(root, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx')
+const nativeTill = join(root, 'src/renderer/src/components/hospitality-pos/bar-local/nativeTillApi.js')
 const client = join(root, 'src/main/bar-local/client.js')
-const tenderEditor = join(root, 'src/renderer/src/components/hospitality-pos/bar-local/BarLocalTenderEditor.jsx')
 
 test('money conversion round-trips exact minor units', () => {
   assert.equal(moneyToCents('11.46'), 1146)
@@ -61,15 +60,6 @@ test('local room charges are refused with the required hotel-authority boundary'
   const evaluation = evaluateTenders({ totalCents: 2500, rows: [makeTenderRow({ method: 'room_charge', amount: '25.00', reference: 'ROOM-1' })] })
   assert.match(evaluation.error, /unavailable in local Bar.*hotel authority/)
   assert.deepEqual(evaluation.tenders, [])
-})
-
-test('Modern tender editor labels external status locally and offers no provider-confirmed control', () => {
-  const source = readFileSync(tenderEditor, 'utf8')
-  assert.match(source, /Recorded locally only/)
-  assert.match(source, /cannot verify provider authorisation or settlement/)
-  assert.doesNotMatch(source, /value="provider_confirmed"/)
-  assert.match(source, /value="room_charge" disabled/)
-  assert.match(source, /Room charges require the hotel authority/)
 })
 
 test('short, excess, and over-tendered non-cash tenders are refused with actionable errors', () => {
@@ -122,23 +112,19 @@ test('tender row helpers keep at least one row and cap the contract maximum', ()
   assert.equal(removeTenderRow(rows, rows[0].id).length, 1)
 })
 
-test('the counter sale builds tenders from the shared evaluator and never authors payment state', () => {
-  const source = readFileSync(workspace, 'utf8')
-  assert.match(source, /evaluateTenders\(\{ totalCents, rows: saleTenderRows \}\)/)
-  assert.match(source, /tenders: evaluation\.tenders/)
-  assert.match(source, /onApprovedCommand=\{submitApprovedCommand\}/)
-  assert.match(source, /requestApprovalForCommand\(\{ command, payload, pin: approvalPin, operation_id: operationId \}\)/)
+test('the original Till adapter uses the shared evaluator and never authors payment state', () => {
+  const source = readFileSync(nativeTill, 'utf8')
+  assert.match(source, /evaluateTenders\(\{ totalCents: due, rows \}\)/)
+  assert.match(source, /tenders: tenders\.tenders/)
+  assert.match(source, /requestApprovalForCommand\(\{ command: 'sale\.commit', payload, operation_id: operationId, pin: approvalPin \}\)/)
   assert.doesNotMatch(source, /payment_status\s*:/)
   assert.doesNotMatch(source, /amount_paid/)
 })
 
-test('the workspace mounts the split-tender, tabs, and operations surfaces', () => {
-  const source = readFileSync(workspace, 'utf8')
-  assert.match(source, /<BarLocalTenderEditor/)
-  assert.match(source, /<BarLocalTabsPanel/)
-  assert.match(source, /<BarLocalOperationsPanel/)
-  assert.match(source, /canUseStoreCredit=\{canUseCustomers\}/)
-  assert.match(source, /canUseVoucher=\{canUseVouchers\}/)
+test('the original Till routes local open tabs to their established workspace', () => {
+  const source = readFileSync(nativeTill, 'utf8')
+  assert.match(source, /Use Open tabs to settle a local tab/)
+  assert.match(source, /Open and change local tabs from Open tabs/)
 })
 
 test('approval-bearing commands remain allowlisted and mapped to a capability', () => {

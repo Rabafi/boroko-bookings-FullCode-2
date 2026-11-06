@@ -5,7 +5,10 @@ import { subscribeRuntimeEvent } from '../lib/runtime'
 import { isFrontDeskConversation, upsertFrontDeskNotification } from '../lib/frontDeskNotifications'
 import { normalizeSupportMessages, supportMessageSide } from '@shared/supportThreads'
 
-const InboxContext = createContext({
+/** @typedef {Record<string, unknown> & {id?: unknown, lodge_id?: unknown, category?: unknown, manager_has_unread?: unknown, updated_at?: unknown, created_at?: unknown, messages?: unknown}} InboxConversationExpectedView */
+/** @typedef {{conversations: InboxConversationExpectedView[], loading: boolean, error: string, unreadCount: number, refresh: () => void, refreshFresh: () => void, updateConversation: (ticketId: unknown, updates: Record<string, unknown>) => void}} InboxContextValue */
+
+const InboxContext = createContext(/** @type {InboxContextValue} */ ({
   conversations: [],
   loading: false,
   error: '',
@@ -13,17 +16,20 @@ const InboxContext = createContext({
   refresh: () => {},
   refreshFresh: () => {},
   updateConversation: () => {}
-})
+}))
 
+/** @param {InboxConversationExpectedView} request */
 function latestMessage(request) {
   const messages = normalizeSupportMessages(request)
   return messages[messages.length - 1] || null
 }
 
+/** @param {InboxConversationExpectedView} request */
 function conversationTimestamp(request) {
   return request?.updated_at || latestMessage(request)?.created_at || request?.created_at || ''
 }
 
+/** @param {InboxConversationExpectedView} request */
 function latestDeskMessageVersion(request) {
   const messages = normalizeSupportMessages(request)
   const latestDeskMessage = [...messages].reverse().find((message) => supportMessageSide(message) === 'desk')
@@ -32,17 +38,18 @@ function latestDeskMessageVersion(request) {
     request?.id || '',
     latestDeskMessage?.id || '',
     latestDeskMessage?.created_at || '',
-    latestDeskMessage?.body || latestDeskMessage?.message || ''
+    latestDeskMessage?.body || ''
   ].map((part) => String(part ?? '').trim()).join('|')
 }
 
+/** @param {{children: import('react').ReactNode}} props */
 export function InboxProvider({ children }) {
   const { user } = useAuth()
-  const [conversations, setConversations] = useState([])
+  const [conversations, setConversations] = useState(/** @type {InboxConversationExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const mountedRef = useRef(true)
-  const lastLoadRef = useRef(null)
+  const lastLoadRef = useRef(/** @type {number|null} */ (null))
   const conversationCountRef = useRef(0)
   const previousUnreadVersionsRef = useRef(new Map())
   const initialLoadDoneRef = useRef(false)
@@ -60,7 +67,8 @@ export function InboxProvider({ children }) {
       if (!Array.isArray(rows)) {
         throw new Error('Unexpected response from server.')
       }
-      const filtered = rows.filter(isFrontDeskConversation)
+      // API/cache rows remain unvalidated; this view names only fields consumed by the current inbox.
+      const filtered = /** @type {InboxConversationExpectedView[]} */ (rows).filter(isFrontDeskConversation)
       filtered.sort((left, right) => String(conversationTimestamp(right)).localeCompare(String(conversationTimestamp(left))))
 
       const currentUnreadVersions = new Map()
@@ -85,9 +93,9 @@ export function InboxProvider({ children }) {
     } catch (err) {
       if (!mountedRef.current) return
       if (conversationCountRef.current > 0) {
-        setError(err?.message || 'Refresh failed. Showing last known conversations.')
+        setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Refresh failed. Showing last known conversations.')
       } else {
-        setError(err?.message || 'Inbox could not load.')
+        setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Inbox could not load.')
       }
     }
     setLoading(false)
@@ -125,7 +133,7 @@ export function InboxProvider({ children }) {
     return conversations.filter((c) => c.manager_has_unread === true).length
   }, [conversations])
 
-  const updateConversation = useCallback((ticketId, updates) => {
+  const updateConversation = useCallback((/** @type {unknown} */ ticketId, /** @type {Record<string, unknown>} */ updates) => {
     setConversations((current) =>
       current.map((c) => (c.id === ticketId ? { ...c, ...updates } : c))
     )

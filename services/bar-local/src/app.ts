@@ -250,6 +250,7 @@ export function createApp(options: AppOptions) {
   const replacementChallengeLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
   const pairingLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
   const approvalLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
+  const managePinLimiter: RateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 })
 
   async function setupOwner(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
     if (!isLoopbackRequest(req)) {
@@ -731,6 +732,23 @@ export function createApp(options: AppOptions) {
     }, id)
   }
 
+  async function verifyManagerPin(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+    const auth = await authenticate(ctx, req)
+    managePinLimiter.check(`${auth.context.business_id}:${auth.deviceId}:${auth.context.staff_id}`)
+    const body = await readJson(req, { limitBytes: config.http.bodyLimitBytes })
+    keys(body, 'body', ['staff_id', 'pin'])
+    const staffId = uuid(body.staff_id, 'staff_id')
+    if (staffId !== auth.context.staff_id) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.CAPABILITY_DENIED, 'Only the signed-in manager can unlock this Manage session.', { httpStatus: 403 })
+    }
+    const pin = validatePin(body.pin)
+    const approver = await resolveApprover(ctx, auth, pin, 'staff.manage', staffId)
+    if (approver.id !== staffId) {
+      throw new BarLocalError(BAR_LOCAL_ERROR_CODES.CAPABILITY_DENIED, 'Only the signed-in manager can unlock this Manage session.', { httpStatus: 403 })
+    }
+    sendJson(res, 200, { ok: true, verified: true, staff_id: approver.id }, id)
+  }
+
   async function submitCommand(ctx: AppContext, req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
     requireWriteAuthority()
     const auth = await authenticate(ctx, req)
@@ -751,7 +769,7 @@ export function createApp(options: AppOptions) {
     const outcome = typeof result === 'object' && result !== null && 'outcome' in result
       ? (result as { outcome?: unknown }).outcome
       : undefined
-    if (cloudSync && envelope.command === 'cashup.submit' && outcome === 'committed_local') {
+    if (cloudSync && (envelope.command === 'cashup.submit' || envelope.command === 'cashup.handover') && outcome === 'committed_local') {
       // Cash-up has already committed locally. The final upload is a hint that
       // must never delay or fail the cashier's committed result.
       cloudSync.requestFinalSync('cashup.submit')
@@ -785,7 +803,7 @@ export function createApp(options: AppOptions) {
     if (!result) {
       throw new BarLocalError(BAR_LOCAL_ERROR_CODES.INTERNAL_ERROR, 'The local authority returned no query result.', { httpStatus: 500 })
     }
-    const validated = validateQueryResult(result)
+    const validated = validateQueryResult(result, { allowNullData: queryName === 'shift.current' })
     sendJson(res, 200, { ...validated, ok: true, query: envelope.query }, id)
   }
 
@@ -938,6 +956,10 @@ export function createApp(options: AppOptions) {
       }
       if (req.method === 'POST' && pathname === '/v1/approvals') {
         await createApproval(ctx, req, res, id)
+        return
+      }
+      if (req.method === 'POST' && pathname === '/v1/manager-pin/verify') {
+        await verifyManagerPin(ctx, req, res, id)
         return
       }
       if (req.method === 'POST' && pathname === '/v1/commands') {

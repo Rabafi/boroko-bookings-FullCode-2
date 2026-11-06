@@ -1,14 +1,15 @@
 // @ts-check
 import { createClient } from '@supabase/supabase-js';
 import { state } from '../state.js';
+import { MANAGER_RESET_PASSWORD_URL } from '../../shared/publicEndpoints.js';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 const AUTH_REDIRECT_URL = (
-process.env.BOROKO_AUTH_REDIRECT_URL ||
-import.meta.env.VITE_AUTH_REDIRECT_URL ||
-'').
-trim();
+  process.env.BOROKO_AUTH_REDIRECT_URL ||
+  import.meta.env.VITE_AUTH_REDIRECT_URL ||
+  MANAGER_RESET_PASSWORD_URL
+).trim();
 
 /** @param {string} label @param {Record<string, unknown>} [payload] */
 function authTrace(label, payload = {}) {

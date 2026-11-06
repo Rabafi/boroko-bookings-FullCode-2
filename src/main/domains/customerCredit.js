@@ -8,6 +8,23 @@ import { recordCriticalError } from './operationalLog.js';
 const CREDIT_IN_TYPES = new Set(['receipt', 'adjustment_in', 'reversal_in']);
 const CREDIT_OUT_TYPES = new Set(['booking_allocation', 'refund', 'adjustment_out', 'reversal_out']);
 
+/** Expected row view for cache/SQL ledger consumers; JSON and RPC row fields are not validated here.
+ * @typedef {{id?: unknown, lodge_id?: unknown, customer_id?: unknown, entry_type?: string, amount?: unknown, created_at?: unknown, _pending_sync?: unknown, _sync_state?: unknown, _sync_error?: unknown, reverses_entry_id?: unknown, booking_id?: unknown, payment_id?: unknown, method?: unknown, reference?: unknown, notes?: unknown, recorded_by?: unknown, approved_by?: unknown, _offline_snapshot?: unknown, _confirmed_balance?: unknown, [key: string]: unknown}} CustomerCreditEntryExpectedView
+ */
+/** @typedef {{customer_id?: unknown, customer_name?: unknown, customer_phone?: unknown, customer_email?: unknown, balance?: unknown, latest_entry_at?: unknown, _pending_sync?: unknown, _confirmed_balance?: unknown, _offline_snapshot?: unknown, [key: string]: unknown}} CustomerCreditSummaryExpectedView */
+/** @typedef {{id?: unknown, name?: unknown, phone?: unknown, email?: unknown, [key: string]: unknown}} CustomerExpectedView */
+/** @typedef {{id?: unknown, total_amount?: unknown, charges_total?: unknown, amount_paid?: unknown, _pending_sync?: unknown, updated_at?: unknown, [key: string]: unknown}} BookingCreditExpectedView */
+/** @typedef {{customerId?: string, amount?: number, method?: string, reference?: string|null, notes?: string|null, recordedBy?: unknown, idempotencyKey?: string, operationId?: string, operationKey?: string}} RecordCustomerCreditInput */
+/** @typedef {{customerId?: string, bookingId?: string, amount?: number, notes?: string|null, recordedBy?: unknown, expectedBookingUpdatedAt?: string|null, idempotencyKey?: string, operationId?: string, operationKey?: string}} ApplyCustomerCreditInput */
+/** @typedef {{customerId?: string, amount?: number, method?: string, reference?: string|null, notes?: string|null, requestedBy?: unknown, approvedBy?: unknown, idempotencyKey?: string, operationId?: string, operationKey?: string}} RefundCustomerCreditInput */
+/** @typedef {{entryId?: string, notes?: string|null, recordedBy?: unknown, idempotencyKey?: string, operationId?: string, operationKey?: string}} ReverseCustomerCreditInput */
+/** @typedef {{config?: unknown, operationId?: unknown, operationKey?: unknown, idempotencyKey?: unknown}} SetPrepaymentConfigInput */
+/** @typedef {{artifactSha256?: unknown, fileName?: unknown, rowCount?: unknown, startAt?: unknown, endAt?: unknown}} PrepaymentExportAuditInput */
+/** @typedef {{success?: unknown, error?: string, [key: string]: unknown}} PrepaymentReadExpectedView */
+/** Expected SQL JSON result view; the consuming guards below remain the runtime authority.
+ * @typedef {{success?: unknown, error?: string, balance?: unknown, entry_id?: string, reversal_entry_id?: string, receipt_number?: string|null, payment_id?: string|null, amount_paid?: unknown, payment_status?: string, [key: string]: unknown}} CustomerCreditRpcExpectedView
+ */
+
 /** @param {unknown} value @param {string} [label] */
 function requireStableOperationId(value, label = 'operation') {
   const key = String(value || '').trim();
@@ -17,8 +34,10 @@ function requireStableOperationId(value, label = 'operation') {
   return key;
 }
 
+/** @param {CustomerCreditEntryExpectedView} [entry] */
 function appendPendingCreditEntry(entry = {}) {
-  const cached = readCache('customer-credit-ledger') || [];
+  // Cache reads are expected to contain ledger rows written by this module or cache refresh; no JSON validation is implied.
+  const cached = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []);
   const next = [
     ...cached.filter((row) => row?.id !== entry.id),
     {
@@ -31,9 +50,11 @@ function appendPendingCreditEntry(entry = {}) {
   writeCache('customer-credit-ledger', next);
 }
 
+/** @param {CustomerCreditEntryExpectedView[]} [rows] */
 function mergeCreditLedgerRows(rows = []) {
-  if (!Array.isArray(rows) || rows.length === 0) return readCache('customer-credit-ledger') || [];
-  const cached = readCache('customer-credit-ledger') || [];
+  if (!Array.isArray(rows) || rows.length === 0) return /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []);
+  // readCache parses JSON without validating row shape; this is the existing ledger consumer view.
+  const cached = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []);
   const incomingIds = new Set(rows.map((entry) => entry?.id).filter(Boolean));
   const merged = [
     ...rows,
@@ -43,10 +64,12 @@ function mergeCreditLedgerRows(rows = []) {
   return merged;
 }
 
+/** @param {CustomerCreditSummaryExpectedView[]} [rows] */
 function mergeCreditSummaryRows(rows = []) {
-  if (!Array.isArray(rows) || rows.length === 0) return readCache('customer-credit-summary') || [];
+  if (!Array.isArray(rows) || rows.length === 0) return /** @type {CustomerCreditSummaryExpectedView[]} */ (readCache('customer-credit-summary') || []);
   const incomingIds = new Set(rows.map((row) => row?.customer_id).filter(Boolean));
-  const cached = readCache('customer-credit-summary') || [];
+  // readCache parses JSON without validating row shape; this is the existing summary consumer view.
+  const cached = /** @type {CustomerCreditSummaryExpectedView[]} */ (readCache('customer-credit-summary') || []);
   const merged = [
     ...rows.map((row) => ({ ...row, _confirmed_balance: true })),
     ...cached.filter((row) => !incomingIds.has(row?.customer_id))
@@ -55,11 +78,13 @@ function mergeCreditSummaryRows(rows = []) {
   return merged;
 }
 
+/** @param {unknown} customerId @param {number} balance @param {Partial<CustomerCreditSummaryExpectedView>} [patch] */
 function patchCreditSummaryBalance(customerId, balance, patch = {}) {
   if (!customerId) return;
-  const customers = readCache('customers') || [];
+  // The cache producer stores customer rows; parsed cache values remain unvalidated.
+  const customers = /** @type {CustomerExpectedView[]} */ (readCache('customers') || []);
   const customer = customers.find((row) => row?.id === customerId) || {};
-  const cached = readCache('customer-credit-summary') || [];
+  const cached = /** @type {CustomerCreditSummaryExpectedView[]} */ (readCache('customer-credit-summary') || []);
   const nextRow = {
     customer_id: customerId,
     customer_name: customer.name || 'Customer',
@@ -76,7 +101,7 @@ function patchCreditSummaryBalance(customerId, balance, patch = {}) {
   ]);
 }
 
-/** @param {unknown} customerId @param {unknown} value */
+/** @param {unknown} customerId @param {unknown} value @param {Partial<CustomerCreditSummaryExpectedView>} [patch] @returns {boolean} */
 function patchAuthoritativeCreditBalance(customerId, value, patch = {}) {
   const balance = Number(value);
   if (!Number.isFinite(balance)) return false;
@@ -84,17 +109,22 @@ function patchAuthoritativeCreditBalance(customerId, value, patch = {}) {
   return true;
 }
 
+/** @param {CustomerCreditEntryExpectedView[]} [entries] */
 function creditLedgerDelta(entries = []) {
   return entries.reduce((sum, e) => {
-    if (CREDIT_IN_TYPES.has(e.entry_type)) return sum + Number(e.amount || 0);
-    if (CREDIT_OUT_TYPES.has(e.entry_type)) return sum - Number(e.amount || 0);
+    // Type-only at this membership boundary: Set.has keeps the original strict
+    // equality semantics, so missing or malformed persisted values still miss.
+    if (CREDIT_IN_TYPES.has(/** @type {string} */ (e.entry_type))) return sum + Number(e.amount || 0);
+    if (CREDIT_OUT_TYPES.has(/** @type {string} */ (e.entry_type))) return sum - Number(e.amount || 0);
     return sum;
   }, 0);
 }
 
+/** @param {unknown} customerId @returns {number} */
 function getCachedCreditBalance(customerId) {
-  const entries = readCache('customer-credit-ledger') || [];
-  const confirmedSummary = (readCache('customer-credit-summary') || [])
+  // These cache views describe existing module writers, not runtime validation of persisted JSON.
+  const entries = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []);
+  const confirmedSummary = /** @type {CustomerCreditSummaryExpectedView[]} */ (readCache('customer-credit-summary') || [])
     .find((row) => row?.customer_id === customerId && row?._confirmed_balance !== false);
   if (confirmedSummary) {
     const pendingDelta = creditLedgerDelta(entries.filter((e) =>
@@ -107,8 +137,9 @@ function getCachedCreditBalance(customerId) {
   return Math.round(balance * 100) / 100;
 }
 
+/** @param {unknown} bookingId @param {unknown} amount @returns {(BookingCreditExpectedView & Record<string, unknown>)|null} */
 function patchCachedBookingCreditEstimate(bookingId, amount) {
-  const cachedBookings = readCache('bookings') || [];
+  const cachedBookings = /** @type {BookingCreditExpectedView[]} */ (readCache('bookings') || []);
   const idx = cachedBookings.findIndex((booking) => booking?.id === bookingId);
   if (idx < 0) return null;
   const current = cachedBookings[idx];
@@ -133,6 +164,7 @@ function patchCachedBookingCreditEstimate(bookingId, amount) {
   return next;
 }
 
+/** @param {CustomerCreditEntryExpectedView} [entry] @returns {string|null} */
 function getCreditQueueIdForEntry(entry = {}) {
   if (!entry?.id) return null;
   if (entry.entry_type === 'receipt') return `customer-credit-${entry.id}`;
@@ -142,6 +174,7 @@ function getCreditQueueIdForEntry(entry = {}) {
   return `customer-credit-${entry.id}`;
 }
 
+/** @param {unknown} customerId */
 export async function getCustomerCreditBalance(customerId) {
   if (!customerId) return { success: false, unavailable: true, error: 'Customer ID is required.' };
   if (!state.isOnline) {
@@ -154,12 +187,13 @@ export async function getCustomerCreditBalance(customerId) {
     };
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_customer_credit_balance', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_customer_credit_balance', {
       p_lodge_id: state.lodgeId,
       p_customer_id: customerId
     });
     if (error) throw new Error(error.message);
-    const result = data;
+    // The RPC result is dynamic JSON; the existing success/balance guards below validate only those facts.
+    const result = /** @type {CustomerCreditRpcExpectedView|null} */ (data);
     const numericBalance = Number(result?.balance);
     if (!result || typeof result !== 'object' || result.success !== true || !Number.isFinite(numericBalance)) {
       throw new Error('The authoritative customer-credit balance response was unavailable or malformed.');
@@ -173,17 +207,18 @@ export async function getCustomerCreditBalance(customerId) {
   }
 }
 
+/** @param {unknown} customerId @param {number} [limit] @param {number} [offset] */
 export async function getCustomerCreditHistory(customerId, limit = 50, offset = 0) {
   if (!customerId) return [];
   if (!state.isOnline) {
-    return (readCache('customer-credit-ledger') || [])
+    return (/** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []))
       .filter((entry) => entry?.customer_id === customerId && entry?.lodge_id === state.lodgeId)
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
       .slice(Number(offset || 0), Number(offset || 0) + Number(limit || 50))
       .map((entry) => ({ ...entry, _offline_snapshot: true, _confirmed_balance: false }));
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_customer_credit_history', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_customer_credit_history', {
       p_lodge_id: state.lodgeId,
       p_customer_id: customerId,
       p_limit: limit,
@@ -191,7 +226,8 @@ export async function getCustomerCreditHistory(customerId, limit = 50, offset = 
     });
     if (error) throw new Error(error.message);
     if (!Array.isArray(data)) throw new Error('The authoritative customer-credit history response was unavailable or malformed.');
-    const rows = data;
+    // The RPC's array envelope is guarded above; individual JSON row fields remain unvalidated.
+    const rows = /** @type {CustomerCreditEntryExpectedView[]} */ (data);
     mergeCreditLedgerRows(rows);
     return rows;
   } catch (error) {
@@ -200,12 +236,13 @@ export async function getCustomerCreditHistory(customerId, limit = 50, offset = 
   }
 }
 
+/** @param {string|null} [search] @param {number} [limit] @param {number} [offset] */
 export async function getCustomerCreditSummary(search = null, limit = 50, offset = 0) {
   if (!state.isOnline) {
     const needle = String(search || '').trim().toLowerCase();
-    const customers = readCache('customers') || [];
-    const byCustomer = new Map();
-    for (const summary of readCache('customer-credit-summary') || []) {
+    const customers = /** @type {CustomerExpectedView[]} */ (readCache('customers') || []);
+    const byCustomer = new Map(/** @type {Array<[unknown, CustomerCreditSummaryExpectedView]>} */ ([]));
+    for (const summary of /** @type {CustomerCreditSummaryExpectedView[]} */ (readCache('customer-credit-summary') || [])) {
       if (!summary?.customer_id) continue;
       byCustomer.set(summary.customer_id, {
         ...summary,
@@ -230,7 +267,7 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
         _offline_snapshot: true
       });
     }
-    for (const entry of readCache('customer-credit-ledger') || []) {
+    for (const entry of /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || [])) {
       if (entry?.lodge_id !== state.lodgeId || !entry?.customer_id) continue;
       const row = byCustomer.get(entry.customer_id) || {
         customer_id: entry.customer_id,
@@ -258,7 +295,7 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
       .slice(Number(offset || 0), Number(offset || 0) + Number(limit || 50));
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_customer_credit_summary', {
+    const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('get_customer_credit_summary', {
       p_lodge_id: state.lodgeId,
       p_search: search || null,
       p_limit: limit,
@@ -266,7 +303,8 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
     });
     if (error) throw new Error(error.message);
     if (!Array.isArray(data)) throw new Error('The authoritative customer-credit summary response was unavailable or malformed.');
-    const rows = data;
+    // The RPC's array envelope is guarded above; individual JSON row fields remain unvalidated.
+    const rows = /** @type {CustomerCreditSummaryExpectedView[]} */ (data);
     mergeCreditSummaryRows(rows);
     return rows;
   } catch (error) {
@@ -278,6 +316,7 @@ export async function getCustomerCreditSummary(search = null, limit = 50, offset
   }
 }
 
+/** @param {RecordCustomerCreditInput} input Expected IPC fields from Prepayments; the SQL RPC remains authoritative. */
 export async function recordCustomerCredit({
   customerId,
   amount,
@@ -298,7 +337,7 @@ export async function recordCustomerCredit({
     const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'receipt');
 
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('record_customer_credit', {
+      const { data: rawResult, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('record_customer_credit', {
         p_lodge_id: state.lodgeId,
         p_customer_id: customerId,
         p_amount: Number(amount),
@@ -309,13 +348,15 @@ export async function recordCustomerCredit({
         p_recorded_by: recordedBy || state.currentUser?.id || null
       });
       if (error) throw new Error(error.message);
+      // SQL returns dynamic JSON; retain the existing success check and pass-through result fields.
+      const result = /** @type {CustomerCreditRpcExpectedView|null} */ (rawResult);
       if (!result?.success) throw new Error(result?.error || 'Could not record customer credit');
 
       patchAuthoritativeCreditBalance(customerId, result.balance);
       await refreshCache('customers');
-      const postedHistory = await getCustomerCreditHistory(customerId, 100, 0).catch(() => []);
+      const postedHistory = /** @type {CustomerCreditEntryExpectedView[]} */ (await getCustomerCreditHistory(customerId, 100, 0).catch(() => []));
       const postedEntry = postedHistory.find((entry) => entry.id === result.entry_id);
-      const customer = readCache('customers').find((c) => c.id === customerId);
+      const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
       logActivity(
         'customer_credit_received',
         `Advance payment received · ${customer?.name || 'Customer'} · ${Number(amount).toFixed(2)} (${method})`
@@ -362,7 +403,7 @@ export async function recordCustomerCredit({
       }, null, { _queue_id: `customer-credit-${entry.id}` });
 
       const balanceResult = await getCustomerCreditBalance(customerId);
-      const customer = readCache('customers').find((c) => c.id === customerId);
+      const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
       logActivity(
         'customer_credit_received',
         `Advance payment received (offline) · ${customer?.name || 'Customer'} · ${Number(amount).toFixed(2)} (${method})`
@@ -387,6 +428,7 @@ export async function recordCustomerCredit({
   }
 }
 
+/** @param {ApplyCustomerCreditInput} input Expected IPC fields from Prepayments/Bookings; the SQL RPC remains authoritative. */
 export async function applyCustomerCreditToBooking({
   customerId,
   bookingId,
@@ -413,7 +455,7 @@ export async function applyCustomerCreditToBooking({
         throw new Error('Available customer credit is not enough for this allocation.');
       }
       const entryId = randomUUID();
-      const booking = readCache('bookings').find((row) => row?.id === bookingId) || null;
+      const booking = /** @type {BookingCreditExpectedView[]} */ (readCache('bookings')).find((row) => row?.id === bookingId) || null;
       const entry = {
         id: entryId,
         lodge_id: state.lodgeId,
@@ -446,7 +488,7 @@ export async function applyCustomerCreditToBooking({
         ...(booking?._pending_sync ? { _depends_on: `booking-${bookingId}` } : {})
       });
 
-      const customer = readCache('customers').find((c) => c.id === customerId);
+      const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
       logActivity(
         'customer_credit_allocated',
         `Credit applied to booking (offline) · ${customer?.name || 'Customer'} · ${numericAmount.toFixed(2)}`
@@ -465,7 +507,7 @@ export async function applyCustomerCreditToBooking({
       };
     }
 
-    const { data: result, error } = await state.supabase.rpc('apply_customer_credit_to_booking', {
+    const { data: rawResult, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('apply_customer_credit_to_booking', {
       p_lodge_id: state.lodgeId,
       p_customer_id: customerId,
       p_booking_id: bookingId,
@@ -476,12 +518,14 @@ export async function applyCustomerCreditToBooking({
       p_expected_booking_updated_at: expectedBookingUpdatedAt || null
     });
     if (error) throw new Error(error.message);
+    // SQL returns dynamic JSON; retain the existing success check and pass-through result fields.
+    const result = /** @type {CustomerCreditRpcExpectedView|null} */ (rawResult);
     if (!result?.success) throw new Error(result?.error || 'Could not apply customer credit');
 
     patchAuthoritativeCreditBalance(customerId, result.balance);
     await refreshCache('bookings');
 
-    const customer = readCache('customers').find((c) => c.id === customerId);
+    const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
     logActivity(
       'customer_credit_allocated',
       `Credit applied to booking · ${customer?.name || 'Customer'} · ${Number(amount).toFixed(2)}`
@@ -507,6 +551,7 @@ export async function applyCustomerCreditToBooking({
   }
 }
 
+/** @param {RefundCustomerCreditInput} input Expected IPC fields from Prepayments; the SQL RPC remains authoritative. */
 export async function refundCustomerCredit({
   customerId,
   amount,
@@ -563,7 +608,7 @@ export async function refundCustomerCredit({
         p_approved_by: approvedBy || state.currentUser?.id || null
       }, null, { _queue_id: `customer-credit-refund-${entryId}` });
 
-      const customer = readCache('customers').find((c) => c.id === customerId);
+      const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
       logActivity(
         'customer_credit_refunded',
         `Credit refund queued (offline) · ${customer?.name || 'Customer'} · ${numericAmount.toFixed(2)} (${method})`
@@ -578,7 +623,7 @@ export async function refundCustomerCredit({
       };
     }
 
-    const { data: result, error } = await state.supabase.rpc('refund_customer_credit', {
+    const { data: rawResult, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('refund_customer_credit', {
       p_lodge_id: state.lodgeId,
       p_customer_id: customerId,
       p_amount: Number(amount),
@@ -590,10 +635,12 @@ export async function refundCustomerCredit({
       p_approved_by: approvedBy || state.currentUser?.id || null
     });
     if (error) throw new Error(error.message);
+    // SQL returns dynamic JSON; retain the existing success check and pass-through result fields.
+    const result = /** @type {CustomerCreditRpcExpectedView|null} */ (rawResult);
     if (!result?.success) throw new Error(result?.error || 'Could not refund customer credit');
 
     patchAuthoritativeCreditBalance(customerId, result.balance);
-    const customer = readCache('customers').find((c) => c.id === customerId);
+    const customer = /** @type {CustomerExpectedView[]} */ (readCache('customers')).find((c) => c.id === customerId);
     logActivity(
       'customer_credit_refunded',
       `Credit refunded · ${customer?.name || 'Customer'} · ${Number(amount).toFixed(2)} (${method})`
@@ -615,6 +662,7 @@ export async function refundCustomerCredit({
   }
 }
 
+/** @param {ReverseCustomerCreditInput} input Expected IPC fields from Prepayments; the SQL RPC remains authoritative. */
 export async function reverseCustomerCreditEntry({
   entryId,
   notes,
@@ -629,15 +677,17 @@ export async function reverseCustomerCreditEntry({
 
     const idempotencyKey = requireStableOperationId(callerIdempotencyKey || operationId || operationKey, 'reversal');
     if (!state.isOnline) {
-      const original = (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
+      const original = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
       if (!original) throw new Error('Credit entry not found in offline ledger.');
       if (original.entry_type?.startsWith?.('reversal_')) {
         throw new Error('Reversal entries cannot be reversed.');
       }
-      const alreadyReversed = (readCache('customer-credit-ledger') || []).some((entry) => entry?.reverses_entry_id === entryId);
+      const alreadyReversed = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []).some((entry) => entry?.reverses_entry_id === entryId);
       if (alreadyReversed) throw new Error('This credit entry has already been reversed.');
       const reversalEntryId = randomUUID();
-      const reversalType = CREDIT_IN_TYPES.has(original.entry_type) ? 'reversal_out' : 'reversal_in';
+      // The assertion changes only static typing; Set.has still compares the
+      // persisted value exactly and returns false for missing/malformed values.
+      const reversalType = CREDIT_IN_TYPES.has(/** @type {string} */ (original.entry_type)) ? 'reversal_out' : 'reversal_in';
       appendPendingCreditEntry({
         id: reversalEntryId,
         lodge_id: state.lodgeId,
@@ -679,7 +729,7 @@ export async function reverseCustomerCreditEntry({
       };
     }
 
-    const { data: result, error } = await state.supabase.rpc('reverse_customer_credit_entry', {
+    const { data: rawResult, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('reverse_customer_credit_entry', {
       p_lodge_id: state.lodgeId,
       p_entry_id: entryId,
       p_notes: notes || '',
@@ -687,9 +737,11 @@ export async function reverseCustomerCreditEntry({
       p_recorded_by: recordedBy || state.currentUser?.id || null
     });
     if (error) throw new Error(error.message);
+    // SQL returns dynamic JSON; retain the existing success check and pass-through result fields.
+    const result = /** @type {CustomerCreditRpcExpectedView|null} */ (rawResult);
     if (!result?.success) throw new Error(result?.error || 'Could not reverse entry');
 
-    const original = (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
+    const original = /** @type {CustomerCreditEntryExpectedView[]} */ (readCache('customer-credit-ledger') || []).find((entry) => entry?.id === entryId);
     if (original?.customer_id) patchAuthoritativeCreditBalance(original.customer_id, result.balance);
     logActivity(
       'customer_credit_reversed',
@@ -711,6 +763,7 @@ export async function reverseCustomerCreditEntry({
 // Advanced Prepayments reads intentionally stay online-only. They are
 // server-derived projections over customer_credit_ledger; a stale local cache
 // must not be promoted into reconciliation, ageing, matching, or export truth.
+/** @param {string} rpcName @param {Record<string, unknown>} params */
 async function prepaymentReadRpc(rpcName, params) {
   if (!state.isOnline) {
     return {
@@ -720,14 +773,18 @@ async function prepaymentReadRpc(rpcName, params) {
       error: 'This server-authoritative prepayments view requires a connection.'
     };
   }
-  const { data, error } = await state.supabase.rpc(rpcName, params);
+  // The online branch uses the already-established client invariant; preserve its existing property-access failure behavior.
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc(rpcName, params);
   if (error) throw new Error(error.message);
-  if (!data || typeof data !== 'object' || data.success !== true) {
-    throw new Error(data?.error || `The authoritative ${rpcName} response was unavailable or malformed.`);
+  // RPC payloads remain dynamic; the existing guard validates only object-ness and success.
+  const result = /** @type {PrepaymentReadExpectedView|null} */ (data);
+  if (!result || typeof result !== 'object' || result.success !== true) {
+    throw new Error(result?.error || `The authoritative ${rpcName} response was unavailable or malformed.`);
   }
-  return data;
+  return result;
 }
 
+/** @param {string|null} [asOf] */
 export async function getPrepaymentPortfolio(asOf = null) {
   return prepaymentReadRpc('get_prepayment_portfolio', {
     p_lodge_id: state.lodgeId,
@@ -735,6 +792,7 @@ export async function getPrepaymentPortfolio(asOf = null) {
   });
 }
 
+/** @param {string|null} [asOf] */
 export async function getPrepaymentAging(asOf = null) {
   return prepaymentReadRpc('get_prepayment_aging', {
     p_lodge_id: state.lodgeId,
@@ -742,6 +800,7 @@ export async function getPrepaymentAging(asOf = null) {
   });
 }
 
+/** @param {string|null} startAt @param {string|null} endAt */
 export async function getPrepaymentReconciliation(startAt, endAt) {
   return prepaymentReadRpc('get_prepayment_reconciliation', {
     p_lodge_id: state.lodgeId,
@@ -750,6 +809,7 @@ export async function getPrepaymentReconciliation(startAt, endAt) {
   });
 }
 
+/** @param {number} [limit] */
 export async function getPrepaymentMatchingSuggestions(limit = 50) {
   return prepaymentReadRpc('get_prepayment_matching_suggestions', {
     p_lodge_id: state.lodgeId,
@@ -761,6 +821,7 @@ export async function getPrepaymentConfig() {
   return prepaymentReadRpc('get_prepayment_config', { p_lodge_id: state.lodgeId });
 }
 
+/** @param {SetPrepaymentConfigInput} input Expected IPC configuration; authoritative validation remains in SQL. */
 export async function setPrepaymentConfig({ config, operationId, operationKey, idempotencyKey }) {
   const stableKey = requireStableOperationId(idempotencyKey || operationId || operationKey, 'configuration');
   if (!state.isOnline) {
@@ -771,7 +832,7 @@ export async function setPrepaymentConfig({ config, operationId, operationKey, i
       error: 'Prepayments configuration requires a server connection.'
     };
   }
-  const { data, error } = await state.supabase.rpc('set_prepayment_config', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('set_prepayment_config', {
     p_lodge_id: state.lodgeId,
     p_config: config || {},
     p_idempotency_key: stableKey
@@ -781,6 +842,7 @@ export async function setPrepaymentConfig({ config, operationId, operationKey, i
   return data;
 }
 
+/** @param {string|null} [startAt] @param {string|null} [endAt] */
 export async function exportPrepayments(startAt = null, endAt = null) {
   return prepaymentReadRpc('get_prepayment_export', {
     p_lodge_id: state.lodgeId,
@@ -789,11 +851,12 @@ export async function exportPrepayments(startAt = null, endAt = null) {
   });
 }
 
+/** @param {PrepaymentExportAuditInput} [input] Expected IPC artifact metadata; the RPC remains authoritative. */
 export async function recordPrepaymentExportAudit({ artifactSha256, fileName, rowCount, startAt = null, endAt = null } = {}) {
   if (!state.isOnline) {
     return { success: false, unavailable: true, offline: true, error: 'Export audit requires a server connection.' };
   }
-  const { data, error } = await state.supabase.rpc('record_prepayment_export_audit', {
+  const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('record_prepayment_export_audit', {
     p_lodge_id: state.lodgeId,
     p_artifact_sha256: artifactSha256,
     p_file_name: fileName,

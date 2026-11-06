@@ -2,12 +2,19 @@ import { randomUUID } from 'crypto';
 import { state } from '../state.js';
 import { logActivity, queueOperation, readCache, writeCache, dedupePromise } from './infrastructure.js';
 
+/** The online branch already calls state.supabase directly; this view preserves that failure behavior without adding a runtime guard. */
+/** @typedef {import('@supabase/supabase-js').SupabaseClient} RateCalendarSupabaseClientExpectedView */
+/** Persisted cache values are not validated by readCache; these views describe rows this module reads/writes. */
+/** A caught value is expected to expose the message property already read by this code; the view performs no runtime validation. */
+/** @typedef {{message?: string}} RateCalendarCaughtErrorExpectedView */
+/** @typedef {Record<string, unknown> & {_pending_sync?: boolean}} RateCalendarCacheRowExpectedView */
+
 /** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 async function _getRateCalendar(roomTypeId, startDate, endDate) {
   const cacheKey = `rate-calendar:${roomTypeId}:${startDate}:${endDate}`;
   if (!state.isOnline) return readCache(cacheKey) || { entries: [], restrictions: [] };
   try {
-    const { data, error } = await state.supabase.rpc('get_rate_calendar', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_rate_calendar', {
       p_lodge_id: state.lodgeId,
       p_room_type_id: roomTypeId,
       p_start_date: startDate,
@@ -20,14 +27,14 @@ async function _getRateCalendar(roomTypeId, startDate, endDate) {
   } catch (err) {
     const cached = readCache(cacheKey);
     if (cached) return cached;
-    throw new Error(err?.message || 'Failed to load rate calendar');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to load rate calendar');
   }
 }
 
 /** @param {unknown} roomTypeId @param {unknown} date @param {unknown} amount @param {unknown} currency */
 async function _setRateCalendarEntry(roomTypeId, date, amount, currency) {
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('set_rate_calendar_entry', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('set_rate_calendar_entry', {
       p_lodge_id: state.lodgeId,
       p_room_type_id: roomTypeId,
       p_date: date,
@@ -54,7 +61,7 @@ async function _setRateCalendarEntry(roomTypeId, date, amount, currency) {
 async function _setRateCalendarBulk(entries) {
   if (!Array.isArray(entries) || entries.length === 0) throw new Error('Entries array is required');
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('set_rate_calendar_bulk', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('set_rate_calendar_bulk', {
       p_lodge_id: state.lodgeId,
       p_entries: JSON.stringify(entries)
     });
@@ -74,7 +81,7 @@ async function _setRateCalendarBulk(entries) {
 /** @param {unknown} roomTypeId @param {unknown} date @param {unknown} restrictions */
 async function _setRateRestriction(roomTypeId, date, restrictions) {
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('set_rate_restriction', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('set_rate_restriction', {
       p_lodge_id: state.lodgeId,
       p_room_type_id: roomTypeId,
       p_date: date,
@@ -95,11 +102,12 @@ async function _setRateRestriction(roomTypeId, date, restrictions) {
   }
 }
 
+
 /** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 async function _getRateConflicts(roomTypeId, startDate, endDate) {
   if (!state.isOnline) return { multiple_entries_per_day: [], days_without_restrictions: [] };
   try {
-    const { data, error } = await state.supabase.rpc('get_rate_conflicts', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_rate_conflicts', {
       p_lodge_id: state.lodgeId,
       p_room_type_id: roomTypeId,
       p_start_date: startDate,
@@ -108,7 +116,7 @@ async function _getRateConflicts(roomTypeId, startDate, endDate) {
     if (error) throw error;
     return data || { multiple_entries_per_day: [], days_without_restrictions: [] };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to check rate conflicts');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to check rate conflicts');
   }
 }
 
@@ -126,7 +134,7 @@ async function _getApplicableRate(roomTypeId, date) {
     };
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_applicable_rate', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_applicable_rate', {
       p_lodge_id: state.lodgeId,
       p_room_type_id: roomTypeId,
       p_date: date
@@ -140,7 +148,7 @@ async function _getApplicableRate(roomTypeId, date) {
       source: result.source || 'server_get_applicable_rate'
     };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to get applicable rate');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to get applicable rate');
   }
 }
 
@@ -155,7 +163,7 @@ async function _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = n
 
   if (state.isOnline && typeof state.supabase?.rpc === 'function') {
     try {
-      const { data, error } = await state.supabase.rpc('quote_room_stay', {
+      const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('quote_room_stay', {
         p_lodge_id: state.lodgeId,
         p_room_id: roomId,
         p_check_in: checkIn,
@@ -191,7 +199,7 @@ async function _quoteStayTotal(roomId, checkIn, checkOut, corporateAccountId = n
 async function _getAllPromoCodes() {
   if (!state.isOnline) return readCache('promo-codes') || [];
   try {
-    const { data, error } = await state.supabase
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase))
       .from('promo_codes')
       .select('*')
       .eq('lodge_id', state.lodgeId)
@@ -200,12 +208,13 @@ async function _getAllPromoCodes() {
     writeCache('promo-codes', data || []);
     return data || [];
   } catch (err) {
-    const cached = readCache('promo-codes');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('promo-codes'));
     if (cached.length > 0) return cached;
-    throw new Error(err?.message || 'Failed to load promo codes');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to load promo codes');
   }
 }
 
+/** @param {Record<string, unknown>} data */
 async function _createPromoCode(data) {
   const id = randomUUID();
   const payload = {
@@ -225,7 +234,7 @@ async function _createPromoCode(data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_promo_code', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('create_promo_code', {
       p_lodge_id: state.lodgeId,
       p_code: payload
     });
@@ -234,7 +243,7 @@ async function _createPromoCode(data) {
     logActivity('promo_code_created', `Promo code ${data.code} created`);
     return result?.id || id;
   } else {
-    const cached = readCache('promo-codes');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('promo-codes'));
     cached.push({ ...payload, _pending_sync: true });
     writeCache('promo-codes', cached);
     queueOperation('rpc', 'create_promo_code', { p_lodge_id: state.lodgeId, p_code: payload }, null, { _queue_id: `promo-${id}` });
@@ -242,6 +251,7 @@ async function _createPromoCode(data) {
   }
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 async function _updatePromoCode(id, data) {
   const update = {
     code: data.code,
@@ -258,14 +268,14 @@ async function _updatePromoCode(id, data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_promo_code', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('update_promo_code', {
       p_id: id, p_lodge_id: state.lodgeId, p_code: update
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update promo code');
     logActivity('promo_code_updated', `Promo code ${id} updated`);
   } else {
-    const cached = readCache('promo-codes');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('promo-codes'));
     const idx = cached.findIndex((p) => p.id === id);
     const pending = idx >= 0 && cached[idx]?._pending_sync;
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
@@ -276,16 +286,17 @@ async function _updatePromoCode(id, data) {
   }
 }
 
+/** @param {string} id */
 async function _deletePromoCode(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_promo_code', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('delete_promo_code', {
       p_id: id, p_lodge_id: state.lodgeId
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not delete promo code');
     logActivity('promo_code_deleted', `Promo code ${id} deleted`);
   } else {
-    const cached = readCache('promo-codes');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('promo-codes'));
     const pending = cached.some((p) => p.id === id && p?._pending_sync);
     writeCache('promo-codes', cached.filter((p) => p.id !== id));
     queueOperation('rpc', 'delete_promo_code', {
@@ -294,10 +305,11 @@ async function _deletePromoCode(id) {
   }
 }
 
+/** @param {string} code @param {unknown} roomTypeId @param {unknown} nights */
 async function _validatePromoCode(code, roomTypeId, nights) {
   if (!state.isOnline) return { valid: false, error: 'Cannot validate promo codes offline' };
   try {
-    const { data, error } = await state.supabase.rpc('validate_promo_code', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('validate_promo_code', {
       p_lodge_id: state.lodgeId,
       p_code: code,
       p_room_type_id: roomTypeId || null,
@@ -306,7 +318,7 @@ async function _validatePromoCode(code, roomTypeId, nights) {
     if (error) throw error;
     return data || { valid: false, error: 'Could not validate promo code' };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to validate promo code');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to validate promo code');
   }
 }
 
@@ -315,7 +327,7 @@ async function _validatePromoCode(code, roomTypeId, nights) {
 async function _getAllSeasonLabels() {
   if (!state.isOnline) return readCache('season-labels') || [];
   try {
-    const { data, error } = await state.supabase
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase))
       .from('season_labels')
       .select('*')
       .eq('lodge_id', state.lodgeId)
@@ -324,12 +336,13 @@ async function _getAllSeasonLabels() {
     writeCache('season-labels', data || []);
     return data || [];
   } catch (err) {
-    const cached = readCache('season-labels');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('season-labels'));
     if (cached.length > 0) return cached;
-    throw new Error(err?.message || 'Failed to load season labels');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to load season labels');
   }
 }
 
+/** @param {Record<string, unknown>} data */
 async function _createSeasonLabel(data) {
   const id = randomUUID();
   const payload = {
@@ -339,14 +352,14 @@ async function _createSeasonLabel(data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_season_label', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('create_season_label', {
       p_lodge_id: state.lodgeId, p_season: payload
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create season label');
     return result?.id || id;
   } else {
-    const cached = readCache('season-labels');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('season-labels'));
     cached.push({ ...payload, _pending_sync: true });
     writeCache('season-labels', cached);
     queueOperation('rpc', 'create_season_label', { p_lodge_id: state.lodgeId, p_season: payload }, null, { _queue_id: `season-${id}` });
@@ -354,6 +367,7 @@ async function _createSeasonLabel(data) {
   }
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 async function _updateSeasonLabel(id, data) {
   const update = {
     name: data.name, color: data.color,
@@ -361,13 +375,13 @@ async function _updateSeasonLabel(id, data) {
   };
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_season_label', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('update_season_label', {
       p_id: id, p_lodge_id: state.lodgeId, p_season: update
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update season label');
   } else {
-    const cached = readCache('season-labels');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('season-labels'));
     const idx = cached.findIndex((s) => s.id === id);
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
     writeCache('season-labels', cached);
@@ -377,15 +391,16 @@ async function _updateSeasonLabel(id, data) {
   }
 }
 
+/** @param {string} id */
 async function _deleteSeasonLabel(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_season_label', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('delete_season_label', {
       p_id: id, p_lodge_id: state.lodgeId
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not delete season label');
   } else {
-    const cached = readCache('season-labels');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('season-labels'));
     writeCache('season-labels', cached.filter((s) => s.id !== id));
     queueOperation('rpc', 'delete_season_label', {
       p_id: id, p_lodge_id: state.lodgeId
@@ -398,22 +413,23 @@ async function _deleteSeasonLabel(id) {
 async function _getYieldRules() {
   if (!state.isOnline) return readCache('yield-rules') || [];
   try {
-    const { data, error } = await state.supabase.rpc('get_yield_rules', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_yield_rules', {
       p_lodge_id: state.lodgeId
     });
     if (error) throw error;
     writeCache('yield-rules', data || []);
     return data || [];
   } catch (err) {
-    const cached = readCache('yield-rules');
+    const cached = /** @type {RateCalendarCacheRowExpectedView[]} */ (readCache('yield-rules'));
     if (cached?.length > 0) return cached;
-    throw new Error(err?.message || 'Failed to load yield rules');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to load yield rules');
   }
 }
 
+/** @param {Record<string, unknown>} data */
 async function _createYieldRule(data) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_yield_rule', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('create_yield_rule', {
       p_lodge_id: state.lodgeId,
       p_name: data.name,
       p_description: data.description || '',
@@ -440,9 +456,10 @@ async function _createYieldRule(data) {
   }
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 async function _updateYieldRule(id, data) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_yield_rule', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('update_yield_rule', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_name: data.name || null,
@@ -473,9 +490,10 @@ async function _updateYieldRule(id, data) {
   }
 }
 
+/** @param {string} id */
 async function _deleteYieldRule(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_yield_rule', {
+    const { data: result, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('delete_yield_rule', {
       p_id: id,
       p_lodge_id: state.lodgeId
     });
@@ -492,6 +510,7 @@ async function _deleteYieldRule(id) {
   }
 }
 
+/** @param {string} date @param {unknown} currentOccupancyPct */
 async function _getApplicableYieldAdjustment(date, currentOccupancyPct) {
   if (!state.isOnline) {
     return {
@@ -504,7 +523,7 @@ async function _getApplicableYieldAdjustment(date, currentOccupancyPct) {
     };
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_applicable_yield_adjustment', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_applicable_yield_adjustment', {
       p_lodge_id: state.lodgeId,
       p_date: date,
       p_current_occupancy_pct: Number(currentOccupancyPct) || 0
@@ -517,10 +536,11 @@ async function _getApplicableYieldAdjustment(date, currentOccupancyPct) {
       source: 'server_get_applicable_yield_adjustment'
     };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to get yield adjustment');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to get yield adjustment');
   }
 }
 
+/** @param {unknown} baseRate @param {string} date @param {unknown} roomTypeId */
 async function _calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
   if (!state.isOnline) {
     return {
@@ -534,7 +554,7 @@ async function _calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
     };
   }
   try {
-    const { data, error } = await state.supabase.rpc('calculate_occupancy_based_rate', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('calculate_occupancy_based_rate', {
       p_lodge_id: state.lodgeId,
       p_base_rate: Number(baseRate) || 0,
       p_date: date,
@@ -548,14 +568,15 @@ async function _calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
       source: 'server_calculate_occupancy_based_rate'
     };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to calculate occupancy based rate');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to calculate occupancy based rate');
   }
 }
 
+/** @param {string} startDate @param {string} endDate */
 async function _getOccupancyForecast(startDate, endDate) {
   if (!state.isOnline) return { forecast: [] };
   try {
-    const { data, error } = await state.supabase.rpc('get_occupancy_forecast', {
+    const { data, error } = await (/** @type {RateCalendarSupabaseClientExpectedView} */ (state.supabase)).rpc('get_occupancy_forecast', {
       p_lodge_id: state.lodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -563,11 +584,12 @@ async function _getOccupancyForecast(startDate, endDate) {
     if (error) throw error;
     return data || { forecast: [] };
   } catch (err) {
-    throw new Error(err?.message || 'Failed to get occupancy forecast');
+    throw new Error((/** @type {RateCalendarCaughtErrorExpectedView|null|undefined} */ (err))?.message || 'Failed to get occupancy forecast');
   }
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
+
 
 /** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 export function getRateCalendar(roomTypeId, startDate, endDate) {
@@ -589,6 +611,7 @@ export function setRateRestriction(roomTypeId, date, restrictions) {
   return _setRateRestriction(roomTypeId, date, restrictions);
 }
 
+
 /** @param {unknown} roomTypeId @param {unknown} startDate @param {unknown} endDate */
 export function getRateConflicts(roomTypeId, startDate, endDate) {
   return _getRateConflicts(roomTypeId, startDate, endDate);
@@ -608,18 +631,22 @@ export function getAllPromoCodes() {
   return dedupePromise('promoCodes', _getAllPromoCodes);
 }
 
+/** @param {Record<string, unknown>} data */
 export function createPromoCode(data) {
   return _createPromoCode(data);
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 export function updatePromoCode(id, data) {
   return _updatePromoCode(id, data);
 }
 
+/** @param {string} id */
 export function deletePromoCode(id) {
   return _deletePromoCode(id);
 }
 
+/** @param {string} code @param {unknown} roomTypeId @param {unknown} nights */
 export function validatePromoCode(code, roomTypeId, nights) {
   return _validatePromoCode(code, roomTypeId, nights);
 }
@@ -628,14 +655,17 @@ export function getAllSeasonLabels() {
   return dedupePromise('seasonLabels', _getAllSeasonLabels);
 }
 
+/** @param {Record<string, unknown>} data */
 export function createSeasonLabel(data) {
   return _createSeasonLabel(data);
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 export function updateSeasonLabel(id, data) {
   return _updateSeasonLabel(id, data);
 }
 
+/** @param {string} id */
 export function deleteSeasonLabel(id) {
   return _deleteSeasonLabel(id);
 }
@@ -644,26 +674,32 @@ export function getYieldRules() {
   return dedupePromise('yieldRules', _getYieldRules);
 }
 
+/** @param {Record<string, unknown>} data */
 export function createYieldRule(data) {
   return _createYieldRule(data);
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 export function updateYieldRule(id, data) {
   return _updateYieldRule(id, data);
 }
 
+/** @param {string} id */
 export function deleteYieldRule(id) {
   return _deleteYieldRule(id);
 }
 
+/** @param {string} date @param {unknown} currentOccupancyPct */
 export function getApplicableYieldAdjustment(date, currentOccupancyPct) {
   return _getApplicableYieldAdjustment(date, currentOccupancyPct);
 }
 
+/** @param {unknown} baseRate @param {string} date @param {unknown} roomTypeId */
 export function calculateOccupancyBasedRate(baseRate, date, roomTypeId) {
   return _calculateOccupancyBasedRate(baseRate, date, roomTypeId);
 }
 
+/** @param {string} startDate @param {string} endDate */
 export function getOccupancyForecast(startDate, endDate) {
   return _getOccupancyForecast(startDate, endDate);
 }

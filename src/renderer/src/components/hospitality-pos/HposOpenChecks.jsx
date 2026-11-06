@@ -28,7 +28,18 @@ import {
   submitNewTabOperation
 } from "../../../../shared/posTabRecovery";
 import { HposButton, HposEmptyState, HposNotice, HposPageHero } from "./HposUi";
+import { createLocalHposOpenChecksApi } from "./bar-local/hposOpenChecksApi.js";
 
+/**
+ * Consumer projection of main's getPosTabs rows (including local-cache rows).
+ * The producer documents these fields, but IPC/cache payloads are not runtime-validated.
+ * @typedef {{id: string, lodge_id: string | null, outlet_id: string | null, items: unknown, line_count?: number, created_at: string, updated_at: string, table_name?: string | null, tab_name?: string | null, customer_name?: string | null, waiter_name?: string | null, waiter_id?: string | null, opened_by_name?: string | null, status?: string, tab_version?: number | null, version?: number | null, expected_version?: number | null, financial_complete?: boolean, _financial_complete?: boolean, financial_snapshot?: {financial_complete?: unknown} | null, _pending_sync?: boolean, [field: string]: unknown}} HposOpenTabExpectedView
+ * @typedef {{operationId: string | null, kind: 'split' | 'transfer', tenantId: string | null, outletId: string | null, sourceTabId: string | null, actorId: string | null, expectedVersion: unknown, payload: Record<string, unknown>, payloadFingerprint: string | undefined, request: Record<string, unknown> | null, createdAt: unknown, lastCheckedAt: unknown, outcome: unknown, authoritativeResult: unknown, lastCode: unknown, [field: string]: unknown}} HposRecoveryEnvelopeExpectedView
+ * @typedef {{key: string, kind: 'split' | 'transfer', corrupt: true, raw: string} | {key: string, kind: 'split' | 'transfer', corrupt: false, legacy: boolean, envelope: HposRecoveryEnvelopeExpectedView}} HposRecoveryListItemExpectedView
+ * @typedef {{staff_user_id?: string | null, staff_name?: string | null, pos_shift_id: string, pos_shift: {id: string, status?: string, outlet_id?: string | null}}} HposTransferChoiceExpectedView
+ */
+
+/** @param {string | number | null | undefined} value */
 const age = (value) => {
   const mins = Math.max(
     0,
@@ -37,6 +48,7 @@ const age = (value) => {
   return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
 };
 
+/** @param {HposOpenTabExpectedView | null | undefined} tab */
 const tabValue = (tab) => {
   const financialComplete = tab?.financial_complete === true || tab?._financial_complete === true || tab?.financial_snapshot?.financial_complete === true;
   if (!financialComplete) return null;
@@ -48,6 +60,7 @@ const tabValue = (tab) => {
 // Offline estimate from saved lines (uncertified): settle stays possible
 // while disconnected, clearly marked. The Till rebuilds the basket from the
 // same lines and the server prices at replay.
+/** @param {HposOpenTabExpectedView | null | undefined} tab */
 const tabLocalValue = (tab) => {
   const lines = Array.isArray(tab?.items) ? tab.items : [];
   if (!lines.length) return null;
@@ -60,7 +73,9 @@ const tabLocalValue = (tab) => {
   }
   return sum;
 };
+/** @param {HposOpenTabExpectedView | null | undefined} tab */
 const tabSettleValue = (tab) => tabValue(tab) ?? tabLocalValue(tab);
+/** @param {HposOpenTabExpectedView | null | undefined} tab */
 const tabSettleEstimated = (tab) => tabValue(tab) === null && tabSettleValue(tab) !== null;
 
 export default function HposOpenChecks() {
@@ -68,37 +83,48 @@ export default function HposOpenChecks() {
   const { user } = useAuth();
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
+  const localAuthority = user?.localAuthority === true;
+  const localOpenChecksApi = useMemo(() => localAuthority
+    ? createLocalHposOpenChecksApi(window.api?.barLocal, { outletId: settings?.outlet_id || null })
+    : null, [localAuthority, settings?.outlet_id]);
+  const splitDispatcher = useCallback((args) => localAuthority
+    ? localOpenChecksApi?.splitBillEvenly(args)
+    : window.api?.pos?.splitBillEvenly?.(args), [localAuthority, localOpenChecksApi]);
+  const transferDispatcher = useCallback((args) => localAuthority
+    ? localOpenChecksApi?.transferTabWaiter(args)
+    : window.api?.pos?.transferTabWaiter?.(args), [localAuthority, localOpenChecksApi]);
   const currency = settings?.currency || "P";
-  const [tabs, setTabs] = useState([]);
+  const [tabs, setTabs] = useState(/** @type {HposOpenTabExpectedView[]} */ ([]));
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("newest");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [splitTab, setSplitTab] = useState(null);
+  const [splitTab, setSplitTab] = useState(/** @type {HposOpenTabExpectedView | null} */ (null));
   const [splitCount, setSplitCount] = useState(2);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitError, setSplitError] = useState("");
-  const [splitPending, setSplitPending] = useState(null);
+  const [splitPending, setSplitPending] = useState(/** @type {(HposRecoveryEnvelopeExpectedView & {corrupt?: false}) | {outcome: 'needs_review'; corrupt: true} | null} */ (null));
   const [splitQuarantine, setSplitQuarantine] = useState("");
-  const [transferTab, setTransferTab] = useState(null);
-  const [transferChoices, setTransferChoices] = useState([]);
+  const [transferTab, setTransferTab] = useState(/** @type {HposOpenTabExpectedView | null} */ (null));
+  const [transferChoices, setTransferChoices] = useState(/** @type {HposTransferChoiceExpectedView[]} */ ([]));
   const [transferTarget, setTransferTarget] = useState("");
   const [transferNotes, setTransferNotes] = useState("");
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferError, setTransferError] = useState("");
-  const [transferPending, setTransferPending] = useState(null);
+  const [transferPending, setTransferPending] = useState(/** @type {(HposRecoveryEnvelopeExpectedView & {corrupt?: false}) | {outcome: 'needs_review'; corrupt: true} | null} */ (null));
   const [transferQuarantine, setTransferQuarantine] = useState("");
-  const [sharedTillOperatorId, setSharedTillOperatorId] = useState(null);
+  const [sharedTillOperatorId, setSharedTillOperatorId] = useState(/** @type {string | null} */ (null));
   const tenantId = settings?.lodge_id || user?.lodge_id || null;
   const actorId = sharedTillOperatorId || user?.id || null;
   const actorRole = user?.role || null;
-  const [inbox, setInbox] = useState([]);
+  const [inbox, setInbox] = useState(/** @type {HposRecoveryListItemExpectedView[]} */ ([]));
 
   const refreshInbox = useCallback(() => {
     const { envelopes } = listRecoveryEnvelopes({ tenantId });
     setInbox(envelopes);
   }, [tenantId]);
 
+  /** @param {HposOpenTabExpectedView | null} tab */
   const refreshSplitPending = useCallback((tab) => {
     if (!tab?.id) {
       setSplitPending(null);
@@ -116,6 +142,7 @@ export default function HposOpenChecks() {
     setSplitPending(envelope);
   }, [tenantId]);
 
+  /** @param {HposOpenTabExpectedView | null} tab */
   const refreshTransferPending = useCallback((tab) => {
     if (!tab?.id) {
       setTransferPending(null);
@@ -138,6 +165,10 @@ export default function HposOpenChecks() {
       setSharedTillOperatorId(null);
       return undefined;
     }
+    if (localAuthority) {
+      setSharedTillOperatorId(user?.id || null);
+      return undefined;
+    }
     let active = true;
     // This is a read-only rehydration path. It must not touch or extend the
     // Till lease merely because Open Tabs mounted.
@@ -149,21 +180,25 @@ export default function HposOpenChecks() {
         if (active) setSharedTillOperatorId(null);
       });
     return () => { active = false; };
-  }, [barOnly]);
+  }, [barOnly, localAuthority, user?.id]);
 
   // Tabs being settled on the other till (mesh tab holds). Any live hold
   // counts as foreign: this screen only ever reads, never holds.
-  const [settlingTabIds, setSettlingTabIds] = useState(new Set());
+  const [settlingTabIds, setSettlingTabIds] = useState(/** @type {Set<string>} */ (new Set()));
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true);
     setError("");
     try {
-      const [rows, mesh] = await Promise.all([
-        window.api?.pos?.getTabs?.({ status: "active" }) || [],
-        Promise.resolve(window.api?.mesh?.getDiagnostics?.()).catch(() => null) || null,
-      ]);
+      const [rows, mesh] = localAuthority
+        ? [await localOpenChecksApi?.listActiveTabs(), null]
+        : await Promise.all([
+          window.api?.pos?.getTabs?.({ status: "active" }) || [],
+          Promise.resolve(window.api?.mesh?.getDiagnostics?.()).catch(() => null) || null,
+        ]);
+      // getTabs returns the domain's persisted tab-row projection; the main IPC
+      // error envelope remains unvalidated and still follows the existing catch path.
       setTabs(
-        rows.filter(
+        /** @type {HposOpenTabExpectedView[]} */ (rows).filter(
           (row) =>
             !["closed", "paid", "cancelled", "voided"].includes(
               String(row.status || "").toLowerCase(),
@@ -180,7 +215,7 @@ export default function HposOpenChecks() {
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, []);
+  }, [localAuthority, localOpenChecksApi]);
 
   useEffect(() => {
     load();
@@ -333,7 +368,7 @@ export default function HposOpenChecks() {
         payload,
         request: { source_tab_id: splitTab.id, split_count: count, target_table_names: [], source_tab_version: version },
         corrected,
-        dispatch: (args) => window.api?.pos?.splitBillEvenly?.(args),
+        dispatch: splitDispatcher,
       });
       const message = applySplitOutcome(out);
       if (message) throw new Error(message);
@@ -351,15 +386,22 @@ export default function HposOpenChecks() {
     setTransferNotes("");
     setTransferError("");
     refreshTransferPending(tab);
+    if (localAuthority) {
+      setTransferChoices([]);
+      setTransferError("Waiter transfers are unavailable in this local build because the original transfer workflow is not yet connected to an atomic local command. No change was made.");
+      return;
+    }
     try {
-      const attendance = (await window.api?.pos?.getBarActiveShifts?.()) || [];
+      // Main returns active attendance rows or [] on its catch path. The
+      // source rows remain expected data; no runtime validation is added.
+      const attendance = /** @type {{staff_user_id?: string | null; staff_name?: string | null}[]} */ ((await window.api?.pos?.getBarActiveShifts?.()) || []);
       const choices = (await Promise.all(attendance.map(async (row) => {
         const shift = await window.api?.pos?.getStaffOpenShift?.(row.staff_user_id).catch(() => null);
         if (!shift?.id || String(shift.status || "").toLowerCase() !== "open") return null;
         if ((shift.outlet_id || null) !== (tab.outlet_id || null) || row.staff_user_id === tab.waiter_id) return null;
         return { ...row, pos_shift_id: shift.id, pos_shift: shift };
       }))).filter(Boolean);
-      setTransferChoices(choices);
+      setTransferChoices(/** @type {HposTransferChoiceExpectedView[]} */ (choices));
       if (!choices.length) setTransferError("No other waiter has a confirmed active attendance and Till shift for this outlet.");
     } catch (loadError) {
       setTransferError(loadError?.message || "Active waiter shifts could not be confirmed.");
@@ -410,7 +452,7 @@ export default function HposOpenChecks() {
           notes,
         },
         corrected,
-        dispatch: (args) => window.api?.pos?.transferTabWaiter?.(args),
+        dispatch: transferDispatcher,
       });
       const message = applyTransferOutcome(out);
       if (message) throw new Error(message);
@@ -434,7 +476,7 @@ export default function HposOpenChecks() {
         sourceTabId: transferTab.id,
         actorId,
         actorRole,
-        dispatch: (args) => window.api?.pos?.transferTabWaiter?.(args),
+        dispatch: transferDispatcher,
       });
       const message = applyTransferOutcome(out);
       if (message) throw new Error(message);
@@ -461,7 +503,7 @@ export default function HposOpenChecks() {
         sourceTabId: splitTab.id,
         actorId,
         actorRole,
-        dispatch: (args) => window.api?.pos?.splitBillEvenly?.(args),
+        dispatch: splitDispatcher,
       });
       const message = applySplitOutcome(out);
       if (message) throw new Error(message);
@@ -488,10 +530,10 @@ export default function HposOpenChecks() {
   // envelope survives tab closure, ownership change, and reload. Replay is
   // authorized per operation (originator or manager); the server enforces
   // the rest. Committed attempts are archived out of this list.
-  const [inboxBusyKey, setInboxBusyKey] = useState(null);
+  const [inboxBusyKey, setInboxBusyKey] = useState(/** @type {string | null} */ (null));
   // Per-row outcome notes: a replay that stays unresolved must still tell
   // the operator what the server said — otherwise Check status looks dead.
-  const [inboxNotes, setInboxNotes] = useState({});
+  const [inboxNotes, setInboxNotes] = useState(/** @type {Record<string, string>} */ ({}));
   const isManagerForRecovery = actorRole && REPLAY_MANAGER_ROLES.has(String(actorRole).trim().toLowerCase());
   // Manager-only escape hatch for records that can never resolve by replay
   // (missing tab reference, unreadable record): archive keeps the envelope
@@ -524,6 +566,10 @@ export default function HposOpenChecks() {
   const replayInboxItem = async (row) => {
     if (!row?.envelope || inboxBusyKey) return;
     const key = `${row.kind}:${row.envelope.operationId}`;
+    if (localAuthority) {
+      setInboxNotes((prev) => ({ ...prev, [key]: 'This saved check operation was created for the other authority and cannot be replayed into the local Bar database. Keep it for support review.' }));
+      return;
+    }
     setInboxBusyKey(key);
     try {
       const out = await replaySavedTabOperation({
@@ -533,9 +579,7 @@ export default function HposOpenChecks() {
         actorId,
         actorRole,
         storageKey: row.key,
-        dispatch: (args) => row.kind === 'split'
-          ? window.api?.pos?.splitBillEvenly?.(args)
-          : window.api?.pos?.transferTabWaiter?.(args),
+        dispatch: row.kind === 'split' ? splitDispatcher : transferDispatcher,
       });
       if (out.classification.outcome === TAB_RECOVERY_OUTCOMES.COMMITTED) {
         setInboxNotes((prev) => {
@@ -632,9 +676,9 @@ export default function HposOpenChecks() {
                   {!allowed && <span>Only the person who started it or a manager can check it.</span>}
                 </div>
                 <HposButton
-                  disabled={inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` || !allowed}
+                  disabled={localAuthority || inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` || !allowed}
                   onClick={() => replayInboxItem(row)}
-                  title={allowed ? 'Ask the server for the confirmed outcome of this saved operation' : 'Only the originating operator or a manager can replay this operation'}
+                  title={localAuthority ? 'This saved operation cannot be replayed across authorities.' : allowed ? 'Ask the server for the confirmed outcome of this saved operation' : 'Only the originating operator or a manager can replay this operation'}
                 >
                   {inboxBusyKey === `${row.kind}:${row.envelope?.operationId}` ? 'Checking…' : 'Check status'}
                 </HposButton>
@@ -685,15 +729,15 @@ export default function HposOpenChecks() {
                 </span>
                 <span>
                   <WalletCards size={14} />
-                  {(tab.items || []).length} lines
+                  {tab.line_count ?? (tab.items || []).length} lines
                 </span>
               </div>
               <footer>
                 <button
                   type="button"
                   onClick={() => openSplit(tab)}
-                  disabled={!canControl(tab) || (tab.items || []).length < 2 || tabValue(tab) === null}
-                  title={!canControl(tab) ? ownerTitle(tab) : "Split this tab through the server-authoritative operation."}
+                  disabled={localAuthority || !canControl(tab) || (tab.items || []).length < 2 || tabValue(tab) === null}
+                  title={localAuthority ? "Evenly splitting tabs is not yet supported by the local atomic command contract." : !canControl(tab) ? ownerTitle(tab) : "Split this tab through the server-authoritative operation."}
                 >
                   <Scissors size={14} />
                   Split
@@ -702,8 +746,8 @@ export default function HposOpenChecks() {
                   <button
                     type="button"
                     onClick={() => openTransfer(tab)}
-                    disabled={!canControl(tab) || !tab.waiter_id}
-                    title={!canControl(tab) ? ownerTitle(tab) : (!tab.waiter_id ? "An assigned waiter is required before transfer." : "Transfer to another waiter with an active same-outlet shift.")}
+                    disabled={localAuthority || !canControl(tab) || !tab.waiter_id}
+                    title={localAuthority ? "Waiter transfers are not yet connected to the local authority." : !canControl(tab) ? ownerTitle(tab) : (!tab.waiter_id ? "An assigned waiter is required before transfer." : "Transfer to another waiter with an active same-outlet shift.")}
                   >
                     <UserRound size={14} />
                     Transfer waiter

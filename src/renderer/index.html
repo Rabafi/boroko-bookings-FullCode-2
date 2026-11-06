@@ -10,9 +10,29 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     />
+    <style>
+      html, body, #root { width: 100%; min-height: 100%; margin: 0; }
+      body { min-height: 100vh; background: #111827; color: #f9fafb; font: 16px Arial, sans-serif; }
+      .startup-fallback { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; box-sizing: border-box; text-align: center; }
+      .startup-mark { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 16px; background: #a83c26; font-weight: 700; }
+      .startup-fallback h1 { margin: 0; font-size: 20px; }
+      .startup-fallback p { margin: 0; max-width: 32rem; color: #d1d5db; font-size: 14px; }
+      .startup-spinner { width: 22px; height: 22px; border: 3px solid #fed7aa; border-top-color: transparent; border-radius: 50%; animation: startup-spin 0.9s linear infinite; }
+      .startup-fallback button { border: 0; border-radius: 8px; padding: 10px 18px; background: #f59e0b; color: #111827; font-weight: 700; cursor: pointer; }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup-fallback" role="status" aria-live="polite">
+        <div class="startup-mark" aria-hidden="true">TB</div>
+        <h1>Starting the application…</h1>
+        <p id="startup-message">Preparing this computer. This screen can open without an internet connection.</p>
+        <span class="startup-spinner" aria-hidden="true"></span>
+        <button id="startup-retry" type="button" hidden>Try again</button>
+      </main>
+    </div>
+    <script src="/startup-fallback.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

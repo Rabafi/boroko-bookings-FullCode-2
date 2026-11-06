@@ -35,6 +35,13 @@ import {
   isProductCompatiblePropertyType
 } from '../../shared/productIdentity.js';
 
+/** @typedef {Record<string, unknown>} AuthRecordExpectedView */
+/** @typedef {AuthRecordExpectedView} StoredSessionExpectedView */
+/** @typedef {AuthRecordExpectedView & {userId: unknown, id: unknown, email: string, lodge_id: string|null, createdAt: unknown}} NormalizedTrustedSessionExpectedView */
+/** @typedef {AuthRecordExpectedView} CachedSettingsExpectedView */
+/** @typedef {AuthRecordExpectedView} SessionUserExpectedView */
+
+/** @param {string} label @param {Record<string, unknown>} [payload] */
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
   try {
@@ -50,7 +57,9 @@ function authTrace(label, payload = {}) {
  * Missing settings are allowed so first-run / draft setup is not blocked.
  */
 function assertCachedSettingsMatchCurrentProduct() {
-  const settings = readCache('settings')?.[0] || null;
+  // readCache returns unknown JSON. This view records the existing indexed
+  // property reads only; it does not validate persisted settings.
+  const settings = /** @type {Array<CachedSettingsExpectedView | null | undefined> | null | undefined} */ (readCache('settings'))?.[0] || null;
   if (!settings) return true;
   const propertyType = settings.property_type || settings.business_type;
   if (!propertyType) return true;
@@ -70,12 +79,18 @@ function clearSessionForProductMismatch() {
   clearSessionNonce();
 }
 
+/** @param {unknown} role */
 function isPosFullAccessRole(role) {
-  return ['admin', 'manager', 'super_admin'].includes((role || '').toLowerCase());
+  // Callers pass the stored role string produced by auth normalization. Keep
+  // the original direct toLowerCase behavior for truthy malformed values.
+  const roleView = /** @type {string | {toLowerCase: () => string} | null | undefined} */ (role);
+  return ['admin', 'manager', 'super_admin'].includes((roleView || '').toLowerCase());
 }
 
+/** @param {unknown} user */
 function ensureActiveSessionUser(user) {
-  const status = normalizeStaffStatus(user?.status);
+  const userView = /** @type {SessionUserExpectedView | null | undefined} */ (user);
+  const status = normalizeStaffStatus(userView?.status);
   if (status === 'active') return null;
   return status === 'archived'
     ? `This staff account is ${STAFF_STATUS_LABELS[status].toLowerCase()}. Connect to the internet and ask an admin to restore it before signing in again.`
@@ -86,17 +101,18 @@ const CURRENT_SESSION_NONCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const TRUSTED_SESSION_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // password-unlocked offline sessions
 const MASTER_ADMIN_SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
 
+/** @param {StoredSessionExpectedView | null | undefined} record @param {{trustedUnlock?: boolean}} [options] */
 function getStoredSessionMaxAgeMs(record, { trustedUnlock = false } = {}) {
   if (record?.isMasterAdmin) return MASTER_ADMIN_SESSION_MAX_AGE_MS;
   return trustedUnlock ? TRUSTED_SESSION_MAX_AGE_MS : CURRENT_SESSION_NONCE_MAX_AGE_MS;
 }
 
 function getSessionNoncePath() {
-  return path.join(state.cacheDir, 'session-nonce.json');
+  return path.join(/** @type {string} */ (state.cacheDir), 'session-nonce.json');
 }
 
 function getTrustedSessionsPath() {
-  return path.join(state.cacheDir, 'trusted-sessions.json');
+  return path.join(/** @type {string} */ (state.cacheDir), 'trusted-sessions.json');
 }
 
 export function readSessionNonce() {
@@ -105,9 +121,10 @@ export function readSessionNonce() {
 
 function readTrustedSessions() {
   const parsed = readSecureJson(getTrustedSessionsPath(), []);
-  return Array.isArray(parsed) ? parsed : [];
+  return Array.isArray(parsed) ? /** @type {unknown[]} */ (parsed) : [];
 }
 
+/** @param {unknown} sessions */
 function writeTrustedSessions(sessions) {
   const written = writeSecureJson(
     getTrustedSessionsPath(),
@@ -124,43 +141,51 @@ function writeTrustedSessions(sessions) {
   return written;
 }
 
+/** @param {unknown[]} [sessions] */
 export function pruneExpiredTrustedSessions(sessions = readTrustedSessions()) {
   const now = Date.now();
   const active = sessions.filter((session) => {
-    if (session?.isMasterAdmin) return false;
-    const createdAt = new Date(session?.createdAt || 0).getTime();
+    const sessionView = /** @type {StoredSessionExpectedView | null | undefined} */ (session);
+    if (sessionView?.isMasterAdmin) return false;
+    // Session records are written with an ISO createdAt string; this expected
+    // persisted-data view preserves Date's existing coercion for old/malformed rows.
+    const createdAt = new Date(/** @type {string|number} */ (sessionView?.createdAt || 0)).getTime();
     return Number.isFinite(createdAt) && now - createdAt <= TRUSTED_SESSION_MAX_AGE_MS;
   });
   if (active.length !== sessions.length) writeTrustedSessions(active);
   return active;
 }
 
+/** @param {unknown} record @returns {NormalizedTrustedSessionExpectedView|null} */
 export function normalizeTrustedSessionRecord(record) {
-  if (!record?.nonce) return null;
+  const recordView = /** @type {StoredSessionExpectedView | null | undefined} */ (record);
+  if (!recordView?.nonce) return null;
   return {
-    ...record,
-    userId: record.userId || record.id || null,
-    id: record.id || record.userId || null,
-    email: normalizeEmail(record.email),
-    lodge_id: normalizeLodgeId(record.lodge_id || state.lodgeId),
-    createdAt: record.createdAt || new Date().toISOString()
+    ...recordView,
+    userId: recordView.userId || recordView.id || null,
+    id: recordView.id || recordView.userId || null,
+    email: normalizeEmail(recordView.email),
+    lodge_id: normalizeLodgeId(recordView.lodge_id || state.lodgeId),
+    createdAt: recordView.createdAt || new Date().toISOString()
   };
 }
 
+/** @param {unknown} user @param {string} nonce @param {string} [password] */
 function buildTrustedSessionRecord(user, nonce, password = '') {
   const session = getBackendSession();
   const normalizedUser = normalizeSessionUser(user);
-  const record = normalizedUser && typeof normalizedUser === 'object' ?
+  const normalizedView = /** @type {SessionUserExpectedView | null | undefined} */ (normalizedUser);
+  const record = normalizedView && typeof normalizedView === 'object' ?
   {
-    id: normalizedUser.id || null,
-    email: normalizedUser.email || null,
-    name: normalizedUser.name || null,
-    role: normalizedUser.role || null,
-    lodge_id: normalizedUser.lodge_id || null,
-    ...(Object.prototype.hasOwnProperty.call(normalizedUser, 'allowed_outlet_ids') ?
-    { allowed_outlet_ids: normalizedUser.allowed_outlet_ids } :
+    id: normalizedView.id || null,
+    email: normalizedView.email || null,
+    name: normalizedView.name || null,
+    role: normalizedView.role || null,
+    lodge_id: normalizedView.lodge_id || null,
+    ...(Object.prototype.hasOwnProperty.call(normalizedView, 'allowed_outlet_ids') ?
+    { allowed_outlet_ids: normalizedView.allowed_outlet_ids } :
     {}),
-    isMasterAdmin: Boolean(normalizedUser.isMasterAdmin),
+    isMasterAdmin: Boolean(normalizedView.isMasterAdmin),
     session_token: session?.token || null,
     session_expires_at: session?.expires_at || null,
     session_type: session?.session_type || null
@@ -186,6 +211,7 @@ function buildTrustedSessionRecord(user, nonce, password = '') {
   };
 }
 
+/** @param {unknown} user @param {string} nonce @param {string} [password] */
 export function writeSessionNonce(user, nonce, password = '') {
   const record = buildTrustedSessionRecord(user, nonce, password);
   const nonceWritten = writeSecureJson(getSessionNoncePath(), record);
@@ -210,10 +236,11 @@ export function writeSessionNonce(user, nonce, password = '') {
     normalizedRecord.email && normalized.email === normalizedRecord.email);
 
   });
+  const existingRecord = /** @type {StoredSessionExpectedView|null|undefined} */ (existing);
   const nextRecord = {
-    ...(existing || {}),
+    ...(existingRecord || {}),
     ...record,
-    offline_password_hash: record.offline_password_hash || existing?.offline_password_hash || null
+    offline_password_hash: record.offline_password_hash || existingRecord?.offline_password_hash || null
   };
   const next = sessions.filter((session) => {
     const normalized = normalizeTrustedSessionRecord(session);
@@ -230,13 +257,17 @@ export function clearSessionNonce() {
   removeSecureJson(getSessionNoncePath());
 }
 
+/** @param {unknown} user @param {string} [password] */
 export function createSessionNonce(user, password = '') {
   const nonce = crypto.randomBytes(32).toString('hex');
   return writeSessionNonce(user, nonce, password) ? nonce : null;
 }
 
+/** @param {unknown} user */
 export function setCurrentUser(user) {
-  state.currentUser = normalizeSessionUser(user);
+  // normalizeSessionUser preserves non-object truthy inputs; this expected view
+  // reflects its actual object input from auth producers without adding a guard.
+  state.currentUser = /** @type {typeof state.currentUser} */ (normalizeSessionUser(user));
   if (state.currentUser?.isMasterAdmin) {
     clearBackendSession();
   }
@@ -267,12 +298,13 @@ export function logoutCurrentUser({ forgetTrustedSession = false } = {}) {
 }
 
 export function restoreCurrentTrustedSession() {
-  const stored = readSessionNonce();
+  const stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce());
   const nonce = typeof stored?.nonce === 'string' ? stored.nonce : '';
   if (!nonce) return null;
   return restoreUserSession(nonce);
 }
 
+/** @param {unknown} nonce @param {{trustedUnlock?: boolean}} [options] */
 export function restoreUserSession(nonce, options = {}) {
   authTrace('restoreSession start', { hasNonce: !!nonce, nonceLength: typeof nonce === 'string' ? nonce.length : null });
   console.log('[AUTH] restoreSession requested');
@@ -285,12 +317,14 @@ export function restoreUserSession(nonce, options = {}) {
     return null;
   }
 
-  let stored = readSessionNonce();
+  // The encrypted session record is still untrusted persisted JSON. This view
+  // only documents fields read below and retains the existing rejection flow.
+  let stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce());
   if (!stored || stored.nonce !== nonce) {
-    stored = pruneExpiredTrustedSessions().
+    stored = /** @type {StoredSessionExpectedView | null} */ (pruneExpiredTrustedSessions().
     map(normalizeTrustedSessionRecord).
-    filter(Boolean).
-    find((session) => session.nonce === nonce && (!session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId)));
+    filter((session) => session !== null).
+    find((session) => session.nonce === nonce && (!session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId))));
   }
 
   const maxAgeMs = getStoredSessionMaxAgeMs(stored, options);
@@ -302,7 +336,9 @@ export function restoreUserSession(nonce, options = {}) {
     return null;
   }
 
-  const age = Date.now() - new Date(stored.createdAt).getTime();
+  // createdAt is written as an ISO string; the view preserves Date's existing
+  // coercion/invalid-date behavior for malformed persisted values.
+  const age = Date.now() - new Date(/** @type {string | number} */ (stored.createdAt)).getTime();
   if (age > maxAgeMs) {
     console.warn('[AUTH] restoreSession REJECTED: nonce expired', { ageMs: age });
     state.currentUser = null;
@@ -315,13 +351,13 @@ export function restoreUserSession(nonce, options = {}) {
   const userId = stored.userId;
   if (stored.isMasterAdmin) {
     clearBackendSession();
-    const safeUser = normalizeSessionUser({
+    const safeUser = /** @type {SessionUserExpectedView} */ (normalizeSessionUser({
       id: userId,
       email: stored.email || '',
       name: stored.name || 'Master Admin',
       role: stored.role || 'super_admin',
       isMasterAdmin: true
-    });
+    }));
     setCurrentUser(safeUser);
     console.log('[AUTH] restoreSession restored master admin:', {
       userId: safeUser.id,
@@ -339,7 +375,7 @@ export function restoreUserSession(nonce, options = {}) {
 
   if (stored.email && stored.role) {
     const trustedSessionExpiresAt = options.trustedUnlock
-      ? new Date(new Date(stored.createdAt).getTime() + TRUSTED_SESSION_MAX_AGE_MS).toISOString()
+      ? new Date(new Date(/** @type {string|number} */ (stored.createdAt)).getTime() + TRUSTED_SESSION_MAX_AGE_MS).toISOString()
       : null;
     applyBackendSession({
       token: stored.session_token || null,
@@ -350,22 +386,22 @@ export function restoreUserSession(nonce, options = {}) {
       expires_at: trustedSessionExpiresAt || stored.session_expires_at || null,
       session_type: stored.session_type || 'desktop'
     });
-    const users = readCache('users').
+    const users = /** @type {Array<SessionUserExpectedView>} */ (/** @type {unknown[]} */ (readCache('users')).
     map(normalizeUserRecord).
-    filter(Boolean);
+    filter(Boolean));
     const cachedById = users.find((u) => u.id === userId && (u.lodge_id ? u.lodge_id === state.lodgeId : true));
     const cachedByEmail = stored.email ?
     users.find((u) => u.email === normalizeEmail(stored.email) && (u.lodge_id ? u.lodge_id === state.lodgeId : true)) :
     null;
     const hasStoredScope = Object.prototype.hasOwnProperty.call(stored, 'allowed_outlet_ids');
-    const nonceUser = normalizeSessionUser({
+    const nonceUser = /** @type {SessionUserExpectedView} */ (normalizeSessionUser({
       id: userId,
       email: stored.email,
       name: stored.name || '',
       role: stored.role,
       lodge_id: stored.lodge_id || state.lodgeId,
       ...(hasStoredScope ? { allowed_outlet_ids: stored.allowed_outlet_ids } : {})
-    });
+    }));
     const mergedUser = hasStoredScope ?
     nonceUser :
     mergeSessionUserScope(
@@ -376,7 +412,7 @@ export function restoreUserSession(nonce, options = {}) {
         []
       }
     );
-    const safeUser = normalizeSessionUser(mergedUser);
+    const safeUser = /** @type {SessionUserExpectedView} */ (normalizeSessionUser(mergedUser));
     const inactiveMessage = ensureActiveSessionUser(safeUser);
     if (inactiveMessage) {
       state.currentUser = null;
@@ -395,10 +431,10 @@ export function restoreUserSession(nonce, options = {}) {
     return safeUser;
   }
 
-  const users = readCache('users');
-  const user = users.
+  const users = /** @type {unknown[]} */ (readCache('users'));
+  const user = /** @type {Array<SessionUserExpectedView>} */ (users.
   map(normalizeUserRecord).
-  filter(Boolean).
+  filter(Boolean)).
   find((u) => u.id === userId && (u.lodge_id ? u.lodge_id === state.lodgeId : true));
   if (!user) {
     console.warn('[AUTH] restoreSession cache miss for stored userId:', userId);
@@ -431,17 +467,21 @@ export function restoreSavedTrustedSession(email = '', password = '') {
   const emailLower = normalizeEmail(email);
   const sessions = pruneExpiredTrustedSessions().
   map(normalizeTrustedSessionRecord).
-  filter(Boolean).
+  filter((session) => session !== null).
   filter((session) => !session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId));
 
   const legacy = normalizeTrustedSessionRecord(readSessionNonce());
-  const candidates = [
+  const candidates = /** @type {StoredSessionExpectedView[]} */ ([
   ...sessions,
   ...(legacy ? [legacy] : [])].
   filter((session, index, all) => {
-    const key = session.id || session.email || session.nonce;
-    return all.findIndex((entry) => (entry.id || entry.email || entry.nonce) === key) === index;
-  });
+    const sessionView = /** @type {StoredSessionExpectedView} */ (session);
+    const key = sessionView.id || sessionView.email || sessionView.nonce;
+    return all.findIndex((entry) => {
+      const entryView = /** @type {StoredSessionExpectedView} */ (entry);
+      return (entryView.id || entryView.email || entryView.nonce) === key;
+    }) === index;
+  }));
 
   const matches = emailLower ?
   candidates.filter((session) => session.email === emailLower) :
@@ -470,7 +510,9 @@ export function restoreSavedTrustedSession(email = '', password = '') {
       error: 'This saved session was created before offline password unlock was enabled. Connect to the internet and sign in once to prepare it.'
     };
   }
-  if (!bcrypt.compareSync(password, session.offline_password_hash)) {
+  // Offline password hashes are produced by bcrypt.hashSync in
+  // buildTrustedSessionRecord; persisted session JSON remains unvalidated.
+  if (!bcrypt.compareSync(password, /** @type {string} */ (session.offline_password_hash))) {
     authTrace('restoreSavedTrustedSession result', { restored: false, reason: 'wrong_password', email: emailLower });
     return { user: null, nonce: '', code: 'wrong_password', error: 'Incorrect password for this saved offline session.' };
   }
@@ -510,7 +552,7 @@ export async function validateCurrentSession() {
   }
 
   if (session.expires_at) {
-    const expiryTs = new Date(session.expires_at).getTime();
+    const expiryTs = new Date(/** @type {string | number} */ (session.expires_at)).getTime();
     if (Number.isFinite(expiryTs) && expiryTs <= Date.now()) {
       console.warn('[AUTH] Offline session expired');
       state.replayAuthReady = false;
@@ -523,23 +565,31 @@ export async function validateCurrentSession() {
 
   // Don't block loading screen if IO is exhausted
   const onlineCheck = checkOnline();
-  const timeout = new Promise((r) => setTimeout(() => r('timeout'), 3000));
+  const timeout = new Promise((/** @type {(value: 'timeout') => void} */ r) => setTimeout(() => r('timeout'), 3000));
   const result = await Promise.race([onlineCheck, timeout]);
   if (result === 'timeout' || !state.isOnline) {
     return state.currentUser;
   }
 
   try {
-    const rpcPromise = state.supabase.rpc('validate_app_session', {
+    // Profile setup initializes this client before session validation. The
+    // assertion preserves the existing property access failure if that
+    // precondition is broken; it does not create a fallback client.
+    const supabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+    const rpcPromise = supabase.rpc('validate_app_session', {
       p_session_token: session.token
     });
-    const rpcTimeout = new Promise((_, reject) =>
+    const rpcTimeout = new Promise((/** @type {(reason: Error) => void} */ reject) =>
       setTimeout(() => reject(new Error('validate_app_session timed out')), 5000)
     );
-    const { data, error } = await Promise.race([rpcPromise, rpcTimeout]);
+    // The timeout promise only rejects; a fulfilled race value is the exact
+    // Supabase RPC response shape without altering timeout/order behavior.
+    const { data, error } = /** @type {Awaited<typeof rpcPromise>} */ (await Promise.race([rpcPromise, rpcTimeout]));
     if (error) throw error;
 
-    const row = Array.isArray(data) ? data[0] : data;
+    // validate_app_session's SQL return columns establish this expected read
+    // view; the remote response is still not runtime-validated here.
+    const row = /** @type {AuthRecordExpectedView | null | undefined} */ (Array.isArray(data) ? data[0] : data);
     if (!row) {
       state.replayAuthReady = false;
       state.currentUser = null;
@@ -560,14 +610,14 @@ export async function validateCurrentSession() {
       return null;
     }
 
-    const refreshedUser = normalizeSessionUser({
+    const refreshedUser = /** @type {SessionUserExpectedView} */ (normalizeSessionUser({
       ...state.currentUser,
       id: row.id || state.currentUser.id,
       name: row.name || state.currentUser.name,
       email: row.email || state.currentUser.email,
       role: row.role || state.currentUser.role,
       lodge_id: row.lodge_id || state.currentUser.lodge_id || state.lodgeId
-    });
+    }));
 
     setCurrentUser(refreshedUser);
     upsertCachedUser(refreshedUser);
@@ -578,7 +628,7 @@ export async function validateCurrentSession() {
       markSignIn: false
     });
 
-    const stored = readSessionNonce();
+    const stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce());
     if (stored?.nonce) {
       const persisted = writeSessionNonce(refreshedUser, stored.nonce);
       if (!persisted) {
@@ -591,8 +641,9 @@ export async function validateCurrentSession() {
 
     return refreshedUser;
   } catch (error) {
+    const errorView = /** @type {{message?: unknown} | null | undefined} */ (error);
     authTrace('validateCurrentSession failed', {
-      message: error?.message || 'unknown_error',
+      message: errorView?.message || 'unknown_error',
       lodge_id: state.lodgeId
     });
     return state.currentUser;

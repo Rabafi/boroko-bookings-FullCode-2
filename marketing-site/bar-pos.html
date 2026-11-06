@@ -4,21 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tsa Bonno Bar POS | Point of Sale for Bars, Pubs &amp; Shebeens</title>
-    <meta name="description" content="A simple, offline-ready point of sale for bars, shebeens, and pubs in Botswana. Ring up drinks, track stock, close your till — no internet needed." />
+    <meta name="description" content="A simple, offline-ready point of sale for bars, shebeens, and pubs in Botswana. Ring up drinks, track stock, close your till — selling continues offline." />
     <meta property="og:title" content="Tsa Bonno Bar POS" />
-    <meta property="og:description" content="A simple POS for bars, shebeens, and pubs. No internet needed. No monthly fees." />
+    <meta property="og:description" content="A simple POS for bars, shebeens, and pubs. Offline-first selling. No monthly fees." />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta property="og:image" content="https://tsabonno.com/assets/og-image.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@borokobookings" />
     <meta name="twitter:title" content="Tsa Bonno Bar POS" />
-    <meta name="twitter:description" content="A simple POS for bars, shebeens, and pubs. No internet needed." />
-    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:description" content="A simple POS for bars, shebeens, and pubs. Offline-first selling." />
+    <meta name="twitter:image" content="https://tsabonno.com/assets/og-image.png" />
     <meta name="theme-color" content="#0c0a09" />
-    <link rel="canonical" href="https://borokobookings.com/bar-pos" />
+    <link rel="canonical" href="https://tsabonno.com/bar-pos" />
     <link rel="icon" type="image/svg+xml" href="./assets/tsa-bonno-restaurant-bar-os-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/tsa-bonno-restaurant-bar-os-logo-color.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script src="./analytics.js" defer></script>
     <style>
       .bar-hero { background: linear-gradient(135deg, #0c0a09 0%, #1c1917 50%, #0c0a09 100%); }
       .bar-hero::after { content: ''; position: absolute; inset: 0; background: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 5 L55 30 L30 55 L5 30 Z' fill='none' stroke='rgba(255,255,255,0.02)' stroke-width='1'/%3E%3C/svg%3E") repeat; pointer-events: none; }
@@ -61,16 +62,46 @@
     </style>
   </head>
   <body class="page page-dark" data-page="bar-pos" data-product="hospitality-pos">
-    <div id="app">
-      <header class="site-header">
-        <div class="container header-inner">
-          <a href="./index.html" class="brand">
-            <span class="brand-mark"><img src="./assets/tsa-bonno-restaurant-bar-os-logo-light.png" alt="" aria-hidden="true" width="120" height="43" /></span>
-            <span class="brand-copy"><strong>Tsa Bonno</strong><span>Bar POS</span></span>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="scroll-progress" id="scroll-progress"></div>
+    <div class="site-shell">
+      <header class="topbar" id="topbar">
+        <div class="topbar-pill">
+          <a class="brand" href="./index.html" aria-label="Tsa Bonno HospitalityOS home">
+            <span class="brand-mark">
+              <img src="./assets/tsa-bonno-restaurant-bar-os-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+            </span>
+            <span class="brand-copy">
+              <strong>Tsa Bonno HospitalityOS</strong>
+            </span>
           </a>
-          <nav class="header-nav" aria-label="Main"><a href="./lodge-app.html" data-nav="lodge-app">Lodge</a><a href="./hotel.html" data-nav="hotel">Hotel</a><a href="./restaurant-pos.html" data-nav="restaurant-pos">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos">Bar POS</a><a href="./packages.html" data-nav="packages">Packages</a><a href="./contact.html" data-nav="contact">Contact</a></nav>
+          <nav id="site-nav" class="site-nav" aria-label="Main navigation"><a href="./lodge-app.html" data-nav="lodge-app">Lodge</a><a href="./restaurant-pos.html" data-nav="restaurant-pos">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos">Bar POS</a><a href="./hotel.html" data-nav="hotel">Hotel</a><a href="./packages.html" data-nav="packages">Packages</a><a href="./contact.html" data-nav="contact">Contact</a></nav>
+          <div class="topbar-actions">
+            <a class="nav-cta-pill" href="#" data-action="download">Start your free month</a>
+          </div>
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+            <span class="sr-only">Menu</span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+            <span class="menu-bar"></span>
+          </button>
         </div>
       </header>
+
+      <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
+        <div class="mobile-overlay-bg"></div>
+        <div class="mobile-overlay-content">
+          <nav class="mobile-nav" aria-label="Mobile navigation"><a href="./index.html" data-nav="home" data-stagger="0">Home</a><a href="./lodge-app.html" data-nav="lodge-app" data-stagger="1">Lodge &amp; Camp</a><a href="./restaurant-pos.html" data-nav="restaurant-pos" data-stagger="2">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos" data-stagger="3">Bar POS</a><a href="./hotel.html" data-nav="hotel" data-stagger="4">Hotel</a><a href="./packages.html" data-nav="packages" data-stagger="5">Packages</a><a href="./contact.html" data-nav="contact" data-stagger="6">Contact</a></nav>
+          <div class="mobile-overlay-footer">
+            <a class="mobile-cta" href="#" data-action="download">Start free trial</a>
+            <a class="mobile-cta-secondary" href="./packages.html">See packages</a>
+            <div class="mobile-contact">
+              <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
+              <a href="mailto:support@tsabonno.com">support@tsabonno.com</a>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <main id="main">
         <!-- ═══ HERO ═══ -->
@@ -79,7 +110,7 @@
             <div>
               <div style="display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.2);border-radius:100px;padding:4px 12px 4px 4px;margin-bottom:20px;">
                 <span style="background:#10b981;color:#0c0a09;font-size:0.65rem;font-weight:800;padding:2px 8px;border-radius:100px;">v1.5.7</span>
-                <span style="font-size:0.75rem;color:#a8a29e;">Fully offline. No internet needed.</span>
+                <span style="font-size:0.75rem;color:#a8a29e;">Works offline. Pending items sync when you reconnect.</span>
               </div>
               <h1 style="font-size:2.5rem;font-weight:900;line-height:1.1;color:#d6d3d1;margin-bottom:16px;">
                 Ring up drinks.<br />
@@ -87,13 +118,14 @@
                 <span style="color:#10b981;">Close your till.</span>
               </h1>
               <p style="font-size:1rem;color:#a8a29e;line-height:1.6;margin-bottom:24px;max-width:480px;">
-                A simple, offline POS for bars, pubs, and shebeens in Botswana. Bar POS Base is P4,500 for a one-year licence. No monthly subscription. No training manual. Just a screen that sells drinks.
+                A simple, offline-ready POS for bars, pubs, and shebeens in Botswana. Bar POS Base is P4,500 for a one-year licence. No monthly subscription. No training manual. Just a screen that sells drinks.
               </p>
               <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
+                <a class="btn btn-primary btn-lg" href="#" data-action="download">Start your free month</a>
                 <a class="btn btn-secondary btn-lg" id="fallback-download" href="https://github.com/Rabafi/boroko-hospitality-pos-releases/releases/latest" target="_blank" rel="noreferrer">Direct Windows download</a>
                 <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
+              <p class="hero-trial-line" style="color:#10b981;margin:14px 0 0;">1-month free trial. No credit card required.</p>
               <p class="installer-security-hint">Windows may show “Windows protected your PC” because this new release is not yet digitally signed. If you downloaded it here, select <strong>More info</strong>, check that it is your Tsa Bonno installer, then select <strong>Run anyway</strong>. If anything looks unfamiliar, stop and <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">contact us</a>.</p>
             </div>
             <div>
@@ -188,13 +220,13 @@
               <div class="bar-feature-card">
                 <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
                 <h3>Stock Tracking</h3>
-                <p>Every sale deducts pack stock automatically. Set reorder levels and get low-stock warnings in Base. Reorder suggestions, valuation and margin control need the Stock &amp; Purchasing Pro add-on (P3,000/year). Recipes and food production are excluded from Bar POS.</p>
+                <p>Every sale deducts pack stock automatically. Set reorder levels and get low-stock warnings in Base. Reorder suggestions, valuation and margin control need the Stock &amp; Purchasing Pro add-on (P2,500/year). Recipes and food production are excluded from Bar POS.</p>
               </div>
 
               <div class="bar-feature-card">
                 <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
                 <h3>Staff Clock-In</h3>
-                <p>Staff clock in when they arrive and out when they leave, and sales report by operator. Labour cost, payroll and workforce analytics are excluded from Base and need the Accounting &amp; Workforce add-on (P6,000/year).</p>
+                <p>Staff clock in when they arrive and out when they leave, and sales report by operator. Labour cost, payroll and workforce analytics are excluded from Base and need the Accounting &amp; Workforce add-on (P3,500/year) together with Stock &amp; Purchasing Pro. The two add-ons cost P6,000/year combined.</p>
               </div>
 
               <div class="bar-feature-card">
@@ -206,7 +238,7 @@
               <div class="bar-feature-card">
                 <div class="icon-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div>
                 <h3>Offline-First</h3>
-                <p>Works without internet. No WiFi? No problem. Orders, payments, and stock adjustments all save locally. Sync when you're online.</p>
+                <p>Works without internet. No WiFi? No problem. Orders, payments, and stock adjustments queue locally; pending items sync when you reconnect.</p>
               </div>
 
               <div class="bar-feature-card">
@@ -262,7 +294,7 @@
                   <div class="bar-why-item"><span class="check">&#10003;</span>Cash drawer with variance control</div>
                   <div class="bar-why-item"><span class="check">&#10003;</span>Staff clock-in / clock-out</div>
                   <div class="bar-why-item"><span class="check">&#10003;</span>Manager mobile oversight</div>
-                  <div class="bar-why-item"><span class="check">&#10003;</span>Works fully offline</div>
+                  <div class="bar-why-item"><span class="check">&#10003;</span>Works offline — syncs when you reconnect</div>
                   <div class="bar-why-item"><span class="check">&#10003;</span>Free 1-month trial</div>
                 </div>
               </div>
@@ -291,15 +323,15 @@
             </div>
             <div class="bar-feature-grid">
               <div class="bar-feature-card">
-                <h3>Stock &amp; Purchasing Pro — P3,000/year</h3>
+                <h3>Stock &amp; Purchasing Pro — P2,500/year</h3>
                 <p>Supplier purchasing, reorder suggestions, lots and expiry, recipes, wastage, valuation and advanced stock margin control.</p>
               </div>
               <div class="bar-feature-card">
-                <h3>Accounting &amp; Workforce — P6,000/year</h3>
-                <p>Accounting, supplier finance, bank and tax work, budgets, statements, rosters, workforce analytics, payroll and controlled tip payouts.</p>
+                <h3>Accounting &amp; Workforce — P3,500/year</h3>
+                <p>Accounting, supplier finance, bank and tax work, budgets, statements, rosters, workforce analytics, payroll and controlled tip payouts. Requires Stock &amp; Purchasing Pro; the two add-ons cost P6,000/year combined.</p>
               </div>
               <div class="bar-feature-card">
-                <h3>Growth &amp; Multi-Outlet — P5,000/year</h3>
+                <h3>Growth &amp; Multi-Outlet — P2,000/year</h3>
                 <p>Customer accounts, loyalty, promotions, vouchers, multi-outlet control, central catalogues, Owner View and advanced trends.</p>
               </div>
             </div>
@@ -312,9 +344,9 @@
           <div class="container">
             <div class="bar-cta">
               <h2>Your bar deserves better than a notebook.</h2>
-              <p>Download Tsa Bonno Bar POS. Set it up in 5 minutes. Start tracking your sales, stock, and cash — no internet needed.</p>
+              <p>Download Tsa Bonno Bar POS. Set it up in 5 minutes. Start tracking your sales, stock, and cash — selling continues offline, and pending items sync when you reconnect.</p>
               <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-                <a class="btn btn-primary btn-lg" href="#" data-action="download">Download Free Trial</a>
+                <a class="btn btn-primary btn-lg" href="#" data-action="download">Start your free month</a>
                 <a class="btn btn-secondary btn-lg" href="https://wa.me/26772789415" target="_blank" rel="noreferrer">Chat on WhatsApp</a>
               </div>
             </div>
@@ -330,7 +362,7 @@
               <span class="brand-mark"><img src="./assets/tsa-bonno-restaurant-bar-os-logo-light.png" alt="" aria-hidden="true" width="150" height="54" /></span>
               <span class="brand-copy"><strong>Tsa Bonno Bar POS</strong><span>Built by Batswana for Botswana bars</span></span>
             </div>
-            <p class="footer-copy" style="color:#78716c;">A simple, offline POS for bars, pubs, and shebeens. Part of the Tsa Bonno HospitalityOS family.</p>
+            <p class="footer-copy" style="color:#78716c;">A simple, offline-ready POS for bars, pubs, and shebeens. Part of the Tsa Bonno HospitalityOS family.</p>
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
@@ -341,12 +373,22 @@
             <a href="./download.html">Download</a>
             <a href="./contact.html">Contact</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
-            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="mailto:support@tsabonno.com">support@tsabonno.com</a>
             <a href="./privacy.html">Privacy Policy</a>
             <a href="./terms.html">Terms of Service</a>
           </div>
         </div>
       </footer>
+
+      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+        <div class="container cookie-inner">
+          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <div class="cookie-actions">
+            <button class="btn btn-primary cookie-accept" type="button">Accept</button>
+            <button class="btn btn-cookie-decline" type="button">Decline</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script src="./script.js" defer></script>
   </body>

@@ -1,3 +1,4 @@
+import { captureReadScope, assertReadScopeCurrent } from './readScope.js';
 import { createHash, randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
@@ -15,25 +16,50 @@ import {
   requireAdmin
 } from './infrastructure.js'
 
+/** Error properties read from RPC/catch values; this view does not validate the value. */
+/** @typedef {{message?: unknown, code?: unknown}|null|undefined} FinanceErrorReadView */
+/** Fields read from current and historical local journal entries. JSON.parse plus Array.isArray does not validate these fields. */
+/** @typedef {{id: string, lodge_id: string, triggered_by: string|null, summary: unknown, report_hash: string, persistence_state: string, calculation_state: string, server_confirmed?: boolean, trigger_source?: string, created_at?: string, local_only?: boolean, triggered_by_name?: string|null, date_key?: string, error?: string|null, server_receipt?: {run_id: string, report_hash: string, recorded_at: string|null}}} ValidationRunJournalExpectedView */
+/** Projection returned by get_financial_validation_runs_v2, including legacy rows. */
+/** @typedef {{id: string, run_id?: string, lodge_id: string, triggered_by: string|null, triggered_by_name: string|null, trigger_source: string, summary: unknown, report_hash: string|null, idempotency_key: string|null, persistence_state: 'historical'|'confirmed', server_confirmed: boolean, created_at: string}} ServerFinancialValidationRunExpectedView */
+/** recordInvoiceDelivery accepts partial IPC/domain payloads; omitted fields use its existing defaults. */
+/** @typedef {{id?: unknown, lodge_id?: unknown, booking_id?: unknown, invoice_number?: unknown, delivery_type?: unknown, delivery_status?: unknown, recipient?: unknown, file_path?: unknown, render_version?: unknown, initiated_by?: unknown, initiated_by_name?: unknown, metadata?: unknown}} InvoiceDeliveryPayloadExpectedView */
+/** Historical auxiliary-log rows may omit booking_id; only that field is read by the filter. */
+/** @typedef {{booking_id?: unknown}} InvoiceDeliveryHistoryExpectedView */
+/** Reconciliation summary fields are constructed from validated mismatch counts. */
+/** @typedef {{paymentMismatches: number, chargeMismatches: number, invoiceGaps: number, duplicateInvoices: number, orphanInvoices: number, folioPosMismatches: number, posReturnMismatches: number, creditMismatches: number, posVoidMismatches: number}} FinancialReconciliationSummary */
+/** Expected success projection after normalizeFinancialReconciliation's existing runtime checks. */
+/** @typedef {{valid: boolean, complete: true, unavailable: false, degraded: false, local_only: false, checked_at: string, source: string, schema_version: number, calculation_version: string, lodge_id: string, generated_at: string, examined_counts: Record<string, unknown>, mismatch_counts: Record<string, unknown>, totals: Record<string, unknown>, samples_truncated: boolean, sample_limit: number, summary: FinancialReconciliationSummary, paymentMismatches: unknown[], chargeMismatches: unknown[], invoiceGaps: unknown[], duplicateInvoices: unknown[], orphanInvoices: unknown[], folioPosMismatches: unknown[], posReturnMismatches: unknown[], creditMismatches: unknown[], posVoidMismatches: unknown[], reportId: string|null, reportHash: string|null, serverReport: Record<string, unknown>}} FinancialReconciliationSuccess */
+/** @typedef {{valid: false, complete: false, unavailable: true, degraded: true, timeout: boolean, local_only: boolean, checked_at: string, source: string, schema_version: null, calculation_version: null, summary: FinancialReconciliationSummary, paymentMismatches: unknown[], chargeMismatches: unknown[], invoiceGaps: unknown[], orphanInvoices: unknown[], folioPosMismatches: unknown[], posReturnMismatches: unknown[], creditMismatches: unknown[], posVoidMismatches: unknown[], message: unknown}} FinancialReconciliationUnavailable */
+/** @typedef {FinancialReconciliationSuccess|FinancialReconciliationUnavailable} FinancialReconciliationResult */
+/** @typedef {{success: true, schema_version: 1, calculation_version: 'financial-reconciliation-v1', complete: true, lodge_id: string, generated_at: string, sample_limit: 50, samples_truncated: boolean, examined_counts: Record<string, unknown>, mismatch_counts: Record<string, unknown>, totals: Record<string, unknown>, samples: Record<string, unknown>, report_id?: unknown, report_hash?: unknown, [key: string]: unknown}} FinancialReconciliationReadView */
+/** @typedef {{invoice_count?: number, received_amount?: number, pending_amount?: number, last_invoice_date?: string|null}} InvoiceSummaryValue */
+/** @typedef {{action?: string, booking_id?: string|null, amount_delta?: unknown, created_at?: string, actor_id?: string|null, after_snapshot?: {refund_retained_percent?: unknown, void_reason?: unknown}|null}} FinancialAuditReadView */
+
 export {
 } from './infrastructure.js'
 
 // ─── INVOICES ────────────────────────────────────────────────────────────────────
 
+/** @param {unknown} value @returns {number} */
 export function roundMoneyValue(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+/** @param {unknown} error @returns {boolean} */
 export function isMissingInvoiceNumberRpcError(error) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST202' ||
+  const readView = /** @type {FinanceErrorReadView} */ (error)
+  const message = String(readView?.message || '');
+  return readView?.code === 'PGRST202' ||
   /public\.get_next_invoice_number|get_next_invoice_number.*schema cache|schema cache.*get_next_invoice_number/i.test(message);
 }
 
+/** @param {number} year @param {number} sequence */
 function formatInvoiceNumber(year, sequence) {
   return `INV-${year}-${String(sequence).padStart(4, '0')}`;
 }
 
+/** @param {unknown} invoiceNumber @param {string} prefix */
 function parseInvoiceSequence(invoiceNumber, prefix) {
   if (typeof invoiceNumber !== 'string' || !invoiceNumber.startsWith(prefix)) return null;
   const sequence = Number.parseInt(invoiceNumber.slice(prefix.length), 10);
@@ -44,6 +70,7 @@ function parseInvoiceSequence(invoiceNumber, prefix) {
 // is inherently race-prone (two operators can observe the same maximum).
 // Callers must explicitly opt into a non-financial diagnostic use; invoice
 // creation is hard-gated on the atomic database sequence RPC instead.
+/** @param {Pick<NonNullable<typeof state.supabase>, 'from'>} db @param {{allowUnsafeLookup?: boolean}} [options] */
 export async function getNextInvoiceNumberByLookup(db, { allowUnsafeLookup = false } = {}) {
   if (!allowUnsafeLookup) {
     throw new Error('The atomic invoice-number service is required; lookup fallback is disabled for invoice creation.');
@@ -64,6 +91,7 @@ export async function getNextInvoiceNumberByLookup(db, { allowUnsafeLookup = fal
   like('invoice_number', `${prefix}%`)]
   );
 
+  /** @type {Array<{invoice_number?: unknown}>} Selected invoice number projection from the query builders above. */
   const rows = [];
   const errors = [];
   let successfulLookups = 0;
@@ -86,7 +114,7 @@ export async function getNextInvoiceNumberByLookup(db, { allowUnsafeLookup = fal
 
   const sequences = rows.
   map((row) => parseInvoiceSequence(row?.invoice_number, prefix)).
-  filter((value) => Number.isInteger(value));
+  filter(/** @param {number|null} value @returns {value is number} */ (value) => Number.isInteger(value));
 
   const next = sequences.length > 0 ? Math.max(...sequences) + 1 : 1;
   return formatInvoiceNumber(year, next);
@@ -105,6 +133,7 @@ export async function getNextInvoiceNumber() {
   return data;
 }
 
+/** @param {Record<string, unknown>} data */
 export async function createInvoice(data) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { data: row, error } = await requireAdmin().from('invoices').insert(data).select().single();
@@ -112,6 +141,7 @@ export async function createInvoice(data) {
   return row;
 }
 
+/** @param {{lodge_id?: string, status?: string}} [filters] */
 export async function getInvoices(filters = {}) {
   if (!state.isOnline) return [];
   let q = requireAdmin().from('invoices').select('id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, status, amount, currency, package_name, created_at').order('created_at', { ascending: false }).limit(500);
@@ -122,10 +152,12 @@ export async function getInvoices(filters = {}) {
   return data || [];
 }
 
+/** @param {string} lodgeId */
 export async function getInvoicesByLodge(lodgeId) {
   return getClientBookingInvoices(lodgeId);
 }
 
+/** @param {string} lodgeId */
 export async function getClientBookingInvoices(lodgeId) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   if (!lodgeId) throw new Error('A lodge is required to load booking invoices');
@@ -172,6 +204,7 @@ export async function getClientBookingInvoices(lodgeId) {
   }));
 }
 
+/** @param {string} id @param {Record<string, unknown>} updates */
 export async function updateInvoice(id, updates) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('invoices').update(updates).eq('id', id);
@@ -179,6 +212,7 @@ export async function updateInvoice(id, updates) {
   return { success: true };
 }
 
+/** @param {string} id */
 export async function deleteInvoice(id) {
   if (!state.isOnline) throw new Error('Requires internet connection');
   const { error } = await requireAdmin().from('invoices').delete().eq('id', id);
@@ -194,11 +228,13 @@ export async function getInvoiceSummary() {
   const allRows = data || [];
   const paid = allRows.filter((r) => r.status === 'paid');
   const total = paid.reduce((s, r) => s + Number(r.amount), 0);
+  /** @type {Record<string, number>} */
   const byPlan = {};
   paid.forEach((r) => {
     const planName = normalizePlanName(r.package_name);
     byPlan[planName] = (byPlan[planName] || 0) + Number(r.amount);
   });
+  /** @type {Record<string, number>} */
   const byMonthMap = {};
   paid.forEach((r) => {
     const m = (r.issued_date || '').slice(0, 7);
@@ -217,28 +253,32 @@ const FINANCIAL_VALIDATION_RUNS_FILE = 'financial-validation-runs.json';
 const FINANCIAL_VALIDATION_ALERTS_FILE = 'financial-validation-alerts.json';
 const LOCAL_INVOICE_DELIVERY_FILE = 'invoice-delivery-history.json';
 
+/** @param {{bookingId?: string|null, limit?: number, offset?: number}} [options] */
 export async function getFinancialAuditLog({ bookingId = null, limit = 100, offset = 0 } = {}) {
   if (!state.lodgeId || !state.isOnline) return [];
-  const { data, error } = await state.supabase.rpc('get_financial_audit_log', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_financial_audit_log', {
     p_lodge_id: state.lodgeId,
     p_booking_id: bookingId || null,
     p_limit: Math.min(Math.max(Number(limit) || 100, 1), 500),
     p_offset: Math.max(Number(offset) || 0, 0)
   });
   if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data : [];
+  return Array.isArray(data) ? /** @type {FinancialAuditReadView[]} */ (data) : [];
 }
 
 
+/** @param {unknown} left @param {unknown} right @param {number} [tolerance] */
 function moneyMismatch(left, right, tolerance = 0.01) {
   return Math.abs(roundMoneyValue(left) - roundMoneyValue(right)) > tolerance;
 }
 
+/** @param {unknown} error */
 function isStatementTimeoutError(error) {
-  const message = String(error?.message || error || '');
+  const message = String((/** @type {FinanceErrorReadView} */ (error))?.message || error || '');
   return /canceling statement due to statement timeout|statement timeout|timed out/i.test(message);
 }
 
+/** @param {unknown} error @param {string} [source] @returns {FinancialReconciliationUnavailable} */
 function buildFinancialVerificationUnavailable(error, source = 'money_check') {
   const timeout = isStatementTimeoutError(error);
   return {
@@ -267,7 +307,7 @@ function buildFinancialVerificationUnavailable(error, source = 'money_check') {
     posVoidMismatches: [],
     message: timeout
       ? 'The online money check timed out. No current result is available; connect and run it again.'
-      : (error?.message || 'The online money check could not be verified. Connect and run it again.')
+      : ((/** @type {FinanceErrorReadView} */ (error))?.message || 'The online money check could not be verified. Connect and run it again.')
   };
 }
 
@@ -300,52 +340,56 @@ const RECONCILIATION_TOTAL_KEYS = [
   'customer_credit_entries'
 ];
 
+/** @param {unknown} value @returns {value is number} */
 function isNonNegativeInteger(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** @param {unknown} data @param {string} lodgeId @returns {FinancialReconciliationSuccess} */
 function normalizeFinancialReconciliation(data, lodgeId) {
-  if (!data || typeof data !== 'object' || Array.isArray(data) ||
-      data.success !== true || data.schema_version !== 1 ||
-      data.calculation_version !== 'financial-reconciliation-v1' ||
-      data.complete !== true || data.lodge_id !== lodgeId ||
-      !Number.isFinite(Date.parse(data.generated_at)) ||
-      data.sample_limit !== 50 || typeof data.samples_truncated !== 'boolean' ||
-      !data.examined_counts || typeof data.examined_counts !== 'object' ||
-      !data.mismatch_counts || typeof data.mismatch_counts !== 'object' ||
-      !data.totals || typeof data.totals !== 'object' ||
-      !data.samples || typeof data.samples !== 'object') {
+  // Expected RPC response view; the checks below remain the actual runtime validation.
+  const report = /** @type {FinancialReconciliationReadView|null|undefined} */ (data);
+  if (!report || typeof report !== 'object' || Array.isArray(report) ||
+      report.success !== true || report.schema_version !== 1 ||
+      report.calculation_version !== 'financial-reconciliation-v1' ||
+      report.complete !== true || report.lodge_id !== lodgeId ||
+      !Number.isFinite(Date.parse(report.generated_at)) ||
+      report.sample_limit !== 50 || typeof report.samples_truncated !== 'boolean' ||
+      !report.examined_counts || typeof report.examined_counts !== 'object' ||
+      !report.mismatch_counts || typeof report.mismatch_counts !== 'object' ||
+      !report.totals || typeof report.totals !== 'object' ||
+      !report.samples || typeof report.samples !== 'object') {
     throw new Error('The server returned an incomplete or unsupported reconciliation. Deploy the current reconciliation RPC, then run it again.');
   }
 
   for (const key of RECONCILIATION_EXAMINED_KEYS) {
-    if (!isNonNegativeInteger(data.examined_counts[key])) {
+    if (!isNonNegativeInteger(report.examined_counts[key])) {
       throw new Error('The reconciliation is missing a complete ' + key + ' count. Run it again after the server contract is repaired.');
     }
   }
   for (const key of RECONCILIATION_TOTAL_KEYS) {
-    if (typeof data.totals[key] !== 'string' || !/^-?(?:0|[1-9]\d*)(?:\.\d{1,4})?$/.test(data.totals[key])) {
+    if (typeof report.totals[key] !== 'string' || !/^-?(?:0|[1-9]\d*)(?:\.\d{1,4})?$/.test(report.totals[key])) {
       throw new Error('The reconciliation is missing an exact monetary total for ' + key + '. Run it again after the server contract is repaired.');
     }
   }
   for (const key of RECONCILIATION_COUNT_KEYS) {
-    if (!isNonNegativeInteger(data.mismatch_counts[key])) {
+    if (!isNonNegativeInteger(report.mismatch_counts[key])) {
       throw new Error('The reconciliation is missing an exact ' + key + ' count. Run it again after the server contract is repaired.');
     }
-    if (!Array.isArray(data.samples[key]) || data.samples[key].length > 50) {
+    if (!Array.isArray(report.samples[key]) || report.samples[key].length > 50) {
       throw new Error('The reconciliation has an invalid ' + key + ' sample. Run it again.');
     }
   }
   const summary = {
-    paymentMismatches: Number(data.mismatch_counts.payment_mismatches),
-    chargeMismatches: Number(data.mismatch_counts.charge_mismatches),
-    invoiceGaps: Number(data.mismatch_counts.invoice_gaps),
-    duplicateInvoices: Number(data.mismatch_counts.duplicate_invoices),
-    orphanInvoices: Number(data.mismatch_counts.orphan_invoices),
-    folioPosMismatches: Number(data.mismatch_counts.folio_pos_mismatches),
-    posReturnMismatches: Number(data.mismatch_counts.pos_return_mismatches),
-    creditMismatches: Number(data.mismatch_counts.credit_mismatches),
-    posVoidMismatches: Number(data.mismatch_counts.pos_void_mismatches)
+    paymentMismatches: Number(report.mismatch_counts.payment_mismatches),
+    chargeMismatches: Number(report.mismatch_counts.charge_mismatches),
+    invoiceGaps: Number(report.mismatch_counts.invoice_gaps),
+    duplicateInvoices: Number(report.mismatch_counts.duplicate_invoices),
+    orphanInvoices: Number(report.mismatch_counts.orphan_invoices),
+    folioPosMismatches: Number(report.mismatch_counts.folio_pos_mismatches),
+    posReturnMismatches: Number(report.mismatch_counts.pos_return_mismatches),
+    creditMismatches: Number(report.mismatch_counts.credit_mismatches),
+    posVoidMismatches: Number(report.mismatch_counts.pos_void_mismatches)
   };
   const hasMismatches = Object.values(summary).some((count) => count > 0);
 
@@ -356,32 +400,33 @@ function normalizeFinancialReconciliation(data, lodgeId) {
     degraded: false,
     local_only: false,
     source: 'reconciliation',
-    schema_version: data.schema_version,
-    calculation_version: data.calculation_version,
-    lodge_id: data.lodge_id,
-    generated_at: data.generated_at,
-    checked_at: data.generated_at,
-    examined_counts: data.examined_counts,
-    mismatch_counts: data.mismatch_counts,
-    totals: data.totals,
-    samples_truncated: data.samples_truncated,
-    sample_limit: data.sample_limit,
+    schema_version: report.schema_version,
+    calculation_version: report.calculation_version,
+    lodge_id: report.lodge_id,
+    generated_at: report.generated_at,
+    checked_at: report.generated_at,
+    examined_counts: report.examined_counts,
+    mismatch_counts: report.mismatch_counts,
+    totals: report.totals,
+    samples_truncated: report.samples_truncated,
+    sample_limit: report.sample_limit,
     summary,
-    paymentMismatches: data.samples.payment_mismatches,
-    chargeMismatches: data.samples.charge_mismatches,
-    invoiceGaps: data.samples.invoice_gaps,
-    duplicateInvoices: data.samples.duplicate_invoices,
-    orphanInvoices: data.samples.orphan_invoices,
-    folioPosMismatches: data.samples.folio_pos_mismatches,
-    posReturnMismatches: data.samples.pos_return_mismatches,
-    creditMismatches: data.samples.credit_mismatches,
-    posVoidMismatches: data.samples.pos_void_mismatches,
-    reportId: typeof data.report_id === 'string' ? data.report_id : null,
-    reportHash: typeof data.report_hash === 'string' ? data.report_hash : null,
-    serverReport: data
+    paymentMismatches: /** @type {unknown[]} */ (report.samples.payment_mismatches),
+    chargeMismatches: /** @type {unknown[]} */ (report.samples.charge_mismatches),
+    invoiceGaps: /** @type {unknown[]} */ (report.samples.invoice_gaps),
+    duplicateInvoices: /** @type {unknown[]} */ (report.samples.duplicate_invoices),
+    orphanInvoices: /** @type {unknown[]} */ (report.samples.orphan_invoices),
+    folioPosMismatches: /** @type {unknown[]} */ (report.samples.folio_pos_mismatches),
+    posReturnMismatches: /** @type {unknown[]} */ (report.samples.pos_return_mismatches),
+    creditMismatches: /** @type {unknown[]} */ (report.samples.credit_mismatches),
+    posVoidMismatches: /** @type {unknown[]} */ (report.samples.pos_void_mismatches),
+    reportId: typeof report.report_id === 'string' ? report.report_id : null,
+    reportHash: typeof report.report_hash === 'string' ? report.report_hash : null,
+    serverReport: /** @type {Record<string, unknown>} */ (data)
   };
 }
 
+/** @returns {Promise<FinancialReconciliationResult>} */
 export async function getFinancialReconciliation() {
   if (!state.lodgeId) {
     return buildFinancialVerificationUnavailable(new Error('Choose a lodge before running the online reconciliation.'), 'reconciliation');
@@ -390,41 +435,52 @@ export async function getFinancialReconciliation() {
     return buildFinancialVerificationUnavailable(new Error('Reconciliation requires an online server result. Connect and run it again.'), 'reconciliation');
   }
 
+  const scope = captureReadScope();
   try {
-    const { data, error } = await state.supabase.rpc('get_financial_reconciliation_v1', {
-      p_lodge_id: state.lodgeId
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (scope.client).rpc('get_financial_reconciliation_v1', {
+      p_lodge_id: scope.lodgeId
     });
+    assertReadScopeCurrent(scope);
     if (error) {
       recordCriticalError('financial.reconciliation.rpc', error, { lodge_id: state.lodgeId }, { level: 'warn', limit: 120 });
       return buildFinancialVerificationUnavailable(error, 'reconciliation');
     }
     return normalizeFinancialReconciliation(data, state.lodgeId);
   } catch (error) {
+    try { assertReadScopeCurrent(scope); }
+    catch (scopeError) { return buildFinancialVerificationUnavailable(scopeError, 'reconciliation'); }
     recordCriticalError('financial.reconciliation.rpc', error, { lodge_id: state.lodgeId }, { level: 'warn', limit: 120 });
     return buildFinancialVerificationUnavailable(error, 'reconciliation');
   }
 }
+/** @returns {Promise<FinancialReconciliationResult>} */
 async function prepareFinancialValidationReport() {
   if (!state.lodgeId || !state.isOnline || !state.supabase) {
     return buildFinancialVerificationUnavailable(new Error('Financial validation requires an online server report and an authorized lodge account.'), 'reconciliation');
   }
+  const scope = captureReadScope();
   try {
-    const { data, error } = await state.supabase.rpc('prepare_financial_validation_report_v1', {
-      p_lodge_id: state.lodgeId
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (scope.client).rpc('prepare_financial_validation_report_v1', {
+      p_lodge_id: scope.lodgeId
     });
+    assertReadScopeCurrent(scope);
     if (error) {
       recordCriticalError('financial.validation.report.rpc', error, { lodge_id: state.lodgeId }, { level: 'warn', limit: 120 });
       return buildFinancialVerificationUnavailable(error, 'reconciliation');
     }
     return normalizeFinancialReconciliation(data, state.lodgeId);
   } catch (error) {
+    try { assertReadScopeCurrent(scope); }
+    catch (scopeError) { return buildFinancialVerificationUnavailable(scopeError, 'reconciliation'); }
     recordCriticalError('financial.validation.report.rpc', error, { lodge_id: state.lodgeId }, { level: 'warn', limit: 120 });
     return buildFinancialVerificationUnavailable(error, 'reconciliation');
   }
 }
 
+/** @returns {Promise<{checked_at: string, totals: Record<string, number>, recentRefunds: unknown[], recentChargeVoids: unknown[], reconciliation: FinancialReconciliationResult, degraded: boolean, message: unknown}>} */
 export async function getFinancialValidationSummary() {
   const reconciliation = await prepareFinancialValidationReport();
+  /** @type {FinancialAuditReadView[]} */
   let auditRows = [];
   let auditWarning = null;
   if (state.isOnline) {
@@ -479,10 +535,11 @@ export async function getFinancialValidationSummary() {
     recentChargeVoids,
     reconciliation,
     degraded: reconciliation?.degraded === true || !!auditWarning,
-    message: auditWarning || reconciliation?.message || null
+    message: auditWarning || (/** @type {FinancialReconciliationResult & {message?: string}} */ (reconciliation))?.message || null
   };
 }
 
+/** @param {InvoiceDeliveryPayloadExpectedView} payload */
 export async function recordInvoiceDelivery(payload = {}) {
   const row = {
     id: payload.id || randomUUID(),
@@ -506,7 +563,7 @@ export async function recordInvoiceDelivery(payload = {}) {
     return { success: true, localOnly: true, row };
   }
 
-  const { data, error } = await state.supabase.rpc('record_invoice_delivery', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('record_invoice_delivery', {
     p_lodge_id: state.lodgeId,
     p_booking_id: payload.booking_id || null,
     p_invoice_number: payload.invoice_number || null,
@@ -523,14 +580,15 @@ export async function recordInvoiceDelivery(payload = {}) {
   return { success: data?.success !== false, id: data?.id || null, row: { ...row, local_only: false } };
 }
 
+/** @param {{bookingId?: string|null, limit?: number}} [options] */
 export async function getInvoiceDeliveryHistory({ bookingId = null, limit = 100 } = {}) {
   const localRows = readAuxiliaryLog(LOCAL_INVOICE_DELIVERY_FILE).
-  filter((row) => !bookingId || row.booking_id === bookingId).
+  filter((row) => !bookingId || /** @type {InvoiceDeliveryHistoryExpectedView} */ (row).booking_id === bookingId).
   slice(0, limit);
 
   if (!state.isOnline || !state.lodgeId) return localRows;
 
-  const { data, error } = await state.supabase.rpc('get_invoice_delivery_history', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_invoice_delivery_history', {
     p_lodge_id: state.lodgeId,
     p_booking_id: bookingId || null,
     p_limit: limit
@@ -539,18 +597,22 @@ export async function getInvoiceDeliveryHistory({ bookingId = null, limit = 100 
   return Array.isArray(data) ? data.map((row) => ({ ...row, local_only: false })) : [];
 }
 
+/** @param {unknown} value @returns {string|undefined} */
 function stableFinancialJson(value) {
   if (Array.isArray(value)) return '[' + value.map(stableFinancialJson).join(',') + ']';
   if (value && typeof value === 'object') {
-    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stableFinancialJson(value[key])).join(',') + '}';
+    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stableFinancialJson((/** @type {Record<string, unknown>} */ (value))[key])).join(',') + '}';
   }
   return JSON.stringify(value);
 }
 
+/** @param {unknown} summary */
 function hashFinancialReport(summary) {
-  return createHash('sha256').update(stableFinancialJson(summary)).digest('hex');
+  // Reports created here are objects; malformed persisted summaries retain the existing crypto update failure.
+  return createHash('sha256').update(/** @type {string} */ (stableFinancialJson(summary))).digest('hex');
 }
 
+/** @returns {ValidationRunJournalExpectedView[]} */
 function readValidationRunsStrict() {
   if (!state.cacheDir) throw new Error('Local validation storage is unavailable. No audit run was submitted.');
   const filePath = path.join(state.cacheDir, FINANCIAL_VALIDATION_RUNS_FILE);
@@ -562,9 +624,11 @@ function readValidationRunsStrict() {
     throw new Error('The local validation journal is unreadable. Preserve it and contact support before retrying.');
   }
   if (!Array.isArray(parsed)) throw new Error('The local validation journal has an unsupported format. Preserve it and contact support.');
-  return parsed;
+  // Expected persisted-row view after the existing parse and array checks; JSON.parse is not validation.
+  return /** @type {ValidationRunJournalExpectedView[]} */ (parsed);
 }
 
+/** @param {ValidationRunJournalExpectedView[]} rows */
 function persistValidationRuns(rows) {
   if (!state.cacheDir) throw new Error('Local validation storage is unavailable. No audit run was submitted.');
   fs.mkdirSync(state.cacheDir, { recursive: true });
@@ -585,6 +649,7 @@ function persistValidationRuns(rows) {
   }
 }
 
+/** @param {ValidationRunJournalExpectedView} run */
 function saveValidationRun(run) {
   const rows = readValidationRunsStrict();
   const index = rows.findIndex((row) => row?.id === run.id);
@@ -604,12 +669,16 @@ function saveValidationRun(run) {
   return run;
 }
 
+/** @param {unknown} data @param {ValidationRunJournalExpectedView} run */
 function hasValidValidationReceipt(data, run) {
   return !!data && typeof data === 'object' && !Array.isArray(data) &&
-    data.success === true && data.recorded === true &&
-    data.run_id === run.id && data.report_hash === run.report_hash;
+    (/** @type {{success?: unknown, recorded?: unknown, run_id?: unknown, report_hash?: unknown}} */ (data)).success === true &&
+    (/** @type {{success?: unknown, recorded?: unknown, run_id?: unknown, report_hash?: unknown}} */ (data)).recorded === true &&
+    (/** @type {{success?: unknown, recorded?: unknown, run_id?: unknown, report_hash?: unknown}} */ (data)).run_id === run.id &&
+    (/** @type {{success?: unknown, recorded?: unknown, run_id?: unknown, report_hash?: unknown}} */ (data)).report_hash === run.report_hash;
 }
 
+/** @param {ValidationRunJournalExpectedView} run */
 async function dispatchValidationRun(run) {
   if (!state.isOnline || !state.supabase || !state.lodgeId) {
     return { run, confirmed: false, error: 'Connect to the server to record this validation run.' };
@@ -620,7 +689,7 @@ async function dispatchValidationRun(run) {
 
   let response;
   try {
-    response = await state.supabase.rpc('record_financial_validation_run_v2', {
+    response = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('record_financial_validation_run_v2', {
       p_lodge_id: run.lodge_id,
       p_run_id: run.id,
       p_idempotency_key: run.id,
@@ -667,12 +736,13 @@ async function dispatchValidationRun(run) {
     return {
       run: { ...submitting, persistence_state: 'unknown', local_only: true, server_confirmed: false, error: 'The server confirmed the run, but its receipt could not be saved locally. Retry this same run to recover the receipt.' },
       confirmed: false,
-      error: error.message
+      error: (/** @type {{message: unknown}} */ (error)).message
     };
   }
   return { run: confirmed, confirmed: true, error: null };
 }
 
+/** @param {{triggerSource?: string}} [options] */
 export async function runFinancialValidation({ triggerSource = 'manual' } = {}) {
   if (!state.currentUser?.id || !state.lodgeId) return { success: false, error: 'Sign in to an authorized lodge account before running financial validation.' };
   const validation = await getFinancialValidationSummary();
@@ -695,8 +765,9 @@ export async function runFinancialValidation({ triggerSource = 'manual' } = {}) 
   const run = {
     id: randomUUID(),
     lodge_id: state.lodgeId,
-    triggered_by: state.currentUser?.id || null,
-    triggered_by_name: state.currentUser?.name || null,
+    // The signed-in auth producer supplies string IDs/names; preserve the current truthy fallback without adding validation.
+    triggered_by: /** @type {string|null} */ (state.currentUser?.id || null),
+    triggered_by_name: /** @type {string|null} */ (state.currentUser?.name || null),
     trigger_source: ['manual', 'scheduled', 'startup'].includes(triggerSource) ? triggerSource : 'manual',
     date_key: getLocalDateKey(new Date(), LOCAL_TIME_ZONE),
     summary,
@@ -712,7 +783,7 @@ export async function runFinancialValidation({ triggerSource = 'manual' } = {}) 
   try {
     saveValidationRun(run);
   } catch (error) {
-    return { success: false, run: { ...run, persistence_state: 'unavailable' }, validation, error: 'The report was calculated but could not be saved locally, so it was not submitted. ' + error.message };
+    return { success: false, run: { ...run, persistence_state: 'unavailable' }, validation, error: 'The report was calculated but could not be saved locally, so it was not submitted. ' + (/** @type {{message: unknown}} */ (error)).message };
   }
 
   const persisted = await dispatchValidationRun(run);
@@ -743,6 +814,7 @@ export async function runFinancialValidation({ triggerSource = 'manual' } = {}) 
   };
 }
 
+/** @param {string} runId */
 export async function retryFinancialValidationRun(runId) {
   if (!state.isOnline || !state.lodgeId) return { success: false, error: 'Connect to the server and select the original lodge before retrying.' };
   if (typeof runId !== 'string' || !/^[0-9a-f-]{36}$/i.test(runId)) return { success: false, error: 'Invalid validation run ID.' };
@@ -761,12 +833,13 @@ export async function retryFinancialValidationRun(runId) {
   const result = await dispatchValidationRun(run);
   return { success: result.confirmed, run: result.run, ...(result.error ? { error: result.error } : {}) };
 }
+/** @param {number} [limit] */
 export async function getFinancialValidationAlerts(limit = 30) {
   const localAlerts = readAuxiliaryLog(FINANCIAL_VALIDATION_ALERTS_FILE).slice(0, limit);
   if (!state.isOnline || !state.lodgeId) return localAlerts;
 
   try {
-    const { data, error } = await state.supabase.rpc('get_financial_validation_alerts', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_financial_validation_alerts', {
       p_lodge_id: state.lodgeId,
       p_limit: limit
     });
@@ -779,7 +852,9 @@ export async function getFinancialValidationAlerts(limit = 30) {
 }
 
 
+/** @param {number} [limit] */
 export async function getFinancialValidationRuns(limit = 30) {
+  /** @type {ValidationRunJournalExpectedView[]} */
   let localRuns = [];
   try {
     localRuns = readValidationRunsStrict();
@@ -790,12 +865,12 @@ export async function getFinancialValidationRuns(limit = 30) {
   if (!state.isOnline || !state.lodgeId) return localRuns.slice(0, boundedLimit);
 
   try {
-    const { data, error } = await state.supabase.rpc('get_financial_validation_runs_v2', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_financial_validation_runs_v2', {
       p_lodge_id: state.lodgeId,
       p_limit: boundedLimit
     });
     if (error) throw new Error(error.message);
-    const serverRuns = Array.isArray(data) ? data.map((row) => ({
+    const serverRuns = Array.isArray(data) ? data.map(/** @param {ServerFinancialValidationRunExpectedView} row */ (row) => ({
       ...row,
       id: row.id || row.run_id,
       local_only: false,
@@ -837,11 +912,21 @@ export async function getFinancialValidationRuns(limit = 30) {
     return localRuns.slice(0, boundedLimit);
   }
 }
+/** @param {string} [triggerSource] */
 export async function runScheduledFinancialValidation(triggerSource = 'scheduled') {
   if (!state.currentUser || !state.lodgeId) return { success: false, skipped: true, reason: 'Not signed in' };
+  // Command Central identity and a cached/offline operator do not establish
+  // an authenticated business RPC session. Wait for staff sign-in rather
+  // than writing predictable access-denied startup faults into this profile.
+  if (state.currentUser.isMasterAdmin || !state.backendSession?.token || !state.isOnline) {
+    return { success: false, skipped: true, reason: 'Waiting for an online business staff session' };
+  }
   const todayKey = getLocalDateKey(new Date(), LOCAL_TIME_ZONE);
   const existingRuns = readAuxiliaryLog(FINANCIAL_VALIDATION_RUNS_FILE);
-  const alreadyRanToday = existingRuns.some((row) => row?.lodge_id === state.lodgeId && row?.date_key === todayKey);
+  const alreadyRanToday = existingRuns.some((row) => {
+    const expected = /** @type {{lodge_id?: unknown, date_key?: unknown}|null|undefined} */ (row);
+    return expected?.lodge_id === state.lodgeId && expected?.date_key === todayKey;
+  });
   if (alreadyRanToday) return { success: true, skipped: true, reason: 'Already ran today' };
   return runFinancialValidation({ triggerSource });
 }

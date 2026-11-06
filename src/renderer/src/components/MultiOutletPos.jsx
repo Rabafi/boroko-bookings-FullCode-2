@@ -22,6 +22,31 @@ const OUTLET_TYPES = [
   { value: 'other', label: 'Other' }
 ]
 
+/** Expected row projections from the outlet control RPC and legacy outlet reader; IPC data is not validated here. */
+/** @typedef {{id: string, name: string, type: string, is_active: boolean, sort_order: number, active?: boolean, code?: string, pos_type?: string, cash_model?: string}} OutletControlExpectedView */
+/** Expected row projection from get_restaurant_stock_locations; its SQL JSON aggregate includes these fields. */
+/** @typedef {{id: string, name: string, is_default: boolean, is_active: boolean, outlet_count: number, outlet_ids: string[]}} StockLocationExpectedView */
+/** Expected row projection from get_restaurant_stock_location_balances; numeric database values retain their existing coercion below. */
+/** @typedef {{inventory_item_id: string, item_name: string, unit: string|null, stock_location_id: string, quantity: unknown, business_stock: unknown, allocated_stock: unknown, unallocated_stock: unknown}} StockLocationBalanceExpectedView */
+/** @typedef {{id: string, name: string, unit?: string|null, current_stock?: unknown, selling_price?: unknown, outlet_id?: string|null}} OutletInventoryItemExpectedView */
+/** @typedef {{key: string, name: string, revenue: unknown, inventoryCost: unknown, expenses: unknown, profit: unknown}} OutletProfitRowExpectedView */
+/** The SQL report returns this aggregate shape; this view does not validate RPC output. */
+/** @typedef {{key?: string, name?: string, revenue?: unknown, inventoryCost?: unknown, expenses?: unknown, profit?: unknown}} OutletProfitRowReadView */
+/** @typedef {{revenue: unknown, inventoryCost: unknown, expenses: unknown, profit: unknown}} OutletProfitTotalsExpectedView */
+/** @typedef {{source: string, outlets: OutletProfitRowReadView[], combined: OutletProfitTotalsExpectedView}} OutletProfitExpectedView */
+/** The preload method is optional; fulfilled calls can therefore also yield undefined. */
+/** @typedef {OutletProfitExpectedView|null|undefined} OutletProfitReadView */
+/** Existing mutation RPCs return success/error envelopes; the renderer reads these values without validating their origin. */
+/** Optional preload methods can resolve to null or undefined; retain both variants without asserting validation. */
+/** @typedef {{success?: boolean, error?: string, source_balance?: unknown, destination_balance?: unknown, outlet?: {id?: string}|null}|null|undefined} OutletMutationResultReadView */
+/** Existing main IPC handlers reject with Error instances; keep their current message display semantics. */
+/** @typedef {{message?: string}|null|undefined} OutletErrorMessageReadView */
+/** Creation uses the existing empty-object edit sentinel; the populated branch follows the outlet control projection. */
+/** @typedef {{id?: string, name?: string, type?: string, is_active?: boolean, sort_order?: number, cash_model?: string}} EditingOutletExpectedView */
+/** @typedef {{id: string, name: string, is_default: boolean, is_active: boolean, outlet_count: number, outlet_ids: string[]}} EditingStockLocationExpectedView */
+/** @typedef {{from_stock_location_id: string, to_stock_location_id: string, inventory_item_id: string, quantity: string, notes: string}} StockTransferDraft */
+/** @typedef {{name: string, type: string, is_active: boolean, sort_order: string, cash_model: string}} OutletDraft */
+
 export default function MultiOutletPos() {
   const { settings } = useSettings()
   const restaurantMode = isRestaurantOnly(settings?.property_type || settings?.business_type || 'lodge')
@@ -38,23 +63,23 @@ function RestaurantMultiOutlet({ barOnly = false }) {
   const canConfigureOutlets = ['manager', 'admin', 'super_admin'].includes(String(access?.role || '').toLowerCase())
   const now = new Date()
   const [activeTab, setActiveTab] = useState('outlets')
-  const [outlets, setOutlets] = useState([])
-  const [stockLocations, setStockLocations] = useState([])
-  const [stockLocationBalances, setStockLocationBalances] = useState([])
-  const [items, setItems] = useState([])
-  const [profit, setProfit] = useState(null)
+  const [outlets, setOutlets] = useState(/** @type {OutletControlExpectedView[]} */ ([]))
+  const [stockLocations, setStockLocations] = useState(/** @type {StockLocationExpectedView[]} */ ([]))
+  const [stockLocationBalances, setStockLocationBalances] = useState(/** @type {StockLocationBalanceExpectedView[]} */ ([]))
+  const [items, setItems] = useState(/** @type {OutletInventoryItemExpectedView[]} */ ([]))
+  const [profit, setProfit] = useState(/** @type {OutletProfitReadView} */ (null))
   const [start, setStart] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10))
   const [end, setEnd] = useState(now.toISOString().slice(0, 10))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [transfer, setTransfer] = useState({ from_stock_location_id: '', to_stock_location_id: '', inventory_item_id: '', quantity: '1', notes: '' })
+  const [transfer, setTransfer] = useState(/** @type {StockTransferDraft} */ ({ from_stock_location_id: '', to_stock_location_id: '', inventory_item_id: '', quantity: '1', notes: '' }))
   const [newStockLocationName, setNewStockLocationName] = useState('')
-  const [editingStockLocation, setEditingStockLocation] = useState(null)
+  const [editingStockLocation, setEditingStockLocation] = useState(/** @type {EditingStockLocationExpectedView|null} */ (null))
   const [stockLocationName, setStockLocationName] = useState('')
-  const [editingOutlet, setEditingOutlet] = useState(null)
-  const [outletForm, setOutletForm] = useState({ name: '', type: barOnly ? 'beverage' : 'food', is_active: true, sort_order: '0', cash_model: barOnly ? 'shared_drawer' : 'personal_bank' })
+  const [editingOutlet, setEditingOutlet] = useState(/** @type {EditingOutletExpectedView|null} */ (null))
+  const [outletForm, setOutletForm] = useState(/** @type {OutletDraft} */ ({ name: '', type: barOnly ? 'beverage' : 'food', is_active: true, sort_order: '0', cash_model: barOnly ? 'shared_drawer' : 'personal_bank' }))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -66,13 +91,14 @@ function RestaurantMultiOutlet({ barOnly = false }) {
       window.api?.pos?.getRestaurantStockLocations?.(),
       window.api?.pos?.getRestaurantStockLocationBalances?.()
     ])
-    setOutlets(outletResult.status === 'fulfilled' && Array.isArray(outletResult.value) ? outletResult.value : [])
-    setItems(itemResult.status === 'fulfilled' && Array.isArray(itemResult.value) ? itemResult.value : [])
-    setProfit(profitResult.status === 'fulfilled' ? profitResult.value : null)
-    setStockLocations(locationResult.status === 'fulfilled' && Array.isArray(locationResult.value) ? locationResult.value : [])
-    setStockLocationBalances(balanceResult.status === 'fulfilled' && Array.isArray(balanceResult.value) ? balanceResult.value : [])
-    if (outletResult.status === 'rejected') setError(outletResult.reason?.message || 'Outlet configuration could not be loaded.')
-    else if (canReport && profitResult.status === 'rejected') setError(profitResult.reason?.message || 'Outlet profit report could not be loaded.')
+    // The RPCs below retain their current array/nullable fallback behavior; these are expected views, not validation.
+    setOutlets(outletResult.status === 'fulfilled' && Array.isArray(outletResult.value) ? /** @type {OutletControlExpectedView[]} */ (outletResult.value) : [])
+    setItems(itemResult.status === 'fulfilled' && Array.isArray(itemResult.value) ? /** @type {OutletInventoryItemExpectedView[]} */ (itemResult.value) : [])
+    setProfit(profitResult.status === 'fulfilled' ? /** @type {OutletProfitReadView} */ (profitResult.value) : null)
+    setStockLocations(locationResult.status === 'fulfilled' && Array.isArray(locationResult.value) ? /** @type {StockLocationExpectedView[]} */ (locationResult.value) : [])
+    setStockLocationBalances(balanceResult.status === 'fulfilled' && Array.isArray(balanceResult.value) ? /** @type {StockLocationBalanceExpectedView[]} */ (balanceResult.value) : [])
+    if (outletResult.status === 'rejected') setError((/** @type {OutletErrorMessageReadView} */ (outletResult.reason))?.message || 'Outlet configuration could not be loaded.')
+    else if (canReport && profitResult.status === 'rejected') setError((/** @type {OutletErrorMessageReadView} */ (profitResult.reason))?.message || 'Outlet profit report could not be loaded.')
     setLoading(false)
   }, [canReport, end, start])
 
@@ -86,18 +112,19 @@ function RestaurantMultiOutlet({ barOnly = false }) {
   const activeOutlets = useMemo(() => outlets.filter((outlet) => outlet?.active !== false), [outlets])
   const activeStockLocations = useMemo(() => stockLocations.filter((location) => location?.is_active !== false), [stockLocations])
   const stockBalanceItems = useMemo(() => {
+    /** @type {Map<string, {id: string, name: string, unit: string, businessStock: number, allocatedStock: number, unallocatedStock: number, byLocation: Record<string, number>}>} */
     const rows = new Map()
     for (const balance of stockLocationBalances) {
-      const item = rows.get(balance.inventory_item_id) || { id: balance.inventory_item_id, name: balance.item_name || 'Inventory item', unit: balance.unit || 'each', businessStock: Number(balance.business_stock || 0), allocatedStock: Number(balance.allocated_stock || 0), unallocatedStock: Number(balance.unallocated_stock || 0), byLocation: {} }
+      const item = rows.get(balance.inventory_item_id) || { id: balance.inventory_item_id, name: balance.item_name || 'Inventory item', unit: balance.unit || 'each', businessStock: Number(balance.business_stock || 0), allocatedStock: Number(balance.allocated_stock || 0), unallocatedStock: Number(balance.unallocated_stock || 0), byLocation: /** @type {Record<string, number>} */ ({}) }
       item.byLocation[balance.stock_location_id] = Number(balance.quantity || 0)
       rows.set(balance.inventory_item_id, item)
     }
     return [...rows.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [stockLocationBalances])
-  const stockLocationForOutlet = useCallback((outletId) => stockLocations.find((location) => Array.isArray(location.outlet_ids) && location.outlet_ids.includes(outletId))?.id || '', [stockLocations])
-  const money = (value) => `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const stockLocationForOutlet = useCallback((outletId /** @type {string} */) => stockLocations.find((location) => Array.isArray(location.outlet_ids) && location.outlet_ids.includes(outletId))?.id || '', [stockLocations])
+  const money = (value /** @type {unknown} */) => `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-  const submitTransfer = async (event) => {
+  const submitTransfer = async (event /** @type {import('react').FormEvent<HTMLFormElement>} */) => {
     event.preventDefault()
     if (!transfer.from_stock_location_id || !transfer.to_stock_location_id || !transfer.inventory_item_id || Number(transfer.quantity) <= 0) {
       setError('Choose a source location, destination location, inventory item, and quantity above zero.')
@@ -109,67 +136,67 @@ function RestaurantMultiOutlet({ barOnly = false }) {
     }
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api?.pos?.createStockTransfer?.({ ...transfer, id: crypto.randomUUID(), quantity: Number(transfer.quantity) })
+      const result = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.createStockTransfer?.({ ...transfer, id: crypto.randomUUID(), quantity: Number(transfer.quantity) }))
       if (!result?.success) throw new Error(result?.error || 'Stock transfer could not be recorded.')
       setNotice(`Stock location transfer recorded. Source balance: ${Number(result.source_balance || 0)}; destination balance: ${Number(result.destination_balance || 0)}. Total business stock is unchanged.`)
       setTransfer({ from_stock_location_id: '', to_stock_location_id: '', inventory_item_id: '', quantity: '1', notes: '' })
       await load()
     } catch (transferError) {
-      setError(transferError?.message || 'Stock transfer could not be recorded.')
+      setError((/** @type {OutletErrorMessageReadView} */ (transferError))?.message || 'Stock transfer could not be recorded.')
     } finally {
       setSaving(false)
     }
   }
 
-  const saveStockLocation = async (event) => {
+  const saveStockLocation = async (event /** @type {import('react').FormEvent<HTMLFormElement>} */) => {
     event.preventDefault()
     if (!newStockLocationName.trim()) { setError('Enter a stock location name.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api?.pos?.createRestaurantStockLocation?.({ name: newStockLocationName.trim() })
+      const result = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.createRestaurantStockLocation?.({ name: newStockLocationName.trim() }))
       if (!result?.success) throw new Error(result?.error || 'Could not create stock location.')
       setNewStockLocationName(''); setNotice('Stock location created. Assign an outlet to it only when that outlet should draw stock separately.'); await load()
-    } catch (saveError) { setError(saveError?.message || 'Could not create stock location.') } finally { setSaving(false) }
+    } catch (saveError) { setError((/** @type {OutletErrorMessageReadView} */ (saveError))?.message || 'Could not create stock location.') } finally { setSaving(false) }
   }
 
-  const assignOutletStockLocation = async (outletId, stockLocationId) => {
+  const assignOutletStockLocation = async (outletId /** @type {string} */, stockLocationId /** @type {string} */) => {
     if (!stockLocationId) return
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api?.pos?.setRestaurantOutletStockLocation?.(outletId, stockLocationId)
+      const result = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.setRestaurantOutletStockLocation?.(outletId, stockLocationId))
       if (!result?.success) throw new Error(result?.error || 'Could not update outlet stock source.')
       setNotice('Outlet stock source saved. Sales from this Till now draw from that stock location.'); await load()
-    } catch (saveError) { setError(saveError?.message || 'Could not update outlet stock source.') } finally { setSaving(false) }
+    } catch (saveError) { setError((/** @type {OutletErrorMessageReadView} */ (saveError))?.message || 'Could not update outlet stock source.') } finally { setSaving(false) }
   }
 
-  const renameStockLocation = (location) => {
+  const renameStockLocation = (location /** @type {StockLocationExpectedView} */) => {
     setEditingStockLocation(location)
     setStockLocationName(location.name || '')
     setError('')
   }
 
-  const saveStockLocationName = async (event) => {
+  const saveStockLocationName = async (event /** @type {import('react').FormEvent<HTMLFormElement>} */) => {
     event.preventDefault()
     if (!stockLocationName.trim()) { setError('Enter a stock location name.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api?.pos?.updateRestaurantStockLocation?.(editingStockLocation.id, { name: stockLocationName.trim() })
+      const result = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.updateRestaurantStockLocation?.(editingStockLocation.id, { name: stockLocationName.trim() }))
       if (!result?.success) throw new Error(result?.error || 'Could not update stock location.')
       setEditingStockLocation(null); setNotice('Stock location renamed.'); await load()
-    } catch (saveError) { setError(saveError?.message || 'Could not update stock location.') } finally { setSaving(false) }
+    } catch (saveError) { setError((/** @type {OutletErrorMessageReadView} */ (saveError))?.message || 'Could not update stock location.') } finally { setSaving(false) }
   }
 
-  const removeStockLocation = async (location) => {
+  const removeStockLocation = async (location /** @type {StockLocationExpectedView} */) => {
     if (!window.confirm(`Delete ${location.name}? This is allowed only when it has no stock and no outlet assignment.`)) return
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api?.pos?.deleteRestaurantStockLocation?.(location.id)
+      const result = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.deleteRestaurantStockLocation?.(location.id))
       if (!result?.success) throw new Error(result?.error || 'Could not delete stock location.')
       setNotice('Stock location deleted.'); await load()
-    } catch (saveError) { setError(saveError?.message || 'Could not delete stock location.') } finally { setSaving(false) }
+    } catch (saveError) { setError((/** @type {OutletErrorMessageReadView} */ (saveError))?.message || 'Could not delete stock location.') } finally { setSaving(false) }
   }
 
-  const openOutletEditor = (outlet = null) => {
+  const openOutletEditor = (outlet /** @type {OutletControlExpectedView|null} */ = null) => {
     setEditingOutlet(outlet || {})
     setOutletForm({
       name: outlet?.name || '',
@@ -181,15 +208,15 @@ function RestaurantMultiOutlet({ barOnly = false }) {
     setError('')
   }
 
-  const saveOutlet = async (event) => {
+  const saveOutlet = async (event /** @type {import('react').FormEvent<HTMLFormElement>} */) => {
     event.preventDefault()
     if (!outletForm.name.trim()) { setError('Outlet name is required.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
       const payload = { ...outletForm, name: outletForm.name.trim(), sort_order: Number(outletForm.sort_order || 0) }
-      const result = editingOutlet?.id
+      const result = /** @type {OutletMutationResultReadView} */ (editingOutlet?.id
         ? await window.api?.pos?.updateRestaurantOutlet?.(editingOutlet.id, payload)
-        : await window.api?.pos?.createRestaurantOutlet?.(payload)
+        : await window.api?.pos?.createRestaurantOutlet?.(payload))
       if (!result?.success) throw new Error(result?.error || 'Could not save outlet.')
       // Cash counting changes only through the guarded switch: it needs an
       // admin and zero open financial activity in the outlet.
@@ -197,14 +224,14 @@ function RestaurantMultiOutlet({ barOnly = false }) {
       const wantedModel = payload.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
       const currentModel = editingOutlet?.cash_model === 'shared_drawer' ? 'shared_drawer' : 'personal_bank'
       if (savedId && (!editingOutlet?.id || wantedModel !== currentModel)) {
-        const modelResult = await window.api?.pos?.setOutletCashModel?.(savedId, wantedModel)
+        const modelResult = /** @type {OutletMutationResultReadView} */ (await window.api?.pos?.setOutletCashModel?.(savedId, wantedModel))
         if (!modelResult?.success) throw new Error(modelResult?.error || 'Outlet saved, but the cash counting model could not be changed.')
       }
       setEditingOutlet(null)
       setNotice(editingOutlet?.id ? 'Outlet updated. Its future sales, stock custody, and reporting scope remain traceable.' : 'Outlet created. Assign appropriate staff access before using it for service.')
       await load()
     } catch (saveError) {
-      setError(saveError?.message || 'Could not save outlet.')
+      setError((/** @type {OutletErrorMessageReadView} */ (saveError))?.message || 'Could not save outlet.')
     } finally { setSaving(false) }
   }
 

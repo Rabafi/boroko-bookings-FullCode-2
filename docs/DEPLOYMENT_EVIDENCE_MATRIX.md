@@ -1,5 +1,29 @@
 # Deployment Evidence Matrix
 
+## 2026-10-22 - Bar add-on pricing and Accounting dependency (database deployed; no client release)
+
+Linked project `Tsa Bonno HospitalityOS` (`oicgpknsmtvcsjacymum`) is applied
+through `20261021090000_bar_addon_dependencies_and_prices.sql`. It was the only
+pending migration. Local/remote migration history matches through this ID, and
+the post-deploy dry run reports the remote database up to date. Error-level
+linked SQL lint and security advisors return no findings.
+
+Live readback confirms the active Bar catalogue charges P2,500 for Stock &
+Purchasing Pro, P3,500 for Accounting & Workforce and P2,000 for Growth &
+Multi-Outlet; Accounting carries the required
+`bar_stock_purchasing_pro` dependency. The activation function no longer
+performs the invalid composite settings read and accepts `restaurant` or `bar`.
+A read-only quote smoke returned P10,500 for Bar POS plus both required
+add-ons, while an Accounting-only quote raised the expected dependency error.
+No quote, subscription, entitlement or customer record was changed by this
+deployment.
+
+Boundary: the hosted migration is applied, but the existing
+`settings_property_type_check` constraint still does not admit
+`property_type = 'bar'`; no constraint migration was deployed. No authenticated
+production activation journey, desktop/Manager/Legacy release, manual/guide
+approval or customer rollout is claimed.
+
 ## 2026-09-04 — F&B and verified booking contracts (database deployed; lint blocked)
 
 Linked project `Tsa Bonno HospitalityOS` (`oicgpknsmtvcsjacymum`) is applied

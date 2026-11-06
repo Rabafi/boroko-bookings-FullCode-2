@@ -14,20 +14,39 @@ import { ErrorNotice } from './shared/ErrorNotice'
 /**
  * @typedef {import('../../../shared/desktopIpcContracts.js').SyncDetailsSnapshot} SyncDetailsSnapshot
  * @typedef {import('../../../shared/desktopIpcContracts.js').SyncGroupedCounts} SyncGroupedCounts
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncRetryResult} SyncRetryResult
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncClearFailedResult} SyncClearFailedResult
  * @typedef {import('../../../shared/desktopIpcContracts.js').SyncOfflineModeSnapshot} SyncOfflineModeSnapshot
  * @typedef {import('../../../shared/desktopIpcContracts.js').SyncOperationJournalSummary} SyncOperationJournalSummary
+ * @typedef {import('../../../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult} SyncOfflineModeWriteResult
+ * IPC result views below follow their concrete Main producers; values crossing IPC remain unvalidated here.
+ * @typedef {{success: boolean | undefined; error: unknown}} SystemHealthSyncRunResultExpectedView
+ * @typedef {{success: boolean | undefined; error: unknown; run: SystemHealthValidationRunExpectedView | null | undefined}} SystemHealthValidationActionExpectedView
+ * @typedef {{success: boolean | undefined; error: unknown}} SystemHealthHistoryClearResultExpectedView
+ * @typedef {{success: boolean | undefined; error: unknown; mesh: SystemHealthMeshStatusExpectedView | undefined}} SystemHealthMeshActionResultExpectedView
+ * @typedef {{success: boolean | undefined; error: unknown; canceled: boolean | undefined; pending: number | undefined; failed: number | undefined}} SystemHealthOfflineExportResultExpectedView
+ * @typedef {{success: boolean | undefined; error: unknown; bundle: unknown}} SystemHealthSupportBundleResultExpectedView
+ * @typedef {{stale: boolean; source: unknown; updatedAt: unknown; cacheAgeMs: number | null}} SystemHealthCacheFreshnessExpectedView
  * The failed-row view follows sync.js:getSyncDetails/enrichFailed. Queue rows
  * come from local JSON and remain unvalidated; raw identifiers/payload fields
- * stay unknown while producer-computed retry classification is typed.
+ * stay unknown while producer-computed retry classification is typed. The
+ * existing sync queue view declares operation `type` and `table` strings; that
+ * is an expected lookup view, not validation of persisted rows.
  * @typedef {{p_booking_id?: unknown, p_id?: unknown, payload?: {id?: unknown, booking_id?: unknown} | null}} FailedSyncItemDataExpectedView
- * @typedef {{_queue_id?: unknown, type?: unknown, table?: unknown, scope?: unknown, context?: unknown, data?: unknown, isFinancial?: boolean, isAutoRetryable?: boolean, autoRetryEligible?: boolean, nextAutoRetryAt?: unknown, lastAttemptedAt?: unknown, displayError?: unknown, lastError?: unknown, dependencyLabel?: string, dependencyCategory?: string}} FailedSyncItemExpectedView
+ * @typedef {{_queue_id?: unknown, type?: unknown, table?: unknown, scope?: unknown, context?: unknown, data?: unknown, createdAt?: unknown, dependencyState?: unknown, _depends_on?: unknown, isFinancial?: boolean, isAutoRetryable?: boolean, autoRetryEligible?: boolean, nextAutoRetryAt?: unknown, lastAttemptedAt?: unknown, displayError?: unknown, lastError?: unknown, dependencyLabel?: string, dependencyCategory?: string}} FailedSyncItemExpectedView
+ * Health-fault records are constructed and sanitized by syncStore.appendHealthFault,
+ * then read from JSON without row validation. This is the expected UI view only;
+ * context identifiers remain unknown and persisted records are not validated.
+ * appendHealthFault produces string timestamps; this permits a display-only
+ * string|null view of formatTs output while persisted records remain unvalidated.
+ * @typedef {FailedSyncItemExpectedView & {id: string, type: string, scope: string, message: string, at: string, severity: 'error' | 'warn', context?: {booking_id?: unknown} | null}} SystemHealthFaultExpectedView
  * @typedef {{label: string, route: string, state: Record<string, unknown>}} SyncItemNavigation
  * The main handler returns the complete snapshot or a queue-only access
  * fallback. Local catch/timeout fallbacks add error, faults, and freshness.
  * Optional members below are only those omitted by these concrete fallbacks;
  * queue rows and persisted leaf values remain unvalidated.
  * @typedef {{
- *   pending: unknown[],
+  *   pending: FailedSyncItemExpectedView[],
  *   failed: unknown[],
  *   faults?: unknown,
  *   groupedCounts?: Partial<SyncGroupedCounts>,
@@ -44,9 +63,9 @@ import { ErrorNotice } from './shared/ErrorNotice'
  *   error?: unknown
  * }} SystemHealthSyncDetailsResponseExpectedView
  * @typedef {{
- *   pending: unknown[],
+  *   pending: FailedSyncItemExpectedView[],
  *   failed: FailedSyncItemExpectedView[],
- *   faults: unknown[],
+ *   faults: SystemHealthFaultExpectedView[],
  *   groupedCounts: Partial<SyncGroupedCounts>,
  *   cacheFreshness: Record<string, unknown>,
  *   cacheStale: Partial<SyncDetailsSnapshot['cacheStale']>,
@@ -63,7 +82,7 @@ import { ErrorNotice } from './shared/ErrorNotice'
  * @typedef {{
  *   pending: unknown[],
  *   failed: FailedSyncItemExpectedView[],
- *   faults: unknown[],
+ *   faults: SystemHealthFaultExpectedView[],
  *   cacheFreshness: Record<string, unknown>,
  *   groupedCounts?: undefined,
  *   cacheStale?: undefined,
@@ -83,7 +102,39 @@ import { ErrorNotice } from './shared/ErrorNotice'
  * @typedef {{name: string, address: string, netmask: string, network: string, broadcast: string, cidr: string|null, private: boolean}} SystemHealthMeshInterfaceExpectedView
  * @typedef {{at: string, peerCount: number, importedCount: number, missingCount: number, conflictCount: number, conflictSamples: unknown[], perPeer: unknown[]}} SystemHealthMeshQueueRepairExpectedView
  * @typedef {{enabled: boolean, running: boolean, nodeId?: unknown, peerCount: number, peers?: SystemHealthMeshPeerExpectedView[], activeLockCount?: number, activeLocks?: unknown[], lastQueueMergeAt?: string|null, lastQueueRepair?: SystemHealthMeshQueueRepairExpectedView|null, lastTeamSync?: unknown, lastError?: unknown, lastDiscoveryError?: string|null, lastBeaconAt?: string|null, lastPeerSeenAt?: string|null, httpPort?: number|null, localInterfaces?: SystemHealthMeshInterfaceExpectedView[], warnings?: string[]}} SystemHealthMeshStatusExpectedView
- * @typedef {import('../../../shared/desktopIpcContracts.js').SyncStatusSnapshot & {mesh?: SystemHealthMeshStatusExpectedView}} SystemHealthSyncStatusWithMeshExpectedView
+ * @typedef {import('../../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot & {mesh?: SystemHealthMeshStatusExpectedView}} SystemHealthSyncStatusWithMeshExpectedView
+ * Financial validation history rows are produced either by the local run
+ * journal writer or get_financial_validation_runs_v2. Summary totals remain
+ * unknown until the existing Number(...) display coercion; the view does not
+ * validate journal or RPC JSON.
+ * @typedef {{payment_mismatches?: unknown, charge_mismatches?: unknown, invoice_gaps?: unknown}} SystemHealthValidationRunTotalsExpectedView
+ * @typedef {{totals?: SystemHealthValidationRunTotalsExpectedView|null}} SystemHealthValidationRunSummaryExpectedView
+ * @typedef {{id: string, trigger_source?: string|null, created_at?: unknown, summary?: SystemHealthValidationRunSummaryExpectedView|null, triggered_by_name?: string|null, persistence_state?: string|null, server_confirmed?: boolean, local_only?: boolean, calculation_state?: string|null, error?: string|null}} SystemHealthValidationRunExpectedView
+ * @typedef {import('../app-context.jsx').SettingsRowView} SystemHealthSettingsExpectedView
+ * @typedef {{name?: unknown, email?: unknown}} SystemHealthSessionUserExpectedView
+ * @typedef {{payments_rpc?: {ok?: unknown, message?: unknown}, contract?: {ok?: unknown, allOk?: unknown, probes?: Record<string, unknown>, message?: unknown}}} SystemHealthFinanceExpectedView
+ * The producer does not emit lodge_name; it remains optional here because the
+ * current support-ticket consumer still reads it from this snapshot.
+ * @typedef {{checked_at: string, lodge_id: unknown, lodge_name?: unknown, online: boolean, replayAuthReady: unknown, sync: SystemHealthSyncStatusWithMeshExpectedView, backups: {backups: Array<{name: string, created: string}>, policy?: unknown, bar_trading?: unknown}, backup_health: {ok?: unknown, warnings?: unknown[]}, diagnostics: {error?: unknown, message?: unknown}, finance: SystemHealthFinanceExpectedView, faults: unknown[]}} SystemHealthSnapshotSuccessExpectedView
+ * settings:getSystemHealth returns an error object when its handler rejects;
+ * component catch/timeout paths also provide this fallback shape. This local
+ * expected view records those paths without validating the IPC response.
+ * @typedef {Partial<SystemHealthSnapshotSuccessExpectedView> & {error: unknown}} SystemHealthSnapshotErrorExpectedView
+ * @typedef {SystemHealthSnapshotSuccessExpectedView | SystemHealthSnapshotErrorExpectedView} SystemHealthSnapshotExpectedView
+ * The main finance producer returns this normalized view or its unavailable fallback.
+ * This describes expected IPC data and does not validate the dynamic response.
+ * @typedef {{booking_id?: unknown, invoice_number?: string|null, booking_amount_paid?: unknown, payment_ledger_total?: unknown}} SystemHealthPaymentMismatchExpectedView
+ * @typedef {{booking_id?: unknown, invoice_number?: string|null, booking_charges_total?: unknown, charge_ledger_total?: unknown}} SystemHealthChargeMismatchExpectedView
+ * @typedef {{id?: unknown, invoice_number?: string|null, amount_to_refund: number, customer_name?: string|null}} SystemHealthPendingRefundExpectedView
+ * @typedef {{summary?: {paymentMismatches?: number, chargeMismatches?: number, folioPosMismatches?: number, posReturnMismatches?: number, creditMismatches?: number, posVoidMismatches?: number, invoiceGaps?: number, duplicateInvoices?: number, orphanInvoices?: number, pendingRefunds?: number}, paymentMismatches?: SystemHealthPaymentMismatchExpectedView[], chargeMismatches?: SystemHealthChargeMismatchExpectedView[], pendingRefunds?: SystemHealthPendingRefundExpectedView[], local_only?: boolean, degraded?: boolean, timeout?: boolean, valid?: boolean, error?: unknown, message?: unknown, online?: unknown}} SystemHealthReconciliationExpectedView
+ * @typedef {{totals?: {payment_mismatches?: unknown, charge_mismatches?: unknown, invoice_gaps?: unknown, recent_refunds?: number, recent_charge_voids?: number}, degraded?: boolean, message?: unknown, reconciliation?: SystemHealthReconciliationExpectedView, recentRefunds?: Array<{booking_id?: unknown, amount_delta?: unknown, created_at?: unknown}>, recentChargeVoids?: Array<{booking_id?: unknown, amount_delta?: unknown, reason?: unknown}>}} SystemHealthValidationExpectedView
+ * @typedef {{device_id: string, client_type: string, reported_at: string, pending_queue_count: number, failed_queue_count: number, unresolved_local_count: number, reconciliation_state: string, top_fault_types: unknown[], stale: boolean}} SystemHealthDeviceExpectedView
+ * Main returns `devices: []` in both the unavailable branch and after its Array.isArray RPC guard.
+ * @typedef {{available?: boolean, devices: SystemHealthDeviceExpectedView[]}} SystemHealthDeviceRollupExpectedView
+ * @typedef {{id?: unknown, name?: unknown, room_number?: unknown, table_number?: unknown}} SystemHealthRoomExpectedView
+ * @typedef {{id?: unknown, name?: unknown}} SystemHealthCustomerExpectedView
+ * @typedef {{id?: unknown, scope?: unknown, operation?: unknown, message?: string|null, level?: unknown, severity?: unknown, at?: unknown, route?: string|null, componentStack?: string|null, details?: unknown}} SystemHealthIssueExpectedView
+ * @typedef {{id?: unknown, detected_at?: unknown, type?: unknown, alert_type?: unknown, message?: unknown, summary?: unknown}} SystemHealthValidationAlertExpectedView
  */
 
 // ─── Pill helpers ──────────────────────────────────────────────────────────────
@@ -133,6 +184,8 @@ function withTimeout(promise, ms, fallback) {
   ])
 }
 
+/** @typedef {Record<string, unknown> & {payload?: Record<string, unknown>|null}} HumanContextNestedRecordExpectedView */
+/** @typedef {Record<string, unknown> & {data?: HumanContextNestedRecordExpectedView|null, payload?: Record<string, unknown>|null}} HumanContextDetailRecordExpectedView */
 /**
  * Queue payloads remain unvalidated external data. The caller supplies the
  * existing room/customer collections; this expected UI shape only describes
@@ -145,7 +198,7 @@ function HumanContext({ details, rooms, customers, restaurantMode = false }) {
   // Flatten common payload structures
   // Expected-data projection only: the existing object guard does not validate
   // nested queue payloads or their leaf values.
-  const detailRecord = /** @type {Record<string, unknown> & {data?: {payload?: object | null} | null, payload?: object | null}} */ (details)
+  const detailRecord = /** @type {HumanContextDetailRecordExpectedView} */ (details)
   const flattened = { 
     ...(detailRecord.data?.payload || {}),
     ...(detailRecord.data || {}),
@@ -153,7 +206,9 @@ function HumanContext({ details, rooms, customers, restaurantMode = false }) {
     ...detailRecord
   }
   
+  /** @param {unknown} id Queue-derived identifier; comparisons preserve existing Number/String coercion. */
   const findRoom = (id) => rooms.find(r => r.id === Number(id) || r.id === String(id))
+  /** @param {unknown} id Queue-derived identifier; comparisons preserve existing Number/String coercion. */
   const findCustomer = (id) => customers.find(c => c.id === Number(id) || c.id === String(id))
 
   const entries = Object.entries(flattened)
@@ -191,7 +246,9 @@ function HumanContext({ details, rooms, customers, restaurantMode = false }) {
         const c = findCustomer(val)
         if (c) displayVal = c.name
       } else if (key.toLowerCase().includes('amount') || key.toLowerCase().includes('rate') || key.toLowerCase().includes('total') || key.toLowerCase().includes('balance')) {
-        if (!isNaN(val)) displayVal = Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 })
+        // The global isNaN applies its existing numeric coercion to unknown queue leaves.
+        // This view widens only the library signature; it does not claim `val` is a number.
+        if (!(/** @type {(value: unknown) => boolean} */ (isNaN))(val)) displayVal = Number(val).toLocaleString(undefined, { minimumFractionDigits: 2 })
       }
 
       return { label, value: String(displayVal) }
@@ -212,6 +269,7 @@ function HumanContext({ details, rooms, customers, restaurantMode = false }) {
 }
 
 // Human-readable labels for sync queue operation names shown to operators.
+/** @type {Record<string, unknown>} */
 const SYNC_OP_LABEL = {
   create_booking:           'New booking',
   create_booking_record:    'New booking',
@@ -241,6 +299,7 @@ const SYNC_OP_LABEL = {
   create_expense:           'New expense',
 }
 
+/** @type {Record<string, unknown>} */
 const SYNC_OP_LABEL_RESTAURANT = {
   ...SYNC_OP_LABEL,
   create_customer:          'New customer',
@@ -260,11 +319,15 @@ const SYNC_OP_LABEL_RESTAURANT = {
   create_pos_order:         'POS sale',
 }
 
+/** @param {unknown} table Persisted queue data is not validated. */
 function syncOpLabel(table, restaurantMode = false) {
   const map = restaurantMode ? SYNC_OP_LABEL_RESTAURANT : SYNC_OP_LABEL
-  return map[table] || table || 'Unknown operation'
+  // Keep JavaScript's original property-key coercion, including inherited
+  // lookups such as "toString"; this assertion does not validate queue data.
+  return map[/** @type {string} */ (table)] || table || 'Unknown operation'
 }
 
+/** @type {Record<string, unknown>} */
 const PLAIN_LABEL_OVERRIDES = {
   payments_rpc: 'Payments',
   bookings_rpc: 'Bookings',
@@ -280,16 +343,17 @@ const PLAIN_LABEL_OVERRIDES = {
   inventory_item: 'Inventory',
 }
 
+/** @param {unknown} value */
 function plainLabel(value, { restaurantMode = false } = {}) {
   if (value == null) return 'Item'
   const raw = String(value).trim()
   if (!raw) return 'Item'
   const restaurantOverrides = restaurantMode
-    ? {
+    ? /** @type {Record<string, unknown>} */ ({
         bookings_rpc: 'Orders',
         customers_rpc: 'Customers',
         rooms_rpc: 'Tables / stations',
-      }
+      })
     : {}
   const override = restaurantOverrides[raw.toLowerCase()] || PLAIN_LABEL_OVERRIDES[raw.toLowerCase()]
   if (override) return override
@@ -310,9 +374,10 @@ function plainLabel(value, { restaurantMode = false } = {}) {
   return label.replace(/\b\w/g, (ch) => ch.toUpperCase())
 }
 
+/** @param {unknown} value */
 function plainStatusLabel(value) {
   const raw = String(value ?? '').trim().toLowerCase()
-  const labels = {
+  const labels = /** @type {Record<string, unknown>} */ ({
     ok: 'Clear',
     good: 'Clear',
     clear: 'Clear',
@@ -339,26 +404,29 @@ function plainStatusLabel(value) {
     stale: 'Out of date',
     blocked: 'Blocked',
     unknown: 'Unknown'
-  }
+  })
   return labels[raw] || plainLabel(value)
 }
 
+/** @param {unknown} value */
 function plainOutcomeLabel(value) {
   const raw = String(value ?? '').trim().toLowerCase()
-  const labels = {
+  const labels = /** @type {Record<string, unknown>} */ ({
     success: 'Success',
     empty: 'Nothing to send',
     partial: 'Partly sent',
     failed: 'Needs review',
     unknown: 'Unknown'
-  }
+  })
   return labels[raw] || plainLabel(value)
 }
 
+/** @param {SystemHealthIssueExpectedView|null|undefined} entry */
 function issueLevel(entry) {
   return String(entry?.severity || entry?.level || '').trim().toLowerCase()
 }
 
+/** @param {SystemHealthIssueExpectedView|null|undefined} entry */
 function isImportantIssueCritical(entry) {
   const scope = String(entry?.scope || entry?.operation || '').toLowerCase()
   return scope.includes('financial') || scope.includes('db_init') || issueLevel(entry) === 'error'
@@ -369,22 +437,23 @@ function isImportantIssueCritical(entry) {
 export default function SystemHealthPanel() {
   const navigate = useNavigate()
   const { settings: contextSettings } = useSettings()
-  const [health, setHealth]               = useState(null)
-  const [globalSettings, setGlobalSettings] = useState(null)
-  const [sessionUser, setSessionUser]     = useState(null)
+  const [health, setHealth]               = useState(/** @type {SystemHealthSnapshotExpectedView|null} */ (null))
+  const [globalSettings, setGlobalSettings] = useState(/** @type {SystemHealthSettingsExpectedView|null} */ (null))
+  const [sessionUser, setSessionUser]     = useState(/** @type {SystemHealthSessionUserExpectedView|null} */ (null))
   const [syncDetails, setSyncDetails]     = useState(/** @type {SystemHealthSyncDetails | SystemHealthSyncDetailsInitial} */ ({ pending: [], failed: [], faults: [], cacheFreshness: {} }))
-  const [reconciliation, setReconciliation] = useState(null)
-  const [validation, setValidation]       = useState(null)
-  const [validationRuns, setValidationRuns] = useState([])
-  const [validationAlerts, setValidationAlerts] = useState([])
-  const [criticalErrors, setCriticalErrors] = useState([])
-  const [deviceHealthRollup, setDeviceHealthRollup] = useState({ available: false, devices: [] })
+  const [reconciliation, setReconciliation] = useState(/** @type {SystemHealthReconciliationExpectedView|null} */ (null))
+  const [validation, setValidation]       = useState(/** @type {SystemHealthValidationExpectedView|null} */ (null))
+  const [validationRuns, setValidationRuns] = useState(/** @type {SystemHealthValidationRunExpectedView[]} */ ([]))
+  const [validationAlerts, setValidationAlerts] = useState(/** @type {SystemHealthValidationAlertExpectedView[]} */ ([]))
+  const [criticalErrors, setCriticalErrors] = useState(/** @type {SystemHealthIssueExpectedView[]} */ ([]))
+  const [deviceHealthRollup, setDeviceHealthRollup] = useState(/** @type {SystemHealthDeviceRollupExpectedView} */ ({ available: false, devices: [] }))
   const [loading, setLoading]             = useState(false)
   const [actionBusy, setActionBusy]       = useState('')
-  const [flash, setFlash]                 = useState(null)
-  const [rendererErrors, setRendererErrors] = useState([])
-  const [rooms, setRooms]                 = useState([])
-  const [customers, setCustomers]         = useState([])
+  // Some messages come from unvalidated IPC errors, so their content remains unknown.
+  const [flash, setFlash]                 = useState(/** @type {{type: 'success' | 'error', text: unknown} | null} */ (null))
+  const [rendererErrors, setRendererErrors] = useState(/** @type {SystemHealthIssueExpectedView[]} */ ([]))
+  const [rooms, setRooms]                 = useState(/** @type {SystemHealthRoomExpectedView[]} */ ([]))
+  const [customers, setCustomers]         = useState(/** @type {SystemHealthCustomerExpectedView[]} */ ([]))
   const [meshStatus, setMeshStatus]       = useState(/** @type {SystemHealthMeshStatusExpectedView} */ ({ enabled: false, running: false, peerCount: 0, activeLocks: [] }))
   const [manualMeshIp, setManualMeshIp]   = useState('')
   // Track current pending count so post-sync polling can detect when items drain
@@ -412,8 +481,8 @@ export default function SystemHealthPanel() {
         nextRendererErrors, nextValidationAlerts, nextCriticalErrors,
         nextDeviceHealthRollup, nextCustomers, nextSyncStatus
       ] = await Promise.all([
-        withTimeout(window.api.settings.getSystemHealth().catch((e) => ({ error: e.message })), 8000, { error: 'System health is taking too long to load.' }),
-        withTimeout(window.api.settings.get().catch(() => null), 8000, null),
+        withTimeout((/** @type {() => Promise<unknown>} */ (window.api.settings.getSystemHealth))().catch((e) => ({ error: e.message })), 8000, { error: 'System health is taking too long to load.' }),
+        withTimeout(/** @type {Promise<SystemHealthSettingsExpectedView|null>} */ (window.api.settings.get().catch(() => null)), 8000, null),
         withTimeout(window.api.auth.validateSession().catch(() => null), 8000, null),
         withTimeout(/** @type {Promise<SystemHealthSyncDetailsResponseExpectedView>} */ (window.api.sync.getDetails().catch((e) => ({ error: e.message, pending: [], failed: [], faults: [], cacheFreshness: {} }))), 8000, /** @type {SystemHealthSyncDetailsResponseExpectedView} */ ({ error: 'Sync details are taking too long to load.', pending: [], failed: [], faults: [], cacheFreshness: {} })),
         withTimeout(window.api.reports.financialReconciliation().catch((e) => ({ error: e.message, summary: {} })), 8000, { error: 'Money check is unavailable offline.', summary: {} }),
@@ -426,26 +495,30 @@ export default function SystemHealthPanel() {
         withTimeout(window.api.customers.getAll().catch(() => []), 8000, []),
         withTimeout(/** @type {Promise<SystemHealthSyncStatusWithMeshExpectedView|null>} */ (window.api.sync.getStatus().catch(() => null)), 8000, null)
       ])
-      setHealth(systemHealth || null)
-      setGlobalSettings(settingsSnapshot || null)
+      // These are expected IPC views from health/settings producers; the local
+      // type does not validate the dynamic IPC values.
+      setHealth(/** @type {SystemHealthSnapshotExpectedView|null} */ (systemHealth || null))
+      setGlobalSettings(/** @type {SystemHealthSettingsExpectedView|null} */ (settingsSnapshot || null))
       // Rooms only help accommodation queue humanization; skip for restaurant/bar.
       const snapshotRestaurant = isRestaurantOnly(
         settingsSnapshot?.property_type || settingsSnapshot?.business_type || propertyType
       )
       if (!snapshotRestaurant) {
         const nextRooms = await withTimeout(window.api.rooms.getAll().catch(() => []), 8000, [])
-        setRooms(Array.isArray(nextRooms) ? nextRooms : [])
+        setRooms(Array.isArray(nextRooms) ? /** @type {SystemHealthRoomExpectedView[]} */ (nextRooms) : [])
       } else {
         setRooms([])
       }
-      setSessionUser(validatedUser || null)
+      setSessionUser(/** @type {SystemHealthSessionUserExpectedView|null} */ (validatedUser || null))
       const nextPending = Array.isArray(details?.pending) ? details.pending : []
       pendingCountRef.current = nextPending.length
       setSyncDetails({
         pending:        nextPending,
         // Existing array guard covers only the collection, not its persisted rows.
         failed:         Array.isArray(details?.failed) ? /** @type {FailedSyncItemExpectedView[]} */ (details.failed) : [],
-        faults:         Array.isArray(details?.faults) ? details.faults : [],
+        // Existing array guard checks only the container; JSON rows remain an
+        // expected health-fault view and are not runtime-validated.
+        faults:         Array.isArray(details?.faults) ? /** @type {SystemHealthFaultExpectedView[]} */ (details.faults) : [],
         groupedCounts:  details?.groupedCounts || {},
         cacheFreshness: details?.cacheFreshness && typeof details.cacheFreshness === 'object' ? details.cacheFreshness : {},
         cacheStale:     details?.cacheStale || { active: false, names: [] },
@@ -461,17 +534,19 @@ export default function SystemHealthPanel() {
         operationJournal: details?.operationJournal || { total: 0 },
         error: details?.error || ''
       })
-      setReconciliation(reconciliationSummary || null)
-      setValidation(validationSummary || null)
-      setValidationRuns(Array.isArray(validationHistory) ? validationHistory : [])
-      setRendererErrors(Array.isArray(nextRendererErrors) ? nextRendererErrors : [])
-      setValidationAlerts(Array.isArray(nextValidationAlerts) ? nextValidationAlerts : [])
-      setCriticalErrors(Array.isArray(nextCriticalErrors) ? nextCriticalErrors : [])
-      setDeviceHealthRollup(nextDeviceHealthRollup || { available: false, devices: [] })
-      setCustomers(Array.isArray(nextCustomers) ? nextCustomers : [])
+      setReconciliation(/** @type {SystemHealthReconciliationExpectedView|null} */ (reconciliationSummary || null))
+      setValidation(/** @type {SystemHealthValidationExpectedView|null} */ (validationSummary || null))
+      // The existing array guard preserves the collection boundary; rows are
+      // still expected data from the local journal/RPC, not runtime-validated.
+      setValidationRuns(Array.isArray(validationHistory) ? /** @type {SystemHealthValidationRunExpectedView[]} */ (validationHistory) : [])
+      setRendererErrors(Array.isArray(nextRendererErrors) ? /** @type {SystemHealthIssueExpectedView[]} */ (nextRendererErrors) : [])
+      setValidationAlerts(Array.isArray(nextValidationAlerts) ? /** @type {SystemHealthValidationAlertExpectedView[]} */ (nextValidationAlerts) : [])
+      setCriticalErrors(Array.isArray(nextCriticalErrors) ? /** @type {SystemHealthIssueExpectedView[]} */ (nextCriticalErrors) : [])
+      setDeviceHealthRollup(/** @type {SystemHealthDeviceRollupExpectedView} */ (nextDeviceHealthRollup || { available: false, devices: [] }))
+      setCustomers(Array.isArray(nextCustomers) ? /** @type {SystemHealthCustomerExpectedView[]} */ (nextCustomers) : [])
       setMeshStatus(nextSyncStatus?.mesh || { enabled: false, running: false, peerCount: 0, activeLocks: [] })
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not refresh the status page.')
+      pushFlash('error', (/** @type {{message?: unknown} | null | undefined} */ (error))?.message || 'Could not refresh the status page.')
     } finally {
       setLoading(false)
     }
@@ -484,16 +559,16 @@ export default function SystemHealthPanel() {
     load()
 
     if (!window.api?.sync?.onStatusChanged) return
-    const unsubscribe = window.api.sync.onStatusChanged(() => {
+    const unsubscribe = /** @type {(() => void) | undefined} */ (window.api.sync.onStatusChanged(() => {
       // A status-changed event fires when sync starts, processes an item, or
       // finishes. Reload the full health snapshot so all counters stay current.
       load()
-    })
+    }))
     return () => unsubscribe?.()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const pushFlash = (type, text) => {
+  const pushFlash = (/** @type {'success' | 'error'} */ type, /** @type {unknown} */ text) => {
     setFlash({ type, text })
     setTimeout(() => setFlash(null), 4000)
   }
@@ -503,7 +578,7 @@ export default function SystemHealthPanel() {
   const runSyncNow = async () => {
     setActionBusy('run-sync')
     try {
-      const result = await window.api.sync.runNow().catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthSyncRunResultExpectedView} */ (await window.api.sync.runNow().catch((e) => ({ success: false, error: e.message })))
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not start sending right now.')
         return
@@ -537,7 +612,7 @@ export default function SystemHealthPanel() {
   const retryFailed = async () => {
     setActionBusy('retry')
     try {
-      const result = await window.api.sync.retryFailed().catch((e) => ({ success: false, error: e.message }))
+      const result = await window.api.sync.retryFailed().catch((e) => /** @type {SyncRetryResult} */ ({ success: false, error: e.message }))
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not try again right now.')
         return
@@ -554,7 +629,7 @@ export default function SystemHealthPanel() {
     if (!queueId) return
     setActionBusy(`retry:${queueId}`)
     try {
-      const result = await window.api.sync.retryFailed([queueId]).catch((e) => ({ success: false, error: e.message }))
+      const result = await window.api.sync.retryFailed([queueId]).catch((e) => /** @type {SyncRetryResult} */ ({ success: false, error: e.message }))
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not try again for this item.')
         return
@@ -569,7 +644,7 @@ export default function SystemHealthPanel() {
   const clearFailed = async () => {
     setActionBusy('clear')
     try {
-      const result = await window.api.sync.clearFailed().catch((e) => ({ success: false, error: e.message }))
+      const result = await window.api.sync.clearFailed().catch((e) => /** @type {SyncClearFailedResult} */ ({ success: false, error: e.message }))
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not clear the items needing review.')
         return
@@ -585,6 +660,7 @@ export default function SystemHealthPanel() {
     }
   }
 
+  /** @param {string} faultId Health-fault ids are created as UUID strings by appendHealthFault. */
   const dismissFault = async (faultId) => {
     setActionBusy(`fault:${faultId}`)
     try {
@@ -601,7 +677,7 @@ export default function SystemHealthPanel() {
   const runValidationNow = async () => {
     setActionBusy('validation')
     try {
-      const result = await window.api.reports.runFinancialValidation().catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthValidationActionExpectedView} */ (await window.api.reports.runFinancialValidation().catch((e) => ({ success: false, error: e.message })))
       if (result?.run?.calculation_state === 'complete' && result?.run?.persistence_state !== 'confirmed') {
         pushFlash('error', result.error || 'The calculation completed, but the server has not confirmed its saved audit record. Retry the saved run from Check history.')
         await load()
@@ -618,11 +694,12 @@ export default function SystemHealthPanel() {
     }
   }
 
+  /** @param {string} runId */
   const retryValidationRun = async (runId) => {
     if (!runId) return
     setActionBusy('validation-retry:' + runId)
     try {
-      const result = await window.api.reports.retryFinancialValidationRun(runId).catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthValidationActionExpectedView} */ (await window.api.reports.retryFinancialValidationRun(runId).catch((e) => ({ success: false, error: e.message })))
       if (result?.success !== true || result?.run?.persistence_state !== 'confirmed') {
         pushFlash('error', result?.error || 'The saved check is still not recorded. Retry it with the same run ID after checking access.')
         await load()
@@ -637,10 +714,10 @@ export default function SystemHealthPanel() {
   const clearErrorHistory = async () => {
     setActionBusy('clear-errors')
     try {
-      const [criticalResult, rendererResult] = await Promise.all([
+      const [criticalResult, rendererResult] = /** @type {[SystemHealthHistoryClearResultExpectedView, SystemHealthHistoryClearResultExpectedView]} */ (await Promise.all([
         window.api.reports.clearCriticalErrors?.().catch((e) => ({ success: false, error: e.message })) || Promise.resolve({ success: true }),
         window.api.app?.clearRendererErrors?.().catch((e) => ({ success: false, error: e.message })) || Promise.resolve({ success: true })
-      ])
+      ]))
       if (criticalResult?.success === false || rendererResult?.success === false) {
         pushFlash('error', 'Could not clear all history.')
         return
@@ -658,7 +735,7 @@ export default function SystemHealthPanel() {
   const refreshLocalMesh = async () => {
     setActionBusy('mesh-refresh')
     try {
-      const result = await window.api.mesh.refreshDiscovery().catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthMeshActionResultExpectedView} */ (await window.api.mesh.refreshDiscovery().catch((e) => ({ success: false, error: e.message })))
       if (result?.mesh) setMeshStatus(result.mesh)
       pushFlash(result?.success === false ? 'error' : 'success', result?.error || 'Nearby-device search refreshed.')
     } finally {
@@ -674,7 +751,7 @@ export default function SystemHealthPanel() {
     }
     setActionBusy('mesh-connect')
     try {
-      const result = await window.api.mesh.connectManualPeer(address).catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthMeshActionResultExpectedView} */ (await (/** @type {(address: string) => Promise<unknown>} */ (window.api.mesh.connectManualPeer))(address).catch((e) => ({ success: false, error: e.message })))
       if (result?.mesh) setMeshStatus(result.mesh)
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not reach that Tsa Bonno device.')
@@ -691,13 +768,13 @@ export default function SystemHealthPanel() {
     const enabled = syncDetails?.offlineMode?.enabled === true
     setActionBusy('offline-mode')
     try {
-      const result = await window.api.sync.setOfflineMode({
+      const result = /** @type {SyncOfflineModeWriteResult} */ (await window.api.sync.setOfflineMode({
         enabled: !enabled,
         acknowledged: !enabled,
         reason: !enabled
           ? 'Manager enabled offline mode from System Health.'
           : 'Manager ended offline mode from System Health.'
-      }).catch((e) => ({ success: false, error: e.message }))
+      }).catch((e) => ({ success: false, error: e.message })))
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not update offline mode.')
         return
@@ -712,7 +789,7 @@ export default function SystemHealthPanel() {
   const exportOfflineOperations = async () => {
     setActionBusy('offline-export')
     try {
-      const result = await window.api.sync.exportOfflineOperations().catch((e) => ({ success: false, error: e.message }))
+      const result = /** @type {SystemHealthOfflineExportResultExpectedView} */ (await window.api.sync.exportOfflineOperations().catch((e) => ({ success: false, error: e.message })))
       if (result?.canceled) return
       if (result?.success === false) {
         pushFlash('error', result.error || 'Could not save the offline operations bundle.')
@@ -748,7 +825,7 @@ export default function SystemHealthPanel() {
         ? issues.map((issue) => `- ${issue}`).join('\n')
         : '- Staff requested a review of this status page even though no current issues were detected.'
 
-      const bundleResult = await window.api.reports.getSupportBundle?.(25).catch(() => null)
+      const bundleResult = /** @type {SystemHealthSupportBundleResultExpectedView|null} */ (await window.api.reports.getSupportBundle?.(25).catch(() => null))
       const bundleJson = bundleResult?.bundle ? JSON.stringify(bundleResult.bundle, null, 2) : null
 
       const description = [
@@ -784,7 +861,7 @@ export default function SystemHealthPanel() {
       })
       pushFlash('success', 'Health report sent for review.')
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not send the report right now.')
+      pushFlash('error', (/** @type {{message?: unknown} | null | undefined} */ (error))?.message || 'Could not send the report right now.')
     } finally {
       setActionBusy('')
     }
@@ -799,7 +876,7 @@ export default function SystemHealthPanel() {
   const cacheStale         = syncDetails?.cacheStale?.active === true
   const pendingCount       = Number(syncDetails?.pending?.length || health?.sync?.pending || 0)
   const failedCount        = Number(syncDetails?.failed?.length || health?.sync?.failed || 0)
-  const faults             = syncDetails?.faults || []
+  const faults             = /** @type {SystemHealthFaultExpectedView[]} */ (syncDetails?.faults || [])
   const blockingFaults     = faults.filter((f) => ['queue_corrupt', 'cache_corrupt'].includes(f.type))
   const manualReviewFaults = faults.filter((f) => ['financial_dead_letter_cleared', 'ghost_update'].includes(f.type))
   const driftFaults        = faults.filter((f) => ['booking_drift', 'quotation_drift', 'pos_drift', 'customer_drift', 'room_drift'].includes(f.type))
@@ -816,7 +893,7 @@ export default function SystemHealthPanel() {
   const lastSyncOutcome    = syncMeta?.lastSyncOutcome || null
   const lastSyncError      = syncMeta?.lastSyncError || ''
   const syncState          = syncRunning ? 'Sending' : failedCount > 0 ? 'Needs review' : 'Ready'
-  const cacheFreshness     = syncDetails?.cacheFreshness || {}
+  const cacheFreshness     = /** @type {Record<string, SystemHealthCacheFreshnessExpectedView>} */ (syncDetails?.cacheFreshness || {})
   const staleCaches        = Object.entries(cacheFreshness).filter(([, m]) => m.stale).map(([k]) => k)
   const needsAttention     = failedCount > 0 || pendingCount > 0 || cacheStale || blockingFaults.length > 0 || integrityRiskFaults.length > 0 || lastSyncOutcome === 'partial' || lastSyncOutcome === 'failed'
   const reconciliationSummary   = reconciliation?.summary || {}
@@ -834,9 +911,10 @@ export default function SystemHealthPanel() {
   const offlineMode            = syncDetails?.offlineMode || {}
   const operationJournal       = syncDetails?.operationJournal || {}
   const offlineModeEnabled     = offlineMode?.enabled === true
-  const offlineBackupAt        = offlineMode?.lastBackupAt || null
+  // Offline-mode timestamps are written as ISO strings by the main-process settings writer.
+  const offlineBackupAt        = /** @type {string|null} */ (offlineMode?.lastBackupAt || null)
   const offlineBackupAgeMs     = offlineBackupAt ? Date.now() - Date.parse(offlineBackupAt) : null
-  const offlineBackupStale     = offlineModeEnabled && (!offlineBackupAt || offlineBackupAgeMs > 24 * 60 * 60 * 1000)
+  const offlineBackupStale     = offlineModeEnabled && (!offlineBackupAt || /** @type {number} */ (offlineBackupAgeMs) > 24 * 60 * 60 * 1000)
   const missingParentCount     = Number(groupedCounts.missing_parent || 0)
   const blockedDependencyCount = Number(groupedCounts.blocked_dependencies || 0)
   const financialRiskCount     = Number(groupedCounts.financial_risk_items || 0)
@@ -919,6 +997,19 @@ export default function SystemHealthPanel() {
     }
     return null
   }
+
+  /** Keys and labels correspond to the fixed producer snapshot contract. */
+  const unresolvedCategories = /** @type {Array<{key: keyof NonNullable<SyncDetailsSnapshot['unresolvedLocal']>, label: string}>} */ ([
+    { key: 'bookings', label: restaurantMode ? 'Orders / reservations' : 'Bookings' },
+    { key: 'customers', label: 'Customers' },
+    { key: 'rooms', label: restaurantMode ? 'Tables / stations' : 'Rooms' },
+    { key: 'users', label: 'Staff' },
+    { key: 'quotations', label: 'Quotations' },
+    { key: 'posOrders', label: 'POS sales' },
+    { key: 'conferenceBookings', label: 'Conference Bookings' },
+    { key: 'poolDayUse', label: 'Day Use Entries' },
+    { key: 'inventoryItems', label: 'Inventory' }
+  ])
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -1003,7 +1094,7 @@ export default function SystemHealthPanel() {
                   {fault.type === 'queue_corrupt' ? 'Saved changes issue found' : 'Saved data issue found'}
                 </p>
                 <p className="mt-1 text-sm text-red-800/80">{fault.message}</p>
-                <p className="mt-1 text-xs text-red-700/70">{formatTs(fault.at)}</p>
+                <p className="mt-1 text-xs text-red-700/70">{/** @type {string|null} */ (formatTs(fault.at))}</p>
               </div>
             </div>
             <button type="button" onClick={() => dismissFault(fault.id)}
@@ -1029,7 +1120,7 @@ export default function SystemHealthPanel() {
                     : 'Booking changed after save'}
                 </p>
                 <p className="mt-1 text-sm text-amber-800/80">{fault.message}</p>
-                <p className="mt-1 text-xs text-amber-700/70">{formatTs(fault.at)}</p>
+                <p className="mt-1 text-xs text-amber-700/70">{/** @type {string|null} */ (formatTs(fault.at))}</p>
               </div>
             </div>
             <button type="button" onClick={() => dismissFault(fault.id)}
@@ -1050,18 +1141,18 @@ export default function SystemHealthPanel() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-rose-600 mb-0.5">Needs review</p>
                 <p className="text-sm font-bold text-rose-900">Online copy and this computer do not match</p>
                 <p className="mt-1 text-sm text-rose-800/80">{fault.message}</p>
-                <p className="mt-1 text-xs text-rose-700/70">{formatTs(fault.at)}</p>
+                <p className="mt-1 text-xs text-rose-700/70">{/** @type {string|null} */ (formatTs(fault.at))}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {getSyncItemAction(fault) && (
                 <button type="button"
                   onClick={() => {
-                    const action = getSyncItemAction(fault)
+                    const action = /** @type {SyncItemNavigation} */ (getSyncItemAction(fault))
                     navigate(action.route, { state: action.state })
                   }}
                   className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-800 transition hover:bg-rose-50">
-                  {getSyncItemAction(fault).label}
+                  {/** @type {SyncItemNavigation} */ (getSyncItemAction(fault)).label}
                 </button>
               )}
               <button type="button" onClick={() => dismissFault(fault.id)}
@@ -1083,18 +1174,18 @@ export default function SystemHealthPanel() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-red-600 mb-0.5">Needs review</p>
                 <p className="text-sm font-bold text-red-900">A manual clear still needs checking</p>
                 <p className="mt-1 text-sm text-red-800/80">{fault.message}</p>
-                <p className="mt-1 text-xs text-red-700/70">{formatTs(fault.at)}</p>
+                <p className="mt-1 text-xs text-red-700/70">{/** @type {string|null} */ (formatTs(fault.at))}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {getSyncItemAction(fault) && (
                 <button type="button"
                   onClick={() => {
-                    const action = getSyncItemAction(fault)
+                    const action = /** @type {SyncItemNavigation} */ (getSyncItemAction(fault))
                     navigate(action.route, { state: action.state })
                   }}
                   className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 transition hover:bg-red-50">
-                  {getSyncItemAction(fault).label}
+                  {/** @type {SyncItemNavigation} */ (getSyncItemAction(fault)).label}
                 </button>
               )}
               <button type="button" onClick={() => dismissFault(fault.id)}
@@ -1116,7 +1207,7 @@ export default function SystemHealthPanel() {
               <Info size={16} className="mt-0.5 shrink-0 text-slate-400" />
               <div>
                 <p className="text-sm font-medium text-slate-700">{fault.message || fault.type}</p>
-                <p className="mt-0.5 text-xs text-slate-500">{fault.type} · {fault.scope} · {formatTs(fault.at)}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{fault.type} · {fault.scope} · {/** @type {string|null} */ (formatTs(fault.at))}</p>
               </div>
             </div>
             <button type="button" onClick={() => dismissFault(fault.id)}
@@ -1141,17 +1232,7 @@ export default function SystemHealthPanel() {
               </p>
               {unresolvedLocal.total > 0 && (
                 <div className="mt-2 space-y-1">
-                  {[
-                    { key: 'bookings', label: restaurantMode ? 'Orders / reservations' : 'Bookings' },
-                    { key: 'customers', label: restaurantMode ? 'Customers' : 'Customers' },
-                    { key: 'rooms', label: restaurantMode ? 'Tables / stations' : 'Rooms' },
-                    { key: 'users', label: 'Staff' },
-                    { key: 'quotations', label: 'Quotations' },
-                    { key: 'posOrders', label: 'POS sales' },
-                    { key: 'conferenceBookings', label: 'Conference Bookings' },
-                    { key: 'poolDayUse', label: 'Day Use Entries' },
-                    { key: 'inventoryItems', label: 'Inventory' }
-                  ].filter(({ key }) => {
+                  {unresolvedCategories.filter(({ key }) => {
                     if (restaurantMode && ['conferenceBookings', 'poolDayUse', 'rooms'].includes(key) && (unresolvedLocal[key]?.count ?? 0) === 0) return false
                     if (restaurantMode && key === 'rooms') return false
                     if (restaurantMode && key === 'conferenceBookings') return false
@@ -1718,7 +1799,7 @@ export default function SystemHealthPanel() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className={`text-sm font-semibold ${isHighRisk ? 'text-red-900' : 'text-amber-900'}`}>{plainLabel(fault.type)}</p>
                       <div className="flex items-center gap-2">
-                        <span className={`text-xs ${isHighRisk ? 'text-red-700/80' : 'text-amber-700/80'}`}>{formatTs(fault.at)}</span>
+                        <span className={`text-xs ${isHighRisk ? 'text-red-700/80' : 'text-amber-700/80'}`}>{/** @type {string|null} */ (formatTs(fault.at))}</span>
                         {getSyncItemAction(fault) && (
                           <button type="button"
                             onClick={() => {

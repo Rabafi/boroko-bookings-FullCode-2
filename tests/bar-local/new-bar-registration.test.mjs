@@ -11,7 +11,7 @@ import {
   isLocalBarSetupRequest
 } from '../../src/shared/barLocalCompanySetup.js'
 import { LOCAL_BAR_WORKSPACE_FLAG, LOCAL_BAR_WORKSPACE_DIR } from '../../src/shared/barLocalWorkspace.js'
-import { BarLocalElectronRuntime } from '../../src/main/bar-local/electronRuntime.js'
+import { BarLocalElectronRuntime, registerBarLocalIpc } from '../../src/main/bar-local/electronRuntime.js'
 import {
   buildWorkspaceLaunchArguments,
   buildWorkspacePrefill,
@@ -50,7 +50,6 @@ test('the Bar journey cannot reach cloud company initialization', () => {
   // The refusal is a complete IPC result: no handler path continues to Supabase.
   assert.deepEqual(Object.keys(refusal).sort(), ['code', 'error', 'required_flow', 'success'])
 })
-
 test('the settings-domain guard refuses a Bar before any profile or Supabase work', () => {
   assert.throws(() => assertCloudCompanySetupAllowed(barPayload.settings), (error) => {
     assert.ok(error instanceof BarLocalSetupRequiredError)
@@ -161,9 +160,11 @@ test('the dedicated workspace is a separate process profile with no inherited se
   assert.deepEqual(env, { PATH: 'C:\\Windows', NORMAL_SETTING: 'kept' })
 })
 
-test('a dedicated window owns its own authority status and cannot switch to cloud', () => {
+test('the isolated Bar profile owns its own setup data and can return to the Restaurant profile', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'bar-workspace-'))
   try {
+    const barRoot = join(dir, LOCAL_BAR_WORKSPACE_DIR)
+    mkdirSync(barRoot, { recursive: true })
     const standard = new BarLocalElectronRuntime({
       userDataPath: dir, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos'
     })
@@ -171,7 +172,7 @@ test('a dedicated window owns its own authority status and cannot switch to clou
     assert.equal(standard.status().setup_prefill, null)
 
     const dedicated = new BarLocalElectronRuntime({
-      userDataPath: dir, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos'
+      userDataPath: barRoot, safeStorage: fakeSafeStorage(), buildProductId: 'hospitality-pos'
     })
     dedicated.dedicatedLocalWorkspace = true
     const status = dedicated.status()
@@ -181,7 +182,7 @@ test('a dedicated window owns its own authority status and cannot switch to clou
 
     // Prefill is read from the dedicated profile root (which is this runtime's
     // userDataPath inside the real dedicated process).
-    const prefillPath = join(dir, 'bar-local-setup-request.json')
+    const prefillPath = join(barRoot, 'bar-local-setup-request.json')
     writeFileSync(prefillPath, JSON.stringify({ version: 1, business_name: 'Corner Pub', currency: 'ZAR', created_at: 'now' }))
     assert.deepEqual(dedicated.status().setup_prefill, { business_name: 'Corner Pub', currency: 'ZAR', business_profile: {}, entry_mode: 'commission' })
     writeFileSync(prefillPath, JSON.stringify({ version: 3, business_name: 'Unsupported Format' }))
@@ -189,9 +190,11 @@ test('a dedicated window owns its own authority status and cannot switch to clou
     // The prefill helper itself targets the dedicated workspace subtree.
     assert.ok(dedicatedWorkspacePrefillPath(dir).endsWith(join(LOCAL_BAR_WORKSPACE_DIR, 'bar-local-setup-request.json')))
 
-    assert.throws(() => dedicated.selectCloudWorkspace(), { code: 'DEDICATED_LOCAL_WORKSPACE' })
+    const cloudChoice = await dedicated.selectCloudWorkspace()
+    assert.equal(cloudChoice.restart_required, true)
+    assert.equal(cloudChoice.workspace, 'cloud')
     // A standard workspace still gets the existing explicit cloud choice.
-    assert.equal(typeof standard.selectCloudWorkspace().restart_required, 'boolean')
+    assert.equal(typeof (await standard.selectCloudWorkspace()).restart_required, 'boolean')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -264,13 +267,16 @@ test('the setup renderer and IPC wire the same guard', () => {
   assert.match(handoff, /offline owner sign-in with an email address and password/)
   assert.doesNotMatch(handoff, /restaurant, hotel, lodge|existing cloud business/i)
 
-  // The handoff is successful only after the dedicated window reports a
-  // visible ready-to-show acknowledgement. The main process can focus an
-  // already-running dedicated Bar window and acknowledge that same request.
-  assert.match(runtime, /windowsHide: false/)
-  assert.match(runtime, /25000\)/)
-  assert.match(runtime, /\/ready\/\$\{handoffToken\}/)
-  assert.match(app, /react-first-commit[\s\S]*rendererReady/)
+  // The handoff durably selects the isolated profile and reopens this app;
+  // it does not create a second operating window.
+  const mainHandoff = runtime.slice(runtime.indexOf("ipcMain.handle('barLocal:openLocalBarWorkspace'"), runtime.indexOf("const provisionAndRestart"))
+  assert.match(mainHandoff, /BAR_WORKSPACE_SELECTION_FILE[\s\S]*makeBarWorkspaceSelection\('local_bar'\)/)
+  assert.match(mainHandoff, /app\.relaunch\(\{ args: buildWorkspaceLaunchArguments/)
+  assert.match(mainHandoff, /app\.exit\(0\)/)
+  assert.match(mainHandoff, /restart_required: true/)
+  assert.match(mainHandoff, /resume_existing/)
+  assert.match(mainHandoff, /server-setup\.bin/)
+  assert.match(handoff, /Reopening this app to set up your Bar/)
   assert.match(app, /Bar or counter name[\s\S]*An outlet is a trading area, not each till[\s\S]*Main Bar[\s\S]*Pool Bar/)
   assert.match(app, /Main computer name[\s\S]*Other tills connect to this main computer/)
   assert.match(app, /Owner PIN[\s\S]*Choose 4–12 digits/)
@@ -284,12 +290,11 @@ test('the setup renderer and IPC wire the same guard', () => {
   assert.match(app, /Before you can continue:[\s\S]*ownerFormReasons/)
   assert.match(app, /Currency[\s\S]*3-letter code, such as BWP/)
   assert.match(app, /Timezone[\s\S]*Africa\/Gaborone/)
+  assert.match(app, /const setupStageLabels = \['Business details', 'Install Bar service', 'Verify database', 'Create owner sign-in', 'Ready to open'\]/)
+  assert.match(app, /aria-label="Local Bar setup steps"/)
+  assert.match(app, /aria-label=\{showSetupDraftPin \? 'Hide setup PIN' : 'Show setup PIN'\}/)
   assert.match(app, /More storage space is needed[\s\S]*Check again/)
   assert.doesNotMatch(app, /This computer is not ready for automatic setup/)
-  assert.match(main, /ipcMain\.handle\('barLocal:rendererReady'[\s\S]*if \(mainWindowVisible\) completeLocalWorkspaceHandoffs\(\)/)
-  assert.match(main, /if \(localWorkspaceRendererReady && mainWindowVisible\)/)
-  assert.match(main, /app\.on\('second-instance', \(_event, commandLine\)[\s\S]*existing\.focus\(\)[\s\S]*if \(localWorkspaceRendererReady && mainWindowVisible\)[\s\S]*acknowledgeLocalBarWorkspace\(\[flag\]\)[\s\S]*pendingLocalBarHandoffs\.add\(flag\)/)
-  assert.match(main, /function completeLocalWorkspaceHandoffs\(\)[\s\S]*acknowledgeLocalBarWorkspace\(process\.argv\)[\s\S]*acknowledgeLocalBarWorkspace\(\[flag\]\)/)
 
   // Main process: the IPC contract and the settings domain both enforce it.
   assert.match(main, /cloudCompanySetupRefusal\(payload\?\.settings\)/)
@@ -303,10 +308,37 @@ test('the setup renderer and IPC wire the same guard', () => {
   assert.match(preload, /openLocalBarWorkspace: \(request\) => invoke\('barLocal:openLocalBarWorkspace', request\)/)
 })
 
-test('owner sign-in and recovery password visibility controls are accessible and reset when the form changes', () => {
-  const workspace = readFileSync(new URL('../../src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx', import.meta.url), 'utf8')
-  assert.match(workspace, /aria-label=\{showOwnerPassword \? 'Hide owner password' : 'Show owner password'\}/)
-  assert.match(workspace, /aria-label=\{showRecoveryPassword \? 'Hide new password' : 'Show new password'\}/)
-  assert.match(workspace, /type="button" aria-label=\{showOwnerPassword/)
-  assert.match(workspace, /useEffect\(\(\) => \{\s*setShowOwnerPassword\(false\)\s*setShowRecoveryPassword\(false\)\s*\}, \[loginMode\]\)/)
+test('new Bar setup handoff persists its isolated profile before same-app relaunch', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'bar-same-app-handoff-'))
+  const handlers = new Map()
+  let relaunchArgs = null
+  let exitCode = null
+  const appPath = join(parent, 'app')
+  const runtime = registerBarLocalIpc({
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    app: {
+      getPath: () => parent,
+      getAppPath: () => appPath,
+      isPackaged: false,
+      once() {},
+      relaunch: (options) => { relaunchArgs = options.args },
+      exit: (code) => { exitCode = code }
+    },
+    safeStorage: fakeSafeStorage(),
+    buildProductId: 'hospitality-pos'
+  })
+  try {
+    const result = await handlers.get('barLocal:openLocalBarWorkspace')({}, {
+      business_name: 'Test Bar', currency: 'BWP', entry_mode: 'commission'
+    })
+    assert.deepEqual(result, { opened: true, restart_required: true, workspace: 'dedicated_local_bar' })
+    assert.deepEqual(relaunchArgs, [appPath, LOCAL_BAR_WORKSPACE_FLAG])
+    assert.equal(exitCode, 0)
+    assert.equal(readFileSync(join(parent, 'bar-local', 'workspace-choice.json'), 'utf8'), '{"version":1,"workspace":"local_bar"}')
+    assert.ok(readFileSync(dedicatedWorkspacePrefillPath(parent), 'utf8').includes('Test Bar'))
+    runtime.close()
+  } finally {
+    runtime.close()
+    rmSync(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  }
 })

@@ -12,6 +12,7 @@ import {
 } from '../../../../shared/subscriptionPlans'
 import { getCommercialPackageLabel } from '../../../../shared/commercialPackages'
 import { getProductDefinition, getRuntimeProductId } from '../../../../shared/productIdentity'
+import { buildSupportMailto } from '../../../../shared/publicEndpoints'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_CAPACITYLESS_PRODUCT = BUILD_PRODUCT.id === 'hotel' || BUILD_PRODUCT.id === 'hospitality-pos'
@@ -97,9 +98,7 @@ export default function UsageUpgradePrompt({
     ].join('\n')
     const externalOpen = window.api?.shell?.openExternal
     if (typeof externalOpen === 'function') {
-      await externalOpen(
-        `mailto:support@boroko.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-      ).catch(() => {})
+      await externalOpen(buildSupportMailto(subject, body)).catch(() => {})
     }
   }
 

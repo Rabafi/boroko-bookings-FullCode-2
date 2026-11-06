@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Clock3, History, LogIn, LogOut, MessageSquareText, Users } from 'lucide-react';
-import { useAccess, useSettings } from '../../app-context';
+import { useAccess, useAuth, useSettings } from '../../app-context';
 import { canAccessCapability } from '../../../../shared/accessControl';
 import { isBarOnlyMode } from '../../../../shared/propertyTypes';
 import {
@@ -12,6 +12,7 @@ import {
   HposPageHero,
   HposStatusBadge,
 } from './HposUi';
+import { loadLocalHposTeam } from './bar-local/hposTeamLocalApi.js'
 
 const startedAt = (shift) => shift.clock_in || shift.clock_in_at || shift.started_at;
 
@@ -25,9 +26,11 @@ function elapsedLabel(shift) {
 export default function HposTeam() {
   const navigate = useNavigate();
   const access = useAccess();
+  const { user } = useAuth();
   const { settings } = useSettings();
+  const localAuthority = settings?.authority_mode === 'bar_local'
   const barOnly = isBarOnlyMode(settings);
-  const canManage = canAccessCapability(access, 'pos.manage');
+  const canManage = canAccessCapability(access, localAuthority ? 'staff.manage' : 'pos.manage');
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -47,16 +50,27 @@ export default function HposTeam() {
   const [handoverOperationId, setHandoverOperationId] = useState('');
 
   const refreshShifts = useCallback(async () => {
+    if (localAuthority) {
+      const data = await loadLocalHposTeam(window.api?.barLocal, { outletId: settings?.outlet_id, staffId: user?.id })
+      setShifts(data.shifts); setStaff(data.staff)
+      return
+    }
     const [data, staffRows] = await Promise.all([window.api?.pos?.getBarActiveShifts?.() ?? window.api?.pos?.getActiveShifts?.() ?? [], window.api?.pos?.getStaff?.() ?? []]);
     setShifts(Array.isArray(data) ? data : []);
     setStaff(Array.isArray(staffRows) ? staffRows.filter((row) => row.status !== 'suspended' && row.status !== 'inactive') : []);
-  }, []);
+  }, [localAuthority, settings?.outlet_id, user?.id]);
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-      const [data, staffRows] = await Promise.all([window.api?.pos?.getBarActiveShifts?.() ?? window.api?.pos?.getActiveShifts?.() ?? [], window.api?.pos?.getStaff?.() ?? []]);
+      let data, staffRows;
+      if (localAuthority) {
+        const localData = await loadLocalHposTeam(window.api?.barLocal, { outletId: settings?.outlet_id, staffId: user?.id });
+        data = localData.shifts; staffRows = localData.staff;
+      } else {
+        [data, staffRows] = await Promise.all([window.api?.pos?.getBarActiveShifts?.() ?? window.api?.pos?.getActiveShifts?.() ?? [], window.api?.pos?.getStaff?.() ?? []]);
+      }
         if (active) { setShifts(Array.isArray(data) ? data : []); setStaff(Array.isArray(staffRows) ? staffRows.filter((row) => row.status !== 'suspended' && row.status !== 'inactive') : []) }
       } catch (error) {
         if (active) setActionError(error?.message || 'Active shifts could not be loaded.');
@@ -68,7 +82,7 @@ export default function HposTeam() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [localAuthority, settings?.outlet_id, user?.id]);
 
   const roleCounts = useMemo(
     () =>
@@ -86,6 +100,7 @@ export default function HposTeam() {
 
   const saveHandoverNote = async (event) => {
     event.preventDefault();
+    if (localAuthority) { setActionError('Local staff handover notes are not enabled yet. No request was sent.'); return }
     const shift = handoverTarget;
     const note = handoverNote.trim();
     if (!shift?.id || !note || !handoverOperationId || saving) return;
@@ -111,7 +126,7 @@ export default function HposTeam() {
       setActionError('Choose the staff member who is clocking in.');
       return;
     }
-    if (!attendancePin.trim()) {
+    if (!localAuthority && !attendancePin.trim()) {
       setActionError('The staff member must enter their private attendance PIN.');
       return;
     }
@@ -120,13 +135,15 @@ export default function HposTeam() {
     setNotice('');
     try {
       const selected = staff.find((row) => row.id === clockInStaffId);
-      const result = await window.api?.pos?.clockInStaffWithAttendancePin?.({
-        staff_user_id: clockInStaffId,
-        pin: attendancePin,
-        role: clockInRole,
-        expected_hours: Number(expectedHours || 0) || null,
-        idempotency_key: crypto.randomUUID(),
-      });
+      const result = localAuthority
+        ? await window.api.barLocal.command({ command: 'workforce.clock.in', operation_id: crypto.randomUUID(), payload: { staff_id: clockInStaffId } })
+        : await window.api?.pos?.clockInStaffWithAttendancePin?.({
+          staff_user_id: clockInStaffId,
+          pin: attendancePin,
+          role: clockInRole,
+          expected_hours: Number(expectedHours || 0) || null,
+          idempotency_key: crypto.randomUUID(),
+        });
       if (result?.success === false) throw new Error(result.error || 'Clock-in failed.');
       setNotice(`${selected?.name || 'Staff member'} is now on shift.`);
       setClockInName(''); setClockInStaffId(''); setAttendancePin('');
@@ -149,7 +166,7 @@ export default function HposTeam() {
     event.preventDefault();
     const shift = clockOutTarget?.shift;
     if (!shift?.id) return;
-    if (!clockOutPin.trim()) {
+    if (!localAuthority && !clockOutPin.trim()) {
       setActionError('The staff member must enter their private attendance PIN to clock out.');
       return;
     }
@@ -157,11 +174,13 @@ export default function HposTeam() {
     setActionError('');
     setNotice('');
     try {
-      const result = await window.api?.pos?.clockOutStaffWithAttendancePin?.({
-        shiftId: shift.id,
-        pin: clockOutPin,
-        idempotency_key: clockOutTarget.idempotencyKey,
-      });
+      const result = localAuthority
+        ? await window.api.barLocal.command({ command: 'workforce.clock.out', operation_id: clockOutTarget.idempotencyKey, payload: { attendance_id: shift.id } })
+        : await window.api?.pos?.clockOutStaffWithAttendancePin?.({
+          shiftId: shift.id,
+          pin: clockOutPin,
+          idempotency_key: clockOutTarget.idempotencyKey,
+        });
       if (result?.success === false) throw new Error(result.error || 'Clock-out failed.');
       setNotice(`${shift.staff_name || shift.name || 'Staff member'} clocked out.`);
       setClockOutTarget(null);
@@ -191,6 +210,7 @@ export default function HposTeam() {
 
       {actionError && <HposNotice tone="error">{actionError}</HposNotice>}
       {notice && <HposNotice>{notice}</HposNotice>}
+      {localAuthority && <HposNotice tone="warning">Attendance changes are recorded by the local Bar authority and are available on this device.</HposNotice>}
 
       <section className="hpos-team-summary" aria-label="Active shift summary">
         <article>
@@ -228,7 +248,7 @@ export default function HposTeam() {
                 {staff.map((member) => <option key={member.id} value={member.id}>{member.name || member.email}</option>)}
               </select>
             </label>
-            <div className="hpos-form-pair">
+            {!localAuthority && <div className="hpos-form-pair">
               <label>
                 Service role
                 <select value={clockInRole} onChange={(event) => setClockInRole(event.target.value)}>
@@ -250,12 +270,12 @@ export default function HposTeam() {
                   onChange={(event) => setExpectedHours(event.target.value)}
                 />
               </label>
-            </div>
-            <label>
+            </div>}
+            {!localAuthority && <label>
               Staff attendance PIN
               <input type="password" inputMode="numeric" autoComplete="one-time-code" value={attendancePin} onChange={(event) => setAttendancePin(event.target.value)} placeholder="Entered by staff member" />
               <small className="hpos-form-help">The manager operates this board; the worker enters their own PIN. The PIN is not displayed or stored here.</small>
-            </label>
+            </label>}
             <HposButton type="submit" tone="primary" icon={LogIn} disabled={saving}>
               {saving ? 'Saving…' : 'Clock in'}
             </HposButton>
@@ -292,7 +312,7 @@ export default function HposTeam() {
                   </div>
                   <div className="hpos-shift-handover">
                     {Array.isArray(shift.handover_notes) && shift.handover_notes.length > 0 && <small title={shift.handover_notes[0].note}>Note: {shift.handover_notes[0].note}</small>}
-                    {canManage && <button type="button" className="hpos-secondary-action" disabled={saving} onClick={() => { setHandoverTarget(shift); setHandoverNote(''); setHandoverOperationId(crypto.randomUUID()); setActionError(''); }}><MessageSquareText size={15} /> Add handover</button>}
+                    {canManage && !localAuthority && <button type="button" className="hpos-secondary-action" disabled={saving} onClick={() => { setHandoverTarget(shift); setHandoverNote(''); setHandoverOperationId(crypto.randomUUID()); setActionError(''); }}><MessageSquareText size={15} /> Add handover</button>}
                   </div>
                   {canManage && (
                     <button type="button" className="hpos-danger-action" disabled={saving} onClick={() => requestClockOut(shift)}>
@@ -311,17 +331,17 @@ export default function HposTeam() {
           <form className="hpos-expense-form" onSubmit={clockOut} role="dialog" aria-modal="true" aria-labelledby="clock-out-title">
             <div className="hpos-section-heading">
               <span><LogOut size={18} /></span>
-              <div><h2 id="clock-out-title">Protect clock-out</h2><p>{clockOutTarget.shift.staff_name || clockOutTarget.shift.name || 'Staff member'} must enter their private attendance PIN.</p></div>
+              <div><h2 id="clock-out-title">{localAuthority ? 'Confirm clock-out' : 'Protect clock-out'}</h2><p>{localAuthority ? `Close the local attendance record for ${clockOutTarget.shift.staff_name || clockOutTarget.shift.name || 'this staff member'}.` : `${clockOutTarget.shift.staff_name || clockOutTarget.shift.name || 'Staff member'} must enter their private attendance PIN.`}</p></div>
             </div>
             {actionError && <HposNotice tone="error">{actionError}</HposNotice>}
-            <label>
+            {!localAuthority && <label>
               Private attendance PIN
               <input type="password" inputMode="numeric" autoComplete="one-time-code" autoFocus value={clockOutPin} onChange={(event) => setClockOutPin(event.target.value)} placeholder="Entered by staff member" />
               <small className="hpos-form-help">The PIN is verified by the server and is not stored in this form.</small>
-            </label>
+            </label>}
             <div className="hpos-device-actions">
               <HposButton type="button" onClick={() => { setClockOutTarget(null); setClockOutPin(''); }}>Cancel</HposButton>
-              <HposButton type="submit" tone="primary" icon={LogOut} disabled={saving}>{saving ? 'Verifying…' : 'Verify & clock out'}</HposButton>
+              <HposButton type="submit" tone="primary" icon={LogOut} disabled={saving}>{saving ? 'Saving…' : localAuthority ? 'Clock out' : 'Verify & clock out'}</HposButton>
             </div>
           </form>
         </div>

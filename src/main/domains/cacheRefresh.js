@@ -1,4 +1,8 @@
 import { state } from '../state.js';
+import { captureReadScope, assertReadScopeCurrent, isReadScopeCurrent } from './readScope.js';
+// Login can start cache hydration after binding the backend client but before
+// publishing currentUser. Pin its business, cache directory and authenticated
+// client; that same client's initial actor publication must not cancel hydration.
 import { normalizeUserRecord } from './shared.js';
 import { readCache, writeCache } from './cacheStore.js';
 import { broadcastSyncStatus } from './connectivity.js';
@@ -9,6 +13,10 @@ import { applyQueuedPosInventoryReservations, applyQueuedDayUseInventoryReservat
 import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js';
 import { mergeRemoteQuotationsWithLocalState } from './quotationMerge.js';
 import { getRuntimeProductId } from '../../shared/productIdentity.js';
+
+/** Error-like values are read as-is; this type view does not validate them. */
+/** Existing thrown errors expose string messages; this view does not validate arbitrary errors. */
+/** @typedef {{message?: string}} SyncRefreshErrorExpectedView */
 
 const SYNC_REFRESH_RETRY_BASE_DELAY_MS = 5_000;
 const SYNC_REFRESH_RETRY_MAX_DELAY_MS = 60_000;
@@ -86,14 +94,21 @@ const PRESERVE_PENDING_LOCAL_CACHE_NAMES = new Set([
   'room-supply-stocktakes'
 ]);
 
+// Infrastructure installs `state.supabase` before online cache refresh is
+// reachable. These direct type views preserve the existing property access
+// (including its existing failure if the client is absent); they add no guard.
+
+/** @param {string[]} [names] */
 function uniqueSyncNames(names = []) {
   return [...new Set((names || []).filter(Boolean))];
 }
 
+/** @param {string} name */
 function isSyncRefreshStaleFor(name) {
   return state.syncRefreshState.stale && state.syncRefreshState.names.includes(name);
 }
 
+/** @param {string[]} [names] @param {string} [errorMessage] */
 function markSyncRefreshStale(names = [], errorMessage = 'Cache refresh failed.') {
   const mergedNames = uniqueSyncNames([...state.syncRefreshState.names, ...names]);
   state.syncRefreshState = {
@@ -106,6 +121,7 @@ function markSyncRefreshStale(names = [], errorMessage = 'Cache refresh failed.'
   broadcastSyncStatus();
 }
 
+/** @param {string[]} [names] */
 function clearSyncRefreshStale(names = []) {
   if (!state.syncRefreshState.stale) return;
   const clearNames = new Set(uniqueSyncNames(names));
@@ -126,19 +142,23 @@ function clearSyncRefreshStale(names = []) {
   broadcastSyncStatus();
 }
 
+/** @param {unknown} error */
 function isLegacyUserSchemaError(error) {
-  const message = String(error?.message || '');
+  const message = String((/** @type {SyncRefreshErrorExpectedView|null|undefined} */ (error))?.message || '');
   return /column users\.(status|last_sign_in_at|last_desktop_sign_in_at|last_pwa_sign_in_at|last_activity_at|invite_sent_at|password_updated_at|capability_overrides) does not exist/i.test(message);
 }
 
+/** @param {unknown} error */
 function isMissingInventoryCompatibilityColumnError(error) {
-  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
+  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String((/** @type {SyncRefreshErrorExpectedView|null|undefined} */ (error))?.message || ''));
 }
 
+/** @param {unknown} error */
 function isMaintenanceTicketSchemaCompatibilityError(error) {
-  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String(error?.message || ''));
+  return /column maintenance_tickets\.(issue|completed_at|updated_at) does not exist/i.test(String((/** @type {SyncRefreshErrorExpectedView|null|undefined} */ (error))?.message || ''));
 }
 
+/** @param {{title?: unknown, issue?: unknown, description?: unknown, notes?: unknown, completed_at?: unknown, updated_at?: unknown, created_at?: unknown}} [row] */
 function normalizeMaintenanceTicketRowForCache(row = {}) {
   return {
     ...row,
@@ -150,8 +170,9 @@ function normalizeMaintenanceTicketRowForCache(row = {}) {
   };
 }
 
+/** @param {string} name @param {Array<Record<string, unknown>>} [rows] */
 function mergeRemoteRowsPreservingPendingLocal(name, rows = []) {
-  const localPending = (readCache(name) || []).filter((row) =>
+  const localPending = /** @type {Array<Record<string, unknown>>} */ (readCache(name) || []).filter((row) =>
   row?._pending_sync === true ||
   row?._deleted_offline === true ||
   row?._sync_state === 'pending');
@@ -163,7 +184,7 @@ function mergeRemoteRowsPreservingPendingLocal(name, rows = []) {
 }
 
 async function fetchUsersForRefresh() {
-  const primary = await state.supabase
+  const primary = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
     .from('users')
     .select(USER_SELECT)
     .eq('lodge_id', state.lodgeId)
@@ -171,7 +192,7 @@ async function fetchUsersForRefresh() {
   if (!primary.error || !isLegacyUserSchemaError(primary.error)) {
     return primary;
   }
-  return state.supabase
+  return /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
     .from('users')
     .select(LEGACY_USER_SELECT)
     .eq('lodge_id', state.lodgeId)
@@ -179,13 +200,13 @@ async function fetchUsersForRefresh() {
 }
 
 async function fetchInventoryItemsForRefresh() {
-  const primary = await state.supabase.from('inventory_items').select(INVENTORY_ITEM_SELECT).eq('lodge_id', state.lodgeId).order('category').order('name').limit(500);
+  const primary = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_items').select(INVENTORY_ITEM_SELECT).eq('lodge_id', state.lodgeId).order('category').order('name').limit(500);
   if (!primary.error || !isMissingInventoryCompatibilityColumnError(primary.error)) {
     return primary;
   }
-  const legacy = await state.supabase.from('inventory_items').select(INVENTORY_ITEM_LEGACY_SELECT).eq('lodge_id', state.lodgeId).order('category').order('name').limit(500);
+  const legacy = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_items').select(INVENTORY_ITEM_LEGACY_SELECT).eq('lodge_id', state.lodgeId).order('category').order('name').limit(500);
   return legacy.error ? legacy : {
-    data: (legacy.data || []).map((row) => ({
+    data: (legacy.data || []).map((/** @type {Record<string, unknown> & {created_at?: unknown, updated_at?: unknown}} */ row) => ({
       ...row,
       updated_at: row.updated_at || row.created_at || null,
       sku: null,
@@ -197,7 +218,7 @@ async function fetchInventoryItemsForRefresh() {
 }
 
 async function fetchMaintenanceForRefresh() {
-  const primary = await state.supabase
+  const primary = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
     .from('maintenance_tickets')
     .select(MAINTENANCE_TICKET_SELECT)
     .eq('lodge_id', state.lodgeId)
@@ -206,7 +227,7 @@ async function fetchMaintenanceForRefresh() {
   if (!primary.error || !isMaintenanceTicketSchemaCompatibilityError(primary.error)) {
     return primary;
   }
-  const legacy = await state.supabase
+  const legacy = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
     .from('maintenance_tickets')
     .select(MAINTENANCE_TICKET_LEGACY_SELECT)
     .eq('lodge_id', state.lodgeId)
@@ -222,7 +243,7 @@ async function fetchBookingsForRefresh() {
   const rows = [];
   for (let from = 0; from < BOOKING_REFRESH_MAX_ROWS; from += BOOKING_PAGE_SIZE) {
     const to = Math.min(from + BOOKING_PAGE_SIZE - 1, BOOKING_REFRESH_MAX_ROWS - 1);
-    const { data, error } = await state.supabase
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
       .from('bookings')
       .select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`)
       .eq('lodge_id', state.lodgeId)
@@ -236,59 +257,63 @@ async function fetchBookingsForRefresh() {
   return { data: rows, error: null };
 }
 
+/** @param {...string} names */
 async function refreshCacheStrict(...names) {
   if (!state.lodgeId) return;
+  const scope = captureReadScope({ includeActor: false });
   if (!state.replayAuthReady && !state.backendSession?.token && !state.currentUser?.isMasterAdmin) {
     markSyncRefreshStale(names, 'Waiting for sign-in before refreshing live data.');
     return;
   }
   const fetchers = {
     users: () => fetchUsersForRefresh(),
-    rooms: () => state.supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', state.lodgeId).order('room_number').limit(200),
-    customers: () => state.supabase.from('customers').select('id, name, email, phone, id_number, nationality, created_at, updated_at, is_blacklisted, blacklist_reason, lodge_id').eq('lodge_id', state.lodgeId).order('name').limit(500),
+    rooms: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', state.lodgeId).order('room_number').limit(200),
+    customers: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('customers').select('id, name, email, phone, id_number, nationality, created_at, updated_at, is_blacklisted, blacklist_reason, lodge_id').eq('lodge_id', state.lodgeId).order('name').limit(500),
     bookings: () => fetchBookingsForRefresh(),
     maintenance: () => fetchMaintenanceForRefresh(),
     'inventory-items': () => fetchInventoryItemsForRefresh(),
-    'inventory-purchases': () => state.supabase.from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
-    'inventory-stocktakes': () => state.supabase.from('inventory_stocktakes').select('*, outlets(name, type)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
-    'booking-charges': () => state.supabase.from('booking_charges').select('*, outlets(name)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
-    'room-rate-overrides': () => state.supabase.from('room_rate_overrides').select('*').eq('lodge_id', state.lodgeId).order('start_date').limit(500),
-    'customer-credit-summary': () => state.supabase.rpc('get_customer_credit_summary', {
+    'inventory-purchases': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'inventory-stocktakes': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_stocktakes').select('*, outlets(name, type)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
+    'booking-charges': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('booking_charges').select('*, outlets(name)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
+    'room-rate-overrides': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('room_rate_overrides').select('*').eq('lodge_id', state.lodgeId).order('start_date').limit(500),
+    'customer-credit-summary': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_customer_credit_summary', {
       p_lodge_id: state.lodgeId,
       p_search: null,
       p_limit: 1000,
       p_offset: 0
     }),
-    quotations: () => state.supabase.from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
-    'conference-bookings': () => state.supabase.from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
-    'event-line-items': () => state.supabase.from('event_booking_line_items').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
-    'pool-day-use': () => state.supabase.from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
-    expenses: () => state.supabase.from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
-    'supply-items': () => state.supabase.from('supply_items').select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
-    'supply-purchases': () => state.supabase.from('supply_purchases').select('*').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
-    'room-supply-stock': () => state.supabase.from('room_supply_room_stock').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('updated_at', { ascending: false }).limit(1000),
-    'room-supply-movements': () => state.supabase.from('room_supply_movements').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
-    'room-supply-allocations': () => state.supabase.from('room_supply_allocations').select('*, supply_items(name, unit, category), rooms(room_number)').eq('lodge_id', state.lodgeId).order('week_start', { ascending: false }).limit(1000),
-    'supply-stocktakes': () => state.supabase.from('supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
-    'room-supply-stocktakes': () => state.supabase.from('room_supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
-    'pos-orders': () => state.supabase.
+    quotations: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
+    'conference-bookings': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
+    'event-line-items': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('event_booking_line_items').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
+    'pool-day-use': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    expenses: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'supply-items': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('supply_items').select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
+    'supply-purchases': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('supply_purchases').select('*').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
+    'room-supply-stock': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('room_supply_room_stock').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('updated_at', { ascending: false }).limit(1000),
+    'room-supply-movements': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('room_supply_movements').select('*, rooms(room_number, room_type), supply_items(name, unit, category)').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
+    'room-supply-allocations': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('room_supply_allocations').select('*, supply_items(name, unit, category), rooms(room_number)').eq('lodge_id', state.lodgeId).order('week_start', { ascending: false }).limit(1000),
+    'supply-stocktakes': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
+    'room-supply-stocktakes': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('room_supply_stocktakes').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(100),
+    'pos-orders': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('pos_orders').
     select('id, room_id, booking_id, walk_in_name, total, gross_total, discount_total, tax_rate, tax_total, tip_total, notes, payment_method, payment_breakdown, outlet_id, service_mode, table_name, tab_name, waiter_name, cashier_id, cashier_name, shift_id, ticket_status, status, created_at, pos_order_items(*), outlets(name)').
     eq('lodge_id', state.lodgeId).
     order('created_at', { ascending: false }).
     limit(500),
-    'pos-shifts': () => state.supabase.from('pos_shifts').select('*').eq('lodge_id', state.lodgeId).order('opened_at', { ascending: false }).limit(200),
-    'pos-menu-items': () => state.supabase.from('pos_menu_items').select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
-    outlets: () => state.supabase.from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
+    'pos-shifts': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pos_shifts').select('*').eq('lodge_id', state.lodgeId).order('opened_at', { ascending: false }).limit(200),
+    'pos-menu-items': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pos_menu_items').select('id, name, category, price, is_available, archived_at, barcode, inventory_item_id, depletion_qty, outlet_id, template_kind, lodge_id, created_at, updated_at, kitchen_station_id').eq('lodge_id', state.lodgeId).order('category').order('name').limit(500),
+    outlets: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('outlets').select('id, name, type, sort_order, is_active').eq('lodge_id', state.lodgeId).order('sort_order').limit(100)
   };
 
-  const targetNames = uniqueSyncNames(names).filter((name) => fetchers[name]);
+  const targetNames = uniqueSyncNames(names).filter((name) => fetchers[/** @type {keyof typeof fetchers} */ (name)]);
   let nextIndex = 0;
   const worker = async () => {
     while (nextIndex < targetNames.length) {
+      assertReadScopeCurrent(scope);
       const name = targetNames[nextIndex];
       nextIndex += 1;
-      const { data, error } = await fetchers[name]();
+      const { data, error } = await fetchers[/** @type {keyof typeof fetchers} */ (name)]();
+      assertReadScopeCurrent(scope);
       if (error) throw error;
       if (!data) continue;
       if (Array.isArray(data) && data.length === 0) {
@@ -303,15 +328,15 @@ async function refreshCacheStrict(...names) {
         }
       }
       if (name === 'users') {
-        const normalizedUsers = data.map(normalizeUserRecord).filter(Boolean);
+        const normalizedUsers = data.map(normalizeUserRecord).filter((entry) => entry !== null);
         writeCache(name, normalizedUsers, { source: 'remote' });
         if (state.currentUser && !state.currentUser.isMasterAdmin) {
           const refreshedUser = normalizedUsers.find((entry) =>
-          state.currentUser.id && entry.id === state.currentUser.id ||
-          !state.currentUser.id && state.currentUser.email && entry.email === state.currentUser.email
+          /** @type {NonNullable<typeof state.currentUser>} */ (state.currentUser).id && entry.id === /** @type {NonNullable<typeof state.currentUser>} */ (state.currentUser).id ||
+          !/** @type {NonNullable<typeof state.currentUser>} */ (state.currentUser).id && /** @type {NonNullable<typeof state.currentUser>} */ (state.currentUser).email && entry.email === /** @type {NonNullable<typeof state.currentUser>} */ (state.currentUser).email
           );
           if (refreshedUser) {
-            state.currentUser = mergeSessionUserScope(state.currentUser, refreshedUser);
+            state.currentUser = /** @type {typeof state.currentUser} */ (mergeSessionUserScope(state.currentUser, refreshedUser));
           }
         }
         continue;
@@ -335,7 +360,7 @@ async function refreshCacheStrict(...names) {
         continue;
       }
       if (name === 'customer-credit-summary') {
-        writeCache(name, (data || []).map((row) => ({ ...row, _confirmed_balance: true })), { source: 'remote' });
+        writeCache(name, (data || []).map(/** @param {Record<string, unknown>} row */ (row) => ({ ...row, _confirmed_balance: true })), { source: 'remote' });
         continue;
       }
       if (name === 'pos-orders') {
@@ -343,7 +368,7 @@ async function refreshCacheStrict(...names) {
         continue;
       }
       if (name === 'room-supply-stock') {
-        const normalized = (data || []).map((row) => ({
+        const normalized = (data || []).map(/** @param {Record<string, unknown> & {rooms?: {room_number?: unknown, room_type?: unknown}|null, supply_items?: {name?: unknown, unit?: unknown, category?: unknown}|null}} row */ (row) => ({
           ...row,
           room_number: row.rooms?.room_number,
           room_type: row.rooms?.room_type,
@@ -355,7 +380,7 @@ async function refreshCacheStrict(...names) {
         continue;
       }
       if (name === 'room-supply-movements') {
-        const normalized = (data || []).map((row) => ({
+        const normalized = (data || []).map(/** @param {Record<string, unknown> & {rooms?: {room_number?: unknown, room_type?: unknown}|null, supply_items?: {name?: unknown, unit?: unknown, category?: unknown}|null}} row */ (row) => ({
           ...row,
           room_number: row.rooms?.room_number,
           room_type: row.rooms?.room_type,
@@ -367,7 +392,7 @@ async function refreshCacheStrict(...names) {
         continue;
       }
       if (name === 'room-supply-allocations') {
-        const normalized = (data || []).map((row) => ({
+        const normalized = (data || []).map(/** @param {Record<string, unknown> & {week_start?: unknown, rooms?: {room_number?: unknown}|null, supply_items?: {name?: unknown, unit?: unknown, category?: unknown}|null}} row */ (row) => ({
           ...row,
           source: 'allocation',
           entry_date: row.week_start,
@@ -394,7 +419,9 @@ async function refreshCacheStrict(...names) {
   );
 }
 
+/** @param {string[]} [names] @param {string} [reason] */
 function scheduleSyncRefreshRetry(names = [], reason = 'Background refresh failed.') {
+  const scope = captureReadScope({ includeActor: false });
   const mergedNames = uniqueSyncNames([...state.syncRefreshState.names, ...names]);
   if (mergedNames.length === 0) return;
 
@@ -417,44 +444,57 @@ function scheduleSyncRefreshRetry(names = [], reason = 'Background refresh faile
 
   state.syncRefreshRetryTimer = setTimeout(async () => {
     state.syncRefreshRetryTimer = null;
+    if (!isReadScopeCurrent(scope)) return;
     const retryNames = [...state.syncRefreshState.names];
     if (!retryNames.length || !state.isOnline || !state.lodgeId) return;
     try {
       await refreshCacheStrict(...retryNames);
+      assertReadScopeCurrent(scope);
       clearSyncRefreshStale(retryNames);
     } catch (error) {
+      if (!isReadScopeCurrent(scope)) return;
       console.error('[Sync] Background cache refresh retry failed:', error);
-      scheduleSyncRefreshRetry(retryNames, error?.message || 'Background refresh retry failed.');
+      scheduleSyncRefreshRetry(retryNames, (/** @type {SyncRefreshErrorExpectedView|null|undefined} */ (error))?.message || 'Background refresh retry failed.');
     }
   }, waitMs);
 }
 
+/** @param {...string} names */
 export async function refreshCachesAfterSync(...names) {
+  const scope = captureReadScope({ includeActor: false });
   const targetNames = uniqueSyncNames(names);
   if (targetNames.length === 0) return;
+  /** @type {{name: string, error: unknown}[]} */
   const failures = [];
   for (const name of targetNames) {
+    if (!isReadScopeCurrent(scope)) return;
     try {
       await refreshCacheStrict(name);
+      assertReadScopeCurrent(scope);
       clearSyncRefreshStale([name]);
     } catch (error) {
+      if (!isReadScopeCurrent(scope)) return;
       console.error(`[Sync] Post-sync cache refresh failed for ${name}:`, error);
       failures.push({ name, error });
     }
   }
   if (failures.length > 0) {
     const failedNames = failures.map((entry) => entry.name);
-    const reason = failures[0]?.error?.message || 'Post-sync cache refresh failed.';
+    const reason = (/** @type {SyncRefreshErrorExpectedView|null|undefined} */ (failures[0]?.error))?.message || 'Post-sync cache refresh failed.';
     markSyncRefreshStale(failedNames, reason);
     scheduleSyncRefreshRetry(failedNames, reason);
   }
 }
 
+/** @param {...string} names */
 export async function refreshCache(...names) {
+  const scope = captureReadScope({ includeActor: false });
   try {
     await refreshCacheStrict(...names);
+    assertReadScopeCurrent(scope);
     clearSyncRefreshStale(uniqueSyncNames(names).filter((name) => isSyncRefreshStaleFor(name)));
   } catch (e) {
+    if (!isReadScopeCurrent(scope)) return;
     console.error('Cache refresh failed:', e);
   }
 }

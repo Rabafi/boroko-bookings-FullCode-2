@@ -15,13 +15,28 @@ import { formatStockMutationNotice, validateSingleStockQuantity } from './hposSt
 import { WASTE_MOVEMENT_PREFIX } from '../../../../shared/wasteSummary'
 import { transportErrorMessage } from '../../../../shared/transportErrors'
 import { isArchivedOnlyStockItem } from '../../../../shared/archivedStock'
+import { createLocalHposStockApi } from './bar-local/nativeStockApi.js'
 
 /** @typedef {{rows: unknown[], source: unknown, complete: boolean, loading: boolean, error: string}} StockHistoryReadState */
+/** Fields rendered by the Bar count history view. The server RPC returns these values from inventory_movements; offline rows come from unvalidated cache and are not checked by this expected view. @typedef {{id?: string | null, operation_id?: string | null, item_id?: string | null, created_at?: string | null, item_name?: string | null, item_unit?: string | null, reference_type?: string | null, expected_qty?: unknown, actual_qty?: unknown, delta?: unknown, reason_code?: string | null, notes?: string | null, actor_name?: string | null, actor_id?: string | null}} StockCountHistoryRowReadExpectedView */
+/** @param {unknown} row */
+const expectedStockCountHistoryRow = (row) => /** @type {StockCountHistoryRowReadExpectedView} */ (row)
+/** The main getOutlets producer returns normalized rows: database UUID/text/boolean fields plus virtual outlets with null IDs. Persisted cache rows are not revalidated here. @typedef {{id: string | null, name: string, type: string, is_active?: boolean}} StockOutletReadExpectedView */
+/** @param {unknown} outlet */
+const expectedStockOutlet = (outlet) => /** @type {StockOutletReadExpectedView} */ (outlet)
+/** Stock quantity projection only; stock rows remain unknown at the IPC boundary and this assertion adds no validation. @typedef {{current_stock?: unknown, reorder_level?: unknown}} StockQuantityReadView */
+/** Expected inventory item fields read by this screen; IPC/cache rows remain unknown and this projection does not validate them. The legacy SELECT predates update/identity metadata and persisted cache rows are not revalidated. Inventory item IDs are UUID strings in the DB schema and local creation uses randomUUID; this expected view does not validate malformed IPC/cache rows. @typedef {{id: string, name: unknown, category: unknown, unit: unknown, current_stock: unknown, reorder_level: unknown, selling_price: unknown, outlet_id: unknown, latest_unit_cost: unknown, created_at: unknown, updated_at?: unknown, sku?: unknown, barcode?: unknown, is_active?: unknown}} StockItemReadExpectedData */
+/** @typedef {{mode: 'receive'|'count'|'waste', item: StockItemReadExpectedData, operationId: string}} StockActionState */
+/** Local Count All draft. Values copied from IPC rows keep unknown leaves until the existing form logic uses them. @typedef {{item_id: unknown, item_name: unknown, unit: unknown, expected_qty: number, expected_updated_at: unknown, actual_qty: string, reason_code: string, reason: string}} StockCountLineDraft */
+/** Local delivery draft assembled from IPC row values and user-entered strings. @typedef {{item_id: unknown, item_name: unknown, unit: unknown, quantity: string, reason_code: string, reason: string}} StockDeliveryLineDraft */
 
 /** @param {unknown} item */
-const stockNumber = (item) => Number(item.current_stock || 0)
+const expectedStockItem = (item) => /** @type {StockItemReadExpectedData} */ (item)
+
 /** @param {unknown} item */
-const reorderNumber = (item) => Number(item.reorder_level || 0)
+const stockNumber = (item) => Number((/** @type {StockQuantityReadView} */ (item)).current_stock || 0)
+/** @param {unknown} item */
+const reorderNumber = (item) => Number((/** @type {StockQuantityReadView} */ (item)).reorder_level || 0)
 /** @param {unknown} item */
 const isLow = (item) => reorderNumber(item) > 0 && stockNumber(item) <= reorderNumber(item)
 /** @param {unknown} value */
@@ -52,6 +67,7 @@ const STOCK_ACTION_REASONS = {
   ]
 }
 
+/** @param {'receive'|'count'|'waste'} mode @param {string} code */
 const actionReasonLabel = (mode, code) => STOCK_ACTION_REASONS[mode]?.find((entry) => entry.value === code)?.label || code
 
 /** @param {string | null | undefined} value */
@@ -74,8 +90,9 @@ export default function HposStock() {
   const location = useLocation()
   const navigate = useNavigate()
   const barOnly = isBarOnlyMode(settings)
+  const localAuthority = settings?.authority_mode === 'bar_local'
   const currency = settings?.currency || 'P'
-  const canManage = canAccessCapability(access, 'inventory.manage')
+  const hasManageAccess = canAccessCapability(access, 'inventory.manage')
   // `null` is the canonical unrestricted value (manager/admin); an array is
   // an assigned-outlet scope (cashier/supervisor). Never turn an empty scoped
   // array into a lodge-wide request.
@@ -85,10 +102,10 @@ export default function HposStock() {
   const outletScoped = Array.isArray(allowedOutletIds)
   const [items, setItems] = useState(/** @type {unknown[]} */ ([]))
   const [itemsRead, setItemsRead] = useState({ source: 'unknown', complete: false })
-  const [menuItems, setMenuItems] = useState([])
+  const [menuItems, setMenuItems] = useState(/** @type {unknown[]} */ ([]))
   const [showArchived, setShowArchived] = useState(false)
   const [aging, setAging] = useState(/** @type {unknown[]} */ ([]))
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {unknown[]} */ ([]))
   const [outletId, setOutletId] = useState('')
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
@@ -99,22 +116,22 @@ export default function HposStock() {
   const [showCreate, setShowCreate] = useState(false)
   // Unified wizard (Bar): same product+stock flow as Products.
   const [showWizard, setShowWizard] = useState(false)
-  const [wizardModifiers, setWizardModifiers] = useState([])
-  const [editingItem, setEditingItem] = useState(null)
-  const [stockAction, setStockAction] = useState(null)
+  const [wizardModifiers, setWizardModifiers] = useState(/** @type {unknown[]} */ ([]))
+  const [editingItem, setEditingItem] = useState(/** @type {StockItemReadExpectedData | null} */ (null))
+  const [stockAction, setStockAction] = useState(/** @type {StockActionState | null} */ (null))
   const [lowOnly, setLowOnly] = useState(false)
-  const [historyItemId, setHistoryItemId] = useState(null)
+  const [historyItemId, setHistoryItemId] = useState(/** @type {string | null} */ (null))
   const [movementHistory, setMovementHistory] = useState(/** @type {Record<string, StockHistoryReadState>} */ ({}))
   const [allHistoryOpen, setAllHistoryOpen] = useState(false)
   const [allHistory, setAllHistory] = useState(/** @type {StockHistoryReadState} */ ({ rows: [], source: 'unknown', complete: false, loading: false, error: '' }))
   const [printSheet, setPrintSheet] = useState(false)
   const [countAllOpen, setCountAllOpen] = useState(false)
-  const [countOperationId, setCountOperationId] = useState(null)
-  const [countLines, setCountLines] = useState([])
+  const [countOperationId, setCountOperationId] = useState(/** @type {string | null} */ (null))
+  const [countLines, setCountLines] = useState(/** @type {StockCountLineDraft[]} */ ([]))
   const [countNotes, setCountNotes] = useState('')
   const [deliveryOpen, setDeliveryOpen] = useState(false)
-  const [deliveryOperationId, setDeliveryOperationId] = useState(null)
-  const [deliveryLines, setDeliveryLines] = useState([])
+  const [deliveryOperationId, setDeliveryOperationId] = useState(/** @type {string | null} */ (null))
+  const [deliveryLines, setDeliveryLines] = useState(/** @type {StockDeliveryLineDraft[]} */ ([]))
   const [deliveryNotes, setDeliveryNotes] = useState('')
   const [deliveryBarcode, setDeliveryBarcode] = useState('')
   const [deliveryLookup, setDeliveryLookup] = useState('')
@@ -124,6 +141,49 @@ export default function HposStock() {
   const [barcodeScanStatus, setBarcodeScanStatus] = useState('')
   const barcodeInputRef = useRef(null)
   const [actionForm, setActionForm] = useState({ quantity: '', reasonCode: '', reasonDetail: '', reason: '' })
+  const [wasteApprovalPin, setWasteApprovalPin] = useState('')
+  const [localOperations, setLocalOperations] = useState(/** @type {Array<{operation_id: string, command: string}>} */ ([]))
+  const [localOperationsChecked, setLocalOperationsChecked] = useState(false)
+  const [localOperationsError, setLocalOperationsError] = useState('')
+  const localActionsBlocked = localAuthority && (!localOperationsChecked || Boolean(localOperationsError) || localOperations.length > 0)
+  const canManage = hasManageAccess && !localActionsBlocked
+  const refreshLocalOperations = async () => {
+    if (!localAuthority) return
+    try {
+      const operations = await window.api.barLocal.getOpenIntents()
+      if (!Array.isArray(operations)) throw new Error('Saved local operations could not be checked.')
+      setLocalOperations(operations)
+      if (operations.length) { setStockAction(null);setShowCreate(false);setCountAllOpen(false);setDeliveryOpen(false) }
+      setLocalOperationsError('')
+      setLocalOperationsChecked(true)
+    } catch (cause) {
+      setLocalOperationsChecked(false)
+      setLocalOperationsError(cause?.message || 'Saved local operations could not be checked. Refresh before changing stock.')
+    }
+  }
+  const stockApi = useMemo(() => localAuthority
+    ? createLocalHposStockApi(window.api.barLocal, { canManageMenu: canAccessCapability(access, 'pos.menu_manage'), onMutation: refreshLocalOperations })
+    : window.api, [localAuthority, access])
+  useEffect(() => { void refreshLocalOperations() }, [localAuthority])
+  const retryLocalOperation = async (operationId) => {
+    if (saving) return
+    setSaving(true);setError('');setNotice('')
+    try {
+      const result = await window.api.barLocal.retryOperation(operationId)
+      if (result?.outcome === 'committed_local') {
+        setNotice('The saved local operation is confirmed. Refresh the stock list before starting another change.')
+        setStockAction(null);setCountAllOpen(false);setDeliveryOpen(false);setShowCreate(false)
+        await loadItems()
+      } else if (result?.outcome === 'unknown') {
+        setError('The result is still unknown. Keep retrying this saved operation; do not create a replacement.')
+      } else setError(result?.error?.message || 'The local service refused the saved operation. Refresh and review its values.')
+    } catch (cause) { setError(cause?.message || 'The saved local operation could not be confirmed.') }
+    finally { await refreshLocalOperations();setSaving(false) }
+  }
+
+  // Keep IPC/cache rows unknown in state; this expected-data projection only
+  // describes the inventory row fields consumed below and performs no validation.
+  const expectedItems = useMemo(() => items.map(expectedStockItem), [items])
 
   useEffect(() => {
     const onAfterPrint = () => setPrintSheet(false)
@@ -136,7 +196,11 @@ export default function HposStock() {
   useEffect(() => {
     if (!showCreate || !barcodeCaptureActive) return undefined
     const decoder = createBarcodeScannerDecoder()
+    // Preserve the existing null initial value passed to clearTimeout; the assertion below is type-only.
+    /** @type {number | null} */
     let idleTimer = null
+    // Decoder callbacks pass tagged outcomes; retain the original empty-object fallback shape.
+    /** @param {import('../../../../shared/barcodeScanner.js').BarcodeScanFailure | import('../../../../shared/barcodeScanner.js').BarcodeScanSuccess | {success?: false, code?: string}} [result] */
     const completeScan = (result = {}) => {
       setBarcodeCaptureActive(false)
       if (!result.success) {
@@ -147,23 +211,25 @@ export default function HposStock() {
       setBarcodeTouched(true)
       setBarcodeScanStatus(`Barcode captured: ${result.barcode}`)
     }
+    /** @param {KeyboardEvent} event */
     const onKeyDown = (event) => {
       const key = String(event.key || '')
       if (!(key.length === 1 || key === 'Enter' || key === 'NumpadEnter' || key === 'Tab')) return
       const outcome = decoder.consumeKey(event)
       if (outcome.type === 'buffered' || outcome.type === 'completed') event.preventDefault()
       if (outcome.type === 'buffered') {
-        clearTimeout(idleTimer)
+        clearTimeout(/** @type {number} */ (idleTimer))
+        // This decoder is constructed with no config override, so its idle delay is the shared 180 ms default.
         idleTimer = setTimeout(() => {
           const flushed = decoder.flush()
           if (flushed.type === 'completed') completeScan(flushed.result)
-        }, decoder.getOptions().idleCompleteMs)
+        }, /** @type {number} */ (decoder.getOptions().idleCompleteMs))
         return
       }
       if (outcome.type === 'completed') completeScan(outcome.result)
     }
     window.addEventListener('keydown', onKeyDown, true)
-    return () => { clearTimeout(idleTimer); window.removeEventListener('keydown', onKeyDown, true) }
+    return () => { clearTimeout(/** @type {number} */ (idleTimer)); window.removeEventListener('keydown', onKeyDown, true) }
   }, [showCreate, barcodeCaptureActive])
 
   const loadItems = async (requestedOutletId = outletId) => {
@@ -173,9 +239,9 @@ export default function HposStock() {
     // A failed refresh must never leave a prior server-certified envelope
     // authorizing a count against stale last-known rows.
     setItemsRead({ source: 'refreshing', complete: false })
-    let outletRows = []
+    let outletRows = /** @type {unknown} */ ([])
     try {
-      outletRows = await window.api?.outlets?.getAll?.() ?? []
+      outletRows = await stockApi?.outlets?.getAll?.() ?? []
     } catch (outletError) {
       if (outletScoped) setError(outletError?.message || 'Assigned stock outlets could not be loaded.')
     }
@@ -191,13 +257,13 @@ export default function HposStock() {
     setOutletId(nextOutletId)
     const agingPromise = outletScoped && !nextOutletId
       ? Promise.reject(new Error('No assigned outlet is available for stock aging.'))
-      : (window.api?.inventory?.getBarStockAging?.(nextOutletId || null) ?? [])
-    const stockReadPromise = window.api?.inventory?.getItemsWithReadStatus
-      ? window.api.inventory.getItemsWithReadStatus()
+      : (stockApi?.inventory?.getBarStockAging?.(nextOutletId || null) ?? [])
+    const stockReadPromise = stockApi?.inventory?.getItemsWithReadStatus
+      ? stockApi.inventory.getItemsWithReadStatus()
       : Promise.reject(new Error('This app version cannot verify the stock source. Restart the app and refresh.'))
     // Menu catalogue is fail-soft: it only drives the archived-only clutter
     // filter below. A menu-read failure must never hide stock or block counts.
-    const menuPromise = window.api?.pos?.getMenuItems?.() ?? Promise.resolve([])
+    const menuPromise = stockApi?.pos?.getMenuItems?.() ?? Promise.resolve([])
     const [itemsResult, agingResult, menuResult] = await Promise.allSettled([
       stockReadPromise,
       agingPromise,
@@ -225,20 +291,25 @@ export default function HposStock() {
   // the wizard works without them and Products remains the manager.
   useEffect(() => {
     let active = true
-    window.api?.pos?.getModifierGroups?.()
+    stockApi?.pos?.getModifierGroups?.()
       .then((groups) => { if (active) setWizardModifiers(Array.isArray(groups) ? groups : []) })
       .catch(() => { if (active) setWizardModifiers([]) })
     return () => { active = false }
   }, [])
 
-  const openReceiveAction = (item) => {
+  /** @param {unknown} value */
+  const openReceiveAction = (value) => {
+    const item = expectedStockItem(value)
     if (!item?.id) return
     setActionForm({ quantity: '', reasonCode: 'delivery_received', reasonDetail: '', reason: '' })
     setStockAction({ mode: 'receive', item, operationId: crypto.randomUUID() })
   }
 
-  const openWasteAction = (item) => {
+  /** @param {unknown} value */
+  const openWasteAction = (value) => {
+    const item = expectedStockItem(value)
     if (!item?.id) return
+    setWasteApprovalPin('')
     setActionForm({ quantity: '', reasonCode: 'burnt_spoilt', reasonDetail: '', reason: '' })
     setStockAction({ mode: 'waste', item, operationId: crypto.randomUUID() })
   }
@@ -247,7 +318,7 @@ export default function HposStock() {
   useEffect(() => {
     const receiveId = location.state?.receiveStockId
     if (!receiveId || !canManage || loading || stockAction) return
-    const item = items.find((row) => String(row.id) === String(receiveId))
+    const item = expectedItems.find((row) => String(row.id) === String(receiveId))
     if (!item) return
     openReceiveAction(item)
     navigate(location.pathname, { replace: true, state: {} })
@@ -259,29 +330,36 @@ export default function HposStock() {
   // movement ledger for audit. Archived-only stock (every linked product is
   // archived) is hidden by default with an opt-in toggle — the rows and
   // history stay server-side so an archived product can be restored.
-  const isActive = (item) => item?.is_active !== false
+  /** @param {unknown} value */
+  const isActive = (value) => expectedStockItem(value)?.is_active !== false
+  /** @param {unknown} item */
   const isHiddenArchived = (item) => !showArchived && isArchivedOnlyStockItem(item, menuItems)
-  const archivedCount = useMemo(() => items.filter((item) => isActive(item) && isArchivedOnlyStockItem(item, menuItems)).length, [items, menuItems])
-  const filtered = useMemo(() => items.filter((item) =>
-    isActive(item) &&
-    !isHiddenArchived(item) &&
-    (!outletId ? !outletScoped || !item.outlet_id || allowedOutletIds.includes(String(item.outlet_id)) : String(item.outlet_id || '') === String(outletId)) &&
-    (!lowOnly || isLow(item)) &&
-    [String(item.name || ''), String(item.barcode || '')].some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))), [items, menuItems, search, outletId, outletScoped, lowOnly, showArchived])
+  const archivedCount = useMemo(() => expectedItems.filter((item) => isActive(item) && isArchivedOnlyStockItem(item, menuItems)).length, [expectedItems, menuItems])
+  const filtered = useMemo(() => expectedItems.filter((value) => {
+    const item = expectedStockItem(value)
+    return isActive(item) &&
+      !isHiddenArchived(item) &&
+      (!outletId ? !outletScoped || !item.outlet_id || allowedOutletIds.includes(String(item.outlet_id)) : String(item.outlet_id || '') === String(outletId)) &&
+      (!lowOnly || isLow(item)) &&
+      [String(item.name || ''), String(item.barcode || '')].some((text) => text.toLowerCase().includes(search.trim().toLowerCase()))
+  }), [expectedItems, menuItems, search, outletId, outletScoped, lowOnly, showArchived])
   const lowStock = filtered.filter(isLow)
   const healthyStock = filtered.filter((item) => !isLow(item))
-  const scopedItems = useMemo(() => items.filter((item) => (
+  const scopedItems = useMemo(() => expectedItems.filter((value) => {
+    const item = expectedStockItem(value)
+    return (
     isActive(item) &&
     !isHiddenArchived(item) &&
     (!outletId
       ? (!outletScoped || !item.outlet_id || allowedOutletIds.includes(String(item.outlet_id)))
       : String(item.outlet_id || '') === String(outletId))
-  )), [items, menuItems, outletId, outletScoped, allowedOutletIds, showArchived])
+    )
+  }), [expectedItems, menuItems, outletId, outletScoped, allowedOutletIds, showArchived])
   const stockCountsReady = itemsRead.complete && scopedItems.length > 0 && scopedItems.every((item) => Boolean(item?.updated_at))
   // Offline counts queue against last-known expected quantities (same contract
   // as deliveries/waste). Certified reads stay required for certified labels;
   // this gate only allows queueing when every line carries a known baseline.
-  const stockCountsQueueable = scopedItems.length > 0 && scopedItems.every((item) => Boolean(item?.updated_at))
+  const stockCountsQueueable = (!localAuthority || itemsRead.complete) && scopedItems.length > 0 && scopedItems.every((item) => Boolean(item?.updated_at))
   const agingByItem = useMemo(() => new Map(aging.map((row) => [row.item_id, row])), [aging])
 
   const loadMovementHistory = async (item) => {
@@ -292,10 +370,10 @@ export default function HposStock() {
       [item.id]: { ...(current[item.id] || {}), loading: true, error: '' }
     }))
     try {
-      if (typeof window.api?.inventory?.getMovementsWithReadStatus !== 'function') {
+      if (typeof stockApi?.inventory?.getMovementsWithReadStatus !== 'function') {
         throw new Error('This app version cannot certify item movement history. Restart the app and refresh.')
       }
-      const result = await window.api.inventory.getMovementsWithReadStatus({ item_id: item.id, limit: 50 })
+      const result = await stockApi.inventory.getMovementsWithReadStatus({ item_id: item.id, limit: 50 })
       setMovementHistory((current) => ({
         ...current,
         [item.id]: {
@@ -336,12 +414,18 @@ export default function HposStock() {
     setEditingItem(null)
     setBarcodeTouched(false)
     setBarcodeCaptureActive(false)
-    const preferredBarOutletId = String(outlets.find((outlet) => outlet?.is_active !== false && outlet?.type === 'beverage')?.id || '')
+    const preferredBarOutlet = outlets.find((value) => {
+      const outlet = expectedStockOutlet(value)
+      return outlet?.is_active !== false && outlet?.type === 'beverage'
+    })
+    const preferredBarOutletId = String(expectedStockOutlet(preferredBarOutlet)?.id || '')
     setNewItem({ name: '', category: 'Beer', barcode: '', opening_stock: '', unit: 'bottle', reorder_level: '', unit_cost: '', outlet_id: outletId || (barOnly ? preferredBarOutletId : '') })
     setShowCreate(true)
   }
 
-  const openEdit = (item) => {
+  /** @param {unknown} value */
+  const openEdit = (value) => {
+    const item = expectedStockItem(value)
     setError('')
     setBarcodeScanStatus('')
     setEditingItem(item)
@@ -355,12 +439,16 @@ export default function HposStock() {
       unit: item.unit || 'each',
       reorder_level: String(item.reorder_level ?? ''),
       unit_cost: item.latest_unit_cost == null ? '' : String(item.latest_unit_cost),
-      outlet_id: item.outlet_id || outletId || (barOnly ? String(outlets.find((outlet) => outlet?.is_active !== false && outlet?.type === 'beverage')?.id || '') : ''),
+      outlet_id: item.outlet_id || outletId || (barOnly ? String(expectedStockOutlet(outlets.find((value) => {
+        const outlet = expectedStockOutlet(value)
+        return outlet?.is_active !== false && outlet?.type === 'beverage'
+      }))?.id || '') : ''),
     })
     setShowCreate(true)
   }
 
   const saveItem = async () => {
+    if (localActionsBlocked) { setError('Resolve the saved local operation below before editing stock.'); return }
     if (!newItem.name.trim()) { setError('Enter the stock item name.'); return }
     const costPatch = buildOptionalUnitCostPatch(newItem.unit_cost)
     if (!costPatch.ok) {
@@ -369,14 +457,14 @@ export default function HposStock() {
     }
     setSaving(true); setError(''); setNotice('')
     try {
-      const durableOutletId = isOutletId(newItem.outlet_id) && outlets.some((outlet) => String(outlet.id) === String(newItem.outlet_id))
+      const durableOutletId = isOutletId(newItem.outlet_id) && outlets.some((value) => String(expectedStockOutlet(value).id) === String(newItem.outlet_id))
         ? String(newItem.outlet_id)
         : null
       const barcodePatch = editingItem
         ? (barcodeTouched ? { barcode: String(newItem.barcode || '').trim() || null } : {})
         : { barcode: String(newItem.barcode || '').trim() || null }
       const result = editingItem
-        ? await window.api.inventory.updateItem(editingItem.id, {
+        ? await stockApi.inventory.updateItem(editingItem.id, {
             name: newItem.name.trim(),
             category: newItem.category.trim() || null,
             unit: newItem.unit.trim() || 'each',
@@ -385,7 +473,7 @@ export default function HposStock() {
             ...barcodePatch,
             outlet_id: durableOutletId,
           })
-        : await window.api.inventory.createItem({
+        : await stockApi.inventory.createItem({
             name: newItem.name.trim(),
             category: newItem.category.trim() || null,
             current_stock: Number(newItem.opening_stock || 0),
@@ -409,6 +497,7 @@ export default function HposStock() {
   }
 
   const recordStockAction = async () => {
+    if (localActionsBlocked) { setError('Resolve the saved local operation below before changing stock.'); return }
     if (!stockAction?.item) return
     if (stockAction.mode === 'count' && !stockCountsQueueable) {
       setError('Reconnect and refresh the stock list before recording a physical count. Nothing is saved without a known item baseline.')
@@ -427,7 +516,7 @@ export default function HposStock() {
     setSaving(true); setError(''); setNotice('')
     try {
       const result = stockAction.mode === 'count'
-        ? await window.api.inventory.postBarPhysicalCount({
+        ? await stockApi.inventory.postBarPhysicalCount({
             outlet_id: outletId || stockAction.item.outlet_id || null,
             operation_id: stockAction.operationId,
             notes: null,
@@ -443,14 +532,15 @@ export default function HposStock() {
             }]
           })
         : stockAction.mode === 'waste'
-        ? await window.api.inventory.adjustStock(
+        ? await stockApi.inventory.adjustStock(
             stockAction.item.id,
             -entered,
             `${WASTE_MOVEMENT_PREFIX} reason_code=${actionForm.reasonCode} · ${actionReasonLabel(stockAction.mode, actionForm.reasonCode)} · ${reasonDetail}`,
             null,
             stockAction.operationId,
+            ...(localAuthority ? [wasteApprovalPin] : []),
           )
-        : await window.api.inventory.adjustStock(
+        : await stockApi.inventory.adjustStock(
             stockAction.item.id,
             entered,
             `Simple delivery · reason_code=${actionForm.reasonCode} · ${actionReasonLabel(stockAction.mode, actionForm.reasonCode)} · ${reasonDetail}`,
@@ -462,7 +552,7 @@ export default function HposStock() {
       setStockAction(null); setActionForm({ quantity: '', reasonCode: '', reasonDetail: '', reason: '' })
       await loadItems()
     } catch (saveError) { setError(saveError?.message || 'Could not record this stock change.') }
-    finally { setSaving(false) }
+    finally { setSaving(false);setWasteApprovalPin('') }
   }
 
   const openCountAll = () => {
@@ -475,28 +565,32 @@ export default function HposStock() {
     }
     if (!scopedItems.length) { setError('Select an outlet or add stock items before opening Count All.'); return }
     setCountOperationId(crypto.randomUUID())
-    setCountLines(scopedItems.map((item) => ({
-      item_id: item.id,
-      item_name: item.name,
-      unit: item.unit || 'each',
-      expected_qty: stockNumber(item),
-      expected_updated_at: item.updated_at || null,
-      actual_qty: '',
-      reason_code: 'routine_count',
-      reason: ''
-    })))
+    setCountLines(scopedItems.map((value) => {
+      const item = expectedStockItem(value)
+      return {
+        item_id: item.id,
+        item_name: item.name,
+        unit: item.unit || 'each',
+        expected_qty: stockNumber(item),
+        expected_updated_at: item.updated_at || null,
+        actual_qty: '',
+        reason_code: 'routine_count',
+        reason: ''
+      }
+    }))
     setCountNotes('')
     setCountAllOpen(true)
     setError('')
   }
 
   const postCountAll = async () => {
+    if (localActionsBlocked) { setError('Resolve the saved local operation below before posting a count.'); return }
     if (!stockCountsQueueable || !countLines.length) return
     const invalid = countLines.find((line) => String(line.actual_qty ?? '').trim() === '' || !Number.isFinite(Number(line.actual_qty)) || Number(line.actual_qty) < 0 || ((line.reason_code === 'other' || Number(line.actual_qty) !== Number(line.expected_qty)) && !String(line.reason || '').trim()))
     if (invalid) { setError('Enter a non-negative quantity for every line; add a detail for an exceptional reason or variance.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api.inventory.postBarPhysicalCount({
+      const result = await stockApi.inventory.postBarPhysicalCount({
         outlet_id: outletId || null,
         operation_id: countOperationId,
         notes: countNotes,
@@ -521,7 +615,9 @@ export default function HposStock() {
     setError('')
   }
 
-  const addDeliveryItem = (item) => {
+  /** @param {unknown} value */
+  const addDeliveryItem = (value) => {
+    const item = expectedStockItem(value)
     if (!item?.id) return
     if (deliveryLines.some((line) => line.item_id === item.id)) {
       setDeliveryLookup('This item is already in the delivery. Adjust its quantity below.')
@@ -536,7 +632,7 @@ export default function HposStock() {
     if (!barcode) { setDeliveryLookup('Scan or enter a barcode first.'); return }
     setDeliveryLookup('Looking up barcode…')
     try {
-      const result = await window.api.inventory.findByBarcode(barcode, outletId || null)
+      const result = await stockApi.inventory.findByBarcode(barcode, outletId || null)
       if (result?.success === false) throw new Error(result.error)
       if (!result) throw new Error('No stock item matches that barcode in the selected outlet.')
       addDeliveryItem(result)
@@ -545,11 +641,12 @@ export default function HposStock() {
   }
 
   const postDelivery = async () => {
+    if (localActionsBlocked) { setError('Resolve the saved local operation below before receiving stock.'); return }
     const invalid = deliveryLines.find((line) => !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0 || ((line.reason_code === 'other') && !String(line.reason || '').trim()))
     if (!deliveryLines.length || invalid) { setError('Add at least one delivery line with a positive quantity; add detail when using Other.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      const result = await window.api.inventory.postBarSimpleDelivery({
+      const result = await stockApi.inventory.postBarSimpleDelivery({
         outlet_id: outletId || null,
         operation_id: deliveryOperationId,
         notes: deliveryNotes,
@@ -568,12 +665,13 @@ export default function HposStock() {
     setAllHistoryOpen(true)
     setAllHistory((current) => ({ ...current, loading: true, error: '' }))
     try {
-      const result = await window.api.inventory.getBarStockCountHistory(outletId || null, 200)
+      const result = await stockApi.inventory.getBarStockCountHistory(outletId || null, 200)
       setAllHistory({ rows: Array.isArray(result?.rows) ? result.rows : [], source: result?.source || 'unknown', complete: result?.complete === true, loading: false, error: '' })
     } catch (historyError) { setAllHistory((current) => ({ ...current, loading: false, error: historyError?.message || 'Could not load history.' })) }
   }
 
   const printBarcodeLabel = async (item) => {
+    if (localAuthority) { setError('Barcode label printing is not configured for this local till.'); return }
     if (!item?.barcode) { setError('Add a barcode to this stock item before printing a label.'); return }
     setError(''); setNotice('')
     try {
@@ -585,6 +683,12 @@ export default function HposStock() {
 
   return (
     <div className={printSheet ? 'hpos-stock-printing' : ''} style={{ maxWidth: 1180, margin: '0 auto', padding: '4px 0 28px' }}>
+      {localAuthority && localActionsBlocked && <section role="status" className="hpos-inline-notice no-print">
+        <p>{localOperationsError || (!localOperationsChecked ? 'Checking saved local operations before stock changes…' : 'Resolve the saved local operation before starting another stock change. Retrying uses its original ID.')}</p>
+        {localOperationsError && <button type="button" onClick={refreshLocalOperations}>Check saved operations again</button>}
+        {localOperations.map((operation) => <div key={operation.operation_id}><span>{operation.command} · {operation.operation_id}</span>{' '}
+          <button type="button" disabled={saving} onClick={() => retryLocalOperation(operation.operation_id)}>Retry saved operation</button></div>)}
+      </section>}
       <section className="no-print" aria-label="Stock tools" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: 10, marginBottom: 12, padding: '12px 14px', border: '1px solid rgba(72,45,56,.12)', borderRadius: 14, background: '#fffdf9' }}>
         <label style={{ minWidth: 260, color: '#695961', fontSize: 10, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase' }}>Read-only movement history
           <select value={historyItemId || ''} onChange={(event) => { const id = event.target.value; const item = filtered.find((row) => String(row.id) === String(id)); if (!item) { setHistoryItemId(null); return } loadMovementHistory(item) }} style={{ display: 'block', width: '100%', marginTop: 4, padding: '9px 10px', borderRadius: 10, border: '1px solid rgba(72,45,56,.18)', background: '#fff', color: '#33232b', fontSize: 12 }}>
@@ -641,7 +745,7 @@ export default function HposStock() {
               <select aria-label="Stock outlet" value={outletScoped ? outletId : outletId || 'all'} onChange={(event) => { const next = event.target.value === 'all' ? '' : event.target.value; setOutletId(next); loadItems(next) }} disabled={loading || (outletScoped && !outlets.length)} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 4, padding: '9px 10px', borderRadius: 10, border: '1px solid rgba(72,45,56,.18)', background: '#fff', color: '#33232b', outline: 'none', fontSize: 12 }}>
                 {!outletScoped && <option value="all">All outlets</option>}
                 {outletScoped && !outlets.length && <option value="">No assigned outlet</option>}
-                {outlets.map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}
+                {outlets.map((value) => { const outlet = expectedStockOutlet(value); return <option key={outlet.id} value={outlet.id ?? outlet.name}>{outlet.name}</option> })}
               </select>
               <small style={{ display: 'block', marginTop: 3, color: '#917f87', fontSize: 10, fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>{outletScoped ? 'Assigned outlet only' : 'Lodge-wide or selected outlet'}</small>
             </label>
@@ -650,27 +754,28 @@ export default function HposStock() {
         </div>
         {error && <ErrorNotice style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#9a3027', background: '#fff1ef', fontSize: 12 }}>{transportErrorMessage(error)}</ErrorNotice>}
         {notice && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#215e47', background: '#e9f6ef', fontSize: 12 }}>{notice}</div>}
-        {(!stockCountsReady || agingError) && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#79551e', background: '#fff6df', fontSize: 12 }}>Offline — showing last saved stock. Reconnect and refresh before counting.{agingError ? ` ${transportErrorMessage(agingError)}` : ''}</div>}
+        {(!stockCountsReady || agingError) && <div role="status" style={{ margin: 16, padding: '10px 12px', borderRadius: 10, color: '#79551e', background: '#fff6df', fontSize: 12 }}>{localAuthority ? 'The local stock read is unverified. Reconnect to the Bar service and refresh before counting.' : 'Offline — showing last saved stock. Reconnect and refresh before counting.'}{agingError ? ` ${transportErrorMessage(agingError)}` : ''}</div>}
         {loading ? <div aria-live="polite" style={{ padding: 52, textAlign: 'center', color: '#806f76', fontSize: 13 }}>Loading stock…</div> : <div style={{ overflowX: 'auto' }}><table aria-label="Service stock list" style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse', fontSize: 13 }}><thead><tr style={{ background: 'rgba(74,44,56,.045)' }}>{['Item', 'Barcode', 'Status', 'On hand', 'Reorder point', 'Unit cost', 'Stock age', 'Actions'].map((heading) => <th key={heading} style={{ padding: '11px 18px', textAlign: 'left', color: '#806f76', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase' }}>{heading}</th>)}</tr></thead><tbody>{filtered.map((item) => {
           const attention = isLow(item)
           const age = agingByItem.get(item.id)
           const receiptDate = formatAgeDate(age?.last_received_at)
           const soldDate = formatAgeDate(age?.last_sold_at)
-              return <tr key={item.id} style={{ background: attention ? 'rgba(194, 70, 55, .055)' : 'transparent', borderTop: '1px solid rgba(72,45,56,.08)' }}><td style={{ padding: '13px 18px', color: '#33232b', fontWeight: 800 }}>{item.name}<small style={{ display: 'block', marginTop: 2, color: '#917f87', fontWeight: 500 }}>{item.category || 'Uncategorised'}</small></td><td style={{ padding: '13px 18px', color: '#695961', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 11 }}>{item.barcode || '—'}</td><td style={{ padding: '13px 18px' }}><span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, color: attention ? '#a53a30' : '#28624d', background: attention ? '#fde5e1' : '#e4f4ea' }}>{attention ? 'Needs attention' : 'Available'}</span></td><td style={{ padding: '13px 18px', color: attention ? '#a53a30' : '#2e6450', fontWeight: 800 }}>{stockNumber(item)} {item.unit || 'each'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{reorderNumber(item) || '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{item.latest_unit_cost != null ? `${currency}${Number(item.latest_unit_cost).toFixed(2)}` : '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}><strong style={{ display: 'block', color: age?.age_bucket?.startsWith('Critical') ? '#a53a30' : '#5b4851', fontSize: 11 }}>{age?.age_bucket || 'Unavailable'}</strong><small style={{ display: 'block', marginTop: 2 }}>{ageDescription(age)}{receiptDate ? ` · ${receiptDate}` : ''}</small><small style={{ display: 'block', marginTop: 2, color: '#917f87' }}>{soldDate ? `Last sold ${soldDate}` : 'No recorded sale'}</small></td><td style={{ padding: '13px 18px' }}>{canManage ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}><button type="button" onClick={() => openEdit(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Edit</button><button type="button" onClick={() => { setActionForm({ quantity: '', reasonCode: 'delivery_received', reasonDetail: '', reason: '' }); setStockAction({ mode: 'receive', item, operationId: crypto.randomUUID() }) }} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Receive</button><button type="button" onClick={() => { setActionForm({ quantity: String(stockNumber(item)), reasonCode: 'routine_count', reasonDetail: '', reason: '' }); setStockAction({ mode: 'count', item, operationId: crypto.randomUUID() }) }} style={{ border: 0, background: '#3d2b34', color: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}><ClipboardCheck size={12} style={{ display: 'inline', marginRight: 4 }}/>Count</button><button type="button" onClick={() => openWasteAction(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Waste</button><button type="button" onClick={() => printBarcodeLabel(item)} disabled={!item.barcode} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11, opacity: item.barcode ? 1 : .55 }}>Print label</button></div> : '—'}</td></tr>
+              return <tr key={item.id} style={{ background: attention ? 'rgba(194, 70, 55, .055)' : 'transparent', borderTop: '1px solid rgba(72,45,56,.08)' }}><td style={{ padding: '13px 18px', color: '#33232b', fontWeight: 800 }}>{item.name}<small style={{ display: 'block', marginTop: 2, color: '#917f87', fontWeight: 500 }}>{item.category || 'Uncategorised'}</small></td><td style={{ padding: '13px 18px', color: '#695961', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 11 }}>{item.barcode || '—'}</td><td style={{ padding: '13px 18px' }}><span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: 999, fontSize: 10, fontWeight: 800, color: attention ? '#a53a30' : '#28624d', background: attention ? '#fde5e1' : '#e4f4ea' }}>{attention ? 'Needs attention' : 'Available'}</span></td><td style={{ padding: '13px 18px', color: attention ? '#a53a30' : '#2e6450', fontWeight: 800 }}>{stockNumber(item)} {item.unit || 'each'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{reorderNumber(item) || '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}>{item.latest_unit_cost != null ? `${currency}${Number(item.latest_unit_cost).toFixed(2)}` : '—'}</td><td style={{ padding: '13px 18px', color: '#695961' }}><strong style={{ display: 'block', color: age?.age_bucket?.startsWith('Critical') ? '#a53a30' : '#5b4851', fontSize: 11 }}>{age?.age_bucket || 'Unavailable'}</strong><small style={{ display: 'block', marginTop: 2 }}>{ageDescription(age)}{receiptDate ? ` · ${receiptDate}` : ''}</small><small style={{ display: 'block', marginTop: 2, color: '#917f87' }}>{soldDate ? `Last sold ${soldDate}` : 'No recorded sale'}</small></td><td style={{ padding: '13px 18px' }}>{canManage ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}><button type="button" onClick={() => openEdit(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Edit</button><button type="button" onClick={() => { setActionForm({ quantity: '', reasonCode: 'delivery_received', reasonDetail: '', reason: '' }); setStockAction({ mode: 'receive', item, operationId: crypto.randomUUID() }) }} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Receive</button><button type="button" onClick={() => { setActionForm({ quantity: String(stockNumber(item)), reasonCode: 'routine_count', reasonDetail: '', reason: '' }); setStockAction({ mode: 'count', item, operationId: crypto.randomUUID() }) }} style={{ border: 0, background: '#3d2b34', color: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}><ClipboardCheck size={12} style={{ display: 'inline', marginRight: 4 }}/>Count</button><button type="button" onClick={() => openWasteAction(item)} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11 }}>Waste</button><button type="button" onClick={() => printBarcodeLabel(item)} disabled={localAuthority || !item.barcode} title={localAuthority ? "Label printing is not configured for this local till" : undefined} style={{ border: '1px solid #d7c4ba', background: '#fff', borderRadius: 8, padding: '6px 8px', fontWeight: 800, fontSize: 11, opacity: item.barcode ? 1 : .55 }}>Print label</button></div> : '—'}</td></tr>
         })}{!filtered.length && <tr><td colSpan="8" style={{ padding: 44, textAlign: 'center', color: '#806f76' }}>{items.length ? (outletScoped && !outletId ? 'No assigned outlet is available for this operator.' : 'No stock items match this outlet or search.') : 'No stock items yet. Add the first bottle, keg, snack or prepared portion.'}</td></tr>}</tbody></table></div>}
       </section>
 
       {showWizard && barOnly && (
         <HposProductWizard
           modifierGroups={wizardModifiers}
-          onClose={() => setShowWizard(false)}
+          onClose={() => { setShowWizard(false);void refreshLocalOperations() }}
           onSaved={() => {
             loadItems()
+            void refreshLocalOperations()
           }}
         />
       )}
 
-      {showCreate && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-create-title"><button className="hpos-service-dialog__close" type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving} aria-label="Close"><X size={18}/></button><p className="hpos-eyebrow">Base bar stock</p><h2 id="bar-stock-create-title">{editingItem ? 'Edit stock item' : 'Add a counted stock item'}</h2><p>{editingItem ? 'Update the name, category, counted unit, reorder point or cost basis. Use Receive, Count or Waste to change on-hand stock.' : 'Use one record for the exact unit you count, such as a 330ml bottle, one keg, one snack packet, one prepared food portion, or kilograms of potatoes.'}</p><div className="hpos-service-form hpos-service-form--two"><label className="is-wide">Item name<input autoFocus value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} placeholder="Heineken 330ml"/></label><label>Category<input value={newItem.category} onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}/></label><label>Counted unit<select value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}>{BAR_COUNTED_UNITS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><small>Use kilograms or grams for weighed ingredients such as potatoes.</small></label><label>Stock location<select value={newItem.outlet_id || ''} onChange={(e) => setNewItem({ ...newItem, outlet_id: e.target.value })}><option value="">Unassigned</option>{outlets.filter((outlet) => outlet?.is_active !== false).map((outlet) => <option key={outlet.id} value={outlet.id}>{outlet.name}{outlet.type === 'beverage' ? ' (Bar)' : ''}</option>)}</select>{barOnly && <small>Use a Bar location when this item may be sold as a 6-pack, 12-pack or case.</small>}</label>{!editingItem && <label>Opening quantity<input type="number" min="0" step="0.01" value={newItem.opening_stock} onChange={(e) => setNewItem({ ...newItem, opening_stock: e.target.value })}/></label>}<label>Low-stock level<input type="number" min="0" step="0.01" value={newItem.reorder_level} onChange={(e) => setNewItem({ ...newItem, reorder_level: e.target.value })}/></label><label className="is-wide">Barcode<div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input ref={barcodeInputRef} value={newItem.barcode} onChange={(e) => { setBarcodeTouched(true); setBarcodeScanStatus(''); setNewItem({ ...newItem, barcode: e.target.value }) }} placeholder="Scan or enter barcode" inputMode="text" autoComplete="off" style={{ flex: 1 }} /><button type="button" onClick={() => { setBarcodeCaptureActive(true); setBarcodeScanStatus('Waiting for scanner…'); requestAnimationFrame(() => barcodeInputRef.current?.focus()) }} disabled={saving} aria-label="Scan barcode"><ScanLine size={14} /> {barcodeCaptureActive ? 'Scanning…' : 'Scan'}</button>{newItem.barcode && <button type="button" onClick={() => { setNewItem({ ...newItem, barcode: '' }); setBarcodeTouched(true); setBarcodeScanStatus('Barcode cleared') }} disabled={saving} aria-label="Clear barcode"><X size={14} /></button>}</div><small>Leading zeroes are preserved. Scan the product label or enter the code manually.</small>{barcodeScanStatus && <span role="status" style={{ display: 'block', marginTop: 4, color: barcodeCaptureActive ? '#79551e' : '#28624d', fontSize: 11 }}>{barcodeScanStatus}</span>}</label><label>Unit cost ({currency})<input type="number" min="0" step="0.01" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: e.target.value })}/></label></div><footer><button type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={saveItem} disabled={saving}>{saving ? 'Saving…' : editingItem ? 'Save changes' : 'Add stock item'}</button></footer></section></div>}
+      {showCreate && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-create-title"><button className="hpos-service-dialog__close" type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving} aria-label="Close"><X size={18}/></button><p className="hpos-eyebrow">Base bar stock</p><h2 id="bar-stock-create-title">{editingItem ? 'Edit stock item' : 'Add a counted stock item'}</h2><p>{editingItem ? 'Update the name, category, counted unit, reorder point or cost basis. Use Receive, Count or Waste to change on-hand stock.' : 'Use one record for the exact unit you count, such as a 330ml bottle, one keg, one snack packet, one prepared food portion, or kilograms of potatoes.'}</p><div className="hpos-service-form hpos-service-form--two"><label className="is-wide">Item name<input autoFocus value={newItem.name} onChange={(e) => setNewItem({ ...newItem, name: e.target.value })} placeholder="Heineken 330ml"/></label><label>Category<input value={newItem.category} onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}/></label><label>Counted unit<select value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}>{BAR_COUNTED_UNITS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><small>Use kilograms or grams for weighed ingredients such as potatoes.</small></label><label>Stock location<select value={newItem.outlet_id || ''} onChange={(e) => setNewItem({ ...newItem, outlet_id: e.target.value })}><option value="">Unassigned</option>{outlets.filter((value) => expectedStockOutlet(value).is_active !== false).map((value) => { const outlet = expectedStockOutlet(value); return <option key={outlet.id} value={outlet.id ?? outlet.name}>{outlet.name}{outlet.type === 'beverage' ? ' (Bar)' : ''}</option> })}</select>{barOnly && <small>Use a Bar location when this item may be sold as a 6-pack, 12-pack or case.</small>}</label>{!editingItem && <label>Opening quantity<input type="number" min="0" step="0.01" value={newItem.opening_stock} onChange={(e) => setNewItem({ ...newItem, opening_stock: e.target.value })}/></label>}<label>Low-stock level<input type="number" min="0" step="0.01" value={newItem.reorder_level} onChange={(e) => setNewItem({ ...newItem, reorder_level: e.target.value })}/></label><label className="is-wide">Barcode<div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input ref={barcodeInputRef} value={newItem.barcode} onChange={(e) => { setBarcodeTouched(true); setBarcodeScanStatus(''); setNewItem({ ...newItem, barcode: e.target.value }) }} placeholder="Scan or enter barcode" inputMode="text" autoComplete="off" style={{ flex: 1 }} /><button type="button" onClick={() => { setBarcodeCaptureActive(true); setBarcodeScanStatus('Waiting for scanner…'); requestAnimationFrame(() => barcodeInputRef.current?.focus()) }} disabled={saving} aria-label="Scan barcode"><ScanLine size={14} /> {barcodeCaptureActive ? 'Scanning…' : 'Scan'}</button>{newItem.barcode && <button type="button" onClick={() => { setNewItem({ ...newItem, barcode: '' }); setBarcodeTouched(true); setBarcodeScanStatus('Barcode cleared') }} disabled={saving} aria-label="Clear barcode"><X size={14} /></button>}</div><small>Leading zeroes are preserved. Scan the product label or enter the code manually.</small>{barcodeScanStatus && <span role="status" style={{ display: 'block', marginTop: 4, color: barcodeCaptureActive ? '#79551e' : '#28624d', fontSize: 11 }}>{barcodeScanStatus}</span>}</label><label>Unit cost ({currency})<input type="number" min="0" step="0.01" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: e.target.value })}/></label></div><footer><button type="button" onClick={() => { setShowCreate(false); setEditingItem(null) }} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={saveItem} disabled={saving}>{saving ? 'Saving…' : editingItem ? 'Save changes' : 'Add stock item'}</button></footer></section></div>}
 
       {countAllOpen && (
         <div className="hpos-modal-backdrop" role="presentation">
@@ -707,10 +812,10 @@ export default function HposStock() {
         </div>
       )}
 
-      {stockAction && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-action-title"><button className="hpos-service-dialog__close" type="button" onClick={() => setStockAction(null)} disabled={saving} aria-label="Close"><X size={18}/></button><p className="hpos-eyebrow">Audited stock movement</p><h2 id="bar-stock-action-title">{stockAction.mode === 'count' ? `Count ${stockAction.item.name}` : stockAction.mode === 'waste' ? `Record waste — ${stockAction.item.name}` : `Receive ${stockAction.item.name}`}</h2><p>{stockAction.mode === 'count' ? `Enter the physical quantity on hand. The system currently records ${stockNumber(stockAction.item)} ${stockAction.item.unit || 'each'}.` : stockAction.mode === 'waste' ? `Enter only the quantity wasted or lost. The system currently records ${stockNumber(stockAction.item)} ${stockAction.item.unit || 'each'}. This removes stock with an auditable waste movement.` : 'Enter only the quantity physically received in this delivery.'}</p><div className="hpos-service-form"><label>{stockAction.mode === 'count' ? 'Physical quantity on hand' : stockAction.mode === 'waste' ? 'Quantity wasted' : 'Quantity received'}<input autoFocus type="number" min="0" step="0.01" value={actionForm.quantity} onChange={(e) => setActionForm({ ...actionForm, quantity: e.target.value })}/></label><label>Reason category<select value={actionForm.reasonCode} onChange={(e) => setActionForm({ ...actionForm, reasonCode: e.target.value })}>{(STOCK_ACTION_REASONS[stockAction.mode] || []).map((reason) => <option key={reason.value} value={reason.value}>{reason.label}</option>)}</select></label><label>{stockAction.mode === 'count' ? 'Count note / reference' : stockAction.mode === 'waste' ? 'Waste note / reference' : 'Delivery note / reference'}<input value={actionForm.reasonDetail || actionForm.reason || ''} onChange={(e) => setActionForm({ ...actionForm, reasonDetail: e.target.value, reason: e.target.value })} placeholder={stockAction.mode === 'count' ? 'Weekly bottle count' : stockAction.mode === 'waste' ? 'Burnt fries batch' : 'Delivery note or reference'}/></label></div><p style={{ fontSize: 12, color: '#806f76' }}>Reason code and custom detail are stored with one idempotent, auditable stock movement. It never edits the displayed balance directly.</p><footer><button type="button" onClick={() => setStockAction(null)} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={recordStockAction} disabled={saving}>{saving ? 'Recording…' : stockAction.mode === 'count' ? 'Post count' : stockAction.mode === 'waste' ? 'Record waste' : 'Receive stock'}</button></footer></section></div>}
-      {allHistoryOpen && <div className="hpos-modal-backdrop no-print" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-all-history-title" style={{ maxWidth: 980 }}><button className="hpos-service-dialog__close" type="button" onClick={() => setAllHistoryOpen(false)} aria-label="Close"><X size={18} /></button><p className="hpos-eyebrow">Immutable stock evidence</p><h2 id="bar-stock-all-history-title">Count and delivery history</h2><p>Read-only history includes the server-recorded actor, expected quantity, physical quantity, delta and reason. It never substitutes a cache for a certified ledger.</p>{allHistory.loading && <p role="status">Loading stock operation history…</p>}{allHistory.error && <ErrorNotice style={{ color: '#a53a30' }}>{allHistory.error}</ErrorNotice>}{!allHistory.loading && !allHistory.error && <><p style={{ fontSize: 11, color: allHistory.complete ? '#28624d' : '#9a621e' }}>{allHistory.complete ? 'Server-confirmed history.' : `Not certified (${allHistory.source || 'unknown'}). Reconnect before relying on this history.`}</p><div style={{ maxHeight: 420, overflowY: 'auto' }}>{allHistory.rows.length ? <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: 7 }}>Date</th><th style={{ textAlign: 'left', padding: 7 }}>Item</th><th style={{ textAlign: 'left', padding: 7 }}>Operation</th><th style={{ textAlign: 'right', padding: 7 }}>Expected</th><th style={{ textAlign: 'right', padding: 7 }}>Actual</th><th style={{ textAlign: 'right', padding: 7 }}>Delta</th><th style={{ textAlign: 'left', padding: 7 }}>Reason / actor</th></tr></thead><tbody>{allHistory.rows.map((row) => <tr key={row.id || `${row.operation_id}-${row.item_id}`} style={{ borderTop: '1px solid #eee5e9' }}><td style={{ padding: 7 }}>{formatAgeDate(row.created_at) || '—'}</td><td style={{ padding: 7 }}>{row.item_name || 'Item'}<small style={{ display: 'block', color: '#917f87' }}>{row.item_unit || 'each'}</small></td><td style={{ padding: 7 }}>{row.reference_type === 'bar_physical_count' ? 'Physical count' : 'Simple delivery'}</td><td style={{ padding: 7, textAlign: 'right' }}>{row.expected_qty == null ? '—' : Number(row.expected_qty)}</td><td style={{ padding: 7, textAlign: 'right' }}>{row.actual_qty == null ? '—' : Number(row.actual_qty)}</td><td style={{ padding: 7, textAlign: 'right' }}>{Number(row.delta || 0)}</td><td style={{ padding: 7 }}>{row.reason_code || '—'}{row.notes ? ` · ${row.notes}` : ''}<small style={{ display: 'block', color: '#917f87' }}>{row.actor_name || row.actor_id || 'Unknown actor'}</small></td></tr>)}</tbody></table> : <p>No Bar Base count or delivery operations recorded.</p>}</div></>}</section></div>}
+      {stockAction && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-action-title"><button className="hpos-service-dialog__close" type="button" onClick={() => setStockAction(null)} disabled={saving} aria-label="Close"><X size={18}/></button><p className="hpos-eyebrow">Audited stock movement</p><h2 id="bar-stock-action-title">{stockAction.mode === 'count' ? `Count ${stockAction.item.name}` : stockAction.mode === 'waste' ? `Record waste — ${stockAction.item.name}` : `Receive ${stockAction.item.name}`}</h2><p>{stockAction.mode === 'count' ? `Enter the physical quantity on hand. The system currently records ${stockNumber(stockAction.item)} ${stockAction.item.unit || 'each'}.` : stockAction.mode === 'waste' ? `Enter only the quantity wasted or lost. The system currently records ${stockNumber(stockAction.item)} ${stockAction.item.unit || 'each'}. This removes stock with an auditable waste movement.` : 'Enter only the quantity physically received in this delivery.'}</p><div className="hpos-service-form"><label>{stockAction.mode === 'count' ? 'Physical quantity on hand' : stockAction.mode === 'waste' ? 'Quantity wasted' : 'Quantity received'}<input autoFocus type="number" min="0" step="0.01" value={actionForm.quantity} onChange={(e) => setActionForm({ ...actionForm, quantity: e.target.value })}/></label><label>Reason category<select value={actionForm.reasonCode} onChange={(e) => setActionForm({ ...actionForm, reasonCode: e.target.value })}>{(STOCK_ACTION_REASONS[stockAction.mode] || []).map((reason) => <option key={reason.value} value={reason.value}>{reason.label}</option>)}</select></label><label>{stockAction.mode === 'count' ? 'Count note / reference' : stockAction.mode === 'waste' ? 'Waste note / reference' : 'Delivery note / reference'}<input value={actionForm.reasonDetail || actionForm.reason || ''} onChange={(e) => setActionForm({ ...actionForm, reasonDetail: e.target.value, reason: e.target.value })} placeholder={stockAction.mode === 'count' ? 'Weekly bottle count' : stockAction.mode === 'waste' ? 'Burnt fries batch' : 'Delivery note or reference'}/></label>{localAuthority && stockAction.mode === 'waste' && <label>Approving manager PIN<input type="password" inputMode="numeric" autoComplete="off" value={wasteApprovalPin} onChange={(e) => setWasteApprovalPin(e.target.value)}/><small>A different authorised manager must approve this waste.</small></label>}</div><p style={{ fontSize: 12, color: '#806f76' }}>Reason code and custom detail are stored with one idempotent, auditable stock movement. It never edits the displayed balance directly.</p><footer><button type="button" onClick={() => setStockAction(null)} disabled={saving}>Cancel</button><button type="button" className="hpos-primary-action" onClick={recordStockAction} disabled={saving}>{saving ? 'Recording…' : stockAction.mode === 'count' ? 'Post count' : stockAction.mode === 'waste' ? 'Record waste' : 'Receive stock'}</button></footer></section></div>}
+      {allHistoryOpen && <div className="hpos-modal-backdrop no-print" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-all-history-title" style={{ maxWidth: 980 }}><button className="hpos-service-dialog__close" type="button" onClick={() => setAllHistoryOpen(false)} aria-label="Close"><X size={18} /></button><p className="hpos-eyebrow">Immutable stock evidence</p><h2 id="bar-stock-all-history-title">Count and delivery history</h2><p>Read-only history includes the server-recorded actor, expected quantity, physical quantity, delta and reason. It never substitutes a cache for a certified ledger.</p>{allHistory.loading && <p role="status">Loading stock operation history…</p>}{allHistory.error && <ErrorNotice style={{ color: '#a53a30' }}>{allHistory.error}</ErrorNotice>}{!allHistory.loading && !allHistory.error && <><p style={{ fontSize: 11, color: allHistory.complete ? '#28624d' : '#9a621e' }}>{allHistory.complete ? 'Server-confirmed history.' : `Not certified (${allHistory.source || 'unknown'}). Reconnect before relying on this history.`}</p><div style={{ maxHeight: 420, overflowY: 'auto' }}>{allHistory.rows.length ? <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: 7 }}>Date</th><th style={{ textAlign: 'left', padding: 7 }}>Item</th><th style={{ textAlign: 'left', padding: 7 }}>Operation</th><th style={{ textAlign: 'right', padding: 7 }}>Expected</th><th style={{ textAlign: 'right', padding: 7 }}>Actual</th><th style={{ textAlign: 'right', padding: 7 }}>Delta</th><th style={{ textAlign: 'left', padding: 7 }}>Reason / actor</th></tr></thead><tbody>{allHistory.rows.map(expectedStockCountHistoryRow).map((row) => <tr key={row.id || `${row.operation_id}-${row.item_id}`} style={{ borderTop: '1px solid #eee5e9' }}><td style={{ padding: 7 }}>{formatAgeDate(row.created_at) || '—'}</td><td style={{ padding: 7 }}>{row.item_name || 'Item'}<small style={{ display: 'block', color: '#917f87' }}>{row.item_unit || 'each'}</small></td><td style={{ padding: 7 }}>{row.reference_type === 'bar_physical_count' ? 'Physical count' : 'Simple delivery'}</td><td style={{ padding: 7, textAlign: 'right' }}>{row.expected_qty == null ? '—' : Number(row.expected_qty)}</td><td style={{ padding: 7, textAlign: 'right' }}>{row.actual_qty == null ? '—' : Number(row.actual_qty)}</td><td style={{ padding: 7, textAlign: 'right' }}>{Number(row.delta || 0)}</td><td style={{ padding: 7 }}>{row.reason_code || '—'}{row.notes ? ` · ${row.notes}` : ''}<small style={{ display: 'block', color: '#917f87' }}>{row.actor_name || row.actor_id || 'Unknown actor'}</small></td></tr>)}</tbody></table> : <p>No Bar Base count or delivery operations recorded.</p>}</div></>}</section></div>}
       {historyItemId && <div className="hpos-modal-backdrop no-print" role="presentation"><section className="hpos-service-dialog" role="dialog" aria-modal="true" aria-labelledby="bar-stock-history-title"><button className="hpos-service-dialog__close" type="button" onClick={() => setHistoryItemId(null)} aria-label="Close"><X size={18} /></button><p className="hpos-eyebrow">Read-only ledger</p><h2 id="bar-stock-history-title">Movement history</h2><p>Server-scoped history for {filtered.find((item) => item.id === historyItemId)?.name || 'this item'}. It cannot change stock.</p>{movementHistory[historyItemId]?.loading && <p role="status">Loading movement history…</p>}{movementHistory[historyItemId]?.error && <ErrorNotice style={{ color: '#a53a30' }}>{movementHistory[historyItemId].error}</ErrorNotice>}{movementHistory[historyItemId] && !movementHistory[historyItemId].loading && !movementHistory[historyItemId].error && <><p style={{ fontSize: 11, color: movementHistory[historyItemId].complete ? '#28624d' : '#9a621e' }}>{movementHistory[historyItemId].complete ? 'Server-confirmed ledger read.' : `Not certified (${movementHistory[historyItemId].source || 'unknown'}). Reconnect before relying on this history.`}</p><div style={{ maxHeight: 360, overflowY: 'auto' }}>{movementHistory[historyItemId].rows?.length ? <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}><thead><tr><th style={{ textAlign: 'left', padding: 7 }}>Date</th><th style={{ textAlign: 'left', padding: 7 }}>Movement</th><th style={{ textAlign: 'right', padding: 7 }}>Quantity</th><th style={{ textAlign: 'left', padding: 7 }}>Reason / reference</th></tr></thead><tbody>{movementHistory[historyItemId].rows.map((row) => <tr key={row.id || `${row.created_at}-${row.quantity}`} style={{ borderTop: '1px solid #eee5e9' }}><td style={{ padding: 7 }}>{formatAgeDate(row.created_at) || '—'}</td><td style={{ padding: 7 }}>{row.movement_type || 'Movement'}</td><td style={{ padding: 7, textAlign: 'right' }}>{Number(row.quantity || 0)}</td><td style={{ padding: 7 }}>{row.notes || row.reference_type || '—'}</td></tr>)}</tbody></table> : <p>No movements recorded for this item.</p>}</div></>}</section></div>}
-      {printSheet && <section className="hpos-stock-print-sheet" aria-label="Printable blank stock count sheet"><h1>Blank physical stock count sheet</h1><p>{settings?.business_name || settings?.company_name || 'Bar'} · {outletId ? (outlets.find((outlet) => String(outlet.id) === String(outletId))?.name || 'Selected outlet') : 'All outlets'} · Printed {new Date().toLocaleString()}</p><p className={stockCountsReady ? 'is-certified' : 'is-provisional'}>{stockCountsReady ? 'Prepared from a server-confirmed item list. Quantity fields are intentionally blank for a physical count.' : 'PROVISIONAL ITEM LIST — server confirmation is unavailable. Do not use this sheet as certified stock-on-hand evidence; reconnect and refresh first.'}</p><table><thead><tr><th>Item</th><th>Category</th><th>Unit</th><th>Physical quantity</th><th>Notes / reason</th></tr></thead><tbody>{filtered.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.category || 'Uncategorised'}</td><td>{item.unit || 'each'}</td><td>&nbsp;</td><td>&nbsp;</td></tr>)}</tbody></table><footer>Post completed counts through the audited Count action. This blank sheet does not alter stock and does not include cached on-hand quantities.</footer></section>}
+      {printSheet && <section className="hpos-stock-print-sheet" aria-label="Printable blank stock count sheet"><h1>Blank physical stock count sheet</h1><p>{settings?.business_name || settings?.company_name || 'Bar'} · {outletId ? (expectedStockOutlet(outlets.find((value) => String(expectedStockOutlet(value).id) === String(outletId)))?.name || 'Selected outlet') : 'All outlets'} · Printed {new Date().toLocaleString()}</p><p className={stockCountsReady ? 'is-certified' : 'is-provisional'}>{stockCountsReady ? 'Prepared from a server-confirmed item list. Quantity fields are intentionally blank for a physical count.' : 'PROVISIONAL ITEM LIST — server confirmation is unavailable. Do not use this sheet as certified stock-on-hand evidence; reconnect and refresh first.'}</p><table><thead><tr><th>Item</th><th>Category</th><th>Unit</th><th>Physical quantity</th><th>Notes / reason</th></tr></thead><tbody>{filtered.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.category || 'Uncategorised'}</td><td>{item.unit || 'each'}</td><td>&nbsp;</td><td>&nbsp;</td></tr>)}</tbody></table><footer>Post completed counts through the audited Count action. This blank sheet does not alter stock and does not include cached on-hand quantities.</footer></section>}
     </div>
   )
 }

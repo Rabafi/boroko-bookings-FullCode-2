@@ -1,6 +1,10 @@
 import { AlertCircle, ShieldCheck, X } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'
 
+/**
+ * @typedef {{id: string, name?: string|null, email?: string|null, has_pin?: unknown}} HposTillOperatorStaffExpectedView
+ * @param {{staff?: HposTillOperatorStaffExpectedView[], staffId: string, pin: string, error?: unknown, busy: boolean, onStaff: (id: string) => void, onPin: (pin: string) => void, onConfirm: () => unknown, onClose: () => unknown, activeStaffIds?: Array<string|null|undefined>|null, isOnline?: boolean|null}} props
+ */
 export default function HposTillOperatorDialog({ staff = [], staffId, pin, error, busy, onStaff, onPin, onConfirm, onClose, activeStaffIds = null, isOnline = null }) {
   const append = (value) => onPin(`${pin}${value}`.slice(0, 6))
   // Defensive copy: older main builds may return a bare wrong-PIN message.

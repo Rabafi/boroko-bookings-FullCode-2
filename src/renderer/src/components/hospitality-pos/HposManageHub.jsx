@@ -251,6 +251,7 @@ export default function HposManageHub() {
   const access = useAccess();
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
+  const localAuthority = settings?.authority_mode === 'bar_local';
   const canManagePos = canAccessCapability(access, 'pos.manage');
   // No commercial package key means isCommercialFeatureIncluded() fails
   // closed (commercialAccess.js) and the filtered workspace list is empty
@@ -330,6 +331,19 @@ export default function HposManageHub() {
     if (!canManagePos) return;
     setDailyLoading(true);
     try {
+      if (localAuthority) {
+        const readiness = await window.api?.barLocal?.refreshReadiness?.();
+        if (!readiness || typeof readiness.ready !== 'boolean' || !Array.isArray(readiness.blockers)) {
+          throw new Error('The local Bar service did not return a complete setup-readiness result.');
+        }
+        const complete = readiness.ready === true;
+        setDailyOpening(null);
+        setSetupReadStatus({ source: 'local_bar_service', complete, online: true, rows: [],
+          error: complete ? '' : `Trading remains paused: ${readiness.blockers.join(', ') || 'service readiness is incomplete'}.` });
+        setSetupSummary({ completed: complete ? 1 : 0, total: 1 });
+        setSetupComplete(complete);
+        return;
+      }
       const [rows, progress, hardware] = await Promise.all([
         barOnly ? Promise.resolve([]) : window.api?.pos?.getChecklists?.() || [],
         (async () => {
@@ -372,7 +386,7 @@ export default function HposManageHub() {
       setSetupComplete(false);
     }
     finally { setDailyLoading(false); }
-  }, [barOnly, canManagePos]);
+  }, [barOnly, canManagePos, localAuthority]);
 
   useEffect(() => { loadDailyOpening(); }, [loadDailyOpening]);
 
@@ -466,24 +480,40 @@ export default function HposManageHub() {
           </div>
 
           <div className="hpos-bar-package-guide__cards">
-            {barAddonSummary.map((addon) => (
-              <article key={addon.addonKey} className={addon.enabled ? 'is-enabled' : ''}>
-                <div className="hpos-bar-package-guide__card-topline">
-                  <span>{addon.eyebrow}</span>
-                  <em>{addon.enabled ? 'Enabled' : 'Optional add-on'}</em>
-                </div>
-                <h3>{addon.displayName}</h3>
-                <p>{addon.summary}</p>
-                <strong>{formatCommercialMoney(addon.annualPriceBwp)}/year</strong>
-                <button
-                  type="button"
-                  className="hpos-bar-package-guide__card-cta"
-                  onClick={() => navigate(`/settings?tab=license&feature=${encodeURIComponent(addon.addonKey)}`)}
-                >
-                  {addon.enabled ? 'View in Subscription' : 'Request this add-on'} <ArrowUpRight size={13} />
-                </button>
-              </article>
-            ))}
+            {barAddonSummary.map((addon) => {
+              const requiredAddons = (addon.requiredAddonKeys || []).flatMap((key) => {
+                const required = BAR_POS_ADDON_CATALOG.find((entry) => entry.addonKey === key);
+                return required ? [required] : [];
+              });
+              const missingRequired = requiredAddons.filter((entry) => !activeAddonKeys.has(entry.addonKey));
+              const combinedAnnual = Number(addon.annualPriceBwp || 0)
+                + requiredAddons.reduce((sum, entry) => sum + Number(entry.annualPriceBwp || 0), 0);
+              return (
+                <article key={addon.addonKey} className={addon.enabled ? 'is-enabled' : ''}>
+                  <div className="hpos-bar-package-guide__card-topline">
+                    <span>{addon.eyebrow}</span>
+                    <em>{addon.enabled ? 'Enabled' : 'Optional add-on'}</em>
+                  </div>
+                  <h3>{addon.displayName}</h3>
+                  <p>{addon.summary}</p>
+                  <strong>{formatCommercialMoney(addon.annualPriceBwp)}/year</strong>
+                  {requiredAddons.length > 0 && (
+                    <small>
+                      {addon.enabled && missingRequired.length > 0
+                        ? `Requires ${requiredAddons.map((entry) => entry.displayName).join(', ')}. Existing access is retained; ask Tsa Bonno before changing this package.`
+                        : `Requires ${requiredAddons.map((entry) => entry.displayName).join(', ')}. Combined with Bar POS: ${formatCommercialMoney(combinedAnnual)}/year.`}
+                    </small>
+                  )}
+                  <button
+                    type="button"
+                    className="hpos-bar-package-guide__card-cta"
+                    onClick={() => navigate(`/settings?tab=license&feature=${encodeURIComponent(addon.addonKey)}`)}
+                  >
+                    {addon.enabled ? 'View in Subscription' : missingRequired.length ? 'Request both add-ons' : 'Request this add-on'} <ArrowUpRight size={13} />
+                  </button>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}

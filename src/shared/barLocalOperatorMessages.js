@@ -7,6 +7,12 @@ export function barLocalOperatorError(error) {
   const code = typeof record.code === 'string' ? record.code : ''
   const raw = typeof record.message === 'string' ? record.message : ''
   const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '').replace(/^Error:\s*/, '')
+  const blockers = record.details && typeof record.details === 'object' && Array.isArray(record.details.blockers)
+    ? record.details.blockers.filter((item) => typeof item === 'string') : []
+  if (code === 'SERVICE_UNAVAILABLE' && blockers.includes('empty_catalogue')) {
+    return 'Add your first product to finish setting up this Bar. Sales stay paused until the menu and stock are ready.'
+  }
+  if (code === 'SERVICE_UNAVAILABLE') return 'Trading is paused until the Bar server confirms that setup and trading checks are ready. Check the connection or ask a manager for help.'
   if (record.outcomeUnknown === true || code === 'UNKNOWN_OUTCOME') {
     return 'This action may already be saved. Check the saved operation and retry that same operation; do not enter it again.'
   }
@@ -21,9 +27,12 @@ export function barLocalOperatorError(error) {
   return message || 'This action could not be completed. Keep your work and check the Bar server or ask a manager for help.'
 }
 
-/** @param {string} state */
-export function barLocalReadinessMessage(state) {
+/** @param {string} state @param {string[]} [blockers] */
+export function barLocalReadinessMessage(state, blockers = []) {
   if (state === 'ready') return 'Ready to sell · connected to the Bar server.'
+  if (state === 'blocked' && blockers.length === 1 && blockers[0] === 'empty_catalogue') {
+    return 'Your Bar is ready to set up. Add your first product and opening stock before opening a shift.'
+  }
   if (state === 'blocked') return 'Trading is paused. Ask a manager to check the Bar server before continuing.'
   if (state === 'unavailable') return 'Cannot reach the Bar server. Keep this sale open and check the local network and server PC.'
   if (state === 'stale') return 'Checking the Bar server. Keep this sale open; trading will resume after a successful check.'

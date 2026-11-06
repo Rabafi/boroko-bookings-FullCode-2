@@ -8,6 +8,14 @@ const require = createRequire(import.meta.url)
 const TEMPLATES_CACHE = 'guest-message-templates'
 const TRIGGERS_CACHE = 'guest-message-triggers'
 
+/**
+ * Expected consumer fields from the existing dispatch IPC options payload;
+ * the payload is not runtime-validated here.
+ * @typedef {{channel?: unknown, to?: unknown, recipient?: unknown, guest_email?: unknown, subject?: unknown, body?: unknown, text?: unknown, html?: unknown}} DispatchMessageOptionsExpectedView
+ */
+/** @typedef {{channel?: unknown, status?: unknown, [key: string]: unknown}} GuestMessageDeliveryRowExpectedView */
+/** @typedef {{message?: unknown, code?: unknown, cached?: unknown}} GuestMessageErrorExpectedView */
+
 /** Channels that require an external provider. Until configured they must never report "sent". */
 const PROVIDER_CHANNELS = new Set(['sms', 'whatsapp'])
 
@@ -26,6 +34,7 @@ function loadEmailConfigSafe() {
  * Email uses local SMTP (nodemailer) when configured.
  * SMS/WhatsApp have no provider adapter yet — fail closed.
  */
+/** @param {unknown} channel */
 export function getChannelReadiness(channel) {
   const ch = String(channel || 'email').toLowerCase()
   if (ch === 'email') {
@@ -77,11 +86,12 @@ export function getAllChannelReadiness() {
   }
 }
 
+/** @returns {Promise<unknown[]>} */
 async function _getAllTemplates() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_guest_message_templates', { p_lodge_id: currentLodgeId })
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_guest_message_templates', { p_lodge_id: currentLodgeId })
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
     writeCache(TEMPLATES_CACHE, rows)
@@ -89,7 +99,7 @@ async function _getAllTemplates() {
   } catch (e) {
     const cached = readCache(TEMPLATES_CACHE)
     if (Array.isArray(cached) && cached.length > 0) {
-      const err = new Error(e?.message || 'Failed to load templates; showing cached data')
+      const err = /** @type {GuestMessageErrorExpectedView} */ (new Error(/** @type {string} */ ((/** @type {GuestMessageErrorExpectedView|null|undefined} */ (e))?.message || 'Failed to load templates; showing cached data')))
       err.code = 'STALE_CACHE'
       err.cached = cached
       throw err
@@ -98,12 +108,14 @@ async function _getAllTemplates() {
   }
 }
 
+/** @param {Parameters<typeof _getAllTemplates>} args */
 export const getAllTemplates = (...args) => dedupePromise('getAllTemplates', () => _getAllTemplates(...args))
 
+/** @param {Record<string, unknown>} data */
 export async function createTemplate(data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('create_message_template', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_message_template', {
     p_lodge_id: currentLodgeId,
     p_template_key: data.template_key,
     p_name: data.name,
@@ -118,10 +130,11 @@ export async function createTemplate(data) {
   return result
 }
 
+/** @param {unknown} id @param {Record<string, unknown>} data */
 export async function updateTemplate(id, data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('update_message_template', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_message_template', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_data: data
@@ -131,10 +144,11 @@ export async function updateTemplate(id, data) {
   return result
 }
 
+/** @param {unknown} id */
 export async function deleteTemplate(id) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('delete_message_template', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_message_template', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -143,11 +157,12 @@ export async function deleteTemplate(id) {
   return result
 }
 
+/** @returns {Promise<unknown[]>} */
 async function _getAllTriggers() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_guest_message_triggers', { p_lodge_id: currentLodgeId })
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_guest_message_triggers', { p_lodge_id: currentLodgeId })
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
     writeCache(TRIGGERS_CACHE, rows)
@@ -155,7 +170,7 @@ async function _getAllTriggers() {
   } catch (e) {
     const cached = readCache(TRIGGERS_CACHE)
     if (Array.isArray(cached) && cached.length > 0) {
-      const err = new Error(e?.message || 'Failed to load triggers; showing cached data')
+      const err = /** @type {GuestMessageErrorExpectedView} */ (new Error(/** @type {string} */ ((/** @type {GuestMessageErrorExpectedView|null|undefined} */ (e))?.message || 'Failed to load triggers; showing cached data')))
       err.code = 'STALE_CACHE'
       err.cached = cached
       throw err
@@ -164,12 +179,14 @@ async function _getAllTriggers() {
   }
 }
 
+/** @param {Parameters<typeof _getAllTriggers>} args */
 export const getAllTriggers = (...args) => dedupePromise('getAllTriggers', () => _getAllTriggers(...args))
 
+/** @param {Record<string, unknown>} data */
 export async function createTrigger(data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('create_message_trigger', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_message_trigger', {
     p_lodge_id: currentLodgeId,
     p_trigger_event: data.trigger_event,
     p_template_id: data.template_id,
@@ -181,10 +198,11 @@ export async function createTrigger(data) {
   return result
 }
 
+/** @param {unknown} id @param {Record<string, unknown>} data */
 export async function updateTrigger(id, data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('update_message_trigger', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_message_trigger', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_data: data
@@ -194,10 +212,11 @@ export async function updateTrigger(id, data) {
   return result
 }
 
+/** @param {unknown} id */
 export async function deleteTrigger(id) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('delete_message_trigger', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_message_trigger', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -206,8 +225,9 @@ export async function deleteTrigger(id) {
   return result
 }
 
+/** @param {unknown} templateId @param {unknown} variables */
 export async function renderTemplate(templateId, variables) {
-  const { data, error } = await state.supabase.rpc('render_message_template', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('render_message_template', {
     p_template_id: templateId,
     p_variables: variables || {}
   })
@@ -215,10 +235,11 @@ export async function renderTemplate(templateId, variables) {
   return data
 }
 
+/** @param {unknown} triggerEvent @param {unknown} variables */
 export async function queueTriggeredMessages(triggerEvent, variables) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('queue_triggered_messages', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('queue_triggered_messages', {
     p_lodge_id: currentLodgeId,
     p_trigger_event: triggerEvent,
     p_variables: variables || {}
@@ -232,17 +253,18 @@ export async function queueTriggeredMessages(triggerEvent, variables) {
   }
 }
 
+/** @param {unknown} status */
 export async function getDeliveryStatus(status) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
-  const { data, error } = await state.supabase.rpc('get_message_delivery_status', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_message_delivery_status', {
     p_lodge_id: currentLodgeId,
     p_status: status || null
   })
   if (error) throw error
   const rows = Array.isArray(data) ? data : []
   // Annotate non-deliverable provider statuses for the UI — never upgrade status client-side.
-  return rows.map((row) => {
+  return rows.map((/** @type {GuestMessageDeliveryRowExpectedView} */ row) => {
     const ch = String(row?.channel || '').toLowerCase()
     const readiness = getChannelReadiness(ch)
     const statusValue = String(row?.status || '').toLowerCase()
@@ -271,6 +293,7 @@ export async function getDeliveryStatus(status) {
  * Only marks "sent" after the email provider confirms.
  * SMS/WhatsApp always return not_configured and never mark sent.
  */
+/** @param {unknown} messageId @param {DispatchMessageOptionsExpectedView} [options] */
 export async function dispatchMessage(messageId, options = {}) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
@@ -341,9 +364,9 @@ export async function dispatchMessage(messageId, options = {}) {
     const info = await transporter.sendMail({
       from: config.from || config.user,
       to: String(to).trim(),
-      subject: options.subject || 'Message from property',
-      text: options.body || options.text || '',
-      html: options.html || undefined
+      subject: /** @type {string} */ (options.subject || 'Message from property'),
+      text: /** @type {string} */ (options.body || options.text || ''),
+      html: /** @type {string|undefined} */ (options.html || undefined)
     })
     // Provider confirmation required: messageId or response from nodemailer.
     const confirmed = Boolean(info?.messageId || info?.response)
@@ -360,26 +383,28 @@ export async function dispatchMessage(messageId, options = {}) {
     }
     sendResult = { messageId: info.messageId, response: info.response }
   } catch (e) {
+    const errorView = /** @type {GuestMessageErrorExpectedView|null|undefined} */ (e)
     return {
       success: false,
       sent: false,
       status: 'failed',
       delivery_status: 'failed',
       channel: 'email',
-      error: e?.message || 'Email send failed',
-      message: e?.message || 'Email send failed'
+      error: errorView?.message || 'Email send failed',
+      message: errorView?.message || 'Email send failed'
     }
   }
 
   // Persist delivery status only after provider confirmation.
   try {
-    const { data, error } = await state.supabase.rpc('update_message_delivery_status', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_message_delivery_status', {
       p_lodge_id: currentLodgeId,
       p_message_id: messageId,
       p_status: 'sent',
       p_provider_ref: sendResult?.messageId || null
     })
     if (error) {
+      const writeError = /** @type {GuestMessageErrorExpectedView} */ (error)
       // Provider confirmed but status write failed — report partial truth, not false "sent" silence.
       return {
         success: true,
@@ -388,7 +413,7 @@ export async function dispatchMessage(messageId, options = {}) {
         delivery_status: 'sent',
         channel: 'email',
         provider_ref: sendResult?.messageId || null,
-        warning: error.message || 'Could not persist delivery status after provider confirmation',
+        warning: writeError.message || 'Could not persist delivery status after provider confirmation',
         provider_confirmed: true
       }
     }
@@ -403,6 +428,7 @@ export async function dispatchMessage(messageId, options = {}) {
       result: data
     }
   } catch (persistErr) {
+    const errorView = /** @type {GuestMessageErrorExpectedView|null|undefined} */ (persistErr)
     return {
       success: true,
       sent: true,
@@ -411,7 +437,7 @@ export async function dispatchMessage(messageId, options = {}) {
       channel: 'email',
       provider_ref: sendResult?.messageId || null,
       provider_confirmed: true,
-      warning: persistErr?.message || 'Could not persist delivery status after provider confirmation'
+      warning: errorView?.message || 'Could not persist delivery status after provider confirmation'
     }
   }
 }

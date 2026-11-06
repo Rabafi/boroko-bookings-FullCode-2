@@ -62,3 +62,36 @@ test('catalogue edits require an optimistic product version', () => {
     ...base, expected_version: 3, active: true
   })
 })
+
+test('atomic Bar product contract preserves operation fields and rejects unsafe stock edits', () => {
+  const stockId = randomUUID()
+  const parsed = COMMANDS['catalogue.bar_product.save'].validate({
+    name: 'Bottled Water', category: 'Drinks', price: '12.00', barcode: 'BAR-001',
+    depletion_qty: '1', is_available: true, stock_mode: 'link', inventory_item_id: stockId,
+    expected_stock_version: 3, stock_name: 'Bottled Water', stock_category: 'Drinks',
+    stock_unit: 'bottle', stock_barcode: 'BAR-001', outlet_id: randomUUID(),
+    opening_stock: '0', reorder_level: '4', unit_cost: '5.2500', selling_price: '12.00',
+    pack6: true, pack12: false, pack24: false, pack6Barcode: 'PACK-6'
+  })
+  assert.equal(COMMANDS['catalogue.bar_product.save'].capability, CAPABILITIES.MENU_MANAGE)
+  assert.equal(parsed.stock_mode, 'link')
+  assert.equal(parsed.inventory_item_id, stockId)
+  assert.equal(parsed.opening_stock, '0')
+  assert.deepEqual(parsed.packs, [
+    { pack_size: 6, enabled: true, barcode: 'PACK-6' },
+    { pack_size: 12, enabled: false, barcode: null },
+    { pack_size: 24, enabled: false, barcode: null }
+  ])
+  assert.throws(() => COMMANDS['catalogue.bar_product.save'].validate({
+    name: 'No stock link', category: 'Drinks', price: '10', stock_mode: 'link',
+    stock_name: 'No stock link', stock_category: 'Drinks', stock_unit: 'unit'
+  }), /inventory_item_id/)
+  assert.throws(() => COMMANDS['catalogue.bar_product.save'].validate({
+    menu_item_id: stockId, name: 'Stale', category: 'Drinks', price: '10', stock_mode: 'create',
+    stock_name: 'Stale', stock_category: 'Drinks', stock_unit: 'unit'
+  }), /expected_menu_version/)
+  assert.throws(() => COMMANDS['catalogue.bar_product.save'].validate({
+    name: 'Bad pack', category: 'Drinks', price: '10', stock_mode: 'create',
+    stock_name: 'Bad pack', stock_category: 'Drinks', stock_unit: 'unit', pack6: 'true'
+  }), /pack6/)
+})

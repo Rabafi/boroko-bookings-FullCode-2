@@ -34,20 +34,44 @@ function readUnknownProperty(value, key) {
   return value !== null && typeof value === 'object' ? Reflect.get(value, key) : undefined;
 }
 
+/** Shape returned by the shared-Till history IPC producer; local cached rows remain unvalidated. */
+/** @typedef {Record<string, unknown> & {id?: string|number, order_number?: string|number|null, receipt_number?: string|null, business_date?: string|null, created_at?: string|null, order_date?: string|null, transaction_type?: string|null, status?: string|null, _sync_state?: string|null, _pending_sync?: boolean, total?: unknown, total_amount?: unknown, payment_method?: string|null, payment_breakdown?: unknown, table_name?: string|null, service_mode?: string|null, outlet_id?: string|null, shift_id?: string|null, waiter_name?: string|null, cashier_name?: string|null, notes?: string|null, pos_order_items?: HposOrderItemExpectedView[]}} HposOrderExpectedView */
+/** @typedef {{id?: string|number, item_name?: string|null, name?: string|null, category?: unknown, menu_category?: unknown, product_id?: unknown, menu_item_id?: unknown, item_id?: unknown, quantity?: string|number|null, net_subtotal?: unknown, subtotal?: unknown, gross_subtotal?: unknown, inventory_item_id?: string|null}} HposOrderItemExpectedView */
+/** @typedef {{order_id?: string|number, reason?: string|null, approver_name?: string|null, created_at?: string|null}} HposVoidAuditExpectedView */
+/** @typedef {{id?: string|number, code: string, label: string}} HposVoidReasonTemplateExpectedView */
+/** @typedef {{id?: string|number, name?: string|null, unit?: string|null, is_active?: boolean|null, current_stock?: number|string|null, created_at?: string|null}} HposInventoryItemExpectedView */
+/** @typedef {{item_id?: string|number, last_sold_at?: string|null}} HposStockAgingExpectedView */
+/** @typedef {{label: string, unit: string, onHand: number, idleLabel: string, idleRank: number}} HposSlowMoverExpectedView */
+/** @typedef {{success?: boolean, filePath?: string, error?: string}} HposExportResultExpectedView */
+/** @typedef {{message?: string}} HposCaughtErrorExpectedView */
+/** @typedef {{net_recorded_sales?: number, discounts?: number, average_completed_sale?: number, tender_totals?: Record<string, number>}} HposServerControlsExpectedView */
+/** @typedef {{rows: unknown[], source: string, complete: boolean}} HposWasteExpectedView */
+/** @typedef {{items: HposInventoryItemExpectedView[], aging: HposStockAgingExpectedView[], itemsComplete: boolean, agingOk: boolean}} HposSlowStockExpectedView */
+/** @typedef {{orders: HposOrderExpectedView[], source?: string, refreshed?: boolean, complete?: boolean, tender_complete?: boolean, item_detail_complete?: boolean}} SharedTillHistoryExpectedView */
+/** @typedef {{source: string, complete: boolean, tenderComplete?: boolean, itemDetailComplete?: boolean}} PosHistoryReadCompleteness */
+
+/** @param {Date} date @param {string} timeZone */
 const dateKeyInTimeZone = (date, timeZone) => {
   const parts = new Intl.DateTimeFormat('en', {
     timeZone: timeZone || 'Africa/Gaborone', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), /** @type {Record<string, string>} */ ({}));
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
+/** @param {unknown} value @param {string} currency */
 const money = (value, currency) =>
   `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** @param {unknown} value */
 const hasRecordedMoney = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+/** @param {HposOrderExpectedView} order */
 const orderDate = (order) =>
   String(order.business_date || order.created_at || order.order_date || '').slice(0, 10);
+/** @param {HposOrderExpectedView} order */
 const orderLabel = (order) => order.order_number ? `Order #${order.order_number}` : `Legacy order ${String(order.id).slice(0, 8)}`;
+/** @param {HposOrderExpectedView} order */
 const receiptLabel = (order) => order.receipt_number || orderLabel(order);
+/** @param {HposOrderExpectedView} order */
 const transactionLabel = (order) => String(order.transaction_type || 'sale').replaceAll('_', ' ');
+/** @param {HposOrderExpectedView} order */
 const statusTone = (order) => {
   const state = classifyPosTransaction(order);
   if (state === 'pending') return 'pending';
@@ -55,10 +79,12 @@ const statusTone = (order) => {
   if (state === 'sale' || state === 'return') return 'completed';
   return 'neutral';
 };
+/** @param {HposOrderExpectedView} order */
 const statusLabel = (order) => {
   const state = classifyPosTransaction(order);
   return state === 'sale' ? 'Completed sale' : state === 'return' ? 'Return' : state === 'void' ? 'Voided' : state === 'cancelled' ? 'Cancelled' : state === 'pending' ? 'Pending sync' : 'Needs review';
 };
+/** @param {HposOrderExpectedView} order */
 const tenderLabel = (order) => {
   if (!hasRecordedPosTenderEnvelope(order)) return 'Tender unavailable';
   const methods = [...new Set(posTenderRows(order).map((tender) => tender.method).filter(Boolean))];
@@ -72,6 +98,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const currency = settings?.currency || 'P';
   const businessTimeZone = settings?.timezone || 'Africa/Gaborone';
   const barOnly = isBarOnlyMode(settings);
+  const localAuthority = user?.localAuthority === true;
   const canRequestVoid = canAccessCapability(access, 'pos.view');
   const canExport = canAccessCapability(access, 'reports.export');
   const canViewWaste = canAccessCapability(access, 'inventory.view');
@@ -82,7 +109,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       : dateKeyInTimeZone(new Date(now.getFullYear(), now.getMonth(), 1), businessTimeZone),
   );
   const [end, setEnd] = useState(dateKeyInTimeZone(now, businessTimeZone));
-  const [orders, setOrders] = useState(/** @type {Record<string, unknown>[]} */ ([]));
+  const [orders, setOrders] = useState(/** @type {HposOrderExpectedView[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState('');
   const [notice, setNotice] = useState('');
@@ -90,39 +117,79 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortOrder, setSortOrder] = useState('newest');
-  const [voidHistory, setVoidHistory] = useState([]);
-  const [selectedOrder, setSelectedOrder] = useState(null);
-  const [printOrder, setPrintOrder] = useState(null);
+  const [voidHistory, setVoidHistory] = useState(/** @type {HposVoidAuditExpectedView[]} */ ([]));
+  const [selectedOrder, setSelectedOrder] = useState(/** @type {HposOrderExpectedView|null} */ (null));
+  const [printOrder, setPrintOrder] = useState(/** @type {HposOrderExpectedView|null} */ (null));
   const [voidPin, setVoidPin] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const [directStockDisposition, setDirectStockDisposition] = useState('return_to_stock');
   const [voiding, setVoiding] = useState(false);
   const [voidError, setVoidError] = useState('');
   const [historySource, setHistorySource] = useState('');
-  const [readCompleteness, setReadCompleteness] = useState({ source: 'unknown', complete: false });
-  const [serverControls, setServerControls] = useState(null);
-  const [voidTemplates, setVoidTemplates] = useState([]);
+  const [readCompleteness, setReadCompleteness] = useState(/** @type {PosHistoryReadCompleteness} */ ({ source: 'unknown', complete: false }));
+  const [serverControls, setServerControls] = useState(/** @type {HposServerControlsExpectedView|null} */ (null));
+  const [voidTemplates, setVoidTemplates] = useState(/** @type {HposVoidReasonTemplateExpectedView[]} */ ([]));
   // Waste summary (Bar base, quantities only): recent stock-waste movements
   // for the selected period. Costed waste and margin stay in Pro.
-  const [waste, setWaste] = useState({ rows: [], source: 'unknown', complete: false });
+  const [waste, setWaste] = useState(/** @type {HposWasteExpectedView} */ ({ rows: [], source: 'unknown', complete: false }));
   // Slow movers (Bar base, quantities only): stocked items with no sale in
   // the last 14 days. Descriptive only — no reorder advice, no costs.
-  const [slowStock, setSlowStock] = useState({ items: [], aging: [], itemsComplete: false, agingOk: false });
+  const [slowStock, setSlowStock] = useState(/** @type {HposSlowStockExpectedView} */ ({ items: [], aging: [], itemsComplete: false, agingOk: false }));
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
+    if (localAuthority) {
+      try {
+        setServerControls(null);
+        if (correctionMode || sharedTillHistoryMode) {
+          throw new Error('This local report does not yet have the staff-scoped correction history contract. No outlet-wide sales were shown.')
+        }
+        const result = await window.api?.barLocal?.query('sales.list', { from: start, to: end, limit: 500 });
+        if (result?.complete !== true || result?.pagination?.has_more === true || !Array.isArray(result?.data)) {
+          throw new Error('The local Bar service did not return a complete sales history. Narrow the date range and refresh.')
+        }
+        const outletId = typeof result.scope?.outlet_id === 'string' ? result.scope.outlet_id : null;
+        const localOrders = result.data.map((sale) => ({
+          id: sale.sale_id,
+          order_number: sale.receipt_number,
+          receipt_number: sale.receipt_number,
+          business_date: sale.business_date,
+          created_at: sale.created_at,
+          status: sale.status,
+          total: sale.total,
+          subtotal: sale.subtotal,
+          payment_breakdown: sale.tenders,
+          outlet_id: outletId,
+          cashier_id: sale.actor_staff_id,
+          transaction_type: sale.original_sale_id ? 'return' : 'sale',
+          pos_order_items: []
+        }));
+        setOrders(/** @type {HposOrderExpectedView[]} */ (localOrders));
+        setReadCompleteness({ source: 'local_authority', complete: true, tenderComplete: true, itemDetailComplete: false });
+        setVoidHistory([]);
+        setHistorySource('Complete sales records loaded from this Bar’s local database. Void history is not part of this local report yet.');
+      } catch (loadError) {
+        setOrders([]);
+        setVoidHistory([]);
+        setReadCompleteness({ source: 'local_authority', complete: false });
+        setError((/** @type {HposCaughtErrorExpectedView|null|undefined} */ (loadError))?.message || 'Local sales detail could not be loaded for this period.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     if (sharedTillHistoryMode) {
       setServerControls(null);
       try {
-        const cached = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: false });
+        const cached = /** @type {SharedTillHistoryExpectedView|null|undefined} */ (await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: false }));
         setOrders(cached?.orders || []);
         setReadCompleteness({ source: cached?.source || 'local_cache', complete: cached?.complete === true, tenderComplete: cached?.tender_complete === true, itemDetailComplete: cached?.item_detail_complete === true });
         setVoidHistory([]);
         setHistorySource(cached?.source === 'local_cache' ? 'Showing this terminal’s saved history. Checking for updates…' : 'Loading PIN-verified sales…');
         setLoading(false);
         try {
-          const refreshed = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true });
+          const refreshed = /** @type {SharedTillHistoryExpectedView|null|undefined} */ (await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: true }));
           setOrders(refreshed?.orders || cached?.orders || []);
           setReadCompleteness({ source: refreshed?.source || 'server', complete: refreshed?.complete === true, tenderComplete: refreshed?.tender_complete === true, itemDetailComplete: refreshed?.item_detail_complete === true });
           setHistorySource(refreshed?.refreshed ? 'Updated from the server.' : 'Showing this terminal’s saved history while offline.');
@@ -134,7 +201,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       } catch (loadError) {
         setOrders([]);
         setVoidHistory([]);
-        setError(loadError?.message || 'Unlock Till with your Staff PIN to view your sales history.');
+        setError((/** @type {HposCaughtErrorExpectedView|null|undefined} */ (loadError))?.message || 'Unlock Till with your Staff PIN to view your sales history.');
       } finally {
         setLoading(false);
       }
@@ -152,34 +219,37 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       const historyRecord = isRecord(history) ? history : null;
       const loadedOrders = /** @type {unknown} */ (correctionMode ? unpackTransport(history) : unpackTransport(historyRecord?.orders));
       const orderRows = Array.isArray(loadedOrders) ? loadedOrders.filter(isRecord) : [];
-      setOrders(orderRows);
+      // Existing POS IPC/cache row view only; record filtering above remains the runtime guard.
+      setOrders(/** @type {HposOrderExpectedView[]} */ (orderRows));
       setReadCompleteness(correctionMode
         ? { source: readUnknownProperty(loadedOrders, '_source') || 'unknown', complete: readUnknownProperty(loadedOrders, '_complete') === true, tenderComplete: readUnknownProperty(loadedOrders, '_tender_complete') === true, itemDetailComplete: readUnknownProperty(loadedOrders, '_item_detail_complete') === true }
         : { source: historyRecord?.source || 'unknown', complete: historyRecord?.complete === true, tenderComplete: historyRecord?.tender_complete === true, itemDetailComplete: historyRecord?.item_detail_complete === true });
       if (!correctionMode && historyRecord?.complete === true && historyRecord?.source === 'server' && historyRecord?.control_totals) {
-        setServerControls(historyRecord.control_totals);
+        // The certified-report producer supplies its control totals here; this assertion does not validate the IPC value.
+        setServerControls(/** @type {HposServerControlsExpectedView} */ (historyRecord.control_totals));
       }
       if (!correctionMode && historyRecord?.success === false && historyRecord?.error) setNotice(String(historyRecord.error));
-      setVoidHistory(loadedVoids || []);
+      // The void-history IPC result is already an array from the main handler; row contents stay unvalidated.
+      setVoidHistory(/** @type {HposVoidAuditExpectedView[]} */ (loadedVoids || []));
     } catch (loadError) {
       setOrders([]);
       setVoidHistory([]);
-      setError(loadError?.message || 'Sales detail could not be loaded for this period.');
+      setError((/** @type {HposCaughtErrorExpectedView|null|undefined} */ (loadError))?.message || 'Sales detail could not be loaded for this period.');
     } finally {
       setLoading(false);
     }
-  }, [correctionMode, sharedTillHistoryMode, start, end]);
+  }, [correctionMode, sharedTillHistoryMode, start, end, localAuthority]);
   useEffect(() => {
     load();
   }, [load]);
   useEffect(() => {
-    if (!barOnly || correctionMode || sharedTillHistoryMode) return;
+    if (localAuthority || !barOnly || correctionMode || sharedTillHistoryMode) return;
     window.api?.pos?.getVoidReasonTemplates?.().then((result) => {
-      if (Array.isArray(result)) setVoidTemplates(result);
+      if (Array.isArray(result)) setVoidTemplates(/** @type {HposVoidReasonTemplateExpectedView[]} */ (result));
     }).catch(() => {});
-  }, [barOnly, correctionMode, sharedTillHistoryMode]);
+  }, [barOnly, correctionMode, sharedTillHistoryMode, localAuthority]);
   useEffect(() => {
-    if (!barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
+    if (localAuthority || !barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
       setWaste({ rows: [], source: 'unknown', complete: false });
       return;
     }
@@ -189,6 +259,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         if (!active) return;
         const resultRecord = isRecord(result) ? result : null;
         setWaste({
+          // The read-status envelope exposes rows, while row values remain unvalidated.
           rows: Array.isArray(resultRecord?.rows) ? resultRecord.rows : [],
           source: typeof resultRecord?.source === 'string' ? resultRecord.source : 'unknown',
           complete: resultRecord?.complete === true,
@@ -200,9 +271,9 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     return () => {
       active = false;
     };
-  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste, start, end]);
+  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste, start, end, localAuthority]);
   useEffect(() => {
-    if (!barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
+    if (localAuthority || !barOnly || correctionMode || sharedTillHistoryMode || !canViewWaste) {
       setSlowStock({ items: [], aging: [], itemsComplete: false, agingOk: false });
       return;
     }
@@ -215,8 +286,9 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
         if (!active) return;
         const itemsRecord = isRecord(itemsResult) ? itemsResult : null;
         setSlowStock({
-          items: unpackTransport(itemsRecord?.items) || [],
-          aging: Array.isArray(agingResult) ? agingResult : [],
+          // The two inventory readers provide these display fields; the RPC/cache row data is not validated here.
+          items: /** @type {HposInventoryItemExpectedView[]} */ (unpackTransport(itemsRecord?.items) || []),
+          aging: Array.isArray(agingResult) ? /** @type {HposStockAgingExpectedView[]} */ (agingResult) : [],
           itemsComplete: itemsRecord?.complete === true,
           agingOk: true,
         });
@@ -227,7 +299,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     return () => {
       active = false;
     };
-  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste]);
+  }, [barOnly, correctionMode, sharedTillHistoryMode, canViewWaste, localAuthority]);
 
   const rows = useMemo(
     () =>
@@ -240,10 +312,12 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
   );
   // Display-only ordering: the newest transaction leads by default. Sorting
   // never touches money or classifications — metrics keep reading `rows`.
+  /** @param {HposOrderExpectedView} order */
   const orderRecency = (order) => {
     const parsed = new Date(order.created_at || order.business_date || 0).getTime();
     return Number.isFinite(parsed) ? parsed : 0;
   };
+  /** @param {HposOrderExpectedView} order */
   const orderSortTotal = (order) => {
     const parsed = Number(order.total ?? order.total_amount ?? 0);
     return Number.isFinite(parsed) ? parsed : 0;
@@ -349,7 +423,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     const idleMs = 14 * 24 * 60 * 60 * 1000;
     const now = Date.now();
     const lastSoldByItem = new Map((slowStock.aging || []).map((row) => [String(row?.item_id || ''), row?.last_sold_at || null]));
-    return (slowStock.items || [])
+    return /** @type {HposSlowMoverExpectedView[]} */ ((slowStock.items || [])
       .filter((item) => item?.is_active !== false && Number(item?.current_stock || 0) > 0)
       .map((item) => {
         const lastSoldAt = lastSoldByItem.get(String(item?.id || ''));
@@ -370,13 +444,18 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       })
       .filter(Boolean)
       .sort((a, b) => b.idleRank - a.idleRank || b.onHand - a.onHand)
-      .slice(0, 8);
+      .slice(0, 8));
   }, [barOnly, canViewWaste, slowStock]);
 
+  /** @param {'excel'|'pdf'|'device-excel'|'device-pdf'} format */
   const exportReport = async (format) => {
     setExporting(format);
     setNotice('');
     try {
+      if (localAuthority) {
+        setNotice('Report export is not yet connected to the local Bar authority. No cloud export was requested.');
+        return;
+      }
       const device = String(format || '').startsWith('device-');
       const fn =
         format === 'pdf'
@@ -386,14 +465,16 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
             : format === 'device-excel'
               ? window.api?.pos?.exportDeviceRecordsExcel
               : window.api?.pos?.exportHistoryExcel;
-      const result = await fn?.({ start, end });
+      const rawResult = await fn?.({ start, end });
+      // The four existing export handlers return these fields; this expected view adds no runtime validation.
+      const result = /** @type {HposExportResultExpectedView|null|undefined} */ (rawResult);
       setNotice(
         result?.success
           ? `${device ? 'Unconfirmed device records' : format === 'pdf' ? 'PDF' : 'Excel workbook'} created${result.filePath ? `: ${result.filePath}` : '.'}${device ? ' Marked UNCONFIRMED — not server-certified.' : ''}`
           : result?.error || 'Export was cancelled.',
       );
     } catch (error) {
-      setNotice(error.message || 'Could not export this report.');
+      setNotice((/** @type {HposCaughtErrorExpectedView} */ (error)).message || 'Could not export this report.');
     } finally {
       setExporting('');
     }
@@ -416,6 +497,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     if (!breakdown || typeof breakdown !== 'object') return [];
     return Object.entries(breakdown).filter(([, value]) => Number(value || 0) !== 0).map(([method, value]) => [method, Number(value || 0), null, `${selectedOrder?.id || 'order'}:${method}`]);
   }, [selectedOrder]);
+  /** @param {boolean|import('react').MouseEvent<HTMLButtonElement>} [force] */
   const closeDetail = (force = false) => {
     if (voiding && !force) return;
     setSelectedOrder(null);
@@ -425,8 +507,13 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
     setDirectStockDisposition('return_to_stock');
     setVoidError('');
   };
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submitVoid = async (event) => {
     event.preventDefault();
+    if (localAuthority) {
+      setVoidError('Voiding is unavailable in this local report because its PIN approval flow is not yet connected to the local atomic command. No change was made.');
+      return;
+    }
     if (!selectedOrder?.id || !voidPin.trim() || !voidReason.trim()) {
       setVoidError('An authorised approver PIN and a reason are required.');
       return;
@@ -450,7 +537,7 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
       closeDetail(true);
       await load();
     } catch (submitError) {
-      setVoidError(submitError?.message || 'The sale could not be voided.');
+      setVoidError((/** @type {HposCaughtErrorExpectedView|null|undefined} */ (submitError))?.message || 'The sale could not be voided.');
     } finally {
       setVoiding(false);
     }
@@ -662,8 +749,8 @@ export default function HposReports({ correctionMode = false, sharedTillHistoryM
               <div><h3>Receipt detail</h3><p>Business date: {orderDate(selectedOrder) || '—'} · Created: {selectedOrder.created_at ? new Date(selectedOrder.created_at).toLocaleString() : '—'}</p><p>{selectedOrder.table_name || selectedOrder.service_mode || 'Counter'} · Outlet {selectedOrder.outlet_id || '—'} · Shift {selectedOrder.shift_id || '—'}</p><p>{selectedOrder.waiter_name || selectedOrder.cashier_name || 'Operator not recorded'} · Sync {selectedOrder._sync_state || 'synced'}</p><p>{selectedOrder.notes || 'No receipt note.'}</p></div>
                <div><h3>Payment information</h3>{tenderReady && selectedPaymentBreakdown.length ? selectedPaymentBreakdown.map(([method, value, reference], index) => <p key={`${method}-${index}`}>{method}: <strong>{hasRecordedMoney(value) ? money(value, currency) : 'Unavailable'}</strong>{reference && <small className="ml-2 text-slate-500">Ref {reference}</small>}</p>) : <p>Tender allocation is unavailable until the server confirms a complete recorded payment envelope.</p>}</div>
             </div>
-             <div className="hpos-report-detail-items"><h3>Items</h3>{itemDetailReady && (selectedOrder.pos_order_items || []).length ? selectedOrder.pos_order_items.map((item) => { const lineAmount = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{hasRecordedMoney(lineAmount) ? money(lineAmount, currency) : 'Unavailable'}</strong></p> }) : <p>Item detail is unavailable until the server confirms recorded line amounts.</p>}</div>
-            {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(selectedVoid.created_at).toLocaleString()}</span></div>}
+             <div className="hpos-report-detail-items"><h3>Items</h3>{itemDetailReady && (selectedOrder.pos_order_items || []).length ? /** @type {HposOrderItemExpectedView[]} */ (selectedOrder.pos_order_items).map((item) => { const lineAmount = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || `${item.item_name}-${item.quantity}`}>{item.quantity} × {item.item_name} <strong>{hasRecordedMoney(lineAmount) ? money(lineAmount, currency) : 'Unavailable'}</strong></p> }) : <p>Item detail is unavailable until the server confirms recorded line amounts.</p>}</div>
+            {selectedVoid && <div className="hpos-inline-notice"><CheckCircle2 size={17} /> <span><strong>Void audit reference</strong><br />{selectedVoid.reason} · approved by {selectedVoid.approver_name || 'authorised PIN holder'} · {new Date(/** @type {string} */ (selectedVoid.created_at)).toLocaleString()}</span></div>}
             {!sharedTillHistoryMode && !selectedVoid && String(selectedOrder.status || '').toLowerCase() !== 'settled' && ['sale', 'pending'].includes(classifyPosTransaction(selectedOrder)) && canRequestVoid && (
               <form onSubmit={submitVoid} className="hpos-report-void-form">
                 <h3><LockKeyhole size={18} /> {correctionMode ? 'Request supervisor correction' : 'Void this sale'}</h3>

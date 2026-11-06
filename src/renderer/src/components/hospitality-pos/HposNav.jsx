@@ -5,14 +5,22 @@ import { createPortal } from 'react-dom'
 import {
   Bell, Wifi, WifiOff, Clock, User, ChevronDown,
   RefreshCw, Plus, LogOut, Settings, ShieldCheck, Database, Search, Rows3,
-  BookOpen, ExternalLink, Download, Loader2, X, KeyRound, Volume2, VolumeX
+  BookOpen, ExternalLink, Download, Loader2, X, KeyRound, Volume2, VolumeX, ArrowLeftRight
 } from 'lucide-react'
 import { isBarOnlyMode } from '../../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../../shared/uiVocabulary'
 import { isTillSoundEnabled, subscribeTillSound, toggleTillSound } from '../../../../shared/tillSound'
 import { productLogoColor } from '../../assets/productLogos'
 
-function SyncIndicator({ syncStatus, onOpenHealth }) {
+function SyncIndicator({ syncStatus, onOpenHealth, localAuthority = false }) {
+  if (localAuthority) {
+    return (
+      <button type="button" onClick={onOpenHealth} title="Bar transactions are stored on this local database" aria-label="Local Bar database" style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '999px', background: 'rgba(73, 122, 139, 0.1)', border: '1px solid rgba(73, 122, 139, 0.2)', fontSize: '11px', fontWeight: 600, color: '#356676', cursor: 'pointer' }}>
+        <Database size={12} />
+        <span>Local database</span>
+      </button>
+    )
+  }
   const isOnline = syncStatus?.isOnline !== false
   const pending = syncStatus?.pending || 0
   const failed = syncStatus?.failed || 0
@@ -261,10 +269,12 @@ function HposBarGuidesPanel({ settings, onClose }) {
     </div>
   )
 }
-export default function HposNav({ settings, user, syncStatus, trialStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange, barOnly: barOnlyProp }) {
+export default function HposNav({ settings, user, syncStatus, trialStatus, isPosRoute, onClockIn, onLogout, onNotifications, onSearch, density, onDensityChange, barOnly: barOnlyProp, localAuthority = false }) {
   const navigate = useNavigate()
   const [showProfile, setShowProfile] = useState(false)
   const [showGuides, setShowGuides] = useState(false)
+  const [switchingBusiness, setSwitchingBusiness] = useState(false)
+  const [switchBusinessError, setSwitchBusinessError] = useState('')
 
   const barOnly = barOnlyProp ?? isBarOnlyMode(settings)
   const vocab = getUiVocabulary({ settings, propertyType: settings?.property_type || settings?.business_type })
@@ -339,13 +349,14 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
         <button type="button" className="hpos-command-trigger" onClick={onSearch} aria-label={`Search ${barOnly ? 'bar' : 'restaurant'} workspaces and actions`}><Search size={15}/><span>Search anything…</span><kbd>Ctrl K</kbd></button>
         <LiveClock />
 
-        <TrialStatusIndicator
+        {!localAuthority && <TrialStatusIndicator
           trialStatus={trialStatus}
           onOpenSubscription={() => goTo('/settings?tab=license')}
-        />
+        />}
 
         <SyncIndicator
           syncStatus={syncStatus}
+          localAuthority={localAuthority}
           onOpenHealth={() => goTo('/hpos/system-health')}
         />
 
@@ -413,7 +424,7 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                 top: '100%',
                 right: 0,
                 marginTop: '6px',
-                width: '180px',
+                width: '230px',
                 background: '#fffdf8',
                 border: '1px solid rgba(55,70,57,.16)',
                 borderRadius: '10px',
@@ -452,7 +463,7 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                     Help &amp; guides
                   </button>
                 )}
-                <button
+                {!localAuthority && <button
                   type="button"
                   onClick={() => goTo('/hpos/my-shift#my-staff-pin')}
                   style={{
@@ -463,7 +474,7 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                 >
                   <KeyRound size={14} />
                   My Staff PIN
-                </button>
+                </button>}
                 <button
                   type="button"
                   onClick={() => goTo('/settings')}
@@ -488,7 +499,7 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                   <ShieldCheck size={14} />
                   System Health
                 </button>
-                <button
+                {!localAuthority && <button
                   type="button"
                   onClick={() => goTo('/settings?tab=license')}
                   style={{
@@ -499,8 +510,8 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                 >
                   <Settings size={14} />
                   Subscription
-                </button>
-                <button
+                </button>}
+                {!localAuthority && <button
                   type="button"
                   onClick={() => goTo('/data-management')}
                   style={{
@@ -511,7 +522,26 @@ export default function HposNav({ settings, user, syncStatus, trialStatus, isPos
                 >
                   <Database size={14} />
                   Data & backup
-                </button>
+                </button>}
+                {localAuthority && settings?.can_switch_business === true && <>
+                  <button
+                    type="button"
+                    disabled={switchingBusiness}
+                    onClick={async () => {
+                      setSwitchingBusiness(true)
+                      setSwitchBusinessError('')
+                      try {
+                        const result = await window.api.barLocal.selectCloudWorkspace()
+                        if (result?.restart_required !== true || result?.workspace !== 'cloud') throw new Error('The other business could not be selected. Your local Bar is preserved.')
+                      } catch (error) {
+                        setSwitchBusinessError(error?.message || 'Resolve pending Bar work, then try switching again.')
+                        setSwitchingBusiness(false)
+                      }
+                    }}
+                    style={{display:'flex',alignItems:'center',gap:'8px',width:'100%',padding:'9px 14px',border:'none',background:'transparent',color:'#24362c',fontSize:'12px',fontWeight:700,cursor:switchingBusiness?'wait':'pointer',textAlign:'left',opacity:switchingBusiness?0.65:1}}
+                  ><ArrowLeftRight size={14}/>{switchingBusiness ? 'Switching business…' : 'Switch business'}</button>
+                  {switchBusinessError && <p role="alert" style={{margin:'0 12px 10px',padding:'8px',borderRadius:'8px',background:'#fff0eb',color:'#a94430',fontSize:'11px'}}>{switchBusinessError}</p>}
+                </>}
                 <div style={{ height: 1, background: 'rgba(55,70,57,.10)' }} />
                 <button onClick={() => onLogout?.()} style={{
                   display: 'flex',

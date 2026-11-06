@@ -992,6 +992,10 @@ let autoUpdaterStarted = false;
 let updateCheckInterval = null;
 let healthReportInterval = null;
 
+/** @typedef {{phase: string, currentVersion: string, version: string|null, releaseName: string, releaseDate: string, releaseNotes: string, progress: {percent: number, transferred: number, total: number, bytesPerSecond: number}|null, error: string}} LegacyUpdateStateExpectedView */
+/** @typedef {LegacyUpdateStateExpectedView & {safety?: {blocked: boolean, blockers: string[], pendingCount: number, failedCount: number, openShiftCount: number, openTabCount: number, unfinalizedCashupCount: number}, message?: string}} LegacyUpdateEventExpectedView */
+
+/** @type {LegacyUpdateStateExpectedView} */
 const updateState = {
   phase: 'idle',
   currentVersion: app.getVersion(),
@@ -1035,12 +1039,14 @@ function formatUpdateError(error) {
   return message || 'Could not check for updates.';
 }
 
+/** @param {Partial<LegacyUpdateStateExpectedView>} [patch] @returns {LegacyUpdateStateExpectedView} */
 function setUpdateState(patch = {}) {
   Object.assign(updateState, patch);
   updateState.currentVersion = app.getVersion();
   return { ...updateState };
 }
 
+/** @param {'pos:update-available'|'pos:update-not-available'|'pos:update-progress'|'pos:update-ready'|'pos:update-error'} channel @param {LegacyUpdateEventExpectedView} payload */
 function broadcastUpdate(channel, payload) {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);

@@ -12,11 +12,27 @@ import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
 import { isBarHospitalityMode } from '../lib/productShell'
 
+// listExpenses currently reads only these three inputs. Preserve the historical fourth
+// options argument at both call sites without changing the imported function or its arity.
+/** @type {(lodgeId: string, start: string, end: string, options: {forceFresh: boolean}) => ReturnType<typeof listExpenses>} */
+const listExpensesWithLegacyFreshOption = listExpenses
+
+/** @typedef {{message?: string}|null|undefined} MoneyCaughtErrorExpectedView */
+/** @typedef {Awaited<ReturnType<typeof getManagerPosSnapshot>>} ManagerPosSnapshotExpectedView */
+/** @typedef {{id?: string, booking_id: string, invoice_number?: string|null, customer_name?: string|null, customer_email?: string|null, check_in?: string|null, balance_due: number|string, status?: string|null}} MoneyInvoiceExpectedView */
+/** @typedef {{status: string}} MoneyQuotationExpectedView */
+/** @typedef {{amount: number|string, category?: string|null}} MoneyExpenseExpectedView */
+/** @typedef {{id: string, invoice_number?: string|null, created_at?: string|null, refund_amount: number|string}} MoneyRefundExpectedView */
+/** @typedef {{gross_collected?: number|string|null, refunds_issued?: number|string|null, expenses_total?: number|string|null, net_collected?: number|string|null, pos_revenue?: number|string|null, outstanding_total?: number|string|null}} MoneyAuditExpectedView */
+/** @typedef {{customer_id: string, customer_name?: string|null, customer_email?: string|null, balance: number|string}} MoneyCustomerCreditExpectedView */
+/** @typedef {{quotations: MoneyQuotationExpectedView[], invoices: MoneyInvoiceExpectedView[], expenses: MoneyExpenseExpectedView[], refunds: MoneyRefundExpectedView[], audit: MoneyAuditExpectedView|null, customerCredits: MoneyCustomerCreditExpectedView[]}} LodgingMoneySnapshotExpectedView */
+
+/** @param {{lodgeId: string}} props */
 function BarMoney({ lodgeId }) {
-  const [snapshot, setSnapshot] = useState(null)
+  const [snapshot, setSnapshot] = useState(/** @type {ManagerPosSnapshotExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string|null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -27,7 +43,7 @@ function BarMoney({ lodgeId }) {
       setUpdatedAt(result?.as_of || new Date().toISOString())
     } catch (loadError) {
       setSnapshot(null)
-      setError(loadError?.message || 'Bar money data could not be loaded from the server.')
+      setError(/** @type {MoneyCaughtErrorExpectedView} */ (loadError)?.message || 'Bar money data could not be loaded from the server.')
     } finally {
       setLoading(false)
     }
@@ -49,6 +65,7 @@ function BarMoney({ lodgeId }) {
   </div>
 }
 
+/** @param {{to: string, title: string, value: string|number, sub: string, icon: import('lucide-react').LucideIcon}} props */
 function RouteLink({ to, title, value, sub, icon: Icon }) {
   return (
     <Link to={to} className="bg-gray-800 rounded-2xl p-3 flex items-center gap-3 active:scale-[0.98] transition-transform">
@@ -65,6 +82,7 @@ function RouteLink({ to, title, value, sub, icon: Icon }) {
   )
 }
 
+/** @param {{title: string, onClose: () => void, children: import('react').ReactNode}} props */
 function Sheet({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 z-[70] flex items-end bg-black/60" onClick={onClose}>
@@ -82,28 +100,33 @@ function Sheet({ title, onClose, children }) {
 
 export default function Money() {
   const { user } = useAuth()
-  if (isBarHospitalityMode(user?.hospitality_mode)) return <BarMoney lodgeId={user?.lodge_id} />
+  // AppShell's authenticated route guard supplies a manager session for this page.
+  const manager = /** @type {NonNullable<typeof user>} */ (user)
+  if (isBarHospitalityMode(/** @type {string|null|undefined} */ (manager.hospitality_mode))) return <BarMoney lodgeId={manager.lodge_id} />
   return <LodgingMoney />
 }
 
 function LodgingMoney() {
   const { user } = useAuth()
+  // This page is mounted only below AppShell's authenticated-user route guard.
+  // The shared auth hook remains nullable; this expected view reflects that route guarantee.
+  const manager = /** @type {NonNullable<typeof user>} */ (user)
   const { showToast } = useToast()
   const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [sheet, setSheet] = useState(null)
-  const balancesRef = useRef(null)
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
+  const [sheet, setSheet] = useState(/** @type {'shift'|'refunds'|'expenses'|'balances'|'customerCredit'|null} */ (null))
+  const balancesRef = useRef(/** @type {HTMLDivElement|null} */ (null))
   const handledFocusRef = useRef('')
-  const [snapshot, setSnapshot] = useState({
+  const [snapshot, setSnapshot] = useState(/** @type {LodgingMoneySnapshotExpectedView} */ ({
     quotations: [],
     invoices: [],
     expenses: [],
     refunds: [],
     audit: null,
     customerCredits: []
-  })
+  }))
 
   useEffect(() => {
     let cancelled = false
@@ -113,28 +136,36 @@ function LodgingMoney() {
       const today = businessDate()
       const monthStart = `${today.slice(0, 7)}-01`
       try {
-        const [quotations, invoices, expenses, refunds, audit, customerCredits] = await Promise.all([
-          listQuotations(user.lodge_id).catch(() => []),
-          listInvoices(user.lodge_id, { forceFresh: true }),
-          listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
-          getRefundHistory(user.lodge_id, 6).catch(() => []),
-          getNightAudit(user.lodge_id, today).catch(() => null),
-          getCustomerCreditSummaryPwa(user.lodge_id).catch(() => [])
+        const [quotationResult, invoiceResult, expenseResult, refundResult, auditResult, creditResult] = await Promise.all([
+          listQuotations(manager.lodge_id).catch(() => []),
+          listInvoices(manager.lodge_id, { forceFresh: true }),
+          // Preserve this historical option argument through the typed view above.
+          listExpensesWithLegacyFreshOption(manager.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
+          getRefundHistory(manager.lodge_id, 6).catch(() => []),
+          getNightAudit(manager.lodge_id, today).catch(() => null),
+          getCustomerCreditSummaryPwa(manager.lodge_id).catch(() => [])
         ])
         if (cancelled) return
-        const expenseReadError = expenses?.error
-        setSnapshot({ quotations, invoices, expenses: expenseReadError ? [] : expenses, refunds, audit, customerCredits })
+        // These assertions describe expected API/cache records; queryWithCache does not validate persisted values.
+        const quotations = /** @type {MoneyQuotationExpectedView[]} */ (quotationResult)
+        const invoices = /** @type {MoneyInvoiceExpectedView[]} */ (invoiceResult)
+        const expenses = /** @type {MoneyExpenseExpectedView[]|{error?: {message?: string}}} */ (expenseResult)
+        const refunds = /** @type {MoneyRefundExpectedView[]} */ (refundResult)
+        const audit = /** @type {MoneyAuditExpectedView|null} */ (auditResult)
+        const customerCredits = /** @type {MoneyCustomerCreditExpectedView[]} */ (creditResult)
+        const expenseReadError = /** @type {{error?: {message?: string}}|null|undefined} */ (expenses)?.error
+        setSnapshot({ quotations, invoices, expenses: expenseReadError ? [] : /** @type {MoneyExpenseExpectedView[]} */ (expenses), refunds, audit, customerCredits })
         if (expenseReadError) setLoadError(expenseReadError.message || 'Expenses could not be loaded from the server; no estimate was included.')
         const expenseCacheKey = `expenses:${monthStart}:${today}`
         const cacheTimes = [
-          readCacheEntry(user.lodge_id, 'invoice_summary_v2', null)?.updatedAt,
-          readCacheEntry(user.lodge_id, expenseCacheKey, null)?.updatedAt,
-          readCacheEntry(user.lodge_id, 'quotations', null)?.updatedAt
+          /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, 'invoice_summary_v2', null))?.updatedAt,
+          /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, expenseCacheKey, null))?.updatedAt,
+          /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, 'quotations', null))?.updatedAt
         ].filter(Boolean).sort().at(-1) || null
         setLastUpdated(cacheTimes)
       } catch (error) {
         if (!cancelled) {
-          setLoadError(error?.message || 'Money data could not load.')
+          setLoadError(/** @type {MoneyCaughtErrorExpectedView} */ (error)?.message || 'Money data could not load.')
         }
       } finally {
         if (!silent && !cancelled) setLoading(false)
@@ -154,7 +185,7 @@ function LodgingMoney() {
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisible)
     }
-  }, [user.lodge_id])
+  }, [manager.lodge_id])
 
   const currency = 'P'
   const outstanding = snapshot.invoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
@@ -171,10 +202,11 @@ function LodgingMoney() {
     window.setTimeout(() => balancesRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 120)
   }, [loading, searchParams])
 
+  /** @param {MoneyInvoiceExpectedView} invoice */
   async function sendFollowUp(invoice) {
     try {
       const result = await sendFrontDeskRequest({
-        user,
+        user: manager,
         title: 'Balance follow-up request',
         description: `Please follow up ${invoice.customer_name || 'this guest'} about the outstanding balance of ${money(invoice.balance_due)}. Invoice: ${invoice.invoice_number}.`,
         priority: 'High',
@@ -190,7 +222,7 @@ function LodgingMoney() {
     } catch (error) {
       showToast({
         title: 'Request was not sent',
-        message: error?.message || 'Please try again.',
+        message: /** @type {MoneyCaughtErrorExpectedView} */ (error)?.message || 'Please try again.',
         tone: 'error'
       })
     }
@@ -211,26 +243,31 @@ function LodgingMoney() {
                 const today = businessDate()
                 const monthStart = `${today.slice(0, 7)}-01`
                 const [quotations, invoices, expenses, refunds, audit] = await Promise.all([
-                  listQuotations(user.lodge_id).catch(() => []),
-                  listInvoices(user.lodge_id, { forceFresh: true }),
-                  listExpenses(user.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
-                  getRefundHistory(user.lodge_id, 6).catch(() => []),
-                  getNightAudit(user.lodge_id, today).catch(() => null)
+                  listQuotations(manager.lodge_id).catch(() => []),
+                  listInvoices(manager.lodge_id, { forceFresh: true }),
+                  listExpensesWithLegacyFreshOption(manager.lodge_id, monthStart, today, { forceFresh: true }).catch((error) => ({ error })),
+                  getRefundHistory(manager.lodge_id, 6).catch(() => []),
+                  getNightAudit(manager.lodge_id, today).catch(() => null)
                 ])
-                const expenseReadError = expenses?.error
-                setSnapshot((current) => ({ ...current, quotations, invoices, expenses: expenseReadError ? [] : expenses, refunds, audit }))
+                const quotationsView = /** @type {MoneyQuotationExpectedView[]} */ (quotations)
+                const invoicesView = /** @type {MoneyInvoiceExpectedView[]} */ (invoices)
+                const expensesView = /** @type {MoneyExpenseExpectedView[]|{error?: {message?: string}}} */ (expenses)
+                const refundsView = /** @type {MoneyRefundExpectedView[]} */ (refunds)
+                const auditView = /** @type {MoneyAuditExpectedView|null} */ (audit)
+                const expenseReadError = /** @type {{error?: {message?: string}}|null|undefined} */ (expensesView)?.error
+                setSnapshot((current) => ({ ...current, quotations: quotationsView, invoices: invoicesView, expenses: expenseReadError ? [] : /** @type {MoneyExpenseExpectedView[]} */ (expensesView), refunds: refundsView, audit: auditView }))
                 if (expenseReadError) setLoadError(expenseReadError.message || 'Expenses could not be loaded from the server; no estimate was included.')
                 const expenseCacheKey = `expenses:${monthStart}:${today}`
                 const cacheTimes = [
-                  readCacheEntry(user.lodge_id, 'invoice_summary_v2', null)?.updatedAt,
-                  readCacheEntry(user.lodge_id, expenseCacheKey, null)?.updatedAt,
-                  readCacheEntry(user.lodge_id, 'quotations', null)?.updatedAt
+                  /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, 'invoice_summary_v2', null))?.updatedAt,
+                  /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, expenseCacheKey, null))?.updatedAt,
+                  /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(manager.lodge_id, 'quotations', null))?.updatedAt
                 ].filter(Boolean).sort().at(-1) || null
                 setLastUpdated(cacheTimes)
                 setLoadError('')
                 showToast({ title: 'Money view refreshed', tone: 'success' })
               } catch (error) {
-                showToast({ title: 'Money view could not refresh', message: error?.message, tone: 'error' })
+                showToast({ title: 'Money view could not refresh', message: /** @type {MoneyCaughtErrorExpectedView} */ (error)?.message, tone: 'error' })
               } finally {
                 setLoading(false)
               }

@@ -8,12 +8,14 @@ import { readSecureJson, writeSecureJson } from './secureLocalStore.js';
 import { recordCriticalError } from './operationalLog.js';
 
 /** @typedef {Record<string, unknown>} AuthCachePropertyView */
+/** @typedef {AuthCachePropertyView & {allowed_outlet_ids?: unknown}} NormalizedSessionUserView */
 
 /** @param {unknown} user @returns {unknown} */
 export function normalizeSessionUser(user) {
   if (!user || typeof user !== 'object') return user || null;
   const userView = /** @type {AuthCachePropertyView} */ (user)
 
+  /** @type {NormalizedSessionUserView} */
   const normalized = {
     ...userView,
     id: userView.id || userView.user_id || null,
@@ -53,6 +55,7 @@ export function mergeSessionUserScope(existingUser, refreshedUser) {
 
   const existingView = /** @type {AuthCachePropertyView} */ (existing)
   const refreshedView = /** @type {AuthCachePropertyView} */ (refreshed)
+  /** @type {NormalizedSessionUserView} */
   const next = { ...existingView, ...refreshedView };
   const refreshedHasScope = Object.prototype.hasOwnProperty.call(refreshedView, 'allowed_outlet_ids');
   const existingHasScope = Object.prototype.hasOwnProperty.call(existingView, 'allowed_outlet_ids');

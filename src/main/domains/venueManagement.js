@@ -11,6 +11,11 @@ const CACHE_MILESTONES = 'deposit-milestones'
 const CACHE_SETTLEMENTS = 'event-settlements'
 
 /** @typedef {Record<string, unknown>} VenuePropertyView */
+/** @typedef {Record<string, unknown> & {event_booking_id: unknown}} VenueEventRelatedCachedRow */
+
+// Venue RPCs below return JSON produced by the corresponding SQL functions.
+// Cache values are still unvalidated; these view casts describe the arrays
+// written by those RPC reads and do not add runtime validation.
 
 /** @returns {void} */
 function requireOnline() {
@@ -51,7 +56,7 @@ async function _getEventLeads(status) {
     writeCached(CACHE_LEADS, data || [])
     return data || []
   } catch (e) {
-    const cached = readCached(CACHE_LEADS)
+    const cached = /** @type {unknown[]} */ (readCached(CACHE_LEADS))
     if (cached.length > 0 || !state.isOnline) return cached
     return []
   }
@@ -126,7 +131,7 @@ async function _getVenueAvailabilityRules(resourceKey) {
     writeCached(CACHE_RULES, data || [])
     return data || []
   } catch (e) {
-    const cached = readCached(CACHE_RULES)
+    const cached = /** @type {unknown[]} */ (readCached(CACHE_RULES))
     if (cached.length > 0 || !state.isOnline) return cached
     return []
   }
@@ -183,12 +188,12 @@ async function _getRunSheet(eventBookingId) {
     })
     if (error) throw error
     if (data && data.id) {
-      const existing = readCached(CACHE_RUN_SHEETS).filter((r) => r.event_booking_id !== eventBookingId)
+      const existing = /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_RUN_SHEETS)).filter((r) => r.event_booking_id !== eventBookingId)
       writeCached(CACHE_RUN_SHEETS, [...existing, data])
     }
     return data
   } catch {
-    const cached = readCached(CACHE_RUN_SHEETS).find((r) => r.event_booking_id === eventBookingId) || null
+    const cached = /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_RUN_SHEETS)).find((r) => r.event_booking_id === eventBookingId) || null
     return cached
   }
 }
@@ -276,11 +281,11 @@ async function _getEventSuppliers(eventBookingId) {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
-    const filtered = readCached(CACHE_SUPPLIERS).filter((s) => s.event_booking_id !== eventBookingId)
+    const filtered = /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_SUPPLIERS)).filter((s) => s.event_booking_id !== eventBookingId)
     writeCached(CACHE_SUPPLIERS, [...filtered, ...(data || [])])
     return data || []
   } catch {
-    return readCached(CACHE_SUPPLIERS).filter((s) => s.event_booking_id === eventBookingId)
+    return /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_SUPPLIERS)).filter((s) => s.event_booking_id === eventBookingId)
   }
 }
 /** @type {(...args: unknown[]) => ReturnType<typeof _getEventSuppliers>} */
@@ -352,11 +357,11 @@ async function _getDepositMilestones(eventBookingId) {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
-    const filtered = readCached(CACHE_MILESTONES).filter((m) => m.event_booking_id !== eventBookingId)
+    const filtered = /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_MILESTONES)).filter((m) => m.event_booking_id !== eventBookingId)
     writeCached(CACHE_MILESTONES, [...filtered, ...(data || [])])
     return data || []
   } catch {
-    return readCached(CACHE_MILESTONES).filter((m) => m.event_booking_id === eventBookingId)
+    return /** @type {VenueEventRelatedCachedRow[]} */ (readCached(CACHE_MILESTONES)).filter((m) => m.event_booking_id === eventBookingId)
   }
 }
 /** @type {(...args: unknown[]) => ReturnType<typeof _getDepositMilestones>} */

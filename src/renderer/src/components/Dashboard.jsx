@@ -67,6 +67,30 @@ const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 const HotelDashboard = lazy(() => import('./HotelDashboard'))
 
+/**
+ * Local consumer views for dashboard state. IPC/cache values are not runtime-
+ * validated by these declarations; array checks below only establish array-ness.
+ * @typedef {{id: string, status?: string|null, booking_type?: string|null, check_in?: string|null, check_out?: string|null, created_at?: string|null, customer_name?: string|null, customer_email?: string|null, customer_phone?: string|null, room_number?: string|null, room_type?: string|null, resource_name?: string|null, booking_number?: string|null, total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null, outstanding_balance?: number, balance_due?: number|string|null, room_count?: number, is_exclusive_event?: boolean, notes?: string|null, adults?: number, children?: number, start_time?: string|null, end_time?: string|null, _event_group?: boolean, _label?: string}} DashboardBookingExpectedView
+ * @typedef {{id: string, status?: string|null, booking_date?: string|null, client_name?: string|null, payment_status?: string|null, total_amount?: number|string|null, deposit_paid?: number|string|null}} DashboardConferenceBookingExpectedView
+ * @typedef {{id: string, category?: string|null, status?: string|null, title?: string|null, description?: string|null, requester_name?: string|null, created_at?: string|null, updated_at?: string|null}} DashboardRequestExpectedView
+ * @typedef {{id: string, room_number?: string|null, accommodation_kind?: string|null, kind?: string|null}} DashboardRoomExpectedView
+ * @typedef {{id: string, start_date?: string|null, end_date?: string|null, room_id?: string|null, name?: string|null, rate_per_night?: number|string|null, daysRemaining?: number, durationDays?: number, roomLabel?: string}} DashboardSpecialExpectedView
+ * The offline/default report may omit gross/refund totals; consumers retain their existing `Number(value || 0)` fallbacks.
+ * @typedef {{total_collected: number, gross_collected?: number, refunds_issued?: number, by_method: Record<string, number>, payment_count: number, date: string|null}} DashboardPaymentMix
+ * @typedef {{outstandingTotal: number, unpaidCount: number}} DashboardBookingHealth
+ * @typedef {{today: DashboardBookingExpectedView[], tomorrow: DashboardBookingExpectedView[], dayAfter: DashboardBookingExpectedView[]}} DashboardUpcoming
+ * @typedef {{id: string, status?: string|null}} DashboardRestaurantTableExpectedView
+ * @typedef {{id: string, status?: string|null}} DashboardKitchenTicketExpectedView
+ * @typedef {{id: string, status?: string|null}} DashboardShiftExpectedView
+ * @typedef {{id: string, status?: string|null}} DashboardAlertExpectedView
+ * The pending-online IPC selects public.bookings dates, whose SQL columns are NOT NULL; returned IPC/cache rows remain unvalidated.
+ * @typedef {Omit<DashboardBookingExpectedView, 'check_in'|'check_out'> & {check_in: string, check_out: string}} DashboardPendingOnlineBookingExpectedView
+ * @typedef {{date: string, total: number, occupied: number}} DashboardForecastExpectedView
+ * @typedef {{id: string, name: string, current_stock: number|string, unit?: string|null}} DashboardLowStockExpectedView
+ * @typedef {{plan?: string, limits?: Record<string, number|null>, error?: unknown, usage?: {monthlyBookings?: number, rooms?: number, users?: number}, statuses?: Record<string, unknown>, recommendation?: unknown, monthlyResetCopy?: string, source?: string, usageStateKey?: unknown}} DashboardUsageExpectedView
+ * @typedef {{total_rooms?: number, occupied_today?: number, checkins_today?: number, checkouts_today?: number, upcoming_bookings?: number, outstanding_total?: number, unpaid_count?: number, plan?: string, lodge_id?: string, lodge_name?: string, company_name?: string, business_type?: string, property_type?: string, currency?: string, rooms?: number, users?: number, phone?: string, email_host?: string, smtp_host?: string, pwa?: unknown}} DashboardStatsExpectedView
+ */
+
 const SHORTCUTS = [
   { label: 'Bookings',      to: '/bookings',   icon: BookOpen },
   { label: 'Expenses',      to: '/expenses',   icon: Receipt,       feature: 'expenses',   tier: 'Standard' },
@@ -99,6 +123,7 @@ const SHORTCUT_ICONS = {
   '/settings': Settings
 }
 
+/** @param {unknown} settings */
 function resolveRestaurantShortcuts(settings) {
   return getRestaurantDashboardShortcuts(settings).map((item) => ({
     ...item,
@@ -106,6 +131,7 @@ function resolveRestaurantShortcuts(settings) {
   }))
 }
 
+/** @param {string|null|undefined} createdAt */
 function getRequestAgeMeta(createdAt) {
   const time = createdAt ? new Date(createdAt).getTime() : NaN
   if (!Number.isFinite(time)) {
@@ -139,11 +165,13 @@ function getRequestAgeMeta(createdAt) {
   }
 }
 
+/** @param {unknown} request */
 function getLatestSupportMessage(request) {
   const messages = normalizeSupportMessages(request)
   return messages[messages.length - 1] || null
 }
 
+/** @param {string|null|undefined} value */
 function timeAgo(value) {
   if (!value) return ''
   const timestamp = new Date(value).getTime()
@@ -163,6 +191,7 @@ function timeAgo(value) {
   return new Date(timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
 }
 
+/** @param {string|null|undefined} phone */
 function formatWhatsAppPhone(phone) {
   if (!phone) return ''
   let p = phone.replace(/\D/g, '')
@@ -202,32 +231,35 @@ export default function Dashboard() {
   const dashExclusiveUse = dashPresentation?.exclusiveUseLabel || 'Full Lodge'
   const dashOccupancyDetail = dashPresentation?.dashboardHints?.occupancyDetail || 'Rooms occupied today'
   const dashFirstUnit = dashPresentation?.dashboardHints || { firstUnitTitle: 'Add your first room', firstUnitCopy: 'Create the room list before bookings, housekeeping, and availability can work properly.', firstUnitAction: 'Add rooms' }
+  // This view follows the pending-online bookings supplied by the existing
+  // preload/API provider; the provider does not validate returned JSON.
+  /** @type {{requests: DashboardPendingOnlineBookingExpectedView[], refresh: () => void}} */
   const { requests: onlineRequests, refresh: refreshOnlineRequests } = useOnlineRequests()
-  const [actioningId, setActioningId] = useState(null)
+  const [actioningId, setActioningId] = useState(/** @type {string|null} */ (null))
 
-  const [stats, setStats] = useState(null)
-  const [usageSnapshot, setUsageSnapshot] = useState(null)
-  const [recentBookings, setRecentBookings] = useState([])
+  const [stats, setStats] = useState(/** @type {DashboardStatsExpectedView|null} */ (null))
+  const [usageSnapshot, setUsageSnapshot] = useState(/** @type {DashboardUsageExpectedView|null} */ (null))
+  const [recentBookings, setRecentBookings] = useState(/** @type {DashboardBookingExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(false)
-  const [bookingHealth, setBookingHealth] = useState({ outstandingTotal: 0, unpaidCount: 0 })
-  const [overdueBalances, setOverdueBalances] = useState([])
+  const [bookingHealth, setBookingHealth] = useState(/** @type {DashboardBookingHealth} */ ({ outstandingTotal: 0, unpaidCount: 0 }))
+  const [overdueBalances, setOverdueBalances] = useState(/** @type {(DashboardBookingExpectedView & {outstanding_balance: number})[]} */ ([]))
   const [activeBalanceCount, setActiveBalanceCount] = useState(0)
-  const [upcoming, setUpcoming] = useState({ today: [], tomorrow: [], dayAfter: [] })
-  const [forecast, setForecast] = useState([])
-  const [lowStock, setLowStock] = useState([])
-  const [paymentMixToday, setPaymentMixToday] = useState({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
-  const [frontDeskRequests, setFrontDeskRequests] = useState([])
-  const [activeSpecials, setActiveSpecials] = useState([])
-  const [backupInfo, setBackupInfo] = useState(null)
+  const [upcoming, setUpcoming] = useState(/** @type {DashboardUpcoming} */ ({ today: [], tomorrow: [], dayAfter: [] }))
+  const [forecast, setForecast] = useState(/** @type {DashboardForecastExpectedView[]} */ ([]))
+  const [lowStock, setLowStock] = useState(/** @type {DashboardLowStockExpectedView[]} */ ([]))
+  const [paymentMixToday, setPaymentMixToday] = useState(/** @type {DashboardPaymentMix} */ ({ total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null }))
+  const [frontDeskRequests, setFrontDeskRequests] = useState(/** @type {DashboardRequestExpectedView[]} */ ([]))
+  const [activeSpecials, setActiveSpecials] = useState(/** @type {DashboardSpecialExpectedView[]} */ ([]))
+  const [backupInfo, setBackupInfo] = useState(/** @type {unknown} */ (null))
   const [activeInboxRequestId, setActiveInboxRequestId] = useState('')
   const [inboxDraft, setInboxDraft] = useState('')
   const [inboxSending, setInboxSending] = useState(false)
   const [inboxError, setInboxError] = useState('')
-  const [restaurantTables, setRestaurantTables] = useState([])
-  const [kitchenTickets, setKitchenTickets] = useState([])
-  const [activeShifts, setActiveShifts] = useState([])
-  const [cashDrawer, setCashDrawer] = useState(null)
-  const [activeAlerts, setActiveAlerts] = useState([])
+  const [restaurantTables, setRestaurantTables] = useState(/** @type {DashboardRestaurantTableExpectedView[]} */ ([]))
+  const [kitchenTickets, setKitchenTickets] = useState(/** @type {DashboardKitchenTicketExpectedView[]} */ ([]))
+  const [activeShifts, setActiveShifts] = useState(/** @type {DashboardShiftExpectedView[]} */ ([]))
+  const [cashDrawer, setCashDrawer] = useState(/** @type {unknown} */ (null))
+  const [activeAlerts, setActiveAlerts] = useState(/** @type {DashboardAlertExpectedView[]} */ ([]))
   const pendingOnlineRequests = onlineRequests || []
   const managerInboxRequests = useMemo(
     () => frontDeskRequests
@@ -282,10 +314,14 @@ export default function Dashboard() {
         window.api.pos.getActiveAlerts?.().catch(() => [])
       ] : []
       const [s, ls, paymentMix, lodgeRequests, users, usage, backups, ...restResults] = await Promise.all([...baseCalls, ...accomCalls, ...restaurantCalls])
+      // These are consumer-expected result views. The assertions do not validate IPC results.
+      const dashboardStats = /** @type {DashboardStatsExpectedView|null} */ (s)
+      const usageView = /** @type {DashboardUsageExpectedView|null} */ (usage)
+      const paymentMixView = /** @type {DashboardPaymentMix|null} */ (paymentMix)
       const [bookings, up, fc, rooms, rateOverrides, confBookings] = restaurantMode ? [ [], [], [], [], [], [] ] : restResults.slice(0, 6)
       const [rTables, rTickets, rShifts, rDrawer, rAlerts] = restaurantMode ? restResults.slice(0, 5) : [ [], [], [], null, [] ]
-      const allBookings = Array.isArray(bookings) ? bookings : []
-      const allConfBookings = Array.isArray(confBookings) ? confBookings : []
+      const allBookings = /** @type {DashboardBookingExpectedView[]} */ (Array.isArray(bookings) ? bookings : [])
+      const allConfBookings = /** @type {DashboardConferenceBookingExpectedView[]} */ (Array.isArray(confBookings) ? confBookings : [])
       const allRooms = Array.isArray(rooms) ? rooms : []
       const allUsers = Array.isArray(users) ? users : []
       setBackupInfo(backups || null)
@@ -294,28 +330,28 @@ export default function Dashboard() {
       setActiveShifts(Array.isArray(rShifts) ? rShifts : [])
       setCashDrawer(rDrawer || null)
       setActiveAlerts(Array.isArray(rAlerts) ? rAlerts : [])
-      const usagePlan = normalizeSubscriptionPlan(usage?.plan || s?.plan || settings?.subscription_plan || 'Starter')
-      const usageLimits = usage?.limits || getPlanUsageLimits(usagePlan)
-      const usageCounts = usage && !usage.error && usage.usage
+      const usagePlan = normalizeSubscriptionPlan(usageView?.plan || dashboardStats?.plan || settings?.subscription_plan || 'Starter')
+      const usageLimits = usageView?.limits || getPlanUsageLimits(usagePlan)
+      const usageCounts = usageView && !usageView.error && usageView.usage
         ? {
-            monthlyBookings: Number(usage.usage.monthlyBookings || 0),
-            rooms: Number(usage.usage.rooms || 0),
-            users: Number(usage.usage.users || 0)
+            monthlyBookings: Number(usageView.usage.monthlyBookings || 0),
+            rooms: Number(usageView.usage.rooms || 0),
+            users: Number(usageView.usage.users || 0)
           }
         : {
             monthlyBookings: countMonthlyUsageBookings(allBookings, new Date()),
             rooms: allRooms.length,
             users: allUsers.length
           }
-      const usageStatuses = usage && !usage.error && usage.statuses
-        ? usage.statuses
+      const usageStatuses = usageView && !usageView.error && usageView.statuses
+        ? usageView.statuses
         : {
             bookings: getUsageLimitStatus({ used: usageCounts.monthlyBookings, limit: usageLimits.monthlyBookings, grace: usageLimits.monthlyBookingsGrace }),
             rooms: getUsageLimitStatus({ used: usageCounts.rooms, limit: usageLimits.rooms }),
             users: getUsageLimitStatus({ used: usageCounts.users, limit: usageLimits.users })
           }
-      const usageRecommendation = usage && !usage.error && usage.recommendation
-        ? usage.recommendation
+      const usageRecommendation = usageView && !usageView.error && usageView.recommendation
+        ? usageView.recommendation
         : getPlanRecommendation({
             plan: usagePlan,
             bookingsUsage: usageCounts.monthlyBookings,
@@ -326,16 +362,16 @@ export default function Dashboard() {
       const usageStateKey = [usageStatuses.bookings, usageStatuses.rooms, usageStatuses.users]
         .sort((left, right) => getUsagePriorityScore(right) - getUsagePriorityScore(left))[0]
       setUsageSnapshot({
-        ...(usage && !usage.error ? usage : {}),
+        ...(usageView && !usageView.error ? usageView : {}),
         plan: usagePlan,
         usage: usageCounts,
         statuses: usageStatuses,
         recommendation: usageRecommendation,
         usageStateKey: getUsageStateKey(usageStateKey),
-        monthlyResetCopy: usage?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY,
-        source: usage?.source || 'cache'
+        monthlyResetCopy: usageView?.monthlyResetCopy || MONTHLY_USAGE_RESET_COPY,
+        source: usageView?.source || 'cache'
       })
-      setStats(s || null)
+      setStats(dashboardStats || null)
 
     // Collapse exclusive event room-rows into one entry per event group
     const regularBookings = allBookings.filter(b => !b.is_exclusive_event)
@@ -435,14 +471,14 @@ export default function Dashboard() {
         })
         .sort((left, right) => String(left.end_date || '').localeCompare(String(right.end_date || '')))
     )
-      setPaymentMixToday(paymentMix && typeof paymentMix === 'object'
+      setPaymentMixToday(paymentMixView && typeof paymentMixView === 'object'
           ? {
-            total_collected: Number(paymentMix.total_collected || 0),
-            gross_collected: Number(paymentMix.gross_collected || 0),
-            refunds_issued: Number(paymentMix.refunds_issued || 0),
-            by_method: paymentMix.by_method && typeof paymentMix.by_method === 'object' ? paymentMix.by_method : {},
-            payment_count: Number(paymentMix.payment_count || 0),
-            date: paymentMix.date || null
+            total_collected: Number(paymentMixView.total_collected || 0),
+            gross_collected: Number(paymentMixView.gross_collected || 0),
+            refunds_issued: Number(paymentMixView.refunds_issued || 0),
+            by_method: paymentMixView.by_method && typeof paymentMixView.by_method === 'object' ? paymentMixView.by_method : {},
+            payment_count: Number(paymentMixView.payment_count || 0),
+            date: paymentMixView.date || null
           }
         : { total_collected: 0, gross_collected: 0, refunds_issued: 0, by_method: {}, payment_count: 0, date: null })
     } catch (err) {
@@ -1050,10 +1086,10 @@ export default function Dashboard() {
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-xl border border-amber-300 bg-white/80 px-3 py-2 text-xs font-semibold text-amber-800">
                 Oldest request: {getRequestAgeMeta(
-                  onlineRequests.reduce((oldest, booking) => {
+                  onlineRequests.reduce(/** @type {(oldest: string|null, booking: DashboardPendingOnlineBookingExpectedView) => string|null} */ ((oldest, booking) => {
                     if (!oldest) return booking?.created_at || null
                     return String(booking?.created_at || '') < String(oldest) ? booking.created_at : oldest
-                  }, null)
+                  }), null)
                 ).label}
               </span>
               <button
@@ -1068,7 +1104,7 @@ export default function Dashboard() {
           <div className="divide-y divide-amber-100">
             {onlineRequests.map((booking) => {
               const nights = booking.check_in && booking.check_out
-                ? Math.round((new Date(booking.check_out) - new Date(booking.check_in)) / 86400000)
+                ? Math.round((new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000)
                 : 0
               const isActioning = actioningId === booking.id
               const ageMeta = getRequestAgeMeta(booking.created_at)

@@ -30,6 +30,7 @@ const BOOKING_PRICING_SNAPSHOT_FIELDS = new Set(['nights', 'site_rate', 'person_
 // Restore DTO allowlist: explicit per-table field contracts. The restore path
 // strips or rejects any field not listed here; `select('*')` is an export
 // convenience and not a restore contract.
+/** @type {Record<string, Set<string>>} */
 const RESTORE_FIELD_ALLOWLIST = {
   settings: new Set(['id', 'lodge_id', 'lodge_name', 'company_name', 'address', 'city', 'country', 'phone', 'email', 'website', 'vat_number', 'currency', 'setup_complete', 'created_at', 'updated_at', 'business_type', 'property_type', 'vat_enabled', 'vat_rate', 'deleted', 'slug', 'booking_tagline', 'booking_description', 'whatsapp_number', 'booking_check_in_from', 'booking_check_out_until', 'booking_cancellation_policy', 'booking_payment_terms', 'booking_house_rules', 'booking_faq', 'assistant_enabled', 'timezone', 'public_offer_rooms', 'public_offer_multi_room', 'public_offer_full_lodge', 'public_offer_day_use', 'public_offer_events', 'public_offer_campsites', 'operating_profile']),
   // Keep the historical aliases for importing older packages, but emit and
@@ -58,6 +59,7 @@ const UNIQUE_REGENERATED_FIELDS = {
   signed_payment_ledger: ['id'],
   maintenance: ['id']
 }
+/** @type {Array<{key: string, table: string, cache: string, order: string, select: string}>} */
 const CORE_TABLE_SPECS = [
   { key: 'settings', table: 'settings', cache: 'settings', order: 'updated_at', select: 'id,lodge_id,lodge_name,company_name,address,city,country,phone,email,website,vat_number,currency,setup_complete,created_at,updated_at,business_type,property_type,vat_enabled,vat_rate,deleted,slug,booking_tagline,booking_description,whatsapp_number,booking_check_in_from,booking_check_out_until,booking_cancellation_policy,booking_payment_terms,booking_house_rules,booking_faq,assistant_enabled,timezone,public_offer_rooms,public_offer_multi_room,public_offer_full_lodge,public_offer_day_use,public_offer_events,public_offer_campsites,operating_profile' },
   { key: 'rooms', table: 'rooms', cache: 'rooms', order: 'room_number', select: 'id,lodge_id,room_number,room_type,room_type_id,floor_section_id,rate_per_night,max_occupancy,status,housekeeping_status,housekeeping_notes,description,created_at,photo,photos,amenities,updated_at,accommodation_kind,capacity_adults,capacity_children,max_tents,max_vehicles,is_powered,site_surface,shared_facilities,rate_mode,rate_per_person,rate_per_tent,rate_per_vehicle' },
@@ -79,29 +81,290 @@ const RECOVERY_README = [
   `Package format: ${DEFAULT_PACKAGE_SCHEMA} (older ${STARTER_BACKUP_PACKAGE_SCHEMA} packages can still be checked)`
 ].join('\n') + '\n'
 
+// --- Type views -------------------------------------------------------------
+// Rows and payloads below come from three unvalidated boundaries: PostgreSQL
+// `select(...)` results (loadLodgeRowsForBackup), local `${cache}.json` files
+// (readLocalRows) and parsed `.tbbackup` JSON (validateStarterBackupPackage).
+// The views describe the shape each stage expects to consume; field presence and
+// value types are only checked by the explicit validators in this module.
+
+/**
+ * One DTO row as it moves through normalize -> sanitize -> validate -> remap.
+ * Row fields are never schema-validated as a whole, so leaves stay `unknown`.
+ * @typedef {Record<string, unknown>} StarterBackupRowReadView
+ */
+
+/**
+ * Row arrays keyed by the seven core table keys. Values are row arrays from the
+ * boundaries above; the table set is enforced by REQUIRED_TABLE_KEYS checks.
+ * @typedef {Record<string, StarterBackupRowReadView[]>} StarterBackupTablesReadView
+ */
+
+/**
+ * The read surface this module uses from the Supabase client. PostgREST row
+ * results are unvalidated, so `data` is a row-object array and `error` only
+ * guarantees an optional `message`. `select` starts the filter chain; `eq`,
+ * `order` and `range` are the chained builder methods this module calls. The
+ * real client (state.supabase, or an injected override) satisfies this shape.
+ * @typedef {object} StarterBackupQueryReadView
+ * @property {(columns?: string, options?: {count?: string, head?: boolean}) => StarterBackupFilterReadView} select
+ */
+
+/**
+ * @typedef {object} StarterBackupQueryResultReadView
+ * @property {StarterBackupRowReadView[] | null} data
+ * @property {{message?: unknown} | null} error
+ * @property {number | null} [count]
+ */
+
+/**
+ * A chained PostgREST builder is both awaitable and filterable; the drift
+ * recheck awaits select(...).eq(...), while loadLodgeRowsForBackup chains
+ * order/range. `data` is unvalidated server rows, `error` is unvalidated.
+ * @typedef {PromiseLike<StarterBackupQueryResultReadView> & {
+ *   eq: (column: string, value: unknown) => StarterBackupFilterReadView,
+ *   order: (column: string, options: {ascending: boolean}) => StarterBackupFilterReadView,
+ *   range: (from: number, to: number) => PromiseLike<StarterBackupQueryResultReadView>
+ * }} StarterBackupFilterReadView
+ */
+
+/** @typedef {{from: (table: string) => StarterBackupQueryReadView}} StarterBackupSupabaseClientReadView */
+
+/**
+ * Frozen per-run backup context produced by captureBackupContext and consumed by
+ * loadLodgeRowsForBackup, buildStarterBackupPayload and
+ * starterBackupAutomation.runStarterBackupAutomationOnce (`_backupContext`).
+ * The Supabase client is carried as `unknown`: the real client's untyped
+ * PostgREST generics are not structurally modelled here, so loadLodgeRowsForBackup
+ * casts it to StarterBackupSupabaseClientReadView at the single query boundary.
+ * @typedef {object} StarterBackupContextExpectedData
+ * @property {string} lodgeId
+ * @property {unknown} supabaseClient
+ * @property {boolean} isOnline
+ * @property {string} cacheDir
+ * @property {string} appVersion
+ */
+
+/**
+ * Caller-supplied options for export, packaging, verification and rehearsal.
+ * They arrive from the Electron IPC handlers (index.js backup:starter*) and the
+ * backup scheduler, so leaves stay `unknown` unless this module produced them.
+ * @typedef {object} StarterBackupOptionsInputReadView
+ * @property {unknown} [lodgeId]
+ * @property {unknown} [supabase]
+ * @property {unknown} [isOnline]
+ * @property {unknown} [cacheDir]
+ * @property {unknown} [appVersion]
+ * @property {unknown} [passphrase]
+ * @property {unknown} [useV3]
+ * @property {unknown} [expectedLodgeId]
+ * @property {string | null} [operationId]
+ * @property {string | null} [recoveryLodgeId]
+ * @property {unknown} [now]
+ * @property {StarterBackupContextExpectedData} [_backupContext]
+ */
+
+/**
+ * Core-data payload produced by buildStarterBackupPayload and read back from
+ * core-data.json. `tables` is enforced as an array per manifest table key by the
+ * `missing` check in validateStarterBackupPackage before any table is indexed.
+ * @typedef {Record<string, unknown> & {
+ *   schema?: string,
+ *   app_version?: string,
+ *   generated_at?: string,
+ *   lodge_id?: string,
+ *   tables: Record<string, StarterBackupRowReadView[]>,
+ *   completeness: {complete?: boolean, warnings?: string[], snapshot_coherence?: unknown, dto_sanitization?: unknown}
+ * }} StarterBackupPayloadExpectedData
+ */
+
+/**
+ * Table-bearing slice of a core payload consumed by recovery identity remapping.
+ * Callers pass either a starter-validated payload or the recovery rehearsal's
+ * unvalidated core-data payload; both guarantee `tables`, while the remaining
+ * manifest-validated fields (including `completeness`) are never read here.
+ * @typedef {Record<string, unknown> & {
+ *   lodge_id?: unknown,
+ *   tables: Record<string, StarterBackupRowReadView[]>
+ * }} StarterBackupRemapPayloadReadView
+ */
+
+/**
+ * Manifest authored by buildManifest. A parsed manifest is only returned as
+ * validated data after validateStarterBackupPackage checks its format, table set,
+ * counts and hashes, so `format` is a string on this view.
+ * @typedef {object} StarterBackupManifestExpectedData
+ * @property {string} format
+ * @property {unknown} core_schema
+ * @property {unknown} app_version
+ * @property {unknown} generated_at
+ * @property {unknown} lodge_id
+ * @property {unknown} complete
+ * @property {unknown} warnings
+ * @property {unknown} [per_table_hashes]
+ * @property {unknown} dto_sanitization
+ * @property {unknown} table_keys
+ * @property {unknown} table_counts
+ * @property {unknown} included_categories
+ * @property {unknown} excluded_categories
+ */
+
+/**
+ * Successful package validation result. The sanitized DTO never crosses IPC.
+ * @typedef {object} StarterBackupValidationSuccessExpectedData
+ * @property {true} success
+ * @property {string} format
+ * @property {boolean} encrypted
+ * @property {string} packageSha256
+ * @property {unknown} coreDataSha256
+ * @property {unknown} checksums
+ * @property {StarterBackupManifestExpectedData} manifest
+ * @property {StarterBackupPayloadExpectedData} payload
+ * @property {StarterBackupTablesReadView} sanitizedTables
+ * @property {Record<string, number>} counts
+ * @property {boolean} complete
+ * @property {unknown[]} warnings
+ * @property {Record<string, string>} perTableHashes
+ * @property {boolean} perTableHashesVerified
+ * @property {unknown} dtoSanitization
+ * @property {unknown} snapshotCoherence
+ */
+
+/** @typedef {{success: false, error: unknown}} StarterBackupFailureExpectedData */
+
+/**
+ * Thrown values are read as `message` before this module re-wraps them; this
+ * expected view does not validate or normalize the thrown value.
+ * @typedef {{message?: unknown, code?: unknown}} StarterBackupErrorMessageReadView
+ */
+
+/**
+ * Encrypted header written by createStarterBackupPackage and read back by
+ * decodeEnvelope. The values are package JSON, so encryption settings remain
+ * `unknown` until the algorithm/KDF checks in decodeEnvelope pass.
+ * @typedef {object} StarterBackupEnvelopeReadView
+ * @property {unknown} [format]
+ * @property {unknown} [encrypted]
+ * @property {unknown} [created_at]
+ * @property {unknown} [lodge_id]
+ * @property {unknown} [app_version]
+ * @property {unknown} [ciphertext]
+ * @property {{algorithm?: unknown, kdf?: unknown, kdf_params?: {N?: unknown, r?: unknown, p?: unknown}, salt?: unknown, iv?: unknown, auth_tag?: unknown, ciphertext_sha256?: unknown}} [encryption]
+ */
+
+/**
+ * Inner package document after envelope decoding. Only the presence of
+ * `manifest`, `files` and `checksums` is checked by validateStarterBackupPackage;
+ * `manifest` is presented through the manifest view only after the format and
+ * table-set checks pass.
+ * @typedef {object} StarterBackupPackageInnerReadView
+ * @property {StarterBackupManifestExpectedData} [manifest]
+ * @property {Record<string, unknown>} [files]
+ * @property {Record<string, unknown>} [checksums]
+ * @property {unknown} [per_table_hashes]
+ */
+
+/**
+ * Stored history entry written by recordStarterBackupHistory into
+ * starter-backup-history.json. Older or hand-edited files are read back without
+ * re-validation, so `counts` stays `unknown`.
+ * @typedef {object} StarterBackupHistoryEntryExpectedData
+ * @property {string} id
+ * @property {string} at
+ * @property {string} lodgeId
+ * @property {string} fileName
+ * @property {string} destination
+ * @property {number} bytes
+ * @property {string} sha256
+ * @property {boolean} encrypted
+ * @property {boolean} complete
+ * @property {unknown} counts
+ */
+
+/**
+ * Caller-supplied history entry. index.js spreads the export/copy result into it
+ * and starterBackupAutomation passes its run provenance (`automated`,
+ * `window_id`, `run_id`). recordStarterBackupHistory currently persists only the
+ * fields copied into `safeEntry`; the provenance keys are accepted and dropped.
+ * @typedef {object} StarterBackupHistoryEntryInputReadView
+ * @property {unknown} [id]
+ * @property {unknown} [at]
+ * @property {unknown} [lodgeId]
+ * @property {unknown} [fileName]
+ * @property {unknown} [destination]
+ * @property {unknown} [bytes]
+ * @property {unknown} [sha256]
+ * @property {unknown} [encrypted]
+ * @property {unknown} [complete]
+ * @property {unknown} [counts]
+ * @property {boolean} [automated]
+ * @property {string} [window_id]
+ * @property {string} [run_id]
+ */
+
+/**
+ * Row arrays returned by loadLodgeRowsForBackup carry read-evidence properties
+ * defined by withReadEvidence. Both are written as literal `source`/`complete`
+ * values for this run; a cache file could still supply its own `_source`.
+ * @typedef {unknown[] & {_source?: unknown, _complete?: unknown}} StarterBackupRowArrayExpectedData
+ */
+
+/**
+ * Identity map produced by buildRecoveryIdentityMap: deterministic table buckets
+ * plus provenance metadata. Buckets map a source row id to a recovery row id.
+ * @typedef {Record<string, unknown> & {
+ *   sourceLodgeId: string,
+ *   recoveryLodgeId: string,
+ *   seed: string,
+ *   settings: Record<string, string>,
+ *   rooms: Record<string, string>,
+ *   customers: Record<string, string>,
+ *   bookings: Record<string, string>,
+ *   quotations: Record<string, string>,
+ *   payments: Record<string, string>,
+ *   maintenance: Record<string, string>,
+ *   slugMapping?: Record<string, string>
+ * }} StarterRecoveryIdentityMapExpectedData
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
 function stableStringify(value) {
   // Deterministic JSON serialization for per-table canonical hashes.
   // Object keys are sorted recursively; arrays keep order (rows are ordered by
   // their server-side `order` clause at export time).
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry) ?? 'null').join(',')}]`
+  if (Array.isArray(value)) return `[${(/** @type {unknown[]} */ (value)).map((entry) => stableStringify(entry) ?? 'null').join(',')}]`
   const keys = Object.keys(value).sort()
+  // Object.keys above establishes the enumerable-key serialization boundary;
+  // values remain unknown and are recursively serialized without validation.
+  /** @type {string[]} */
   const entries = []
   for (const key of keys) {
-    const serialized = stableStringify(value[key])
+    const serialized = stableStringify((/** @type {Record<string, unknown>} */ (value))[key])
     if (serialized !== undefined) entries.push(`${JSON.stringify(key)}:${serialized}`)
   }
   return `{${entries.join(',')}}`
 }
 
+/**
+ * @param {unknown[]} rows
+ * @returns {string}
+ */
 function perTableCanonicalHash(rows) {
-  return sha256(stableStringify(rows))
+  // stableStringify's array branch always returns a string (it emits null for
+  // undefined array elements), so this narrow assertion reflects that branch.
+  return sha256(/** @type {string} */ (stableStringify(rows)))
 }
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+/** @param {unknown} value */
 function normalizeBookingAccommodationRelation(value) {
   if (value === undefined || value === null) return undefined
   if (Array.isArray(value)) {
@@ -112,6 +375,7 @@ function normalizeBookingAccommodationRelation(value) {
   return value
 }
 
+/** @param {unknown} value */
 function sanitizeBookingAccommodationDetails(value) {
   // PostgREST may expose a one-to-one relation as a one-element array; the
   // online loader normalizes that wire shape before it reaches this DTO
@@ -120,6 +384,7 @@ function sanitizeBookingAccommodationDetails(value) {
   const detail = value === null ? undefined : value
   if (detail === undefined) return undefined
   if (!isPlainObject(detail)) return detail
+  /** @type {Record<string, unknown>} */
   const out = {}
   for (const [key, nestedValue] of Object.entries(detail)) {
     if (!BOOKING_ACCOMMODATION_DETAIL_FIELDS.has(key)) continue
@@ -132,9 +397,15 @@ function sanitizeBookingAccommodationDetails(value) {
   return out
 }
 
+/**
+ * @param {string} tableKey
+ * @param {StarterBackupRowReadView} row
+ * @returns {StarterBackupRowReadView}
+ */
 function sanitizeRowForRestore(tableKey, row) {
   const allowlist = RESTORE_FIELD_ALLOWLIST[tableKey]
   if (!allowlist) return { ...row }
+  /** @type {StarterBackupRowReadView} */
   const out = {}
   for (const [key, value] of Object.entries(row)) {
     if (EXCLUDED_RESTORE_FIELD_NAMES.has(key)) continue
@@ -149,7 +420,12 @@ function sanitizeRowForRestore(tableKey, row) {
   return out
 }
 
+/**
+ * @param {Record<string, unknown>} tables
+ * @param {Record<string, unknown>} sanitizedTables
+ */
 function buildDtoSanitizationReport(tables, sanitizedTables) {
+  /** @type {Record<string, {rows: number, rows_with_stripped_fields: number, stripped_field_count: number, fields: Record<string, number>}>} */
   const perTable = {}
   let totalRows = 0
   let rowsWithStrippedFields = 0
@@ -157,6 +433,7 @@ function buildDtoSanitizationReport(tables, sanitizedTables) {
   for (const key of REQUIRED_TABLE_KEYS) {
     const rows = Array.isArray(tables?.[key]) ? tables[key] : []
     const safeRows = Array.isArray(sanitizedTables?.[key]) ? sanitizedTables[key] : []
+    /** @type {Record<string, number>} */
     const fields = {}
     let tableRowsWithStrippedFields = 0
     let tableStrippedFieldCount = 0
@@ -208,12 +485,14 @@ function buildDtoSanitizationReport(tables, sanitizedTables) {
   }
 }
 
+/** @param {unknown} value @param {string} label */
 function validateNonNegativeInt(value, label) {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 2147483647) {
     throw new Error(`${label} must be a non-negative 32-bit integer.`)
   }
 }
 
+/** @param {StarterBackupRowReadView} row */
 function validateBookingAccommodationDetails(row) {
   if (!Object.hasOwn(row, 'booking_accommodation_details')) return
   const detail = row.booking_accommodation_details
@@ -263,6 +542,10 @@ function validateBookingAccommodationDetails(row) {
   }
 }
 
+/**
+ * @param {string} tableKey
+ * @param {StarterBackupRowReadView} row
+ */
 function validateRowTypes(tableKey, row) {
   // Minimal type contracts: IDs must be string-like, monetary fields numeric,
   // lodge linkage present. Full schema evolution is handled by adapters.
@@ -286,6 +569,12 @@ function validateRowTypes(tableKey, row) {
 
 const LEDGER_PAYMENT_TYPES = new Set(['payment', 'deposit', 'refund', 'retention_fee'])
 
+/**
+ * @param {StarterBackupRowReadView | null | undefined} payment
+ * @param {number} index
+ * @param {Set<string>} bookingIds
+ * @param {{allowUnlinkedConference?: boolean, allowOrphanPayments?: boolean}} [options]
+ */
 function validateLedgerEntrySign(payment, index, bookingIds, { allowUnlinkedConference = false, allowOrphanPayments = false } = {}) {
   const paymentId = payment?.id ? String(payment.id) : `at row ${index + 1}`
   const type = String(payment?.type || '').trim().toLowerCase()
@@ -307,6 +596,10 @@ function validateLedgerEntrySign(payment, index, bookingIds, { allowUnlinkedConf
   return { type, amount, bookingId, conferenceId }
 }
 
+/**
+ * @param {Record<string, unknown> | null} [tables]
+ * @param {{allowUnlinkedConference?: boolean, allowOrphanPayments?: boolean}} [options]
+ */
 function validateLedgerRows(tables, options = {}) {
   const bookings = Array.isArray(tables?.bookings) ? tables.bookings : []
   const payments = Array.isArray(tables?.signed_payment_ledger) ? tables.signed_payment_ledger : []
@@ -322,6 +615,11 @@ function validateLedgerRows(tables, options = {}) {
   return validated
 }
 
+/**
+ * @param {Record<string, unknown>} tables
+ * @param {unknown[]} warnings
+ * @param {boolean} [driftDetected]
+ */
 function buildTableSnapshotCoherence(tables, warnings, driftDetected = false) {
   // The seven reads are independent, not a point-in-time snapshot. Without a
   // server-side transaction, coherence is only advisory. Always report false
@@ -345,6 +643,10 @@ function buildTableSnapshotCoherence(tables, warnings, driftDetected = false) {
   }
 }
 
+/**
+ * @param {{lodgeId?: unknown, supabase?: unknown, isOnline?: unknown, cacheDir?: unknown, appVersion?: unknown}} [overrides]
+ * @returns {StarterBackupContextExpectedData}
+ */
 function captureBackupContext(overrides = {}) {
   // Freeze mutable global state once per backup operation. All subsequent reads
   // for this run use the captured values. This prevents a lodge switch,
@@ -357,21 +659,41 @@ function captureBackupContext(overrides = {}) {
   return { lodgeId, supabaseClient, isOnline, cacheDir, appVersion }
 }
 
+/**
+ * @param {unknown} value
+ * @returns {StarterBackupRowReadView[]}
+ */
 function asRows(value) {
   if (Array.isArray(value)) return value
-  if (value && typeof value === 'object') return [value]
+  if (value && typeof value === 'object') return [/** @type {StarterBackupRowReadView} */ (value)]
   return []
 }
+/**
+ * @param {StarterBackupRowReadView | null | undefined} row
+ * @param {unknown} lodgeId
+ * @param {{allowMissing?: boolean}} [options]
+ * @returns {boolean}
+ */
 function rowBelongsToLodge(row, lodgeId, { allowMissing = false } = {}) {
   if (!row || row.lodge_id === undefined || row.lodge_id === null || row.lodge_id === '') return allowMissing
   return String(row.lodge_id) === String(lodgeId)
 }
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
 function containsProtectedKey(value) {
   if (Array.isArray(value)) return value.some(containsProtectedKey)
   if (!value || typeof value !== 'object') return false
   if (Object.keys(value).some((key) => PROTECTED_FIELD_NAMES.has(String(key).toLowerCase()))) return true
   return Object.values(value).some(containsProtectedKey)
 }
+/**
+ * @param {string} name
+ * @param {unknown} value
+ * @param {string} lodgeId
+ * @returns {StarterBackupRowReadView[]}
+ */
 function normalizeTable(name, value, lodgeId) {
   const rows = asRows(value)
   const foreignRows = rows.filter((row) => !rowBelongsToLodge(row, lodgeId, { allowMissing: name === 'settings' })).length
@@ -392,39 +714,73 @@ function normalizeTable(name, value, lodgeId) {
     return safe
   })
 }
-function readSource(value, fallback = 'unknown') { return Array.isArray(value) ? value._source || fallback : fallback }
-function isComplete(value, source) { return Array.isArray(value) && value._complete !== undefined ? value._complete === true : source === 'server' }
+/**
+ * `_source` is only attached by withReadEvidence for this run; a cache file could
+ * still carry its own value, so the read result stays `unknown` and falls back.
+ * @param {unknown} value
+ * @param {string} [fallback]
+ * @returns {unknown}
+ */
+function readSource(value, fallback = 'unknown') { return Array.isArray(value) ? /** @type {StarterBackupRowArrayExpectedData} */ (value)._source || fallback : fallback }
+/**
+ * @param {unknown} value
+ * @param {unknown} source
+ * @returns {boolean}
+ */
+function isComplete(value, source) { return Array.isArray(value) && /** @type {StarterBackupRowArrayExpectedData} */ (value)._complete !== undefined ? /** @type {StarterBackupRowArrayExpectedData} */ (value)._complete === true : source === 'server' }
+/**
+ * @param {string} name
+ * @param {unknown} value
+ * @param {StarterBackupRowReadView[]} rows
+ */
 function buildTableEvidence(name, value, rows) {
   // Note: source is captured per-load; the fallback mirrors the immutable
   // context's online flag where available.
   const source = readSource(value, 'offline-cache')
   return { table: name, count: rows.length, source, complete: isComplete(value, source), note: source === 'server' && isComplete(value, source) ? 'Server-confirmed read.' : 'Local or partial read; verify with support before relying on this package for full recovery.' }
 }
+/**
+ * @param {unknown[]} rows
+ * @param {string} source
+ * @param {boolean} complete
+ * @returns {StarterBackupRowArrayExpectedData}
+ */
 function withReadEvidence(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : []
   Object.defineProperties(result, { _source: { value: source, enumerable: true }, _complete: { value: complete === true, enumerable: true } })
-  return result
+  return /** @type {StarterBackupRowArrayExpectedData} */ (result)
 }
+/**
+ * @param {string} name
+ * @param {unknown} [cacheDirOverride]
+ * @returns {StarterBackupRowReadView[]}
+ */
 function readLocalRows(name, cacheDirOverride) {
   try {
     const cacheDir = String(cacheDirOverride !== undefined ? cacheDirOverride : state.cacheDir || '').trim()
     if (!cacheDir) return []
     const value = JSON.parse(fs.readFileSync(path.join(cacheDir, `${name}.json`), 'utf8'))
-    return Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []
+    return Array.isArray(value) ? value : value && typeof value === 'object' ? [/** @type {StarterBackupRowReadView} */ (value)] : []
   } catch { return [] }
 }
 
+/**
+ * @param {{key: string, table: string, cache: string, order: string, select: string}} spec
+ * @param {StarterBackupContextExpectedData | null | undefined} [context]
+ */
 async function loadLodgeRowsForBackup(spec, context) {
   const effectiveContext = context || captureBackupContext()
   const lodgeId = effectiveContext.lodgeId
-  const supabaseClient = effectiveContext.supabaseClient
+  // The client is injected through IPC/global state as `unknown`; this is the
+  // single boundary where it is read with the query view above.
+  const supabaseClient = /** @type {StarterBackupSupabaseClientReadView} */ (effectiveContext.supabaseClient)
   const isOnline = effectiveContext.isOnline
   const cacheDir = effectiveContext.cacheDir
   if (!isOnline || !supabaseClient) {
     if (spec.key === 'settings') return withReadEvidence([readLocalRows(spec.cache, cacheDir)[0] || { lodge_id: lodgeId }], 'offline-cache', false)
     return withReadEvidence(readLocalRows(spec.cache, cacheDir), 'offline-cache', false)
   }
-  const rows = []
+  const rows = /** @type {StarterBackupRowReadView[]} */ ([])
   for (let from = 0; from < MAX_ROWS_PER_TABLE; from += 500) {
     let query = supabaseClient.from(spec.table).select(spec.select || '*').eq('lodge_id', lodgeId)
     if (spec.order) query = query.order(spec.order, { ascending: spec.key === 'rooms' || spec.key === 'customers' })
@@ -449,6 +805,9 @@ async function loadLodgeRowsForBackup(spec, context) {
   return withReadEvidence(rows, 'server', true)
 }
 
+/**
+ * @param {StarterBackupOptionsInputReadView} [options]
+ */
 async function buildStarterBackupPayload(options = {}) {
   // Capture once; do not re-read global state per table.
   const context = options._backupContext || captureBackupContext({ lodgeId: options.lodgeId, supabase: options.supabase, isOnline: options.isOnline, cacheDir: options.cacheDir, appVersion: options.appVersion })
@@ -474,7 +833,7 @@ async function buildStarterBackupPayload(options = {}) {
     try {
       for (const key of ['bookings', 'signed_payment_ledger']) {
         const spec = CORE_TABLE_SPECS.find((entry) => entry.key === key)
-        const { count, error } = await context.supabaseClient.from(spec.table).select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId)
+        const { count, error } = await (/** @type {StarterBackupSupabaseClientReadView} */ (context.supabaseClient)).from(spec.table).select('id', { count: 'exact', head: true }).eq('lodge_id', lodgeId)
         if (!error && typeof count === 'number' && count !== rowsByTable[key].length) {
           driftDetected = true
           driftWarning = `Drift detected: ${key} changed during export (initial ${rowsByTable[key].length}, recheck ${count}).`
@@ -497,14 +856,22 @@ async function buildStarterBackupPayload(options = {}) {
   }
 }
 
+/** @param {string | Buffer} value @returns {string} */
 function sha256(value) { return crypto.createHash('sha256').update(value).digest('hex') }
+/** @param {unknown} value @returns {string} */
 function canonicalJson(value) { return `${JSON.stringify(value, null, 2)}\n` }
+/** @param {unknown} passphrase @returns {string} */
 function requirePassphrase(passphrase) {
   const value = String(passphrase || '')
   if (value.length < 12) throw new Error('Use an encryption passphrase with at least 12 characters.')
   if (value.length > 1024) throw new Error('The encryption passphrase is too long.')
   return value
 }
+/**
+ * @param {StarterBackupPayloadExpectedData | null | undefined} payload
+ * @param {unknown} [appVersion]
+ * @param {string} [format]
+ */
 function buildManifest(payload, appVersion = payload?.app_version || 'unknown', format = DEFAULT_PACKAGE_SCHEMA) {
   const tableKeys = CORE_TABLE_SPECS.map((spec) => spec.key)
   const base = { format, core_schema: payload?.schema || STARTER_BACKUP_SCHEMA, app_version: String(appVersion || 'unknown'), generated_at: payload?.generated_at || null, lodge_id: payload?.lodge_id || null, recovery_mode: 'support-led-disposable-restore-only', live_restore_available: false, contains_personal_data: true, included_categories: [...INCLUDED_CATEGORIES], excluded_categories: [...EXCLUDED_CATEGORIES], table_keys: tableKeys, table_counts: Object.fromEntries(tableKeys.map((key) => [key, Array.isArray(payload?.tables?.[key]) ? payload.tables[key].length : 0])), complete: payload?.completeness?.complete === true, warnings: Array.isArray(payload?.completeness?.warnings) ? payload.completeness.warnings : [], dto_sanitization: payload?.completeness?.dto_sanitization || null }
@@ -513,7 +880,12 @@ function buildManifest(payload, appVersion = payload?.app_version || 'unknown', 
     : base
 }
 
+/**
+ * @param {Record<string, unknown> | null | undefined} tables
+ * @returns {Record<string, string>}
+ */
 function buildV3PerTableHashes(tables) {
+  /** @type {Record<string, string>} */
   const out = {}
   for (const key of REQUIRED_TABLE_KEYS) {
     const rows = Array.isArray(tables?.[key]) ? tables[key] : []
@@ -522,6 +894,13 @@ function buildV3PerTableHashes(tables) {
   return out
 }
 
+/**
+ * The preview only reads these display fields. A validated package manifest and
+ * the persisted operation summary (which omits table_keys/table_counts) both fit.
+ * @param {{format?: unknown, core_schema?: unknown, lodge_id?: unknown, app_version?: unknown, generated_at?: unknown, per_table_hashes?: unknown, complete?: unknown, warnings?: unknown, dto_sanitization?: unknown} | null | undefined} manifest
+ * @param {Record<string, number> | null | undefined} counts
+ * @param {{manifestVerified?: unknown, snapshotCoherence?: unknown}} [options]
+ */
 export function buildRestorePreviewReport(manifest, counts, options = {}) {
   // Read-only preview helper for Command Central: never includes raw rows or PII.
   return {
@@ -541,6 +920,10 @@ export function buildRestorePreviewReport(manifest, counts, options = {}) {
     included_categories: [...INCLUDED_CATEGORIES]
   }
 }
+/**
+ * @param {StarterBackupPayloadExpectedData | null | undefined} payload
+ * @param {StarterBackupOptionsInputReadView} [options]
+ */
 function packageParts(payload, options = {}) {
   // v3 is now the default production format (per-table canonical hashes). Callers
   // may explicitly pass useV3:false to emit v2 for legacy compatibility; all
@@ -563,8 +946,29 @@ function packageParts(payload, options = {}) {
   return { coreData, manifest, readme, checksums, perTableHashes, sanitizedPayload, dtoSanitization }
 }
 
+/**
+ * @typedef {object} StarterBackupCopyVerificationSuccessExpectedData
+ * @property {true} success
+ * @property {string} fileName
+ * @property {number} bytes
+ * @property {string} destination
+ */
+
+/**
+ * A successful verifyStarterBackupAtPath result is the validated package plus
+ * the selected file identity; failures only carry an operator-facing error.
+ * @typedef {StarterBackupValidationSuccessExpectedData & StarterBackupCopyVerificationSuccessExpectedData} StarterBackupCopyVerificationSuccessView
+ */
+
+/** @typedef {StarterBackupCopyVerificationSuccessView | StarterBackupFailureExpectedData} StarterBackupCopyVerificationExpectedData */
+
+/**
+ * @param {StarterBackupPayloadExpectedData | null | undefined} payload
+ * @param {StarterBackupOptionsInputReadView} [options]
+ */
 export function createStarterBackupPackage(payload, options = {}) {
   const parts = packageParts(payload, options)
+  /** @type {{manifest: StarterBackupManifestExpectedData, checksums: unknown, files: Record<string, string>, per_table_hashes?: Record<string, string>}} */
   const inner = { manifest: parts.manifest, checksums: parts.checksums, files: { 'core-data.json': parts.coreData, 'manifest.json': canonicalJson(parts.manifest), 'README.txt': parts.readme } }
   // When v3 hashes exist, also embed them as a non-PII reconciliation sidecar so a
   // trusted backend can verify without trusting PostgreSQL canonicalization.
@@ -583,11 +987,17 @@ export function createStarterBackupPackage(payload, options = {}) {
   return { bytes, packageSha256: sha256(bytes), coreDataSha256: parts.checksums['core-data.json'], checksums: parts.checksums, manifest: parts.manifest, counts: Object.fromEntries((parts.manifest.table_keys || []).map((key) => [key, Array.isArray(parts.sanitizedPayload?.tables?.[key]) ? parts.sanitizedPayload.tables[key].length : 0])), encrypted: envelope.encrypted === true, perTableHashes: parts.perTableHashes || null, dtoSanitization: parts.dtoSanitization }
 }
 
+/**
+ * @param {Buffer | string | null | undefined} buffer
+ * @param {unknown} [passphrase]
+ * @returns {{envelope: StarterBackupEnvelopeReadView, inner: StarterBackupPackageInnerReadView}}
+ */
 function decodeEnvelope(buffer, passphrase = '') {
+  /** @type {StarterBackupEnvelopeReadView} */
   let envelope
-  try { envelope = JSON.parse(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '')) } catch { throw new Error('This file is not a valid Tsa Bonno .tbbackup package.') }
-  if (!SUPPORTED_PACKAGE_SCHEMAS.has(envelope?.format)) throw new Error('Unsupported or outdated .tbbackup package format.')
-  if (envelope.encrypted !== true) return { envelope, inner: envelope }
+  try { envelope = /** @type {StarterBackupEnvelopeReadView} */ (JSON.parse(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || ''))) } catch { throw new Error('This file is not a valid Tsa Bonno .tbbackup package.') }
+  if (!SUPPORTED_PACKAGE_SCHEMAS.has(/** @type {string} */ (envelope?.format))) throw new Error('Unsupported or outdated .tbbackup package format.')
+  if (envelope.encrypted !== true) return { envelope, inner: /** @type {StarterBackupPackageInnerReadView} */ (envelope) }
   if (envelope?.encryption?.algorithm !== 'aes-256-gcm' || envelope?.encryption?.kdf !== 'scrypt') throw new Error('Unsupported backup encryption settings.')
   if (envelope?.encryption?.kdf_params?.N !== 32768 || envelope?.encryption?.kdf_params?.r !== 8 || envelope?.encryption?.kdf_params?.p !== 1) throw new Error('Unsupported backup key-derivation settings.')
   const ciphertext = Buffer.from(String(envelope.ciphertext || ''), 'base64')
@@ -599,9 +1009,14 @@ function decodeEnvelope(buffer, passphrase = '') {
     decipher.setAuthTag(Buffer.from(String(envelope.encryption.auth_tag || ''), 'base64'))
     plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()])
   } catch { throw new Error('Backup could not be decrypted. Check the passphrase and try again.') }
-  try { return { envelope, inner: JSON.parse(plaintext.toString('utf8')) } } catch { throw new Error('Backup decryption produced an invalid package.') }
+  try { return { envelope, inner: /** @type {StarterBackupPackageInnerReadView} */ (JSON.parse(plaintext.toString('utf8'))) } } catch { throw new Error('Backup decryption produced an invalid package.') }
 }
 
+/**
+ * @param {Buffer | string | null | undefined} buffer
+ * @param {StarterBackupOptionsInputReadView} [options]
+ * @returns {StarterBackupValidationSuccessExpectedData}
+ */
 export function validateStarterBackupPackage(buffer, options = {}) {
   const packageBytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer || ''), 'utf8')
   if (packageBytes.length > MAX_PACKAGE_BYTES) throw new Error('The selected recovery package is too large to verify safely.')
@@ -615,11 +1030,12 @@ export function validateStarterBackupPackage(buffer, options = {}) {
   if (canonicalJson(manifestFile) !== canonicalJson(manifest)) throw new Error('Backup manifest copies do not match.')
   if (!SUPPORTED_PACKAGE_SCHEMAS.has(manifest?.format) || manifest?.core_schema !== STARTER_BACKUP_SCHEMA) throw new Error('Backup manifest format is unsupported.')
   if (decoded.envelope.encrypted === true && (String(decoded.envelope.lodge_id) !== String(manifest.lodge_id) || String(decoded.envelope.app_version) !== String(manifest.app_version))) throw new Error('Encrypted backup header and manifest identity do not match.')
+  /** @type {StarterBackupPayloadExpectedData} */
   let payload
-  try { payload = JSON.parse(files['core-data.json']) } catch { throw new Error('Backup core data is not valid JSON.') }
+  try { payload = /** @type {StarterBackupPayloadExpectedData} */ (JSON.parse(files['core-data.json'])) } catch { throw new Error('Backup core data is not valid JSON.') }
   if (payload?.schema !== STARTER_BACKUP_SCHEMA || payload?.lodge_id !== manifest.lodge_id) throw new Error('Backup core data and manifest identity do not match.')
   if (options.expectedLodgeId && String(options.expectedLodgeId) !== String(payload.lodge_id)) throw new Error('This backup belongs to a different lodge and cannot be rehearsed here.')
-  const tableKeys = Array.isArray(manifest.table_keys) ? manifest.table_keys : []
+  const tableKeys = /** @type {string[]} */ (Array.isArray(manifest.table_keys) ? manifest.table_keys : [])
   if (tableKeys.length !== REQUIRED_TABLE_KEYS.length || REQUIRED_TABLE_KEYS.some((key) => !tableKeys.includes(key)) || tableKeys.some((key) => !REQUIRED_TABLE_KEYS.includes(key))) throw new Error('Backup manifest does not contain the required core table set.')
   const missing = tableKeys.filter((key) => !Array.isArray(payload?.tables?.[key]))
   if (missing.length) throw new Error(`Backup is missing required table data: ${missing.join(', ')}.`)
@@ -634,7 +1050,7 @@ export function validateStarterBackupPackage(buffer, options = {}) {
     validateRowTypes(key, sanitizeRowForRestore(key, row))
   }
   const counts = Object.fromEntries(tableKeys.map((key) => [key, payload.tables[key].length]))
-  if (tableKeys.some((key) => Number(manifest?.table_counts?.[key]) !== counts[key])) throw new Error('Backup manifest record counts do not match the core data.')
+  if (tableKeys.some((key) => Number((/** @type {Record<string, unknown> | undefined} */ (manifest?.table_counts))?.[key]) !== counts[key])) throw new Error('Backup manifest record counts do not match the core data.')
   const sanitizedTables = Object.fromEntries(tableKeys.map((key) => [key, payload.tables[key].map((row) => sanitizeRowForRestore(key, row))]))
   const computedDtoSanitization = buildDtoSanitizationReport(payload.tables, sanitizedTables)
   // Current exporters disclose fields stripped before packaging in the
@@ -647,10 +1063,11 @@ export function validateStarterBackupPackage(buffer, options = {}) {
   // Per-table hash reconciliation: v3 carries a checked sidecar; for v2
   // packages, recompute the hashes locally and verify any legacy sidecar rather
   // than trusting it. Hashes describe the restore DTO, not excluded source fields.
+  /** @type {Record<string, string> | null} */
   let perTableHashes = null
   let perTableHashesVerified = false
   const expectedPerTableHashes = buildV3PerTableHashes(sanitizedTables)
-  const suppliedPerTableHashes = manifest?.per_table_hashes || inner?.per_table_hashes || null
+  const suppliedPerTableHashes = /** @type {Record<string, unknown> | null} */ (manifest?.per_table_hashes || inner?.per_table_hashes || null)
   if (manifest?.format === STARTER_BACKUP_PACKAGE_SCHEMA_V3 && !manifest?.per_table_hashes) throw new Error('Backup v3 manifest is missing its per-table hashes.')
   if (suppliedPerTableHashes) {
     const suppliedKeys = Object.keys(suppliedPerTableHashes).sort()
@@ -664,8 +1081,13 @@ export function validateStarterBackupPackage(buffer, options = {}) {
   // Return only the sanitized DTO. Raw package rows (including legacy identity
   // artifacts) must not cross the main/preload boundary.
   const safePayload = { ...payload, tables: sanitizedTables, completeness: { ...(payload.completeness || {}), dto_sanitization: dtoSanitization } }
-  return { success: true, format: manifest.format, encrypted: decoded.envelope.encrypted === true, packageSha256: sha256(packageBytes), coreDataSha256: inner.checksums['core-data.json'], checksums: inner.checksums, manifest, payload: safePayload, sanitizedTables, counts, complete: manifest.complete === true, warnings: Array.isArray(manifest.warnings) ? manifest.warnings : [], perTableHashes, perTableHashesVerified, dtoSanitization, snapshotCoherence: payload?.completeness?.snapshot_coherence || null }
+  return { success: true, format: manifest.format, encrypted: decoded.envelope.encrypted === true, packageSha256: sha256(packageBytes), coreDataSha256: inner.checksums['core-data.json'], checksums: inner.checksums, manifest, payload: safePayload, sanitizedTables, counts, complete: manifest.complete === true, warnings: Array.isArray(manifest.warnings) ? /** @type {unknown[]} */ (manifest.warnings) : [], perTableHashes, perTableHashesVerified, dtoSanitization, snapshotCoherence: payload?.completeness?.snapshot_coherence || null }
 }
+/**
+ * @param {unknown} filePath
+ * @param {StarterBackupOptionsInputReadView} [options]
+ * @returns {StarterBackupCopyVerificationExpectedData}
+ */
 export function verifyStarterBackupAtPath(filePath, options = {}) {
   try {
     const target = String(filePath || '').trim()
@@ -676,9 +1098,10 @@ export function verifyStarterBackupAtPath(filePath, options = {}) {
     if (stats.size > MAX_PACKAGE_BYTES) return { success: false, error: 'The selected recovery package is too large to verify safely.' }
     const bytes = fs.readFileSync(target), result = validateStarterBackupPackage(bytes, options)
     return { ...result, fileName: path.basename(target), bytes: bytes.length, destination: target }
-  } catch (error) { return { success: false, error: error?.message || 'Backup verification failed.' }
+  } catch (error) { return { success: false, error: (/** @type {StarterBackupErrorMessageReadView} */ (error))?.message || 'Backup verification failed.' }
   }
 }
+/** @param {string} filePath */
 function fsyncFileSync(filePath) {
   try {
     const handle = fs.openSync(filePath, 'r+')
@@ -686,6 +1109,7 @@ function fsyncFileSync(filePath) {
   } catch {}
 }
 
+/** @param {string} dirPath */
 function fsyncDirSync(dirPath) {
   try {
     const handle = fs.openSync(dirPath, 'r')
@@ -693,18 +1117,27 @@ function fsyncDirSync(dirPath) {
   } catch {}
 }
 
+/**
+ * @param {string} filePath
+ * @param {Buffer | string} bytes
+ */
 function writeAtomic(filePath, bytes) {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`
-  try { fs.mkdirSync(path.dirname(filePath), { recursive: true }); fs.writeFileSync(temporaryPath, bytes, { flag: 'wx' }); fsyncFileSync(temporaryPath); fs.renameSync(temporaryPath, filePath); fsyncDirSync(path.dirname(filePath)) } catch (error) { try { if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath) } catch {}; throw new Error(`Starter backup could not be written. Choose another destination and try again. (${error?.code || 'write_error'})`) }
+  try { fs.mkdirSync(path.dirname(filePath), { recursive: true }); fs.writeFileSync(temporaryPath, bytes, { flag: 'wx' }); fsyncFileSync(temporaryPath); fs.renameSync(temporaryPath, filePath); fsyncDirSync(path.dirname(filePath)) } catch (error) { try { if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath) } catch {}; throw new Error(`Starter backup could not be written. Choose another destination and try again. (${(/** @type {StarterBackupErrorMessageReadView} */ (error))?.code || 'write_error'})`) }
 }
 
+/**
+ * @param {Record<string, unknown> | null | undefined} tables
+ * @param {{strict?: unknown, allowUnlinkedConference?: unknown, allowOrphanPayments?: unknown}} [options]
+ */
 export function reconstructBookingLedger(tables, options = {}) {
   // Advisory rehearsal calculation only. It must never be treated as an
   // authoritative amount_paid/payment_status write; production derives those
   // values inside the database payment RPC/transaction.
-  const bookings = Array.isArray(tables?.bookings) ? tables.bookings : []
-  const payments = Array.isArray(tables?.signed_payment_ledger) ? tables.signed_payment_ledger : []
-  const ledgerByBooking = new Map()
+  const bookings = Array.isArray(tables?.bookings) ? /** @type {StarterBackupRowReadView[]} */ (tables.bookings) : []
+  const payments = Array.isArray(tables?.signed_payment_ledger) ? /** @type {StarterBackupRowReadView[]} */ (tables.signed_payment_ledger) : []
+  const ledgerByBooking = /** @type {Map<string, number>} */ (new Map())
+  /** @type {Array<Record<string, unknown>>} */
   const orphanPayments = []
   const bookingIds = new Set(bookings.map((row) => String(row.id || '')).filter(Boolean))
   let totalPayments = 0
@@ -750,6 +1183,11 @@ export function reconstructBookingLedger(tables, options = {}) {
   }
 }
 
+/**
+ * @param {StarterBackupRemapPayloadReadView | null | undefined} payload
+ * @param {{operationId?: string | null | undefined, recoveryLodgeId?: string | null | undefined}} [options]
+ * @returns {StarterRecoveryIdentityMapExpectedData}
+ */
 export function buildRecoveryIdentityMap(payload, options = {}) {
   // Durable remapping for isolated recovery targets where the source lodge still exists.
   // Preserves original IDs in provenance; generates new target IDs deterministically
@@ -757,50 +1195,58 @@ export function buildRecoveryIdentityMap(payload, options = {}) {
   const seed = String(options.operationId || options.recoveryLodgeId || randomUUID())
   const newLodgeId = options.recoveryLodgeId || randomUUID()
   const sourceLodgeId = String(payload?.lodge_id || '')
+  /** @param {unknown} original @returns {string} */
   function deriveId(original) {
     return crypto.createHash('sha256').update(`${seed}:${String(original)}`).digest('hex').slice(0, 32).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5')
   }
+  /** @type {StarterRecoveryIdentityMapExpectedData} */
   const map = { sourceLodgeId, recoveryLodgeId: newLodgeId, seed, settings: {}, rooms: {}, customers: {}, bookings: {}, quotations: {}, payments: {}, maintenance: {} }
   for (const table of REQUIRED_TABLE_KEYS) {
-    const rows = Array.isArray(payload?.tables?.[table]) ? payload.tables[table] : []
+    const rows = Array.isArray(payload?.tables?.[table]) ? /** @type {StarterBackupRowReadView[]} */ (payload.tables[table]) : []
     for (const row of rows) {
       const originalId = row?.id ? String(row.id) : null
       if (!originalId) continue
       const bucket = table === 'signed_payment_ledger' ? 'payments' : table
-      if (!map[bucket]) map[bucket] = {}
-      map[bucket][originalId] = deriveId(`${table}:${originalId}`)
+      if (!map[bucket]) map[bucket] = {};
+      (/** @type {Record<string, string>} */ (map[bucket]))[originalId] = deriveId(`${table}:${originalId}`)
     }
   }
   // Deterministic slug regeneration to avoid unique constraint collisions.
   map.slugMapping = {}
-  const settingsRows = Array.isArray(payload?.tables?.settings) ? payload.tables.settings : []
+  const settingsRows = Array.isArray(payload?.tables?.settings) ? /** @type {StarterBackupRowReadView[]} */ (payload.tables.settings) : []
   for (const settings of settingsRows) {
-    if (settings.slug) map.slugMapping[settings.slug] = `${String(settings.slug).slice(0, 48)}-recovery-${newLodgeId.slice(0, 8)}`
+    if (settings.slug) map.slugMapping[/** @type {string} */ (settings.slug)] = `${String(settings.slug).slice(0, 48)}-recovery-${newLodgeId.slice(0, 8)}`
   }
   return map
 }
 
+/**
+ * @param {StarterBackupRemapPayloadReadView} payload
+ * @param {StarterRecoveryIdentityMapExpectedData} identityMap
+ */
 export function remapPayloadForRecovery(payload, identityMap) {
+  /** @type {Record<string, StarterBackupRowReadView[]>} */
   const tables = {}
   for (const key of REQUIRED_TABLE_KEYS) {
-    const rows = Array.isArray(payload?.tables?.[key]) ? payload.tables[key] : []
+    const rows = Array.isArray(payload?.tables?.[key]) ? /** @type {StarterBackupRowReadView[]} */ (payload.tables[key]) : []
     tables[key] = rows.map((row) => {
       const out = sanitizeRowForRestore(key, row)
       // Lodge scope is rewritten to the recovery lodge.
       if (out.lodge_id !== undefined) out.lodge_id = identityMap.recoveryLodgeId
-      // Primary key remapped; provenance retained.
-      if (out.id && identityMap[key === 'signed_payment_ledger' ? 'payments' : key]?.[String(out.id)]) {
+      // Primary key remapped; provenance retained. The bucket key is one of the
+      // REQUIRED_TABLE_KEYS except signed_payment_ledger, which maps to payments.
+      if (out.id && /** @type {Record<string, string> | undefined} */ (identityMap[key === 'signed_payment_ledger' ? 'payments' : key])?.[String(out.id)]) {
         out._source_id = String(out.id)
-        out.id = identityMap[key === 'signed_payment_ledger' ? 'payments' : key][String(out.id)]
+        out.id = /** @type {Record<string, string>} */ (identityMap[key === 'signed_payment_ledger' ? 'payments' : key])[String(out.id)]
       }
-      if (key === 'settings' && out.slug && identityMap.slugMapping?.[row.slug]) out.slug = identityMap.slugMapping[row.slug]
+      if (key === 'settings' && out.slug && identityMap.slugMapping?.[/** @type {string} */ (row.slug)]) out.slug = identityMap.slugMapping[/** @type {string} */ (row.slug)]
       if (out.room_id && identityMap.rooms?.[String(out.room_id)]) out.room_id = identityMap.rooms[String(out.room_id)]
       if (out.customer_id && identityMap.customers?.[String(out.customer_id)]) out.customer_id = identityMap.customers[String(out.customer_id)]
       if (out.booking_id && identityMap.bookings?.[String(out.booking_id)]) out.booking_id = identityMap.bookings[String(out.booking_id)]
       if (out.quotation_id && identityMap.quotations?.[String(out.quotation_id)]) out.quotation_id = identityMap.quotations[String(out.quotation_id)]
       if (out.converted_booking_id && identityMap.bookings?.[String(out.converted_booking_id)]) out.converted_booking_id = identityMap.bookings[String(out.converted_booking_id)]
       if (key === 'bookings' && out.booking_accommodation_details) {
-        const detail = out.booking_accommodation_details
+        const detail = /** @type {StarterBackupRowReadView} */ (out.booking_accommodation_details)
         // Nested campsite details are part of the booking DTO, but their
         // foreign keys must follow the same isolated-target remap as the
         // containing booking. Never send source lodge/booking IDs downstream.
@@ -812,9 +1258,9 @@ export function remapPayloadForRecovery(payload, identityMap) {
       // still identify source-lodge records. Remap them before the payload is
       // handed to the isolated restore target.
       if (key === 'quotations' && Array.isArray(out.accommodation_lines)) {
-        out.accommodation_lines = out.accommodation_lines.map((line) => {
+        out.accommodation_lines = (/** @type {unknown[]} */ (out.accommodation_lines)).map((line) => {
           if (!line || typeof line !== 'object') return line
-          const mappedLine = { ...line }
+          const mappedLine = { ...(/** @type {StarterBackupRowReadView} */ (line)) }
           if (mappedLine.room_id && identityMap.rooms?.[String(mappedLine.room_id)]) {
             mappedLine.room_id = identityMap.rooms[String(mappedLine.room_id)]
           }
@@ -829,12 +1275,20 @@ export function remapPayloadForRecovery(payload, identityMap) {
   if (tables.settings[0]) tables.settings[0].lodge_id = identityMap.recoveryLodgeId
   return { ...payload, lodge_id: identityMap.recoveryLodgeId, tables, _recovery_provenance: { source_lodge_id: identityMap.sourceLodgeId, recovery_lodge_id: identityMap.recoveryLodgeId, seed: identityMap.seed } }
 }
+/**
+ * @param {unknown} filePath
+ * @param {Buffer | Uint8Array | string | null | undefined} bytes
+ */
 export function writeStarterBackupPackageBytes(filePath, bytes) {
   const target = String(filePath || '').trim()
   if (!target || path.extname(target).toLowerCase() !== '.tbbackup') throw new Error('Starter recovery exports must use the .tbbackup format.')
   writeAtomic(target, Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || ''))
   return { success: true, destination: target, bytes: Buffer.isBuffer(bytes) ? bytes.length : Buffer.byteLength(String(bytes || '')) }
 }
+/**
+ * @param {unknown} filePath
+ * @param {StarterBackupOptionsInputReadView} [options]
+ */
 export async function writeStarterBackupToPath(filePath, options = {}) {
   const target = String(filePath || '').trim()
   if (!target) throw new Error('Choose a destination file for the Starter backup.')
@@ -844,14 +1298,24 @@ export async function writeStarterBackupToPath(filePath, options = {}) {
   return { success: true, fileName: path.basename(target), destination: target, bytes: packaged.bytes.length, sha256: packaged.packageSha256, coreDataSha256: packaged.coreDataSha256, checksums: packaged.checksums, generatedAt: payload.generated_at, lodgeId: payload.lodge_id, appVersion: payload.app_version, complete: payload.completeness.complete, encrypted: packaged.encrypted, warnings: payload.completeness.warnings, counts: packaged.counts, manifest: packaged.manifest }
 }
 
+/**
+ * @param {unknown} historyPath
+ * @param {{lodgeId?: unknown}} [options]
+ * @returns {StarterBackupHistoryEntryExpectedData[]}
+ */
 export function getStarterBackupHistory(historyPath, options = {}) {
   try {
     const target = String(historyPath || '').trim()
     if (!target) return []
-    const raw = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : [], lodgeId = options.lodgeId ? String(options.lodgeId) : null
+    const raw = fs.existsSync(target) ? /** @type {StarterBackupHistoryEntryExpectedData[]} */ (JSON.parse(fs.readFileSync(target, 'utf8'))) : [], lodgeId = options.lodgeId ? String(options.lodgeId) : null
     return (Array.isArray(raw) ? raw : []).filter((entry) => !lodgeId || String(entry.lodgeId) === lodgeId).slice(0, MAX_HISTORY_ENTRIES)
   } catch { return [] }
 }
+/**
+ * @param {unknown} historyPath
+ * @param {StarterBackupHistoryEntryInputReadView} [entry]
+ * @returns {StarterBackupHistoryEntryExpectedData}
+ */
 export function recordStarterBackupHistory(historyPath, entry = {}) {
   const target = String(historyPath || '').trim()
   if (!target) throw new Error('Starter backup history storage is unavailable.')
@@ -861,10 +1325,19 @@ export function recordStarterBackupHistory(historyPath, entry = {}) {
   writeAtomic(target, Buffer.from(canonicalJson(next), 'utf8'))
   return safeEntry
 }
+/**
+ * @param {unknown} historyPath
+ * @param {{lodgeId?: unknown, now?: string | number | Date}} [options]
+ */
 export function getStarterBackupReminder(historyPath, options = {}) {
   const history = getStarterBackupHistory(historyPath, options), latest = history[0] || null, now = options.now ? new Date(options.now).getTime() : Date.now(), ageDays = latest?.at ? Math.max(0, (now - new Date(latest.at).getTime()) / 86400000) : null
   return { lastBackupAt: latest?.at || null, lastBackupFileName: latest?.fileName || null, lastBackupComplete: latest ? latest.complete === true : null, ageDays, state: !latest ? 'never' : latest.complete !== true ? 'incomplete' : ageDays > 7 ? 'due' : 'current', reminderDays: 7, history }
 }
+/**
+ * @param {unknown} sourcePath
+ * @param {unknown} targetDirectory
+ * @param {StarterBackupOptionsInputReadView} [options]
+ */
 export function createStarterRestoreRehearsal(sourcePath, targetDirectory, options = {}) {
   try {
     const source = String(sourcePath || '').trim(), targetRoot = String(targetDirectory || '').trim()
@@ -881,9 +1354,10 @@ export function createStarterRestoreRehearsal(sourcePath, targetDirectory, optio
       ? buildRecoveryIdentityMap(effectivePayload, { operationId: options.operationId, recoveryLodgeId: options.recoveryLodgeId })
       : null
     const remapped = identityMap ? remapPayloadForRecovery(effectivePayload, identityMap) : effectivePayload
+    /** @type {Record<string, {count: number, sha256: string}>} */
     const restoredTables = {}
     for (const [table, rows] of Object.entries(remapped.tables)) {
-      const restoredRows = JSON.parse(JSON.stringify(rows))
+      const restoredRows = /** @type {StarterBackupRowReadView[]} */ (JSON.parse(JSON.stringify(rows)))
       const ids = restoredRows.map((row) => row?.id).filter(Boolean).map(String)
       if (new Set(ids).size !== ids.length) return { success: false, error: `Disposable restore rehearsal found duplicate IDs in ${table}.` }
       // Reconciliation uses the trusted Node canonicalizer hashes, not PostgreSQL serialization.
@@ -932,7 +1406,7 @@ export function createStarterRestoreRehearsal(sourcePath, targetDirectory, optio
     writeAtomic(path.join(rehearsalDir, 'restore-report.json'), Buffer.from(canonicalJson(report), 'utf8'))
     if (identityMap) writeAtomic(path.join(rehearsalDir, 'identity-map.json'), Buffer.from(canonicalJson(identityMap), 'utf8'))
     return { success: true, rehearsalDirectory: rehearsalDir, report, counts: verification.counts, canRestoreLive: false, identityMap }
-  } catch (error) { return { success: false, error: error?.message || 'Disposable restore rehearsal failed.' }
+  } catch (error) { return { success: false, error: (/** @type {StarterBackupErrorMessageReadView} */ (error))?.message || 'Disposable restore rehearsal failed.' }
   }
 }
 export { STARTER_BACKUP_SCHEMA, STARTER_BACKUP_PACKAGE_SCHEMA, STARTER_BACKUP_PACKAGE_SCHEMA_V3, DEFAULT_PACKAGE_SCHEMA, SUPPORTED_PACKAGE_SCHEMAS, RESTORE_FIELD_ALLOWLIST, EXCLUDED_RESTORE_FIELD_NAMES, buildStarterBackupPayload, captureBackupContext, buildTableSnapshotCoherence, buildDtoSanitizationReport, perTableCanonicalHash, sanitizeRowForRestore }

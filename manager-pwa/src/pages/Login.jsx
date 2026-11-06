@@ -2,11 +2,14 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { Building2, ChevronRight, Eye, EyeOff, Hotel, LogIn, UtensilsCrossed, Moon, Sun } from 'lucide-react'
 import { sendPasswordResetEmail } from '../lib/supabase'
-import { getPwaShellConfig } from '../lib/productShell'
+import { getPwaAuthenticatedShellConfig } from '../lib/productShell'
 import { PRODUCT_FAMILY_IDS, resolveProductFamily } from '@shared/productIdentity'
 import tsaBonnoLogoColor from '../assets/tsa-bonno-hospitalityos-logo-color.png'
 import tsaBonnoLogoLight from '../assets/tsa-bonno-hospitalityos-logo-light.png'
 
+/** @typedef {{lodge_id: string, product_family?: string | null, property_type?: string | null, hospitality_mode?: string|null, product_family_label?: string | null, package_label?: string | null, plan?: string | null, pwa_plan?: string | null, lodge_display_name: string, role: string, pwa_enabled?: boolean, pwa_feature_enabled?: boolean}} LoginMembershipExpectedView */
+
+/** @param {{dark: boolean, setDark: import('react').Dispatch<import('react').SetStateAction<boolean>>}} props */
 function ThemeButton({ dark, setDark }) {
   return (
     <button
@@ -21,6 +24,7 @@ function ThemeButton({ dark, setDark }) {
   )
 }
 
+/** @param {{productFamily: string | null | undefined}} props */
 function ProductIcon({ productFamily }) {
   const family = resolveProductFamily(productFamily)
   if (family === PRODUCT_FAMILY_IDS.HOTEL) return <Hotel size={20} className="text-amber-300" />
@@ -28,6 +32,7 @@ function ProductIcon({ productFamily }) {
   return <Building2 size={20} className="text-green-400" />
 }
 
+/** @param {string | null | undefined} productFamily */
 function productBadgeClass(productFamily) {
   const family = resolveProductFamily(productFamily)
   if (family === PRODUCT_FAMILY_IDS.HOTEL) return 'bg-amber-950/50 text-amber-200 border-amber-800/60'
@@ -35,6 +40,7 @@ function productBadgeClass(productFamily) {
   return 'bg-green-950/50 text-green-200 border-green-800/60'
 }
 
+/** @param {string | null | undefined} productFamily */
 function productIconBg(productFamily) {
   const family = resolveProductFamily(productFamily)
   if (family === PRODUCT_FAMILY_IDS.HOTEL) return 'bg-amber-950/40'
@@ -42,17 +48,19 @@ function productIconBg(productFamily) {
   return 'bg-green-900/40'
 }
 
+/** @param {{dark: boolean, setDark: import('react').Dispatch<import('react').SetStateAction<boolean>>}} props */
 export default function Login({ dark, setDark }) {
   const { login, pendingMemberships, selectMembership, cancelMembershipSelection } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [selectLoadingId, setSelectLoadingId] = useState(null)
+  const [selectLoadingId, setSelectLoadingId] = useState(/** @type {string | null} */ (null))
   const [resetLoading, setResetLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const submit = async (e) => {
     e.preventDefault()
     setError('')
@@ -61,7 +69,7 @@ export default function Login({ dark, setDark }) {
     try {
       await login(email, password)
     } catch (err) {
-      setError(err.message)
+      setError((/** @type {{message: string}} */ (err)).message)
     } finally {
       setLoading(false)
     }
@@ -80,19 +88,20 @@ export default function Login({ dark, setDark }) {
       await sendPasswordResetEmail(targetEmail)
       setNotice(`Password reset email sent to ${targetEmail}.`)
     } catch (err) {
-      setError(err.message || 'Could not send password reset email.')
+      setError((/** @type {{message?: string}} */ (err)).message || 'Could not send password reset email.')
     } finally {
       setResetLoading(false)
     }
   }
 
+  /** @param {LoginMembershipExpectedView} membership */
   const chooseMembership = async (membership) => {
     setError('')
     setSelectLoadingId(membership.lodge_id)
     try {
       await selectMembership(membership)
     } catch (err) {
-      setError(err.message || 'Could not open that business.')
+      setError((/** @type {{message?: string}} */ (err)).message || 'Could not open that business.')
     } finally {
       setSelectLoadingId(null)
     }
@@ -100,6 +109,7 @@ export default function Login({ dark, setDark }) {
 
   const inp = 'w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500'
   const logoSrc = dark ? tsaBonnoLogoLight : tsaBonnoLogoColor
+  const pendingOnlyBars = Array.isArray(pendingMemberships) && pendingMemberships.length > 0 && pendingMemberships.every((membership) => membership.hospitality_mode === 'bar_only')
 
   // Membership chooser — password is not held in React state for this step.
   if (pendingMemberships?.length) {
@@ -110,18 +120,18 @@ export default function Login({ dark, setDark }) {
           <div className="pwa-login-logo mx-auto mb-4 flex h-28 w-80 max-w-[88vw] items-center justify-center">
             <img src={logoSrc} alt="Tsa Bonno HospitalityOS Manager" className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
-          <h1 className="text-xl font-bold text-white">Select your business</h1>
+          <h1 className="text-xl font-bold text-white">{pendingOnlyBars ? 'Select your Bar' : 'Select your business'}</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Your account is linked to multiple businesses. Choose which one to open.
+            {pendingOnlyBars ? 'Your account is linked to multiple Bars. Choose which one to open.' : 'Your account is linked to multiple businesses. Choose which one to open.'}
           </p>
         </div>
 
         <div className="w-full max-w-sm space-y-3">
-          {pendingMemberships.map((membership) => {
+          {/** @type {LoginMembershipExpectedView[]} */ (pendingMemberships).map((membership) => {
             const family = resolveProductFamily(membership.product_family || membership.property_type)
-            const shell = getPwaShellConfig(family)
-            const label = membership.product_family_label || shell.productFamilyLabel
-            const packageLabel = membership.package_label || membership.plan || membership.pwa_plan
+            const shell = getPwaAuthenticatedShellConfig(family, membership.hospitality_mode)
+            const label = /** @type {string} */ (membership.hospitality_mode === 'bar_only' ? 'Bar' : membership.product_family_label || shell.productFamilyLabel)
+            const packageLabel = /** @type {string | null | undefined} */ (membership.package_label || membership.plan || membership.pwa_plan)
             const busy = selectLoadingId === membership.lodge_id
             const selectable = membership.pwa_enabled === true && membership.pwa_feature_enabled === true
             const status = membership.pwa_feature_enabled !== true
@@ -245,6 +255,7 @@ export default function Login({ dark, setDark }) {
         >
           {resetLoading ? 'Sending reset email…' : 'Forgot password?'}
         </button>
+        <a href="#/bar-owner" className="block w-full text-center text-xs text-gray-400 hover:text-white">Bar owner access</a>
       </form>
     </div>
   )

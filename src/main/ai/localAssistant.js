@@ -2125,7 +2125,7 @@ function mergeDialogueParams(intent, existing = {}, message) {
   return { ...(existing || {}), ...buildToolParams(intent, message) }
 }
 
-/** @param {{intent?: unknown} | null | undefined} dialogue @param {string} message */
+/** @param {{intent?: unknown} | null | undefined} dialogue @param {unknown} message */
 function enrichFromDialogue(dialogue, message) {
   if (!dialogue?.intent) return message
   if (dialogue.intent === 'search_guest') return `find guest ${message}`
@@ -2135,23 +2135,40 @@ function enrichFromDialogue(dialogue, message) {
   return message
 }
 
+/** Concrete producer shape from get_unpaid_summary; existing optional chains still tolerate absent data without validating it. */
+/** @typedef {{overdue: {rows: unknown[]}, due_today: {rows: unknown[]}, future: {rows: unknown[]}}} LocalAssistantUnpaidBreakdownExpectedView */
+/** @typedef {{room_numbers: unknown[], booking_ids: unknown[], guest_names: unknown[]}} LocalAssistantToolResultSummary */
+/** @typedef {{query: unknown, workflowId: string | null, toolName: string | null, toolResult: LocalAssistantToolResultSummary | null, at: number}} LocalAssistantHistoryEntry */
+/** @typedef {{intent: string, params: Record<string, unknown>, missing: string[]}} LocalAssistantPendingDialogue */
+/** Required property-read projection over the resolver's locally constructed variants; absent fields read as undefined at runtime. */
+/** @typedef {{assistantText: string | undefined, tool: unknown, params: unknown, localIntent: {confidence: string | undefined} | null | undefined, localHelp: {bestMatch: {id: string} | null | undefined, mode: string | undefined, dialogue: LocalAssistantPendingDialogue | null | undefined} | null | undefined}} LocalAssistantSessionTurnExpectedView */
+/** Required property-read projection for the orchestrator's assembled live context; values are expected data, not validated. */
+/** @typedef {{stats: {arrivals_today: number | null | undefined, departures_today: number | null | undefined, occupancy_rate: number | null | undefined, occupancy: number | null | undefined, sync_pending: number | null | undefined, sync_failed: number | null | undefined} | null | undefined, upcoming: {today: unknown[] | undefined, todayDepartures: number | null | undefined} | null | undefined, unpaidCount: number | null | undefined, overdueCount: number | null | undefined, attentionSummary: string | null | undefined}} LocalAssistantLiveContextExpectedData */
+
+/** @param {string} toolName @param {unknown} result */
 function summarizeToolResult(toolName, result) {
   if (!result || typeof result !== 'object') return null
-  const breakdownRows = result.breakdown
+  // The caller may pass results backed by provider/database data. This record
+  // view only permits the existing property lookups; no fields are validated.
+  const expectedResult = /** @type {Record<string, unknown>} */ (result)
+  const breakdownRows = expectedResult['breakdown']
     ? [
-        ...(result.breakdown.overdue?.rows || []),
-        ...(result.breakdown.due_today?.rows || []),
-        ...(result.breakdown.future?.rows || [])
+        ...((/** @type {LocalAssistantUnpaidBreakdownExpectedView} */ (expectedResult['breakdown'])).overdue?.rows || []),
+        ...((/** @type {LocalAssistantUnpaidBreakdownExpectedView} */ (expectedResult['breakdown'])).due_today?.rows || []),
+        ...((/** @type {LocalAssistantUnpaidBreakdownExpectedView} */ (expectedResult['breakdown'])).future?.rows || [])
       ]
     : []
-  const rows = result.bookings || result.guests || result.rooms || result.unpaid || result.overdue_checkouts || result.items || result.all_rows || breakdownRows || []
+  const rows = expectedResult['bookings'] || expectedResult['guests'] || expectedResult['rooms'] || expectedResult['unpaid'] || expectedResult['overdue_checkouts'] || expectedResult['items'] || expectedResult['all_rows'] || breakdownRows || []
+  // These producer paths supply row arrays. The existing Array.isArray guard
+  // still controls iteration; this view only retains the current .length read.
+  const expectedRows = /** @type {{length?: unknown}} */ (rows)
   return {
     toolName,
-    count: Number(result.count || result.unpaid_count || result.overdue_count || rows.length || 0),
-    total: Number(result.total_outstanding || result.unpaid_total || result.weekly_total || result.financial_at_risk || result.financial_amount_at_risk || 0),
-    room_numbers: Array.isArray(rows) ? rows.map((row) => row?.room_number).filter(Boolean).slice(0, 5) : [],
-    booking_ids: Array.isArray(rows) ? rows.map((row) => row?.id).filter(Boolean).slice(0, 5) : [],
-    guest_names: Array.isArray(rows) ? rows.map((row) => row?.guest || row?.name).filter(Boolean).slice(0, 5) : [],
+    count: Number(expectedResult['count'] || expectedResult['unpaid_count'] || expectedResult['overdue_count'] || expectedRows.length || 0),
+    total: Number(expectedResult['total_outstanding'] || expectedResult['unpaid_total'] || expectedResult['weekly_total'] || expectedResult['financial_at_risk'] || expectedResult['financial_amount_at_risk'] || 0),
+    room_numbers: Array.isArray(rows) ? rows.map((/** @type {{room_number?: unknown} | null | undefined} */ row) => row?.room_number).filter(Boolean).slice(0, 5) : [],
+    booking_ids: Array.isArray(rows) ? rows.map((/** @type {{id?: unknown} | null | undefined} */ row) => row?.id).filter(Boolean).slice(0, 5) : [],
+    guest_names: Array.isArray(rows) ? rows.map((/** @type {{guest?: unknown, name?: unknown} | null | undefined} */ row) => row?.guest || row?.name).filter(Boolean).slice(0, 5) : [],
     first: Array.isArray(rows) ? rows[0] || null : null
   }
 }
@@ -2169,9 +2186,11 @@ function confidenceFromScore(score) {
  * Builds a short live context snippet to inject into help text.
  * Only surfaces information that is directly relevant to the matched workflow.
  */
+/** @param {string} workflowId @param {unknown} liveContext */
 function buildLiveContextSnippet(workflowId, liveContext) {
   if (!liveContext) return null
-  const { stats, upcoming, unpaidCount, overdueCount, attentionSummary } = liveContext
+  const expectedContext = /** @type {LocalAssistantLiveContextExpectedData} */ (liveContext)
+  const { stats, upcoming, unpaidCount, overdueCount, attentionSummary } = expectedContext
 
   const snippets = []
 
@@ -2227,9 +2246,11 @@ function buildLiveContextSnippet(workflowId, liveContext) {
  * Builds proactive attention text to show in fallback responses.
  * Surfaces the most important live alerts even when the query didn't match.
  */
+/** @param {unknown} liveContext */
 function buildProactiveFallbackNote(liveContext) {
   if (!liveContext) return null
-  const { overdueCount, unpaidCount, stats } = liveContext
+  const expectedContext = /** @type {LocalAssistantLiveContextExpectedData} */ (liveContext)
+  const { overdueCount, unpaidCount, stats } = expectedContext
   const notes = []
 
   const failed = stats?.sync_failed ?? null
@@ -2247,6 +2268,7 @@ function buildProactiveFallbackNote(liveContext) {
   return `While I couldn't find an exact match, here's what's live:\n${notes.join('\n')}`
 }
 
+/** @param {LocalAssistantUiContextExpectedData | null | undefined} uiContext */
 function buildUiContextSnippet(uiContext) {
   if (!uiContext) return null
   const lines = []
@@ -2260,7 +2282,7 @@ function buildUiContextSnippet(uiContext) {
 
 // ─── Help text builders ───────────────────────────────────────────────────
 
-/** @param {ReturnType<typeof publicWorkflow> | null} match @param {ReturnType<typeof publicWorkflow>[]} matches @param {string} confidence */
+/** @param {ReturnType<typeof publicWorkflow> | null} match @param {ReturnType<typeof publicWorkflow>[]} matches @param {string} confidence @param {unknown} [liveContext] @param {LocalAssistantUiContextExpectedData | null} [uiContext] */
 function buildHelpText(match, matches, confidence, liveContext = null, uiContext = null) {
   if (!match) {
     const fallbackNote = buildProactiveFallbackNote(liveContext)
@@ -2317,6 +2339,7 @@ function routeWorkflow(route) {
   return APP_WORKFLOWS.find((entry) => route !== '/' && entry.route !== '/' && route.startsWith(entry.route)) || null
 }
 
+/** @param {string | null | undefined} route @param {unknown} [liveContext] @param {LocalAssistantUiContextExpectedData | null} [uiContext] */
 function buildOverviewHelp(route, liveContext = null, uiContext = null) {
   const current = routeWorkflow(uiContext?.sourceRoute || route)
   const primary = current || APP_WORKFLOWS[0]
@@ -2363,9 +2386,12 @@ function buildDynamicFallbackMatches(route) {
  */
 /** @param {{maxTurns?: number}} [options] */
 export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
-  const history = [] // { query, workflowId, toolName, toolResult }
+  /** @type {LocalAssistantHistoryEntry[]} */
+  const history = []
+  /** @type {LocalAssistantPendingDialogue | null} */
   let pendingDialogue = null
 
+  /** @param {unknown} message */
   function getContextualQuery(message) {
     if (history.length === 0) return message
 
@@ -2429,11 +2455,13 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
     return message
   }
 
+  /** @param {unknown} message @param {string | null} [workflowId] @param {string | null} [toolName] @param {LocalAssistantToolResultSummary | null} [toolResult] */
   function recordTurn(message, workflowId = null, toolName = null, toolResult = null) {
     history.push({ query: message, workflowId, toolName, toolResult, at: Date.now() })
     if (history.length > maxTurns) history.shift()
   }
 
+  /** @param {string} toolName @param {unknown} result */
   function rememberToolResult(toolName, result) {
     const last = history[history.length - 1]
     if (!last) return
@@ -2446,6 +2474,7 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
   // Without this, "rooms?" asked after a payment question became a
   // maintenance alert, because enrichment prepended the previous screen's
   // category before matching.
+  /** @param {LocalAssistantSessionTurnExpectedView | null} result */
   function isConfidentResult(result) {
     if (!result) return false
     if (result.tool) return result.localIntent?.confidence === 'high'
@@ -2461,6 +2490,7 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
   // some unrelated tool with spurious confidence.
   const CONTINUATION_LEAD = /^(and|or|but|also|too|then|so|plus)\b/i
 
+  /** @param {unknown} message @param {LocalAssistantSessionTurnExpectedView | null} result */
   function trackTurn(message, result) {
     const workflowId = result?.localHelp?.bestMatch?.id || null
     const toolName = result?.tool || history[history.length - 1]?.toolName || null
@@ -2468,11 +2498,14 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
     recordTurn(message, workflowId, toolName)
   }
 
+  /** @param {{message?: unknown, route?: string | null, liveContext?: unknown, uiContext?: LocalAssistantUiContextExpectedData | null}} [input] */
   function resolve({ message, route = null, liveContext = null, uiContext = null } = {}) {
     // Slot-filling dialogue always enriches: the user is answering our question.
     if (pendingDialogue) {
       const enrichedMessage = enrichFromDialogue(pendingDialogue, message)
-      let result = resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext })
+      // The session reads only these locally constructed resolver fields; the
+      // view does not add validation or alter the original result object.
+      let result = /** @type {LocalAssistantSessionTurnExpectedView | null} */ (resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext }))
       if (result?.tool === pendingDialogue.intent) {
         const params = mergeDialogueParams(pendingDialogue.intent, pendingDialogue.params, enrichedMessage)
         const missing = missingSlotsForTool(pendingDialogue.intent, params)
@@ -2497,7 +2530,7 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
       trackTurn(message, result)
       return result
     }
-    const rawResult = resolveLocalAssistantTurn({ message, route, liveContext, uiContext })
+    const rawResult = /** @type {LocalAssistantSessionTurnExpectedView | null} */ (resolveLocalAssistantTurn({ message, route, liveContext, uiContext }))
     if (!CONTINUATION_LEAD.test(String(message).trim()) && isConfidentResult(rawResult)) {
       trackTurn(message, rawResult)
       return rawResult
@@ -2507,7 +2540,7 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
       trackTurn(message, rawResult)
       return rawResult
     }
-    const enrichedResult = resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext })
+    const enrichedResult = /** @type {LocalAssistantSessionTurnExpectedView | null} */ (resolveLocalAssistantTurn({ message: enrichedMessage, route, liveContext, uiContext }))
     const final = isConfidentResult(enrichedResult) ? enrichedResult : rawResult
     trackTurn(message, final)
     return final
@@ -2518,6 +2551,12 @@ export function createLocalAssistantSession({ maxTurns = 3 } = {}) {
 
 // ─── Main resolver ────────────────────────────────────────────────────────
 
+/** Expected UI route view. The IPC object is only checked for objectness upstream; this does not validate its fields. */
+/** Required property-read view of the object-checked renderer context; leaves remain unvalidated and missing reads are undefined. */
+/** @typedef {{sourceRoute: string | null | undefined, screenLabel: unknown, activeTabLabel: unknown, activeBookingId: unknown, activeGuestName: unknown, roomNumber: unknown}} LocalAssistantUiContextExpectedData */
+/**
+ * @param {{message?: unknown, route?: string | null, liveContext?: unknown, uiContext?: LocalAssistantUiContextExpectedData | null}} [input]
+ */
 export function resolveLocalAssistantTurn({ message, route = null, liveContext = null, uiContext = null } = {}) {
   const query = String(message || '').trim()
   if (!query) return null

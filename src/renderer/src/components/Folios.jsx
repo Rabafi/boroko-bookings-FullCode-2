@@ -6,6 +6,19 @@ import { StatusBadge } from './shared/StatusBadge'
 import { useSettings } from '../app-context'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** Expected view of `buildFolioSummary` output in main/domains/folios.js. IPC rows are not runtime-validated here. */
+/** @typedef {{id: string, booking_id: string, guest_name: string, room_number: string|number, check_in: string, check_out: string, payment_status?: string|null, room_total: number, charges_total: number, amount_paid: number, balance: number, entries_count: number}} FolioSummaryExpectedView */
+/** Expected projection of `getFolioEntries`; values originate in the booking-charge producer and remain unvalidated at IPC. */
+/** @typedef {{id: string, description: string, category: string, quantity: number, unit_price: number, amount: number, pending_sync: boolean}} FolioEntryExpectedView */
+/** Expected fields consumed from the `get_hotel_folios`/`get_folio_line_items` RPC JSON or their local cache rows; this is not validation. */
+/** @typedef {{id: string|number, folio_number: string, label: string, folio_type: string, status: string, balance: number|string, booking_id?: string|null, guest_name?: string|null, room_number?: string|number|null, check_in?: string|null, check_out?: string|null, payment_status?: string|null, entries_count?: number|null}} LedgerFolioExpectedView */
+/** @typedef {{id: string|number, description: string|null, line_type: string, amount: number|string, is_reversed?: boolean, reversal?: {description?: string|null}|null, created_at: string}} LedgerLineItemExpectedView */
+/** Expected recovery-journal listing fields; persisted journal validation happens in main, while renderer IPC is not revalidated. */
+/** @typedef {{intentId: string, operationKind: string, status: 'prepared'|'submitting'|'unknown', createdAt: string}} PendingFolioIntentExpectedView */
+/** Outcomes from folioLedger submit/retry handlers include confirmed, rejected and ambiguous-recovery branches. */
+/** @typedef {{success?: boolean, status?: 'confirmed'|'rejected'|'unknown', pendingRecovery?: boolean, intentId?: string, error?: string, offline?: boolean}} FolioMutationExpectedView */
+
+/** @returns {{description: string, category: string, quantity: string, unit_price: string, idempotency_key: string}} */
 function createEmptyCharge() {
   return {
     description: '',
@@ -16,10 +29,12 @@ function createEmptyCharge() {
   }
 }
 
+/** @param {number|string|null|undefined} amount @param {string} [currency] */
 function formatCurrency(amount, currency = 'P') {
   return `${currency}${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {string} str */
 function capitalize(str) {
   return String(str || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
@@ -28,9 +43,9 @@ export default function Folios() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const [activeTab, setActiveTab] = useState('overview')
-  const [folios, setFolios] = useState([])
-  const [selectedId, setSelectedId] = useState(null)
-  const [entries, setEntries] = useState([])
+  const [folios, setFolios] = useState(/** @type {FolioSummaryExpectedView[]} */ ([]))
+  const [selectedId, setSelectedId] = useState(/** @type {string|null} */ (null))
+  const [entries, setEntries] = useState(/** @type {FolioEntryExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [entriesLoading, setEntriesLoading] = useState(false)
   const [error, setError] = useState('')
@@ -41,9 +56,9 @@ export default function Folios() {
   const [posting, setPosting] = useState(false)
 
   // Ledger state
-  const [ledgerFolios, setLedgerFolios] = useState([])
-  const [selectedLedgerFolioId, setSelectedLedgerFolioId] = useState(null)
-  const [ledgerLineItems, setLedgerLineItems] = useState([])
+  const [ledgerFolios, setLedgerFolios] = useState(/** @type {LedgerFolioExpectedView[]} */ ([]))
+  const [selectedLedgerFolioId, setSelectedLedgerFolioId] = useState(/** @type {string|number|null} */ (null))
+  const [ledgerLineItems, setLedgerLineItems] = useState(/** @type {LedgerLineItemExpectedView[]} */ ([]))
   const [ledgerLoading, setLedgerLoading] = useState(false)
   const [lineItemsLoading, setLineItemsLoading] = useState(false)
   const [showSplitModal, setShowSplitModal] = useState(false)
@@ -54,8 +69,8 @@ export default function Folios() {
   const [transferForm, setTransferForm] = useState({ targetFolioId: '', amount: '', description: '' })
   const [ledgerChargeForm, setLedgerChargeForm] = useState({ amount: '', description: '' })
   const [ledgerPaymentForm, setLedgerPaymentForm] = useState({ amount: '', description: '' })
-  const [pendingFolioIntents, setPendingFolioIntents] = useState([])
-  const [recoveringFolioIntentId, setRecoveringFolioIntentId] = useState(null)
+  const [pendingFolioIntents, setPendingFolioIntents] = useState(/** @type {PendingFolioIntentExpectedView[]} */ ([]))
+  const [recoveringFolioIntentId, setRecoveringFolioIntentId] = useState(/** @type {string|null} */ (null))
 
   const selectedFolio = useMemo(
     () => folios.find((folio) => folio.booking_id === selectedId) || folios[0] || null,
@@ -73,16 +88,17 @@ export default function Folios() {
     try {
       const data = await window.api.folios.getAll()
       const next = Array.isArray(data) ? data : []
-      setFolios(next)
+      setFolios(/** @type {FolioSummaryExpectedView[]} */ (next))
       setSelectedId((current) => current || next[0]?.booking_id || null)
     } catch (err) {
       console.error('Failed to load folios:', err)
-      setError(err?.message || 'Failed to load folios')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to load folios')
     } finally {
       setLoading(false)
     }
   }, [])
 
+  /** @param {string|null|undefined} bookingId */
   const loadEntries = useCallback(async (bookingId) => {
     if (!bookingId) {
       setEntries([])
@@ -91,10 +107,10 @@ export default function Folios() {
     setEntriesLoading(true)
     try {
       const data = await window.api.folios.getEntries(bookingId)
-      setEntries(Array.isArray(data) ? data : [])
+      setEntries(/** @type {FolioEntryExpectedView[]} */ (Array.isArray(data) ? data : []))
     } catch (err) {
       console.error('Failed to load folio entries:', err)
-      setError(err?.message || 'Failed to load folio entries')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to load folio entries')
     } finally {
       setEntriesLoading(false)
     }
@@ -105,7 +121,7 @@ export default function Folios() {
     try {
       const data = await window.api.folioLedger.getFolios()
       const next = Array.isArray(data) ? data : []
-      setLedgerFolios(next)
+      setLedgerFolios(/** @type {LedgerFolioExpectedView[]} */ (next))
       setSelectedLedgerFolioId((current) => current || next[0]?.id || null)
     } catch (err) {
       console.error('Failed to load ledger folios:', err)
@@ -114,6 +130,7 @@ export default function Folios() {
     }
   }, [])
 
+  /** @param {string|number|null|undefined} folioId */
   const loadLedgerLineItems = useCallback(async (folioId) => {
     if (!folioId) {
       setLedgerLineItems([])
@@ -122,7 +139,7 @@ export default function Folios() {
     setLineItemsLoading(true)
     try {
       const data = await window.api.folioLedger.getLineItems(folioId)
-      setLedgerLineItems(Array.isArray(data) ? data : [])
+      setLedgerLineItems(/** @type {LedgerLineItemExpectedView[]} */ (Array.isArray(data) ? data : []))
     } catch (err) {
       console.error('Failed to load ledger line items:', err)
     } finally {
@@ -135,15 +152,16 @@ export default function Folios() {
   const loadPendingFolioIntents = useCallback(async () => {
     try {
       const rows = await window.api.folioLedger.getPendingIntentRecovery()
-      setPendingFolioIntents(Array.isArray(rows) ? rows : [])
+      setPendingFolioIntents(/** @type {PendingFolioIntentExpectedView[]} */ (Array.isArray(rows) ? rows : []))
     } catch (err) {
-      setError(err?.message || 'Hotel folio recovery could not be read. Do not submit another payment until the saved intent is checked.')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Hotel folio recovery could not be read. Do not submit another payment until the saved intent is checked.')
     }
   }, [])
+  /** @param {string} intentId */
   const retryPendingFolioIntent = async (intentId) => {
     setRecoveringFolioIntentId(intentId)
     try {
-      const result = await window.api.folioLedger.retryIntent(intentId)
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folioLedger.retryIntent(intentId))
       if (result?.status === 'confirmed') {
         setSuccess('The original folio operation was confirmed.')
         await Promise.all([loadLedgerFolios(), loadPendingFolioIntents()])
@@ -152,7 +170,7 @@ export default function Folios() {
         await loadPendingFolioIntents()
       }
     } catch (err) {
-      setError(err?.message || 'The original folio operation could not be recovered.')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'The original folio operation could not be recovered.')
     } finally {
       setRecoveringFolioIntentId(null)
     }
@@ -173,6 +191,7 @@ export default function Folios() {
     setShowChargeModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const postCharge = async (event) => {
     event.preventDefault()
     if (pendingFolioIntents.length) { setChargeError('Recover the unresolved folio operation before submitting another charge or payment.'); return }
@@ -189,13 +208,13 @@ export default function Folios() {
     setPosting(true)
     setChargeError('')
     try {
-      const result = await window.api.folios.postCharge(selectedFolio.booking_id, {
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folios.postCharge(selectedFolio.booking_id, {
         ...chargeForm,
         description: chargeForm.description.trim(),
         quantity: Number(chargeForm.quantity) || 1,
         unit_price: Number(chargeForm.unit_price) || 0,
         idempotency_key: chargeForm.idempotency_key
-      })
+      }))
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setChargeError(result.error || 'Failed to post charge')
@@ -206,26 +225,27 @@ export default function Folios() {
         setSuccess(result?.offline ? 'Charge queued for sync.' : 'Charge posted to folio.')
       }
     } catch (err) {
-      setChargeError(err?.message || 'Failed to post charge')
+      setChargeError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to post charge')
     } finally {
       setPosting(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleLedgerSplit = async (event) => {
     event.preventDefault()
     if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio) return
     try {
       const intentId = crypto.randomUUID()
-      const result = await window.api.folioLedger.splitFolio(
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folioLedger.splitFolio(
         selectedLedgerFolio.id,
         splitForm.folioType,
         splitForm.label,
         Number(splitForm.amount),
         splitForm.label,
         intentId
-      )
+      ))
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Split failed')
@@ -236,23 +256,24 @@ export default function Folios() {
         setSuccess('Folio split successfully')
       }
     } catch (err) {
-      setError(err?.message || 'Failed to split folio')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to split folio')
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleLedgerTransfer = async (event) => {
     event.preventDefault()
     if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
     if (!selectedLedgerFolio || !transferForm.targetFolioId) return
     try {
       const intentId = crypto.randomUUID()
-      const result = await window.api.folioLedger.transferCharge(
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folioLedger.transferCharge(
         selectedLedgerFolio.id,
         transferForm.targetFolioId,
         Number(transferForm.amount),
         transferForm.description,
         intentId
-      )
+      ))
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Transfer failed')
@@ -264,10 +285,11 @@ export default function Folios() {
         setSuccess('Charge transferred successfully')
       }
     } catch (err) {
-      setError(err?.message || 'Failed to transfer charge')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to transfer charge')
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleLedgerCharge = async (event) => {
     event.preventDefault()
     if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
@@ -278,14 +300,14 @@ export default function Folios() {
     }
     try {
       const intentId = crypto.randomUUID()
-      const result = await window.api.folioLedger.addCharge(
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folioLedger.addCharge(
         selectedLedgerFolio.id,
         Number(ledgerChargeForm.amount),
         ledgerChargeForm.description.trim(),
         null,
         null,
         intentId
-      )
+      ))
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Add charge failed')
@@ -297,10 +319,11 @@ export default function Folios() {
         setSuccess('Charge added to ledger folio')
       }
     } catch (err) {
-      setError(err?.message || 'Failed to add charge')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to add charge')
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleLedgerPayment = async (event) => {
     event.preventDefault()
     if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before submitting another ledger change.'); return }
@@ -311,12 +334,12 @@ export default function Folios() {
     }
     try {
       const intentId = crypto.randomUUID()
-      const result = await window.api.folioLedger.addPayment(
+      const result = /** @type {FolioMutationExpectedView} */ (await window.api.folioLedger.addPayment(
         selectedLedgerFolio.id,
         Number(ledgerPaymentForm.amount),
         ledgerPaymentForm.description.trim() || 'Payment',
         intentId
-      )
+      ))
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || 'Add payment failed')
@@ -328,10 +351,11 @@ export default function Folios() {
         setSuccess('Payment posted to ledger folio')
       }
     } catch (err) {
-      setError(err?.message || 'Failed to add payment')
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to add payment')
     }
   }
 
+  /** @param {'close'|'reopen'|'lock'} action @param {string|number} folioId */
   const handleLedgerAction = async (action, folioId) => {
     if (pendingFolioIntents.length) { setError('Recover the unresolved folio operation before changing folio status.'); return }
     try {
@@ -341,7 +365,7 @@ export default function Folios() {
         reopen: () => window.api.folioLedger.reopenFolio(folioId, intentId),
         lock: () => window.api.folioLedger.lockFolio(folioId, intentId)
       }
-      const result = await actions[action]()
+      const result = /** @type {FolioMutationExpectedView} */ (await actions[action]())
       if (result?.pendingRecovery) await loadPendingFolioIntents()
       if (result?.success === false) {
         setError(result.error || (action + ' failed'))
@@ -350,7 +374,7 @@ export default function Folios() {
         setSuccess('Folio ' + action + 'ed successfully')
       }
     } catch (err) {
-      setError(err?.message || ('Failed to ' + action + ' folio'))
+      setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || ('Failed to ' + action + ' folio'))
     }
   }
   return (
@@ -711,14 +735,14 @@ export default function Folios() {
                                     if (!window.confirm('Void this line item?')) return
                                     const intentId = crypto.randomUUID()
                                     window.api.folioLedger.voidLineItem(item.id, 'User requested void', intentId)
-                                      .then(async (result) => {
+                                      .then(/** @param {FolioMutationExpectedView|null|undefined} result */ async (result) => {
                                         if (result?.pendingRecovery) { await loadPendingFolioIntents(); setError(result.error); return }
                                         if (result?.success === false) { setError(result.error || 'Failed to correct the line item'); return }
                                         setSuccess('Line item correction recorded')
                                         loadLedgerFolios()
                                         loadLedgerLineItems(selectedLedgerFolio?.id)
                                       })
-                                      .catch((err) => setError(err?.message || 'Failed to void line item'))
+                                      .catch((err) => setError((/** @type {{message?: string}|null|undefined} */ (err))?.message || 'Failed to void line item'))
                                   }}
                                   className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-800"
                                 >

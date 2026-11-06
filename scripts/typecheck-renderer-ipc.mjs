@@ -30,6 +30,9 @@ const configPath = resolve(repoRoot, 'tsconfig.typecheck-renderer-ipc.json');
 const invalidConfigPath = resolve(repoRoot, 'tsconfig.typecheck-renderer-ipc.invalid.json');
 const inventoryPath = resolve(repoRoot, 'docs/engineering/typescript-migration/evidence/L02-renderer-ipc-caller-inventory-2026-10-14.txt');
 const apiTypesPath = resolve(repoRoot, 'src/renderer/src/types/desktop-api.d.ts');
+const appEntryPath = resolve(repoRoot, 'src/renderer/src/App.jsx');
+const localBarShellPath = resolve(repoRoot, 'src/renderer/src/components/hospitality-pos/LocalBarHposShell.jsx');
+const barLocalWorkspacePath = resolve(repoRoot, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx');
 const positiveFixture = resolve(repoRoot, 'tests/typecheck/renderer-desktop-api/valid.ts');
 const negativeFixture = resolve(repoRoot, 'tests/typecheck/renderer-desktop-api/invalid.ts');
 const inventorySha256 = '30C24B5C0380AB1982FD24D68EE37E9A708669CFE29C0C8D81B0D4EF80BA0F6B';
@@ -102,7 +105,11 @@ function validateOptions(options, label) {
 function requireProgramSources(program, required, label) {
   const sourceFiles = program.getSourceFiles();
   const have = new Set(sourceFiles.map((source) => resolve(source.fileName)));
-  for (const file of required) if (!have.has(resolve(file))) fail(`${label}: required source excluded from actual program: ${toRel(file)}`);
+  try {
+    assertProgramContainsSources(have, required, label);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
   const options = program.getCompilerOptions();
   if (label === 'positive') {
     const jsCallers = callers.filter((file) => /\.(?:js|jsx)$/i.test(extname(file)));
@@ -135,6 +142,58 @@ function requireProgramSources(program, required, label) {
   return sourceFiles;
 }
 
+function assertProgramContainsSources(actualPaths, required, label) {
+  for (const file of required) {
+    if (!actualPaths.has(resolve(file))) throw new Error(`${label}: required source excluded from actual program: ${toRel(file)}`);
+  }
+}
+
+function verifyProgramOmissionSensitivity() {
+  const required = resolve(barLocalWorkspacePath);
+  const inMemoryProgramPaths = new Set([required]);
+  assertProgramContainsSources(inMemoryProgramPaths, [required], 'in-memory sensitivity baseline');
+  const omittedProgramPaths = new Set(inMemoryProgramPaths);
+  omittedProgramPaths.delete(required);
+  let expectedOmissionRejected = false;
+  try {
+    assertProgramContainsSources(omittedProgramPaths, [required], 'in-memory sensitivity omission');
+  } catch (error) {
+    expectedOmissionRejected = error instanceof Error && error.message ===
+      `in-memory sensitivity omission: required source excluded from actual program: ${toRel(required)}`;
+  }
+  if (!expectedOmissionRejected) fail('shared actual-program inventory assertion did not reject the required-source omission probe');
+  console.log('[typecheck-renderer-ipc] sensitivity: shared actual-program assertion accepts baseline and rejects omitted source in-memory');
+}
+
+verifyProgramOmissionSensitivity();
+
+function programSourceSnapshot(program, label) {
+  const snapshot = new Map();
+  for (const source of program.getSourceFiles()) {
+    const path = resolve(source.fileName);
+    if (!existsSync(path)) fail(`${label}: actual program source disappeared during check: ${toRel(path)}`);
+    const loadedText = source.text.replace(/^\uFEFF/, '');
+    const diskText = readFileSync(path, 'utf8').replace(/^\uFEFF/, '');
+    const loadedHash = createHash('sha256').update(loadedText).digest('hex');
+    const diskHash = createHash('sha256').update(diskText).digest('hex');
+    if (loadedHash !== diskHash) fail(`${label}: source changed while TypeScript loaded the program: ${toRel(path)}`);
+    snapshot.set(path, diskHash);
+  }
+  return snapshot;
+}
+
+function assertProgramSourceSnapshot(program, snapshot, label) {
+  const sources = program.getSourceFiles();
+  if (sources.length !== snapshot.size) fail(`${label}: actual program source count changed during check (${snapshot.size} -> ${sources.length})`);
+  for (const source of sources) {
+    const path = resolve(source.fileName);
+    if (!existsSync(path)) fail(`${label}: actual program source disappeared during check: ${toRel(path)}`);
+    const currentText = readFileSync(path, 'utf8').replace(/^\uFEFF/, '');
+    const currentHash = createHash('sha256').update(currentText).digest('hex');
+    if (snapshot.get(path) !== currentHash) fail(`${label}: actual program source changed during check: ${toRel(path)}`);
+  }
+}
+
 function diagnosticsFor(program) {
   return ts.getPreEmitDiagnostics(program);
 }
@@ -154,6 +213,12 @@ validateOptions(positiveConfig.options, 'positive config');
 validateOptions(negativeConfig.options, 'negative config');
 if (positiveConfig.fileNames.some((file) => resolve(file) === negativeFixture)) fail('positive config includes negative fixture');
 if (negativeConfig.fileNames.some((file) => resolve(file) === positiveFixture)) fail('negative config includes positive fixture');
+const appSource = readFileSync(appEntryPath, 'utf8');
+const localBarShellBinding = "const LocalBarHposShell = lazy(() => import('./components/hospitality-pos/LocalBarHposShell.jsx'))";
+if (!appSource.includes(localBarShellBinding)) fail('App.jsx must preserve the original HPOS local-authority route shell');
+const barLocalWorkspaceBinding = "const BarLocalWorkspace = lazy(() => import('./components/hospitality-pos/BarLocalWorkspace'))";
+if (!existsSync(barLocalWorkspacePath)) fail('BarLocalWorkspace.jsx is missing from the original App import tree');
+if (!appSource.includes(barLocalWorkspaceBinding)) fail('App.jsx must preserve the original BarLocalWorkspace lazy import until a reviewed route migration updates this guard');
 
 let positiveFailed = false;
 for (const [label, parsed, fixture] of [['positive', positiveConfig, positiveFixture], ['negative', negativeConfig, negativeFixture]]) {
@@ -162,8 +227,29 @@ for (const [label, parsed, fixture] of [['positive', positiveConfig, positiveFix
   // every application root would repeat the expensive positive diagnostics.
   const roots = label === 'positive' ? [...parsed.fileNames, ...callers] : parsed.fileNames;
   const program = ts.createProgram(roots, parsed.options);
-  requireProgramSources(program, label === 'positive' ? [...callers, apiTypesPath, fixture] : [apiTypesPath, fixture], label);
-  const diagnostics = diagnosticsFor(program);
+  requireProgramSources(program, label === 'positive' ? [...callers, apiTypesPath, fixture, localBarShellPath, barLocalWorkspacePath] : [apiTypesPath, fixture], label);
+  let diagnostics;
+  if (label === 'positive') {
+    const sourceSnapshot = programSourceSnapshot(program, label);
+    const actualProgramPaths = new Set(program.getSourceFiles().map((source) => resolve(source.fileName)));
+    assertProgramContainsSources(actualProgramPaths, [barLocalWorkspacePath], 'positive sensitivity baseline');
+    const omittedPathProbe = new Set(actualProgramPaths);
+    omittedPathProbe.delete(barLocalWorkspacePath);
+    let omissionDetected = false;
+    try {
+      assertProgramContainsSources(omittedPathProbe, [barLocalWorkspacePath], 'positive sensitivity omission');
+    } catch (error) {
+      omissionDetected = error instanceof Error && error.message ===
+        `positive sensitivity omission: required source excluded from actual program: ${toRel(barLocalWorkspacePath)}`;
+    }
+    if (!omissionDetected) fail('actual-program import sensitivity did not detect an omitted original BarLocalWorkspace source');
+    console.log('[typecheck-renderer-ipc] sensitivity: detected an omitted original BarLocalWorkspace source through the actual-program inventory assertion');
+    diagnostics = diagnosticsFor(program);
+    assertProgramSourceSnapshot(program, sourceSnapshot, label);
+    if (readFileSync(appEntryPath, 'utf8') !== appSource) fail('App.jsx changed during renderer checking; this run is not comparable');
+  } else {
+    diagnostics = diagnosticsFor(program);
+  }
   if (label === 'positive') {
     const callerRoots = callers.map((file) => resolve(file));
     const rootsWithErrors = new Set(diagnostics.filter((diagnostic) => diagnostic.file).map((diagnostic) => resolve(diagnostic.file.fileName)));
@@ -199,6 +285,11 @@ for (const [label, parsed, fixture] of [['positive', positiveConfig, positiveFix
     if (diagnosticRecords.length !== diagnostics.length) fail('renderer diagnostic sidecar count mismatch');
     const timestamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
     const diagnosticsPath = resolve(evidenceDirectory, `L02-renderer-ipc-diagnostics-${timestamp}.jsonl`);
+    const programSourceInventoryPath = resolve(evidenceDirectory, `L02-renderer-ipc-program-sources-${timestamp}.txt`);
+    const programSourceInventory = actualProgramSources.map((source) => toRel(source.fileName)).sort();
+    const programSourceInventoryText = `${programSourceInventory.join('\n')}\n`;
+    const programSourceInventorySha256 = createHash('sha256').update(programSourceInventoryText).digest('hex');
+    writeFileSync(programSourceInventoryPath, programSourceInventoryText);
     const diagnosticMetadata = {
       recordType: 'metadata',
       profile: 'L02-renderer-ipc-positive',
@@ -210,6 +301,8 @@ for (const [label, parsed, fixture] of [['positive', positiveConfig, positiveFix
       inventory: {
         callerRoots: callerRoots.length,
         actualProgramSourceFiles: actualProgramSources.length,
+        actualProgramSourceInventoryPath: toRel(programSourceInventoryPath),
+        actualProgramSourceInventorySha256: programSourceInventorySha256,
         importedLocalJavaScriptOutsideCallerRoots: importedLocalJs.length,
         importedLocalJavaScriptChecked: checkedImported.length,
         importedLocalJavaScriptUncheckedAndNotCounted: uncheckedImported.length,
@@ -268,6 +361,8 @@ for (const [label, parsed, fixture] of [['positive', positiveConfig, positiveFix
       "const malformedShellResult: ShellOpenExternalResult = { success: true, error: 'unexpected' }",
       'const unvalidatedScannerError: string = barcodeScannerResult.error',
       'const invalidProgressCounter: string = progress.bytesPerSecond',
+      'const invalidRetryCount: string = syncRetryContract.retried',
+      'const invalidClearCount: string = syncClearContract.removed',
       'process.version',
       'Buffer.from',
       'ipcRenderer',

@@ -7,6 +7,19 @@ import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** Expected consumer views of existing event/conference IPC and SQL producers. These types do not validate returned JSON or cache rows. */
+/** @typedef {{id: string, booking_date: string, start_time: string, end_time: string, client_name: string, total_amount: number|null, deposit_paid: number|null, payment_status: string|null, event_name?: string|null, company?: string|null, event_type?: string|null, reservation_scope?: string|null, status?: string|null, attendees?: number|null, adults?: number|null, children?: number|null, amount_paid?: number|null, setup_type?: string|null, room_name?: string|null, includes_catering?: boolean|null, catering_notes?: string|null, payment_method?: string|null, currency?: string|null, notes?: string|null, extras_total?: number|null, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null}} ConferenceBookingExpectedView */
+/** @typedef {{booking_date: string, start_time: string, end_time: string, client_name: string, company: string, event_name: string, event_type: string, reservation_scope: string, check_in: string, check_out: string, room_ids: string[], resource_keys: string[], status: string, attendees: string, adults: string, children: string, setup_type: string, room_name: string, includes_catering: boolean, catering_notes: string, total_amount: string, deposit_paid: string, deposit_amount: string, payment_status: string, payment_method: string, currency: string, notes: string}} ConferenceFormExpectedView */
+/** @typedef {{key: string, name: string, type?: string|null, allows_shared_use?: boolean, default_price?: number|string|null}} VenueResourceExpectedView */
+/** @typedef {{id: string, status: string|null, room_number: string|number}} ConferenceRoomExpectedView */
+/** @typedef {{id: string, event_booking_id: string, line_type: string, description: string, quantity: number|string, unit_price: number|string, voided_at?: string|null}} EventLineExpectedView */
+/** @typedef {{id: string, resource_name_snapshot: string}} EventResourceExpectedView */
+/** @typedef {{booking_id: string, room_number: string|number|null, check_in: string, check_out: string, total_amount: number|string|null}} EventRoomExpectedView */
+/** @typedef {{id: string, type?: string|null, amount: number|string|null, method: string}} EventPaymentExpectedView */
+/** @typedef {{line_items: EventLineExpectedView[], resources: EventResourceExpectedView[], rooms: EventRoomExpectedView[], payments: EventPaymentExpectedView[]}} EventDetailsExpectedView */
+/** @typedef {{description: string, quantity: number|string, unit_price: number|string}} EventExtraDraftExpectedView */
+/** @typedef {{amount: string, method: string}} EventPaymentFormExpectedView */
+
 const EVENT_TYPES = [
   { value: 'conference', label: 'Conference' },
   { value: 'meeting', label: 'Meeting' },
@@ -82,6 +95,7 @@ const empty = () => ({
   notes: ''
 })
 
+/** @param {string|null|undefined} start @param {string|null|undefined} end */
 function duration(start, end) {
   if (!start || !end) return ''
   const [sh, sm] = start.split(':').map(Number)
@@ -99,25 +113,25 @@ export default function Conference() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [bookings, setBookings] = useState([])
+  const [bookings, setBookings] = useState(/** @type {ConferenceBookingExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {ConferenceBookingExpectedView|null} */ (null))
   const [form, setForm] = useState(empty())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [expandedId, setExpandedId] = useState(null)
   const [filterDate, setFilterDate] = useState('')
   const [deleting, setDeleting] = useState(null)
-  const [payBooking, setPayBooking] = useState(null)
-  const [payForm, setPayForm] = useState({ amount: '', method: 'cash' })
+  const [payBooking, setPayBooking] = useState(/** @type {ConferenceBookingExpectedView|null} */ (null))
+  const [payForm, setPayForm] = useState(/** @type {EventPaymentFormExpectedView} */ ({ amount: '', method: 'cash' }))
   const [paySaving, setPaySaving] = useState(false)
   const [payError, setPayError] = useState('')
-  const [rooms, setRooms] = useState([])
-  const [venueResources, setVenueResources] = useState([])
-  const [detailsById, setDetailsById] = useState({})
+  const [rooms, setRooms] = useState(/** @type {ConferenceRoomExpectedView[]} */ ([]))
+  const [venueResources, setVenueResources] = useState(/** @type {VenueResourceExpectedView[]} */ ([]))
+  const [detailsById, setDetailsById] = useState(/** @type {Record<string, EventDetailsExpectedView|null>} */ ({}))
   const [detailsLoadingId, setDetailsLoadingId] = useState(null)
-  const [extraDrafts, setExtraDrafts] = useState({})
+  const [extraDrafts, setExtraDrafts] = useState(/** @type {Record<string, EventExtraDraftExpectedView>} */ ({}))
   const [folioError, setFolioError] = useState('')
 
   const load = async () => {
@@ -127,16 +141,17 @@ export default function Conference() {
     const data = await window.api.events.getAll(start, end).catch(() =>
       window.api.conference.getAll(start, end).catch(() => [])
     )
-    setBookings(data)
+    // Both handlers return the query result array or the existing [] fallback.
+    setBookings(/** @type {ConferenceBookingExpectedView[]} */ (data))
     setLoading(false)
   }
 
   useEffect(() => { load() }, [filterDate])
 
   useEffect(() => {
-    window.api.rooms.getAll().then((rows) => setRooms(Array.isArray(rows) ? rows : [])).catch(() => setRooms([]))
+    window.api.rooms.getAll().then((rows) => setRooms(Array.isArray(rows) ? /** @type {ConferenceRoomExpectedView[]} */ (rows) : [])).catch(() => setRooms([]))
     window.api.dayuse.getConfig().then((config) => {
-      setVenueResources(Array.isArray(config?.resources) ? config.resources : [])
+      setVenueResources(Array.isArray(config?.resources) ? /** @type {VenueResourceExpectedView[]} */ (config.resources) : [])
     }).catch(() => setVenueResources([]))
   }, [])
 
@@ -151,8 +166,10 @@ export default function Conference() {
     }
   }, [bookings, location.state])
 
+  /** @template {keyof ConferenceFormExpectedView} K @param {K} f @param {ConferenceFormExpectedView[K]} v */
   const set = (f, v) => setForm((prev) => ({ ...prev, [f]: v }))
 
+  /** @param {ConferenceBookingExpectedView} booking */
   const toggleDetails = async (booking) => {
     if (expandedId === booking.id) {
       setExpandedId(null)
@@ -163,7 +180,7 @@ export default function Conference() {
     if (detailsById[booking.id]) return
     setDetailsLoadingId(booking.id)
     try {
-      const details = await window.api.events.getDetails(booking.id)
+      const details = /** @type {EventDetailsExpectedView|null} */ (await window.api.events.getDetails(booking.id))
       setDetailsById((prev) => ({ ...prev, [booking.id]: details }))
     } catch (err) {
       setFolioError(err?.message || 'Could not load the event folio.')
@@ -172,14 +189,16 @@ export default function Conference() {
     }
   }
 
+  /** @param {string} eventId */
   const refreshDetails = async (eventId) => {
-    const details = await window.api.events.getDetails(eventId)
+    const details = /** @type {EventDetailsExpectedView|null} */ (await window.api.events.getDetails(eventId))
     setDetailsById((prev) => ({ ...prev, [eventId]: details }))
     await load()
   }
 
+  /** @param {string} eventId */
   const addExtra = async (eventId) => {
-    const draft = extraDrafts[eventId] || {}
+    const draft = extraDrafts[eventId] || /** @type {EventExtraDraftExpectedView} */ ({})
     const description = String(draft.description || '').trim()
     const quantity = Number(draft.quantity || 1)
     const unitPrice = Number(draft.unit_price || 0)
@@ -203,6 +222,7 @@ export default function Conference() {
     }
   }
 
+  /** @param {string} eventId @param {EventLineExpectedView} lineItem */
   const voidExtra = async (eventId, lineItem) => {
     const reason = window.prompt(`Reason for voiding "${lineItem.description}"?`)
     if (!reason?.trim()) return
@@ -222,6 +242,7 @@ export default function Conference() {
     setShowForm(true)
   }
 
+  /** @param {ConferenceBookingExpectedView} b */
   const openEdit = (b) => {
     setEditing(b)
     setForm({
@@ -257,6 +278,7 @@ export default function Conference() {
     setShowForm(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleSave = async (e) => {
     e.preventDefault()
     if (!form.client_name.trim()) { setError('Client name is required'); return }
@@ -319,6 +341,7 @@ export default function Conference() {
     setSaving(false)
   }
 
+  /** @param {string} id */
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this event booking?')) return
     setDeleting(id)
@@ -329,6 +352,7 @@ export default function Conference() {
     load()
   }
 
+  /** @param {ConferenceBookingExpectedView} booking */
   const openPayment = (booking) => {
     const paid = booking.amount_paid || booking.deposit_paid || 0
     const outstanding = Math.max(0, (booking.total_amount || 0) - paid)
@@ -343,6 +367,7 @@ export default function Conference() {
     setPayError('')
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handlePaymentSave = async (e) => {
     e.preventDefault()
     const amount = parseFloat(payForm.amount) || 0
@@ -363,12 +388,12 @@ export default function Conference() {
     setPaySaving(false)
   }
 
-  const grouped = bookings.reduce((acc, b) => {
+  const grouped = bookings.reduce((/** @type {Record<string, ConferenceBookingExpectedView[]>} */ acc, b) => {
     const d = b.booking_date
     if (!acc[d]) acc[d] = []
     acc[d].push(b)
     return acc
-  }, {})
+  }, /** @type {Record<string, ConferenceBookingExpectedView[]>} */ ({}))
 
   const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a))
 

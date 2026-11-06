@@ -4,15 +4,38 @@ import { randomUUID } from 'crypto';
 /** @typedef {Record<string, unknown>} QueueItemPropertyView */
 /** @typedef {Record<string, unknown>} QueueDataPropertyView */
 /** @typedef {Record<string, unknown>} QueuePayloadPropertyView */
+/**
+ * Expected view for queue rows produced by queueOperation/ensureQueuedItem.
+ * Persisted JSON readers remain unvalidated; general cache paths use the
+ * unknown overload on rewriteQueuedBookingReferenceItem.
+ * @typedef {Record<string, unknown> & {
+ *   type: string,
+ *   table: string,
+ *   data: Record<string, unknown> & {payload?: (Record<string, unknown> & {product?: {name?: unknown}}) | null},
+ *   id: string | null,
+ *   _queue_id: string,
+ *   retryCount?: number,
+ *   lastError?: unknown,
+ *   lastAttemptedAt?: string | null,
+ *   _next_retry_at?: string | null,
+ *   manualRetryOnly?: boolean,
+ *   _local_booking_id?: string | null,
+ *   _local_booking_ids?: unknown,
+ *   _local_charge_id?: string | null,
+ *   _local_line_item_id?: string | null,
+ *   lodge_id?: string | null,
+ *   _depends_on?: string | null,
+ * }} ReplayQueueItemExpectedView
+ */
 
 export const DEAD_LETTER_AUTO_RETRY_AFTER_MS = 30 * 60 * 1000;
 
-/** @param {string} [prefix] @returns {string} */
+/** @param {unknown} [prefix] @returns {string} */
 function createQueueOperationId(prefix = 'op') {
   return `${prefix}-${randomUUID()}`;
 }
 
-/** @param {unknown} [item] @param {string} [fallbackType] @returns {QueueItemPropertyView} */
+/** @param {unknown} [item] @param {unknown} [fallbackType] @returns {QueueItemPropertyView} */
 export function ensureQueuedItem(item = {}, fallbackType = 'op') {
   const queueItem = /** @type {QueueItemPropertyView} */ (item)
   return {
@@ -359,7 +382,9 @@ export function rewritePendingProductReferences(pendingList, operationKey, menuI
     if (!payload || !Array.isArray(payload.items)) continue;
     let touched = false;
     for (const rawLine of /** @type {unknown[]} */ (payload.items)) {
-      const line = /** @type {QueuePayloadPropertyView | null | undefined} */ (rawLine)
+      // Each payload item is produced as an object row. This expected-data
+      // view preserves the current property reads and does not validate JSON.
+      const line = /** @type {QueuePayloadPropertyView} */ (rawLine)
       if (String(line && line.menu_item_id || '') === provisionalMenuId) {
         line.menu_item_id = menuId;
         touched = true;
@@ -385,8 +410,14 @@ export function rewritePendingProductReferences(pendingList, operationKey, menuI
 /** @param {unknown} cachedShifts @param {{outletId?: unknown, cashierId?: unknown}} [options] @returns {unknown} */
 export function resolveCurrentOpenShiftId(cachedShifts, { outletId = null, cashierId = null } = {}) {
   const rows = Array.isArray(cachedShifts) ? /** @type {unknown[]} */ (cachedShifts) : [];
-  const rowView = (row) => /** @type {QueueItemPropertyView | null | undefined} */ (row)
+  // Cache rows are expected to be objects from the shift refresh producer; the
+  // cache itself is not validated here. This view preserves existing property
+  // reads and malformed-row behavior.
+  /** @param {unknown} row @returns {QueueItemPropertyView} */
+  const rowView = (row) => /** @type {QueueItemPropertyView} */ (row)
+  /** @param {unknown} row */
   const sameOutlet = (row) => (rowView(row)?.outlet_id || null) === (outletId || null);
+  /** @param {unknown} row */
   const sameCashier = (row) => !cashierId || !rowView(row)?.cashier_id || String(rowView(row).cashier_id) === String(cashierId);
   const open = rows.filter((rawRow) => {
     const row = rowView(rawRow)
@@ -428,7 +459,10 @@ export function classifySaleReplayRoute(cachedShifts, payload) {
   const shiftId = String((payload ? payload.shift_id : '') || '').trim();
   if (!shiftId) return 'historical';
   const rows = Array.isArray(cachedShifts) ? /** @type {unknown[]} */ (cachedShifts) : [];
-  const rowView = (row) => /** @type {QueueItemPropertyView | null | undefined} */ (row)
+  // Cached shift objects come from the same refresh producer; this is an
+  // expected-data view, not validation of cache contents.
+  /** @param {unknown} row @returns {QueueItemPropertyView} */
+  const rowView = (row) => /** @type {QueueItemPropertyView} */ (row)
   const row = rows.find((rawRow) => String(rowView(rawRow)?.id || '') === shiftId);
   if (!row) return 'historical';
   const isOpen = String(rowView(row)?.status || '').toLowerCase() === 'open' && !rowView(row)?.closed_at;
@@ -483,6 +517,7 @@ export const REPLAY_OUTCOME = Object.freeze({
   UNKNOWN: 'unknown'
 });
 
+/** @type {Set<string>} */
 const REPLAY_RETRYABLE_OUTCOMES = new Set([
   REPLAY_OUTCOME.TRANSPORT_UNCERTAIN,
   REPLAY_OUTCOME.THROTTLED,
@@ -705,7 +740,7 @@ function replayJitterMs(itemView) {
  * synchronized replays spread out. Existing rows without these fields keep
  * working unchanged.
  */
-/** @param {unknown} item @param {{outcomeClass?: string, code?: string | null, message?: string, now?: Date, baseDelayMs?: number, maxDelayMs?: number}} [options] @returns {Record<string, unknown>} */
+/** @param {unknown} item @param {{outcomeClass?: string, code?: unknown, message?: string, now?: Date, baseDelayMs?: number, maxDelayMs?: number}} [options] @returns {Record<string, unknown>} */
 export function buildReplayFailureMetadata(item, {
   outcomeClass = REPLAY_OUTCOME.UNKNOWN,
   code = null,

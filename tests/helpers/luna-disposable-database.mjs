@@ -1,6 +1,7 @@
 import { Client } from 'pg'
 
 const REQUIRED_MARKER = 'LUNA-REMEDIATION-DISPOSABLE-v1'
+const APPROVED_PROJECT_REF = 'repsrmlomedqrmrdsbga'
 const DENIED_PROJECT_REFS = [
   { ref: 'oicgpknsmtvcsjacymum', label: 'linked production project' },
   { ref: 'hwzkwdfmoeayophaktsq', label: 'historical project' }
@@ -43,22 +44,61 @@ export function readLunaDatabaseTarget(env = process.env) {
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) {
     throw new DisposableDatabaseBlocked('Only an explicit PostgreSQL URL is accepted for remediation SQL tests.')
   }
+  if (parsed.pathname.slice(1) !== expectedDatabase) {
+    throw new DisposableDatabaseBlocked('PostgreSQL URL database must match LUNA_REMEDIATION_EXPECTED_DATABASE.')
+  }
+  if (!parsed.username || !parsed.password) {
+    throw new DisposableDatabaseBlocked('PostgreSQL URL must include explicit database credentials.')
+  }
+  try {
+    decodeURIComponent(parsed.username)
+    decodeURIComponent(parsed.password)
+  } catch {
+    throw new DisposableDatabaseBlocked('PostgreSQL URL credentials must use valid percent encoding; credentials are never printed.')
+  }
+
+  const queryEntries = [...parsed.searchParams.entries()]
+  const unsupportedQuery = queryEntries.some(([key]) => key.toLowerCase() !== 'sslmode')
+  const sslModes = queryEntries.filter(([key]) => key.toLowerCase() === 'sslmode')
+  if (unsupportedQuery || sslModes.length > 1
+    || (sslModes.length === 1 && !['require', 'verify-ca', 'verify-full'].includes(sslModes[0][1].toLowerCase()))) {
+    throw new DisposableDatabaseBlocked('PostgreSQL URL query options are not allowed to override the verified connection settings.')
+  }
 
   rejectKnownProjectTarget(parsed.hostname)
+
+  const directProjectHost = parsed.hostname === `db.${APPROVED_PROJECT_REF}.supabase.co`
+  const poolerHost = parsed.hostname.endsWith('.pooler.supabase.com')
+    && decodeURIComponent(parsed.username).endsWith(`.${APPROVED_PROJECT_REF}`)
+  if (!directProjectHost && !poolerHost) {
+    throw new DisposableDatabaseBlocked('Database URL host and account must identify the approved LodgingOS remediation project.')
+  }
 
   if (!/^[a-z0-9][a-z0-9_-]{1,62}$/i.test(expectedProjectRef)) {
     throw new DisposableDatabaseBlocked('Expected disposable project reference has an invalid shape.')
   }
+  if (expectedProjectRef !== APPROVED_PROJECT_REF) {
+    throw new DisposableDatabaseBlocked('Expected project reference must match the approved LodgingOS remediation disposable project.')
+  }
   return { connectionString, expectedDatabase, expectedProjectRef }
 }
 
-export async function connectVerifiedDisposableDatabase(env = process.env) {
+export function createVerifiedDisposableClient(env = process.env) {
   const target = readLunaDatabaseTarget(env)
   const parsed = new URL(target.connectionString)
   const client = new Client({
-    connectionString: target.connectionString,
-    ...(parsed.hostname.endsWith('.supabase.co') ? { ssl: { rejectUnauthorized: false } } : {})
+    host: parsed.hostname,
+    port: parsed.port ? Number(parsed.port) : 5432,
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: decodeURIComponent(parsed.pathname.slice(1)),
+    ssl: { rejectUnauthorized: true }
   })
+  return { client, target }
+}
+
+export async function connectVerifiedDisposableDatabase(env = process.env) {
+  const { client, target } = createVerifiedDisposableClient(env)
   try {
     await client.connect()
     const identity = (await client.query('select current_database() as database_name, current_user as database_user')).rows[0]

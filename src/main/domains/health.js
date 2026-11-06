@@ -50,11 +50,22 @@ const DEVICE_HEALTH_MAX_HEARTBEAT_MS = 20 * 60_000;
 let lastDeviceHealthLocalFingerprint = '';
 let lastDeviceHealthPublishedAt = 0;
 
+/**
+ * Expected fields consumed from the existing booking, room, customer and
+ * inventory list readers and their cache fallbacks. These views do not
+ * validate cache JSON or query responses.
+ * @typedef {{id?: unknown, booking_number?: unknown, invoice_number?: unknown, customer_name?: unknown, customer_id?: unknown, room_id?: unknown, room_number?: unknown, check_in?: string|null, check_out?: string|null, status?: unknown, payment_status?: unknown, total_amount?: unknown, charges_total?: unknown, amount_paid?: unknown}} OfflineSafetyBookingExpectedData
+ * @typedef {{id?: unknown, room_number?: unknown}} OfflineSafetyRoomExpectedData
+ * @typedef {{id?: unknown, name?: unknown}} OfflineSafetyCustomerExpectedData
+ * @typedef {{id?: unknown, name?: unknown, item_name?: unknown, category?: unknown, current_stock?: unknown, reorder_level?: unknown, unit?: unknown}} OfflineSafetyInventoryItemExpectedData
+ */
+
 // ─── HEALTH DIAGNOSTICS & OFFLINE SAFETY ───────────────────────────────────────
 
+/** @param {{includeMutationProbes?: unknown}} [options] */
 export async function getSystemHealth(options = {}) {
   const includeMutationProbes = options?.includeMutationProbes === true;
-  const diagnostics = await getLodgeDiagnostics(state.lodgeId || '').catch((error) => ({ error: error.message }));
+  const diagnostics = await getLodgeDiagnostics(state.lodgeId || '').catch((error) => ({ error: (/** @type {{message: string}} */ (error)).message }));
   const sync = getSyncStatus();
   const backups = getBackupInfoForHealth();
   const backup_health = getBackupHealthSummary(backups);
@@ -68,7 +79,8 @@ export async function getSystemHealth(options = {}) {
   if (state.isOnline && state.lodgeId) {
     // Existing payment ledger check
     try {
-      const { error } = await state.supabase.rpc('get_booking_payments', {
+      // Infrastructure initializes this client before checkOnline can make this branch true.
+      const { error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_booking_payments', {
         p_booking_id: randomUUID(),
         p_lodge_id: state.lodgeId
       });
@@ -77,9 +89,9 @@ export async function getSystemHealth(options = {}) {
     } catch (e) {
       finance.payments_rpc = {
         ok: false,
-        message: /get_booking_payments/i.test(e.message || '') ?
+        message: /get_booking_payments/i.test((/** @type {{message: string}} */ (e)).message || '') ?
         'Booking payment ledger RPC is missing. Run the latest checked-in finance migration.' :
-        e.message || 'Could not verify booking payment ledger RPC.'
+        (/** @type {{message: string}} */ (e)).message || 'Could not verify booking payment ledger RPC.'
       };
     }
 
@@ -151,7 +163,7 @@ export async function getSystemHealth(options = {}) {
 
 
 function getCriticalErrorLogForSupport(limit = 100) {
-  return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).
+  return /** @type {Array<{scope?: unknown, message?: unknown}>} */ (readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE)).
   filter((entry) => !isNonCriticalOperationalError(entry?.scope, entry?.message)).
   slice(0, limit);
 }
@@ -221,10 +233,10 @@ export async function getSupportBundle(limit = 20) {
 export async function getOfflineSafetyData() {
   const today = getLocalDateKey(new Date(), LOCAL_TIME_ZONE);
   const tomorrow = getLocalDateKey(addDays(new Date(), 1), LOCAL_TIME_ZONE);
-  const bookings = await getAllBookings().catch(() => readCache('bookings'));
-  const rooms = await getAllRooms().catch(() => readCache('rooms'));
-  const customers = await getAllCustomers().catch(() => readCache('customers'));
-  const inventoryItems = await getInventoryItems().catch(() => readCache('inventory-items'));
+  const bookings = /** @type {OfflineSafetyBookingExpectedData[]} */ (await getAllBookings().catch(() => readCache('bookings')));
+  const rooms = /** @type {OfflineSafetyRoomExpectedData[]} */ (await getAllRooms().catch(() => readCache('rooms')));
+  const customers = /** @type {OfflineSafetyCustomerExpectedData[]} */ (await getAllCustomers().catch(() => readCache('customers')));
+  const inventoryItems = /** @type {OfflineSafetyInventoryItemExpectedData[]} */ (await getInventoryItems().catch(() => readCache('inventory-items')));
 
   const roomById = new Map((rooms || []).map((room) => [room.id, room]));
   const customerById = new Map((customers || []).map((customer) => [customer.id, customer]));
@@ -281,6 +293,7 @@ function getDesktopDeviceId() {
   }
 }
 
+/** @param {{force?: unknown}} [options] */
 export async function publishDeviceHealth(options = {}) {
   if (!state.isOnline || !state.lodgeId) return { success: false, skipped: true, error: 'Offline or lodge not selected.' };
   const details = getSyncDetails();
@@ -301,7 +314,8 @@ export async function publishDeviceHealth(options = {}) {
   }
 
   const reconciliation = await getFinancialReconciliation().catch(() => ({ state: 'unknown' }));
-  const { data, error } = await state.supabase.rpc('upsert_device_health', {
+  // The online guard follows infrastructure initialization; preserve the existing direct RPC failure path.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('upsert_device_health', {
     p_lodge_id: state.lodgeId,
     p_device_id: getDesktopDeviceId(),
     p_client_type: 'desktop',
@@ -329,7 +343,8 @@ export async function publishDeviceHealth(options = {}) {
 export async function getDeviceHealthRollup() {
   if (!state.isOnline || !state.lodgeId) return { available: false, devices: [] };
   await publishDeviceHealth({ force: true }).catch(() => {});
-  const { data, error } = await state.supabase.rpc('get_device_health_rollup', { p_lodge_id: state.lodgeId });
+  // This guard also follows infrastructure initialization of the Supabase client.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_device_health_rollup', { p_lodge_id: state.lodgeId });
   if (error) throw new Error(error.message);
   return { available: true, devices: Array.isArray(data) ? data : [] };
 }

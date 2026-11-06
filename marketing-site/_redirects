@@ -1,4 +1,7 @@
 # Marketing-site pretty-URL rewrites (mirrors marketing-site/netlify.toml).
+https://borokobookings.com/* https://tsabonno.com/:splat 301!
+https://www.borokobookings.com/* https://tsabonno.com/:splat 301!
+https://borokobookings.netlify.app/* https://tsabonno.com/:splat 301!
 /features /features.html 200
 /packages /packages.html 200
 /why-switch /why-switch.html 200

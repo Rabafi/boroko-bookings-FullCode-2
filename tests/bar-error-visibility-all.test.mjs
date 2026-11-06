@@ -28,6 +28,7 @@ const SHARED_PATH_SKIP = new Set([
   'fnb/FnbDemandPlanning.jsx',
   'fnb/FnbModulePanel.jsx',
   'fnb/FnbTodayView.jsx',
+  // Action errors render directly beneath their originating, still-visible form.
   'hospitality-pos/HposManageHub.jsx',
   'hotel/VenueManagement.jsx',
   'restaurant/RestaurantFinanceOverview.jsx',

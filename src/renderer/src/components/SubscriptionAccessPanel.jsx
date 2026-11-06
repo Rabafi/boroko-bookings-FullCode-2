@@ -43,7 +43,7 @@ import {
   getCommercialPackageDisplayName,
   getAdvertisedEnterpriseAddons
 } from '../../../shared/commercialPackages'
-import { getCommercialAddonOffers } from '../../../shared/commercialEntitlements'
+import { expandCommercialAddonKeys, getCommercialAddon, getCommercialAddonOffers } from '../../../shared/commercialEntitlements'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getHospitalityMode } from '../../../shared/propertyTypes'
 import { isCommercialFeatureIncluded } from '../../../shared/commercialAccess.js'
@@ -60,6 +60,18 @@ const IS_HOTEL_PRODUCT = BUILD_PRODUCT.id === 'hotel'
 const IS_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 const IS_LODGE_PRODUCT = BUILD_PRODUCT.id === 'lodge-camp'
 
+/** @typedef {{status?: string|null, expired?: boolean, plan?: string|null, commercial_package_key?: string|null, enterprise_addons?: unknown[], effective_features?: Record<string, unknown>, subscription_state?: string|null, payment_status?: string|null, daysLeft?: number|null, next_due_date?: string|null, expires_at?: string|null, grace_period_ends_at?: string|null, offline_valid_until?: string|null, lodge_id?: string|null}} SubscriptionStatusExpectedView */
+/** @typedef {{status?: string|null, balance_due?: number|string|null, total?: number|string|null, amount?: number|string|null, currency?: string|null, commercial_package_key?: string|null, commercial_package_name?: string|null, package_name?: string|null, invoice_number?: string|null, id?: string|null, issued_at?: string|null, issued_date?: string|null, due_date?: string|null, paid_at?: string|null, paid_date?: string|null}} CommercialInvoiceExpectedView */
+/** @typedef {{unavailable?: boolean, available?: boolean, success?: boolean, error?: string|null, rows?: unknown}} CommercialInvoiceResponseExpectedView */
+/** The UI's existing nested usage read is an expected-data view, not validation; current main output places these counters at the summary's top level, so the nested property is not guaranteed by the producer. */
+/** @typedef {{error?: string|null, usage?: {monthlyBookings: number, rooms: number, users: number}, source?: string|null, lastUsageSyncAt?: string|null}} UsageSnapshotExpectedView */
+/** @typedef {{success?: boolean, error?: string|null, plan?: string|null}} LicenseActivationExpectedView */
+/** @typedef {{type: 'success'|'error', text: string}} ActivationMessage */
+/** @typedef {ReturnType<typeof getCommercialPackageCatalog>[number]} CommercialPackageExpectedView */
+/** @typedef {'idle'|'loading'|'restricted'|'unavailable'|'error'|'empty'|'success'} BillingHistoryStatus */
+/** @typedef {{status: BillingHistoryStatus, rows: CommercialInvoiceExpectedView[], message: string}} BillingHistoryState */
+
+/** @param {string|number|null|undefined} value */
 function fmtDate(value) {
   if (!value) return '—'
   const date = new Date(value)
@@ -67,6 +79,7 @@ function fmtDate(value) {
   return date.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/** @param {string|null|undefined} currency @param {number|string|null|undefined} value */
 function formatMoney(currency, value) {
   if (value === null || value === undefined || value === '') return '—'
   const amount = Number(value)
@@ -74,11 +87,13 @@ function formatMoney(currency, value) {
   return `${currency || 'BWP'} ${amount.toFixed(2)}`
 }
 
+/** @param {unknown} status */
 function humanStatus(status) {
   if (!status) return 'Not stated'
   return String(status).replace(/[_-]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** @param {unknown} status */
 function paymentBadge(status) {
   if (!status) return <span className="text-sm text-gray-500">Not stated</span>
   const map = {
@@ -106,6 +121,7 @@ function paymentBadge(status) {
   )
 }
 
+/** @param {CommercialInvoiceExpectedView} invoice */
 function invoiceStatus(invoice) {
   if (invoice?.status) return invoice.status
   const balance = invoice?.balance_due
@@ -113,6 +129,7 @@ function invoiceStatus(invoice) {
   return 'issued'
 }
 
+/** @param {string|null|undefined} currentPlan */
 function getRecommendedUpgradePlan(currentPlan) {
   const normalizedPlan = normalizeSubscriptionPlan(currentPlan)
   if (IS_HOTEL_PRODUCT || IS_POS_PRODUCT) return null
@@ -121,6 +138,7 @@ function getRecommendedUpgradePlan(currentPlan) {
   return null
 }
 
+/** @param {{licenseStatus: SubscriptionStatusExpectedView|null, selectedTargetPackage?: CommercialPackageExpectedView|null, currentPackage?: CommercialPackageExpectedView|null}} props */
 function StatusHero({ licenseStatus, selectedTargetPackage = null, currentPackage = null }) {
   if (!licenseStatus) {
     return (
@@ -215,6 +233,7 @@ function StatusHero({ licenseStatus, selectedTargetPackage = null, currentPackag
   )
 }
 
+/** @param {{canManageSubscription: boolean, billingState: BillingHistoryState, onRetry: () => void}} props */
 function BillingHistory({ canManageSubscription, billingState, onRetry }) {
   if (!canManageSubscription) {
     return (
@@ -300,11 +319,12 @@ export default function SubscriptionAccessPanel() {
   const { user } = useAuth()
   const access = useAccess()
   const [searchParams] = useSearchParams()
-  const [licenseStatus, setLicenseStatus] = useState(null)
+  // `trial:getStatus` forwards the database value without runtime validation.
+  const [licenseStatus, setLicenseStatus] = useState(/** @type {SubscriptionStatusExpectedView|null} */ (null))
   const [licenseKey, setLicenseKey] = useState('')
   const [activating, setActivating] = useState(false)
-  const [activateMsg, setActivateMsg] = useState(null)
-  const [billingState, setBillingState] = useState({ status: 'idle', rows: [], message: '' })
+  const [activateMsg, setActivateMsg] = useState(/** @type {ActivationMessage|null} */ (null))
+  const [billingState, setBillingState] = useState(/** @type {BillingHistoryState} */ ({ status: 'idle', rows: [], message: '' }))
   const [billingRefreshToken, setBillingRefreshToken] = useState(0)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [upgradeMsg, setUpgradeMsg] = useState('')
@@ -312,11 +332,12 @@ export default function SubscriptionAccessPanel() {
   const [upgradeSent, setUpgradeSent] = useState(false)
   // This selection is only a preview/request target. It never activates a license.
   // The request selector is keyed by the commercial key: value={requestedPackageKey}.
-  const [requestedPackageKey, setRequestedPackageKey] = useState(null)
+  const [requestedPackageKey, setRequestedPackageKey] = useState(/** @type {string|null} */ (null))
+  const [requestedAddonKeys, setRequestedAddonKeys] = useState(/** @type {string[]} */ ([]))
   const [lodgeIdCopied, setLodgeIdCopied] = useState(false)
   const [usageCounts, setUsageCounts] = useState({ monthlyBookings: 0, rooms: 0, users: 0 })
   const [usageSource, setUsageSource] = useState('cache')
-  const [lastUsageSyncAt, setLastUsageSyncAt] = useState(null)
+  const [lastUsageSyncAt, setLastUsageSyncAt] = useState(/** @type {string|null} */ (null))
   const requestedFeatureFromRoute = searchParams.get('feature') || ''
 
   const lodgeId = settings?.lodge_id || access?.entitlement?.lodge_id
@@ -395,6 +416,7 @@ export default function SubscriptionAccessPanel() {
   }, [activeAddonKeys, currentCommercialPackageKey, operatingProfile])
   const commercialEntitlement = licenseStatus || access?.entitlement || null
 
+  /** @param {typeof APP_FEATURES[number]} featureName */
   const isFeatureEnabled = (featureName) => {
     if (entitlementExpired) return false
     if (IS_POS_PRODUCT && !isCommercialFeatureIncluded(
@@ -417,7 +439,7 @@ export default function SubscriptionAccessPanel() {
   const refreshStatus = async ({ forceFresh = false } = {}) => {
     if (!lodgeId || !window.api?.trial?.getStatus) return
     const nextStatus = await window.api.trial.getStatus(lodgeId, { forceFresh: forceFresh === true }).catch(() => null)
-    setLicenseStatus(nextStatus)
+    setLicenseStatus(/** @type {SubscriptionStatusExpectedView|null} */ (/** @type {unknown} */ (nextStatus)))
     return nextStatus
   }
 
@@ -438,7 +460,8 @@ export default function SubscriptionAccessPanel() {
       }
       setBillingState({ status: 'loading', rows: [], message: '' })
       try {
-        const response = await window.api.trial.getCommercialBillingHistory(lodgeId, BUILD_PRODUCT.id)
+        // This is the UI's expected response view; preload/main do not validate this IPC value.
+        const response = /** @type {CommercialInvoiceResponseExpectedView|null} */ (/** @type {unknown} */ (await window.api.trial.getCommercialBillingHistory(lodgeId, BUILD_PRODUCT.id)))
         if (!active) return
         if (response?.unavailable || response?.available === false) {
           setBillingState({ status: 'unavailable', rows: [], message: response.error || '' })
@@ -448,14 +471,14 @@ export default function SubscriptionAccessPanel() {
           setBillingState({ status: 'error', rows: [], message: response.error || '' })
           return
         }
-        const rows = Array.isArray(response?.rows) ? response.rows : []
+        const rows = Array.isArray(response?.rows) ? /** @type {CommercialInvoiceExpectedView[]} */ (/** @type {unknown} */ (response.rows)) : []
         setBillingState({ status: rows.length ? 'success' : 'empty', rows, message: '' })
       } catch (error) {
         if (!active) return
         setBillingState({
           status: navigator.onLine === false ? 'unavailable' : 'error',
           rows: [],
-          message: error?.message || ''
+          message: (/** @type {{message?: string|null}} */ (error))?.message || ''
         })
       }
     }
@@ -474,6 +497,7 @@ export default function SubscriptionAccessPanel() {
     // explicit future target when the server provides one. All POS plans
     // share internalPlan 'Pro', so prefer a package eligible for this
     // operating profile — otherwise a restaurant trial previews Bar POS.
+    /** @param {CommercialPackageExpectedView[]} [rows] */
     const eligibleFirst = (rows = []) => {
       if (!IS_POS_PRODUCT || !operatingProfile) return rows
       const eligible = rows.filter((plan) => {
@@ -531,7 +555,8 @@ export default function SubscriptionAccessPanel() {
     let active = true
     const loadUsage = async () => {
       if (window.api?.usage?.getSnapshot) {
-        const snapshot = await window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)
+        // usage:getSnapshot forwards the database value or its existing `{error}` fallback.
+        const snapshot = /** @type {UsageSnapshotExpectedView|null} */ (/** @type {unknown} */ (await window.api.usage.getSnapshot({ forceRemoteRefresh: navigator.onLine === true }).catch(() => null)))
         if (snapshot && !snapshot.error) {
           if (!active) return
           setUsageCounts(snapshot.usage || { monthlyBookings: 0, rooms: 0, users: 0 })
@@ -546,7 +571,8 @@ export default function SubscriptionAccessPanel() {
         window.api.rooms.getAll().catch(() => []),
         window.api.users.getAll().catch(() => [])
       ])
-      const monthlyBookings = countMonthlyUsageBookings(bookings || [], new Date())
+      // The IPC/cache rows remain unvalidated; this view matches the fields the existing counter reads.
+      const monthlyBookings = countMonthlyUsageBookings(/** @type {import('../../../shared/subscriptionPlans.js').BookingUsageInput[]} */ (/** @type {unknown} */ (bookings || [])), new Date())
       if (!active) return
       setUsageCounts({
         monthlyBookings,
@@ -593,18 +619,18 @@ export default function SubscriptionAccessPanel() {
     setActivateMsg(null)
     setActivating(true)
     try {
-      const response = await window.api.trial.activateKey(lodgeId, licenseKey.trim())
+      const response = /** @type {LicenseActivationExpectedView} */ (/** @type {unknown} */ (await window.api.trial.activateKey(lodgeId, licenseKey.trim())))
       if (response?.success === false) {
         setActivateMsg({ type: 'error', text: response.error || 'Activation failed.' })
       } else {
         setActivateMsg({ type: 'success', text: `Activation complete. ${response.plan || 'License'} is now active.` })
         setLicenseKey('')
         const nextStatus = await access?.refreshEntitlement?.({ forceFresh: true })
-        if (nextStatus) setLicenseStatus(nextStatus)
+        if (nextStatus) setLicenseStatus(/** @type {SubscriptionStatusExpectedView} */ (/** @type {unknown} */ (nextStatus)))
         else await refreshStatus({ forceFresh: true })
       }
     } catch (error) {
-      setActivateMsg({ type: 'error', text: error.message || 'Activation failed.' })
+      setActivateMsg({ type: 'error', text: (/** @type {{message?: string|null}} */ (error)).message || 'Activation failed.' })
     } finally {
       setActivating(false)
     }
@@ -617,6 +643,15 @@ export default function SubscriptionAccessPanel() {
     try {
       const lodgeName = settings?.lodge_name || settings?.company_name || ''
       if (!selectedCommercialPackage?.commercialPackageKey) throw new Error('Choose a package to preview before requesting a change.')
+      const eligibleSelectedAddons = getCommercialAddonOffers(BUILD_PRODUCT.id, propertyType)
+        .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(selectedCommercialPackage.commercialPackageKey))
+        .filter((addon) => !addon.eligibleOperatingProfiles?.length || addon.eligibleOperatingProfiles.includes(operatingProfile))
+      const eligibleAddonKeySet = new Set(eligibleSelectedAddons.map((addon) => addon.addonKey))
+      const carriedAddonKeys = [...activeAddonKeys].filter((key) => eligibleAddonKeySet.has(key))
+      const requestAddonKeys = IS_POS_PRODUCT
+        ? expandCommercialAddonKeys(BUILD_PRODUCT.id, [...carriedAddonKeys, ...requestedAddonKeys])
+          .filter((key) => eligibleAddonKeySet.has(key))
+        : []
       await window.api.subscriptionRequests.submit({
         source: 'desktop_app',
         request_type: 'plan_upgrade',
@@ -631,6 +666,7 @@ export default function SubscriptionAccessPanel() {
         commercial_package_key: selectedCommercialPackage.commercialPackageKey,
         current_plan: licenseStatus?.plan || 'Starter',
         requested_plan: selectedCommercialPackage.internalPlan,
+        requested_addons: requestAddonKeys,
         notes: buildUpgradeRequestDescription({
           lodgeName,
           currentPlan: licenseStatus?.plan || 'Starter',
@@ -645,12 +681,13 @@ export default function SubscriptionAccessPanel() {
       })
       setUpgradeSent(true)
       setUpgradeMsg('')
+      setRequestedAddonKeys([])
       setTimeout(() => {
         setUpgradeSent(false)
         setUpgradeOpen(false)
       }, 2500)
     } catch (err) {
-      setUpgradeError(err?.message || 'Request failed. Reconnect and try again — nothing was charged.')
+      setUpgradeError((/** @type {{message?: string|null}} */ (err))?.message || 'Request failed. Reconnect and try again — nothing was charged.')
     } finally {
       setUpgradeSending(false)
     }
@@ -666,10 +703,23 @@ export default function SubscriptionAccessPanel() {
   // Add-on request from the cards below: open the package-change form and
   // preface the notes with the add-on so the request carries it even though
   // the quote itself is package-scoped.
+  /** @param {ReturnType<typeof getCommercialAddonOffers>[number]} addon */
   const requestPosAddon = (addon) => {
     if (!addon) return
-    const line = `Add-on request: ${addon.displayName || addon.addonKey} (${addon.addonKey})`
-    setUpgradeMsg((current) => (String(current || '').includes(line) ? current : [line, String(current || '').trim()].filter(Boolean).join('\n')))
+    const keys = expandCommercialAddonKeys(BUILD_PRODUCT.id, [addon.addonKey])
+      .filter((key) => key === addon.addonKey || !activeAddonKeys.has(key))
+    setRequestedAddonKeys(keys)
+    const lines = keys.map((key) => {
+      const target = getCommercialAddon(BUILD_PRODUCT.id, key) || addon
+      return `Add-on request: ${target.displayName || key} (${key})`
+    })
+    setUpgradeMsg((current) => {
+      let next = String(current || '')
+      for (const line of lines) {
+        if (!next.includes(line)) next = [next.trim(), line].filter(Boolean).join('\n')
+      }
+      return next
+    })
     setUpgradeOpen(true)
     document.getElementById('change-plan-heading')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
@@ -738,14 +788,14 @@ export default function SubscriptionAccessPanel() {
             const limits = IS_LODGE_PRODUCT ? formatPlanLimits(plan.internalPlan) : null
             const isCurrent = currentCommercialPackageKey ? currentCommercialPackageKey === plan.commercialPackageKey : normalizeSubscriptionPlan(licenseStatus?.plan || 'Starter') === plan.internalPlan
             const isSelected = requestedPackageKey === plan.commercialPackageKey
-            return <button key={plan.commercialPackageKey} type="button" aria-pressed={isSelected} onClick={() => setRequestedPackageKey(plan.commercialPackageKey)} className={`rounded-2xl border p-4 text-left transition-all ${isSelected ? 'border-emerald-300 bg-emerald-50 shadow-sm' : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'}`}>
+            return <button key={plan.commercialPackageKey} type="button" aria-pressed={isSelected} onClick={() => { setRequestedPackageKey(plan.commercialPackageKey); setRequestedAddonKeys([]) }} className={`rounded-2xl border p-4 text-left transition-all ${isSelected ? 'border-emerald-300 bg-emerald-50 shadow-sm' : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'}`}>
               <div className="flex items-start justify-between gap-2"><div><p className="font-semibold text-gray-800">{plan.displayName || plan.name}</p><p className="mt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">{plan.priceLabel}</p></div><div className="flex flex-col items-end gap-1">{isCurrent && <span className="rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-green-700">Current</span>}{isSelected && <span className="rounded-full bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">Preview selected</span>}</div></div>
               <p className="mt-3 text-sm font-medium text-gray-800">{plan.headline}</p><p className="mt-2 text-sm text-gray-500">{plan.summary}</p>{IS_HOTEL_PRODUCT ? <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">Configured by hotel quotation</p> : IS_POS_PRODUCT ? <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">Feature bundle · no capacity limits</p> : <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">{limits.bookings} · {limits.rooms} · {limits.users}</p>}<p className="mt-3 text-xs text-gray-500">{plan.modules.slice(0, 3).join(' · ')}</p><p className="mt-3 text-[11px] font-medium text-slate-500">{plan.upgradeNudge}</p>
             </button>
           })}
         </div>
 
-        {canManageSubscription ? <div className="mt-5">{!upgradeOpen ? (isSelectedCurrentPackage ? <p className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800" role="status">{selectedCommercialPackage?.displayName || 'This package'} is your current package — no request needed. Select a different package to preview a change.</p> : <button type="button" onClick={() => setUpgradeOpen(true)} className="w-full border-2 border-dashed border-green-300 py-3 text-sm font-semibold text-green-700 transition-colors hover:bg-green-50 rounded-2xl flex items-center justify-center gap-2"><ArrowUpCircle size={16} /> Request this package</button>) : <div className="space-y-3 rounded-2xl border border-green-200 bg-green-50 p-4"><div><p className="text-sm font-semibold text-green-800">Request a package change</p><p className="mt-1 text-xs text-green-700">This sends a request to Tsa Bonno for review. Your current plan remains active until an approved activation is completed.</p></div>{upgradeSent ? <p className="text-sm text-green-700" role="status">Request sent. Tsa Bonno will follow up shortly.</p> : <><div className="grid gap-3 sm:grid-cols-[0.95fr_1.05fr]"><div><label className="text-xs font-semibold uppercase tracking-wide text-green-800" htmlFor="requested-package">Package to preview/request</label><select id="requested-package" className="input mt-2 text-sm" value={requestedPackageKey || ''} onChange={(event) => setRequestedPackageKey(event.target.value)}>{visibleCommercialPackages.map((plan) => <option key={plan.commercialPackageKey} value={plan.commercialPackageKey}>{plan.displayName || plan.name}</option>)}</select></div><div className="rounded-2xl border border-green-200 bg-white/75 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-green-800">Selected preview</p><p className="mt-1 text-sm font-semibold text-slate-800">{selectedCommercialPackage?.displayName || 'Choose a package'}</p><p className="mt-1 text-xs text-slate-500">{selectedCommercialPackage?.summary || 'No change is made by selecting a package.'}</p></div></div><textarea className="input h-24 resize-none text-sm" placeholder="Optional notes: expected usage, number of outlets, reporting needs, or anything else Tsa Bonno should know…" value={upgradeMsg} onChange={(event) => setUpgradeMsg(event.target.value)} /><div className="flex gap-2"><button type="button" onClick={() => setUpgradeOpen(false)} className="btn-secondary flex-1 text-sm">Cancel</button><button type="button" onClick={handleUpgradeRequest} disabled={upgradeSending || !selectedCommercialPackage || (isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute)} title={isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute ? 'The selected package is already your current package.' : undefined} className="btn-primary flex-1 text-sm">{upgradeSending ? 'Sending…' : 'Send request for review'}</button></div>{upgradeError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{upgradeError}</ErrorNotice>}{isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute && <p className="text-xs text-green-800" role="status">The selected package is your current package — choose a different package above to request a change.</p>}</>}</div>}</div> : <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-sm font-semibold text-amber-800">Plan changes are restricted</p><p className="mt-1 text-sm text-amber-700">Your role can review access, but only finance, manager, or admin-level users can request or activate a subscription change.</p></div>}
+        {canManageSubscription ? <div className="mt-5">{!upgradeOpen ? (isSelectedCurrentPackage ? <p className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800" role="status">{selectedCommercialPackage?.displayName || 'This package'} is your current package — no request needed. Select a different package to preview a change.</p> : <button type="button" onClick={() => setUpgradeOpen(true)} className="w-full border-2 border-dashed border-green-300 py-3 text-sm font-semibold text-green-700 transition-colors hover:bg-green-50 rounded-2xl flex items-center justify-center gap-2"><ArrowUpCircle size={16} /> Request this package</button>) : <div className="space-y-3 rounded-2xl border border-green-200 bg-green-50 p-4"><div><p className="text-sm font-semibold text-green-800">Request a package change</p><p className="mt-1 text-xs text-green-700">This sends a request to Tsa Bonno for review. Your current plan remains active until an approved activation is completed.</p></div>{upgradeSent ? <p className="text-sm text-green-700" role="status">Request sent. Tsa Bonno will follow up shortly.</p> : <><div className="grid gap-3 sm:grid-cols-[0.95fr_1.05fr]"><div><label className="text-xs font-semibold uppercase tracking-wide text-green-800" htmlFor="requested-package">Package to preview/request</label><select id="requested-package" className="input mt-2 text-sm" value={requestedPackageKey || ''} onChange={(event) => { setRequestedPackageKey(event.target.value); setRequestedAddonKeys([]) }}>{visibleCommercialPackages.map((plan) => <option key={plan.commercialPackageKey} value={plan.commercialPackageKey}>{plan.displayName || plan.name}</option>)}</select></div><div className="rounded-2xl border border-green-200 bg-white/75 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-green-800">Selected preview</p><p className="mt-1 text-sm font-semibold text-slate-800">{selectedCommercialPackage?.displayName || 'Choose a package'}</p><p className="mt-1 text-xs text-slate-500">{selectedCommercialPackage?.summary || 'No change is made by selecting a package.'}</p></div></div><textarea className="input h-24 resize-none text-sm" placeholder="Optional notes: expected usage, number of outlets, reporting needs, or anything else Tsa Bonno should know…" value={upgradeMsg} onChange={(event) => setUpgradeMsg(event.target.value)} /><div className="flex gap-2"><button type="button" onClick={() => { setUpgradeOpen(false); setRequestedAddonKeys([]) }} className="btn-secondary flex-1 text-sm">Cancel</button><button type="button" onClick={handleUpgradeRequest} disabled={upgradeSending || !selectedCommercialPackage || (isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute)} title={isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute ? 'The selected package is already your current package.' : undefined} className="btn-primary flex-1 text-sm">{upgradeSending ? 'Sending…' : 'Send request for review'}</button></div>{upgradeError && <ErrorNotice className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{upgradeError}</ErrorNotice>}{isSelectedCurrentPackage && !/add-on request:/i.test(upgradeMsg || '') && !requestedFeatureFromRoute && <p className="text-xs text-green-800" role="status">The selected package is your current package — choose a different package above to request a change.</p>}</>}</div>}</div> : <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-sm font-semibold text-amber-800">Plan changes are restricted</p><p className="mt-1 text-sm text-amber-700">Your role can review access, but only finance, manager, or admin-level users can request or activate a subscription change.</p></div>}
 
         {IS_HOTEL_PRODUCT && <div className="mt-5 rounded-2xl border border-indigo-200 bg-indigo-50 p-4"><p className="text-sm font-semibold text-indigo-800">Need a HotelOS quotation?</p><p className="mt-1 text-sm text-indigo-700">HotelOS and optional hotel services are quoted separately for each property.</p><button type="button" onClick={() => { window.location.hash = '#/subscription-builder' }} className="mt-3 inline-flex items-center gap-2 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"><Sparkles size={15} /> Open Package Builder</button></div>}
       </section>
@@ -756,14 +806,33 @@ export default function SubscriptionAccessPanel() {
           <div className="mt-5 grid gap-3 lg:grid-cols-3">
             {posAddons.map((addon) => {
               const highlighted = requestedFeatureFromRoute === addon.addonKey
+              const requiredAddons = (addon.requiredAddonKeys || []).flatMap((key) => {
+                const required = getCommercialAddon(BUILD_PRODUCT.id, key)
+                return required ? [required] : []
+              })
+              const missingRequired = requiredAddons.filter((entry) => !activeAddonKeys.has(entry.addonKey))
+              const combinedAnnual = Number(addon.annualPriceBwp || 0)
+                + requiredAddons.reduce((sum, entry) => sum + Number(entry.annualPriceBwp || 0), 0)
               return (
                 <article key={addon.addonKey} className={`rounded-2xl border p-4 ${addon.enabled ? 'border-green-200 bg-green-50' : highlighted ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200 bg-white'}`}>
                   <div className="flex items-start justify-between gap-2"><div><p className="font-semibold text-gray-800">{addon.displayName}</p><p className="mt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">{addon.annualPriceBwp ? `${formatCommercialMoney(addon.annualPriceBwp)}/year` : 'Quoted separately'}</p></div><div className="flex flex-col items-end gap-1">{addon.enabled ? <span className="rounded-full bg-green-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-green-700">Active</span> : <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">Optional</span>}{highlighted && !addon.enabled && <span className="rounded-full bg-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">Requested from Manage</span>}</div></div>
                   <p className="mt-3 text-sm text-gray-500">{addon.description}</p>
                   <p className="mt-3 text-xs text-gray-500">{(addon.includedFeatures || []).slice(0, 3).join(' · ')}</p>
+                  {requiredAddons.length > 0 && (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                      <p className="font-semibold">Requires {requiredAddons.map((entry) => entry.displayName).join(', ')}.</p>
+                      {addon.enabled && missingRequired.length > 0 ? (
+                        <p className="mt-1">This add-on is active, but its required add-on is not active. Existing access is retained; ask Tsa Bonno before changing this package.</p>
+                      ) : missingRequired.length > 0 ? (
+                        <p className="mt-1">Requesting it also requests {missingRequired.map((entry) => entry.displayName).join(', ')}. Combined: +{formatCommercialMoney(combinedAnnual)}/year.</p>
+                      ) : (
+                        <p className="mt-1">The required add-on is already active. This add-on adds +{formatCommercialMoney(addon.annualPriceBwp)}/year.</p>
+                      )}
+                    </div>
+                  )}
                   {!addon.enabled && (
                     canManageSubscription
-                      ? <button type="button" onClick={() => requestPosAddon(addon)} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-green-300 bg-white px-3 py-2 text-sm font-semibold text-green-700 hover:bg-green-50"><ArrowUpCircle size={15} /> Request this add-on</button>
+                      ? <button type="button" onClick={() => requestPosAddon(addon)} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-green-300 bg-white px-3 py-2 text-sm font-semibold text-green-700 hover:bg-green-50"><ArrowUpCircle size={15} /> {missingRequired.length ? 'Request both add-ons' : 'Request this add-on'}</button>
                       : <p className="mt-4 text-xs text-gray-500">Ask a manager to request this add-on.</p>
                   )}
                   {addon.enabled && <p className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-green-700"><CheckCircle2 size={15} /> Activated for this business</p>}

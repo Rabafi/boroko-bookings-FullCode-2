@@ -8,6 +8,7 @@ import { getFeatureRequiredPlan, normalizeSubscriptionPlan, SUBSCRIPTION_PLAN_OR
 import { Modal } from './shared/Modal'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** @type {[string, string][]} */
 const PAYMENT_METHODS = [
   ['cash', 'Cash'],
   ['card', 'Card'],
@@ -18,31 +19,71 @@ const PAYMENT_METHODS = [
 
 const emptyReceipt = { amount: '', method: 'cash', reference: '', notes: '' }
 
+/** @typedef {number|string|null|undefined} PrepaymentAmountReadView */
+/** Customer, summary, and booking projections read by this screen; IPC/cache rows are expected data, not validated here. */
+/** @typedef {{id: string, name: string, phone?: string|null, email?: string|null}} PrepaymentCustomerExpectedView */
+/** @typedef {{customer_id: string, balance?: unknown, _pending_sync?: unknown, _confirmed_balance?: unknown}} PrepaymentSummaryExpectedView */
+/** @typedef {{id: string, status: string, total_amount: unknown, charges_total?: unknown, amount_paid: unknown, updated_at?: string|null, invoice_number?: string|null, check_in?: string|null}} PrepaymentBookingExpectedView */
+/** Customer-credit history rows are produced from the SQL ledger or the offline cache; fields remain unvalidated. */
+/** @typedef {{id: string, entry_type: string, amount: unknown, created_at?: string|null, method?: string|null, reference?: string|null, notes?: string|null, booking_id?: string|null, receipt_number?: string|null, _pending_sync?: unknown, reversed?: unknown}} PrepaymentLedgerEntryExpectedView */
+/** @typedef {{success?: unknown, error?: unknown, offline?: unknown, queued?: unknown, _pending_sync?: unknown, balance?: unknown, entry_id?: string, receipt_number?: string|null}} CreditMutationResultExpectedView */
+/** Advanced prepayments handlers forward server RPC JSON without validation. */
+/** Field view of server projections and export results; returned JSON is not validated before this read. */
+/** @typedef {Record<string, unknown> & {customer_id?: string, customer_name?: string|null, booking_id?: string, booking_number?: string|null, suggested_amount?: unknown, bucket?: string, customer_count?: string|number|null, balance?: unknown, total_liability?: unknown, financial_certified?: unknown, receipts?: unknown, allocations?: unknown, refunds?: unknown, reversal_out?: unknown, entry_count?: unknown, alerts?: unknown, alert_output?: unknown, threshold_alerts?: unknown, suggestions?: unknown, aging_threshold_days?: unknown, matching_tolerance?: unknown, suggestion_window_days?: string|number|null, config?: unknown, id?: string, title?: string, code?: string, type?: string, message?: string, amount?: unknown, fileName?: string, filename?: string, rowCount?: unknown, financialCertified?: unknown}> PrepaymentServerRecordExpectedView */
+/** @typedef {Record<string, unknown> & {success?: unknown, error?: unknown, data?: unknown}} PrepaymentServerResponseExpectedView */
+/** @typedef {{message?: string}|null|undefined} PrepaymentErrorMessageReadView */
+/** @typedef {{status: 'idle'|'locked'|'loading'|'ready'|'unavailable', data: PrepaymentServerRecordExpectedView|null, error: string}} PrepaymentPanelState */
+/** @typedef {{status: 'idle'|'loading'|'ready'|'unavailable', balance: number|null, balanceState: 'unavailable'|'pending'|'confirmed', history: PrepaymentLedgerEntryExpectedView[]|null, bookings: PrepaymentBookingExpectedView[]|null, allBookings: PrepaymentBookingExpectedView[]|null}} SelectedPrepaymentDataState */
+/** @typedef {{id: string, customer: PrepaymentCustomerExpectedView, amount: number|null, method: string, reference: string, notes: string, balance: number|null, balanceState: 'pending'|'unavailable'|'confirmed', offline: boolean, created_at: string, receipt_number?: string|null}} PrepaymentReceiptView */
+/** @typedef {{aging_threshold_days: string, matching_tolerance: string, suggestion_window_days: string}} PrepaymentConfigDraft */
+/** @typedef {'aging'|'matching'|'config'} PrepaymentAdvancedKey */
+/** @typedef {{status: 'idle'|'loading'|'ready', aging: PrepaymentServerRecordExpectedView|null, matching: PrepaymentServerRecordExpectedView|null, config: PrepaymentServerRecordExpectedView|null, errors: Partial<Record<PrepaymentAdvancedKey, string>>}} PrepaymentAdvancedState */
+/** @typedef {{customers: 'loading'|'ready'|'unavailable', summary: 'loading'|'ready'|'unavailable'}} PrepaymentBaseStatus */
+/** @typedef {{customers: string, summary: string}} PrepaymentBaseErrors */
+/** @typedef {{amount: string, method: string, reference: string, notes: string}} PrepaymentReceiveDraft */
+/** @typedef {{bookingId: string, amount: string, notes: string}} PrepaymentAllocationDraft */
+/** @typedef {{amount: string, method: string, reference: string, notes: string}} PrepaymentRefundDraft */
+/** @typedef {{reason: string, idempotencyKey: string}} PrepaymentReverseIntent */
+/** @typedef {PrepaymentServerRecordExpectedView & {canceled?: unknown, cancelled?: unknown, success?: unknown, error?: unknown}} PrepaymentExportExpectedView */
+/** @typedef {{bucket?: string, customer_count?: unknown, balance?: unknown, id?: string, title?: string, code?: string, type?: string, message?: string, amount?: unknown}} PrepaymentAlertExpectedView */
+/** @typedef {{label: string, children: import('react').ReactNode}} PrepaymentFieldProps */
+/** @typedef {{value: string, onChange: (value: string) => void, children: import('react').ReactNode}} PrepaymentSelectProps */
+/** @typedef {{receipt: PrepaymentReceiptView, currency: string, settings?: {lodge_name?: string|null, company_name?: string|null, address?: string|null, phone?: string|null, email?: string|null, website?: string|null, logo?: string|null}|null, onClose: () => void}} PrepaymentReceiptModalProps */
+
+/** @param {string} currency @param {unknown} value */
 function money(currency, value) {
   return `${currency} ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {unknown} value */
 function numericAmount(value) {
   if (value === null || value === undefined || value === '') return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
 
+/** @param {string} currency @param {unknown} value @param {string} [unavailableLabel] */
 function amountLabel(currency, value, unavailableLabel = 'Unavailable') {
   const amount = numericAmount(value)
   return amount === null ? unavailableLabel : money(currency, amount)
 }
 
+/** @param {string} scope */
 function newOperationKey(scope) {
   const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return `${scope}:${uuid}`
 }
 
+/** @param {Date|string|number} date */
 function localDate(date) {
   const value = date instanceof Date ? date : new Date(date)
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
 }
 
+/** Expected access and entitlement context from AppContext; fields are not runtime-validated here.
+ * @param {{role?: unknown, entitlement?: {effective_features?: unknown, expired?: unknown, plan?: unknown}|null, features?: unknown, subscription_plan?: unknown}|null|undefined} access
+ * @param {string} featureKey
+ */
 function hasFeature(access, featureKey) {
   const entitlementFeatures = access?.entitlement?.effective_features
   if (Object.prototype.hasOwnProperty.call(entitlementFeatures || {}, featureKey)) return entitlementFeatures[featureKey] !== false
@@ -52,38 +93,47 @@ function hasFeature(access, featureKey) {
   return SUBSCRIPTION_PLAN_ORDER.indexOf(plan) >= SUBSCRIPTION_PLAN_ORDER.indexOf(getFeatureRequiredPlan(featureKey))
 }
 
+/** @param {PrepaymentLedgerEntryExpectedView|null|undefined} entry */
 function entryEffect(entry) {
   if (['receipt', 'adjustment_in', 'reversal_in'].includes(entry?.entry_type)) return 1
   if (['booking_allocation', 'refund', 'adjustment_out', 'reversal_out'].includes(entry?.entry_type)) return -1
   return 0
 }
 
+/** @param {unknown} result */
 function pendingResult(result) {
-  return result?.offline === true || result?.queued === true || result?._pending_sync === true
+  return (/** @type {CreditMutationResultExpectedView|null|undefined} */ (result))?.offline === true || (/** @type {CreditMutationResultExpectedView|null|undefined} */ (result))?.queued === true || (/** @type {CreditMutationResultExpectedView|null|undefined} */ (result))?._pending_sync === true
 }
 
+/** @param {string} currency @param {PrepaymentSummaryExpectedView|null|undefined} row */
 function summaryBalanceLabel(currency, row) {
   const amount = numericAmount(row?.balance)
   if (row?._pending_sync === true || row?._confirmed_balance === false) return amount === null ? 'Pending confirmation' : `Pending · ${money(currency, amount)}`
   return amountLabel(currency, amount)
 }
 
+/** Array envelope guard only; item fields remain expected, unvalidated server JSON. @param {unknown} value */
 function serverResponseRows(value) {
-  if (Array.isArray(value)) return value
-  if (Array.isArray(value?.data)) return value.data
-  if (Array.isArray(value?.rows)) return value.rows
+  const response = /** @type {PrepaymentServerResponseExpectedView|null|undefined} */ (value)
+  if (Array.isArray(value)) return /** @type {PrepaymentServerRecordExpectedView[]} */ (value)
+  if (Array.isArray(response?.data)) return /** @type {PrepaymentServerRecordExpectedView[]} */ (response.data)
+  if (Array.isArray(response?.rows)) return /** @type {PrepaymentServerRecordExpectedView[]} */ (response.rows)
   return null
 }
 
+/** Object-shape expectation for existing server wrappers; no JSON validation is added. @param {unknown} value */
 function serverResponseData(value) {
-  if (value?.data && typeof value.data === 'object') return value.data
-  return value
+  const response = /** @type {PrepaymentServerResponseExpectedView|null|undefined} */ (value)
+  if (response?.data && typeof response.data === 'object') return /** @type {PrepaymentServerRecordExpectedView} */ (response.data)
+  return /** @type {PrepaymentServerRecordExpectedView|null|undefined} */ (value)
 }
 
+/** @param {PrepaymentLedgerEntryExpectedView|null|undefined} entry */
 function isCancelledBookingCredit(entry) {
   return entry?.method === 'customer_credit_transfer' && entry?.entry_type === 'adjustment_in'
 }
 
+/** @param {PrepaymentLedgerEntryExpectedView|null|undefined} entry */
 function entryLabel(entry) {
   if (isCancelledBookingCredit(entry)) return 'Credit from cancelled booking'
   return {
@@ -119,37 +169,37 @@ export default function Prepayments() {
   const canMatch = advancedTier && canAccessCapability(access, 'prepayments.match')
   const activeTier = advancedTier ? 'Pro' : managementTier ? 'Standard' : 'Starter'
 
-  const [customers, setCustomers] = useState(null)
-  const [summary, setSummary] = useState(null)
-  const [portfolio, setPortfolio] = useState({ status: 'idle', data: null, error: '' })
-  const [baseStatus, setBaseStatus] = useState({ customers: 'loading', summary: 'loading' })
-  const [baseError, setBaseError] = useState({ customers: '', summary: '' })
+  const [customers, setCustomers] = useState(/** @type {PrepaymentCustomerExpectedView[]|null} */ (null))
+  const [summary, setSummary] = useState(/** @type {PrepaymentSummaryExpectedView[]|null} */ (null))
+  const [portfolio, setPortfolio] = useState(/** @type {PrepaymentPanelState} */ ({ status: 'idle', data: null, error: '' }))
+  const [baseStatus, setBaseStatus] = useState(/** @type {PrepaymentBaseStatus} */ ({ customers: 'loading', summary: 'loading' }))
+  const [baseError, setBaseError] = useState(/** @type {PrepaymentBaseErrors} */ ({ customers: '', summary: '' }))
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState(null)
-  const [selectedData, setSelectedData] = useState({ status: 'idle', balance: null, balanceState: 'unavailable', history: null, bookings: null, allBookings: null })
+  const [selected, setSelected] = useState(/** @type {PrepaymentCustomerExpectedView|null} */ (null))
+  const [selectedData, setSelectedData] = useState(/** @type {SelectedPrepaymentDataState} */ ({ status: 'idle', balance: null, balanceState: 'unavailable', history: null, bookings: null, allBookings: null }))
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
   const [receiveOpen, setReceiveOpen] = useState(false)
-  const [receiveForm, setReceiveForm] = useState(emptyReceipt)
-  const [receiveOperationKey, setReceiveOperationKey] = useState(null)
+  const [receiveForm, setReceiveForm] = useState(/** @type {PrepaymentReceiveDraft} */ (emptyReceipt))
+  const [receiveOperationKey, setReceiveOperationKey] = useState(/** @type {string|null} */ (null))
   const [saving, setSaving] = useState(false)
-  const [receipt, setReceipt] = useState(null)
+  const [receipt, setReceipt] = useState(/** @type {PrepaymentReceiptView|null} */ (null))
 
   const [applyEntry, setApplyEntry] = useState(false)
-  const [applyForm, setApplyForm] = useState({ bookingId: '', amount: '', notes: '' })
-  const [applyOperationKey, setApplyOperationKey] = useState(null)
+  const [applyForm, setApplyForm] = useState(/** @type {PrepaymentAllocationDraft} */ ({ bookingId: '', amount: '', notes: '' }))
+  const [applyOperationKey, setApplyOperationKey] = useState(/** @type {string|null} */ (null))
   const [refundOpen, setRefundOpen] = useState(false)
-  const [refundForm, setRefundForm] = useState({ amount: '', method: 'cash', reference: '', notes: '' })
-  const [refundOperationKey, setRefundOperationKey] = useState(null)
-  const reverseIntentRef = useRef(new Map())
-  const [reconciliation, setReconciliation] = useState({ status: 'idle', data: null, error: '' })
+  const [refundForm, setRefundForm] = useState(/** @type {PrepaymentRefundDraft} */ ({ amount: '', method: 'cash', reference: '', notes: '' }))
+  const [refundOperationKey, setRefundOperationKey] = useState(/** @type {string|null} */ (null))
+  const reverseIntentRef = useRef(/** @type {Map<string, PrepaymentReverseIntent>} */ (new Map()))
+  const [reconciliation, setReconciliation] = useState(/** @type {PrepaymentPanelState} */ ({ status: 'idle', data: null, error: '' }))
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [advanced, setAdvanced] = useState({ status: 'idle', aging: null, matching: null, config: null, errors: {} })
-  const [configForm, setConfigForm] = useState({ aging_threshold_days: '30,60,90', matching_tolerance: '0.01', suggestion_window_days: '365' })
-  const [configOperationKey, setConfigOperationKey] = useState(null)
+  const [advanced, setAdvanced] = useState(/** @type {PrepaymentAdvancedState} */ ({ status: 'idle', aging: null, matching: null, config: null, errors: {} }))
+  const [configForm, setConfigForm] = useState(/** @type {PrepaymentConfigDraft} */ ({ aging_threshold_days: '30,60,90', matching_tolerance: '0.01', suggestion_window_days: '365' }))
+  const [configOperationKey, setConfigOperationKey] = useState(/** @type {string|null} */ (null))
   const [savingConfig, setSavingConfig] = useState(false)
-  const [exportResult, setExportResult] = useState(null)
+  const [exportResult, setExportResult] = useState(/** @type {PrepaymentExportExpectedView|null} */ (null))
   const [exporting, setExporting] = useState('')
 
   const loadBase = useCallback(async () => {
@@ -168,7 +218,7 @@ export default function Prepayments() {
     } else {
       setCustomers(null)
       setBaseStatus((current) => ({ ...current, customers: 'unavailable' }))
-      setBaseError((current) => ({ ...current, customers: customersResult.reason?.message || 'Customer records are unavailable.' }))
+      setBaseError((current) => ({ ...current, customers: (/** @type {PrepaymentErrorMessageReadView} */ (customersResult.status === 'rejected' ? customersResult.reason : null))?.message || 'Customer records are unavailable.' }))
     }
     if (summaryResult.status === 'fulfilled' && Array.isArray(summaryResult.value)) {
       setSummary(summaryResult.value)
@@ -176,17 +226,18 @@ export default function Prepayments() {
     } else {
       setSummary(null)
       setBaseStatus((current) => ({ ...current, summary: 'unavailable' }))
-      setBaseError((current) => ({ ...current, summary: summaryResult.reason?.message || 'Deposit balances are unavailable.' }))
+      setBaseError((current) => ({ ...current, summary: (/** @type {PrepaymentErrorMessageReadView} */ (summaryResult.status === 'rejected' ? summaryResult.reason : null))?.message || 'Deposit balances are unavailable.' }))
     }
     if (canSearchPortfolio) {
       if (portfolioResult.status === 'fulfilled' && portfolioResult.value?.success !== false && !portfolioResult.value?.error) {
         setPortfolio({ status: 'ready', data: portfolioResult.value, error: '' })
       } else {
-        setPortfolio({ status: 'unavailable', data: null, error: portfolioResult.reason?.message || portfolioResult.value?.error || 'The server portfolio is unavailable.' })
+        setPortfolio({ status: 'unavailable', data: null, error: (/** @type {PrepaymentErrorMessageReadView} */ (portfolioResult.status === 'rejected' ? portfolioResult.reason : null))?.message || (/** @type {PrepaymentServerResponseExpectedView|null|undefined} */ (portfolioResult.status === 'fulfilled' ? portfolioResult.value : null))?.error || 'The server portfolio is unavailable.' })
       }
     }
   }, [canSearchPortfolio, search])
 
+  /** @param {PrepaymentCustomerExpectedView|null|undefined} customer */
   const loadCustomer = useCallback(async (customer) => {
     if (!customer?.id) return
     setSelected(customer)
@@ -197,17 +248,18 @@ export default function Prepayments() {
       window.api.customerCredit.getHistory(customer.id, 100, 0),
       window.api.customers.getBookings(customer.id)
     ])
-    if (balanceResult.status === 'fulfilled' && balanceResult.value?.success !== false) {
-      const value = numericAmount(balanceResult.value?.balance)
-      setSelectedData((current) => ({ ...current, balance: value, balanceState: pendingResult(balanceResult.value) ? 'pending' : value === null ? 'unavailable' : 'confirmed' }))
+    if (balanceResult.status === 'fulfilled' && /** @type {CreditMutationResultExpectedView} */ (balanceResult.value)?.success !== false) {
+      const balanceResponse = /** @type {CreditMutationResultExpectedView} */ (balanceResult.value)
+      const value = numericAmount(balanceResponse?.balance)
+      setSelectedData((current) => ({ ...current, balance: value, balanceState: pendingResult(balanceResponse) ? 'pending' : value === null ? 'unavailable' : 'confirmed' }))
     }
     if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
-      setSelectedData((current) => ({ ...current, history: historyResult.value }))
+      setSelectedData((current) => ({ ...current, history: /** @type {PrepaymentLedgerEntryExpectedView[]} */ (historyResult.value) }))
     } else {
-      setError(historyResult.reason?.message || 'The deposit ledger is unavailable.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (historyResult.status === 'rejected' ? historyResult.reason : null))?.message || 'The deposit ledger is unavailable.')
     }
     if (bookingsResult.status === 'fulfilled' && Array.isArray(bookingsResult.value)) {
-      const customerBookings = bookingsResult.value
+      const customerBookings = /** @type {PrepaymentBookingExpectedView[]} */ (bookingsResult.value)
       const outstandingBookings = customerBookings.filter((booking) => {
         const total = numericAmount(booking.total_amount)
         const charges = numericAmount(booking.charges_total) || 0
@@ -282,6 +334,7 @@ export default function Prepayments() {
     }
   }, [applyEntry, canAllocate, canRecord, canRefund, receiveOpen, refundOpen])
 
+  /** @param {string|null|undefined} bookingId */
   const openLinkedInvoice = (bookingId) => {
     if (!bookingId) return
     navigate('/invoices', {
@@ -301,6 +354,7 @@ export default function Prepayments() {
     setReceiveOperationKey(null)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const receive = async (event) => {
     event.preventDefault()
     if (!canRecord) {
@@ -309,6 +363,7 @@ export default function Prepayments() {
       return
     }
     if (!selected) return
+    const selectedCustomer = selected
     const amount = numericAmount(receiveForm.amount)
     if (amount === null || amount <= 0) {
       setError('Enter a positive deposit amount.')
@@ -319,22 +374,22 @@ export default function Prepayments() {
     setSaving(true)
     setError('')
     try {
-      const result = await window.api.customerCredit.record({
-        customerId: selected.id,
+      const result = /** @type {CreditMutationResultExpectedView} */ (await window.api.customerCredit.record({
+        customerId: selectedCustomer.id,
         amount,
         method: receiveForm.method,
         reference: receiveForm.reference,
         notes: receiveForm.notes,
         recordedBy: user?.id || null,
         idempotencyKey
-      })
+      }))
       if (result?.success === false) throw new Error(result.error)
       const resultBalance = numericAmount(result?.balance)
       const pending = pendingResult(result)
       const receiptData = {
         id: result.entry_id,
         receipt_number: result.receipt_number || (pending ? `PRE-PENDING-${String(result.entry_id || idempotencyKey).slice(0, 6).toUpperCase()}` : null),
-        customer: selected,
+        customer: selectedCustomer,
         amount,
         method: receiveForm.method,
         reference: receiveForm.reference,
@@ -350,12 +405,13 @@ export default function Prepayments() {
       setSuccess(pending ? 'Deposit saved locally and queued for server confirmation.' : resultBalance === null ? 'Deposit recorded; the new balance is not available yet.' : 'Deposit recorded successfully.')
       await refreshSelected()
     } catch (err) {
-      setError(err.message || 'Could not record the deposit. Retry with the same operation if the result was ambiguous.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Could not record the deposit. Retry with the same operation if the result was ambiguous.')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const applyCredit = async (event) => {
     event.preventDefault()
     if (!canAllocate) {
@@ -364,6 +420,7 @@ export default function Prepayments() {
       setError('Deposit allocation is no longer available for this role, subscription, or balance.')
       return
     }
+    const selectedCustomer = /** @type {PrepaymentCustomerExpectedView} */ (selected)
     const booking = bookings?.find((row) => String(row.id) === String(applyForm.bookingId))
     const amount = numericAmount(applyForm.amount)
     if (!booking || amount === null || amount <= 0) return
@@ -372,15 +429,15 @@ export default function Prepayments() {
     setSaving(true)
     setError('')
     try {
-      const result = await window.api.customerCredit.applyToBooking({
-        customerId: selected.id,
+      const result = /** @type {CreditMutationResultExpectedView} */ (await window.api.customerCredit.applyToBooking({
+        customerId: selectedCustomer.id,
         bookingId: booking.id,
         amount,
         notes: applyForm.notes,
         recordedBy: user?.id || null,
         expectedBookingUpdatedAt: booking.updated_at || null,
         idempotencyKey
-      })
+      }))
       if (result?.success === false) throw new Error(result.error)
       setApplyEntry(false)
       setApplyOperationKey(null)
@@ -388,12 +445,13 @@ export default function Prepayments() {
       setSuccess(pendingResult(result) ? 'Allocation queued for server confirmation.' : 'Deposit allocated to the booking through the server ledger.')
       await refreshSelected()
     } catch (err) {
-      setError(err.message || 'Could not allocate the deposit. Retry with the same operation if the result was ambiguous.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Could not allocate the deposit. Retry with the same operation if the result was ambiguous.')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const refundCredit = async (event) => {
     event.preventDefault()
     if (!canRefund || !selectedBalanceUsable) {
@@ -402,6 +460,7 @@ export default function Prepayments() {
       setError('Deposit refunds are no longer available for this role, subscription, or balance.')
       return
     }
+    const selectedCustomer = /** @type {PrepaymentCustomerExpectedView} */ (selected)
     const amount = numericAmount(refundForm.amount)
     if (amount === null || amount <= 0) return
     const idempotencyKey = refundOperationKey || newOperationKey('customer-credit:refund')
@@ -409,8 +468,8 @@ export default function Prepayments() {
     setSaving(true)
     setError('')
     try {
-      const result = await window.api.customerCredit.refund({
-        customerId: selected.id,
+      const result = /** @type {CreditMutationResultExpectedView} */ (await window.api.customerCredit.refund({
+        customerId: selectedCustomer.id,
         amount,
         method: refundForm.method,
         reference: refundForm.reference,
@@ -418,7 +477,7 @@ export default function Prepayments() {
         requestedBy: user?.id || null,
         approvedBy: user?.id || null,
         idempotencyKey
-      })
+      }))
       if (result?.success === false) throw new Error(result.error)
       setRefundOpen(false)
       setRefundOperationKey(null)
@@ -426,12 +485,13 @@ export default function Prepayments() {
       setSuccess(pendingResult(result) ? 'Refund queued for server confirmation.' : 'Customer deposit refund recorded with authorization.')
       await refreshSelected()
     } catch (err) {
-      setError(err.message || 'Could not refund the deposit. Retry with the same operation if the result was ambiguous.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Could not refund the deposit. Retry with the same operation if the result was ambiguous.')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {PrepaymentLedgerEntryExpectedView|null|undefined} entry */
   const reverseEntry = async (entry) => {
     if (!entry?.id) return
     let intent = reverseIntentRef.current.get(entry.id)
@@ -447,13 +507,13 @@ export default function Prepayments() {
     setSaving(true)
     setError('')
     try {
-      const result = await window.api.customerCredit.reverse({ entryId: entry.id, notes: intent.reason, recordedBy: user?.id || null, idempotencyKey: intent.idempotencyKey })
+      const result = /** @type {CreditMutationResultExpectedView} */ (await window.api.customerCredit.reverse({ entryId: entry.id, notes: intent.reason, recordedBy: user?.id || null, idempotencyKey: intent.idempotencyKey }))
       if (result?.success === false) throw new Error(result.error)
       reverseIntentRef.current.delete(entry.id)
       setSuccess(pendingResult(result) ? 'Reversal queued for server confirmation.' : 'Credit entry reversed with a compensating server transaction.')
       await refreshSelected()
     } catch (err) {
-      setError(err.message || 'Could not reverse this entry. Retry to reuse the same operation key.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Could not reverse this entry. Retry to reuse the same operation key.')
     } finally {
       setSaving(false)
     }
@@ -466,17 +526,18 @@ export default function Prepayments() {
       const endDate = localDate(new Date())
       const start = new Date()
       start.setDate(start.getDate() - 29)
-      const result = await window.api.prepayments.getReconciliation(`${localDate(start)}T00:00:00.000Z`, `${endDate}T23:59:59.999Z`)
+      const result = /** @type {PrepaymentServerResponseExpectedView} */ (await window.api.prepayments.getReconciliation(`${localDate(start)}T00:00:00.000Z`, `${endDate}T23:59:59.999Z`))
       if (result?.success === false || result?.error) throw new Error(result.error || 'Server reconciliation was unavailable.')
       setReconciliation({ status: 'ready', data: serverResponseData(result), error: '' })
     } catch (err) {
-      setReconciliation({ status: 'unavailable', data: null, error: err.message || 'Server reconciliation was unavailable.' })
+      setReconciliation({ status: 'unavailable', data: null, error: (/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Server reconciliation was unavailable.' })
     }
   }
 
   const loadAdvanced = useCallback(async () => {
     if (!advancedTier) return
     setAdvanced({ status: 'loading', aging: null, matching: null, config: null, errors: {} })
+    /** @type {[PrepaymentAdvancedKey, Promise<unknown>][]} */
     const tasks = []
     if (canViewAdvancedReports && window.api?.prepayments?.getAging) tasks.push(['aging', window.api.prepayments.getAging(null)])
     if (canMatch && window.api?.prepayments?.getMatchingSuggestions) tasks.push(['matching', window.api.prepayments.getMatchingSuggestions(50)])
@@ -486,11 +547,12 @@ export default function Prepayments() {
       return
     }
     const results = await Promise.allSettled(tasks.map(([, task]) => task))
-    const next = { status: 'ready', aging: null, matching: null, config: null, errors: {} }
+    const next = /** @type {PrepaymentAdvancedState} */ ({ status: 'ready', aging: null, matching: null, config: null, errors: {} })
     results.forEach((result, index) => {
       const key = tasks[index][0]
-      if (result.status === 'fulfilled' && result.value?.success !== false && !result.value?.error) next[key] = result.value
-      else next.errors[key] = result.reason?.message || result.value?.error || 'Server response unavailable.'
+      const value = result.status === 'fulfilled' ? /** @type {PrepaymentServerResponseExpectedView} */ (result.value) : null
+      if (result.status === 'fulfilled' && value?.success !== false && !value?.error) next[key] = /** @type {PrepaymentServerRecordExpectedView} */ (value)
+      else next.errors[key] = (/** @type {PrepaymentErrorMessageReadView} */ (result.status === 'rejected' ? result.reason : null))?.message || value?.error || 'Server response unavailable.'
     })
     setAdvanced(next)
   }, [advancedTier, canMatch, canViewAdvancedReports, canViewPaymentConfig])
@@ -511,7 +573,7 @@ export default function Prepayments() {
     setError('')
     setExportResult(null)
     try {
-      const result = await window.api.prepayments.export(`${localDate(start)}T00:00:00.000Z`, `${endDate}T23:59:59.999Z`)
+      const result = /** @type {PrepaymentExportExpectedView} */ (await window.api.prepayments.export(`${localDate(start)}T00:00:00.000Z`, `${endDate}T23:59:59.999Z`))
       if (result?.canceled === true || result?.cancelled === true) {
         setExportResult(null)
         return
@@ -522,12 +584,13 @@ export default function Prepayments() {
       const rowCount = numericAmount(result?.rowCount)
       setSuccess(`Authoritative Guest Deposits export saved to ${fileName}${rowCount === null ? '' : ` (${rowCount} rows)`}.`)
     } catch (err) {
-      setError(err.message || 'The server-backed export could not be completed.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'The server-backed export could not be completed.')
     } finally {
       setExporting('')
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const saveConfig = async (event) => {
     event.preventDefault()
     if (!canViewPaymentConfig || !window.api?.prepayments?.setConfig) return
@@ -552,20 +615,20 @@ export default function Prepayments() {
     setSavingConfig(true)
     setError('')
     try {
-      const result = await window.api.prepayments.setConfig({
+      const result = /** @type {PrepaymentServerResponseExpectedView} */ (await window.api.prepayments.setConfig({
         config: {
           aging_threshold_days: thresholds,
           matching_tolerance: tolerance,
           suggestion_window_days: suggestionWindow
         },
         idempotencyKey
-      })
+      }))
       if (result?.success === false || result?.error) throw new Error(result.error || 'Configuration was not saved.')
       setConfigOperationKey(null)
       setSuccess('Guest Deposits guidance thresholds saved with an audited server operation.')
       await loadAdvanced()
     } catch (err) {
-      setError(err.message || 'Configuration could not be saved. Retry with the same operation key.')
+      setError((/** @type {PrepaymentErrorMessageReadView} */ (err)).message || 'Configuration could not be saved. Retry with the same operation key.')
     } finally {
       setSavingConfig(false)
     }
@@ -814,14 +877,17 @@ export default function Prepayments() {
   )
 }
 
+/** @param {PrepaymentFieldProps} props */
 function Field({ label, children }) {
   return <label className="block"><span className="mb-1 block text-xs font-semibold text-slate-600">{label}</span>{children}</label>
 }
 
+/** @param {PrepaymentSelectProps} props */
 function MethodSelect({ value, onChange }) {
   return <Field label="Payment method"><select className="input w-full" value={value} onChange={(e) => onChange(e.target.value)}>{PAYMENT_METHODS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field>
 }
 
+/** @param {PrepaymentReceiptModalProps} props */
 function AdvanceReceipt({ receipt, currency, settings, onClose }) {
   const print = () => window.api.receipts.printCurrent({ silent: false }).catch(() => null)
   const receiptNumber = receipt.receipt_number || `PRE-PENDING-${String(receipt.id).slice(0, 6).toUpperCase()}`

@@ -30,7 +30,7 @@ function formatBytes(value) {
   return `${Math.max(1, Math.round(value / 1024))} KB`
 }
 
-export default function HposCashupProofs({ submissionId, canUpload = false }) {
+export default function HposCashupProofs({ submissionId, canUpload = false, localAuthority = false }) {
   const [attachments, setAttachments] = useState([])
   const [draft, setDraft] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -41,6 +41,12 @@ export default function HposCashupProofs({ submissionId, canUpload = false }) {
 
   const refresh = useCallback(async () => {
     if (!submissionId) return
+    if (localAuthority) {
+      setLoading(false)
+      setAttachments([])
+      setError('')
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -55,7 +61,7 @@ export default function HposCashupProofs({ submissionId, canUpload = false }) {
     } finally {
       setLoading(false)
     }
-  }, [submissionId])
+  }, [submissionId, localAuthority])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -137,9 +143,10 @@ export default function HposCashupProofs({ submissionId, canUpload = false }) {
 
   return <section className="hpos-cashup-proofs" aria-label="Cash-up proof attachments">
     <header><div><p className="hpos-eyebrow">Proof attachment</p><h3><FileCheck2 size={17} /> Cash-up evidence</h3></div><HposButton icon={RefreshCw} onClick={refresh} disabled={loading || busy}>{loading ? 'Loading…' : 'Refresh'}</HposButton></header>
+    {localAuthority && <HposNotice tone="warning">Local cash-up proof storage is not wired yet. No cloud proof request was made.</HposNotice>}
     {error && <HposNotice tone="error">{error}</HposNotice>}
     {notice && <HposNotice>{notice}</HposNotice>}
     {loading ? <p className="hpos-cashup-proof-empty">Checking the authoritative proof register…</p> : error ? <p className="hpos-cashup-proof-empty">The proof register could not be read, so this screen will not infer that evidence is absent.</p> : attachments.length === 0 ? <p className="hpos-cashup-proof-empty">No proof is attached yet. Only an authorized cashier or supervisor can add one while this cash-up is still submitted.</p> : <ul className="hpos-cashup-proof-list">{attachments.map((attachment) => <li key={attachment.id}><span><strong>{attachment.file_name || 'Cash-up proof'}</strong><small>{attachment.sha256 ? `${attachment.sha256.slice(0, 12)}…` : 'Hash unavailable'} · {attachment.byte_count ? formatBytes(attachment.byte_count) : 'Size unavailable'} · {attachment.created_at ? new Date(attachment.created_at).toLocaleString('en-GB') : 'Time unavailable'}</small></span><HposButton icon={Eye} onClick={() => openProof(attachment)} disabled={openingId === attachment.id}>{openingId === attachment.id ? 'Opening…' : 'View (60s)'}</HposButton></li>)}</ul>}
-    {canUpload && <div className="hpos-cashup-proof-upload"><label><span>Select a PDF, JPG or PNG (max 8 MB)</span><input type="file" accept="application/pdf,image/jpeg,image/png" onChange={chooseFile} disabled={busy} /></label>{draft && <div className="hpos-cashup-proof-selected"><span>{draft.fileName} · {formatBytes(draft.byteCount)} · SHA-256 verified</span><HposButton tone="primary" icon={Upload} onClick={upload} disabled={busy}>{busy ? 'Saving proof…' : 'Attach proof'}</HposButton></div>}</div>}
+    {canUpload && !localAuthority && <div className="hpos-cashup-proof-upload"><label><span>Select a PDF, JPG or PNG (max 8 MB)</span><input type="file" accept="application/pdf,image/jpeg,image/png" onChange={chooseFile} disabled={busy} /></label>{draft && <div className="hpos-cashup-proof-selected"><span>{draft.fileName} · {formatBytes(draft.byteCount)} · SHA-256 verified</span><HposButton tone="primary" icon={Upload} onClick={upload} disabled={busy}>{busy ? 'Saving proof…' : 'Attach proof'}</HposButton></div>}</div>}
   </section>
 }

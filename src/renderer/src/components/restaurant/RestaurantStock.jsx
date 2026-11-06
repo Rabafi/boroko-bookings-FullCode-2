@@ -1,5 +1,5 @@
 // @ts-check
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArchiveRestore,
   BadgeDollarSign,
@@ -14,15 +14,31 @@ import {
   TrendingDown,
   X,
 } from "lucide-react";
-import { useAccess, useSettings } from "../../app-context";
+import { useAccess, useAuth, useSettings } from "../../app-context";
 import { canAccessCapability } from "../../../../shared/accessControl";
 import { isBarOnlyMode } from "../../../../shared/propertyTypes";
+import { createBarLocalRestaurantStockApi } from "./barLocalRestaurantStockApi.js";
+
+/**
+ * Expected display fields from the inventory read APIs. Supabase rows and the
+ * local cache are not validated at this renderer boundary.
+ * @typedef {{id: string, name: string, category: string|null, unit: string, current_stock: number|string, reorder_level: number|string, latest_unit_cost?: number|string|null, unit_cost?: number|string|null}} RestaurantStockItemExpectedView
+ * @typedef {{id: string, created_at: string|null, item_name?: string|null, inventory_item_name?: string|null, movement_type?: string|null, type?: string|null, quantity?: number|string|null, delta?: number|string|null, notes?: string|null}} RestaurantStockMovementExpectedView
+ * @typedef {{id: string, title: string|null, status: string|null, created_at: string|null}} RestaurantStocktakeExpectedView
+ * @typedef {{id?: string, item_id: string, item_name?: string|null, item_unit?: string|null, expected_qty?: number|string|null, counted_qty?: number|string|null|''}} RestaurantStocktakeLineExpectedView
+ * @typedef {{items: RestaurantStockItemExpectedView[], lowStock: RestaurantStockItemExpectedView[], movements: RestaurantStockMovementExpectedView[], stocktakes: RestaurantStocktakeExpectedView[], error?: string}} RestaurantStockSnapshotExpectedView
+ * @typedef {{success: true, id?: string, stocktake_id?: string}|{success: false, error: string}} RestaurantStockMutationExpectedView
+ * @typedef {{success: true, id: string, stocktake_id?: string}|{success: false, error: string}} RestaurantStocktakeCreateExpectedView
+ * @typedef {{id: string, lines: RestaurantStocktakeLineExpectedView[]}} RestaurantStocktakeDetailExpectedView
+ */
 
 const today = () => {
   const value = new Date();
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 };
+/** @param {unknown} value */
 const qty = (value) => Number(value || 0);
+/** @param {string|number|null|undefined} value */
 const formatLocalDateTime = (value) =>
   value
     ? new Intl.DateTimeFormat("en-GB", {
@@ -30,9 +46,11 @@ const formatLocalDateTime = (value) =>
         timeStyle: "short",
       }).format(new Date(value))
     : "—";
+/** @param {RestaurantStockItemExpectedView} item */
 const isLow = (item) =>
   qty(item.reorder_level) > 0 &&
   qty(item.current_stock) <= qty(item.reorder_level);
+/** @param {RestaurantStockItemExpectedView} item */
 const isEmpty = (item) => qty(item.current_stock) <= 0;
 const INVENTORY_CATEGORIES = [
   "Beverages",
@@ -76,24 +94,48 @@ const ACTION = {
 
 export default function RestaurantStock() {
   const access = useAccess();
+  const { user } = useAuth();
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
-  const canManageInventory = canAccessCapability(access, "inventory.manage");
+  const localAuthority = user?.localAuthority === true || settings?.authority_mode === 'bar_local';
+  const [localOperations, setLocalOperations] = useState([]);
+  const [localOperationsChecked, setLocalOperationsChecked] = useState(false);
+  const [localOperationsError, setLocalOperationsError] = useState('');
+  const refreshLocalOperations = useCallback(async () => {
+    if (!localAuthority) return;
+    try {
+      const operations = await window.api.barLocal.getOpenIntents();
+      if (!Array.isArray(operations)) throw new Error('Saved local stock operations could not be checked.');
+      setLocalOperations(operations);
+      setLocalOperationsError('');
+      setLocalOperationsChecked(true);
+    } catch (cause) {
+      setLocalOperationsChecked(false);
+      setLocalOperationsError(cause?.message || 'Saved local stock operations could not be checked. Open the original Stock page before changing inventory.');
+    }
+  }, [localAuthority]);
+  const localActionsBlocked = localAuthority && (!localOperationsChecked || Boolean(localOperationsError) || localOperations.length > 0);
+  const localStockApi = useMemo(() => {
+    if (!localAuthority) return null;
+    try { return createBarLocalRestaurantStockApi(window.api?.barLocal, { businessId: settings?.lodge_id || user?.lodge_id, outletId: settings?.outlet_id, staffId: user?.id }, { onMutation: refreshLocalOperations }); }
+    catch { return null; }
+  }, [localAuthority, refreshLocalOperations, settings?.lodge_id, settings?.outlet_id, user?.id, user?.lodge_id]);
+  const canManageInventory = canAccessCapability(access, "inventory.manage") && !localActionsBlocked;
   const currency = settings?.currency || "P";
   const [tab, setTab] = useState("stock");
-  const [items, setItems] = useState([]);
-  const [lowStock, setLowStock] = useState([]);
-  const [movements, setMovements] = useState([]);
+  const [items, setItems] = useState(/** @type {RestaurantStockItemExpectedView[]} */ ([]));
+  const [lowStock, setLowStock] = useState(/** @type {RestaurantStockItemExpectedView[]} */ ([]));
+  const [movements, setMovements] = useState(/** @type {RestaurantStockMovementExpectedView[]} */ ([]));
   const [movementDate, setMovementDate] = useState(today);
-  const [stocktakes, setStocktakes] = useState([]);
+  const [stocktakes, setStocktakes] = useState(/** @type {RestaurantStocktakeExpectedView[]} */ ([]));
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [loading, setLoading] = useState(true);
-  const [adjusting, setAdjusting] = useState(null);
-  const [adjustment, setAdjustment] = useState({ delta: "", notes: "" });
+  const [adjusting, setAdjusting] = useState(/** @type {RestaurantStockItemExpectedView|null} */ (null));
+  const [adjustment, setAdjustment] = useState(/** @type {{delta: string, notes: string}} */ { delta: "", notes: "" });
   const [showCreate, setShowCreate] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [newItem, setNewItem] = useState({
+  const [editing, setEditing] = useState(/** @type {RestaurantStockItemExpectedView|null} */ null);
+  const [newItem, setNewItem] = useState(/** @type {{name: string, category: string, opening_stock: string, unit: string, reorder_level: string, unit_cost: string}} */ {
     name: "",
     category: "",
     opening_stock: "",
@@ -101,16 +143,32 @@ export default function RestaurantStock() {
     reorder_level: "",
     unit_cost: "",
   });
-  const [activeStocktake, setActiveStocktake] = useState(null);
+  const [activeStocktake, setActiveStocktake] = useState(/** @type {RestaurantStocktakeDetailExpectedView|null} */ null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => { void refreshLocalOperations(); }, [refreshLocalOperations]);
 
   const load = async (selectedMovementDate = movementDate) => {
     setLoading(true);
     setError("");
     try {
-      const snapshot = window.api.inventory.getRestaurantStockSnapshot
+      if (localAuthority) {
+        if (!localStockApi) throw new Error('The local Stock Pro scope could not be verified. Sign in again before continuing.');
+        const localInventory = await localStockApi.inventory.getItemsWithReadStatus();
+        if (localInventory?.complete !== true) throw new Error('The local Stock Pro item list is incomplete. Refresh before continuing.');
+        const snapshot = await localStockApi.inventory.getRestaurantStockSnapshot(selectedMovementDate);
+        if (snapshot?.complete !== true) throw new Error('The local Stock Pro snapshot is incomplete. Refresh before continuing.');
+        setItems(snapshot.items);
+        setLowStock(snapshot.lowStock);
+        setMovements(snapshot.movements);
+        setStocktakes(snapshot.stocktakes);
+        return;
+      }
+      // The preload parse and fallback IPC results are still unvalidated; this
+      // assertion records only the fields this existing consumer reads.
+      const snapshot = /** @type {RestaurantStockSnapshotExpectedView|null|undefined} */ (window.api.inventory.getRestaurantStockSnapshot
         ? await window.api.inventory.getRestaurantStockSnapshot(
             selectedMovementDate,
           )
@@ -128,15 +186,17 @@ export default function RestaurantStock() {
             lowStock,
             movements,
             stocktakes,
-          }));
+          })));
+      // The preload JSON parse and fallback IPC calls do not validate row data;
+      // these are expected consumer views after preserving the existing guards.
       if (snapshot?.error) throw new Error(snapshot.error);
-      setItems(Array.isArray(snapshot?.items) ? snapshot.items : []);
-      setLowStock(Array.isArray(snapshot?.lowStock) ? snapshot.lowStock : []);
+      setItems(Array.isArray(snapshot?.items) ? /** @type {RestaurantStockItemExpectedView[]} */ snapshot.items : []);
+      setLowStock(Array.isArray(snapshot?.lowStock) ? /** @type {RestaurantStockItemExpectedView[]} */ snapshot.lowStock : []);
       setMovements(
-        Array.isArray(snapshot?.movements) ? snapshot.movements : [],
+        Array.isArray(snapshot?.movements) ? /** @type {RestaurantStockMovementExpectedView[]} */ snapshot.movements : [],
       );
       setStocktakes(
-        Array.isArray(snapshot?.stocktakes) ? snapshot.stocktakes : [],
+        Array.isArray(snapshot?.stocktakes) ? /** @type {RestaurantStocktakeExpectedView[]} */ snapshot.stocktakes : [],
       );
     } catch (err) {
       setError(err?.message || `Could not load ${barOnly ? "bar" : "restaurant"} inventory.`);
@@ -193,13 +253,24 @@ export default function RestaurantStock() {
     setSaving(true);
     setError("");
     try {
-      const result = await window.api.inventory.adjustStock(
+      if (localAuthority) {
+        if (!localStockApi) throw new Error('The local Stock Pro service is unavailable. Refresh after reconnecting.');
+        if (delta < 0) throw new Error('This original screen cannot collect the separate manager PIN required for local waste. Use the original Stock page to record approved waste.');
+        const result = await localStockApi.inventory.adjustStock(adjusting.id, delta, adjustment.notes.trim(), null, crypto.randomUUID());
+        if (!result?.success) throw new Error(result?.error || 'The local stock receipt was not confirmed. Retry the saved operation before making another change.');
+        setNotice(`Stock received for ${adjusting.name}.`);
+        setAdjusting(null);
+        await load();
+        return;
+      }
+      // IPC results are expected views here; no payload validation is added.
+      const result = /** @type {RestaurantStockMutationExpectedView|null|undefined} */ (await window.api.inventory.adjustStock(
         adjusting.id,
         delta,
         adjustment.notes.trim(),
         null,
         crypto.randomUUID(),
-      );
+      ));
       if (!result?.success)
         throw new Error(result?.error || "Could not record this adjustment.");
       setNotice(`Stock adjusted for ${adjusting.name}.`);
@@ -220,14 +291,29 @@ export default function RestaurantStock() {
     setSaving(true);
     setError("");
     try {
-      const result = await window.api.inventory.createItem({
+      if (localAuthority) {
+        if (!localStockApi) throw new Error('The local Stock Pro service is unavailable. Refresh after reconnecting.');
+        const result = await localStockApi.inventory.createItem({
+          name: newItem.name.trim(), category: newItem.category.trim() || null,
+          current_stock: qty(newItem.opening_stock), unit: newItem.unit.trim() || 'each',
+          reorder_level: qty(newItem.reorder_level), unit_cost: newItem.unit_cost === '' ? null : Number(newItem.unit_cost)
+        });
+        if (!result?.success) throw new Error(result?.error || 'The local inventory item was not confirmed. Retry its saved operation before creating another.');
+        setNewItem({ name: '', category: '', opening_stock: '', unit: 'each', reorder_level: '', unit_cost: '' });
+        setShowCreate(false);
+        setNotice('Inventory item created in the local Bar database. Link it to a Menu item when it becomes sellable.');
+        await load();
+        return;
+      }
+      // IPC results are expected views here; no payload validation is added.
+      const result = /** @type {RestaurantStockMutationExpectedView|null|undefined} */ (await window.api.inventory.createItem({
         name: newItem.name.trim(),
         category: newItem.category.trim() || null,
         current_stock: qty(newItem.opening_stock),
         unit: newItem.unit.trim() || "each",
         reorder_level: qty(newItem.reorder_level),
         unit_cost: newItem.unit_cost === "" ? null : Number(newItem.unit_cost),
-      });
+      }));
       if (!result?.success)
         throw new Error(result?.error || "Could not create inventory item.");
       setNewItem({
@@ -258,13 +344,26 @@ export default function RestaurantStock() {
     setSaving(true);
     setError("");
     try {
-      const result = await window.api.inventory.updateItem(editing.id, {
+      if (localAuthority) {
+        if (!localStockApi) throw new Error('The local Stock Pro service is unavailable. Refresh after reconnecting.');
+        const result = await localStockApi.inventory.updateItem(editing.id, {
+          name: editing.name.trim(), category: editing.category?.trim() || null,
+          unit: editing.unit?.trim() || 'each', reorder_level: qty(editing.reorder_level), unit_cost: qty(editing.unit_cost)
+        });
+        if (!result?.success) throw new Error(result?.error || 'The local item update was not confirmed. Refresh its version before retrying.');
+        setNotice(`Inventory details updated for ${editing.name}.`);
+        setEditing(null);
+        await load();
+        return;
+      }
+      // IPC results are expected views here; no payload validation is added.
+      const result = /** @type {RestaurantStockMutationExpectedView|null|undefined} */ (await window.api.inventory.updateItem(editing.id, {
         name: editing.name.trim(),
         category: editing.category?.trim() || null,
         unit: editing.unit?.trim() || "each",
         reorder_level: qty(editing.reorder_level),
         unit_cost: qty(editing.unit_cost),
-      });
+      }));
       if (!result?.success)
         throw new Error(result?.error || "Could not update inventory item.");
       setNotice(`Inventory details updated for ${editing.name}.`);
@@ -277,9 +376,12 @@ export default function RestaurantStock() {
     }
   };
 
+  /** @param {string} id */
   const openStocktake = async (id) => {
+    if (localAuthority) { setError('Recorded local counts are immutable here. Start a new count from the original Stock page.'); return; }
     try {
-      const result = await window.api.inventory.getStocktake(id);
+      // Database/cache result is an expected view, not runtime validation.
+      const result = /** @type {RestaurantStocktakeDetailExpectedView|null|undefined} */ (await window.api.inventory.getStocktake(id));
       if (!result?.id) throw new Error("Could not open this stocktake.");
       setActiveStocktake({
         ...result,
@@ -293,12 +395,15 @@ export default function RestaurantStock() {
     }
   };
   const startStocktake = async () => {
+    if (localAuthority) { setError('Local count sheets are not available in Stock Pro yet. Use the original Stock page to record a version-checked count.'); return; }
     setSaving(true);
     setError("");
     try {
-      const result = await window.api.inventory.createStocktake({
+      // The SQL success payload and offline branch return an id; this expected
+      // RPC/cache view is not runtime-validated.
+      const result = /** @type {RestaurantStocktakeCreateExpectedView|null|undefined} */ (await window.api.inventory.createStocktake({
         title: `${barOnly ? "Bar" : "Restaurant"} stocktake — ${today()}`,
-      });
+      }));
       if (!result?.success)
         throw new Error(result?.error || "Could not start a stocktake.");
       setNotice(
@@ -313,6 +418,7 @@ export default function RestaurantStock() {
     }
   };
   const saveCounts = async (post = false) => {
+    if (localAuthority) { setError('Local Stock Pro cannot save or post this cloud stocktake. Use the original Stock page for a local count.'); return; }
     if (!activeStocktake) return;
     setSaving(true);
     setError("");
@@ -321,20 +427,22 @@ export default function RestaurantStock() {
         ...line,
         counted_qty: line.counted_qty === "" ? null : Number(line.counted_qty),
       }));
-      const saved = await window.api.inventory.saveStocktakeCounts(
+      // IPC results are expected views here; no payload validation is added.
+      const saved = /** @type {RestaurantStockMutationExpectedView|null|undefined} */ (await window.api.inventory.saveStocktakeCounts(
         activeStocktake.id,
         lines,
-      );
+      ));
       if (!saved?.success)
         throw new Error(saved?.error || "Could not save counts.");
       if (!post) {
         setNotice("Stocktake counts saved.");
         return;
       }
-      const posted = await window.api.inventory.postStocktake(
+      // IPC results are expected views here; no payload validation is added.
+      const posted = /** @type {RestaurantStockMutationExpectedView|null|undefined} */ (await window.api.inventory.postStocktake(
         activeStocktake.id,
         `${barOnly ? "Bar" : "Restaurant"} physical stocktake`,
-      );
+      ));
       if (!posted?.success)
         throw new Error(posted?.error || "Could not post stocktake.");
       setNotice("Stocktake posted and inventory movements recorded.");
@@ -387,13 +495,13 @@ export default function RestaurantStock() {
                 >
                   <PackagePlus size={16} /> Add inventory item
                 </button>
-                <button
+                {!localAuthority && <button
                   onClick={startStocktake}
                   disabled={saving}
                   className="inline-flex items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-3 py-2.5 text-sm font-extrabold text-white disabled:opacity-60"
                 >
                   <ClipboardCheck size={16} /> Start stocktake
-                </button>
+                </button>}
               </>
             )}
           </div>
@@ -423,11 +531,13 @@ export default function RestaurantStock() {
               PackageSearch,
             ],
             [
-              "Open counts",
-              draftStocktakes,
-              draftStocktakes
-                ? "Finish or review draft counts"
-                : "No count awaiting review",
+              localAuthority ? "Posted counts" : "Open counts",
+              localAuthority ? stocktakes.length : draftStocktakes,
+              localAuthority
+                ? "Recorded from local audit history"
+                : draftStocktakes
+                  ? "Finish or review draft counts"
+                  : "No count awaiting review",
               Clock3,
             ],
             [
@@ -455,6 +565,10 @@ export default function RestaurantStock() {
           ))}
         </div>
       </section>
+
+      {localAuthority && <section role="status" className="mt-4 rounded-2xl border border-[#e9c98a] bg-[#fff6df] px-4 py-3 text-sm leading-6 text-[#704c13]">
+        {localActionsBlocked ? (localOperationsError || 'An unresolved local operation must be checked before editing inventory.') : 'Stock Pro reads and changes inventory in the local Bar database.'} This page does not create draft count sheets or authorize waste. Use <a className="font-extrabold underline" href="#/hpos/stock">the original Stock page</a> for version-checked physical counts, operation recovery and manager-approved waste.
+      </section>}
 
       {(notice || error) && (
         <div
@@ -960,6 +1074,7 @@ export default function RestaurantStock() {
   );
 }
 
+/** @param {{movements: RestaurantStockMovementExpectedView[], currency: string, date: string, onDateChange: (value: string) => void}} props */
 function Ledger({ movements, currency, date, onDateChange }) {
   return (
     <section className="mt-5 overflow-hidden rounded-[22px] border border-[#decfd0] bg-[#fffdfb] shadow-[0_12px_28px_rgba(65,38,48,.08)]">
@@ -976,7 +1091,7 @@ function Ledger({ movements, currency, date, onDateChange }) {
           <input
             type="date"
             value={date}
-            onChange={(event) => onDateChange(event.target.value)}
+            onChange={(/** @type {import('react').ChangeEvent<HTMLInputElement>} */ event) => onDateChange(event.target.value)}
             className="rounded-xl border border-[#d9caca] bg-white px-3 py-2 text-sm font-semibold normal-case tracking-normal text-[#35242c] outline-none focus:border-[#d87945] focus:ring-2 focus:ring-[#f4d2bb]"
           />
         </label>
@@ -1030,6 +1145,7 @@ function Ledger({ movements, currency, date, onDateChange }) {
     </section>
   );
 }
+/** @param {{rows: RestaurantStocktakeExpectedView[], canManageInventory: boolean, onOpen: (id: string) => void}} props */
 function Counts({ rows, canManageInventory, onOpen }) {
   return (
     <section className="mt-5 overflow-hidden rounded-[22px] border border-[#decfd0] bg-[#fffdfb] shadow-[0_12px_28px_rgba(65,38,48,.08)]">
@@ -1095,9 +1211,11 @@ function Counts({ rows, canManageInventory, onOpen }) {
     </section>
   );
 }
+/** @param {{title: string, subtitle: string, children: import('react').ReactNode, wide?: boolean, onClose?: (() => void)|null}} props */
 function Modal({ title, subtitle, children, wide = false, onClose }) {
   useEffect(() => {
     if (!onClose) return undefined;
+    /** @param {KeyboardEvent} event */
     const closeOnEscape = (event) => {
       if (event.key === "Escape") onClose();
     };
@@ -1107,7 +1225,7 @@ function Modal({ title, subtitle, children, wide = false, onClose }) {
   return (
     <div
       className="fixed inset-0 z-[2000] grid place-items-center overflow-y-auto bg-[#241920]/65 p-4"
-      onMouseDown={(event) => {
+      onMouseDown={(/** @type {import('react').MouseEvent<HTMLDivElement>} */ event) => {
         if (onClose && event.target === event.currentTarget) onClose();
       }}
     >
@@ -1139,6 +1257,7 @@ function Modal({ title, subtitle, children, wide = false, onClose }) {
     </div>
   );
 }
+/** @param {{onCancel: () => void, onConfirm: () => void, confirmLabel: string, busy: boolean}} props */
 function ModalActions({ onCancel, onConfirm, confirmLabel, busy }) {
   return (
     <div className="mt-6 flex justify-end gap-2">

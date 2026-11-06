@@ -15,7 +15,9 @@ cash-up, shifts, basic reports. Add-ons: `bar_stock_purchasing_pro`
 (recipes/purchasing/lots/variance), `bar_accounting_workforce`
 (`restaurant_accounting`, workforce, payroll, tips_payouts, expenses),
 `bar_growth_multi_outlet` (customer_accounts, loyalty, vouchers, promos,
-multi-outlet, advanced_reports). Force-on overrides package inclusion only;
+multi-outlet, advanced_reports). Accounting & Workforce requires Stock &
+Purchasing Pro in the authoritative quote, activation and assignment paths.
+Force-on overrides package inclusion only;
 never role, tenant, outlet, expiry/suspension, or server readiness. Force-off
 defeats inclusion across nav, route walls, IPC, and domain checks.
 

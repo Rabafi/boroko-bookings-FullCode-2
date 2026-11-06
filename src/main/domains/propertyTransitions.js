@@ -14,6 +14,15 @@ export const SUPPORTED_LODGING_TYPES = Object.freeze(['guest_house', 'bnb', 'lod
 
 const CROSS_PRODUCT_TYPES = Object.freeze(['hotel', 'resort', 'restaurant', 'bar', 'pos_only']);
 
+/** Expected settings-cache row fields read here; cache JSON is not validated. */
+/** @typedef {{property_type?: unknown, business_type?: unknown, updated_at?: unknown}} PropertyTransitionSettingsCacheReadView */
+/** Expected JSON envelope returned by the property transition SQL RPCs; this view does not validate RPC data. */
+/** @typedef {{success?: unknown, error?: unknown, code?: unknown, data?: unknown}} PropertyTransitionRpcEnvelopeExpectedData */
+/** Successful transition RPC envelope; SQL source supplies data for successful preview, commit and status responses. */
+/** @typedef {{success: true, data: unknown}} PropertyTransitionRpcSuccessExpectedData */
+/** Status data field read from the stored transition result produced by commit_property_type_change. */
+/** @typedef {{changed?: unknown}} PropertyTransitionStatusOutcomeExpectedData */
+
 /** @param {unknown} targetType @returns {string} */
 function normalizeTargetType(targetType) {
   return String(targetType || '').trim().toLowerCase();
@@ -61,7 +70,7 @@ function assertIdempotencyKey(idempotencyKey) {
 }
 
 function readCachedExpectations() {
-  const cached = (readCache('settings') || [])[0] || {};
+  const cached = /** @type {PropertyTransitionSettingsCacheReadView[]} */ (readCache('settings') || [])[0] || {};
   return {
     expectedPropertyType: cached.property_type || cached.business_type || null,
     expectedUpdatedAt: cached.updated_at || null
@@ -70,16 +79,18 @@ function readCachedExpectations() {
 
 /** @param {string} rpcName @param {unknown} error @param {string} fallbackCode */
 function throwRpcFailure(rpcName, error, fallbackCode) {
-  const message = error?.message || `Property-type ${rpcName} failed.`;
-  const code = error?.code || fallbackCode || 'property_transition_failed';
-  throw createAppError(code, message, { rpc: rpcName });
+  const errorView = /** @type {{message?: unknown, code?: unknown}|null|undefined} */ (error);
+  const message = errorView?.message || `Property-type ${rpcName} failed.`;
+  const code = errorView?.code || fallbackCode || 'property_transition_failed';
+  throw createAppError(/** @type {string} */ (code), /** @type {string} */ (message), { rpc: rpcName });
 }
 
-/** @param {unknown} payload @param {string} rpcName @returns {unknown} */
+/** @param {unknown} payload @param {string} rpcName @returns {PropertyTransitionRpcSuccessExpectedData} */
 function unwrapRpcResult(payload, rpcName) {
-  if (payload && payload.success === true) return payload;
-  const error = new Error(payload?.error || `Property-type ${rpcName} was rejected by the server.`);
-  error.code = payload?.code || 'property_transition_rejected';
+  const envelope = /** @type {PropertyTransitionRpcEnvelopeExpectedData|null|undefined} */ (payload);
+  if (envelope && envelope.success === true) return /** @type {PropertyTransitionRpcSuccessExpectedData} */ (envelope);
+  const error = new Error(/** @type {string} */ (envelope?.error || `Property-type ${rpcName} was rejected by the server.`));
+  /** @type {Error & {code?: unknown}} */ (error).code = envelope?.code || 'property_transition_rejected';
   throw error;
 }
 
@@ -116,8 +127,9 @@ export async function refreshSettingsCache() {
     writeCache('settings', [{ ...data, lodge_id: data.lodge_id || lodgeId }]);
     return { ok: true, updatedAt: data.updated_at || null };
   } catch (error) {
-    console.warn('[PROPERTY_TRANSITION] settings refresh delayed:', error?.message || error);
-    return { ok: false, reason: 'exception', detail: error?.message || String(error) };
+    const errorView = /** @type {{message?: unknown}|null|undefined} */ (error);
+    console.warn('[PROPERTY_TRANSITION] settings refresh delayed:', errorView?.message || error);
+    return { ok: false, reason: 'exception', detail: errorView?.message || String(error) };
   }
 }
 
@@ -148,7 +160,8 @@ export async function refreshSettingsFromServer() {
     writeCache('settings', [normalized]);
     return { ok: true, updatedAt: data.updated_at || null, settings: normalized };
   } catch (error) {
-    return { ok: false, reason: 'exception', detail: error?.message || String(error) };
+    const errorView = /** @type {{message?: unknown}|null|undefined} */ (error);
+    return { ok: false, reason: 'exception', detail: errorView?.message || String(error) };
   }
 }
 
@@ -222,8 +235,11 @@ export async function getPropertyTypeTransitionStatus(idempotencyKey) {
   });
   if (error) throwRpcFailure('status', error, 'property_transition_status_failed');
   const result = unwrapRpcResult(data, 'status');
-  const outcome = result && typeof result === 'object' ? result.data : null;
-  if (result?.success === true && (outcome?.changed === true || outcome?.changed === false)) {
+  const outcome = result && typeof result === 'object'
+    ? /** @type {{data?: unknown}} */ (result).data
+    : null;
+  const statusOutcome = /** @type {PropertyTransitionStatusOutcomeExpectedData|null|undefined} */ (outcome);
+  if (result?.success === true && (statusOutcome?.changed === true || statusOutcome?.changed === false)) {
     // A recovered authoritative outcome reconciles canonical settings too,
     // so a late-arriving ordinary save cannot overwrite the committed
     // classification. The truthful refresh state is ALWAYS attached; a

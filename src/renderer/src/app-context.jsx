@@ -15,7 +15,8 @@ import { createContext, useContext } from 'react'
  *   allowed_outlet_ids?: string[] | null,
  *   full_name?: string,
  *   pwa_enabled?: boolean,
- *   pwa_disabled_reason?: string | null
+ *   pwa_disabled_reason?: string | null,
+ *   localAuthority?: boolean
  * }} AuthContextUser
  */
 
@@ -47,6 +48,7 @@ export const AuthContext = createContext(/** @type {AuthContextValue} */ ({
  *   property_type?: string | null,
  *   business_type?: string | null,
  *   hospitality_mode?: string | null,
+ *   authority_mode?: string | null,
  *   operating_mode?: string | null,
  *   operating_profile?: Record<string, unknown> | string | null,
  *   currency?: string | null,
@@ -62,7 +64,9 @@ export const AuthContext = createContext(/** @type {AuthContextValue} */ ({
  *   logo?: string | null,
  *   logo_url?: string | null,
  *   outlet?: unknown,
+ *   outlet_id?: string | null,
  *   outlet_name?: string | null,
+ *   cash_model?: string | null,
  *   default_outlet_name?: string | null,
  *   vat_enabled?: boolean | null,
  *   vat_rate?: number | null,
@@ -97,7 +101,12 @@ export const SettingsContext = createContext(/** @type {SettingsContextValue} */
   setSettings: () => {}
 }))
 
-export const ProfilesContext = createContext({
+/** Main IPC profile rows and the local-only POS profile use separate producer shapes. */
+/** @typedef {import('./types/desktop-api.js').DesktopProfileReadView} DesktopProfileContextReadView */
+/** @typedef {{lodge_id: string, lodge_name: string, business_name: string, property_type: 'bar', product_id: 'hospitality-pos', authority_mode: 'bar_local', status: 'ready'}} LocalBarProfileContextView */
+/** @typedef {DesktopProfileContextReadView | LocalBarProfileContextView} ProfileContextRow */
+/** @typedef {{profiles: ProfileContextRow[], activeProfile: ProfileContextRow|null, loading: boolean, profilesLoading: boolean, reloadProfiles: () => Promise<ProfileContextRow[] | {profiles: ProfileContextRow[], activeProfile: ProfileContextRow|null}>, selectProfile: (lodgeId: string) => Promise<import('./types/desktop-api.js').DesktopProfileSelectionDataReadView | LocalBarProfileContextView | null>, createDraftProfile: () => Promise<DesktopProfileContextReadView|null>, removeDraftProfile: (lodgeId: string) => Promise<import('./types/desktop-api.js').DesktopProfileRemoveDraftResult|null>}} ProfilesContextValue */
+export const ProfilesContext = createContext(/** @type {ProfilesContextValue} */ ({
   profiles: [],
   activeProfile: null,
   loading: false,
@@ -106,7 +115,7 @@ export const ProfilesContext = createContext({
   selectProfile: async () => null,
   createDraftProfile: async () => null,
   removeDraftProfile: async () => null
-})
+}))
 
 /** @typedef {Record<string, boolean>} FeatureFlags */
 export const FeaturesContext = createContext(/** @type {FeatureFlags} */ ({}))
@@ -124,11 +133,12 @@ export const FeaturesContext = createContext(/** @type {FeatureFlags} */ ({}))
 /** @typedef {Record<string, undefined>} EmptyAccessContext */
 export const AccessContext = createContext(/** @type {AccessContextValue | EmptyAccessContext} */ ({}))
 
-export const OnlineRequestsContext = createContext({
+/** @typedef {{count: number, requests: import('./types/desktop-api.js').PendingOnlineBookingReadView[], refresh: () => Promise<void>|void}} OnlineRequestsContextValue */
+export const OnlineRequestsContext = createContext(/** @type {OnlineRequestsContextValue} */ ({
   count: 0,
   requests: [],
   refresh: () => {}
-})
+}))
 
 export const UnsavedChangesContext = createContext({
   isDirty: false,

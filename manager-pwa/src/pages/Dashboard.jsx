@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { AlertTriangle, BellRing, CalendarClock, CreditCard, FileText, MessageSquare, Package, RefreshCw, ShoppingCart, TrendingUp, Utensils, Wrench } from 'lucide-react'
@@ -11,6 +12,11 @@ import DataFreshness from '../components/DataFreshness'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 
+/** @typedef {{id: string|number, check_in: string, check_out: string, status: string, source?: string|null, guest_name?: string|null, customer_name?: string|null, balance?: number|null}} DashboardBookingExpectedView */
+/** @typedef {{id: string|number, name?: string|null, current_stock?: number|null, quantity?: number|null, reorder_level?: number|null}} DashboardInventoryExpectedView */
+/** @typedef {Partial<Omit<import('../lib/api').DashboardSnapshotExpectedData, 'topBalances'|'lowStock'|'lowStockCount'>> & {topBalances?: unknown[], lowStock?: unknown[], posComplete?: boolean, posError?: string, posRevenue?: number|null, todayOrderCount?: number|null, openCheckCount?: number|null, lowStockCount?: number|null, asOf?: string|null}} DashboardDataExpectedView */
+/** @typedef {{id: string, icon: import('react').ComponentType<import('lucide-react').LucideProps>, tone: keyof typeof TONE, label: string, title: string, sub: string, to: string}} AttentionItem */
+
 const TONE = {
   red: 'bg-red-950/50 text-red-300',
   amber: 'bg-amber-950/50 text-amber-300',
@@ -20,6 +26,7 @@ const TONE = {
   slate: 'bg-gray-900 text-gray-300'
 }
 
+/** @param {{label: string, value: import('react').ReactNode, sub?: string, accent?: string, to?: string, onClick?: () => void}} props */
 function KpiCard({ label, value, sub, accent = 'text-white', to, onClick }) {
   const className = 'bg-gray-800 rounded-2xl p-3 text-left active:scale-[0.98] transition-transform'
   const body = (
@@ -38,6 +45,7 @@ function MetricSkeleton() {
   return <div className="bg-gray-800 rounded-2xl p-3 animate-pulse h-[72px]" />
 }
 
+/** @param {{item: AttentionItem}} props */
 function AttentionRow({ item }) {
   const Icon = item.icon
   return (
@@ -58,6 +66,7 @@ function AttentionRow({ item }) {
   )
 }
 
+/** @param {{to: string, icon: import('react').ComponentType<import('lucide-react').LucideProps>, label: string, sub: string}} props */
 function QuickLink({ to, icon: Icon, label, sub }) {
   return (
     <Link to={to} className="rounded-2xl bg-gray-800 px-3 py-2.5 active:scale-[0.98] transition-transform">
@@ -69,33 +78,46 @@ function QuickLink({ to, icon: Icon, label, sub }) {
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
+  const { user: routeUser } = useAuth()
+  /** AppShell's authenticated route guard establishes a non-null session here; the source view remains nullable and this assertion does not validate its contents. @type {NonNullable<typeof routeUser> & {name: string|null, product_family: string|null}} */
+  const user = /** @type {NonNullable<typeof routeUser> & {name: string|null, product_family: string|null}} */ (routeUser)
   const { can, features, isEnabled } = useFeatures()
   const { unreadCount: inboxUnreadCount } = useInbox()
   const pwaEnabled = Object.keys(features).length > 0 && features.pwa === true
   const [loading, setLoading] = useState(true)
-  const [data, setData] = useState(null)
-  const [bookings, setBookings] = useState([])
-  const [lastUpdated, setLastUpdated] = useState(null)
+  const [data, setData] = useState(/** @type {DashboardDataExpectedView|null} */ (null))
+  const [bookings, setBookings] = useState(/** @type {DashboardBookingExpectedView[]} */ ([]))
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
   const [loadError, setLoadError] = useState('')
   // Authority: server product_family on the session, not a client-inferred mode.
   const restaurantMode = isRestaurantProductFamily(user?.product_family)
-  const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
-  const todayParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Gaborone', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).reduce((result, part) => ({ ...result, [part.type]: part.value }), {})
+  // isBarHospitalityMode string-coerces all inputs; preserve the raw session value and its runtime coercion.
+  const barOnly = restaurantMode && isBarHospitalityMode(/** @type {string|null|undefined} */ (user?.hospitality_mode))
+  const todayParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Gaborone', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).reduce((result, part) => ({ ...result, [part.type]: part.value }), /** @type {Record<string, string>} */ ({}))
   const today = `${todayParts.year}-${todayParts.month}-${todayParts.day}`
 
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError('')
+    if (barOnly) {
+      const message = 'This Bar is not linked to a verified local sync projection yet. No cloud POS or stock records are shown here.'
+      setData({ posComplete: false, posError: message, posRevenue: null, todayOrderCount: null, openCheckCount: null, lowStockCount: null, lowStock: [], asOf: null })
+      setBookings([])
+      setLastUpdated(null)
+      setLoadError(message)
+      setLoading(false)
+      return
+    }
     try {
-      const [snapshot, bookingRows] = restaurantMode
+      const [snapshotResult, bookingRows] = restaurantMode
         ? await Promise.all([
             Promise.allSettled([
               getManagerPosSnapshot(user.lodge_id),
               listInventory(user.lodge_id)
             ]).then(([posResult, inventoryResult]) => {
               const pos = posResult.status === 'fulfilled' ? posResult.value : null
-              const inventory = inventoryResult.status === 'fulfilled' ? inventoryResult.value : null
+              // The inventory SELECT/cache result is expected to use this row view; cached JSON is not validated here.
+              const inventory = inventoryResult.status === 'fulfilled' ? /** @type {DashboardInventoryExpectedView[]} */ (inventoryResult.value) : null
               const posComplete = pos?.complete === true
               const lowStock = (Array.isArray(inventory) ? inventory : []).filter((item) => {
                 const reorder = Number(item.reorder_level || 0)
@@ -115,24 +137,27 @@ export default function Dashboard() {
             Promise.resolve([])
           ])
         : await Promise.all([
-            getDashboardSnapshot(user.lodge_id),
+        getDashboardSnapshot(user.lodge_id),
             listBookings(user.lodge_id).catch(() => [])
           ])
+      // getDashboardSnapshot's expected structure and the local POS summary share this consumer view; unknown arrays remain unknown.
+      const snapshot = /** @type {DashboardDataExpectedView|null} */ (snapshotResult)
       setData(snapshot)
       if (restaurantMode && snapshot?.posError) setLoadError(snapshot.posError)
-      setBookings(Array.isArray(bookingRows) ? bookingRows : [])
+      // BOOKING_LIST_SELECT supplies these fields; the cache may hold unvalidated JSON.
+      setBookings(/** @type {DashboardBookingExpectedView[]} */ (Array.isArray(bookingRows) ? bookingRows : []))
       setLastUpdated(
         restaurantMode
           ? snapshot?.asOf || null
-          : readCacheEntry(user.lodge_id, 'dashboard', null)?.updatedAt || null
+          : /** @type {{updatedAt?: string|null}|null} */ (readCacheEntry(user.lodge_id, 'dashboard', null))?.updatedAt || null
       )
     } catch (error) {
       setData(null)
       setBookings([])
-      setLoadError(error?.message || 'Dashboard could not load.')
+      setLoadError((/** @type {{message?: string}|null|undefined} */ (error))?.message || 'Dashboard could not load.')
     }
     setLoading(false)
-  }, [restaurantMode, user.lodge_id])
+  }, [barOnly, restaurantMode, user.lodge_id])
 
   useEffect(() => { load() }, [load])
 
@@ -166,7 +191,7 @@ export default function Dashboard() {
   )
 
   const attentionItems = useMemo(() => {
-    const items = []
+    const items = /** @type {AttentionItem[]} */ ([])
 
     if (!restaurantMode && overdueCheckouts.length > 0) {
       items.push({
@@ -186,7 +211,7 @@ export default function Dashboard() {
         icon: Wrench,
         tone: 'red',
         label: 'Maintenance',
-        title: `${data.urgentMaintenanceCount} urgent maintenance issue${data.urgentMaintenanceCount === 1 ? '' : 's'}`,
+        title: `${data?.urgentMaintenanceCount} urgent maintenance issue${data?.urgentMaintenanceCount === 1 ? '' : 's'}`,
         sub: 'Open Alerts to review priority work.',
         to: '/alerts?filter=maintenance'
       })
@@ -205,7 +230,7 @@ export default function Dashboard() {
     }
 
     if (!restaurantMode) {
-      ;(data?.topBalances || []).slice(0, 1).forEach((booking) => {
+      ;(/** @type {DashboardBookingExpectedView[]} */ (data?.topBalances || [])).slice(0, 1).forEach((booking) => {
         items.push({
           id: `balance-${booking.id}`,
           icon: CreditCard,
@@ -218,7 +243,7 @@ export default function Dashboard() {
       })
     }
 
-    ;(data?.lowStock || []).slice(0, 1).forEach((item) => {
+      ;(/** @type {DashboardInventoryExpectedView[]} */ (data?.lowStock || [])).slice(0, 1).forEach((item) => {
       items.push({
         id: `stock-${item.id}`,
         icon: Package,
@@ -296,25 +321,25 @@ export default function Dashboard() {
                   label="POS Sales Today"
                   value={data?.posComplete ? money(data.posRevenue) : 'Unavailable'}
                   accent="text-green-300"
-                  to="/pos"
+                  to={barOnly ? undefined : '/pos'}
                 />
                 <KpiCard
                   label="Orders Today"
                   value={data?.posComplete ? data.todayOrderCount : 'Unavailable'}
                   sub={data?.posComplete ? 'Completed sales' : 'Server confirmation required'}
-                  to="/pos"
+                  to={barOnly ? undefined : '/pos'}
                 />
                 <KpiCard
                   label={barOnly ? 'Open tabs' : 'Open checks'}
                   value={data?.posComplete ? data.openCheckCount : 'Unavailable'}
                   accent={data?.posComplete && Number(data?.openCheckCount || 0) > 0 ? 'text-yellow-300' : 'text-green-300'}
-                  to={barOnly ? '/restaurant/service' : '/restaurant/floor'}
+                  to={barOnly ? undefined : '/restaurant/floor'}
                 />
                 <KpiCard
                   label="Low Stock"
                   value={data?.lowStockCount === null ? 'Unavailable' : data?.lowStockCount}
                   sub="Items below reorder level"
-                  to="/alerts?filter=stock"
+                  to={barOnly ? undefined : '/alerts?filter=stock'}
                 />
               </>
             ) : (
@@ -348,12 +373,12 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-2 gap-2">
           <QuickLink to="/alerts?filter=all" icon={AlertTriangle} label="Alerts" sub={`${openAlertCount} open`} />
-          <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />
-          {can('pos.reports') && isEnabled('pos') && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
+          {!barOnly && <QuickLink to="/money?focus=outstanding" icon={TrendingUp} label="Money" sub="Balances and audit" />}
+          {can('pos.reports') && isEnabled('pos') && !barOnly && <QuickLink to="/pos" icon={ShoppingCart} label="POS Sales" sub="Live sales and history" />}
           {restaurantMode && (!barOnly || features?.owner_mobile_view === true) && <QuickLink to="/restaurant-owner" icon={Utensils} label={barOnly ? 'Bar Owner' : 'Owner View'} sub="Today's overview" />}
           {pwaEnabled && <QuickLink to="/control" icon={MessageSquare} label="Inbox" sub={inboxUnreadCount > 0 ? `${inboxUnreadCount} unread` : restaurantMode ? 'Manager chat' : 'Front desk chat'} />}
           {restaurantMode ? (
-            <QuickLink to="/inventory" icon={Package} label={barOnly ? 'Bar Stock' : 'Inventory'} sub={barOnly ? 'Drinks, packs and low stock' : 'Stock and menu items'} />
+            !barOnly && <QuickLink to="/inventory" icon={Package} label="Inventory" sub="Stock and menu items" />
           ) : can('reports.view') ? (
             <QuickLink to="/reports" icon={FileText} label="Reports" sub="Full snapshot" />
           ) : (
@@ -363,7 +388,7 @@ export default function Dashboard() {
 
         <MobileBoundaryNotice compact>
           {restaurantMode
-            ? 'Mobile is for visibility and alerts. POS and stock changes are managed on the main terminal.'
+            ? (barOnly ? 'Only records received from a verified local Bar sync will appear here. Trading remains on the Bar computer.' : 'Mobile is for visibility and alerts. POS and stock changes are managed on the main terminal.')
             : 'Mobile is for visibility and requests. Front desk still executes booking and money changes on desktop.'
           }
         </MobileBoundaryNotice>
@@ -372,6 +397,7 @@ export default function Dashboard() {
   )
 }
 
+/** @param {DashboardBookingExpectedView|null|undefined} booking */
 function guestLabel(booking) {
   return booking?.guest_name || booking?.customer_name || 'Guest'
 }

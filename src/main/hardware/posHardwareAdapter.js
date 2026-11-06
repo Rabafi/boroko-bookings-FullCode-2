@@ -10,6 +10,7 @@ const DEFAULT_NETWORK_PORT = 9100
 const DEFAULT_TIMEOUT_MS = 8000
 
 /** @typedef {Record<string, unknown>} HardwareRecord */
+/** @typedef {Record<string, unknown> | import('../../shared/desktopIpcContracts.js').PosHardwareSettings} HardwareSettingsInput */
 
 /** @param {unknown} value @param {boolean} [fallback] @returns {boolean} */
 function toBool(value, fallback = false) {
@@ -178,7 +179,7 @@ function inferRawTarget(settings) {
   return null
 }
 
-/** @param {Record<string, unknown>} [settings] */
+/** @param {HardwareSettingsInput} [settings] */
 export function normalizePosHardwareSettings(settings = {}) {
   const escposEnabled = toBool(settings.escpos_enabled, false)
   const receiptPrintMode = String(settings.receipt_print_mode || (escposEnabled ? 'escpos' : 'windows')).toLowerCase()
@@ -563,7 +564,7 @@ export async function openCashDrawer(settings = {}) {
     : result
 }
 
-/** @param {string} [kind] @param {Record<string, unknown>} [settings] @param {HardwareRecord} [business] */
+/** @param {string} [kind] @param {HardwareSettingsInput} [settings] @param {HardwareRecord} [business] */
 export async function testPosHardwareDevice(kind = 'receipt', settings = {}, business = {}) {
   const normalized = normalizePosHardwareSettings(settings)
   if (kind === 'drawer') return openCashDrawer(normalized)

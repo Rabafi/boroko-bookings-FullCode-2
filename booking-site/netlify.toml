@@ -12,6 +12,12 @@
     Strict-Transport-Security = "max-age=31536000; includeSubDomains"
 
 [[redirects]]
+  from   = "https://borokoonlinebookings.netlify.app/*"
+  to     = "https://book.tsabonno.com/:splat"
+  status = 301
+  force  = true
+
+[[redirects]]
   from   = "/*"
   to     = "/index.html"
   status = 200

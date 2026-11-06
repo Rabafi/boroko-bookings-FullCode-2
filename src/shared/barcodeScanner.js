@@ -19,6 +19,7 @@ export const BARCODE_SCANNER_DEFAULTS = Object.freeze({
 });
 
 /** @typedef {{minLength?: unknown, maxLength?: unknown, interKeyMs?: unknown, idleCompleteMs?: unknown, prefix?: unknown, suffix?: unknown, acceptEnter?: unknown, acceptTab?: unknown}} BarcodeScannerConfig */
+/** @typedef {{key?: unknown, repeat?: unknown, ctrlKey?: unknown, altKey?: unknown, metaKey?: unknown, isComposing?: unknown, timeStamp?: unknown}} BarcodeScannerKeyEventLike */
 /** @typedef {{success: false, code: string, barcode?: string, characterCount?: number}} BarcodeScanFailure */
 /** @typedef {{success: true, barcode: string, terminator: string, characterCount: number, durationMs: number, averageInterKeyMs: number}} BarcodeScanSuccess */
 
@@ -87,9 +88,9 @@ export function createBarcodeScannerDecoder(config = {}) {
     lastAt = 0;
   };
 
-  /** @param {unknown} event @returns {number} */
+  /** @param {BarcodeScannerKeyEventLike | null | undefined} event @returns {number} */
   const nowFrom = (event) => {
-    const candidate = Number((/** @type {Record<string, unknown> | null | undefined} */ (event))?.timeStamp);
+    const candidate = Number(event?.timeStamp);
     return Number.isFinite(candidate) && candidate >= 0 ? candidate : Date.now();
   };
 
@@ -103,7 +104,7 @@ export function createBarcodeScannerDecoder(config = {}) {
     return { type: "completed", result: { ...result, rawLength } };
   };
 
-  /** @param {Record<string, unknown>} [event] */
+  /** @param {BarcodeScannerKeyEventLike} [event] */
   const consumeKey = (event = {}) => {
     const key = String(event.key || "");
     if (event.repeat || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) {

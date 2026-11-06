@@ -5,9 +5,26 @@ import { readFailedSyncQueue, readSyncQueue, writeFailedSyncQueue, writeSyncQueu
 
 const CONFLICT_REVIEW_ERROR_PREFIX = 'Mesh conflict detected';
 
+/** Cache and queue rows are read as expected data; these views do not validate persisted JSON. */
+/** @typedef {{id: string, room_id?: string|null, check_in: string, check_out: string, status?: unknown, created_at?: string|null, _mesh_source_node_id?: string|null, group_key?: string|null, _mesh_group_operation_id?: string|null, _sync_state?: unknown, _sync_error?: unknown, _sync_resolution_suggestions?: unknown}} MeshConflictBookingExpectedData */
+/** @typedef {{id: string, rate_per_night?: number|string|null, room_number?: string|null, room_type?: string|null}} MeshConflictRoomExpectedData */
+/** Queue leaves are expected from local writers/validated peer imports but remain possibly absent in persisted rows. */
+/** @typedef {Record<string, unknown> & {id?: string, room_id?: string|null, check_in?: string, check_out?: string, created_at?: string}} MeshConflictBookingRecordPayloadExpectedData */
+/** @typedef {Record<string, unknown> & {p_rooms?: unknown, p_check_in?: string, p_check_out?: string, p_group_key?: string, created_at?: string}} MeshConflictMultiRoomQueueDataExpectedView */
+/** @typedef {Record<string, unknown> & {p_booking_id?: string, p_room_id?: string, p_check_in?: string, p_check_out?: string, created_at?: string}} MeshConflictSingleBookingQueueDataExpectedView */
+/** @typedef {{payload: MeshConflictBookingRecordPayloadExpectedData}} MeshConflictBookingRecordQueueDataExpectedView */
+/** @typedef {import('../syncStore.js').QueueRowExpectedDataView & {created_at?: unknown, _local_booking_ids?: unknown, _group_id?: unknown}} MeshConflictQueueOperationExpectedData */
+/** @typedef {{id: string|null|undefined, roomId: string|null|undefined, checkIn: string|undefined, checkOut: string|undefined, groupId?: string|null|undefined, createdAt: string}} MeshConflictQueuedBookingExpectedData */
+/** @typedef {{id: string, roomId: string|null|undefined, checkIn: string|undefined, checkOut: string|undefined, createdAt: string, sourceNodeId: string, groupId: string|null, original: MeshConflictBookingExpectedData, isQueued: false}|{id: string, roomId: string|null|undefined, checkIn: string|undefined, checkOut: string|undefined, createdAt: string, sourceNodeId: string, groupId: string|null, original: MeshConflictQueueOperationExpectedData, isQueued: true}} MeshConflictActiveBookingExpectedData */
+/** @typedef {{roomId: string, roomNumber: string|null|undefined, roomType: string|null|undefined, ratePerNight: number, action: 'upgrade'|'swap', label: string}} MeshConflictSuggestionExpectedData */
+
 /**
  * Deterministically checks for date overlaps between any two bookings.
  * Overlap criteria: check_in of one is before check_out of another, and vice-versa.
+ * @param {string} checkIn1
+ * @param {string} checkOut1
+ * @param {string} checkIn2
+ * @param {string} checkOut2
  */
 export function datesOverlap(checkIn1, checkOut1, checkIn2, checkOut2) {
   return checkIn1 < checkOut2 && checkOut1 > checkIn2;
@@ -16,6 +33,13 @@ export function datesOverlap(checkIn1, checkOut1, checkIn2, checkOut2) {
 /**
  * Generates suggested alternative rooms (swaps or upgrades) that are unoccupied
  * during the check-in / check-out dates of a conflicting booking.
+ * @param {string} checkIn
+ * @param {string} checkOut
+ * @param {string|null|undefined} currentRoomId
+ * @param {MeshConflictRoomExpectedData[]} allRooms
+ * @param {MeshConflictBookingExpectedData[]} allBookings
+ * @param {MeshConflictQueueOperationExpectedData[]} queuedOps
+ * @returns {MeshConflictSuggestionExpectedData[]}
  */
 export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, allRooms, allBookings, queuedOps) {
   const currentRoom = allRooms.find((r) => r.id === currentRoomId);
@@ -29,7 +53,8 @@ export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, 
   }
   for (const op of queuedOps) {
     for (const queued of getQueuedBookingRecords(op)) {
-      if (datesOverlap(queued.checkIn, queued.checkOut, checkIn, checkOut)) occupiedRoomIds.add(queued.roomId);
+      // Persisted queue dates are not validated; this existing comparison assumes its booking fields are present.
+      if (datesOverlap(/** @type {string} */ (queued.checkIn), /** @type {string} */ (queued.checkOut), checkIn, checkOut)) occupiedRoomIds.add(queued.roomId);
     }
   }
 
@@ -37,7 +62,7 @@ export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, 
   for (const room of allRooms) {
     if (room.id === currentRoomId || occupiedRoomIds.has(room.id)) continue;
     const rate = Number(room.rate_per_night || 0);
-    const action = rate > currentRate ? 'upgrade' : 'swap';
+    const action = /** @type {'upgrade'|'swap'} */ (rate > currentRate ? 'upgrade' : 'swap');
     const label = action === 'upgrade'
       ? 'Upgrade to Room ' + room.room_number + ' (' + room.room_type + ')'
       : 'Swap to Room ' + room.room_number;
@@ -49,10 +74,11 @@ export function generateSuggestedAlternatives(checkIn, checkOut, currentRoomId, 
     return b.ratePerNight - a.ratePerNight;
   });
 }
+/** @param {MeshConflictQueueOperationExpectedData} op @returns {MeshConflictQueuedBookingExpectedData[]} */
 function getQueuedBookingRecords(op) {
-  const createdAt = op?.created_at || op?.timestamp || new Date(0).toISOString();
+  const createdAt = /** @type {string} */ (op?.created_at || op?.timestamp || new Date(0).toISOString());
   if (op?.table === 'create_multi_room_booking') {
-    const data = op.data || {};
+    const data = /** @type {MeshConflictMultiRoomQueueDataExpectedView} */ (op.data || {});
     const rooms = Array.isArray(data.p_rooms) ? data.p_rooms : [];
     const ids = Array.isArray(op._local_booking_ids) ? op._local_booking_ids : [];
     return rooms.map((room, index) => ({
@@ -60,12 +86,13 @@ function getQueuedBookingRecords(op) {
       roomId: room?.room_id,
       checkIn: data.p_check_in,
       checkOut: data.p_check_out,
-      groupId: data.p_group_key || op._group_id || op._queue_id || null,
+      // These persisted identifiers are expected from local booking queue writers; the read is not validated here.
+      groupId: /** @type {string|null} */ (data.p_group_key || op._group_id || op._queue_id || null),
       createdAt: data.created_at || createdAt
     })).filter((booking) => booking.id && booking.roomId);
   }
   if (op?.table === 'create_booking') {
-    const data = op.data || {};
+    const data = /** @type {MeshConflictSingleBookingQueueDataExpectedView} */ (op.data || {});
     return [{
       id: data.p_booking_id,
       roomId: data.p_room_id,
@@ -75,7 +102,7 @@ function getQueuedBookingRecords(op) {
     }];
   }
   if (op?.table === 'create_booking_record') {
-    const payload = op.data?.payload || {};
+    const payload = /** @type {MeshConflictBookingRecordPayloadExpectedData} */ (op.data?.payload || {});
     return [{
       id: payload.id,
       roomId: payload.room_id,
@@ -86,6 +113,7 @@ function getQueuedBookingRecords(op) {
   }
   return [];
 }
+/** @param {MeshConflictQueueOperationExpectedData} queueItem @param {string} message @param {MeshConflictSuggestionExpectedData[]} [suggestions] */
 function moveQueuedBookingToManualReview(queueItem, message, suggestions = []) {
   if (!queueItem?._queue_id) return false;
   const pending = readSyncQueue();
@@ -114,6 +142,7 @@ function moveQueuedBookingToManualReview(queueItem, message, suggestions = []) {
   return true;
 }
 
+/** @param {string} bookingId @returns {MeshConflictQueueOperationExpectedData|null} */
 function findPendingQueueItemForBooking(bookingId) {
   if (!bookingId) return null;
   return readSyncQueue().find((item) => getQueuedBookingRecords(item).some((booking) => booking.id === bookingId)) || null;
@@ -124,13 +153,14 @@ function findPendingQueueItemForBooking(bookingId) {
  * Flags loser rows, logs sync_error, computes alternatives, and triggers IPC events.
  */
 export async function detectConflicts() {
-  const bookings = readCache('bookings') || [];
-  const rooms = readCache('rooms') || [];
-  const queue = readSyncQueue() || [];
-  const failedQueue = readFailedSyncQueue() || [];
+  const bookings = /** @type {MeshConflictBookingExpectedData[]} */ (readCache('bookings') || []);
+  const rooms = /** @type {MeshConflictRoomExpectedData[]} */ (readCache('rooms') || []);
+  const queue = /** @type {MeshConflictQueueOperationExpectedData[]} */ (readSyncQueue() || []);
+  const failedQueue = /** @type {MeshConflictQueueOperationExpectedData[]} */ (readFailedSyncQueue() || []);
   const queuedOps = [...queue, ...failedQueue];
 
   // 1. Gather all active booking representations
+  /** @type {MeshConflictActiveBookingExpectedData[]} */
   const activeBookings = [];
 
   // Add existing cached bookings
@@ -163,7 +193,7 @@ export async function detectConflicts() {
         checkIn: queuedBooking.checkIn,
         checkOut: queuedBooking.checkOut,
         createdAt: queuedBooking.createdAt,
-        sourceNodeId: op._mesh_source_node_id || 'local',
+        sourceNodeId: /** @type {string} */ (op._mesh_source_node_id || 'local'),
         original: op,
         isQueued: true,
         groupId: queuedBooking.groupId || null
@@ -171,6 +201,7 @@ export async function detectConflicts() {
     }
   }
 
+  /** @type {Array<{b1: MeshConflictActiveBookingExpectedData, b2: MeshConflictActiveBookingExpectedData}>} */
   const conflicts = [];
 
   // 2. Identify overlaps
@@ -179,7 +210,8 @@ export async function detectConflicts() {
       const b1 = activeBookings[i];
       const b2 = activeBookings[j];
 
-      if (b1.roomId === b2.roomId && datesOverlap(b1.checkIn, b1.checkOut, b2.checkIn, b2.checkOut)) {
+      // Cached and queued booking date leaves are expected data, not validated persisted values.
+      if (b1.roomId === b2.roomId && datesOverlap(/** @type {string} */ (b1.checkIn), /** @type {string} */ (b1.checkOut), /** @type {string} */ (b2.checkIn), /** @type {string} */ (b2.checkOut))) {
         conflicts.push({ b1, b2 });
       }
     }
@@ -224,8 +256,8 @@ export async function detectConflicts() {
 
     // 4. Mark loser as review required
     const suggestions = generateSuggestedAlternatives(
-      loser.checkIn,
-      loser.checkOut,
+      /** @type {string} */ (loser.checkIn),
+      /** @type {string} */ (loser.checkOut),
       loser.roomId,
       rooms,
       bookings,

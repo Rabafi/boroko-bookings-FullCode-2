@@ -8,6 +8,7 @@ import {
 } from './syncStore.js';
 import { getQueuedPosOrderId, getSyncItemBookingId, isInventoryItemQueueItem, getQueuedInventoryItemId } from './syncShared.js';
 
+/** @typedef {import('./syncShared.js').ReplayQueueItemExpectedView} ReplayQueueItemExpectedView */
 /** @typedef {{findIndex(predicate: (row: unknown) => unknown): number, map(callback: (row: unknown) => unknown): unknown[], [index: number]: unknown, [Symbol.iterator](): Iterator<unknown>}} CacheSequenceReadView */
 
 /** @param {unknown} item @param {string} prefix */
@@ -106,7 +107,21 @@ export function patchCachedBookingSyncState(bookingId, patch = {}) {
   return true;
 }
 
-/** @param {unknown} item @param {unknown} localBookingId @param {unknown} serverBookingId */
+/**
+ * @overload
+ * @param {ReplayQueueItemExpectedView} item
+ * @param {unknown} localBookingId
+ * @param {unknown} serverBookingId
+ * @returns {ReplayQueueItemExpectedView}
+ */
+/**
+ * @overload
+ * @param {unknown} item
+ * @param {unknown} localBookingId
+ * @param {unknown} serverBookingId
+ * @returns {unknown}
+ */
+/** @param {unknown} item @param {unknown} localBookingId @param {unknown} serverBookingId @returns {unknown} */
 export function rewriteQueuedBookingReferenceItem(item, localBookingId, serverBookingId) {
   if (!item || !localBookingId || !serverBookingId || localBookingId === serverBookingId) return item;
   const itemFields = /** @type {Record<string, unknown>} */ (item);

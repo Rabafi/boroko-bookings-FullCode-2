@@ -10,7 +10,25 @@
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://www.googletagmanager.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://borokobookings.com; connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co; font-src 'self';"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://www.googletagmanager.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: https://tsabonno.com; connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co https://api.github.com; font-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';"
+
+[[redirects]]
+  from = "https://borokobookings.com/*"
+  to = "https://tsabonno.com/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.borokobookings.com/*"
+  to = "https://tsabonno.com/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://borokobookings.netlify.app/*"
+  to = "https://tsabonno.com/:splat"
+  status = 301
+  force = true
 
 [[redirects]]
   from = "/features"

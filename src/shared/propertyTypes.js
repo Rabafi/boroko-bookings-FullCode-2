@@ -128,7 +128,7 @@ export function normalizePropertyType(propertyType) {
   if (raw === 'hotel') return 'hotel'
   if (raw === 'resort') return 'resort'
   if (raw === 'restaurant' || raw === 'pos_only') return 'restaurant'
-  if (raw === 'bar' || raw === 'bar_only' || raw === 'bar_pos') return 'bar'
+  if (['bar', 'bar_only', 'bar-only', 'bar only', 'bar_pos', 'bar-pos', 'bar pos', 'bar / bar pos', 'bar_only_pos', 'bar_pos_only', 'pub', 'tavern'].includes(raw)) return 'bar'
   return 'lodge'
 }
 
@@ -186,8 +186,10 @@ export const HOSPITALITY_MODES = Object.freeze({
 
 /** @param {unknown} value */
 export function normalizeHospitalityMode(value) {
-  const raw = String(value || '').trim().toLowerCase()
-  return raw === HOSPITALITY_MODES.BAR_ONLY ? HOSPITALITY_MODES.BAR_ONLY : HOSPITALITY_MODES.RESTAURANT_BAR
+  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  return ['bar_only', 'bar', 'bar_pos', 'drinks_only'].includes(raw)
+    ? HOSPITALITY_MODES.BAR_ONLY
+    : HOSPITALITY_MODES.RESTAURANT_BAR
 }
 
 /** @param {unknown} settingsOrProfile */
@@ -200,7 +202,8 @@ export function getHospitalityMode(settingsOrProfile) {
   const source = recordFields(nested && typeof nested === 'object' ? nested : {})
   const packageKey = String(root.commercial_package_key || root.package_key || source.commercial_package_key || '').trim().toLowerCase()
   if (packageKey === 'bar_pos') return HOSPITALITY_MODES.BAR_ONLY
-  const explicit = source.hospitality_mode || root.hospitality_mode || root.operating_mode
+  const explicit = source.hospitality_mode || source.hospitalityMode || source.operating_mode || source.operatingMode
+    || root.hospitality_mode || root.hospitalityMode || root.operating_mode || root.operatingMode
   return explicit ? normalizeHospitalityMode(explicit) : HOSPITALITY_MODES.RESTAURANT_BAR
 }
 
@@ -222,7 +225,8 @@ export function getExplicitHospitalityMode(settingsOrProfile) {
     try { source = JSON.parse(source) } catch { source = {} }
   }
   const fields = recordFields(source)
-  const raw = fields.hospitality_mode || root.hospitality_mode || root.operating_mode
+  const raw = fields.hospitality_mode || fields.hospitalityMode || fields.operating_mode || fields.operatingMode
+    || root.hospitality_mode || root.hospitalityMode || root.operating_mode || root.operatingMode
   if (raw == null || String(raw).trim() === '') return null
   return normalizeHospitalityMode(raw)
 }

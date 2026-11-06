@@ -156,6 +156,22 @@ export function getPwaShellConfig(productFamily) {
   return SHELL[family] || SHELL[PRODUCT_FAMILY_IDS.LODGE_CAMP]
 }
 
+/** @param {string|null|undefined} productFamily @param {string|null|undefined} hospitalityMode */
+export function getPwaAuthenticatedShellConfig(productFamily, hospitalityMode) {
+  const shell = getPwaShellConfig(productFamily)
+  if (!isBarHospitalityMode(hospitalityMode) || shell.productFamily !== PRODUCT_FAMILY_IDS.HOSPITALITY_POS) return shell
+  return Object.freeze({
+    ...shell,
+    productFamilyLabel: 'Bar',
+    brandTitle: 'Tsa Bonno Bar Manager',
+    loginTagline: 'Owner and manager access for Bar operations',
+    chooserTitle: 'Select your Bar',
+    chooserSubtitle: 'Your account is linked to more than one Bar',
+    businessNoun: 'bar',
+    businessNounTitle: 'Bar'
+  })
+}
+
 /** @param {string|null|undefined} productFamily @param {{inboxEnabled?:boolean}} [options] */
 export function getPwaNavItems(productFamily, { inboxEnabled = true } = {}) {
   const shell = getPwaShellConfig(productFamily)
@@ -172,7 +188,7 @@ export function isPwaRouteAllowed(pathname, productFamily, hospitalityMode = nul
   const shell = getPwaShellConfig(productFamily)
   const barOnly = String(hospitalityMode || '').toLowerCase() === 'bar_only'
 
-  if (barOnly && ['/restaurant/floor', '/restaurant/kitchen-workspace'].includes(path)) return false
+  if (barOnly && ['/restaurant/floor', '/restaurant/kitchen-workspace', '/restaurant/service', '/restaurant/menu-production', '/restaurant/cash-close'].includes(path)) return false
   // The generic Financial Audit is a lodging/night-audit surface. Bar managers
   // use the POS report and server-certified cash controls instead.
   if (barOnly && path === '/audit') return false
@@ -195,7 +211,7 @@ export function isRestaurantProductFamily(productFamily) {
   return getPwaShellConfig(productFamily).restaurantModules === true
 }
 
-/** @param {string|null|undefined} hospitalityMode */
+/** @param {unknown} hospitalityMode */
 export function isBarHospitalityMode(hospitalityMode) {
   return String(hospitalityMode || '').trim().toLowerCase() === 'bar_only'
 }

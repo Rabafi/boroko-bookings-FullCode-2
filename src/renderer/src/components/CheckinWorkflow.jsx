@@ -19,47 +19,73 @@ import {
 import { useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 
+/**
+ * Expected front-desk row fields from hotel.getArrivals/getDepartures/getInHouse.
+ * The main domain copies booking query/cache rows and adds the joined display
+ * fields; neither that source nor this consumer validates the underlying rows.
+ * @typedef {{id: string, check_in?: string | null, check_out?: string | null, status?: string | null, customer_name?: string | null, guest_name?: string | null, customer_phone?: string | null, customer_email?: string | null, customer_id?: string | null, total_amount?: number | string | null, charges_total?: number | string | null, amount_paid?: number | string | null, room_id?: string | null, room_number?: string | number | null, customers?: {id?: string | null, name?: string | null, email?: string | null, phone?: string | null, id_number?: string | null, nationality?: string | null} | null, rooms?: {room_number?: string | number | null} | null}} CheckinBookingReadExpectedView
+ */
+/** Expected mapped checklist fields; input RPC/cache data remains unvalidated. */
+/** @typedef {{id: string, step_key: string, step_label?: string | null, completed: boolean, required: boolean, completed_at?: string | null, data?: unknown}} CheckinStepReadExpectedView */
+/** @typedef {{id_number?: string, id_type?: string, notes?: string | null, photo_attached?: boolean}} CheckinStepDataReadExpectedView */
+/** @typedef {{id_number?: string, id_type?: string, notes?: string | null, photo_attached?: boolean, captured_at?: string, confirmed_at?: string}} CheckinStepCompletionDataExpectedView */
+/** @typedef {{level: string, code: string, message: string}} CheckinMessageReadExpectedView */
+/** @typedef {{room_number?: string | number | null, housekeeping_status?: string | null, balance_due_estimate?: number, balance_source?: string, deposit_amount: number, room_ready?: boolean, messaging?: CheckinMessageReadExpectedView[]}} CheckinReadinessReadExpectedView */
+/** @typedef {{items: CheckinStepReadExpectedView[], ready_to_check_in?: boolean, ready_to_check_out?: boolean, config?: CheckinConfigReadExpectedView | null, warning?: string, stale?: boolean, from_cache?: boolean, pre_arrival?: CheckinReadinessReadExpectedView | null, readiness?: CheckinReadinessReadExpectedView | null}} CheckinChecklistReadExpectedView */
+/** @typedef {{required_steps?: string[], optional_steps?: string[], require_id_capture?: boolean, require_registration_card?: boolean, require_deposit_check?: boolean, require_room_assignment?: boolean, require_signature?: boolean, require_key_handoff?: boolean}} CheckinConfigReadExpectedView */
+/** @typedef {'require_id_capture' | 'require_registration_card' | 'require_deposit_check' | 'require_room_assignment' | 'require_signature' | 'require_key_handoff'} CheckinConfigToggleKey */
+/** @typedef {'checkin' | 'checkout'} CheckinTab */
+
+/** @param {CheckinBookingReadExpectedView | null | undefined} booking */
 function guestName(booking) {
   return booking?.customer_name || booking?.guest_name || booking?.customers?.name || 'Guest'
 }
 
+/** @param {CheckinBookingReadExpectedView | null | undefined} booking */
 function roomLabel(booking) {
   const number = booking?.room_number || booking?.rooms?.room_number
   return number ? `Room ${number}` : 'Room pending'
 }
 
+/** @param {CheckinBookingReadExpectedView | null | undefined} booking */
 function stayDates(booking) {
   const checkIn = booking?.check_in || '—'
   const checkOut = booking?.check_out || '—'
   return `${checkIn} → ${checkOut}`
 }
 
+/** @param {Pick<CheckinBookingReadExpectedView, 'total_amount' | 'charges_total' | 'amount_paid'> | null | undefined} booking */
 function balanceDue(booking) {
   const total = Number(booking?.total_amount || 0) + Number(booking?.charges_total || 0)
   const paid = Number(booking?.amount_paid || 0)
   return Math.max(0, total - paid)
 }
 
+/** @param {unknown} status */
 function statusLabel(status) {
   const value = String(status || '').replace(/_/g, ' ')
   if (!value) return 'booked'
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
+/** @param {CheckinBookingReadExpectedView | null | undefined} booking */
 function isAlreadyIn(booking) {
   const status = String(booking?.status || '').toLowerCase()
   return status === 'checked_in' || status === 'checked-in'
 }
 
+/** @param {CheckinBookingReadExpectedView | null | undefined} booking */
 function isAlreadyOut(booking) {
   const status = String(booking?.status || '').toLowerCase()
   return status === 'checked_out' || status === 'checked-out' || status === 'cancelled'
 }
 
+/** @param {CheckinStepReadExpectedView | null | undefined} step */
 function isStepDone(step) {
   return step?.completed === true
 }
 
+/** @param {string | number | Date | null | undefined} value */
 function formatWhen(value) {
   if (!value) return ''
   try {
@@ -69,6 +95,7 @@ function formatWhen(value) {
   }
 }
 
+/** @param {File | null | undefined} file @param {number} [maxSide] @param {number} [quality] @returns {Promise<string>} */
 function resizeImageToDataUrl(file, maxSide = 600, quality = 0.85) {
   return new Promise((resolve, reject) => {
     if (!file || !String(file.type || '').startsWith('image/')) {
@@ -94,14 +121,15 @@ function resizeImageToDataUrl(file, maxSide = 600, quality = 0.85) {
   })
 }
 
+/** @param {{step: CheckinStepReadExpectedView, booking: CheckinBookingReadExpectedView | null, onComplete: (stepId: string, data: CheckinStepCompletionDataExpectedView | null, extras?: {idPhoto?: string | null}) => Promise<void>, onReset: (stepId: string) => Promise<void>, loading: boolean}} props */
 function StepItem({ step, booking, onComplete, onReset, loading }) {
   const done = isStepDone(step)
   const key = String(step?.step_key || '')
-  const stored = step?.data && typeof step.data === 'object' ? step.data : {}
+  const stored = /** @type {CheckinStepDataReadExpectedView} */ (step?.data && typeof step.data === 'object' ? step.data : {})
   const [idNumber, setIdNumber] = useState(stored.id_number || booking?.customers?.id_number || '')
   const [idType, setIdType] = useState(stored.id_type || 'national_id')
   const [notes, setNotes] = useState(stored.notes || '')
-  const [photoPreview, setPhotoPreview] = useState(null)
+  const [photoPreview, setPhotoPreview] = useState(/** @type {string | null} */ (null))
   const [localError, setLocalError] = useState('')
 
   useEffect(() => {
@@ -285,6 +313,7 @@ function StepItem({ step, booking, onComplete, onReset, loading }) {
   )
 }
 
+/** @param {{config: CheckinConfigReadExpectedView | null, onUpdate: (config: CheckinConfigReadExpectedView) => void, loading: boolean, open: boolean, onToggle: () => void}} props */
 function ConfigPanel({ config, onUpdate, loading, open, onToggle }) {
   const [requiredSteps, setRequiredSteps] = useState('')
   const [optionalSteps, setOptionalSteps] = useState('')
@@ -336,14 +365,14 @@ function ConfigPanel({ config, onUpdate, loading, open, onToggle }) {
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
-            {[
+            {/** @type {Array<[CheckinConfigToggleKey, string, boolean]>} */ ([
               ['require_id_capture', 'ID capture', true],
               ['require_registration_card', 'Registration card', true],
               ['require_deposit_check', 'Deposit check', true],
               ['require_room_assignment', 'Room assignment', true],
               ['require_signature', 'Signature', false],
               ['require_key_handoff', 'Key handoff', false]
-            ].map(([cfgKey, label, defaultOn]) => (
+            ]).map(([cfgKey, label, defaultOn]) => (
               <label key={cfgKey} className="flex items-center gap-2 text-sm text-gray-600">
                 <input
                   type="checkbox"
@@ -369,6 +398,7 @@ function ConfigPanel({ config, onUpdate, loading, open, onToggle }) {
   )
 }
 
+/** @param {{booking: CheckinBookingReadExpectedView, active: boolean, tab: CheckinTab, currency: string, onSelect: (booking: CheckinBookingReadExpectedView) => void}} props */
 function BoardRow({ booking, active, tab, currency, onSelect }) {
   const balance = balanceDue(booking)
   return (
@@ -412,11 +442,11 @@ export default function CheckinWorkflow() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
 
-  const [tab, setTab] = useState('checkin')
-  const [board, setBoard] = useState([])
-  const [selected, setSelected] = useState(null)
-  const [checklist, setChecklist] = useState(null)
-  const [config, setConfig] = useState(null)
+  const [tab, setTab] = useState(/** @type {CheckinTab} */ ('checkin'))
+  const [board, setBoard] = useState(/** @type {CheckinBookingReadExpectedView[]} */ ([]))
+  const [selected, setSelected] = useState(/** @type {CheckinBookingReadExpectedView | null} */ (null))
+  const [checklist, setChecklist] = useState(/** @type {CheckinChecklistReadExpectedView | null} */ (null))
+  const [config, setConfig] = useState(/** @type {CheckinConfigReadExpectedView | null} */ (null))
   const [query, setQuery] = useState('')
   const [showConfig, setShowConfig] = useState(false)
   const [boardLoading, setBoardLoading] = useState(true)
@@ -424,7 +454,7 @@ export default function CheckinWorkflow() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  const [boardWarnings, setBoardWarnings] = useState([])
+  const [boardWarnings, setBoardWarnings] = useState(/** @type {string[]} */ ([]))
   const [overrideReason, setOverrideReason] = useState('')
   const [showOverride, setShowOverride] = useState(false)
 
@@ -438,11 +468,12 @@ export default function CheckinWorkflow() {
         const arrivals = await window.api.hotel.getArrivals()
         setBoard(
           (Array.isArray(arrivals) ? arrivals : [])
-            .filter((b) => !isAlreadyIn(b) && !isAlreadyOut(b))
-            .sort((a, b) => guestName(a).localeCompare(guestName(b)))
+            .filter((/** @type {CheckinBookingReadExpectedView} */ b) => !isAlreadyIn(b) && !isAlreadyOut(b))
+            .sort((/** @type {CheckinBookingReadExpectedView} */ a, /** @type {CheckinBookingReadExpectedView} */ b) => guestName(a).localeCompare(guestName(b)))
         )
       } else {
-        const warn = []
+        const warn = /** @type {string[]} */ ([])
+        /** @param {string} label @param {Promise<unknown> | undefined} promise */
         const settle = async (label, promise) => {
           try {
             return await promise
@@ -469,14 +500,14 @@ export default function CheckinWorkflow() {
         }
         setBoardWarnings(warn)
         const byId = new Map()
-        for (const row of [...(Array.isArray(departures) ? departures : []), ...(Array.isArray(inHouse) ? inHouse : [])]) {
+        for (const row of /** @type {CheckinBookingReadExpectedView[]} */ ([...(Array.isArray(departures) ? departures : []), ...(Array.isArray(inHouse) ? inHouse : [])])) {
           if (!row?.id) continue
           if (!isAlreadyIn(row) || isAlreadyOut(row)) continue
           byId.set(row.id, row)
         }
         const todayKey = localToday()
         setBoard(
-          Array.from(byId.values()).sort((a, b) => {
+          Array.from(byId.values()).sort((/** @type {CheckinBookingReadExpectedView} */ a, /** @type {CheckinBookingReadExpectedView} */ b) => {
             const aDue = String(a.check_out || '') === todayKey ? 0 : 1
             const bDue = String(b.check_out || '') === todayKey ? 0 : 1
             if (aDue !== bDue) return aDue - bDue
@@ -582,6 +613,7 @@ export default function CheckinWorkflow() {
     }
   }
 
+  /** @param {string} stepId @param {CheckinStepCompletionDataExpectedView | null} [data] @param {{idPhoto?: string | null}} [extras] */
   const handleCompleteStep = async (stepId, data = null, extras = {}) => {
     setActionLoading(true)
     setError('')

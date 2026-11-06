@@ -5,8 +5,8 @@ import { ENTERPRISE_ADDON_CATALOG } from './enterpriseAddons.js'
 /** @typedef {'Starter' | 'Standard' | 'Pro' | 'Enterprise'} InternalPlan */
 /** @typedef {'annual_license' | 'initial_purchase' | 'one_time_addon' | 'annual_addon'} CommercialBillingBasis */
 /** @typedef {{productId: CommercialProductId, commercialPackageKey: string, displayName: string, name: string, internalPlan: InternalPlan, billingBasis: CommercialBillingBasis, priceBwp: number, includedFeatures: readonly string[], excludedFeatures: readonly string[], upgradeTarget: string | null, eligibleOperatingProfiles: readonly string[] | null, salesCopy: string, hasUsageLimits: boolean, compatibilityPlan: InternalPlan}} CommercialOffer */
-/** @typedef {{productId: 'hospitality-pos', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number, eligiblePropertyTypes: readonly string[], eligibleOperatingProfiles: readonly string[], eligiblePackageKeys: readonly string[], includedFeatures: readonly string[]}} BarPosAddon */
-/** @typedef {{productId: 'hotel', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number | null, eligiblePropertyTypes: readonly string[], eligiblePackageKeys?: readonly string[], includedFeatures: readonly string[], sourceAddon: (typeof ENTERPRISE_ADDON_CATALOG)[number]}} HotelAddon */
+/** @typedef {{productId: 'hospitality-pos', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number, eligiblePropertyTypes: readonly string[], eligibleOperatingProfiles: readonly string[], eligiblePackageKeys: readonly string[], includedFeatures: readonly string[], requiredAddonKeys: readonly string[]}} BarPosAddon */
+/** @typedef {{productId: 'hotel', addonKey: string, displayName: string, description: string, billingBasis: CommercialBillingBasis, oneTimePriceBwp: number, annualPriceBwp: number | null, eligiblePropertyTypes: readonly string[], eligiblePackageKeys?: readonly string[], eligibleOperatingProfiles?: readonly string[], includedFeatures: readonly string[], requiredAddonKeys?: readonly string[], sourceAddon: (typeof ENTERPRISE_ADDON_CATALOG)[number]}} HotelAddon */
 
 export const COMMERCIAL_PRODUCT_IDS = Object.freeze({
   LODGE_CAMP: 'lodge-camp',
@@ -74,7 +74,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     description: 'Supplier purchasing, reorder suggestions, lots and expiry, recipes, wastage, valuation and advanced stock margin control.',
     billingBasis: COMMERCIAL_BILLING_BASIS.ANNUAL_ADDON,
     oneTimePriceBwp: 0,
-    annualPriceBwp: 3000,
+    annualPriceBwp: 2500,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
     eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
@@ -82,7 +82,8 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
       'inventory_advanced', 'stock_control', 'suppliers', 'purchasing', 'purchase_suggestions',
       'lots_expiry', 'recipes', 'prep', 'variance', 'wastage', 'stock_valuation',
       'advanced_margin'
-    ])
+    ]),
+    requiredAddonKeys: Object.freeze([])
   }),
   Object.freeze({
     productId: COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS,
@@ -91,14 +92,15 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     description: 'Accounting, supplier finance, bank and tax work, budgets, statements, rosters, workforce analytics, payroll and controlled tip payouts.',
     billingBasis: COMMERCIAL_BILLING_BASIS.ANNUAL_ADDON,
     oneTimePriceBwp: 0,
-    annualPriceBwp: 6000,
+    annualPriceBwp: 3500,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
     eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
     includedFeatures: Object.freeze([
       'restaurant_accounting', 'workforce_management', 'workforce_scheduling',
       'staff_performance', 'performance', 'payroll', 'tips_payouts', 'expenses'
-    ])
+    ]),
+    requiredAddonKeys: Object.freeze(['bar_stock_purchasing_pro'])
   }),
   Object.freeze({
     productId: COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS,
@@ -107,7 +109,7 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
     description: 'Customer accounts, loyalty, promotions, vouchers, multi-outlet control, central catalogues, owner oversight and advanced trends.',
     billingBasis: COMMERCIAL_BILLING_BASIS.ANNUAL_ADDON,
     oneTimePriceBwp: 0,
-    annualPriceBwp: 5000,
+    annualPriceBwp: 2000,
     eligiblePropertyTypes: Object.freeze(['restaurant', 'bar']),
     eligibleOperatingProfiles: Object.freeze(['bar_only']),
     eligiblePackageKeys: Object.freeze(['bar_pos']),
@@ -115,7 +117,8 @@ export const BAR_POS_ADDON_CATALOG = Object.freeze([
       'bar_crm', 'customer_accounts', 'loyalty', 'promotions', 'vouchers',
       'multi_outlet_controls', 'multi_outlet_pos', 'central_menu_publishing',
       'stock_transfers', 'owner_mobile_view', 'advanced_reports'
-    ])
+    ]),
+    requiredAddonKeys: Object.freeze([])
   })
 ])
 
@@ -327,12 +330,12 @@ export function getCommercialOffer(productId, commercialPackageKey) {
   return getCommercialOffers(productId).find((entry) => entry.commercialPackageKey === commercialPackageKey) || null
 }
 
-/** @param {string} addonKey @returns {HotelAddon | null} */
+/** @param {unknown} addonKey @returns {HotelAddon | null} */
 export function getHotelAddon(addonKey) {
   return HOTEL_ADDON_CATALOG.find((entry) => entry.addonKey === addonKey) || null
 }
 
-/** @param {CommercialProductId} productId @param {string} addonKey @returns {HotelAddon | BarPosAddon | null} */
+/** @param {CommercialProductId} productId @param {unknown} addonKey @returns {HotelAddon | BarPosAddon | null} */
 export function getCommercialAddon(productId, addonKey) {
   if (productId === COMMERCIAL_PRODUCT_IDS.HOTEL) return getHotelAddon(addonKey)
   if (productId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS) {
@@ -363,6 +366,68 @@ export function getCommercialAddonOffers(productId, propertyType = null) {
     return BAR_POS_ADDON_CATALOG.filter((addon) => !propertyType || addon.eligiblePropertyTypes.includes(propertyType))
   }
   return []
+}
+
+/** @param {CommercialProductId} productId @param {unknown} addonKey @returns {readonly string[]} */
+export function getCommercialAddonRequiredKeys(productId, addonKey) {
+  const addon = getCommercialAddon(productId, /** @type {string} */ (addonKey))
+  return Array.isArray(addon?.requiredAddonKeys) ? addon.requiredAddonKeys : []
+}
+
+/**
+ * Add-ons in the same catalogue that depend on the supplied add-on.
+ * @param {CommercialProductId} productId @param {string} addonKey
+ * @returns {(HotelAddon | BarPosAddon)[]}
+ */
+export function getCommercialAddonDependents(productId, addonKey) {
+  const key = String(addonKey || '').trim()
+  if (!key) return []
+  return getCommercialAddonOffers(productId)
+    .filter((addon) => Array.isArray(addon.requiredAddonKeys) && addon.requiredAddonKeys.includes(key))
+}
+
+/**
+ * Add every required add-on so a selection is a complete target subscription.
+ * Catalog order is preserved to keep quote lines deterministic.
+ * @param {CommercialProductId} productId @param {readonly string[]} [addonKeys]
+ * @returns {string[]}
+ */
+export function expandCommercialAddonKeys(productId, addonKeys = []) {
+  const selected = new Set((Array.isArray(addonKeys) ? addonKeys : []).filter(Boolean))
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const key of [...selected]) {
+      for (const requiredKey of getCommercialAddonRequiredKeys(productId, key)) {
+        if (!selected.has(requiredKey)) {
+          selected.add(requiredKey)
+          changed = true
+        }
+      }
+    }
+  }
+  return getCommercialAddonOffers(productId)
+    .map((addon) => addon.addonKey)
+    .filter((key) => selected.has(key))
+}
+
+/**
+ * Returns the operator-facing dependency error, or null when the selection is
+ * a valid target subscription.
+ * @param {CommercialProductId} productId @param {readonly string[]} [addonKeys]
+ * @returns {string | null}
+ */
+export function getCommercialAddonDependencyError(productId, addonKeys = []) {
+  const selected = new Set((Array.isArray(addonKeys) ? addonKeys : []).filter(Boolean))
+  for (const addon of getCommercialAddonOffers(productId)) {
+    if (!selected.has(addon.addonKey)) continue
+    for (const requiredKey of addon.requiredAddonKeys || []) {
+      if (selected.has(requiredKey)) continue
+      const requiredAddon = getCommercialAddon(productId, requiredKey)
+      return `${addon.displayName} requires ${requiredAddon?.displayName || requiredKey}`
+    }
+  }
+  return null
 }
 
 /** @param {{productId?: CommercialProductId, commercialPackageKey?: unknown, internalPlan?: unknown}} [options] @returns {CommercialOffer | null} */

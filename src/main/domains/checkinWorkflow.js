@@ -8,25 +8,38 @@ const CHECKIN_CACHE = 'checkin-checklist'
 const CHECKOUT_CACHE = 'checkout-checklist'
 const CONFIG_CACHE = 'checkin-config'
 
+/** @typedef {Record<string, unknown>} CheckinRecordExpectedView */
+/** @typedef {CheckinRecordExpectedView & {items?: unknown, config?: unknown, ready_to_check_in?: unknown, ready_to_check_out?: unknown}} CheckinPayloadExpectedView */
+/** @typedef {CheckinRecordExpectedView & {completed?: unknown, required?: unknown, id?: unknown, step_key?: unknown}} CheckinItemExpectedView */
+/** @typedef {CheckinRecordExpectedView & {total_amount?: unknown, charges_total?: unknown, amount_paid?: unknown, deposit_amount?: unknown}} CheckinBookingFinancialExpectedView */
+/** @typedef {CheckinRecordExpectedView & {id?: unknown, room_number?: unknown, room_type?: unknown, status?: unknown, housekeeping_status?: unknown, housekeeping_notes?: unknown}} CheckinRoomExpectedView */
+/** @typedef {{message?: unknown}} CheckinErrorExpectedView */
+
+/** @param {unknown} data @returns {CheckinPayloadExpectedView & {items: CheckinItemExpectedView[]}} */
 function normalizeChecklistPayload(data) {
   if (!data || typeof data !== 'object') {
     return { items: [], config: null, ready_to_check_in: false, ready_to_check_out: false }
   }
-  const items = Array.isArray(data.items)
-    ? data.items.map((item) => ({
-        ...item,
+  const payload = /** @type {CheckinPayloadExpectedView} */ (data)
+  const items = Array.isArray(payload.items)
+    ? payload.items.map((/** @type {unknown} */ item) => {
+      const itemView = /** @type {CheckinItemExpectedView|null|undefined} */ (item)
+      return ({
+        .../** @type {CheckinRecordExpectedView|null|undefined} */ (item),
         // Strict boolean — never treat missing/null as completed
-        completed: item?.completed === true,
-        required: item?.required === true
-      }))
+        completed: itemView?.completed === true,
+        required: itemView?.required === true
+      })
+    })
     : []
-  return { ...data, items }
+  return { ...payload, items }
 }
 
 /**
  * Booking ledger fields used only as display estimates for the desk.
  * Never author payment_status client-side.
  */
+/** @param {unknown} booking */
 function computeBalanceEstimate(booking) {
   if (!booking || typeof booking !== 'object') {
     return {
@@ -37,18 +50,19 @@ function computeBalanceEstimate(booking) {
       balance_source: 'booking_ledger_estimate'
     }
   }
-  const total =
-    Number(booking.total_amount || 0) + Number(booking.charges_total || 0)
-  const paid = Number(booking.amount_paid || 0)
+  const bookingView = /** @type {CheckinBookingFinancialExpectedView} */ (booking)
+  const total = Number(bookingView.total_amount || 0) + Number(bookingView.charges_total || 0)
+  const paid = Number(bookingView.amount_paid || 0)
   return {
     total_estimate: total,
     amount_paid_estimate: paid,
     balance_due_estimate: Math.max(0, total - paid),
-    deposit_amount: Number(booking.deposit_amount || 0),
+    deposit_amount: Number(bookingView.deposit_amount || 0),
     balance_source: 'booking_ledger_estimate'
   }
 }
 
+/** @param {unknown} room */
 function roomReadiness(room) {
   if (!room) {
     return {
@@ -59,8 +73,9 @@ function roomReadiness(room) {
       blockers: ['No room assigned to this booking']
     }
   }
-  const status = String(room.status || '').toLowerCase()
-  const hk = String(room.housekeeping_status || 'clean').toLowerCase()
+  const roomView = /** @type {CheckinRoomExpectedView} */ (room)
+  const status = String(roomView.status || '').toLowerCase()
+  const hk = String(roomView.housekeeping_status || 'clean').toLowerCase()
   const blockers = []
   if (status === 'maintenance' || hk === 'out_of_order' || hk === 'out_of_service') {
     blockers.push('Room is out of order / under maintenance')
@@ -74,46 +89,49 @@ function roomReadiness(room) {
     !['dirty', 'in_progress', 'out_of_order', 'out_of_service'].includes(hk)
   return {
     room_assigned: true,
-    room_id: room.id,
-    room_number: room.room_number || null,
-    room_type: room.room_type || null,
+    room_id: roomView.id,
+    room_number: roomView.room_number || null,
+    room_type: roomView.room_type || null,
     room_ready: ready,
-    room_status: room.status || null,
-    housekeeping_status: room.housekeeping_status || 'clean',
-    housekeeping_notes: room.housekeeping_notes || '',
+    room_status: roomView.status || null,
+    housekeeping_status: roomView.housekeeping_status || 'clean',
+    housekeeping_notes: roomView.housekeeping_notes || '',
     blockers
   }
 }
 
+/** @param {unknown} bookingId */
 async function loadBookingAndRoom(bookingId) {
   let booking = null
   try {
     const bookings = await getAllBookings()
-    booking = (Array.isArray(bookings) ? bookings : []).find((b) => String(b?.id) === String(bookingId)) || null
+    booking = (Array.isArray(bookings) ? bookings : []).find((/** @type {unknown} */ b) => String((/** @type {CheckinRecordExpectedView|null|undefined} */ (b))?.id) === String(bookingId)) || null
   } catch {
     const cached = readCache('bookings') || []
-    booking = (Array.isArray(cached) ? cached : []).find((b) => String(b?.id) === String(bookingId)) || null
+    booking = (Array.isArray(cached) ? cached : []).find((/** @type {unknown} */ b) => String((/** @type {CheckinRecordExpectedView|null|undefined} */ (b))?.id) === String(bookingId)) || null
   }
   let room = null
-  if (booking?.room_id) {
+  const bookingView = /** @type {CheckinRecordExpectedView|null} */ (booking)
+  if (bookingView?.room_id) {
     try {
       const rooms = await getAllRooms()
-      room = (Array.isArray(rooms) ? rooms : []).find((r) => String(r?.id) === String(booking.room_id)) || null
+      room = (Array.isArray(rooms) ? rooms : []).find((/** @type {unknown} */ r) => String((/** @type {CheckinRecordExpectedView|null|undefined} */ (r))?.id) === String(bookingView.room_id)) || null
     } catch {
       const cachedRooms = readCache('rooms') || []
-      room = (Array.isArray(cachedRooms) ? cachedRooms : []).find((r) => String(r?.id) === String(booking.room_id)) || null
+      room = (Array.isArray(cachedRooms) ? cachedRooms : []).find((/** @type {unknown} */ r) => String((/** @type {CheckinRecordExpectedView|null|undefined} */ (r))?.id) === String(bookingView.room_id)) || null
     }
   }
   return { booking, room }
 }
 
+/** @param {unknown} bookingId @param {unknown} payload @param {string} [mode] */
 async function enrichChecklist(bookingId, payload, mode = 'checkin') {
   const normalized = normalizeChecklistPayload(payload)
   const { booking, room } = await loadBookingAndRoom(bookingId)
   const balance = computeBalanceEstimate(booking)
   const readiness = roomReadiness(room)
   const incompleteRequired = (normalized.items || []).filter(
-    (item) => item.required === true && item.completed !== true
+    (/** @type {CheckinItemExpectedView} */ item) => item.required === true && item.completed !== true
   )
 
   const messaging = []
@@ -148,11 +166,12 @@ async function enrichChecklist(bookingId, payload, mode = 'checkin') {
     })
   }
 
+  const bookingView = /** @type {CheckinRecordExpectedView|null} */ (booking)
   const preArrival = {
     mode,
     booking_id: bookingId,
-    guest_name: booking?.customer_name || booking?.guest_name || null,
-    booking_status: booking?.status || null,
+    guest_name: bookingView?.customer_name || bookingView?.guest_name || null,
+    booking_status: bookingView?.status || null,
     ...balance,
     ...readiness,
     incomplete_required_steps: incompleteRequired.map((s) => s.step_key || s.id),
@@ -167,11 +186,12 @@ async function enrichChecklist(bookingId, payload, mode = 'checkin') {
   }
 }
 
+/** @param {unknown} bookingId */
 async function _getCheckinChecklist(bookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { items: [], config: null, ready_to_check_in: false }
   try {
-    const { data, error } = await state.supabase.rpc('get_checkin_checklist', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_checkin_checklist', {
       p_booking_id: bookingId,
       p_lodge_id: currentLodgeId
     })
@@ -180,6 +200,7 @@ async function _getCheckinChecklist(bookingId) {
     writeCache(`${CHECKIN_CACHE}-${bookingId}`, enriched)
     return enriched
   } catch (e) {
+    const errorView = /** @type {CheckinErrorExpectedView|null|undefined} */ (e)
     const cached = readCache(`${CHECKIN_CACHE}-${bookingId}`)
     if (cached && typeof cached === 'object') {
       const enriched = await enrichChecklist(bookingId, cached, 'checkin')
@@ -187,48 +208,53 @@ async function _getCheckinChecklist(bookingId) {
         ...enriched,
         stale: true,
         from_cache: true,
-        warning: e?.message || 'Using cached checklist; live load failed'
+        warning: errorView?.message || 'Using cached checklist; live load failed'
       }
     }
     // Never convert a live failure into empty success
-    throw new Error(e?.message || 'Could not load check-in checklist')
+    throw new Error(errorView?.message || 'Could not load check-in checklist')
   }
 }
 
+/** @param {unknown} stepId @param {unknown} completedBy @param {unknown} data */
 async function _completeCheckinStep(stepId, completedBy, data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Completing check-in steps requires an online connection')
   const actor = completedBy || state.currentUser?.id || null
-  const { data: result, error } = await state.supabase.rpc('complete_checkin_step', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_checkin_step', {
     p_step_id: stepId,
     p_lodge_id: currentLodgeId,
     p_completed_by: actor,
     p_data: data || null
   })
   if (error) throw error
-  if (result?.success === false) throw new Error(result.error || 'Could not complete check-in step')
+  const resultView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (result)
+  if (resultView?.success === false) throw new Error(/** @type {string} */ (resultView.error || 'Could not complete check-in step'))
   return result
 }
 
+/** @param {unknown} stepId */
 async function _resetCheckinStep(stepId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Resetting check-in steps requires an online connection')
-  const { data, error } = await state.supabase.rpc('reset_checkin_step', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('reset_checkin_step', {
     p_step_id: stepId,
     p_lodge_id: currentLodgeId
   })
   if (error) throw error
-  if (data?.success === false) throw new Error(data.error || 'Could not reset check-in step')
+  const dataView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (data)
+  if (dataView?.success === false) throw new Error(/** @type {string} */ (dataView.error || 'Could not reset check-in step'))
   return data
 }
 
+/** @param {unknown} bookingId */
 async function _getCheckoutChecklist(bookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { items: [], ready_to_check_out: false }
   try {
-    const { data, error } = await state.supabase.rpc('get_checkout_checklist', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_checkout_checklist', {
       p_booking_id: bookingId,
       p_lodge_id: currentLodgeId
     })
@@ -237,6 +263,7 @@ async function _getCheckoutChecklist(bookingId) {
     writeCache(`${CHECKOUT_CACHE}-${bookingId}`, enriched)
     return enriched
   } catch (e) {
+    const errorView = /** @type {CheckinErrorExpectedView|null|undefined} */ (e)
     const cached = readCache(`${CHECKOUT_CACHE}-${bookingId}`)
     if (cached && typeof cached === 'object') {
       const enriched = await enrichChecklist(bookingId, cached, 'checkout')
@@ -244,39 +271,43 @@ async function _getCheckoutChecklist(bookingId) {
         ...enriched,
         stale: true,
         from_cache: true,
-        warning: e?.message || 'Using cached checklist; live load failed'
+        warning: errorView?.message || 'Using cached checklist; live load failed'
       }
     }
-    throw new Error(e?.message || 'Could not load check-out checklist')
+    throw new Error(errorView?.message || 'Could not load check-out checklist')
   }
 }
 
+/** @param {unknown} stepId @param {unknown} completedBy @param {unknown} data */
 async function _completeCheckoutStep(stepId, completedBy, data) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Completing check-out steps requires an online connection')
   const actor = completedBy || state.currentUser?.id || null
-  const { data: result, error } = await state.supabase.rpc('complete_checkout_step', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_checkout_step', {
     p_step_id: stepId,
     p_lodge_id: currentLodgeId,
     p_completed_by: actor,
     p_data: data || null
   })
   if (error) throw error
-  if (result?.success === false) throw new Error(result.error || 'Could not complete check-out step')
+  const resultView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (result)
+  if (resultView?.success === false) throw new Error(/** @type {string} */ (resultView.error || 'Could not complete check-out step'))
   return result
 }
 
+/** @param {unknown} stepId */
 async function _resetCheckoutStep(stepId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Resetting check-out steps requires an online connection')
-  const { data, error } = await state.supabase.rpc('reset_checkout_step', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('reset_checkout_step', {
     p_step_id: stepId,
     p_lodge_id: currentLodgeId
   })
   if (error) throw error
-  if (data?.success === false) throw new Error(data.error || 'Could not reset check-out step')
+  const dataView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (data)
+  if (dataView?.success === false) throw new Error(/** @type {string} */ (dataView.error || 'Could not reset check-out step'))
   return data
 }
 
@@ -284,25 +315,27 @@ async function _getCheckinConfig() {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { config: null }
   try {
-    const { data, error } = await state.supabase.rpc('get_checkin_config', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_checkin_config', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
     if (data) writeCache(CONFIG_CACHE, data)
     return data || { config: null }
   } catch (e) {
+    const errorView = /** @type {CheckinErrorExpectedView|null|undefined} */ (e)
     const cached = readCache(CONFIG_CACHE)
     if (cached) {
-      return { ...cached, stale: true, from_cache: true, warning: e?.message || 'Using cached config' }
+      return { ...cached, stale: true, from_cache: true, warning: errorView?.message || 'Using cached config' }
     }
-    throw new Error(e?.message || 'Could not load check-in config')
+    throw new Error(errorView?.message || 'Could not load check-in config')
   }
 }
 
+/** @param {unknown} config */
 async function _updateCheckinConfig(config) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('update_checkin_config', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_checkin_config', {
     p_lodge_id: currentLodgeId,
     p_config: config
   })
@@ -310,33 +343,37 @@ async function _updateCheckinConfig(config) {
   return data
 }
 
+/** @param {unknown} bookingId */
 export async function completeHotelCheckin(bookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Hotel check-in requires an online connection')
-  const { data, error } = await state.supabase.rpc('complete_hotel_checkin', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_hotel_checkin', {
     p_lodge_id: currentLodgeId,
     p_booking_id: bookingId
   })
   if (error) throw error
-  if (data?.success === false) throw new Error(data.error || 'Check-in failed')
+  const dataView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (data)
+  if (dataView?.success === false) throw new Error(/** @type {string} */ (dataView.error || 'Check-in failed'))
   logActivity('hotel_checkin', `Booking ${bookingId} checked in via hotel workflow`)
   return data
 }
 
+/** @param {unknown} bookingId */
 export async function completeHotelCheckout(bookingId) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
   if (!state.isOnline) throw new Error('Hotel check-out requires an online connection')
-  const { data, error } = await state.supabase.rpc('complete_hotel_checkout', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_hotel_checkout', {
     p_lodge_id: currentLodgeId,
     p_booking_id: bookingId
   })
   if (error) throw error
-  if (data?.success === false) {
+  const dataView = /** @type {{success?: unknown, error?: unknown, balance?: unknown}|null|undefined} */ (data)
+  if (dataView?.success === false) {
     const balanceHint =
-      data.balance != null ? ` (open folio balance: ${data.balance})` : ''
-    throw new Error((data.error || 'Check-out failed') + balanceHint)
+      dataView.balance != null ? ` (open folio balance: ${dataView.balance})` : ''
+    throw new Error(/** @type {string} */ (dataView.error || 'Check-out failed') + balanceHint)
   }
   logActivity('hotel_checkout', `Booking ${bookingId} checked out via hotel workflow`)
   return data
@@ -348,6 +385,7 @@ export async function completeHotelCheckout(bookingId) {
  * complete the hotel check-in. There is no separate bypass RPC — incomplete
  * required steps still block complete_hotel_checkin server-side.
  */
+/** @param {unknown} bookingId @param {unknown} overrideReason @param {unknown} [completedBy] */
 export async function completeHotelCheckinWithOverride(bookingId, overrideReason, completedBy = null) {
   const reason = String(overrideReason || '').trim()
   if (!reason) throw new Error('Manager override requires a reason')
@@ -355,7 +393,7 @@ export async function completeHotelCheckinWithOverride(bookingId, overrideReason
 
   const checklist = await _getCheckinChecklist(bookingId)
   const incomplete = (checklist.items || []).filter(
-    (item) => item.required === true && item.completed !== true
+    (/** @type {CheckinItemExpectedView} */ item) => item.required === true && item.completed !== true
   )
   const actor = completedBy || state.currentUser?.id || null
   for (const step of incomplete) {
@@ -373,10 +411,11 @@ export async function completeHotelCheckinWithOverride(bookingId, overrideReason
   return completeHotelCheckin(bookingId)
 }
 
+/** @param {unknown} roomId @param {unknown} [date] @param {unknown} [corporateAccountId] */
 export async function getApplicableRoomRate(roomId, date = null, corporateAccountId = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('get_applicable_room_rate', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_applicable_room_rate', {
     p_lodge_id: currentLodgeId,
     p_room_id: roomId,
     p_date: date || new Date().toISOString().slice(0, 10),
@@ -386,10 +425,11 @@ export async function getApplicableRoomRate(roomId, date = null, corporateAccoun
   return data
 }
 
+/** @param {unknown} roomId @param {unknown} checkIn @param {unknown} checkOut @param {unknown} [corporateAccountId] */
 export async function quoteRoomStay(roomId, checkIn, checkOut, corporateAccountId = null) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('quote_room_stay', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('quote_room_stay', {
     p_lodge_id: currentLodgeId,
     p_room_id: roomId,
     p_check_in: checkIn,
@@ -397,23 +437,32 @@ export async function quoteRoomStay(roomId, checkIn, checkOut, corporateAccountI
     p_corporate_account_id: corporateAccountId
   })
   if (error) throw error
-  if (data?.success === false) throw new Error(data.error || 'Could not quote stay')
+  const dataView = /** @type {{success?: unknown, error?: unknown}|null|undefined} */ (data)
+  if (dataView?.success === false) throw new Error(/** @type {string} */ (dataView.error || 'Could not quote stay'))
   return data
 }
 
+/** @type {(...args: Parameters<typeof _getCheckinChecklist>) => ReturnType<typeof _getCheckinChecklist>} */
 export const getCheckinChecklist = (...args) =>
   dedupePromise('getCheckinChecklist', () => _getCheckinChecklist(...args))
+/** @type {(...args: Parameters<typeof _completeCheckinStep>) => ReturnType<typeof _completeCheckinStep>} */
 export const completeCheckinStep = (...args) =>
   dedupePromise('completeCheckinStep', () => _completeCheckinStep(...args))
+/** @type {(...args: Parameters<typeof _resetCheckinStep>) => ReturnType<typeof _resetCheckinStep>} */
 export const resetCheckinStep = (...args) =>
   dedupePromise('resetCheckinStep', () => _resetCheckinStep(...args))
+/** @type {(...args: Parameters<typeof _getCheckoutChecklist>) => ReturnType<typeof _getCheckoutChecklist>} */
 export const getCheckoutChecklist = (...args) =>
   dedupePromise('getCheckoutChecklist', () => _getCheckoutChecklist(...args))
+/** @type {(...args: Parameters<typeof _completeCheckoutStep>) => ReturnType<typeof _completeCheckoutStep>} */
 export const completeCheckoutStep = (...args) =>
   dedupePromise('completeCheckoutStep', () => _completeCheckoutStep(...args))
+/** @type {(...args: Parameters<typeof _resetCheckoutStep>) => ReturnType<typeof _resetCheckoutStep>} */
 export const resetCheckoutStep = (...args) =>
   dedupePromise('resetCheckoutStep', () => _resetCheckoutStep(...args))
+/** @type {(...args: Parameters<typeof _getCheckinConfig>) => ReturnType<typeof _getCheckinConfig>} */
 export const getCheckinConfig = (...args) =>
   dedupePromise('getCheckinConfig', () => _getCheckinConfig(...args))
+/** @type {(...args: Parameters<typeof _updateCheckinConfig>) => ReturnType<typeof _updateCheckinConfig>} */
 export const updateCheckinConfig = (...args) =>
   dedupePromise('updateCheckinConfig', () => _updateCheckinConfig(...args))

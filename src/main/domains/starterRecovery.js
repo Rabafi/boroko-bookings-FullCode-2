@@ -36,6 +36,206 @@ const SERVER_RESTORE_FIELDS = Object.freeze({
   maintenance: new Set(['id', 'lodge_id', 'room_id', 'title', 'description', 'priority', 'status', 'reported_date', 'notes', 'created_at', 'labour_cost', 'parts_cost', 'total_cost', 'vendor_name', 'cost_notes'])
 })
 
+// --- Type views -------------------------------------------------------------
+// Recovery operation records, rehearsal reports, package verification results
+// and RPC results all cross unvalidated boundaries: operation/report JSON is
+// read from disk, verification output comes from starterBackup's validators, and
+// RPC data is whatever the server returned. Fields this module authors or checks
+// are typed; every other leaf stays `unknown` and is guarded at its use site.
+
+/** @typedef {Record<string, unknown>} StarterRecoveryRowReadView */
+
+/**
+ * @typedef {{message?: unknown, code?: unknown}} StarterRecoveryErrorReadView
+ */
+
+/**
+ * Local tamper-evidence entry appended by appendAudit. Older operation files are
+ * read without re-validation, so the hash fields may be absent or malformed;
+ * verifyAuditChain treats those as a broken chain rather than trusting them.
+ * @typedef {object} StarterRecoveryAuditEntryExpectedData
+ * @property {string} at
+ * @property {string} event
+ * @property {unknown} actor_id
+ * @property {unknown} actor_email
+ * @property {unknown} operation_id
+ * @property {Record<string, unknown>} details
+ * @property {string | null} [previous_hash]
+ * @property {string} [entry_hash]
+ */
+
+/**
+ * Manifest fields copied into operation summaries and previews. Values can come
+ * from a validated package or from persisted operation JSON, so only `format`
+ * (checked during sealing) is typed as a string.
+ * @typedef {object} StarterRecoveryManifestSummaryReadView
+ * @property {string} format
+ * @property {unknown} [core_schema]
+ * @property {unknown} [lodge_id]
+ * @property {unknown} [app_version]
+ * @property {unknown} [generated_at]
+ * @property {unknown} [complete]
+ * @property {unknown} [warnings]
+ * @property {unknown} [included_categories]
+ * @property {unknown} [excluded_categories]
+ * @property {unknown} [per_table_hashes]
+ */
+
+/**
+ * Persisted operation record written by writeOperationAtomic. Every writer in
+ * this module sets `operation_id`, `status` and `lodge_id`, and readOperation
+ * additionally rejects a file whose `operation_id` does not match the requested
+ * id. Older or hand-edited files are not otherwise re-validated, so the optional
+ * fields are guarded where they matter. beginStarterRecoveryOperation authors
+ * `executed_at` and `rehearsal_directory` as explicit nulls, and
+ * approveStarterRecovery copies `sealed_hash || package_sha256` into
+ * `approval_sealed_hash`, so that field can still be undefined if neither hash
+ * was recorded; JSON serialization then omits the key.
+ * @typedef {Record<string, unknown> & {
+ *   operation_id: string,
+ *   status: string,
+ *   lodge_id: string,
+ *   reason?: string,
+ *   ticket_ref?: string,
+ *   audit?: StarterRecoveryAuditEntryExpectedData[],
+ *   expires_at?: string | null,
+ *   created_at?: string,
+ *   execution_pid?: number | null,
+ *   execution_started_at?: string | null,
+ *   executed_at?: string | null,
+ *   staged_path?: string,
+ *   package_sha256?: string | null,
+ *   sealed_hash?: string | null,
+ *   approval_sealed_hash?: string | null | undefined,
+ *   approval_reason?: string,
+ *   approval_ticket_ref?: string,
+ *   server_request_binding?: string,
+ *   server_payload_binding?: string,
+ *   server_payload_text_bytes?: number,
+ *   server_rpc_attempted_at?: string,
+ *   server_actor_id?: string,
+ *   server_actor_email?: string,
+ *   server_table_counts?: Record<string, number>,
+ *   server_table_hashes?: Record<string, string>,
+ *   server_expected_ledger?: Record<string, number>,
+ *   server_verification_confirmed?: boolean,
+ *   server_verification?: unknown,
+ *   server_verification_checks?: unknown,
+ *   server_execute_result?: unknown,
+ *   server_restore_status?: string,
+ *   recovery_lodge_id?: string | null,
+ *   target_mode?: string,
+ *   target_environment?: string,
+ *   manifest_summary?: StarterRecoveryManifestSummaryReadView | null,
+ *   per_table_hashes?: unknown,
+ *   table_counts?: Record<string, number> | null,
+ *   snapshot_coherence?: unknown,
+ *   failure_reason?: string,
+ *   last_execute_error?: string | null,
+ *   rehearsal_target_id?: string,
+ *   rehearsal_directory?: string | null,
+ *   rehearsal_report?: unknown,
+ *   ledger_reconstruction?: unknown,
+ *   ledger_preview?: unknown,
+ *   missing_lineage_disclosure?: unknown,
+ *   approved_by?: unknown,
+ *   supabase_restored?: boolean,
+ *   restore_persistence?: string,
+ *   verified_at?: string | null
+ * }} StarterRecoveryOperationExpectedData
+ */
+
+/**
+ * Core-data payload returned by package validation and passed through identity
+ * remapping. `tables` is enforced by starterBackup's validators.
+ * @typedef {Record<string, unknown> & {tables: Record<string, StarterRecoveryRowReadView[]>}} StarterRecoveryCorePayloadReadView
+ */
+
+/**
+ * Local package probe used while staging. The staged copy is allowed to be a
+ * foreign-lodge package so preview can show the mismatch; only the failure
+ * branch is read for that case, and the success-only fields stay optional.
+ * @typedef {object} StarterRecoveryProbeReadView
+ * @property {boolean} success
+ * @property {unknown} [error]
+ * @property {string} [packageSha256]
+ * @property {StarterRecoveryManifestSummaryReadView} [manifest]
+ * @property {Record<string, string>} [perTableHashes]
+ */
+
+/**
+ * Validated package plus main-process provenance, as consumed by rehearsal and
+ * server-payload projection. Validation always supplies the required fields.
+ * @typedef {object} StarterRecoveryVerificationReadView
+ * @property {boolean} success
+ * @property {string} packageSha256
+ * @property {StarterRecoveryManifestSummaryReadView} manifest
+ * @property {StarterRecoveryCorePayloadReadView} payload
+ * @property {Record<string, StarterRecoveryRowReadView[]>} [sanitizedTables]
+ * @property {Record<string, number>} [counts]
+ * @property {Record<string, string>} [perTableHashes]
+ * @property {unknown} [perTableHashesVerified]
+ * @property {unknown} [snapshotCoherence]
+ * @property {string} [sourcePath]
+ */
+
+/**
+ * Advisory ledger reconstruction embedded in rehearsal reports.
+ * @typedef {{totals: Record<string, number>, orphanPayments: unknown[], missing_lineage_disclosure: unknown}} StarterRecoveryLedgerReconstructionReadView
+ */
+
+/**
+ * Rehearsal report read back from disk by readLocalRehearsalChecks. The report
+ * is JSON produced by this module but is not re-validated on read.
+ * @typedef {Record<string, unknown> & {
+ *   isolated_target?: unknown,
+ *   target_environment?: unknown,
+ *   execution_mode?: unknown,
+ *   persists_to_database?: unknown,
+ *   can_restore_live?: unknown,
+ *   per_table_hashes?: unknown,
+ *   ledger_reconciliation?: unknown,
+ *   missing_lineage_disclosure?: unknown
+ * }} StarterRecoveryRehearsalReportReadView
+ */
+
+/**
+ * Unvalidated result returned by the recovery RPCs. Every leaf stays `unknown`;
+ * evaluateServerVerification/markServerVerified decide what is trustworthy.
+ * @typedef {object} StarterRecoveryRpcResultReadView
+ * @property {unknown} [success]
+ * @property {unknown} [idempotent]
+ * @property {unknown} [status]
+ * @property {unknown} [operation_id]
+ * @property {unknown} [source_lodge_id]
+ * @property {unknown} [recovery_lodge_id]
+ * @property {unknown} [actor_id]
+ * @property {unknown} [actor_email]
+ * @property {unknown} [target_mode]
+ * @property {unknown} [quarantined]
+ * @property {unknown} [isolation_ok]
+ * @property {unknown} [counts_match]
+ * @property {Record<string, unknown>} [table_counts]
+ * @property {Record<string, unknown>} [counts]
+ * @property {Record<string, unknown>} [per_table_hashes]
+ * @property {Record<string, unknown>} [ledger_reconciliation]
+ * @property {unknown} [package_sha256]
+ * @property {unknown} [payload_sha256]
+ * @property {{replay_is_safe?: unknown}} [idempotency]
+ */
+
+/**
+ * The only admin surface this module uses: a single RPC call. The real
+ * SupabaseClient is structurally deeper and is cast at this boundary.
+ * @typedef {object} StarterRecoveryRpcClientReadView
+ * @property {(name: string, args: Record<string, unknown>) => PromiseLike<{data?: unknown, error?: {message?: string} | null}>} rpc
+ */
+
+/**
+ * Server verification checks computed from an RPC result.
+ * @typedef {{passed: boolean, checks: Record<string, boolean>}} StarterRecoveryEvaluationReadView
+ */
+
 function getOperationsRoot() {
   const base = String(state.cacheRootDir || state.cacheDir || '').trim() || String(process.env.APPDATA || process.cwd())
   return path.join(base, 'starter-recovery-operations')
@@ -46,10 +246,16 @@ function getWorkspaceRoot() {
   return path.join(base, 'starter-recovery-workspace')
 }
 
+/** @param {string} dir */
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true })
 }
 
+/**
+ * @param {string} root
+ * @param {...unknown} segments
+ * @returns {string}
+ */
 function resolveContainedPath(root, ...segments) {
   const resolvedRoot = path.resolve(String(root))
   const candidate = path.resolve(resolvedRoot, ...segments.map((segment) => String(segment)))
@@ -60,6 +266,11 @@ function resolveContainedPath(root, ...segments) {
   return candidate
 }
 
+/**
+ * @param {string} root
+ * @param {unknown} candidate
+ * @returns {string}
+ */
 function assertContainedPath(root, candidate) {
   const resolvedRoot = path.resolve(String(root))
   const resolvedCandidate = path.resolve(String(candidate))
@@ -70,6 +281,7 @@ function assertContainedPath(root, candidate) {
   return resolvedCandidate
 }
 
+/** @param {string} dir */
 function fsyncDir(dir) {
   try {
     const handle = fs.openSync(dir, 'r')
@@ -77,32 +289,41 @@ function fsyncDir(dir) {
   } catch {}
 }
 
+/**
+ * @param {unknown} operationId
+ * @returns {string}
+ */
 function assertValidOperationId(operationId) {
   const value = String(operationId || '').trim()
   if (!OPERATION_ID_PATTERN.test(value)) throw new Error('A stable operation ID (UUID v4) is required for recovery operations.')
   return value.toLowerCase()
 }
 
+/** @param {unknown} operationId @returns {string} */
 function operationPath(operationId) {
   const safeId = assertValidOperationId(operationId)
   return resolveContainedPath(getOperationsRoot(), `${safeId}.json`)
 }
 
+/** @param {unknown} operationId @returns {string} */
 function operationLockPath(operationId) {
   const safeId = assertValidOperationId(operationId)
   return resolveContainedPath(getOperationsRoot(), `${safeId}.lock`)
 }
 
+/** @param {unknown} operationId @returns {string} */
 function stagedPackagePath(operationId) {
   const safeId = assertValidOperationId(operationId)
   return resolveContainedPath(getOperationsRoot(), `${safeId}.tbbackup`)
 }
 
+/** @param {unknown} operationId @returns {string} */
 function operationWorkspacePath(operationId) {
   const safeId = assertValidOperationId(operationId)
   return resolveContainedPath(getWorkspaceRoot(), safeId)
 }
 
+/** @param {unknown} operationId */
 function acquireOperationLock(operationId) {
   const lockPath = operationLockPath(operationId)
   const token = randomUUID()
@@ -114,7 +335,7 @@ function acquireOperationLock(operationId) {
       try { const h = fs.openSync(lockPath, 'r+'); try { fs.fsyncSync(h) } finally { fs.closeSync(h) } } catch {}
       return { lockPath, token }
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
+      if ((/** @type {StarterRecoveryErrorReadView} */ (error))?.code !== 'EEXIST') throw error
       let stale = false
       try {
         const metadata = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
@@ -128,7 +349,7 @@ function acquireOperationLock(operationId) {
       }
       if (!stale) throw new Error('Recovery operation is already executing.')
       try { fs.unlinkSync(lockPath) } catch (unlinkError) {
-        if (unlinkError?.code === 'ENOENT') continue
+        if ((/** @type {StarterRecoveryErrorReadView} */ (unlinkError))?.code === 'ENOENT') continue
         throw new Error('Recovery operation is already executing.')
       }
     }
@@ -136,11 +357,13 @@ function acquireOperationLock(operationId) {
   throw new Error('Recovery operation is already executing.')
 }
 
+/** @param {number} pid */
 function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (error) { return error?.code !== 'ESRCH' }
+  try { process.kill(pid, 0); return true } catch (error) { return (/** @type {StarterRecoveryErrorReadView} */ (error))?.code !== 'ESRCH' }
 }
 
+/** @param {{lockPath?: string, token?: string} | null | undefined} lock */
 function releaseOperationLock(lock) {
   if (!lock?.lockPath) return
   try {
@@ -150,6 +373,10 @@ function releaseOperationLock(lock) {
   try { fs.unlinkSync(lock.lockPath) } catch {}
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {unknown} data
+ */
 function writeOperationAtomic(operationId, data) {
   const safeId = assertValidOperationId(operationId)
   const target = operationPath(safeId)
@@ -165,30 +392,35 @@ function writeOperationAtomic(operationId, data) {
   fsyncDir(path.dirname(target))
 }
 
+/**
+ * @param {unknown} operationId
+ * @returns {StarterRecoveryOperationExpectedData | null}
+ */
 function readOperation(operationId) {
   const safeId = assertValidOperationId(operationId)
   const p = operationPath(safeId)
   if (!fs.existsSync(p)) return null
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'))
+    const parsed = /** @type {StarterRecoveryOperationExpectedData} */ (JSON.parse(fs.readFileSync(p, 'utf8')))
     if (String(parsed?.operation_id || '').toLowerCase() !== safeId) return null
     return parsed
   } catch { return null }
 }
 
+/** @returns {StarterRecoveryOperationExpectedData[]} */
 function listAllOperations() {
   try {
     const dir = getOperationsRoot()
     if (!fs.existsSync(dir)) return []
-    return fs.readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => {
+    return /** @type {StarterRecoveryOperationExpectedData[]} */ (fs.readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => {
       try {
         const filePath = resolveContainedPath(dir, name)
         const operationId = assertValidOperationId(path.basename(name, '.json'))
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+        const parsed = /** @type {StarterRecoveryOperationExpectedData} */ (JSON.parse(fs.readFileSync(filePath, 'utf8')))
         if (String(parsed?.operation_id || '').toLowerCase() !== operationId) return null
         return parsed
       } catch { return null }
-    }).filter(Boolean).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    }).filter(Boolean).sort((a, b) => String((/** @type {StarterRecoveryOperationExpectedData} */ (b)).created_at || '').localeCompare(String((/** @type {StarterRecoveryOperationExpectedData} */ (a)).created_at || ''))))
   } catch { return [] }
 }
 
@@ -196,12 +428,20 @@ function listOperations() {
   return listAllOperations().slice(0, MAX_OPERATIONS)
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData | null | undefined} op
+ * @param {number} [now]
+ */
 function isExpired(op, now = Date.now()) {
   if (!op?.expires_at) return false
   const expiresAt = new Date(op.expires_at).getTime()
   return Number.isFinite(expiresAt) && expiresAt <= now
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData | null | undefined} op
+ * @param {number} [now]
+ */
 function isCapacityActive(op, now = Date.now()) {
   if (!op || op.status === 'discarded') return false
   if (op.status === 'executing' && canRecoverStaleExecution(op)) return false
@@ -209,6 +449,7 @@ function isCapacityActive(op, now = Date.now()) {
   return true
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function recoverStaleExecution(op) {
   if (!op || op.status !== 'executing' || !canRecoverStaleExecution(op)) return op
   op.status = 'approved'
@@ -219,6 +460,7 @@ function recoverStaleExecution(op) {
   return op
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function discardExpiredOperation(op) {
   if (!op || op.status === 'discarded' || op.status === 'executing' || !isExpired(op)) return op
   op.status = 'discarded'
@@ -229,6 +471,7 @@ function discardExpiredOperation(op) {
   return op
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function ensureOperationNotExpired(op) {
   if (isExpired(op) && op.status !== 'executing') {
     discardExpiredOperation(op)
@@ -237,6 +480,14 @@ function ensureOperationNotExpired(op) {
   return op
 }
 
+/**
+ * @param {unknown} operationId
+ * `assertContainedPath` applies String(candidate) before resolving and checking
+ * containment, so this boundary accepts the same unknown values that existing
+ * runtime code already coerces; it does not validate persisted JSON.
+ * @param {unknown} stagedPath
+ * @returns {string}
+ */
 function assertStagedPackagePath(operationId, stagedPath) {
   const expected = stagedPackagePath(operationId)
   const actual = assertContainedPath(getOperationsRoot(), stagedPath)
@@ -244,6 +495,11 @@ function assertStagedPackagePath(operationId, stagedPath) {
   return actual
 }
 
+/**
+ * @param {string} targetRoot
+ * @param {string} operationId
+ * @param {string} lodgeId
+ */
 function captureRehearsalWorkspaceSnapshot(targetRoot, operationId, lodgeId) {
   ensureDir(targetRoot)
   const entries = fs.readdirSync(targetRoot).map((name) => {
@@ -265,6 +521,10 @@ function captureRehearsalWorkspaceSnapshot(targetRoot, operationId, lodgeId) {
   }
 }
 
+/**
+ * @param {string} filePath
+ * @param {unknown} value
+ */
 function writeJsonAtomic(filePath, value) {
   const target = path.resolve(String(filePath))
   const dir = path.dirname(target)
@@ -279,6 +539,10 @@ function writeJsonAtomic(filePath, value) {
   fsyncDir(dir)
 }
 
+/**
+ * @param {string} filePath
+ * @param {Buffer} bytes
+ */
 function writeBytesAtomic(filePath, bytes) {
   const target = path.resolve(String(filePath))
   const dir = path.dirname(target)
@@ -293,6 +557,15 @@ function writeBytesAtomic(filePath, bytes) {
   fsyncDir(dir)
 }
 
+/**
+ * @param {object} params
+ * @param {StarterRecoveryVerificationReadView} params.verification
+ * @param {Record<string, StarterRecoveryRowReadView[]>} params.remappedTables
+ * @param {StarterRecoveryLedgerReconstructionReadView} params.ledgerReconstruction
+ * @param {string} params.rehearsalTargetId
+ * @param {string} params.sourcePackageName
+ * @param {boolean} params.identityRemapped
+ */
 function buildSanitizedRehearsalReport({ verification, remappedTables, ledgerReconstruction, rehearsalTargetId, sourcePackageName, identityRemapped }) {
   const restoredTables = Object.fromEntries(Object.entries(remappedTables).map(([table, rows]) => [
     table,
@@ -329,11 +602,17 @@ function buildSanitizedRehearsalReport({ verification, remappedTables, ledgerRec
   }
 }
 
+/**
+ * @param {Record<string, unknown> | null | undefined} remappedTables
+ * @param {unknown} generatedAt
+ * @returns {Record<string, StarterRecoveryRowReadView[]>}
+ */
 function projectServerRestoreTables(remappedTables, generatedAt) {
   const fallbackDate = String(generatedAt || new Date().toISOString()).slice(0, 10)
+  /** @type {Record<string, StarterRecoveryRowReadView[]>} */
   const tables = {}
   for (const [table, allowlist] of Object.entries(SERVER_RESTORE_FIELDS)) {
-    const rows = Array.isArray(remappedTables?.[table]) ? remappedTables[table] : []
+    const rows = Array.isArray(remappedTables?.[table]) ? /** @type {StarterRecoveryRowReadView[]} */ (remappedTables[table]) : []
     tables[table] = rows.map((row) => {
       if (table === 'signed_payment_ledger' && (row?.conference_booking_id || row?._unresolved_conference_ref)) {
         throw new Error('This package contains conference payment references, which are outside the disposable Starter restore scope.')
@@ -357,6 +636,11 @@ function projectServerRestoreTables(remappedTables, generatedAt) {
   return tables
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {StarterRecoveryVerificationReadView} verification
+ * @param {Record<string, StarterRecoveryRowReadView[]>} remappedTables
+ */
 function buildServerRestorePayload(op, verification, remappedTables) {
   const tables = projectServerRestoreTables(remappedTables, verification.manifest?.generated_at)
   const counts = Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.length]))
@@ -382,6 +666,7 @@ function buildServerRestorePayload(op, verification, remappedTables) {
   return { payload, bytes, binding: createHash('sha256').update(JSON.stringify(payload)).digest('hex') }
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function buildServerRequestBinding(op) {
   return createHash('sha256').update(JSON.stringify({
     operation_id: op.operation_id,
@@ -400,9 +685,13 @@ function buildServerRequestBinding(op) {
   })).digest('hex')
 }
 
+/**
+ * @param {{adminClient?: unknown, isOnline?: unknown}} [options]
+ * @returns {StarterRecoveryRpcClientReadView}
+ */
 function resolveRecoveryAdminContext(options = {}) {
-  const injectedClient = options.adminClient && typeof options.adminClient.rpc === 'function' ? options.adminClient : null
-  const adminClient = injectedClient || state.adminDb
+  const injectedClient = options.adminClient && typeof (/** @type {StarterRecoveryRpcClientReadView} */ (options.adminClient)).rpc === 'function' ? /** @type {StarterRecoveryRpcClientReadView} */ (options.adminClient) : null
+  const adminClient = injectedClient || /** @type {StarterRecoveryRpcClientReadView | null | undefined} */ (state.adminDb)
   const online = injectedClient && Object.prototype.hasOwnProperty.call(options, 'isOnline')
     ? options.isOnline === true
     : state.isOnline === true
@@ -411,6 +700,7 @@ function resolveRecoveryAdminContext(options = {}) {
   return adminClient
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function resolveRecoveryActor(op) {
   const actorId = String(state.currentUser?.id || '').trim().toLowerCase()
   const actorEmail = String(state.currentUser?.email || '').trim().toLowerCase()
@@ -427,32 +717,58 @@ function resolveRecoveryActor(op) {
   return { actorId, actorEmail }
 }
 
+/**
+ * @param {unknown} data
+ * @returns {unknown}
+ */
 function unwrapRpcData(data) {
   return Array.isArray(data) && data.length === 1 ? data[0] : data
 }
 
+/**
+ * @param {StarterRecoveryRpcClientReadView} adminClient
+ * @param {string} name
+ * @param {Record<string, unknown>} args
+ * @returns {Promise<StarterRecoveryRpcResultReadView>}
+ */
 async function callRecoveryRpc(adminClient, name, args) {
   const { data, error } = await adminClient.rpc(name, args)
   if (error) throw new Error(error.message || `${name} failed.`)
   const result = unwrapRpcData(data)
   if (!result || typeof result !== 'object') throw new Error(`${name} returned no result.`)
-  return result
+  return /** @type {StarterRecoveryRpcResultReadView} */ (result)
 }
 
+/**
+ * @param {Record<string, unknown> | null | undefined} actual
+ * @param {Record<string, unknown> | null | undefined} expected
+ */
 function countsMatch(actual, expected) {
   return Object.entries(expected || {}).every(([table, count]) => Number(actual?.[table]) === Number(count))
 }
 
+/**
+ * @param {Record<string, unknown> | null | undefined} actual
+ * @param {Record<string, unknown> | null | undefined} expected
+ */
 function hashesMatch(actual, expected) {
   return Object.entries(expected || {}).every(([table, hash]) => String(actual?.[table] || '').toLowerCase() === String(hash).toLowerCase())
 }
 
+/** @param {unknown} actual @param {unknown} expected */
 function moneyMatches(actual, expected) {
   return Number.isFinite(Number(actual)) && Math.abs(Number(actual) - Number(expected)) < 0.005
 }
 
+/**
+ * @param {StarterRecoveryRpcResultReadView} result
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @returns {StarterRecoveryEvaluationReadView}
+ */
 function evaluateServerVerification(result, op) {
+  /** @type {Record<string, number>} */
   const expectedLedger = op.server_expected_ledger || {}
+  /** @type {Record<string, unknown>} */
   const ledger = result?.ledger_reconciliation || {}
   const checks = {
     server_success: result?.success === true,
@@ -477,6 +793,7 @@ function evaluateServerVerification(result, op) {
   return { passed: Object.values(checks).every(Boolean), checks }
 }
 
+/** @param {StarterRecoveryRpcResultReadView} result */
 function safeServerResult(result) {
   return {
     success: result?.success === true,
@@ -500,6 +817,13 @@ function safeServerResult(result) {
   }
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {StarterRecoveryRpcResultReadView} serverResult
+ * @param {StarterRecoveryEvaluationReadView} evaluation
+ * @param {string} event
+ * @param {boolean | null} [localRehearsalPassed]
+ */
 function markServerVerified(op, serverResult, evaluation, event, localRehearsalPassed = null) {
   const verifiedAt = new Date().toISOString()
   op.status = 'verified'
@@ -514,6 +838,7 @@ function markServerVerified(op, serverResult, evaluation, event, localRehearsalP
   op.restore_persistence = 'quarantined_disposable_lodge'
   op.execution_pid = null
   op.last_execute_error = null
+  /** @type {Record<string, unknown>} */
   const details = {
     recovery_lodge_id: op.recovery_lodge_id,
     package_sha256: op.package_sha256,
@@ -537,7 +862,7 @@ function requireSupportCapability() {
   const hasCapability = (() => {
     try {
       // Prefer explicit capability snapshot if present on the user object.
-      const caps = user.capabilities || user.effectiveCapabilities || {}
+      const caps = /** @type {Record<string, unknown>} */ (user.capabilities || user.effectiveCapabilities || {})
       if (caps['command_central.recovery.manage'] === true) return true
       // Master admins have all capabilities implicitly; allow them.
       if (user.isMasterAdmin === true) return true
@@ -547,6 +872,7 @@ function requireSupportCapability() {
   if (!hasCapability) throw new Error('Missing Command Central recovery capability (command_central.recovery.manage).')
 }
 
+/** @param {StarterRecoveryOperationExpectedData | null | undefined} op */
 function redactOperationForAudit(op) {
   // Never include passphrase, tokens, or raw file bytes. The audit record
   // contains only fingerprints and non-PII metadata.
@@ -555,7 +881,15 @@ function redactOperationForAudit(op) {
   return rest
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {string} event
+ * @param {Record<string, unknown>} [details]
+ */
 function appendAudit(op, event, details = {}) {
+  // Full audit entries are hashed as written; the optional hash fields are
+  // populated below before the entry is appended.
+  /** @type {StarterRecoveryAuditEntryExpectedData} */
   const entry = {
     at: new Date().toISOString(),
     event,
@@ -579,6 +913,7 @@ function appendAudit(op, event, details = {}) {
   op.audit.push(entry)
 }
 
+/** @param {StarterRecoveryOperationExpectedData | null | undefined} op */
 function verifyAuditChain(op) {
   if (!Array.isArray(op?.audit) || op.audit.length === 0) return null
   let previousHash = null
@@ -594,6 +929,9 @@ function verifyAuditChain(op) {
   return true
 }
 
+/**
+ * @param {{operation_id?: unknown, reason?: unknown, ticket_ref?: unknown, ticketRef?: unknown, lodge_id?: unknown, lodgeId?: unknown}} [payload]
+ */
 export function beginStarterRecoveryOperation(payload = {}) {
   const operationId = assertValidOperationId(String(payload.operation_id || randomUUID()).trim())
   const reason = String(payload.reason || '').trim()
@@ -654,6 +992,11 @@ export function beginStarterRecoveryOperation(payload = {}) {
   return op
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {unknown} sourcePath
+ * @param {{passphrase?: unknown}} [options]
+ */
 export function stageStarterRecoveryPackage(operationId, sourcePath, options = {}) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -670,13 +1013,13 @@ export function stageStarterRecoveryPackage(operationId, sourcePath, options = {
   const passphrase = typeof options.passphrase === 'string' ? options.passphrase : ''
   // Quick envelope sanity: decrypt in main process only. Never send passphrase to SQL.
   const source = path.resolve(resolved)
-  const probe = verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: op.lodge_id })
+  const probe = /** @type {StarterRecoveryProbeReadView} */ (verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: op.lodge_id }))
   // Allow staging of foreign-lodge packages so preview can show the lodge mismatch
   // before sealing; seal will enforce identity strictly.
-  if (!probe.success && /different lodge/i.test(probe.error || '')) {
+  if (!probe.success && /different lodge/i.test(/** @type {string} */ (probe.error || ''))) {
     // Record the mismatch as a preview-visible warning; still stage for sealed validation to reject.
   } else if (!probe.success) {
-    throw new Error(probe.error || 'Staged package failed local validation.')
+    throw new Error(/** @type {string} */ (probe.error || 'Staged package failed local validation.'))
   }
   const stagedPath = stagedPackagePath(safeId)
   const packageBytes = fs.readFileSync(source)
@@ -711,6 +1054,10 @@ export function stageStarterRecoveryPackage(operationId, sourcePath, options = {
   return op
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {{passphrase?: unknown}} [options]
+ */
 export function sealAndValidateStarterRecovery(operationId, options = {}) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -731,7 +1078,7 @@ export function sealAndValidateStarterRecovery(operationId, options = {}) {
     result = validateStarterBackupPackage(bytes, { passphrase, expectedLodgeId: op.lodge_id })
   } catch (error) {
     op.status = 'failed'
-    op.failure_reason = error?.message || 'Seal validation failed.'
+    op.failure_reason = /** @type {string} */ ((/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'Seal validation failed.')
     appendAudit(op, 'seal_failed', { error: op.failure_reason })
     writeOperationAtomic(safeId, op)
     throw new Error(op.failure_reason)
@@ -775,6 +1122,7 @@ export function sealAndValidateStarterRecovery(operationId, options = {}) {
   return op
 }
 
+/** @param {unknown} operationId */
 export function previewStarterRecovery(operationId) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -830,6 +1178,10 @@ export function previewStarterRecovery(operationId) {
   }
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {{reason?: unknown, ticket_ref?: unknown, ticketRef?: unknown}} [payload]
+ */
 export function approveStarterRecovery(operationId, payload = {}) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -852,6 +1204,10 @@ export function approveStarterRecovery(operationId, payload = {}) {
   return op
 }
 
+/**
+ * @param {unknown} seed
+ * @returns {string}
+ */
 function deterministicUuid(seed) {
   const hex = createHash('sha256').update(String(seed)).digest('hex').slice(0, 32).split('')
   hex[12] = '4'
@@ -859,6 +1215,13 @@ function deterministicUuid(seed) {
   return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20, 32).join('')}`
 }
 
+/**
+ * @param {StarterRecoveryVerificationReadView} verification
+ * @param {string} targetRoot
+ * @param {string} operationId
+ * @param {string} recoveryLodgeId
+ * @param {unknown} passphrase
+ */
 function runRecoveryRehearsal(verification, targetRoot, operationId, recoveryLodgeId, passphrase) {
   const rehearsalTargetId = recoveryLodgeId
   const effectivePayload = verification.sanitizedTables
@@ -866,9 +1229,10 @@ function runRecoveryRehearsal(verification, targetRoot, operationId, recoveryLod
     : verification.payload
   const identityMap = buildRecoveryIdentityMap(effectivePayload, { operationId, recoveryLodgeId: rehearsalTargetId })
   const remapped = remapPayloadForRecovery(effectivePayload, identityMap)
+  /** @type {Record<string, StarterRecoveryRowReadView[]>} */
   const restoredTables = {}
   for (const [table, rows] of Object.entries(remapped.tables || {})) {
-    const restoredRows = JSON.parse(JSON.stringify(Array.isArray(rows) ? rows : []))
+    const restoredRows = /** @type {StarterRecoveryRowReadView[]} */ (JSON.parse(JSON.stringify(Array.isArray(rows) ? rows : [])))
     const ids = restoredRows.map((row) => row?.id).filter(Boolean).map(String)
     if (new Set(ids).size !== ids.length) throw new Error(`Disposable restore rehearsal found duplicate IDs in ${table}.`)
     restoredTables[table] = restoredRows
@@ -901,6 +1265,7 @@ function runRecoveryRehearsal(verification, targetRoot, operationId, recoveryLod
   return { rehearsalDirectory, report, rehearsalTargetId, remappedTables: restoredTables, ledgerReconstruction }
 }
 
+/** @param {StarterRecoveryOperationExpectedData} op */
 function canRecoverStaleExecution(op) {
   const pid = Number(op?.execution_pid)
   if (Number.isInteger(pid) && pid > 0) return !isProcessAlive(pid)
@@ -908,6 +1273,10 @@ function canRecoverStaleExecution(op) {
   return !Number.isFinite(startedAt) || startedAt <= 0 || Date.now() - startedAt > EXECUTION_STALE_MS
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {string} safeId
+ */
 function assertCompletedReplayMatches(op, safeId) {
   if (op.server_verification_confirmed !== true) throw new Error('This operation has only local rehearsal evidence and must be executed through the recovery service before it can be verified.')
   const stagedPath = assertStagedPackagePath(safeId, op.staged_path)
@@ -922,6 +1291,11 @@ function assertCompletedReplayMatches(op, safeId) {
   return op
 }
 
+/**
+ * @param {StarterRecoveryRpcResultReadView} result
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @returns {StarterRecoveryEvaluationReadView}
+ */
 function evaluateServerExecuteResult(result, op) {
   const checks = {
     server_success: result?.success === true,
@@ -938,12 +1312,25 @@ function evaluateServerExecuteResult(result, op) {
   return { passed: Object.values(checks).every(Boolean), checks }
 }
 
+/**
+ * @param {StarterRecoveryRpcClientReadView} adminClient
+ * @param {StarterRecoveryOperationExpectedData} op
+ */
 async function queryServerRecoveryVerification(adminClient, op) {
   const result = await callRecoveryRpc(adminClient, 'admin_verify_starter_disposable_restore', { p_operation_id: op.operation_id })
   const evaluation = evaluateServerVerification(result, op)
   return { result, evaluation }
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {string} safeId
+ * @param {string} event
+ * @param {unknown} message
+ * @param {Record<string, unknown>} [details]
+ */
+// Always assigns a non-empty `last_execute_error` string, which the execute path
+// rethrows immediately afterwards when a payload binding mismatch is detected.
 function makeExecutionRetryable(op, safeId, event, message, details = {}) {
   op.status = 'approved'
   op.execution_pid = null
@@ -953,7 +1340,12 @@ function makeExecutionRetryable(op, safeId, event, message, details = {}) {
   writeOperationAtomic(safeId, op)
 }
 
+/**
+ * @param {StarterRecoveryOperationExpectedData} op
+ * @param {string} safeId
+ */
 function readLocalRehearsalChecks(op, safeId) {
+  /** @type {StarterRecoveryRehearsalReportReadView | null} */
   let report = null
   let rehearsalDirectory = null
   try {
@@ -977,6 +1369,10 @@ function readLocalRehearsalChecks(op, safeId) {
   return { report, rehearsalDirectory, auditChain, checks, passed: Object.values(checks).every(Boolean) }
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {{passphrase?: unknown, adminClient?: unknown, isOnline?: unknown}} [options]
+ */
 export async function executeStarterRecovery(operationId, options = {}) {
   const safeId = assertValidOperationId(operationId)
   let op = readOperation(safeId)
@@ -1046,10 +1442,10 @@ export async function executeStarterRecovery(operationId, options = {}) {
 
     let validated
     try {
-      validated = validateStarterBackupPackage(currentBytes, { passphrase: String(options.passphrase || ''), expectedLodgeId: op.lodge_id })
-      validated.sourcePath = stagedPath
+      validated = validateStarterBackupPackage(currentBytes, { passphrase: String(options.passphrase || ''), expectedLodgeId: op.lodge_id });
+      (/** @type {StarterRecoveryVerificationReadView} */ (validated)).sourcePath = stagedPath
     } catch (error) {
-      const message = error?.message || 'Recovery validation failed at execution time.'
+      const message = /** @type {string} */ ((/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'Recovery validation failed at execution time.')
       makeExecutionRetryable(op, safeId, 'execute_validation_failed', message)
       throw new Error(message)
     }
@@ -1061,7 +1457,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
     try {
       rehearsal = runRecoveryRehearsal(validated, targetRoot, safeId, op.recovery_lodge_id, String(options.passphrase || ''))
     } catch (error) {
-      const message = error?.message || 'Recovery rehearsal failed.'
+      const message = /** @type {string} */ ((/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'Recovery rehearsal failed.')
       makeExecutionRetryable(op, safeId, 'execute_rehearsal_failed', message)
       throw new Error(message)
     }
@@ -1073,7 +1469,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
     const serverRequest = buildServerRestorePayload(op, validated, rehearsal.remappedTables)
     if (op.server_payload_binding && op.server_payload_binding !== serverRequest.binding) {
       makeExecutionRetryable(op, safeId, 'execute_payload_mismatch', 'Operation ID replay was rejected because the remapped server payload changed.')
-      throw new Error(op.last_execute_error)
+      throw new Error(/** @type {string} */ (op.last_execute_error))
     }
     op.server_payload_binding = serverRequest.binding
     op.server_payload_text_bytes = serverRequest.bytes
@@ -1106,9 +1502,9 @@ export async function executeStarterRecovery(operationId, options = {}) {
         makeExecutionRetryable(op, safeId, 'server_retry_verify_rejected', message, { checks: priorVerification.evaluation.checks })
         throw new Error(message)
       } catch (error) {
-        if (!/not found/i.test(String(error?.message || ''))) {
+        if (!/not found/i.test(String((/** @type {StarterRecoveryErrorReadView} */ (error))?.message || ''))) {
           if (op.status === 'approved') throw error
-          const message = `The earlier recovery request is ambiguous and could not be checked safely: ${error?.message || 'verification failed'}. Retry this same operation before executing again.`
+          const message = `The earlier recovery request is ambiguous and could not be checked safely: ${(/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'verification failed'}. Retry this same operation before executing again.`
           makeExecutionRetryable(op, safeId, 'server_retry_verify_unconfirmed', message)
           throw new Error(message)
         }
@@ -1122,7 +1518,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
     try {
       executeResult = await callRecoveryRpc(adminClient, 'admin_execute_starter_disposable_restore', { p_payload: serverRequest.payload })
     } catch (error) {
-      const message = `Disposable recovery was not confirmed by the server: ${error?.message || 'restore request failed'}. Retry this same operation; its target and payload will be reused safely.`
+      const message = `Disposable recovery was not confirmed by the server: ${(/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'restore request failed'}. Retry this same operation; its target and payload will be reused safely.`
       op.server_restore_status = 'retryable_execute_failure'
       makeExecutionRetryable(op, safeId, 'server_execute_unconfirmed', message)
       throw new Error(message)
@@ -1142,7 +1538,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
     try {
       serverVerification = await queryServerRecoveryVerification(adminClient, op)
     } catch (error) {
-      const message = `The disposable lodge may have been created, but server verification could not be confirmed: ${error?.message || 'verification request failed'}. Retry this same operation.`
+      const message = `The disposable lodge may have been created, but server verification could not be confirmed: ${(/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'verification request failed'}. Retry this same operation.`
       op.server_restore_status = 'pending_verification'
       makeExecutionRetryable(op, safeId, 'server_verify_unconfirmed', message)
       throw new Error(message)
@@ -1162,7 +1558,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
   } catch (error) {
     const latest = readOperation(safeId)
     if (latest && latest.status === 'executing' && latest.execution_pid === process.pid) {
-      makeExecutionRetryable(latest, safeId, 'execute_interrupted', error?.message || 'Disposable recovery was interrupted.')
+      makeExecutionRetryable(latest, safeId, 'execute_interrupted', (/** @type {StarterRecoveryErrorReadView} */ (error))?.message || 'Disposable recovery was interrupted.')
     }
     throw error
   } finally {
@@ -1170,6 +1566,7 @@ export async function executeStarterRecovery(operationId, options = {}) {
   }
 }
 
+/** @param {unknown} operationId */
 export function discardStarterRecoveryOperation(operationId) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -1192,6 +1589,7 @@ export function discardStarterRecoveryOperation(operationId) {
   return op
 }
 
+/** @param {unknown} operationId */
 export function getStarterRecoveryOperation(operationId) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)
@@ -1208,6 +1606,10 @@ export function listStarterRecoveryOperations() {
   })
 }
 
+/**
+ * @param {unknown} operationId
+ * @param {{passphrase?: unknown, adminClient?: unknown, isOnline?: unknown}} [options]
+ */
 export async function verifyStarterRecoveryOperation(operationId, options = {}) {
   const safeId = assertValidOperationId(operationId)
   const op = readOperation(safeId)

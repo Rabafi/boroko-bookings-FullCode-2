@@ -18,9 +18,30 @@ import { refreshCachedTrialCountdown } from './trialCountdown.js';
 import { getRuntimeProductId } from '../../shared/productIdentity.js';
 import { getCommercialFeatureSet } from '../../shared/commercialAccess.js';
 
+/**
+ * Cache and RPC values remain unvalidated. This view describes only fields
+ * consumed by entitlement calculation and does not establish their validity.
+ * @typedef {Record<string, unknown> & {
+ *   lodge_id?: unknown, status?: unknown, trial_ends_at?: unknown, expires_at?: unknown,
+ *   offline_valid_until?: unknown, offlineValidUntil?: unknown, cached_at?: unknown,
+ *   plan?: unknown, subscription_plan?: unknown, payment_status?: unknown,
+ *   billing_status?: unknown, subscription_state?: unknown, expired?: unknown,
+ *   daysLeft?: unknown, days_left?: unknown, monthly_fee?: unknown, next_due_date?: unknown,
+ *   currency?: unknown, lodge_name?: unknown, product_id?: unknown,
+ *   commercial_package_key?: unknown, commercial_catalog_version?: unknown,
+ *   commercial_pricing_snapshot?: unknown, enterprise_addons?: unknown,
+ *   plan_version_code?: unknown, grace_period_days?: unknown, grace_period_ends_at?: unknown,
+ *   offline_lease_days?: unknown, effective_features?: unknown, success?: unknown, error?: unknown
+ * }} EntitlementExpectedView
+ */
+/** @typedef {{feature_name?: unknown, enabled?: unknown}} EntitlementFeatureOverrideExpectedView */
+/** @typedef {{message?: unknown, code?: unknown}} EntitlementErrorExpectedView */
+
 export { refreshCachedTrialCountdown } from './trialCountdown.js';
 
+/** @type {Map<string, {result: EntitlementExpectedView, cachedAt: number}>} */
 const _entitlementCache = new Map()
+/** @type {Map<string, Promise<EntitlementExpectedView>>} */
 const _entitlementRequests = new Map()
 const ENTITLEMENT_CACHE_TTL_MS = 2 * 60_000
 // Entitlement is an authorization boundary. Give the authoritative RPC enough
@@ -28,9 +49,10 @@ const ENTITLEMENT_CACHE_TTL_MS = 2 * 60_000
 // local trial date, which may predate a later active license.
 const ENTITLEMENT_RPC_TIMEOUT_MS = 15 * 1000
 
+/** @param {string} targetLodgeId */
 async function getProductAwareEntitlement(targetLodgeId) {
   const productId = getRuntimeProductId()
-  const productResult = await supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
+  const productResult = await supabaseRpcWithTimeout(/** @type {NonNullable<typeof state.supabase>} */ (state.supabase), 'get_lodge_entitlement', {
     p_lodge_id: targetLodgeId,
     p_product_id: productId
   }, ENTITLEMENT_RPC_TIMEOUT_MS)
@@ -40,7 +62,7 @@ async function getProductAwareEntitlement(targetLodgeId) {
   // and POS must fail over to their product-filtered legacy read instead of
   // accepting a different executable's one-argument entitlement.
   if (productId === 'lodge-camp' && isMissingEntitlementRpcError(productResult.error)) {
-    return supabaseRpcWithTimeout(state.supabase, 'get_lodge_entitlement', {
+    return supabaseRpcWithTimeout(/** @type {NonNullable<typeof state.supabase>} */ (state.supabase), 'get_lodge_entitlement', {
       p_lodge_id: targetLodgeId
     }, ENTITLEMENT_RPC_TIMEOUT_MS)
   }
@@ -50,6 +72,7 @@ async function getProductAwareEntitlement(targetLodgeId) {
 // Drop only the in-memory authorization result. The disk cache remains an
 // offline fallback, while the next online read is forced through the
 // authoritative entitlement RPC.
+/** @param {string|null} [lodgeId] */
 export function invalidateTrialStatus(lodgeId = null) {
   if (lodgeId) {
     _entitlementCache.delete(lodgeId)
@@ -58,13 +81,16 @@ export function invalidateTrialStatus(lodgeId = null) {
   _entitlementCache.clear()
 }
 
+/** @param {unknown} error */
 export function isMissingEntitlementRpcError(error) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST202' ||
+  const errorView = /** @type {EntitlementErrorExpectedView|null|undefined} */ (error);
+  const message = String(errorView?.message || '');
+  return errorView?.code === 'PGRST202' ||
   /schema cache/i.test(message) ||
   /operator does not exist: text = uuid/i.test(message);
 }
 
+/** @param {import('@supabase/supabase-js').SupabaseClient} client @param {string} rpcName @param {Record<string, unknown>} params @param {number} timeoutMs */
 function supabaseRpcWithTimeout(client, rpcName, params, timeoutMs) {
   const rpcPromise = client.rpc(rpcName, params);
   const timeoutPromise = new Promise((_, reject) =>
@@ -73,27 +99,30 @@ function supabaseRpcWithTimeout(client, rpcName, params, timeoutMs) {
   return Promise.race([rpcPromise, timeoutPromise]);
 }
 
+/** @returns {Promise<string|null>} */
 async function getActiveProfileLodgeId() {
   if (state.lodgeId) return state.lodgeId;
   const { getActiveProfile } = await import('./' + 'profiles.js');
   return getActiveProfile()?.lodge_id || null;
 }
 
+/** @param {string|null} [targetLodgeId] @returns {EntitlementExpectedView|null} */
 function getCachedEntitlement(targetLodgeId = null) {
   const cached = readCache('trial_status');
   if (!cached || typeof cached !== 'object') return null;
-  const refreshed = refreshCachedTrialCountdown(cached);
+  const cachedView = /** @type {EntitlementExpectedView} */ (cached);
+  const refreshed = /** @type {EntitlementExpectedView} */ (refreshCachedTrialCountdown(cachedView));
   if (targetLodgeId && String(refreshed.lodge_id || '').trim().toLowerCase() !== String(targetLodgeId || '').trim().toLowerCase()) {
     // Covers both wrong-tenant snapshots and lodge-less legacy snapshots:
     // the latter are handled exclusively by the trusted adapter below.
     return null;
   }
-  if (refreshed.status === 'expired' && cached.status === 'trial') return refreshed;
-  const offlineValidUntil = cached.offline_valid_until ||
-  cached.offlineValidUntil || (
-  cached.cached_at ? addDays(cached.cached_at, DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
+  if (refreshed.status === 'expired' && cachedView.status === 'trial') return refreshed;
+  const offlineValidUntil = cachedView.offline_valid_until ||
+  cachedView.offlineValidUntil || (
+  cachedView.cached_at ? addDays(/** @type {string|number} */ (cachedView.cached_at), DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
   if (offlineValidUntil) {
-    const validUntilDate = new Date(offlineValidUntil);
+    const validUntilDate = new Date(/** @type {string|number} */ (offlineValidUntil));
     if (Number.isFinite(validUntilDate.getTime()) && validUntilDate < new Date()) {
       return null;
     }
@@ -109,26 +138,28 @@ function getCachedEntitlement(targetLodgeId = null) {
  * stamped so the legacy form disappears. Multi-profile devices must refresh
  * online instead of guessing ownership.
  */
+/** @param {string} targetLodgeId @returns {Promise<EntitlementExpectedView|null>} */
 async function getLegacyBoundEntitlement(targetLodgeId) {
   if (!targetLodgeId) return null;
   const cached = readCache('trial_status');
   if (!cached || typeof cached !== 'object') return null;
-  if (String(cached.lodge_id || '').trim()) return null;
+  const cachedView = /** @type {EntitlementExpectedView} */ (cached);
+  if (String(cachedView.lodge_id || '').trim()) return null;
   let singleProfile = false;
   try {
     const profiles = await import('./' + 'profiles.js');
-    const list = (profiles.getProfiles?.() || []).filter((profile) => profile?.lodge_id);
+    const list = (profiles.getProfiles?.() || []).filter((/** @type {{lodge_id?: unknown}|null|undefined} */ profile) => profile?.lodge_id);
     singleProfile = list.length === 1;
   } catch {
     singleProfile = false;
   }
   if (!singleProfile) return null;
-  const refreshed = refreshCachedTrialCountdown(cached);
-  const offlineValidUntil = cached.offline_valid_until ||
-  cached.offlineValidUntil || (
-  cached.cached_at ? addDays(cached.cached_at, DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
+  const refreshed = /** @type {EntitlementExpectedView} */ (refreshCachedTrialCountdown(cachedView));
+  const offlineValidUntil = cachedView.offline_valid_until ||
+  cachedView.offlineValidUntil || (
+  cachedView.cached_at ? addDays(/** @type {string|number} */ (cachedView.cached_at), DEFAULT_OFFLINE_LEASE_DAYS).toISOString() : null);
   if (offlineValidUntil) {
-    const validUntilDate = new Date(offlineValidUntil);
+    const validUntilDate = new Date(/** @type {string|number} */ (offlineValidUntil));
     if (!Number.isFinite(validUntilDate.getTime()) || validUntilDate < new Date()) {
       return null;
     }
@@ -136,6 +167,7 @@ async function getLegacyBoundEntitlement(targetLodgeId) {
   return cacheEntitlement(targetLodgeId, refreshed);
 }
 
+/** @param {string|null} targetLodgeId @param {EntitlementExpectedView} entitlement */
 function cacheEntitlement(targetLodgeId, entitlement) {
   const cached = {
     ...entitlement,
@@ -146,6 +178,7 @@ function cacheEntitlement(targetLodgeId, entitlement) {
   return cached;
 }
 
+/** @param {EntitlementExpectedView} [entitlement] @param {string|null} [lodgeId] @returns {EntitlementExpectedView} */
 function buildOfflineLeaseExpiredEntitlement(entitlement = {}, lodgeId = null) {
   const normalizedPlan = entitlement.plan ? normalizePlanName(entitlement.plan) : normalizePlanName(entitlement.subscription_plan);
   return {
@@ -162,6 +195,7 @@ function buildOfflineLeaseExpiredEntitlement(entitlement = {}, lodgeId = null) {
   };
 }
 
+/** @param {string|number|null} [trialStartedAt] @param {string|null} [lodgeId] @returns {EntitlementExpectedView} */
 function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
   if (!trialStartedAt) {
     return {
@@ -189,7 +223,7 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
 
   const trialEnd = new Date(trialStartedAt);
   trialEnd.setDate(trialEnd.getDate() + 30);
-  const msLeft = trialEnd - new Date();
+  const msLeft = trialEnd.getTime() - new Date().getTime();
   const daysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
   const expired = daysLeft <= 0;
 
@@ -217,6 +251,7 @@ function buildTrialEntitlement(trialStartedAt = null, lodgeId = null) {
   };
 }
 
+/** @param {EntitlementExpectedView} license @param {EntitlementFeatureOverrideExpectedView[]} [featureOverrides] @returns {EntitlementExpectedView} */
 function buildLicensedEntitlement(license, featureOverrides = []) {
   const normalizedPlan = normalizePlanName(license?.subscription_plan);
   const paymentStatus = String(license?.payment_status || 'active').trim().toLowerCase() || 'active';
@@ -231,7 +266,8 @@ function buildLicensedEntitlement(license, featureOverrides = []) {
   const status = activeAccess ? 'licensed' : 'expired';
   const gracePeriodEndsAt = computeGracePeriodEnd(license?.next_due_date, license?.grace_period_days || DEFAULT_SUBSCRIPTION_GRACE_DAYS);
 
-  const commercialAddonKeys = license?.commercial_pricing_snapshot?.selection?.selected_addon_keys;
+  const pricingSnapshot = /** @type {{selection?: {selected_addon_keys?: unknown}}|null|undefined} */ (license?.commercial_pricing_snapshot);
+  const commercialAddonKeys = pricingSnapshot?.selection?.selected_addon_keys;
   return {
     lodge_id: license?.lodge_id || null,
     status,
@@ -267,48 +303,54 @@ function buildLicensedEntitlement(license, featureOverrides = []) {
   };
 }
 
+/** @param {unknown} payload @param {string|null} [requestedLodgeId] @returns {EntitlementExpectedView|null} */
 function coerceEntitlementResponse(payload, requestedLodgeId = null) {
   if (!payload || typeof payload !== 'object') return null;
+  const entitlementPayload = /** @type {EntitlementExpectedView} */ (payload);
   const requested = requestedLodgeId ? String(requestedLodgeId).trim().toLowerCase() : null;
-  const responseLodge = payload.lodge_id ? String(payload.lodge_id).trim().toLowerCase() : null;
+  const responseLodge = entitlementPayload.lodge_id ? String(entitlementPayload.lodge_id).trim().toLowerCase() : null;
   // Fail closed when the server answers for a different tenant than the one
   // requested. When the response carries no tenant, bind the requested lodge:
   // the RPC was scoped with p_lodge_id=requested under RLS, so the answer is
   // inherently about that tenant — this is the trusted adapter, not a guess.
   if (requested && responseLodge && responseLodge !== requested) return null;
-  const normalizedPlan = payload.plan ? normalizePlanName(payload.plan) : payload.status === 'trial' ? 'Trial' : null;
+  const normalizedPlan = entitlementPayload.plan ? normalizePlanName(entitlementPayload.plan) : entitlementPayload.status === 'trial' ? 'Trial' : null;
   const effectiveFeatures = mergeFeatureOverrides(
     getPlanFeatureMap(normalizedPlan || 'Starter', {
-      trial: payload.status === 'trial',
-      expired: payload.expired === true
+      trial: entitlementPayload.status === 'trial',
+      expired: entitlementPayload.expired === true
     }),
-    Object.entries(payload.effective_features || {}).map(([feature_name, enabled]) => ({ feature_name, enabled }))
+    Object.entries(entitlementPayload.effective_features || {}).map(([feature_name, enabled]) => ({ feature_name, enabled }))
   );
 
-  const commercialAddonKeys = payload.enterprise_addons
-    || payload.commercial_pricing_snapshot?.selection?.selected_addon_keys;
+  const commercialAddonKeys = entitlementPayload.enterprise_addons
+    || /** @type {{selection?: {selected_addon_keys?: unknown}}|null|undefined} */ (entitlementPayload.commercial_pricing_snapshot)?.selection?.selected_addon_keys;
   // Older RPCs return base-package features alongside the approved addon
   // selection. Resolve those grants before legacy plan defaults; explicit
   // server denials and product-scoped overrides retain precedence.
-  const boundPayload = { ...payload, lodge_id: responseLodge ? payload.lodge_id : (requestedLodgeId || null) };
-  if (payload.product_id === 'hospitality-pos') {
-    for (const feature of getCommercialFeatureSet(payload.product_id, payload.commercial_package_key, commercialAddonKeys, boundPayload, requestedLodgeId)) {
-      if (!Object.prototype.hasOwnProperty.call(payload.effective_features || {}, feature)) effectiveFeatures[feature] = true;
+  const boundPayload = { ...entitlementPayload, lodge_id: responseLodge ? entitlementPayload.lodge_id : (requestedLodgeId || null) };
+  if (entitlementPayload.product_id === 'hospitality-pos') {
+    for (const feature of getCommercialFeatureSet(
+      /** @type {string|null} */ (entitlementPayload.product_id),
+      /** @type {string|null} */ (entitlementPayload.commercial_package_key),
+      /** @type {string[]} */ (Array.isArray(commercialAddonKeys) ? commercialAddonKeys : []), boundPayload, requestedLodgeId
+    )) {
+      if (!Object.prototype.hasOwnProperty.call(entitlementPayload.effective_features || {}, feature)) effectiveFeatures[feature] = true;
     }
   }
   return {
-    ...payload,
+    ...entitlementPayload,
     lodge_id: boundPayload.lodge_id,
     plan: normalizedPlan,
-    expired: payload.expired === true,
-    daysLeft: payload.daysLeft ?? payload.days_left ?? null,
-    payment_status: payload.payment_status || payload.billing_status || null,
-    subscription_state: payload.subscription_state || null,
-    plan_version_code: payload.plan_version_code || null,
-    grace_period_days: payload.grace_period_days ?? null,
-    grace_period_ends_at: payload.grace_period_ends_at || null,
-    offline_lease_days: payload.offline_lease_days ?? null,
-    offline_valid_until: payload.offline_valid_until || payload.offlineValidUntil || null,
+    expired: entitlementPayload.expired === true,
+    daysLeft: entitlementPayload.daysLeft ?? entitlementPayload.days_left ?? null,
+    payment_status: entitlementPayload.payment_status || entitlementPayload.billing_status || null,
+    subscription_state: entitlementPayload.subscription_state || null,
+    plan_version_code: entitlementPayload.plan_version_code || null,
+    grace_period_days: entitlementPayload.grace_period_days ?? null,
+    grace_period_ends_at: entitlementPayload.grace_period_ends_at || null,
+    offline_lease_days: entitlementPayload.offline_lease_days ?? null,
+    offline_valid_until: entitlementPayload.offline_valid_until || entitlementPayload.offlineValidUntil || null,
     enterprise_addons: Array.isArray(commercialAddonKeys) ? commercialAddonKeys : [],
     effective_features: effectiveFeatures
   };
@@ -337,19 +379,21 @@ export async function getAuthoritativeTrialStatus(lodgeId) {
   return cacheEntitlement(targetLodgeId, normalized);
 }
 
+/** @param {string} targetLodgeId @returns {Promise<EntitlementFeatureOverrideExpectedView[]>} */
 async function getLegacyFeatureOverrides(targetLodgeId) {
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('lodge_features').
   select('feature_name, enabled').
   eq('lodge_id', targetLodgeId);
   if (error) throw new Error(error.message);
-  return data || [];
+  return /** @type {EntitlementFeatureOverrideExpectedView[]} */ (data || []);
 }
 
+/** @param {string} targetLodgeId @returns {Promise<EntitlementExpectedView>} */
 async function getLegacyEntitlement(targetLodgeId) {
   const now = new Date().toISOString();
   const productId = getRuntimeProductId()
-  let licenseQuery = state.supabase.
+  let licenseQuery = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('licenses').
   select('id, lodge_id, lodge_name, expires_at, subscription_plan, monthly_fee, payment_status, next_due_date, currency, is_active, plan_version_code, grace_period_days, offline_lease_days, product_id, commercial_package_key, commercial_catalog_version, commercial_pricing_snapshot').
   eq('lodge_id', targetLodgeId).
@@ -363,18 +407,18 @@ async function getLegacyEntitlement(targetLodgeId) {
   limit(1);
 
   if (licenseError) throw new Error(licenseError.message);
-  const license = Array.isArray(licenseRows) ? licenseRows[0] : null;
+  const license = Array.isArray(licenseRows) ? /** @type {EntitlementExpectedView|null} */ (licenseRows[0]) : null;
   if (license) {
     const overrides = await getLegacyFeatureOverrides(targetLodgeId).catch(() => []);
     return buildLicensedEntitlement(license, overrides);
   }
 
-  const cachedSettings = readCache('settings')[0] || null;
+  const cachedSettings = /** @type {EntitlementExpectedView[]} */ (readCache('settings'))[0] || null;
   if (cachedSettings?.trial_started_at) {
     return buildTrialEntitlement(cachedSettings.trial_started_at, targetLodgeId);
   }
 
-  const { data: settings, error: settingsError } = await state.supabase.
+  const { data: settings, error: settingsError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('settings').
   select('trial_started_at').
   eq('lodge_id', targetLodgeId).
@@ -383,6 +427,7 @@ async function getLegacyEntitlement(targetLodgeId) {
   return buildTrialEntitlement(settings?.trial_started_at || null, targetLodgeId);
 }
 
+/** @param {string|null} [lodgeId] @param {{forceFresh?: boolean}} [options] @returns {Promise<EntitlementExpectedView>} */
 export async function getTrialStatus(lodgeId, options = {}) {
   const targetLodgeId = lodgeId || await getActiveProfileLodgeId();
   if (!targetLodgeId) {
@@ -410,10 +455,11 @@ export async function getTrialStatus(lodgeId, options = {}) {
   }
 }
 
+/** @param {string} targetLodgeId @returns {Promise<EntitlementExpectedView>} */
 async function loadTrialStatus(targetLodgeId) {
   const onlineCheck = checkOnline();
-  const checkTimeout = new Promise((r) => setTimeout(() => r('timeout'), 3000));
-  const checkResult = await Promise.race([onlineCheck, checkTimeout]);
+  const checkTimeout = /** @type {Promise<'timeout'>} */ (new Promise((r) => setTimeout(() => r('timeout'), 3000)));
+  const checkResult = /** @type {boolean|'timeout'} */ (await Promise.race([onlineCheck, checkTimeout]));
   if (checkResult === 'timeout' || !state.isOnline) {
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
@@ -421,9 +467,9 @@ async function loadTrialStatus(targetLodgeId) {
     if (legacyBound) return legacyBound;
     const staleCached = readCache('trial_status');
     if (staleCached && typeof staleCached === 'object') {
-      return buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
+      return buildOfflineLeaseExpiredEntitlement(/** @type {EntitlementExpectedView} */ (staleCached), targetLodgeId);
     }
-    const cachedSettings = readCache('settings')[0] || null;
+    const cachedSettings = /** @type {EntitlementExpectedView[]} */ (readCache('settings'))[0] || null;
     return buildTrialEntitlement(cachedSettings?.trial_started_at || null, targetLodgeId);
   }
 
@@ -437,7 +483,7 @@ async function loadTrialStatus(targetLodgeId) {
     }
   } catch (error) {
     if (!isMissingEntitlementRpcError(error) && !getCachedEntitlement(targetLodgeId)) {
-      console.warn('[ENTITLEMENT] RPC failed, trying legacy fallback:', error.message);
+      console.warn('[ENTITLEMENT] RPC failed, trying legacy fallback:', (/** @type {EntitlementErrorExpectedView} */ (error)).message);
     }
   }
 
@@ -447,7 +493,7 @@ async function loadTrialStatus(targetLodgeId) {
     return cacheEntitlement(targetLodgeId, legacyResult);
   } catch (error) {
     if (!getCachedEntitlement(targetLodgeId)) {
-      console.warn('[ENTITLEMENT] legacy fallback failed:', error.message);
+      console.warn('[ENTITLEMENT] legacy fallback failed:', (/** @type {EntitlementErrorExpectedView} */ (error)).message);
     }
     const cached = getCachedEntitlement(targetLodgeId);
     if (cached) return cached;
@@ -455,22 +501,23 @@ async function loadTrialStatus(targetLodgeId) {
     if (legacyBound) return legacyBound;
     const staleCached = readCache('trial_status');
     if (staleCached && typeof staleCached === 'object') {
-      const result = buildOfflineLeaseExpiredEntitlement(staleCached, targetLodgeId);
+      const result = buildOfflineLeaseExpiredEntitlement(/** @type {EntitlementExpectedView} */ (staleCached), targetLodgeId);
       return cacheEntitlement(targetLodgeId, result);
     }
-    const cachedSettings = readCache('settings')[0] || null;
+    const cachedSettings = /** @type {EntitlementExpectedView[]} */ (readCache('settings'))[0] || null;
     const result = buildTrialEntitlement(cachedSettings?.trial_started_at || null, targetLodgeId);
     return cacheEntitlement(targetLodgeId, result);
   }
 }
 
+/** @param {string} lodgeId @param {string} licenseKey */
 export async function activateLicenseKey(lodgeId, licenseKey) {
   if (!state.isOnline) throw new Error('Internet connection required to activate license.');
   if (!licenseKey?.trim()) throw new Error('Please enter a license key.');
 
   const key = licenseKey.trim().toUpperCase();
   try {
-    const { data, error } = await state.supabase.rpc('activate_license_key', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('activate_license_key', {
       p_lodge_id: lodgeId,
       p_license_key: key
     });
@@ -493,7 +540,7 @@ export async function activateLicenseKey(lodgeId, licenseKey) {
     }
     // Authoritative RPC denials (unknown key, deactivated, ineligible,
     // wrong tenant) are final: never fall through to a direct table write.
-    throw error instanceof Error ? error : new Error(String(error?.message || 'Activation failed'));
+    throw error instanceof Error ? error : new Error(String((/** @type {EntitlementErrorExpectedView|null|undefined} */ (error))?.message || 'Activation failed'));
   }
 
   // Closed null-package shortcut: direct licenses-table activation bypassed

@@ -1,36 +1,64 @@
 // @ts-check
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { AlertTriangle, CheckCircle2, ClipboardList, Download, Mail, Pencil, Plus, RefreshCw, Trash2, Truck, X } from 'lucide-react'
-import { useSettings } from '../../app-context'
+import { useAuth, useSettings } from '../../app-context'
+import { createBarLocalRestaurantStockApi } from './barLocalRestaurantStockApi.js'
+
+/**
+ * Purchasing rows come from the current POS/database producers or the JSON IPC
+ * snapshot. The assertions below describe fields the existing UI consumes;
+ * neither Array.isArray nor these views validate external/cache/RPC row data.
+ * @typedef {{id: string; name: string | null | undefined; contact_person: string | null | undefined; phone: string | null | undefined; email: string | null | undefined; address: string | null | undefined; payment_terms: string | null | undefined}} PurchasingSupplierExpectedView
+ * @typedef {{id: string; name: string | null | undefined; unit: string | null | undefined; latest_unit_cost: string | number | null | undefined; unit_cost: string | number | null | undefined}} PurchasingInventoryItemExpectedView
+ * @typedef {{id: string; name: string | null | undefined; is_default: unknown; is_active: unknown}} PurchasingStockLocationExpectedView
+ * @typedef {{id: string; inventory_item_id: string | null | undefined; description: string | null | undefined; quantity: string | number | null | undefined; unit_cost: string | number | null | undefined; total: string | number | null | undefined; unit: string | null | undefined}} PurchasingOrderItemExpectedView
+ * @typedef {{name: string | null | undefined; contact_person: string | null | undefined; phone: string | null | undefined; email: string | null | undefined}} PurchasingOrderSupplierExpectedView
+ * The Main producer maps nested purchase-order items with `Array.isArray(...) ? ... : []`; this expected-data view reflects that output and does not validate IPC rows.
+ * @typedef {{id: string; supplier_id: string | null | undefined; stock_location_id: string | null | undefined; status: string; order_date: string | null | undefined; expected_delivery: string | null | undefined; notes: string | null | undefined; total: string | number | null | undefined; created_at: string | null | undefined; updated_at: string | null | undefined; stock_location_name: string | null | undefined; supplier_name: string | null | undefined; supplier: PurchasingOrderSupplierExpectedView | null | undefined; items: PurchasingOrderItemExpectedView[]}} PurchasingOrderExpectedView
+ * @typedef {{inventory_item_id: string; description: string; quantity: string | number; unit_cost: string | number}} PurchasingDraftItemExpectedView
+ * @typedef {{supplier_id: string; stock_location_id: string; expected_delivery: string; notes: string; items: PurchasingDraftItemExpectedView[]}} PurchasingDraftExpectedView
+ * @typedef {{name: string; contact_person: string; phone: string; email: string; address: string; payment_terms: string}} PurchasingSupplierFormExpectedView
+ * @typedef {{suppliers: PurchasingSupplierExpectedView[]; orders: PurchasingOrderExpectedView[]; inventoryItems: PurchasingInventoryItemExpectedView[]; error?: unknown}} PurchasingSnapshotExpectedView
+ * Mutation RPC and SQL failure producers use string error messages. The returned IPC payload is not validated; each local assertion below only reflects that producer contract for the Error constructor's message type.
+ * @typedef {{success: boolean | undefined; error: unknown; reconciled: boolean | undefined; duplicate: boolean | undefined; canceled: boolean | undefined}} PurchasingMutationExpectedView
+ */
 
 const FIELD = 'mt-1 w-full rounded-xl border border-[#d7c9c8] bg-[#fffdfb] px-3 py-2.5 text-sm text-[#35242c] outline-none transition focus:border-[#d87945] focus:ring-2 focus:ring-[#f4d2bb]'
 
 export default function RestaurantPurchasing() {
   const { settings } = useSettings()
+  const { user } = useAuth()
+  const localAuthority = user?.localAuthority === true || settings?.authority_mode === 'bar_local'
+  const localStockApi = useMemo(() => {
+    if (!localAuthority) return null
+    try { return createBarLocalRestaurantStockApi(window.api?.barLocal, { businessId: settings?.lodge_id || user?.lodge_id, outletId: settings?.outlet_id, staffId: user?.id }) }
+    catch { return null }
+  }, [localAuthority, settings?.lodge_id, settings?.outlet_id, user?.id, user?.lodge_id])
   const currency = settings?.currency || 'P'
-  const [suppliers, setSuppliers] = useState([])
-  const [inventoryItems, setInventoryItems] = useState([])
-  const [stockLocations, setStockLocations] = useState([])
-  const [orders, setOrders] = useState([])
+  const [suppliers, setSuppliers] = useState(/** @type {PurchasingSupplierExpectedView[]} */ ([]))
+  const [inventoryItems, setInventoryItems] = useState(/** @type {PurchasingInventoryItemExpectedView[]} */ ([]))
+  const [stockLocations, setStockLocations] = useState(/** @type {PurchasingStockLocationExpectedView[]} */ ([]))
+  const [orders, setOrders] = useState(/** @type {PurchasingOrderExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('orders')
   const [showSupplierForm, setShowSupplierForm] = useState(false)
   const [showPOForm, setShowPOForm] = useState(false)
-  const [detailOrder, setDetailOrder] = useState(null)
-  const [editingOrder, setEditingOrder] = useState(null)
-  const [editingSupplier, setEditingSupplier] = useState(null)
-  const [receivingOrder, setReceivingOrder] = useState(null)
+  const [detailOrder, setDetailOrder] = useState(/** @type {PurchasingOrderExpectedView | null} */ (null))
+  const [editingOrder, setEditingOrder] = useState(/** @type {PurchasingOrderExpectedView | null} */ (null))
+  const [editingSupplier, setEditingSupplier] = useState(/** @type {PurchasingSupplierExpectedView | null} */ (null))
+  const [receivingOrder, setReceivingOrder] = useState(/** @type {PurchasingOrderExpectedView | null} */ (null))
   const [receiptLocationId, setReceiptLocationId] = useState('')
-  const [supplierForm, setSupplierForm] = useState({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
-  const [poForm, setPoForm] = useState({ supplier_id: '', stock_location_id: '', expected_delivery: '', notes: '', items: [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }] })
+  const [supplierForm, setSupplierForm] = useState(/** @type {PurchasingSupplierFormExpectedView} */ ({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' }))
+  const [poForm, setPoForm] = useState(/** @type {PurchasingDraftExpectedView} */ ({ supplier_id: '', stock_location_id: '', expected_delivery: '', notes: '', items: [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }] }))
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [actionOrderId, setActionOrderId] = useState('')
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { void loadData() }, [localAuthority, localStockApi])
   useEffect(() => {
     if ((!showSupplierForm && !showPOForm && !detailOrder) || saving) return undefined
+    /** @param {KeyboardEvent} event */
     const closeOnEscape = (event) => {
       if (event.key !== 'Escape') return
       setShowSupplierForm(false)
@@ -45,6 +73,16 @@ export default function RestaurantPurchasing() {
     try {
       setLoading(true)
       setError('')
+      if (localAuthority) {
+        if (!localStockApi) throw new Error('The local purchasing scope could not be verified. Sign in again before continuing.')
+        const snapshot = await localStockApi.inventory.getPurchasingSnapshot()
+        if (snapshot?.complete !== true) throw new Error('Local purchasing data is incomplete. Refresh before relying on it.')
+        setSuppliers(snapshot.suppliers)
+        setOrders(snapshot.orders)
+        setInventoryItems(snapshot.inventoryItems)
+        setStockLocations([{ id: settings?.outlet_id || '', name: 'This Bar outlet', is_default: true, is_active: true }])
+        return
+      }
       const [snapshot, locations] = await Promise.all([window.api.pos.getPurchasingSnapshot
         ? await window.api.pos.getPurchasingSnapshot()
         : await Promise.all([
@@ -52,19 +90,21 @@ export default function RestaurantPurchasing() {
           window.api.pos.getPurchaseOrders ? window.api.pos.getPurchaseOrders() : Promise.resolve([]),
           window.api.inventory.getItems()
         ]).then(([suppliers, orders, inventoryItems]) => ({ suppliers, orders, inventoryItems })), window.api.pos.getRestaurantStockLocations()])
-      if (snapshot?.error) throw new Error(snapshot.error)
-      setSuppliers(Array.isArray(snapshot?.suppliers) ? snapshot.suppliers : [])
-      setOrders(Array.isArray(snapshot?.orders) ? snapshot.orders : [])
-      setInventoryItems(Array.isArray(snapshot?.inventoryItems) ? snapshot.inventoryItems : [])
-      setStockLocations(Array.isArray(locations) ? locations.filter((location) => location.is_active !== false) : [])
+      // Main JSON-normalizes these containers; their row properties remain unvalidated.
+      if ((/** @type {PurchasingSnapshotExpectedView} */ (snapshot))?.error) throw new Error(/** @type {string} */ ((/** @type {PurchasingSnapshotExpectedView} */ (snapshot)).error))
+      setSuppliers(Array.isArray((/** @type {PurchasingSnapshotExpectedView} */ (snapshot))?.suppliers) ? /** @type {PurchasingSupplierExpectedView[]} */ ((/** @type {PurchasingSnapshotExpectedView} */ (snapshot)).suppliers) : [])
+      setOrders(Array.isArray((/** @type {PurchasingSnapshotExpectedView} */ (snapshot))?.orders) ? /** @type {PurchasingOrderExpectedView[]} */ ((/** @type {PurchasingSnapshotExpectedView} */ (snapshot)).orders) : [])
+      setInventoryItems(Array.isArray((/** @type {PurchasingSnapshotExpectedView} */ (snapshot))?.inventoryItems) ? /** @type {PurchasingInventoryItemExpectedView[]} */ ((/** @type {PurchasingSnapshotExpectedView} */ (snapshot)).inventoryItems) : [])
+      setStockLocations(Array.isArray(locations) ? /** @type {PurchasingStockLocationExpectedView[]} */ (locations).filter((location) => location.is_active !== false) : [])
     } catch (err) {
-      setError(err?.message || 'Purchasing data could not be loaded.')
+      setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Purchasing data could not be loaded.')
     } finally {
       setLoading(false)
     }
   }
 
   async function saveSupplier() {
+    if (localAuthority) { setError('Supplier changes are not connected to this local purchasing screen yet. No hosted request was made.'); return }
     if (!supplierForm.name.trim()) { setError('Enter the supplier name.'); return }
     try {
       setSaving(true); setError(''); setNotice('')
@@ -76,21 +116,22 @@ export default function RestaurantPurchasing() {
         address: supplierForm.address.trim() || null,
         payment_terms: supplierForm.payment_terms.trim() || null
       }
-      const result = editingSupplier
+      const result = /** @type {PurchasingMutationExpectedView} */ (editingSupplier
         ? await window.api.pos.updateSupplier(editingSupplier.id, supplierData)
-        : await window.api.pos.createSupplier(supplierData)
-      if (result?.success === false) throw new Error(result.error || `Supplier could not be ${editingSupplier ? 'updated' : 'created'}.`)
+        : await window.api.pos.createSupplier(supplierData))
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || `Supplier could not be ${editingSupplier ? 'updated' : 'created'}.`))
       setShowSupplierForm(false)
       setEditingSupplier(null)
       setSupplierForm({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
       setNotice(`${supplierData.name} was ${editingSupplier ? 'updated' : 'added to Purchasing'}.`)
       await loadData()
     } catch (err) {
-      setError(err?.message || 'Supplier could not be saved.')
+      setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Supplier could not be saved.')
     } finally { setSaving(false) }
   }
 
   async function savePO() {
+    if (localAuthority) { setError('Purchase order creation is not connected to this local screen yet. No hosted request was made.'); return }
     if (!poForm.supplier_id) { setError('Choose a supplier for this purchase order.'); return }
     if (!poForm.stock_location_id) { setError('Choose where the goods will physically be received.'); return }
     if (!poForm.items.some(i => i.inventory_item_id)) { setError('Add at least one inventory item to the purchase order.'); return }
@@ -109,37 +150,41 @@ export default function RestaurantPurchasing() {
           unit_cost: Number(i.unit_cost) || 0
         }))
       }
-      const result = editingOrder
+      const result = /** @type {PurchasingMutationExpectedView} */ (editingOrder
         ? await window.api.pos.updatePurchaseOrderDraft(editingOrder.id, payload)
-        : await window.api.pos.createPurchaseOrder(payload)
-      if (result?.success === false) throw new Error(result.error || `Purchase order could not be ${editingOrder ? 'updated' : 'created'}.`)
+        : await window.api.pos.createPurchaseOrder(payload))
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || `Purchase order could not be ${editingOrder ? 'updated' : 'created'}.`))
       setShowPOForm(false)
       setEditingOrder(null)
       setPoForm({ supplier_id: '', stock_location_id: '', expected_delivery: '', notes: '', items: [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }] })
       setNotice(editingOrder ? 'Draft purchase order updated. Review it before approval.' : 'Draft purchase order created. Review it before approval.')
       await loadData()
     } catch (err) {
-      setError(err?.message || 'Purchase order could not be created.')
+      setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Purchase order could not be created.')
     } finally { setSaving(false) }
   }
 
+  /** @param {string} orderId */
   async function approveOrder(orderId) {
+    if (localAuthority) { setError('Purchase order approval is not connected to this local screen yet. No hosted request was made.'); return }
     try {
       setActionOrderId(orderId); setError(''); setNotice('')
-      const result = await window.api.pos.approvePurchaseOrder(orderId)
-      if (result?.success === false) throw new Error(result.error || 'Purchase order could not be approved.')
+      const result = /** @type {PurchasingMutationExpectedView} */ (await window.api.pos.approvePurchaseOrder(orderId))
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || 'Purchase order could not be approved.'))
       setNotice('Purchase order approved. Receive it only after the goods arrive.')
       await loadData()
     } catch (err) {
-      setError(err?.message || 'Purchase order could not be approved.')
+      setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Purchase order could not be approved.')
     } finally { setActionOrderId('') }
   }
 
+  /** @param {string} orderId @param {string} stockLocationId */
   async function receiveOrder(orderId, stockLocationId) {
+    if (localAuthority) { setError('Purchase receiving is not connected to this local screen yet. No hosted request was made.'); return }
     try {
       setActionOrderId(orderId); setError(''); setNotice('')
-      const result = await window.api.pos.receivePurchaseOrder(orderId, stockLocationId)
-      if (result?.success === false) throw new Error(result.error || 'Goods could not be received.')
+      const result = /** @type {PurchasingMutationExpectedView} */ (await window.api.pos.receivePurchaseOrder(orderId, stockLocationId))
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || 'Goods could not be received.'))
       setNotice(result?.reconciled
         ? 'Receipt reconciled: missing stock and movement entries were restored.'
         : result?.duplicate
@@ -147,31 +192,37 @@ export default function RestaurantPurchasing() {
           : 'Goods received and the authoritative stock movement was recorded.')
       setReceivingOrder(null); await loadData()
     } catch (err) {
-      setError(err?.message || 'Goods could not be received.')
+      setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Goods could not be received.')
     } finally { setActionOrderId('') }
   }
 
+  /** @param {string} orderId */
   async function savePurchaseOrderPdf(orderId) {
+    if (localAuthority) { setError('Purchase order PDF export is not connected to the local Bar database.'); return }
     try {
       setActionOrderId(`pdf:${orderId}`); setError(''); setNotice('')
-      const result = await window.api.pos.savePurchaseOrderPdf(orderId)
-      if (result?.success === false && !result?.canceled) throw new Error(result.error || 'Purchase order PDF could not be saved.')
+      const result = /** @type {PurchasingMutationExpectedView} */ (await window.api.pos.savePurchaseOrderPdf(orderId))
+      if (result?.success === false && !result?.canceled) throw new Error(/** @type {string} */ (result.error || 'Purchase order PDF could not be saved.'))
       if (result?.success) setNotice('Purchase order PDF saved. It is ready to send to the supplier.')
-    } catch (err) { setError(err?.message || 'Purchase order PDF could not be saved.') }
+    } catch (err) { setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Purchase order PDF could not be saved.') }
     finally { setActionOrderId('') }
   }
 
+  /** @param {string} orderId */
   async function emailPurchaseOrder(orderId) {
+    if (localAuthority) { setError('Supplier email is unavailable in local Bar mode. No hosted request was made.'); return }
     try {
       setActionOrderId(`email:${orderId}`); setError(''); setNotice('')
-      const result = await window.api.pos.sendPurchaseOrderEmail(orderId)
-      if (result?.success === false) throw new Error(result.error || 'Purchase order email could not be sent.')
+      const result = /** @type {PurchasingMutationExpectedView} */ (await window.api.pos.sendPurchaseOrderEmail(orderId))
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || 'Purchase order email could not be sent.'))
       setNotice('Purchase order emailed to the supplier with the PDF attached.')
-    } catch (err) { setError(err?.message || 'Purchase order email could not be sent.') }
+    } catch (err) { setError(/** @type {string} */ ((/** @type {{message?: unknown} | null | undefined} */ (err))?.message) || 'Purchase order email could not be sent.') }
     finally { setActionOrderId('') }
   }
 
+  /** @param {string} s */
   const statusBadge = (s) => {
+    /** @type {Record<string, string>} */
     const colors = {
       draft: 'bg-gray-100 text-gray-600',
       pending: 'bg-amber-100 text-amber-700',
@@ -182,6 +233,7 @@ export default function RestaurantPurchasing() {
     return colors[s] || 'bg-gray-100 text-gray-600'
   }
 
+  /** @param {PurchasingSupplierExpectedView | null} [supplier] */
   const startSupplierForm = (supplier = null) => {
     setError('')
     setEditingSupplier(supplier)
@@ -192,6 +244,7 @@ export default function RestaurantPurchasing() {
     setShowSupplierForm(true)
   }
 
+  /** @param {PurchasingOrderExpectedView | null} [order] */
   const startPurchaseOrderForm = (order = null) => {
     setError(''); setEditingOrder(order)
     setPoForm(order ? {
@@ -201,6 +254,7 @@ export default function RestaurantPurchasing() {
     setShowPOForm(true)
   }
 
+  /** @param {PurchasingOrderExpectedView} order */
   const startReceipt = (order) => {
     setError(''); setReceivingOrder(order)
     setReceiptLocationId(order.stock_location_id || stockLocations.find((location) => location.is_default)?.id || '')
@@ -214,12 +268,12 @@ export default function RestaurantPurchasing() {
           <p className="mt-1 text-sm text-white/70">Suppliers, purchase orders and receiving—kept separate from live service stock.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {tab === 'suppliers' ? (
+          {!localAuthority && tab === 'suppliers' ? (
             <button type="button" onClick={() => startSupplierForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md">
               <Plus size={14} /> Add supplier
             </button>
           ) : (
-            <button type="button" disabled={!inventoryItems.length} title={!inventoryItems.length ? 'Add an inventory item in Stock Control first' : undefined} onClick={() => startPurchaseOrderForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md disabled:cursor-not-allowed disabled:opacity-50">
+            !localAuthority && <button type="button" disabled={!inventoryItems.length} title={!inventoryItems.length ? 'Add an inventory item in Stock Control first' : undefined} onClick={() => startPurchaseOrderForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md disabled:cursor-not-allowed disabled:opacity-50">
               <Plus size={14} /> New purchase order
             </button>
           )}
@@ -228,6 +282,7 @@ export default function RestaurantPurchasing() {
       </div>
 
       {(notice || error) && <div role={error ? 'alert' : 'status'} className={`mb-5 flex items-start gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold ${error ? 'border-[#efb7aa] bg-[#fff0ed] text-[#8b3027]' : 'border-[#a7d8bf] bg-[#eaf8f0] text-[#17613f]'}`}>{error ? <AlertTriangle className="mt-0.5 shrink-0" size={17}/> : <CheckCircle2 className="mt-0.5 shrink-0" size={17}/>}<span>{error || notice}</span></div>}
+      {localAuthority && <div role="status" className="mb-5 rounded-xl border border-[#efd09e] bg-[#fff3df] px-4 py-3 text-sm font-semibold text-[#794017]">Viewing purchasing records from the local Bar database. Supplier changes, purchase order creation/approval/receiving, email and exports are not connected here yet. No hosted request is made.</div>}
       {!loading && !inventoryItems.length && <div className="mb-5 flex items-start gap-2 rounded-2xl border border-[#efd09e] bg-[#fff3df] px-4 py-3 text-sm font-semibold text-[#794017]"><AlertTriangle className="mt-0.5 shrink-0" size={17}/><span>Add the ingredients and supplies you buy in Stock Control before creating a purchase order. This keeps receiving linked to the stock ledger.</span></div>}
 
       {/* Tab bar */}
@@ -267,13 +322,13 @@ export default function RestaurantPurchasing() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button type="button" onClick={() => setDetailOrder(o)} className="inline-flex items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-3 py-2 text-xs font-extrabold text-[#713f35]"><ClipboardList size={13} /> View details</button>
-                    {o.status === 'draft' && (
+                    {!localAuthority && o.status === 'draft' && (
                       <><button type="button" disabled={actionOrderId === o.id} onClick={() => startPurchaseOrderForm(o)} className="inline-flex items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-3 py-2 text-xs font-extrabold text-[#713f35] disabled:opacity-55"><Pencil size={13} /> Edit draft</button><button type="button" disabled={actionOrderId === o.id} onClick={() => approveOrder(o.id)} className="rounded-lg bg-[#e8994e] px-3 py-2 text-xs font-extrabold text-[#2a1c23] disabled:opacity-55">{actionOrderId === o.id ? 'Approving…' : 'Approve'}</button></>
                     )}
-                    {o.status === 'approved' && (
+                    {!localAuthority && o.status === 'approved' && (
                       <button type="button" disabled={actionOrderId === o.id} onClick={() => startReceipt(o)} className="rounded-lg bg-[#285f4b] px-3 py-2 text-xs font-extrabold text-white disabled:opacity-55">{actionOrderId === o.id ? 'Receiving…' : 'Receive goods'}</button>
                     )}
-                    {o.status === 'received' && (
+                    {!localAuthority && o.status === 'received' && (
                       <button type="button" disabled={actionOrderId === o.id} onClick={() => startReceipt(o)} className="rounded-lg border border-[#9ccbb3] bg-[#eef8f2] px-3 py-2 text-xs font-extrabold text-[#17613f] disabled:opacity-55">{actionOrderId === o.id ? 'Checking…' : 'Verify receipt'}</button>
                     )}
                   </div>
@@ -296,7 +351,7 @@ export default function RestaurantPurchasing() {
                     {[s.contact_person, s.phone, s.email, s.payment_terms].filter(Boolean).join(' · ')}
                   </div>
                 </div>
-                <button type="button" onClick={() => startSupplierForm(s)} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-2.5 py-1.5 text-xs font-extrabold text-[#713f35]"><Pencil size={13} /> Edit</button>
+                {!localAuthority && <button type="button" onClick={() => startSupplierForm(s)} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-2.5 py-1.5 text-xs font-extrabold text-[#713f35]"><Pencil size={13} /> Edit</button>}
               </div>
             ))}
           </div>
@@ -312,15 +367,15 @@ export default function RestaurantPurchasing() {
               <button type="button" aria-label="Close purchase order details" onClick={() => setDetailOrder(null)} className="grid h-10 w-10 place-items-center rounded-xl border border-[#decfd0] bg-white text-[#6d565e] hover:border-[#d87945]"><X size={18} /></button>
             </div>
             <div className="mt-5 overflow-hidden rounded-xl border border-[#eadedb] bg-white">
-              {detailOrder.items?.length ? detailOrder.items.map((item) => { const recordedTotal = item.total === null || item.total === undefined || item.total === '' ? null : Number(item.total); return <div key={item.id} className="flex items-center justify-between gap-4 border-b border-[#f0e6e2] px-4 py-3 last:border-0"><div><p className="text-sm font-bold text-[#35242c]">{item.description}</p><p className="mt-0.5 text-xs text-[#806d73]">{item.quantity} {item.unit || 'units'} × {item.unit_cost === null || item.unit_cost === undefined || item.unit_cost === '' || !Number.isFinite(Number(item.unit_cost)) ? 'Unit cost unavailable' : `${currency}${Number(item.unit_cost).toFixed(2)}`}</p></div><span className="text-sm font-extrabold text-[#35242c]">{Number.isFinite(recordedTotal) ? `${currency}${recordedTotal.toFixed(2)}` : 'Amount unavailable'}</span></div> }) : <p className="px-4 py-5 text-sm text-[#806d73]">No stock lines were saved on this purchase order.</p>}
+              {detailOrder.items?.length ? detailOrder.items.map((item) => { const recordedTotal = item.total === null || item.total === undefined || item.total === '' ? null : Number(item.total); return <div key={item.id} className="flex items-center justify-between gap-4 border-b border-[#f0e6e2] px-4 py-3 last:border-0"><div><p className="text-sm font-bold text-[#35242c]">{item.description}</p><p className="mt-0.5 text-xs text-[#806d73]">{item.quantity} {item.unit || 'units'} × {item.unit_cost === null || item.unit_cost === undefined || item.unit_cost === '' || !Number.isFinite(Number(item.unit_cost)) ? 'Unit cost unavailable' : `${currency}${Number(item.unit_cost).toFixed(2)}`}</p></div><span className="text-sm font-extrabold text-[#35242c]">{Number.isFinite(/** @type {number} */ (recordedTotal)) ? `${currency}${/** @type {number} */ (recordedTotal).toFixed(2)}` : 'Amount unavailable'}</span></div> }) : <p className="px-4 py-5 text-sm text-[#806d73]">No stock lines were saved on this purchase order.</p>}
             </div>
             {detailOrder.notes && <p className="mt-4 rounded-xl bg-[#f5ece8] px-3 py-2 text-sm text-[#604a52]"><span className="font-extrabold">Notes: </span>{detailOrder.notes}</p>}
             <div className="mt-5 flex justify-between border-t border-[#eadedb] pt-4 text-base font-black text-[#35242c]"><span>Order total</span><span>{detailOrder.total === null || detailOrder.total === undefined || detailOrder.total === '' || !Number.isFinite(Number(detailOrder.total)) ? 'Amount unavailable' : `${currency}${Number(detailOrder.total).toFixed(2)}`}</span></div>
-            <div className="mt-5 flex flex-wrap gap-2 border-t border-[#eadedb] pt-4">
+            {!localAuthority && <div className="mt-5 flex flex-wrap gap-2 border-t border-[#eadedb] pt-4">
               <button type="button" disabled={actionOrderId === `pdf:${detailOrder.id}`} onClick={() => savePurchaseOrderPdf(detailOrder.id)} className="inline-flex items-center gap-1.5 rounded-xl border border-[#d9b59e] bg-white px-3 py-2.5 text-sm font-extrabold text-[#713f35] disabled:opacity-50"><Download size={15}/>{actionOrderId === `pdf:${detailOrder.id}` ? 'Saving PDF…' : 'Download PDF'}</button>
               <button type="button" disabled={detailOrder.status !== 'approved' || !detailOrder.supplier?.email || actionOrderId === `email:${detailOrder.id}`} onClick={() => emailPurchaseOrder(detailOrder.id)} title={detailOrder.status !== 'approved' ? 'Approve the PO before sending it.' : !detailOrder.supplier?.email ? 'Add the supplier email in Purchasing first.' : undefined} className="inline-flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] disabled:cursor-not-allowed disabled:opacity-50"><Mail size={15}/>{actionOrderId === `email:${detailOrder.id}` ? 'Sending…' : 'Email supplier'}</button>
               {(detailOrder.status !== 'approved' || !detailOrder.supplier?.email) && <p className="basis-full text-xs font-semibold text-[#806d73]">{detailOrder.status !== 'approved' ? 'Approve the PO before it can be emailed.' : 'Add the supplier email in Purchasing to send directly.'}</p>}
-            </div>
+            </div>}
           </div>
         </div>
       )}

@@ -350,6 +350,10 @@ test('Weeded mesh contract: drawer opens, pack/product writes, checklists flow; 
   assert.match(merge, /applyImportedProductPackEffects/, 'Peer pack/product writes must land in the selling list');
   assert.match(merge, /applyImportedChecklistEffects/, 'Peer checklists and check-offs must land visibly');
   assert.match(merge, /must not carry PIN material/, 'Drawer opens carrying PINs must be quarantined, not merged');
+  const originOnlyStart = merge.indexOf('const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([');
+  const originOnlyEnd = merge.indexOf(']);', originOnlyStart);
+  assert.ok(originOnlyStart >= 0 && originOnlyEnd > originOnlyStart, 'Machine-bound operations must have an explicit origin-only set');
+  const originOnly = merge.slice(originOnlyStart, originOnlyEnd);
   for (const table of [
     'clock_in_staff_offline',
     'clock_out_staff_offline',
@@ -362,7 +366,7 @@ test('Weeded mesh contract: drawer opens, pack/product writes, checklists flow; 
     'activate_shared_till_operator_offline',
     'submit_pos_shift_cashup_with_attendance_pin',
   ]) {
-    assert.ok(!merge.includes(`'${table}'`), `${table} carries PINs and must stay off the mesh`);
+    assert.ok(originOnly.includes(`'${table}'`), `${table} carries PINs/custody and must be origin-device-only`);
   }
 });
 

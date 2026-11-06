@@ -4,7 +4,9 @@ import { requireAdmin, dedupePromise } from './infrastructure.js'
 
 /** @param {string} fn @param {Record<string, unknown>} args @param {boolean} [useAdmin] @returns {Promise<unknown>} */
 async function callCommandCentralRpc(fn, args, useAdmin = false) {
-  const db = useAdmin ? requireAdmin() : state.supabase
+  // The desktop profile initializes state.supabase before command-central IPC;
+  // a premature call still fails at `.rpc` exactly as it did before this view.
+  const db = /** @type {NonNullable<typeof state.supabase>} */ (useAdmin ? requireAdmin() : state.supabase)
   const { data, error } = await db.rpc(fn, args)
   if (error) throw error
   // The Supabase SDK exposes RPC `data` as upstream `any`; preserve the
@@ -34,7 +36,8 @@ async function _getActivationHistory(licenseId) {
 
 /** @param {unknown} licenseId @returns {Promise<unknown[]>} */
 export function getActivationHistory(licenseId) {
-  return dedupePromise(`cmdCentral:history:${licenseId}`, () => _getActivationHistory(licenseId))
+  // `_getActivationHistory` returns only the array accepted by its guard.
+  return /** @type {Promise<unknown[]>} */ (dedupePromise(`cmdCentral:history:${licenseId}`, () => _getActivationHistory(licenseId)))
 }
 
 /** @param {unknown} lodgeId @param {unknown} addonKey @param {unknown} [deactivatedBy] @param {unknown} [reason] @returns {Promise<unknown>} */
@@ -57,5 +60,6 @@ async function _getPendingUpgradeRequests(status = 'pending') {
 
 /** @param {unknown} status @returns {Promise<unknown[]>} */
 export function getPendingUpgradeRequests(status) {
-  return dedupePromise(`cmdCentral:upgrades:${status || 'all'}`, () => _getPendingUpgradeRequests(status))
+  // `_getPendingUpgradeRequests` returns only the array accepted by its guard.
+  return /** @type {Promise<unknown[]>} */ (dedupePromise(`cmdCentral:upgrades:${status || 'all'}`, () => _getPendingUpgradeRequests(status)))
 }

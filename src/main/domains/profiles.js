@@ -24,14 +24,26 @@ import {
   isProductCompatiblePropertyType
 } from '../../shared/productIdentity.js'
 
+/** Normalized producer view; dates preserve their existing raw JSON values. @typedef {import('../../shared/desktopIpcContracts.js').DesktopProfileReadView} ProfileExpectedData */
+/** @typedef {import('../../shared/desktopIpcContracts.js').DesktopProfileListReadView} ProfileListItemExpectedData */
+/** The registry file is still parsed as unvalidated JSON; this view only names fields read below. @typedef {{active_lodge_id?: unknown, profiles?: unknown}} ProfileRegistryInputExpectedView */
+/** @typedef {{active_lodge_id: string|null, profiles: ProfileExpectedData[]}} ProfileRegistryExpectedData */
+/** @typedef {{lodge_id?: unknown, label?: unknown, status?: unknown, created_at?: unknown, last_used_at?: unknown}} RawProfileExpectedView */
+/** @typedef {{profiles?: unknown, active_lodge_id?: unknown}} RawProfileRegistryExpectedView */
+/** @typedef {{property_type?: unknown, business_type?: unknown, setup_complete?: unknown, lodge_name?: unknown, company_name?: unknown, [key: string]: unknown}} ProfileSettingsExpectedView */
+/** @typedef {Error & {code?: unknown}} ProfileErrorExpectedView */
+
+/** @returns {string} */
 function productBusinessTitle() {
   return getProductDefinition(getRuntimeProductId()).businessNounTitle || 'Lodge'
 }
 
+/** @returns {string} */
 function defaultDraftLabel() {
   return `New ${productBusinessTitle()}`
 }
 
+/** @returns {string} */
 function defaultUntitledLabel() {
   return `Untitled ${productBusinessTitle()}`
 }
@@ -41,68 +53,80 @@ export const PROFILE_STATUS = {
   READY: 'ready'
 }
 
+/** @returns {string} */
 function getLodgeIdPath() {
   return path.join(app.getPath('userData'), 'lodge-id.json');
 }
 
+/** @returns {string} */
 function getProfilesPath() {
   return path.join(app.getPath('userData'), 'profiles.json');
 }
 
+/** @returns {string|null} */
 function readLegacyLodgeId() {
-  const data = readJsonFile(getLodgeIdPath(), null);
+  const data = /** @type {{lodge_id?: unknown}|null} */ (readJsonFile(getLodgeIdPath(), null));
   return normalizeLodgeId(data?.lodge_id);
 }
 
+/** @param {string|null} id */
 export function persistLegacyLodgeId(id) {
   writeJsonFile(getLodgeIdPath(), { lodge_id: id });
 }
 
+/** @param {unknown} profileLodgeId @returns {string} */
 export function getProfileCacheDir(profileLodgeId) {
-  return path.join(state.profilesCacheDir, normalizeLodgeId(profileLodgeId));
+  // Profile runtime initializes both paths before callers reach this helper;
+  // these assertions do not add a fallback or change path.join's error on invalid values.
+  return path.join(/** @type {string} */ (state.profilesCacheDir), /** @type {string} */ (normalizeLodgeId(profileLodgeId)));
 }
 
+/** @param {ProfileExpectedData} profile */
 function isProfileCompatibleWithCurrentProduct(profile) {
   if (profile?.status === PROFILE_STATUS.DRAFT) return true;
   const cached = readJsonFile(path.join(getProfileCacheDir(profile?.lodge_id), 'settings.json'), []);
-  const settings = Array.isArray(cached) ? cached[0] : cached;
+  const settings = /** @type {ProfileSettingsExpectedView|null|undefined} */ (Array.isArray(cached) ? cached[0] : cached);
   const propertyType = settings?.property_type || settings?.business_type || 'lodge';
   return isProductCompatiblePropertyType(getRuntimeProductId(), propertyType);
 }
 
+/** @param {string} [propertyType] */
 function productMismatchError(propertyType = '') {
   const error = new Error(
     propertyType
       ? getProductMismatchMessage(getRuntimeProductId(), propertyType)
       : 'This saved business belongs to a different Tsa Bonno product. Open it with its matching app instead.'
   );
-  error.code = 'product_profile_mismatch';
+  /** @type {ProfileErrorExpectedView} */ (error).code = 'product_profile_mismatch';
   return error;
 }
 
 function getInactiveCacheDir() {
-  return path.join(state.cacheRootDir, '__inactive');
+  return path.join(/** @type {string} */ (state.cacheRootDir), '__inactive');
 }
 
+/** @param {unknown} rawProfile @returns {ProfileExpectedData|null} */
 export function sanitizeProfile(rawProfile) {
-  const normalizedId = normalizeLodgeId(rawProfile?.lodge_id);
+  const profileView = /** @type {RawProfileExpectedView|null|undefined} */ (rawProfile);
+  const normalizedId = normalizeLodgeId(profileView?.lodge_id);
   if (!isUuid(normalizedId)) return null;
 
-  const createdAt = rawProfile?.created_at || new Date().toISOString();
-  const status = rawProfile?.status === PROFILE_STATUS.DRAFT ? PROFILE_STATUS.DRAFT : PROFILE_STATUS.READY;
-  const label = typeof rawProfile?.label === 'string' && rawProfile.label.trim() ?
-  rawProfile.label.trim() :
+  const createdAt = profileView?.created_at || new Date().toISOString();
+  const status = profileView?.status === PROFILE_STATUS.DRAFT ? PROFILE_STATUS.DRAFT : PROFILE_STATUS.READY;
+  const label = typeof profileView?.label === 'string' && profileView.label.trim() ?
+  profileView.label.trim() :
   defaultUntitledLabel();
 
   return {
-    lodge_id: normalizedId,
+    lodge_id: /** @type {string} */ (normalizedId),
     label,
     status,
     created_at: createdAt,
-    last_used_at: rawProfile?.last_used_at || createdAt
+    last_used_at: profileView?.last_used_at || createdAt
   };
 }
 
+/** @param {ProfileExpectedData[]} [profiles] @param {unknown} [activeLodgeId] @returns {ProfileExpectedData[]} */
 function sortProfiles(profiles = [], activeLodgeId = null) {
   const activeId = normalizeLodgeId(activeLodgeId);
   return [...profiles].sort((a, b) => {
@@ -115,10 +139,11 @@ function sortProfiles(profiles = [], activeLodgeId = null) {
   });
 }
 
+/** @returns {ProfileRegistryExpectedData} */
 export function readProfilesRegistry() {
-  const raw = readJsonFile(getProfilesPath(), null);
+  const raw = /** @type {RawProfileRegistryExpectedView|null|undefined} */ (readJsonFile(getProfilesPath(), null));
   const profiles = Array.isArray(raw?.profiles) ?
-  raw.profiles.map(sanitizeProfile).filter(Boolean) :
+  raw.profiles.map(sanitizeProfile).filter((profile) => profile !== null) :
   [];
   const active = normalizeLodgeId(raw?.active_lodge_id);
   const activeExists = profiles.some((profile) => profile.lodge_id === active);
@@ -129,11 +154,12 @@ export function readProfilesRegistry() {
   };
 }
 
+/** @param {ProfileRegistryInputExpectedView|null|undefined} registry @returns {ProfileRegistryExpectedData} */
 export function writeProfilesRegistry(registry) {
   const activeId = normalizeLodgeId(registry?.active_lodge_id);
-  const profiles = (Array.isArray(registry?.profiles) ? registry.profiles : []).
+  const profiles = (Array.isArray(registry?.profiles) ? /** @type {unknown[]} */ (registry.profiles) : []).
   map(sanitizeProfile).
-  filter(Boolean);
+  filter((profile) => profile !== null);
 
   const next = {
     active_lodge_id: profiles.some((profile) => profile.lodge_id === activeId) ? activeId : null,
@@ -144,15 +170,18 @@ export function writeProfilesRegistry(registry) {
   return next;
 }
 
+/** @param {ProfileSettingsExpectedView|null} [settings] @param {string|null|undefined} [fallback] @returns {string} */
 export function profileLabelFromSettings(settings = {}, fallback) {
   const safeFallback = fallback || defaultUntitledLabel();
-  return settings?.lodge_name?.trim() || settings?.company_name?.trim() || safeFallback;
+  return /** @type {string|null|undefined} */ (settings?.lodge_name)?.trim() || /** @type {string|null|undefined} */ (settings?.company_name)?.trim() || safeFallback;
 }
 
+/** @param {unknown} profileLodgeId */
 export function ensureProfileCacheFiles(profileLodgeId) {
   const profileDir = getProfileCacheDir(profileLodgeId);
   ensureDir(profileDir);
 
+  /** @type {[string, unknown][]} */
   const fileMap = [
   ['settings.json', []],
   ['users.json', []],
@@ -233,6 +262,7 @@ export function ensureProfileCacheFiles(profileLodgeId) {
   }
 }
 
+/** @returns {boolean} */
 function hasLegacyCacheData() {
   const legacyFiles = [
   'settings.json',
@@ -280,9 +310,10 @@ function hasLegacyCacheData() {
   'trial_status.json'];
 
 
-  return legacyFiles.some((fileName) => fs.existsSync(path.join(state.cacheRootDir, fileName)));
+  return legacyFiles.some((fileName) => fs.existsSync(path.join(/** @type {string} */ (state.cacheRootDir), fileName)));
 }
 
+/** @returns {ProfileRegistryExpectedData} */
 function migrateLegacySingleLodgeProfile() {
   const legacyLodgeId = readLegacyLodgeId();
   if (!legacyLodgeId && !hasLegacyCacheData()) {
@@ -290,15 +321,18 @@ function migrateLegacySingleLodgeProfile() {
   }
 
   const derivedLodgeId = legacyLodgeId || randomUUID();
-  const legacySettings = readJsonFile(path.join(state.cacheRootDir, 'settings.json'), []);
-  const legacySettingsRow = Array.isArray(legacySettings) ? legacySettings[0] : null;
-  const profile = sanitizeProfile({
+  const legacySettings = readJsonFile(path.join(/** @type {string} */ (state.cacheRootDir), 'settings.json'), []);
+  const legacySettingsRow = /** @type {ProfileSettingsExpectedView|null|undefined} */ (Array.isArray(legacySettings) ? legacySettings[0] : null);
+  // Existing migration flow assumes sanitizeProfile succeeds here. This view
+  // records that expectation but does not guard invalid legacy IDs; the same
+  // dereference failure remains if the existing assumption is violated.
+  const profile = /** @type {ProfileExpectedData} */ (sanitizeProfile({
     lodge_id: derivedLodgeId,
     label: profileLabelFromSettings(legacySettingsRow, 'Existing Lodge'),
     status: legacySettingsRow?.setup_complete === false ? PROFILE_STATUS.DRAFT : PROFILE_STATUS.READY,
     created_at: new Date().toISOString(),
     last_used_at: new Date().toISOString()
-  });
+  }));
 
   const profileDir = getProfileCacheDir(profile.lodge_id);
   ensureDir(profileDir);
@@ -350,7 +384,7 @@ function migrateLegacySingleLodgeProfile() {
 
 
   for (const fileName of legacyFileNames) {
-    const legacyPath = path.join(state.cacheRootDir, fileName);
+    const legacyPath = path.join(/** @type {string} */ (state.cacheRootDir), fileName);
     const nextPath = path.join(profileDir, fileName);
     if (fs.existsSync(legacyPath) && !fs.existsSync(nextPath)) {
       fs.copyFileSync(legacyPath, nextPath);
@@ -366,6 +400,7 @@ function migrateLegacySingleLodgeProfile() {
   });
 }
 
+/** @param {unknown} nextLodgeId @param {{persistActive?: unknown, touch?: unknown}} [options] */
 export function setRuntimeActiveProfile(nextLodgeId, { persistActive = true, touch = true } = {}) {
   const normalizedId = normalizeLodgeId(nextLodgeId);
   state.lodgeId = normalizedId || null;
@@ -387,6 +422,7 @@ export function setRuntimeActiveProfile(nextLodgeId, { persistActive = true, tou
   });
 }
 
+/** @returns {ProfileRegistryExpectedData} */
 export function initializeProfileRuntime() {
   ensureDir(state.cacheRootDir);
   ensureDir(state.profilesCacheDir);
@@ -407,6 +443,7 @@ export function initializeProfileRuntime() {
   return productScopedRegistry;
 }
 
+/** @param {unknown} targetLodgeId @param {Record<string, unknown>} [updates] */
 export function updateProfileMetadata(targetLodgeId, updates = {}) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   const registry = readProfilesRegistry();
@@ -426,6 +463,7 @@ export function updateProfileMetadata(targetLodgeId, updates = {}) {
   });
 }
 
+/** @param {unknown} targetLodgeId */
 export function removeLocalCompanyProfile(targetLodgeId) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   if (!normalizedId) return { removed: false, active_profile: getActiveProfile(), profiles: getProfiles() };
@@ -462,6 +500,7 @@ export function removeLocalCompanyProfile(targetLodgeId) {
   };
 }
 
+/** @returns {ProfileListItemExpectedData[]} */
 export function getProfiles() {
   const registry = readProfilesRegistry();
   return registry.profiles.map((profile) => ({
@@ -470,12 +509,14 @@ export function getProfiles() {
   }));
 }
 
+/** @returns {ProfileExpectedData|null} */
 export function getActiveProfile() {
   const registry = readProfilesRegistry();
   const active = registry.profiles.find((profile) => profile.lodge_id === registry.active_lodge_id);
   return active || null;
 }
 
+/** @param {unknown} lodgeId @param {{label?: unknown}} [options] */
 export function ensureReadyProfileForLodge(lodgeId, { label } = {}) {
   const normalizedId = normalizeLodgeId(lodgeId);
   if (!isUuid(normalizedId)) throw new Error('The server returned an invalid lodge ID.');
@@ -484,14 +525,15 @@ export function ensureReadyProfileForLodge(lodgeId, { label } = {}) {
   const nextLabel = typeof label === 'string' && label.trim() ? label.trim() : `Existing ${productBusinessTitle()}`;
   const existing = registry.profiles.find((profile) => profile.lodge_id === normalizedId);
   const genericLabels = new Set(['Untitled Lodge', 'New Lodge', defaultUntitledLabel(), defaultDraftLabel()]);
-  const nextProfile = sanitizeProfile({
+  // `normalizedId` passed isUuid above; this expected view adds no runtime check.
+  const nextProfile = /** @type {ProfileExpectedData} */ (sanitizeProfile({
     ...(existing || {}),
     lodge_id: normalizedId,
     label: existing?.label && !genericLabels.has(existing.label) ? existing.label : nextLabel,
     status: PROFILE_STATUS.READY,
     created_at: existing?.created_at || new Date().toISOString(),
     last_used_at: new Date().toISOString()
-  });
+  }));
   const remainingProfiles = registry.profiles.filter((profile) => profile.lodge_id !== normalizedId);
 
   writeProfilesRegistry({
@@ -504,18 +546,20 @@ export function ensureReadyProfileForLodge(lodgeId, { label } = {}) {
   return getActiveProfile();
 }
 
+/** @returns {ProfileSettingsExpectedView} */
 function getCachedSettingsSnapshot() {
   if (!state.cacheDir) {
     return {
       lodge_id: state.lodgeId || null
     };
   }
-  const cached = readJsonFile(path.join(state.cacheDir, 'settings.json'), []);
-  return cached[0] || {
+  const cached = /** @type {unknown[]} */ (readJsonFile(path.join(state.cacheDir, 'settings.json'), []));
+  return /** @type {ProfileSettingsExpectedView} */ (cached[0]) || {
     lodge_id: state.lodgeId || null
   };
 }
 
+/** @param {unknown} targetLodgeId */
 export async function selectProfile(targetLodgeId) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   const registry = readProfilesRegistry();
@@ -523,7 +567,7 @@ export async function selectProfile(targetLodgeId) {
   if (!profile) throw new Error('That lodge profile was not found on this computer.');
   if (!isProfileCompatibleWithCurrentProduct(profile)) {
     const cached = readJsonFile(path.join(getProfileCacheDir(profile.lodge_id), 'settings.json'), []);
-    const settings = Array.isArray(cached) ? cached[0] : cached;
+    const settings = /** @type {ProfileSettingsExpectedView|null|undefined} */ (Array.isArray(cached) ? cached[0] : cached);
     throw productMismatchError(settings?.property_type || settings?.business_type || '');
   }
 
@@ -551,21 +595,25 @@ export async function selectProfile(targetLodgeId) {
     await refreshAllCaches();
   }
 
+  // The target profile was found in the registry above and is now active. This
+  // expected-data assertion does not validate the returned profile.
   return {
-    ...getActiveProfile(),
+    .../** @type {ProfileExpectedData} */ (getActiveProfile()),
     settings: getCachedSettingsSnapshot()
   };
 }
 
+/** @returns {Promise<ProfileExpectedData>} */
 export async function createDraftProfile() {
   const draftLodgeId = randomUUID();
-  const draftProfile = sanitizeProfile({
+  // randomUUID supplies the UUID checked by sanitizeProfile; assertion is erased.
+  const draftProfile = /** @type {ProfileExpectedData} */ (sanitizeProfile({
     lodge_id: draftLodgeId,
     label: defaultDraftLabel(),
     status: PROFILE_STATUS.DRAFT,
     created_at: new Date().toISOString(),
     last_used_at: new Date().toISOString()
-  });
+  }));
 
   const registry = readProfilesRegistry();
   const nextProfiles = registry.profiles.filter((profile) => profile.lodge_id !== draftLodgeId);
@@ -575,6 +623,11 @@ export async function createDraftProfile() {
     profiles: nextProfiles
   });
 
+  // A new company must never inherit the previous company's operator or
+  // replay authority, even when draft creation is invoked outside the UI.
+  state.currentUser = null;
+  state.replayAuthReady = false;
+  clearBackendSession();
   setRuntimeActiveProfile(draftLodgeId, { persistActive: false, touch: false });
   ensureProfileCacheFiles(draftLodgeId);
   clearCache('users');
@@ -594,6 +647,7 @@ export async function createDraftProfile() {
   return draftProfile;
 }
 
+/** @param {unknown} targetLodgeId @returns {Promise<Extract<import('../../shared/desktopIpcContracts.js').DesktopProfileRemoveDraftResult, {success: true}>>} */
 export async function removeDraftProfile(targetLodgeId) {
   const normalizedId = normalizeLodgeId(targetLodgeId);
   const registry = readProfilesRegistry();
@@ -613,7 +667,7 @@ export async function removeDraftProfile(targetLodgeId) {
 
   await checkOnline();
   if (state.isOnline) {
-    const { data: remoteSettings } = await state.supabase.
+    const { data: remoteSettings } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('settings').
     select('setup_complete').
     eq('lodge_id', normalizedId).

@@ -20,6 +20,7 @@ export default function ResetPassword() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submit = async (event) => {
     event.preventDefault()
     setError('')
@@ -42,7 +43,9 @@ export default function ResetPassword() {
       setPassword('')
       setConfirmPassword('')
     } catch (err) {
-      setError(err.message || 'Could not update password. Open the reset link again and try once more.')
+      // The password client rejects with Error-like values; retain the existing
+      // message property read without claiming the thrown value was validated.
+      setError((/** @type {{message?: string}} */ (err)).message || 'Could not update password. Open the reset link again and try once more.')
     } finally {
       setLoading(false)
     }

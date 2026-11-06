@@ -25,10 +25,78 @@ import { getPoolDayUse } from './pool.js'
  * cache consumers. Cache JSON is not validated here; this read-site view only
  * records the fields the current report reads and preserves native behavior
  * for malformed cache values.
- * @typedef {{room_id?: string|null, check_in?: string, check_out?: string, total_amount?: number|string|null, charges_total?: number|string|null, is_exclusive_event?: boolean|null, status?: string|null}} OccupancyBookingExpectedData
+ * @typedef {{room_id?: string|null, check_in: string|number, check_out: string|number, total_amount?: number|string|null, charges_total?: number|string|null, is_exclusive_event?: boolean|null, status?: string|null}} OccupancyBookingExpectedData
  */
 
-/** @typedef {Record<string, unknown> & {id?: unknown}} OccupancyRoomExpectedData */
+/** @typedef {Record<string, unknown> & {id: string}} OccupancyRoomExpectedData */
+/**
+ * Expected fields read by the local reports snapshot from existing booking,
+ * payment, expense, order, conference, day-use, and maintenance producers.
+ * This view does not validate cache or query data.
+ * @typedef {Record<string, unknown> & {status?: unknown, check_in: string|number, check_out: string|number, payment_status?: unknown, total_amount?: unknown, charges_total?: unknown, amount_paid?: unknown}} ReportsSnapshotBookingExpectedData
+ * @typedef {Record<string, unknown> & {paid_at?: unknown, amount?: unknown, type?: unknown, booking_id?: unknown}} ReportsSnapshotPaymentExpectedData
+ * @typedef {Record<string, unknown> & {date?: unknown, amount?: unknown}} ReportsSnapshotExpenseExpectedData
+ * @typedef {Record<string, unknown> & {status?: unknown, payment_method?: unknown, created_at?: unknown, total?: unknown}} ReportsSnapshotPosOrderExpectedData
+ * @typedef {Record<string, unknown> & {payment_status?: unknown, booking_date?: unknown, total_amount?: unknown}} ReportsSnapshotConferenceBookingExpectedData
+ * @typedef {Record<string, unknown> & {date?: unknown, total?: unknown}} ReportsSnapshotPoolDayUseExpectedData
+ * @typedef {Record<string, unknown> & {total_cost?: unknown}} ReportsSnapshotMaintenanceRowExpectedData
+ */
+/**
+ * Fields read by the local P&L normalizer from the existing summary RPC result.
+ * This view captures its tolerated incomplete/legacy payloads; it is not
+ * runtime validation. Leaves stay unknown for the existing Number/|| handling.
+ * Core amounts are emitted by the SQL function; optional fields have fallback
+ * or enrichment paths in the current caller/normalizer.
+ * @typedef {{bookingRevenue: unknown, posRevenue: unknown, conferenceRevenue: unknown, poolRevenue: unknown, totalExpenses: unknown, invCosts: unknown, supCosts: unknown, vatAmount: unknown, maintenanceCosts?: unknown, retainedRevenue?: unknown, regularRevenue?: unknown, eventRevenue?: unknown, totalBookings?: unknown, avgBookingValue?: unknown, refundsIssued?: unknown, outstandingAmount?: unknown, bookingPaymentByMethod?: unknown}} ProfitLossSummaryExpectedData
+ */
+/**
+ * Expected row views for the local revenue fallback's existing cache and query projections.
+ * Cache JSON and Supabase results are not runtime-validated here.
+ * @typedef {{total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null, status?: string|null, payment_status?: string|null, check_in: string|number, check_out: string|number, is_exclusive_event?: boolean|null, notes?: string|null, event_daily_rate?: number|string|null, vat_enabled?: boolean|null, vat_rate?: number|string|null}} RevenueBookingExpectedData
+ * @typedef {{booking_id?: string|null, amount?: number|string|null, method?: string|null, type?: string|null, paid_at?: string|null}} RevenuePaymentExpectedData
+ * @typedef {{booking_id?: string|null, retained_amount?: number|string|null, amount?: number|string|null, created_at?: string|null}} RevenueRefundApprovalExpectedData
+ * @typedef {{group_id: string|number, check_in: string|number, check_out: string|number, nights: number, daily_rate: number|string, total: number, charges_total: number|string, room_count: number, status?: string|null, payment_status?: string|null, amount_paid: number|string, vat_enabled: boolean, vat_rate: number}} RevenueEventGroupExpectedData
+ */
+/**
+ * Caught values from this module's existing fallback paths. Catch bindings are
+ * unknown; `message` is the conventional Error/PostgrestError text and is not
+ * runtime-validated here.
+ * @typedef {Record<string, unknown> | null | undefined} CaughtReportErrorView
+ */
+/**
+ * Expected read views for report rows. Supabase numeric columns arrive as JSON
+ * numbers, but cache JSON, query results, and RPC payloads remain unvalidated
+ * at these read sites; money leaves keep their stored string variants.
+ * @typedef {{id: string, occupied_nights: number, occupancy_rate: number, actual_revenue: number}} OccupancyReportRowExpectedData
+ * @typedef {{booking_id?: string|null, retained_amount?: number|string|null, amount?: number|string|null}} RevenueRetainedRowExpectedData
+ * @typedef {{check_in?: string, check_out?: string}} ManagerDashboardArrivalExpectedData
+ * @typedef {{status: string, check_in: string, check_out: string, total_amount?: number|string|null, charges_total?: number|string|null}} DashboardCachedBookingExpectedData
+ * @typedef {{check_in: string, check_out: string, status?: string|null}} ForecastBookingExpectedData
+ * @typedef {{date: string, amount: unknown, category: string|null}} ProfitLossExpenseExpectedData
+ * @typedef {{room_id: string|null, room_number: string|null, status: string, total_cost: number|null}} MaintenanceReportRowExpectedData
+ * @typedef {{room_id: string|null, total_cost: number|string|null, units_used: number|string}} RoomSupplyAllocationExpectedData
+ * @typedef {{id?: string, room_number?: string|null, room_type?: string|null, rate_per_night?: number|string|null, complete?: unknown, _complete?: unknown}} RoomProfitabilityRowExpectedData
+ * @typedef {{id?: string, booking_date: string, client_name?: unknown, room_name?: unknown, attendees?: unknown, total_amount?: unknown, deposit_paid?: unknown, payment_status?: unknown, start_time?: unknown, end_time?: unknown}} CachedConferenceBookingExpectedData
+ * @typedef {{id?: string, date: string, guest_name?: unknown, adults?: unknown, children?: unknown, total?: unknown, deposit_amount?: unknown, balance_due?: unknown, template_name?: unknown, resource_name?: unknown, payment_method?: unknown}} CachedPoolDayUseExpectedData
+ * @typedef {{id?: string, customer_id?: string, room_id?: string, check_in: string, check_out?: string|number|null, status?: string|null, customer_name?: string, customer_phone?: string, customer_email?: string, room_number?: string, room_type?: string}} UpcomingBookingExpectedData
+ * @typedef {{id?: string, name?: string, phone?: string, email?: string}} UpcomingCustomerExpectedData
+ * @typedef {{id?: string, room_number?: string, room_type?: string}} UpcomingRoomExpectedData
+ * @typedef {Record<string, unknown> & {id: string, check_in: string|number, check_out: string|number, customers?: {name?: unknown, phone?: unknown, email?: unknown}|Array<{name?: unknown, phone?: unknown, email?: unknown}>|null, rooms?: {room_number?: unknown, room_type?: unknown}|Array<{room_number?: unknown, room_type?: unknown}>|null}} UpcomingRoomBookingQueryExpectedData
+ * @typedef {Record<string, unknown> & {id: string, booking_date: string, client_name?: unknown, room_name?: unknown, attendees?: unknown, total_amount?: unknown, deposit_paid?: unknown, payment_status?: unknown, start_time?: unknown, end_time?: unknown}} UpcomingConferenceQueryExpectedData
+ * @typedef {Record<string, unknown> & {id: string, date: string, guest_name?: unknown, adults?: unknown, children?: unknown, total?: unknown, deposit_amount?: unknown, balance_due?: unknown, template_name?: unknown, resource_name?: unknown, payment_method?: unknown}} UpcomingPoolQueryExpectedData
+ * @typedef {'kitchen'|'bar'|'front_desk'|'unassigned'} OutletProfitBucketKey
+ */
+
+/**
+ * Equivalent to the existing object-index coercion for the primitive report
+ * keys used here: strings stay strings, while null/undefined become their
+ * property names. This is a key conversion, not validation of row data.
+ * @param {string|null|undefined} value
+ * @returns {string}
+ */
+function reportObjectKey(value) {
+  return String(value);
+}
 
 async function getAllExpenses() {
   return getExpenses('2000-01-01', '2099-12-31')
@@ -64,12 +132,11 @@ function withReportMetadata(rows, source, complete) {
 export async function getOccupancyReport(startDate, endDate) {
   // getAllRooms normalizes to an array and attaches read metadata. This local
   // expected view describes its existing result shape without validating cache.
-  /** @type {OccupancyRoomExpectedData[] & ReadMetadataRows} */
-  const rooms = await getAllRooms().catch((error) => {
-    const cached = readCache('rooms');
+  const rooms = /** @type {OccupancyRoomExpectedData[] & ReadMetadataRows} */ (await getAllRooms().catch((error) => {
+    const cached = /** @type {OccupancyRoomExpectedData[]} */ (readCache('rooms'));
     if (cached.length > 0) return withReportMetadata(cached, 'cache', false);
     throw error;
-  });
+  }));
   // Expected cache row shape at the existing direct filter; this assertion is
   // not validation, and a malformed non-array cache still fails at `.filter`.
   const cachedBookingsInRange = /** @type {OccupancyBookingExpectedData[]} */ (readCache('bookings')).filter(
@@ -79,7 +146,7 @@ export async function getOccupancyReport(startDate, endDate) {
   let bookings = [];
   let bookingsSource = 'server';
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('room_id, check_in, check_out, total_amount, charges_total, is_exclusive_event, status').
     eq('lodge_id', state.lodgeId).
@@ -96,16 +163,16 @@ export async function getOccupancyReport(startDate, endDate) {
 
   // +1 for inclusive end-date: Jan 1–Jan 7 = 7 days, not 6
   const totalDays = Math.max(1, Math.round(
-    (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)
+    (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)
   ) + 1);
 
   const rows = rooms.map((room) => {
     const roomBookings = bookings.filter((b) => b.room_id === room.id);
     let nights = 0;
     for (const b of roomBookings) {
-      const start = new Date(Math.max(new Date(b.check_in), new Date(startDate)));
-      const end = new Date(Math.min(new Date(b.check_out), new Date(endDate)));
-      nights += Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+      const start = new Date(Math.max(new Date(b.check_in).getTime(), new Date(startDate).getTime()));
+      const end = new Date(Math.min(new Date(b.check_out).getTime(), new Date(endDate).getTime()));
+      nights += Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
     }
     const actualRevenue = roomBookings.reduce((sum, b) => sum + (b.total_amount || 0) + (b.charges_total || 0), 0);
     const hasEvent = roomBookings.some((b) => b.is_exclusive_event);
@@ -121,8 +188,11 @@ export async function getOccupancyReport(startDate, endDate) {
   return withReportMetadata(rows, bookingsSource === 'server' && rooms?._source !== 'cache' ? 'server' : 'cache', bookingsSource === 'server' && rooms?._complete !== false && bookingsComplete);
 }
 
+/** @param {string} startDate @param {string} endDate */
 async function getRevenueReportLocal(startDate, endDate) {
+  /** @param {unknown} value */
   const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+  /** @param {unknown} gross @param {unknown} vatEnabled @param {unknown} vatRate */
   const computeInclusiveVat = (gross, vatEnabled, vatRate) => {
     const rate = vatEnabled ? Number(vatRate || 0) : 0;
     if (rate <= 0) return 0;
@@ -131,11 +201,14 @@ async function getRevenueReportLocal(startDate, endDate) {
   const paymentWindowStart = `${startDate}T00:00:00`;
   const paymentWindowEnd = `${endDate}T23:59:59`;
 
-  const cachedBookingsInRange = readCache('bookings').filter(
+  const cachedBookingsInRange = /** @type {RevenueBookingExpectedData[]} */ (readCache('bookings')).filter(
     (b) => b.check_in >= startDate && b.check_in <= endDate
   );
+  /** @type {RevenueBookingExpectedData[]} */
   let bookings = [];
+  /** @type {RevenuePaymentExpectedData[]} */
   let paymentEvents = [];
+  /** @type {RevenueRefundApprovalExpectedData[]} */
   let refundApprovals = [];
   try {
     const [
@@ -143,19 +216,19 @@ async function getRevenueReportLocal(startDate, endDate) {
       { data: paymentRows, error: paymentError },
       { data: refundRows, error: refundError }
     ] = await Promise.all([
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('id, total_amount, charges_total, amount_paid, status, payment_status, check_in, check_out, is_exclusive_event, notes, event_daily_rate, vat_enabled, vat_rate').
     eq('lodge_id', state.lodgeId).
     gte('check_in', startDate).
     lte('check_in', endDate),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('payments').
     select('booking_id, amount, method, type, paid_at').
     eq('lodge_id', state.lodgeId).
     gte('paid_at', paymentWindowStart).
     lte('paid_at', paymentWindowEnd),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('refund_approval_log').
     select('booking_id, retained_amount, created_at').
     eq('lodge_id', state.lodgeId).
@@ -166,9 +239,9 @@ async function getRevenueReportLocal(startDate, endDate) {
     if (paymentError) throw paymentError;
     bookings = (bookingRows || []).length === 0 && cachedBookingsInRange.length > 0 ?
     cachedBookingsInRange :
-    bookingRows || [];
-    paymentEvents = paymentRows || [];
-    refundApprovals = refundError ? [] : refundRows || [];
+    /** @type {RevenueBookingExpectedData[]} */ (bookingRows || []);
+    paymentEvents = /** @type {RevenuePaymentExpectedData[]} */ (paymentRows || []);
+    refundApprovals = refundError ? [] : /** @type {RevenueRefundApprovalExpectedData[]} */ (refundRows || []);
   } catch {
     bookings = cachedBookingsInRange;
     paymentEvents = [];
@@ -184,7 +257,7 @@ async function getRevenueReportLocal(startDate, endDate) {
   const explicitRetentionFees = paymentEvents.filter(
     (payment) => String(payment?.type || '').toLowerCase() === 'retention_fee' && Number(payment?.amount || 0) > 0
   );
-  const retainedRows = refundApprovals.length > 0 ? refundApprovals : explicitRetentionFees;
+  const retainedRows = /** @type {RevenueRetainedRowExpectedData[]} */ (refundApprovals.length > 0 ? refundApprovals : explicitRetentionFees);
   const retainedRevenue = roundMoney(retainedRows.reduce(
     (sum, row) => sum + Math.max(0, Number(row?.retained_amount ?? row?.amount ?? 0)),
     0
@@ -200,19 +273,20 @@ async function getRevenueReportLocal(startDate, endDate) {
   // Collapse event room-rows into unique event groups (1 group = 1 event).
   // E5 FIX: accumulate charges_total from every room-row so folio charges on
   // event bookings are not silently dropped from event revenue.
+  /** @type {Record<string|number, RevenueEventGroupExpectedData>} */
   const eventGroupMap = {};
   eventRows.forEach((b) => {
     const match = b.notes?.match(/\[GROUP:([^\]]+)\]/);
     const groupId = match?.[1] || b.check_in;
     if (!eventGroupMap[groupId]) {
-      const nights = Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000);
+      const nights = Math.ceil((new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / 86400000);
       eventGroupMap[groupId] = {
         group_id: groupId,
         check_in: b.check_in,
         check_out: b.check_out,
         nights,
         daily_rate: b.event_daily_rate || 0,
-        total: (b.event_daily_rate || 0) * nights,
+        total: Number(b.event_daily_rate || 0) * nights,
         charges_total: 0, // accumulated below from all room-rows
         room_count: 0,
         status: b.status,
@@ -227,7 +301,7 @@ async function getRevenueReportLocal(startDate, endDate) {
     // E5 FIX: sum charges_total across all rooms in this event group
     eventGroupMap[groupId].charges_total += b.charges_total || 0;
   });
-  const uniqueEvents = Object.values(eventGroupMap);
+  const uniqueEvents = /** @type {RevenueEventGroupExpectedData[]} */ (Object.values(eventGroupMap));
   // E5 FIX: event group revenue = base (daily_rate*nights) + accumulated folio charges
   const eventRevenue = uniqueEvents.reduce((sum, e) => sum + e.total + e.charges_total, 0);
   // Include charges_total in revenue; || 0 guards against null/undefined on older rows
@@ -265,7 +339,8 @@ async function getRevenueReportLocal(startDate, endDate) {
     filter((rate) => rate !== null)
   );
   const vatRate = vatRatesInUse.size === 1 ? Array.from(vatRatesInUse)[0] : null;
-  const bookingPaymentByMethod = {};
+  // Dynamic keys are payment-method strings; every stored amount is rounded money.
+  const bookingPaymentByMethod = /** @type {Record<string, number>} */ ({});
   let grossCollected = 0;
   let refundsIssued = 0;
   let netCashCollected = 0;
@@ -315,11 +390,12 @@ async function getRevenueReportLocal(startDate, endDate) {
   };
 }
 
+/** @param {string} startDate @param {string} endDate */
 export async function getRevenueReport(startDate, endDate) {
   if (!startDate || !endDate) throw new Error('Revenue report requires a start date and end date.');
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_revenue_report', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_revenue_report', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate
@@ -352,7 +428,7 @@ export async function getRevenueReport(startDate, endDate) {
     };
   } catch (error) {
     recordCriticalError('reports.revenue.local', error, { startDate, endDate }, { level: 'error', limit: 120 });
-    throw new Error(`Revenue report could not be generated for ${startDate} to ${endDate}: ${error?.message || 'Unknown error'}`);
+    throw new Error(`Revenue report could not be generated for ${startDate} to ${endDate}: ${(/** @type {CaughtReportErrorView} */ (error))?.message || 'Unknown error'}`);
   }
 }
 
@@ -368,20 +444,20 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
   if (!state.isOnline) {
     return {
       total_collected: 0,
-      by_method: {},
+      by_method: /** @type {Record<string, number>} */ ({}),
       payment_count: 0,
       date: dayStart.toISOString().slice(0, 10)
     };
   }
 
   const [{ data, error }, { data: creditRows, error: creditError }] = await Promise.all([
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('payments').
   select('amount, method, type, paid_at').
   eq('lodge_id', state.lodgeId).
   gte('paid_at', dayStart.toISOString()).
   lte('paid_at', dayEnd.toISOString()),
-  state.supabase.rpc('get_customer_credit_cash_flow', {
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_customer_credit_cash_flow', {
     p_lodge_id: state.lodgeId,
     p_start_at: dayStart.toISOString(),
     p_end_at: dayEnd.toISOString()
@@ -391,7 +467,9 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
   if (error) throw new Error(error.message);
   if (creditError) throw new Error(creditError.message);
 
-  const byMethod = {};
+  // Both payment and credit-flow producers normalize the key with String and
+  // the accumulated amount with Number before this numeric map is updated.
+  const byMethod = /** @type {Record<string, number>} */ ({});
   let totalCollected = 0;
   let grossCollected = 0;
   let refundsIssued = 0;
@@ -442,16 +520,17 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
   };
 }
 
+/** @param {string} start @param {string} end */
 async function getProfitLossLocal(start, end) {
   const [rev, pos, exps, inv, sup, conf, pool, maintenanceRows] = await Promise.all([
   getRevenueReport(start, end),
   getPosRevenueSummary(start, end),
-  getExpenses(start, end),
+  /** @type {Promise<ProfitLossExpenseExpectedData[]>} */ (getExpenses(start, end)),
   getInventorySpend(start, end),
   getSupplySpend(start, end),
   getConferenceRevenueSummary(start, end),
   getPoolRevenueSummary(start, end),
-  getMaintenanceRowsForPeriod(start, end)]
+  /** @type {Promise<MaintenanceReportRowExpectedData[]>} */ (getMaintenanceRowsForPeriod(start, end))]
   );
   const bookingRevenue = rev.total_revenue || 0;
   const posRevenue = pos?.direct_revenue || 0;
@@ -466,9 +545,10 @@ async function getProfitLossLocal(start, end) {
   const totalCosts = invCosts + supCosts + maintenanceCosts;
   const grossProfit = totalRevenue - totalExpenses - totalCosts;
   const expByCategory = exps.reduce((acc, e) => {
-    acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0);
+    const category = reportObjectKey(e.category);
+    acc[category] = (acc[category] || 0) + Number(e.amount || 0);
     return acc;
-  }, {});
+  }, /** @type {Record<string, number>} */ ({}));
   const vatAmount = rev.vat_amount || 0;
   const regularRevenue = rev.regular_revenue || 0;
   const eventRevenue = rev.event_revenue || 0;
@@ -493,7 +573,12 @@ async function getProfitLossLocal(start, end) {
   };
 }
 
-function finalizeProfitLossSummary(summary = {}, retainedRevenueFallback = 0) {
+/** @param {ProfitLossSummaryExpectedData} [summary] @param {unknown} [retainedRevenueFallback] */
+function finalizeProfitLossSummary(
+  // Keep the legacy empty default; this cast only types the fallback literal, not RPC data.
+  summary = /** @type {ProfitLossSummaryExpectedData} */ ({}),
+  retainedRevenueFallback = 0
+) {
   const bookingRevenue = Number(summary.bookingRevenue || 0);
   const posRevenue = Number(summary.posRevenue || 0);
   const conferenceRevenue = Number(summary.conferenceRevenue || 0);
@@ -536,11 +621,12 @@ function finalizeProfitLossSummary(summary = {}, retainedRevenueFallback = 0) {
   };
 }
 
+/** @param {string} start @param {string} end */
 export async function getProfitLoss(start, end) {
   if (!start || !end) throw new Error('Profit and loss report requires a start date and end date.');
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_profit_loss_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_profit_loss_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: start,
         p_end_date: end
@@ -549,7 +635,7 @@ export async function getProfitLoss(start, end) {
       if (data && typeof data === 'object') {
         const normalized = { ...data };
         if (typeof normalized.maintenanceCosts === 'undefined') {
-          const maintenanceRows = await getMaintenanceRowsForPeriod(start, end);
+          const maintenanceRows = /** @type {MaintenanceReportRowExpectedData[]} */ (await getMaintenanceRowsForPeriod(start, end));
           normalized.maintenanceCosts = (maintenanceRows || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
         }
         let retainedRevenue = normalized.retainedRevenue;
@@ -595,7 +681,7 @@ export async function getProfitLoss(start, end) {
     };
   } catch (error) {
     recordCriticalError('reports.profit_loss.local', error, { start, end }, { level: 'error', limit: 120 });
-    throw new Error(`Profit and loss report could not be generated for ${start} to ${end}: ${error?.message || 'Unknown error'}`);
+    throw new Error(`Profit and loss report could not be generated for ${start} to ${end}: ${(/** @type {CaughtReportErrorView} */ (error))?.message || 'Unknown error'}`);
   }
 }
 
@@ -606,7 +692,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
 
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_reports_snapshot', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_reports_snapshot', {
         p_lodge_id: state.lodgeId,
         p_today: today
       });
@@ -621,7 +707,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
       };
       throw new Error('Reports snapshot was empty.');
     } catch (error) {
-      console.warn('[Reports] Shared snapshot unavailable, using local fallback:', error?.message || error);
+      console.warn('[Reports] Shared snapshot unavailable, using local fallback:', (/** @type {CaughtReportErrorView} */ (error))?.message || error);
     }
   }
 
@@ -637,27 +723,32 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
 
   const [rooms, bookings, payments, expenses, posOrders, conferenceBookings, poolDayUse, maintenanceRows] = await Promise.all([
   getAllRooms().catch(() => []),
-  getAllBookings().catch(() => []),
-  Promise.resolve(readCache('payments') || []),
-  getAllExpenses().catch(() => []),
-  getAllPOSOrders().catch(() => []),
-  getAllConferenceBookings().catch(() => []),
-  getAllPoolDayUse().catch(() => []),
-  getMaintenanceRowsForPeriod(monthStart, monthEnd).catch(() => [])]
+  /** @type {Promise<ReportsSnapshotBookingExpectedData[]>} */ (getAllBookings().catch(() => [])),
+  /** @type {Promise<ReportsSnapshotPaymentExpectedData[]>} */ (Promise.resolve(readCache('payments') || [])),
+  /** @type {Promise<ReportsSnapshotExpenseExpectedData[]>} */ (getAllExpenses().catch(() => [])),
+  /** @type {Promise<ReportsSnapshotPosOrderExpectedData[]>} */ (getAllPOSOrders().catch(() => [])),
+  /** @type {Promise<ReportsSnapshotConferenceBookingExpectedData[]>} */ (getAllConferenceBookings().catch(() => [])),
+  /** @type {Promise<ReportsSnapshotPoolDayUseExpectedData[]>} */ (getAllPoolDayUse().catch(() => [])),
+  /** @type {Promise<ReportsSnapshotMaintenanceRowExpectedData[]>} */ (getMaintenanceRowsForPeriod(monthStart, monthEnd).catch(() => []))]
   );
 
   const totalRooms = Array.isArray(rooms) ? rooms.length : 0;
+  /** @param {unknown} value */
   const dateOnly = (value) => String(value || '').slice(0, 10);
+  /** @param {unknown} value @param {string} start @param {string} end */
   const inRange = (value, start, end) => {
     const day = dateOnly(value);
     return Boolean(day) && day >= start && day <= end;
   };
+  /** @param {string} start @param {string} end */
   const revenueInRange = (start, end) => payments.
   filter((payment) => inRange(payment.paid_at, start, end)).
   reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  /** @param {string} start @param {string} end */
   const refundsInRange = (start, end) => payments.
   filter((payment) => inRange(payment.paid_at, start, end) && (Number(payment.amount || 0) < 0 || String(payment.type || '').toLowerCase() === 'refund')).
   reduce((sum, payment) => sum + Math.abs(Number(payment.amount || 0)), 0);
+  /** @param {string} start @param {string} end */
   const retainedForRange = (start, end) => {
     let retained = 0;
     let count = 0;
@@ -681,12 +772,13 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   const paymentsAvailable = Array.isArray(payments) && payments.length > 0;
   const monthRetained = retainedForRange(monthStart, monthEnd);
   const lastMonthRetained = retainedForRange(lastMonthStart, lastMonthEnd);
+  /** @param {string} start @param {string} end */
   const overlapNights = (start, end) => bookings.
   filter((booking) => booking?.status !== 'cancelled' && booking?.check_in < end && booking?.check_out > start).
   reduce((sum, booking) => {
     const overlapStart = booking.check_in > start ? booking.check_in : start;
     const overlapEnd = booking.check_out < end ? booking.check_out : end;
-    return sum + Math.max(0, Math.ceil((new Date(`${overlapEnd}T00:00:00`) - new Date(`${overlapStart}T00:00:00`)) / 86400000));
+    return sum + Math.max(0, Math.ceil((new Date(`${overlapEnd}T00:00:00`).getTime() - new Date(`${overlapStart}T00:00:00`).getTime()) / 86400000));
   }, 0);
 
   const monthDays = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0).getDate();
@@ -726,6 +818,7 @@ export async function getReportsSnapshot(today = getLocalDateKey(new Date(), LOC
   };
 }
 
+/** @param {{type?: unknown}|null|undefined} outletRow @returns {OutletProfitBucketKey} */
 function getOutletProfitLossBucket(outletRow) {
   const type = String(outletRow?.type || '').trim().toLowerCase();
   if (type === 'food') return 'kitchen';
@@ -734,10 +827,11 @@ function getOutletProfitLossBucket(outletRow) {
   return 'unassigned';
 }
 
+/** @param {string} startDate @param {string} endDate */
 export async function getOutletProfitLoss(startDate, endDate) {
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_outlet_profit_loss_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_outlet_profit_loss_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate
@@ -760,8 +854,17 @@ export async function getOutletProfitLoss(startDate, endDate) {
     }
   }
 
-  const cachedOutlets = readCache('outlets');
-  const cachedPosRows = readCache('pos-orders').filter((order) => {
+  // Cache views reflect the existing producers and direct reads; parsed rows are not validated here.
+  /** @typedef {{id: string, name: string, type: string}} OutletReportOutletExpectedData */
+  /** @typedef {{created_at?: unknown, status?: unknown, total?: unknown, outlet_id: string|null, payment_method?: unknown}} OutletReportOrderExpectedData */
+  /** @typedef {{id: string, outlet_id?: string|null}} OutletReportInventoryItemExpectedData */
+  /** @typedef {{date: string, item_id: string, total_cost: unknown}} OutletReportPurchaseExpectedData */
+  /** @typedef {{total_cost?: unknown, inventory_items?: {outlet_id?: string|null}|{outlet_id?: string|null}[]|null}} OutletReportPurchaseRowExpectedData */
+  /** @typedef {{date: string, total_cost?: unknown}} OutletReportSupplyPurchaseExpectedData */
+  /** @typedef {{date: string, amount?: unknown, outlet_id: string|null}} OutletReportExpenseExpectedData */
+  /** @typedef {{amount?: unknown, outlet_id: string|null}} OutletReportExpenseRowExpectedData */
+  const cachedOutlets = /** @type {OutletReportOutletExpectedData[]} */ (readCache('outlets'));
+  const cachedPosRows = (/** @type {OutletReportOrderExpectedData[]} */ (readCache('pos-orders'))).filter((order) => {
     const orderDate = String(order.created_at || '').split('T')[0];
     return (
       (order.status || '') === 'completed' && (
@@ -769,24 +872,29 @@ export async function getOutletProfitLoss(startDate, endDate) {
       !endDate || orderDate <= endDate));
 
   });
-  const inventoryMap = new Map(readCache('inventory-items').map((item) => [item.id, item]));
-  const cachedPurchaseRows = readCache('inventory-purchases').
+  const inventoryMap = new Map((/** @type {OutletReportInventoryItemExpectedData[]} */ (readCache('inventory-items'))).map((item) => [item.id, item]));
+  const cachedPurchaseRows = (/** @type {OutletReportPurchaseExpectedData[]} */ (readCache('inventory-purchases'))).
   filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate)).
-  map((row) => ({
-    ...row,
-    inventory_items: inventoryMap.get(row.item_id) ?
-    { outlet_id: inventoryMap.get(row.item_id).outlet_id || null } :
-    null
-  }));
-  const cachedSupplyTotal = readCache('supply-purchases').
+  map((row) => {
+    const inventoryItem = inventoryMap.get(row.item_id);
+    return {
+      ...row,
+      inventory_items: inventoryItem ? { outlet_id: inventoryItem.outlet_id || null } : null
+    };
+  });
+  const cachedSupplyTotal = (/** @type {OutletReportSupplyPurchaseExpectedData[]} */ (readCache('supply-purchases'))).
   filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate)).
   reduce((sum, row) => sum + Number(row.total_cost || 0), 0);
-  const cachedExpenseRows = readCache('expenses').
+  const cachedExpenseRows = (/** @type {OutletReportExpenseExpectedData[]} */ (readCache('expenses'))).
   filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate));
-  const maintenanceRows = await getMaintenanceRowsForPeriod(startDate, endDate).catch(() => []);
+  const maintenanceRows = /** @type {MaintenanceReportRowExpectedData[]} */ (await getMaintenanceRowsForPeriod(startDate, endDate).catch(() => []));
+  /** @type {OutletReportOutletExpectedData[]} */
   let outletRows = [];
+  /** @type {OutletReportOrderExpectedData[]} */
   let posRows = [];
+  /** @type {OutletReportPurchaseRowExpectedData[]} */
   let purchaseRows = [];
+  /** @type {OutletReportExpenseRowExpectedData[]} */
   let expenseRows = [];
   let bookingResult = null;
   let confResult = { total: 0 };
@@ -804,24 +912,24 @@ export async function getOutletProfitLoss(startDate, endDate) {
     livePoolResult,
     liveSupplyResult] =
     await Promise.all([
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('outlets').
     select('id, name, type').
     eq('lodge_id', state.lodgeId),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('pos_orders').
     select('total, outlet_id, payment_method').
     eq('lodge_id', state.lodgeId).
     eq('status', 'completed').
     gte('created_at', `${startDate}T00:00:00`).
     lte('created_at', `${endDate}T23:59:59`),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('inventory_purchases').
     select('total_cost, inventory_items(outlet_id)').
     eq('lodge_id', state.lodgeId).
     gte('date', startDate).
     lte('date', endDate),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('expenses').
     select('amount, outlet_id').
     eq('lodge_id', state.lodgeId).
@@ -847,21 +955,22 @@ export async function getOutletProfitLoss(startDate, endDate) {
     poolResult = livePoolResult || { total: 0 };
     supResult = liveSupplyResult || { total: cachedSupplyTotal };
   } catch (error) {
-    outletRows = cachedOutlets.length > 0 ? cachedOutlets : await getOutlets().catch(() => []);
+    outletRows = cachedOutlets.length > 0 ? cachedOutlets : /** @type {OutletReportOutletExpectedData[]} */ (await getOutlets().catch(() => []));
     posRows = cachedPosRows;
     purchaseRows = cachedPurchaseRows;
     expenseRows = cachedExpenseRows;
     bookingResult = await getRevenueReport(startDate, endDate).catch(() => null);
     supResult = { total: cachedSupplyTotal };
     if (!outletRows.length && !posRows.length && !purchaseRows.length && !expenseRows.length && state.isOnline) {
-      throw new Error(error?.message || 'Failed to load outlet profit and loss report');
+      throw new Error(/** @type {string} */ ((/** @type {CaughtReportErrorView} */ (error))?.message || 'Failed to load outlet profit and loss report'));
     }
   }
 
+  /** @type {Record<string, {key: OutletProfitBucketKey, name: string, type: string|null}>} */
   const outletMap = {};
   (outletRows || []).forEach((o) => {
     const key = getOutletProfitLossBucket(o);
-    outletMap[o.id] = { key, name: o.name, type: o.type || null };
+    outletMap[reportObjectKey(o.id)] = { key, name: o.name, type: o.type || null };
   });
 
   // B. Initialize buckets — always present, even if zero
@@ -875,8 +984,8 @@ export async function getOutletProfitLoss(startDate, endDate) {
   // C–F: Fetch all raw data in parallel
   // C. POS revenue grouped by outlet
 ;(posRows || []).forEach((o) => {
-    const info = outletMap[o.outlet_id];
-    const key = info?.key || 'unassigned';
+    const info = outletMap[reportObjectKey(o.outlet_id)];
+    const key = /** @type {OutletProfitBucketKey} */ (info?.key || 'unassigned');
     buckets[key].posRevenue += Number(o.total || 0);
   });
 
@@ -892,21 +1001,23 @@ export async function getOutletProfitLoss(startDate, endDate) {
 
   // E. Inventory cost grouped by outlet (JS-side — same pattern as getInventorySpend)
 ;(purchaseRows || []).forEach((p) => {
-    const info = outletMap[p.inventory_items?.outlet_id];
-    const key = info?.key || 'unassigned';
+    // A joined relation can arrive as an object or an array. Keep the existing
+    // `.outlet_id` property read (arrays yield undefined) without validating it.
+    const info = outletMap[reportObjectKey((/** @type {{outlet_id?: string|null}|null|undefined} */ (p.inventory_items))?.outlet_id)];
+    const key = /** @type {OutletProfitBucketKey} */ (info?.key || 'unassigned');
     buckets[key].inventoryCost += Number(p.total_cost || 0);
   })
 
   // F. Expenses grouped by outlet
 ;(expenseRows || []).forEach((e) => {
-    const info = outletMap[e.outlet_id];
-    const key = info?.key || 'unassigned';
+    const info = outletMap[reportObjectKey(e.outlet_id)];
+    const key = /** @type {OutletProfitBucketKey} */ (info?.key || 'unassigned');
     buckets[key].expenses += Number(e.amount || 0);
   })
 
   // G. Room-based maintenance is a Front Desk cost; property-wide work stays Unassigned.
 ;(maintenanceRows || []).forEach((row) => {
-    const key = row.room_id || row.room_number ? 'front_desk' : 'unassigned';
+    const key = /** @type {OutletProfitBucketKey} */ (row.room_id || row.room_number ? 'front_desk' : 'unassigned');
     buckets[key].maintenanceCost += Number(row.total_cost || 0);
   });
 
@@ -946,7 +1057,7 @@ export async function getDashboardStats() {
 
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_manager_dashboard_snapshot', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_manager_dashboard_snapshot', {
         p_lodge_id: state.lodgeId,
         p_today: today
       });
@@ -955,10 +1066,10 @@ export async function getDashboardStats() {
         return {
           total_rooms: Number(data.totalRooms || 0),
           occupied_today: Number(data.occupied || 0),
-          checkins_today: (Array.isArray(data.upcomingArrivals) ? data.upcomingArrivals : []).filter((booking) => booking?.check_in === today).length,
-          checkouts_today: (Array.isArray(data.upcomingArrivals) ? data.upcomingArrivals : []).filter((booking) => booking?.check_out === today).length,
+          checkins_today: (Array.isArray(data.upcomingArrivals) ? /** @type {ManagerDashboardArrivalExpectedData[]} */ (data.upcomingArrivals) : []).filter((booking) => booking?.check_in === today).length,
+          checkouts_today: (Array.isArray(data.upcomingArrivals) ? /** @type {ManagerDashboardArrivalExpectedData[]} */ (data.upcomingArrivals) : []).filter((booking) => booking?.check_out === today).length,
           revenue_month: Number(data.monthRevenue || 0),
-          upcoming_bookings: (Array.isArray(data.upcomingArrivals) ? data.upcomingArrivals : []).length,
+          upcoming_bookings: (Array.isArray(data.upcomingArrivals) ? /** @type {ManagerDashboardArrivalExpectedData[]} */ (data.upcomingArrivals) : []).length,
           outstanding_total: Number(data.outstandingTotal || 0),
           unpaid_count: Number(data.unpaidCount || 0)
         };
@@ -966,7 +1077,7 @@ export async function getDashboardStats() {
     } catch (error) {
       if (!dashboardSnapshotWarningShown) {
         dashboardSnapshotWarningShown = true;
-        const message = String(error?.message || error || '');
+        const message = String((/** @type {CaughtReportErrorView} */ (error))?.message || error || '');
         if (/column "charges_total" does not exist/i.test(message)) {
           console.warn('[Dashboard] Remote dashboard snapshot is still on an older schema; using legacy stats fallback.');
         } else {
@@ -986,24 +1097,24 @@ export async function getDashboardStats() {
 
       const [roomsRes, occupiedRes, todayRes, revenueRes, upcomingRes] = await Promise.all([
       // count only — HEAD request, no rows transferred
-      state.supabase.from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', state.lodgeId),
-      state.supabase.from('bookings').select('id', { count: 'exact', head: true }).
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('rooms').select('id', { count: 'exact', head: true }).eq('lodge_id', state.lodgeId),
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select('id', { count: 'exact', head: true }).
       eq('lodge_id', state.lodgeId).
       in('status', ['confirmed', 'checked_in']).
       lte('check_in', today).
       gt('check_out', today),
       // today's arrivals + departures only — 2 columns
-      state.supabase.from('bookings').select('check_in, check_out').
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select('check_in, check_out').
       eq('lodge_id', state.lodgeId).
       neq('status', 'cancelled').
       or(`check_in.eq.${today},check_out.eq.${today}`),
       // this month's revenue — total_amount only (charges_total may not exist as column yet)
-      state.supabase.from('bookings').select('total_amount').
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select('total_amount').
       eq('lodge_id', state.lodgeId).
       neq('status', 'cancelled').
       gte('check_in', monthStart).
       lt('check_in', nextMonthStart),
-      state.supabase.from('bookings').select('id', { count: 'exact', head: true }).
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select('id', { count: 'exact', head: true }).
       eq('lodge_id', state.lodgeId).
       eq('status', 'confirmed').
       gt('check_in', today)]
@@ -1026,14 +1137,14 @@ export async function getDashboardStats() {
         upcoming_bookings: upcomingRes.count ?? 0
       };
     } catch (fallbackError) {
-      console.warn('[Dashboard] Legacy stats fallback also failed, returning minimal stats:', fallbackError?.message || fallbackError);
+      console.warn('[Dashboard] Legacy stats fallback also failed, returning minimal stats:', (/** @type {CaughtReportErrorView} */ (fallbackError))?.message || fallbackError);
       return { total_rooms: 0, occupied_today: 0, checkins_today: 0, checkouts_today: 0, revenue_month: 0, upcoming_bookings: 0 };
     }
   }
 
   // Offline: aggregate from cache
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
+  const rooms = /** @type {OccupancyRoomExpectedData[]} */ (readCache('rooms'));
+  const bookings = /** @type {DashboardCachedBookingExpectedData[]} */ (readCache('bookings'));
   return {
     total_rooms: rooms.length,
     occupied_today: bookings.filter(
@@ -1054,7 +1165,7 @@ export async function getTodayActivity() {
 
   if (state.isOnline) {
     // Previously fetched all bookings. Now filters to only today/tomorrow rows.
-    const { data } = await state.supabase.
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method').
     eq('lodge_id', state.lodgeId).
@@ -1069,7 +1180,7 @@ export async function getTodayActivity() {
     };
   }
 
-  const bookings = readCache('bookings');
+  const bookings = /** @type {DashboardCachedBookingExpectedData[]} */ (readCache('bookings'));
   return {
     checkins_today: bookings.filter((b) => b.check_in === today && b.status !== 'cancelled'),
     checkouts_today: bookings.filter((b) => b.check_out === today && b.status !== 'cancelled'),
@@ -1083,6 +1194,7 @@ export async function getUpcomingCheckins() {
   const dayAfterStr = new Date(Date.now() + 172800000).toISOString().split('T')[0];
   const upcomingDates = [todayStr, tomorrowStr, dayAfterStr];
 
+  /** @param {UpcomingBookingExpectedData} b @param {UpcomingCustomerExpectedData[]} customers @param {UpcomingRoomExpectedData[]} rooms */
   const mapBooking = (b, customers, rooms) => {
     const customer = customers.find((c) => c.id === b.customer_id);
     const room = rooms.find((r) => r.id === b.room_id);
@@ -1103,20 +1215,20 @@ export async function getUpcomingCheckins() {
 
   if (state.isOnline) {
     const [{ data: roomData }, { data: confData }, { data: poolData }] = await Promise.all([
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, customers(name, phone, email), rooms(room_number, room_type)').
     eq('lodge_id', state.lodgeId).
     in('check_in', upcomingDates).
     neq('status', 'cancelled').
     limit(100),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('conference_bookings').
     select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').
     eq('lodge_id', state.lodgeId).
     in('booking_date', upcomingDates).
     limit(50),
-    state.supabase.
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('pool_day_use').
     select('id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by').
     eq('lodge_id', state.lodgeId).
@@ -1124,17 +1236,19 @@ export async function getUpcomingCheckins() {
     limit(50)]
     );
 
-    roomBookings = (roomData || []).map((b) => ({
+    const roomRows = /** @type {UpcomingRoomBookingQueryExpectedData[]} */ (/** @type {unknown} */ (roomData || []));
+    roomBookings = roomRows.map((b) => ({
       ...b,
-      customer_name: b.customers?.name,
-      customer_phone: b.customers?.phone,
-      customer_email: b.customers?.email,
-      room_number: b.rooms?.room_number,
-      room_type: b.rooms?.room_type,
+      customer_name: (/** @type {{name?: unknown, phone?: unknown, email?: unknown}|null|undefined} */ (b.customers))?.name,
+      customer_phone: (/** @type {{name?: unknown, phone?: unknown, email?: unknown}|null|undefined} */ (b.customers))?.phone,
+      customer_email: (/** @type {{name?: unknown, phone?: unknown, email?: unknown}|null|undefined} */ (b.customers))?.email,
+      room_number: (/** @type {{room_number?: unknown, room_type?: unknown}|null|undefined} */ (b.rooms))?.room_number,
+      room_type: (/** @type {{room_number?: unknown, room_type?: unknown}|null|undefined} */ (b.rooms))?.room_type,
       booking_type: 'room'
     }));
 
-    confBookings = (confData || []).map((cb) => ({
+    const conferenceRows = /** @type {UpcomingConferenceQueryExpectedData[]} */ (/** @type {unknown} */ (confData || []));
+    confBookings = conferenceRows.map((cb) => ({
       id: cb.id,
       customer_name: cb.client_name,
       check_in: cb.booking_date,
@@ -1150,7 +1264,8 @@ export async function getUpcomingCheckins() {
       booking_type: 'conference'
     }));
 
-    poolBookings = (poolData || []).map((pd) => ({
+    const poolRows = /** @type {UpcomingPoolQueryExpectedData[]} */ (/** @type {unknown} */ (poolData || []));
+    poolBookings = poolRows.map((pd) => ({
       id: pd.id,
       customer_name: pd.guest_name,
       check_in: pd.date,
@@ -1167,13 +1282,13 @@ export async function getUpcomingCheckins() {
       booking_type: 'day_use'
     }));
   } else {
-    const customers = readCache('customers');
-    const rooms = readCache('rooms');
-    roomBookings = readCache('bookings').
+    const customers = /** @type {UpcomingCustomerExpectedData[]} */ (readCache('customers'));
+    const rooms = /** @type {UpcomingRoomExpectedData[]} */ (readCache('rooms'));
+    roomBookings = (/** @type {UpcomingBookingExpectedData[]} */ (readCache('bookings'))).
     filter((b) => upcomingDates.includes(b.check_in) && b.status !== 'cancelled').
     map((b) => mapBooking(b, customers, rooms));
 
-    confBookings = (readCache('conference-bookings') || []).
+    confBookings = (/** @type {CachedConferenceBookingExpectedData[]} */ (readCache('conference-bookings') || [])).
     filter((cb) => upcomingDates.includes(cb.booking_date)).
     map((cb) => ({
       id: cb.id,
@@ -1191,7 +1306,7 @@ export async function getUpcomingCheckins() {
       booking_type: 'conference'
     }));
 
-    poolBookings = (readCache('pool-day-use') || []).
+    poolBookings = (/** @type {CachedPoolDayUseExpectedData[]} */ (readCache('pool-day-use') || [])).
     filter((pd) => upcomingDates.includes(pd.date)).
     map((pd) => ({
       id: pd.id,
@@ -1229,13 +1344,13 @@ export async function getForecast(days = 30) {
   const [roomsData, bookingsData] = await Promise.all([
   getAllRooms(),
   state.isOnline ?
-  state.supabase.from('bookings').select('check_in, check_out, status').
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select('check_in, check_out, status').
   eq('lodge_id', state.lodgeId).
   neq('status', 'cancelled').
   lte('check_in', futureStr).
   gte('check_out', today).
-  then((r) => r.data || []) :
-  readCache('bookings').filter((b) => b.status !== 'cancelled' && b.check_in <= futureStr && b.check_out >= today)]
+  then((r) => /** @type {ForecastBookingExpectedData[]} */ (r.data || [])) :
+  (/** @type {ForecastBookingExpectedData[]} */ (readCache('bookings'))).filter((b) => b.status !== 'cancelled' && b.check_in <= futureStr && b.check_out >= today)]
   );
 
   const totalRooms = roomsData.length || 1;
@@ -1252,16 +1367,17 @@ export async function getForecast(days = 30) {
   return result;
 }
 
+/** @param {string} startDate @param {string} endDate */
 export async function getRoomProfitabilityReport(startDate, endDate) {
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_room_profitability_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_room_profitability_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate
       });
       if (error) throw error;
-      const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : null;
+      const rows = /** @type {RoomProfitabilityRowExpectedData[] | null} */ (Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : null);
       if (rows) {
         const serverComplete = data?.complete === true || data?._complete === true || rows.every((row) => row?.complete === true || row?._complete === true);
         return withReportMetadata(rows.map((row) => ({
@@ -1282,13 +1398,14 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
     }
   }
 
-  const rooms = await getAllRooms();
-  const occupancy = await getOccupancyReport(startDate, endDate);
+  const rooms = /** @type {OccupancyRoomExpectedData[]} */ (await getAllRooms());
+  const occupancy = /** @type {OccupancyReportRowExpectedData[] & ReadMetadataRows} */ (await getOccupancyReport(startDate, endDate));
   const occupancyByRoom = new Map((occupancy || []).map((row) => [row.id, row]));
 
+  /** @type {RoomSupplyAllocationExpectedData[]} */
   let supplyRows = [];
   try {
-    const movementRows = await getRoomSupplyAllocations(startDate, endDate);
+    const movementRows = /** @type {RoomSupplyAllocationExpectedData[]} */ (await getRoomSupplyAllocations(startDate, endDate));
     supplyRows = (movementRows || []).map((row) => ({
       room_id: row.room_id,
       total_cost: row.total_cost,
@@ -1298,19 +1415,21 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
     supplyRows = [];
   }
 
-  const maintenanceRows = await getMaintenanceRowsForPeriod(startDate, endDate);
+  const maintenanceRows = /** @type {MaintenanceReportRowExpectedData[]} */ (await getMaintenanceRowsForPeriod(startDate, endDate));
 
+  /** @type {Record<string, {cost: number, units: number}>} */
   const supplyByRoom = {};
   for (const row of supplyRows) {
-    const key = row.room_id;
+    const key = reportObjectKey(row.room_id);
     if (!supplyByRoom[key]) supplyByRoom[key] = { cost: 0, units: 0 };
     supplyByRoom[key].cost += Number(row.total_cost || 0);
     supplyByRoom[key].units += Number(row.units_used || 0);
   }
 
+  /** @type {Record<string, {count: number, open: number, cost: number}>} */
   const maintenanceByRoom = {};
   for (const row of maintenanceRows) {
-    const key = row.room_id;
+    const key = reportObjectKey(row.room_id);
     if (!maintenanceByRoom[key]) maintenanceByRoom[key] = { count: 0, open: 0, cost: 0 };
     maintenanceByRoom[key].count += 1;
     if ((row.status || '') !== 'resolved') maintenanceByRoom[key].open += 1;
@@ -1318,7 +1437,7 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
   }
 
   const result = rooms.map((room) => {
-    const occ = occupancyByRoom.get(room.id) || {};
+    const occ = /** @type {OccupancyReportRowExpectedData} */ (occupancyByRoom.get(room.id) || {});
     const supply = supplyByRoom[room.id] || { cost: 0, units: 0 };
     const maintenance = maintenanceByRoom[room.id] || { count: 0, open: 0, cost: 0 };
     const revenue = Number(occ.actual_revenue || 0);
@@ -1356,10 +1475,11 @@ export async function getRoomProfitabilityReport(startDate, endDate) {
   })), 'derived-estimate', false);
 }
 
+/** @param {string} startDate @param {string} endDate @returns {Promise<{total: number, collected: number, count: number}>} */
 async function getConferenceRevenueSummary(startDate, endDate) {
   if (!state.isOnline) return { total: 0, collected: 0, count: 0 };
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('conference_bookings').
     select('total_amount, deposit_paid, payment_status').
     eq('lodge_id', state.lodgeId).
@@ -1377,10 +1497,11 @@ async function getConferenceRevenueSummary(startDate, endDate) {
   }
 }
 
+/** @param {string} startDate @param {string} endDate @returns {Promise<{total: number, count: number}>} */
 async function getPoolRevenueSummary(startDate, endDate) {
   if (!state.isOnline) return { total: 0, count: 0 };
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('pool_day_use').
     select('total').
     eq('lodge_id', state.lodgeId).
@@ -1397,20 +1518,29 @@ async function getPoolRevenueSummary(startDate, endDate) {
   }
 }
 
+/** @param {string} date */
 export async function getNightAudit(date) {
   if (!state.isOnline) return null;
   const dayStart = `${date}T00:00:00`;
   const dayEnd = `${date}T23:59:59`;
   const bookingAuditSelect = 'id, booking_number, total_amount, charges_total, payment_status, amount_paid, adults, children, notes, status, check_in, check_out, created_at, customers(name), rooms(room_number, room_type)';
+  /**
+   * Expected read-site fields for rows passed to this mapper. The fallback
+   * projection selects the joined fields, while the RPC payload remains
+   * unvalidated. Joined relationships retain PostgREST's object-or-array
+   * uncertainty; unknown leaves do not claim validation.
+   * @typedef {{customer_name?: unknown, room_number?: unknown, room_type?: unknown, customers?: {name?: unknown}|Array<{name?: unknown}>|null, rooms?: {room_number?: unknown, room_type?: unknown}|Array<{room_number?: unknown, room_type?: unknown}>|null}} NightAuditBookingReadView
+   */
+  /** @param {NightAuditBookingReadView} booking */
   const mapAuditBooking = (booking) => ({
     ...booking,
-    customer_name: booking?.customer_name || booking?.customers?.name || '',
-    room_number: booking?.room_number || booking?.rooms?.room_number || '',
-    room_type: booking?.room_type || booking?.rooms?.room_type || ''
+     customer_name: booking?.customer_name || (/** @type {{name?: unknown}|null|undefined} */ (booking?.customers))?.name || '',
+     room_number: booking?.room_number || (/** @type {{room_number?: unknown, room_type?: unknown}|null|undefined} */ (booking?.rooms))?.room_number || '',
+     room_type: booking?.room_type || (/** @type {{room_number?: unknown, room_type?: unknown}|null|undefined} */ (booking?.rooms))?.room_type || ''
   });
 
   try {
-    const { data, error } = await state.supabase.rpc('get_night_audit_summary', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_night_audit_summary', {
       p_lodge_id: state.lodgeId,
       p_audit_date: date
     });
@@ -1426,7 +1556,7 @@ export async function getNightAudit(date) {
       };
     }
   } catch (rpcError) {
-    console.warn('[NightAudit] Server summary unavailable, using legacy fallback:', rpcError?.message || rpcError);
+    console.warn('[NightAudit] Server summary unavailable, using legacy fallback:', (/** @type {CaughtReportErrorView} */ (rpcError))?.message || rpcError);
   }
 
   try {
@@ -1437,15 +1567,15 @@ export async function getNightAudit(date) {
     { data: posOrders },
     { data: outstanding }] =
     await Promise.all([
-    state.supabase.from('bookings').select(bookingAuditSelect).
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select(bookingAuditSelect).
     eq('lodge_id', state.lodgeId).eq('check_in', date).neq('status', 'cancelled').order('check_in'),
-    state.supabase.from('bookings').select(bookingAuditSelect).
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select(bookingAuditSelect).
     eq('lodge_id', state.lodgeId).eq('check_out', date).neq('status', 'cancelled').order('check_out'),
-    state.supabase.from('bookings').select(bookingAuditSelect).
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select(bookingAuditSelect).
     eq('lodge_id', state.lodgeId).gte('created_at', dayStart).lte('created_at', dayEnd).order('created_at', { ascending: false }),
-    state.supabase.from('pos_orders').select('*, pos_order_items(*)').
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pos_orders').select('*, pos_order_items(*)').
     eq('lodge_id', state.lodgeId).eq('status', 'completed').gte('created_at', dayStart).lte('created_at', dayEnd).order('created_at', { ascending: false }),
-    state.supabase.from('bookings').select(bookingAuditSelect).
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('bookings').select(bookingAuditSelect).
     eq('lodge_id', state.lodgeId).in('status', ['confirmed', 'checked_in']).neq('payment_status', 'paid').order('check_in')]
     );
 
@@ -1466,6 +1596,6 @@ export async function getNightAudit(date) {
       outstanding_total: outstandingTotal
     };
   } catch (error) {
-    throw new Error(error?.message || 'Night audit could not be loaded.');
+    throw new Error(/** @type {string} */ ((/** @type {CaughtReportErrorView} */ (error))?.message || 'Night audit could not be loaded.'));
   }
 }

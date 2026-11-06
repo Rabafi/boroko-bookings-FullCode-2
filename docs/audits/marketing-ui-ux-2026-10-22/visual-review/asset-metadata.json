@@ -1,0 +1,266 @@
+[
+  {
+    "path": "/assets/tsa-bonno-hospitalityos-logo-light.png",
+    "width": 1000,
+    "height": 400,
+    "format": "png"
+  },
+  {
+    "path": "/assets/generated/photos/lodge-exterior-1280.avif",
+    "width": 1280,
+    "height": 854,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-dashboard-960.avif",
+    "width": 960,
+    "height": 497,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/reception-640.avif",
+    "width": 640,
+    "height": 480,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/financial-dashboard-640.avif",
+    "width": 640,
+    "height": 360,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/inventory-tablet-640.avif",
+    "width": 640,
+    "height": 360,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/reports-screen-640.avif",
+    "width": 640,
+    "height": 461,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/guest-room-640.avif",
+    "width": 640,
+    "height": 427,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-dashboard-640.avif",
+    "width": 640,
+    "height": 331,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-dashboard-240.avif",
+    "width": 240,
+    "height": 519,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/booking-site-lodge-640.avif",
+    "width": 640,
+    "height": 450,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-reports-640.avif",
+    "width": 640,
+    "height": 331,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-bookings-640.avif",
+    "width": 640,
+    "height": 331,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-room-grid-640.avif",
+    "width": 640,
+    "height": 331,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-pos-640.avif",
+    "width": 640,
+    "height": 331,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/tsa-bonno-lodgingos-logo-light.png",
+    "width": 1000,
+    "height": 400,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/desktop-dashboard.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/tsa-bonno-hotelos-logo-light.png",
+    "width": 1000,
+    "height": 400,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/desktop-room-grid.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/tsa-bonno-restaurant-bar-os-logo-light.png",
+    "width": 1000,
+    "height": 400,
+    "format": "png"
+  },
+  {
+    "path": "/assets/generated/photos/bar-stock-1600.avif",
+    "width": 1600,
+    "height": 2400,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-pos-960.avif",
+    "width": 960,
+    "height": 497,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/restaurant-640.avif",
+    "width": 640,
+    "height": 427,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/bar-stock-400.avif",
+    "width": 400,
+    "height": 600,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/reception-1280.avif",
+    "width": 1280,
+    "height": 961,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/reports-screen-1280.avif",
+    "width": 1280,
+    "height": 922,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-dashboard-320.avif",
+    "width": 320,
+    "height": 693,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-bookings-240.avif",
+    "width": 240,
+    "height": 519,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-rooms-240.avif",
+    "width": 240,
+    "height": 519,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-money-240.avif",
+    "width": 240,
+    "height": 519,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/pwa-alerts-240.avif",
+    "width": 240,
+    "height": 519,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/guest-room-1280.avif",
+    "width": 1280,
+    "height": 854,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/booking-site-lodge-960.avif",
+    "width": 960,
+    "height": 675,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/booking-site-book-640.avif",
+    "width": 640,
+    "height": 450,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/screenshots/desktop-reports-960.avif",
+    "width": 960,
+    "height": 497,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/generated/photos/financial-dashboard-1280.avif",
+    "width": 1280,
+    "height": 720,
+    "format": "heif"
+  },
+  {
+    "path": "/assets/screenshots/pwa-dashboard.png",
+    "width": 780,
+    "height": 1688,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/booking-site-lodge.png",
+    "width": 1280,
+    "height": 900,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/desktop-reports.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/photos/restaurant.jpg",
+    "width": 1600,
+    "height": 1067,
+    "format": "jpeg"
+  },
+  {
+    "path": "/assets/screenshots/desktop-bookings.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/desktop-pos.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/screenshots/desktop-invoices.png",
+    "width": 1920,
+    "height": 993,
+    "format": "png"
+  },
+  {
+    "path": "/assets/generated/photos/lodge-exterior-640.avif",
+    "width": 640,
+    "height": 427,
+    "format": "heif"
+  }
+]

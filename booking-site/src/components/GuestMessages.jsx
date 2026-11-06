@@ -3,16 +3,21 @@ import { Send, MessageCircle, Loader2 } from 'lucide-react'
 import { rpc } from '../lib/publicApi.js'
 import { useGuestPortal } from './GuestPortalSession.jsx'
 
+/** Expected rows from `get_guest_messages`; the API response is not runtime validated here. */
+/** @typedef {{id: string|null, sender_type: string|null, sender: string|null, message: string|null, content: string|null, created_at: string|null}} GuestMessageViewData */
+/** @typedef {{success?: boolean, error?: string|null, messages?: GuestMessageViewData[]|null}} GuestMessagesResponse */
+/** @typedef {{success?: boolean, error?: string|null}} GuestMessageSendResponse */
+
 export default function GuestMessages() {
   const { token, customer_name } = useGuestPortal()
-  const [messages, setMessages] = useState([])
+  const [messages, setMessages] = useState(/** @type {GuestMessageViewData[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [text, setText] = useState('')
-  const [error, setError] = useState(null)
-  const [sendError, setSendError] = useState(null)
-  const listEndRef = useRef(null)
-  const inputRef = useRef(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [sendError, setSendError] = useState(/** @type {string|null} */ (null))
+  const listEndRef = useRef(/** @type {HTMLDivElement|null} */ (null))
+  const inputRef = useRef(/** @type {HTMLInputElement|null} */ (null))
 
   useEffect(() => {
     loadMessages()
@@ -30,15 +35,18 @@ export default function GuestMessages() {
     try {
       const { data, error: rpcErr } = await rpc('get_guest_messages', { p_token: token })
       if (rpcErr) { setError(rpcErr.message); return }
-      if (!data || data.success === false) { setError(data?.error || 'Could not load messages.'); return }
-      setMessages(data.messages || [])
+      // SQL defines this row shape; API JSON remains unvalidated at runtime.
+      const response = /** @type {GuestMessagesResponse|null} */ (data)
+      if (!response || response.success === false) { setError(response?.error || 'Could not load messages.'); return }
+      setMessages(response.messages || [])
     } catch (e) {
-      setError(e.message || 'Network error.')
+      setError((/** @type {Error} */ (e)).message || 'Network error.')
     } finally {
       setLoading(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function handleSend(e) {
     e.preventDefault()
     const trimmed = text.trim()
@@ -52,13 +60,15 @@ export default function GuestMessages() {
         p_message: trimmed
       })
       if (rpcErr) { setSendError(rpcErr.message); return }
-      if (!data || data.success === false) { setSendError(data?.error || 'Could not send message.'); return }
+      // The SQL RPC returns these fields; this is an expected view, not validation.
+      const response = /** @type {GuestMessageSendResponse|null} */ (data)
+      if (!response || response.success === false) { setSendError(response?.error || 'Could not send message.'); return }
 
       setText('')
       await loadMessages()
       inputRef.current?.focus()
     } catch (e) {
-      setSendError(e.message || 'Network error.')
+      setSendError((/** @type {Error} */ (e)).message || 'Network error.')
     } finally {
       setSending(false)
     }
@@ -123,7 +133,7 @@ export default function GuestMessages() {
           ref={inputRef}
           type="text"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(/** @type {import('react').ChangeEvent<HTMLInputElement>} */ e) => setText(e.target.value)}
           placeholder="Type your message…"
           maxLength={2000}
           className="guest-input flex-1"

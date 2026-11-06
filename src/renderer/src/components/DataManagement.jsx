@@ -10,6 +10,10 @@ import { isBarOnlyMode, isRestaurantOnly } from '../../../shared/propertyTypes'
 const LODGE_TABS = ['Import Bookings', 'Export Data', 'Backups']
 const RESTAURANT_TABS = ['Import Data', 'Export Data', 'Backups']
 
+/** @typedef {import('../../../shared/desktopIpcContracts.js').BackupInfoReadResult | {backups: never[], backupDir: string, policy: null}} BackupInfoUiExpectedView */
+/** The UI intentionally omits export_json when replacing policy state; the writer supplies its existing default. */
+/** @typedef {{enabled: boolean, target_dir: string, export_json?: boolean, export_excel: boolean, enforcement_level: string}} BackupPolicyFormState */
+
 const LODGE_EXPORT_PRESETS = [
   { key: 'full', label: 'Full Backup Export', desc: 'Everything needed for archiving and support-led recovery.' },
   { key: 'finance', label: 'Finance Export', desc: 'Invoices, expenses, POS, purchases, conference, and day-use income.' },
@@ -223,17 +227,17 @@ function ExportTab({ restaurantMode, EXPORT_PRESETS, EXPORT_SECTIONS }) {
 }
 
 function BackupsTab({ restaurantMode }) {
-  const [info, setInfo] = useState({ backups: [], backupDir: '', policy: null })
+  const [info, setInfo] = useState(/** @type {BackupInfoUiExpectedView} */ ({ backups: [], backupDir: '', policy: null }))
   const [policySaving, setPolicySaving] = useState(false)
   const [policyRunning, setPolicyRunning] = useState(false)
   const [policyResult, setPolicyResult] = useState(null)
-  const [policy, setPolicy] = useState({
+  const [policy, setPolicy] = useState(/** @type {BackupPolicyFormState} */ ({
     enabled: false,
     target_dir: '',
     export_json: true,
     export_excel: true,
     enforcement_level: 'reminder'
-  })
+  }))
   const dataNoun = restaurantMode ? 'restaurant' : 'property'
 
   const loadInfo = async () => {

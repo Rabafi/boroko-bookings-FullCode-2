@@ -221,10 +221,10 @@ test('Legacy event feed is authenticated, outlet scoped, and requires a safe cur
 test('Legacy client allowlist covers every required command and query', () => {
   const commands = `
     sale.commit sale.return sale.void sale.correct_after_close tab.open tab.add tab.settle tab.transfer tab.split tab.merge
-    shift.open shift.close drawer.movement cashup.submit cashup.review cashup.reopen stock.receive
-    stock.adjust stock.stocktake stock.waste stock.lot.waste stock.lot.release stock.transfer supplier.upsert purchase_order.create
+    shift.open shift.close drawer.movement cashup.submit cashup.review cashup.reopen cashup.handover stock.receive
+    stock.adjust stock.stocktake stock.waste stock.lot.waste stock.lot.release stock.transfer stock.batch.record supplier.upsert purchase_order.create
     purchase_order.cancel purchase_order.receive customer.create customer.credit.payment voucher.issue
-    catalogue.upsert catalogue.availability.set expense.create expense.void accounting.account.upsert
+    catalogue.upsert catalogue.bar_product.save catalogue.stock_item.save catalogue.availability.set expense.create expense.void accounting.account.upsert
     control.checklist.start control.checklist.item.set control.incident.log control.incident.resolve
     workforce.shift.schedule workforce.shift.cancel workforce.clock.in workforce.clock.out staff.create
     staff.status settings.update accounting.journal.post accounting.period.close
@@ -238,12 +238,14 @@ test('Legacy client allowlist covers every required command and query', () => {
     accounting.payroll_run.prepare accounting.payroll_run.finalise accounting.budget.upsert
   `.trim().split(/\s+/);
   const queries = `
-    bootstrap menu.list menu.availability menu.modifiers menu.promotions expenses.list expense.get accounting.accounts.list tabs.list
-    tab.get sales.list reports.sales_summary reports.stock reports.cashup control.templates.list
-    control.checklists.list control.checklist.get control.incidents.list workforce.roster
-    workforce.attendance.list workforce.attendance.current sale.get shift.current cashup.summary
-    stock.list stock.lot_expiry stock.lot_balances suppliers.list purchase_orders.list purchase_order.get customers.list vouchers.list
-    staff.list audit.search outbox.status outbox.bundle.get loyalty.programs.list loyalty.account.get accounting.trial_balance accounting.records workforce.tip_payouts drawer.open_shifts support.reports.list reports.post_close_corrections
+    accounting.accounts.list accounting.journal_entries accounting.records accounting.trial_balance audit.search bootstrap
+    cashup.mine cashup.pending cashup.summary control.checklist.get control.checklists.list control.incidents.list control.templates.list
+    customers.list drawer.open_shifts expense.get expenses.list loyalty.account.get loyalty.programs.list
+    menu.availability menu.list menu.modifiers menu.promotions outbox.bundle.get outbox.status
+    purchase_order.get purchase_orders.list reports.cashup reports.post_close_corrections reports.sales_summary reports.stock
+    sale.get sales.list sales.mine shift.current staff.list stock.aging stock.history stock.list stock.lot_balances stock.lot_expiry
+    suppliers.list support.reports.list tab.get tabs.list vouchers.list workforce.attendance.current
+    workforce.attendance.list workforce.roster workforce.tip_payouts
   `.trim().split(/\s+/);
   assert.equal(ALLOWED_COMMANDS.size, commands.length);
   assert.equal(ALLOWED_QUERIES.size, queries.length);

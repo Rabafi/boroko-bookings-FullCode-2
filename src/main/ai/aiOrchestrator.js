@@ -126,6 +126,11 @@ function deltaSummary(current, previous) {
 // room names, maintenance notes, etc.) is untrusted and may contain adversarial
 // content designed to trigger unintended tool execution.
 
+/** @typedef {{ type: 'string' | 'number' | 'array'; enum?: string[]; items?: { type: 'string' } }} AiToolPropertySchema */
+/** @typedef {{ type: 'object'; required: string[]; properties?: Record<string, AiToolPropertySchema> }} AiToolParamsSchema */
+/** @typedef {{ name: string; description: string; confirm: boolean; paramsSchema: AiToolParamsSchema }} AiToolSpec */
+
+/** @type {AiToolSpec[]} */
 const TOOL_SPECS = [
   {
     name: 'get_attention',
@@ -329,11 +334,16 @@ const TOOL_SPECS = [
 const KNOWN_TOOL_NAMES = new Set(TOOL_SPECS.map((t) => t.name))
 const TOOL_SPEC_MAP = new Map(TOOL_SPECS.map((t) => [t.name, t]))
 
+/** Error codes returned by extractStrictToolCall; the literal discriminant keeps `tool` narrowed on the success path. */
+/** @typedef {{error: 'multiple_json_blocks' | 'malformed_json' | 'missing_tool' | 'unknown_tool' | 'invalid_params' | 'missing_required_param' | 'invalid_param_type' | 'invalid_param_value', message: string, tool?: undefined, params?: undefined}} AiToolCallParseFailure */
+/** Successful parse; `params` stays unknown because the fenced JSON payload is untrusted model output. */
+/** @typedef {{tool: string, params: unknown, error?: undefined, message?: undefined}} AiToolCallParsed */
+
 /**
  * Strict JSON extraction: only accepts exactly ONE ```json fenced block.
  * No fallback loose parsing. No "repair" attempts.
  */
-/** @param {string} text */
+/** @param {string} text @returns {AiToolCallParseFailure | AiToolCallParsed | null} */
 function extractStrictToolCall(text) {
   if (!text) return null
 
@@ -359,6 +369,11 @@ function extractStrictToolCall(text) {
   }
 
   const spec = TOOL_SPEC_MAP.get(toolName)
+  // The set and map are both derived from TOOL_SPECS; keep a runtime guard for
+  // malformed/inconsistent registry state instead of asserting the lookup.
+  if (!spec) {
+    return { error: 'unknown_tool', message: `Unknown tool: "${toolName}". This tool is not available.` }
+  }
   const params = parsed.params ?? parsed.args ?? {}
 
   if (spec.confirm) {
@@ -385,8 +400,11 @@ function extractStrictToolCall(text) {
         if (schema.type === 'string' && typeof paramsRecord[key] !== 'string') {
           return { error: 'invalid_param_type', message: `Tool "${toolName}" parameter "${key}" must be a string.` }
         }
-        if (schema.enum && !schema.enum.includes(paramsRecord[key])) {
-          return { error: 'invalid_param_value', message: `Tool "${toolName}" parameter "${key}" must be one of: ${schema.enum.join(', ')}.` }
+        if (schema.enum) {
+          const enumValue = paramsRecord[key]
+          if (typeof enumValue !== 'string' || !schema.enum.includes(enumValue)) {
+            return { error: 'invalid_param_value', message: `Tool "${toolName}" parameter "${key}" must be one of: ${schema.enum.join(', ')}.` }
+          }
         }
       }
     }
@@ -409,6 +427,7 @@ function stripTrailingJson(text) {
 
 // ─── P0-1 + P0-2: PROVIDER CONFIG & ERROR NORMALIZATION ───────────────────
 
+/** @param {typeof import('../database.js')} db */
 function readAiApiKey(db) {
   const key = (
     process.env.BOROKO_AI_API_KEY ||
@@ -438,6 +457,11 @@ function readAiApiKey(db) {
 const AI_BASE_URL = process.env.BOROKO_AI_BASE_URL || ''
 
 /** @typedef {'local' | 'deepseek' | 'gemini' | 'opencode' | 'zen'} SupportedAiProvider */
+/** @typedef {{apiKey: string, model: unknown, system?: string | null | undefined, user: unknown, context?: unknown | undefined, signal?: AbortSignal | undefined}} AiProviderRequest */
+/** Expected locally assembled request view; IPC-derived leaves are not validated here. */
+/** @typedef {{db: typeof import('../database.js'), model?: unknown, system?: string | null, user: unknown, context?: {route?: string | null}, signal?: AbortSignal}} AiGenerateExpectedArguments */
+// Preserve the original explicit signal property; Fetch treats undefined as no signal.
+/** @typedef {RequestInit} AiProviderRequestInitExpected */
 /** @type {Set<SupportedAiProvider>} */
 const SUPPORTED_PROVIDERS = new Set(['local', 'deepseek', 'gemini', 'opencode', 'zen'])
 
@@ -506,6 +530,7 @@ export function recommendationGuidance(recommendation, fallback = '') {
   return fallback ? `${fallback}\n\n${base}` : base
 }
 
+/** @type {Record<SupportedAiProvider, string>} */
 const PROVIDER_DEFAULT_MODELS = {
   local: 'boroko-local-assistant',
   gemini: 'gemini-2.5-flash',
@@ -530,8 +555,9 @@ const OFFLINE_NETWORK_ERRORS = [
   'timeout'
 ]
 
+/** @param {unknown} err */
 function isOfflineOrNetworkError(err) {
-  const msg = String(err?.message || err || '').toLowerCase()
+  const msg = String(readAiProperty(err, 'message') || err || '').toLowerCase()
   return OFFLINE_NETWORK_ERRORS.some((pattern) => msg.includes(pattern.toLowerCase()))
 }
 
@@ -539,6 +565,7 @@ function isOfflineOrNetworkError(err) {
  * Normalizes ANY provider error into a safe, user-facing message.
  * Never leaks: API keys, raw responses, stack traces, full prompts, or request headers.
  */
+/** @param {unknown} err @param {number | null} statusCode */
 function normalizeProviderError(err, statusCode) {
   if (isOfflineOrNetworkError(err)) {
     return 'The cloud AI provider needs an internet connection. Tsa Bonno Assistant can still answer local app-help questions offline.'
@@ -556,7 +583,7 @@ function normalizeProviderError(err, statusCode) {
     }
   }
 
-  const msg = String(err?.message || err || '')
+  const msg = String(readAiProperty(err, 'message') || err || '')
 
   // Never leak raw provider error messages that might contain keys or internal details
   if (msg.includes('API key') || msg.includes('apikey') || msg.includes('Authorization')) {
@@ -575,6 +602,7 @@ function getProviderModel(provider, requestedModel) {
   return PROVIDER_DEFAULT_MODELS[provider] || DEFAULT_AI_MODEL
 }
 
+/** @param {AiGenerateExpectedArguments} args */
 async function aiGenerate({ db, model, system, user, context, signal }) {
   // Resolve provider — throws if BOROKO_AI_PROVIDER is set to an unsupported value.
   // Unset → local assistant, supported → use it, unsupported → configuration error.
@@ -583,7 +611,7 @@ async function aiGenerate({ db, model, system, user, context, signal }) {
     provider = resolveProvider()
   } catch (e) {
     // Re-throw as a configuration error — safe message, no stack leakage to UI
-    throw new Error(e.message)
+    throw new Error(/** @type {string | undefined} */ (readAiProperty(e, 'message')))
   }
 
   const resolvedModel = getProviderModel(provider, model)
@@ -600,8 +628,6 @@ async function aiGenerate({ db, model, system, user, context, signal }) {
 
   // ── Provider routing ─────────────────────────────────────────────────
   switch (provider) {
-    case 'local':
-      return resolveLocalAssistantTurn({ message: user, route: context?.route || null })?.assistantText || ''
     case 'deepseek':
       return await deepseekGenerate({ apiKey, model: resolvedModel, system, user, context, signal })
     case 'opencode':
@@ -616,6 +642,7 @@ async function aiGenerate({ db, model, system, user, context, signal }) {
 }
 
 // ── DeepSeek V4 Pro (OpenAI-compatible) ──────────────────────────────────
+/** @param {AiProviderRequest} args */
 async function deepseekGenerate({ apiKey, model, system, user, context, signal }) {
   const baseUrl = AI_BASE_URL || 'https://api.deepseek.com/chat/completions'
   const messages = []
@@ -625,7 +652,7 @@ async function deepseekGenerate({ apiKey, model, system, user, context, signal }
 
   let res
   try {
-    res = await fetch(baseUrl, {
+    res = await fetch(baseUrl, /** @type {AiProviderRequestInitExpected} */ ({
       method: 'POST',
       signal,
       headers: {
@@ -638,12 +665,12 @@ async function deepseekGenerate({ apiKey, model, system, user, context, signal }
         temperature: 0.2,
         max_tokens: 800
       })
-    })
+    }))
   } catch (e) {
     throw new Error(normalizeProviderError(e, null))
   }
 
-  let data
+  /** @type {unknown} */ let data
   try {
     data = await res.json()
   } catch {
@@ -652,12 +679,12 @@ async function deepseekGenerate({ apiKey, model, system, user, context, signal }
 
   if (!res.ok) {
     throw new Error(normalizeProviderError(
-      new Error(data?.error?.message || data?.error?.type || `HTTP ${res.status}`),
+      new Error(String(readAiProperty(readAiProperty(data, 'error'), 'message') || readAiProperty(readAiProperty(data, 'error'), 'type') || `HTTP ${res.status}`)),
       res.status
     ))
   }
 
-  const text = data?.choices?.[0]?.message?.content
+  const text = readAiProperty(readAiProperty(readAiProperty(readAiProperty(data, 'choices'), '0'), 'message'), 'content')
   if (!text) {
     throw new Error('The AI did not return a response. Please try again.')
   }
@@ -665,6 +692,7 @@ async function deepseekGenerate({ apiKey, model, system, user, context, signal }
 }
 
 // ── OpenCode/Zen provider ────────────────────────────────────────────────
+/** @param {AiProviderRequest} args */
 async function opencodeGenerate({ apiKey, model, system, user, context, signal }) {
   const baseUrl = AI_BASE_URL || 'https://opencode.ai/zen/v1'
   const url = `${baseUrl}/chat/completions`
@@ -675,7 +703,7 @@ async function opencodeGenerate({ apiKey, model, system, user, context, signal }
 
   let res
   try {
-    res = await fetch(url, {
+    res = await fetch(url, /** @type {AiProviderRequestInitExpected} */ ({
       method: 'POST',
       signal,
       headers: {
@@ -688,12 +716,12 @@ async function opencodeGenerate({ apiKey, model, system, user, context, signal }
         temperature: 0.2,
         max_tokens: 800
       })
-    })
+    }))
   } catch (e) {
     throw new Error(normalizeProviderError(e, null))
   }
 
-  let data
+  /** @type {unknown} */ let data
   try {
     data = await res.json()
   } catch {
@@ -702,11 +730,11 @@ async function opencodeGenerate({ apiKey, model, system, user, context, signal }
 
   if (!res.ok) {
     throw new Error(normalizeProviderError(
-      new Error(data?.error?.message || data?.error?.type || `HTTP ${res.status}`),
+      new Error(String(readAiProperty(readAiProperty(data, 'error'), 'message') || readAiProperty(readAiProperty(data, 'error'), 'type') || `HTTP ${res.status}`)),
       res.status
     ))
   }
-  const text = data?.choices?.[0]?.message?.content
+  const text = readAiProperty(readAiProperty(readAiProperty(readAiProperty(data, 'choices'), '0'), 'message'), 'content')
   if (!text) {
     throw new Error('The AI did not return a response. Please try again.')
   }
@@ -714,6 +742,7 @@ async function opencodeGenerate({ apiKey, model, system, user, context, signal }
 }
 
 // ── Gemini provider ──────────────────────────────────────────────────────
+/** @param {AiProviderRequest} args */
 async function geminiGenerate({ apiKey, model, system, user, context, signal }) {
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
   const prompt = [
@@ -724,7 +753,7 @@ async function geminiGenerate({ apiKey, model, system, user, context, signal }) 
 
   let res
   try {
-    res = await fetch(geminiUrl, {
+    res = await fetch(geminiUrl, /** @type {AiProviderRequestInitExpected} */ ({
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json' },
@@ -732,12 +761,12 @@ async function geminiGenerate({ apiKey, model, system, user, context, signal }) 
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.2, maxOutputTokens: 800 }
       })
-    })
+    }))
   } catch (e) {
     throw new Error(normalizeProviderError(e, null))
   }
 
-  let data
+  /** @type {unknown} */ let data
   try {
     data = await res.json()
   } catch {
@@ -746,12 +775,12 @@ async function geminiGenerate({ apiKey, model, system, user, context, signal }) 
 
   if (!res.ok) {
     throw new Error(normalizeProviderError(
-      new Error(data?.error?.message || `HTTP ${res.status}`),
+      new Error(String(readAiProperty(readAiProperty(data, 'error'), 'message') || `HTTP ${res.status}`)),
       res.status
     ))
   }
 
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text
+  const text = readAiProperty(readAiProperty(readAiProperty(readAiProperty(readAiProperty(readAiProperty(data, 'candidates'), '0'), 'content'), 'parts'), '0'), 'text')
   if (!text) {
     throw new Error('The AI did not return a response. Please try again.')
   }
@@ -760,6 +789,11 @@ async function geminiGenerate({ apiKey, model, system, user, context, signal }) 
 
 // ─── AUDIT LOGGING ───────────────────────────────────────────────────────
 
+// Expected user projection from the current-user producer; leaf values are not validated here.
+/**
+ * @param {{user: {id?: unknown, email?: unknown, role?: unknown} | null | undefined, lodgeId: unknown, event: unknown, payload: unknown}} record
+ * @param {{userDataPath: string}} paths
+ */
 export function writeAiAuditLog({ user, lodgeId, event, payload }, { userDataPath }) {
   try {
     const path = join(userDataPath, 'ai-audit.log')
@@ -832,6 +866,8 @@ SYNC AWARENESS:
 `.trim()
 }
 
+// Expected projection of activity and booking rows; values remain unvalidated.
+/** @param {{id?: unknown, customer_name?: unknown, guest_name?: unknown, guest?: unknown, room_number?: unknown, room?: unknown, check_in?: unknown, check_out?: unknown, status?: unknown}|null|undefined} row */
 function normalizeHandoverPerson(row) {
   return {
     id: row?.id,
@@ -843,17 +879,174 @@ function normalizeHandoverPerson(row) {
   }
 }
 
+// ─── EXPECTED DATA VIEWS FOR AI TOOL READS ───────────────────────────────
+// These views describe values that real producers in this repository already
+// build. They are expectations, not validation: Supabase rows, persisted cache
+// JSON and RPC payloads are not runtime-checked, and values this module does
+// not construct stay `unknown`.
+
+/**
+ * Booking row produced by `getAllBookings` in `domains/bookings.js`
+ * (`BOOKING_LIST_SELECT` plus the `customers(...)`/`rooms(...)` joins and the
+ * local cache fallback). `guest_name` and `updated_by` are not part of that
+ * projection; they are only read through the existing tolerant legacy/actor
+ * fallbacks, so they stay unknown.
+ * @typedef {{
+ *   id: string,
+ *   customer_id?: string | null,
+ *   room_id?: string | null,
+ *   check_in: string,
+ *   check_out?: string | null,
+ *   status?: string | null,
+ *   payment_status?: string | null,
+ *   total_amount?: number | string | null,
+ *   charges_total?: number | string | null,
+ *   amount_paid?: number | string | null,
+ *   invoice_number?: string | null,
+ *   created_at?: string | null,
+ *   updated_at?: string | null,
+ *   created_by?: unknown,
+ *   updated_by?: unknown,
+ *   customer_name?: string | null,
+ *   guest_name?: unknown,
+ *   customer_phone?: string | null,
+ *   customer_email?: string | null,
+ *   room_number?: string | null
+ * }} ExpectedBookingRow
+ */
+
+/**
+ * Payment mix returned by `getTodayBookingPaymentMix` in `domains/reports.js`.
+ * `gross_collected` only exists on the online ledger path and `trend` is added
+ * by the `get_today_revenue` branch of `runTool` after the fact.
+ * @typedef {{total_collected: number, gross_collected?: number, refunds_issued?: number, by_method: Record<string, number>, payment_count: number, date: string | null, trend?: unknown}} ExpectedTodayBookingPaymentMix
+ */
+
+/**
+ * Dashboard projection from `getDashboardStats` in `domains/reports.js` (the
+ * facade `getDashboardStats`). The first six fields are emitted by every
+ * branch; `outstanding_total`/`unpaid_count` only by the online RPC branch.
+ * The legacy aliases below are read as unknown because the current producer
+ * does not emit them; retained fallbacks do not validate or narrow those values.
+ * @typedef {{total_rooms: number, occupied_today: number, checkins_today: number, checkouts_today: number, revenue_month: number, upcoming_bookings: number, outstanding_total?: number, unpaid_count?: number, revenue?: unknown, occupancy?: unknown, revenue_trend?: unknown, occupancy_trend?: unknown, occupancy_rate?: unknown, arrivals_today?: unknown, check_ins_today?: unknown, departures_today?: unknown, check_outs_today?: unknown, revenue_today?: unknown}} ExpectedDashboardStats
+ */
+
+/** The report producer accepts an optional date string; its default-null parameter otherwise infers too narrowly. The returned RPC/cache-derived data remains in the producer's existing inferred type and is not validated here. */
+/** @typedef {{getTodayBookingPaymentMix: (dateValue?: string | null) => Promise<unknown>}} AiPaymentMixDateQueryView */
+
+/**
+ * Backup snapshot from `getBackupInfo` in `domains/misc.js`. Its current
+ * producer emits `created`; existing AI reads also retain optional timestamp
+ * spelling fallbacks. This view does not validate the returned data.
+ * @typedef {{backupDir: string, backups: {name: string, size: number, created: string, createdAt?: string | null, created_at?: string | null}[], policy: unknown}} ExpectedBackupInfo
+ */
+
+/**
+ * `getTodayActivity` in `domains/reports.js`: today's booking rows split by date.
+ * @typedef {{checkins_today: ExpectedBookingRow[], checkouts_today: ExpectedBookingRow[], checkins_tomorrow: ExpectedBookingRow[]}} ExpectedTodayActivity
+ */
+
+/**
+ * `getUpcomingCheckins` in `domains/reports.js`: booking rows per upcoming day.
+ * @typedef {{today: ExpectedBookingRow[], tomorrow: ExpectedBookingRow[], dayAfter: ExpectedBookingRow[]}} ExpectedUpcomingCheckins
+ */
+
+/**
+ * Forecast row from `getForecast` in `domains/reports.js`.
+ * @typedef {{date: string, occupied: number, total: number, rate: number}} ExpectedForecastRow
+ */
+
+/**
+ * Queue row enriched by `getSyncDetails` in `domains/sync.js`
+ * (`enrichPending`/`enrichFailed` always add `isFinancial`); the queued RPC
+ * payload and retry metadata stay unknown.
+ * @typedef {{isFinancial: boolean, data?: {amount?: unknown, total_amount?: unknown, payload?: {amount?: unknown} | null} | null}} ExpectedSyncQueueItem
+ */
+
+/**
+ * Sync details projection read by `get_sync_impact`; queue payloads stay unknown.
+ * @typedef {{pending: ExpectedSyncQueueItem[], failed: ExpectedSyncQueueItem[], faults: unknown[]}} ExpectedSyncDetails
+ */
+
+/**
+ * Payment row returned by the `get_booking_payments` RPC
+ * (`domains/bookings.js` `getBookingPayments`; SQL projection of the payments
+ * table). Rows are not runtime-validated; `user_id`/`created_by` remain
+ * unknown compatibility reads retained by the existing fraud summary even
+ * though the current RPC projection uses `recorded_by`.
+ * @typedef {{id?: unknown, booking_id?: unknown, lodge_id?: unknown, amount: number, method?: unknown, type?: unknown, paid_at?: unknown, recorded_by?: unknown, user_id?: unknown, created_by?: unknown, notes?: unknown, created_at: string, refund_base_amount?: unknown, refund_retained_percent?: unknown, refund_retained_amount?: unknown}} ExpectedBookingPaymentRow
+ */
+
+/**
+ * Process-wide fraud alert throttling flags set by `detect_payment_anomalies`
+ * in this module.
+ * @typedef {{lastFraudEmitTimestamp?: number, lastFraudHighestScore?: number}} AiProcessGlobals
+ */
+
+/**
+ * Summary counts returned by the `detect_payment_anomalies` branch of
+ * `runTool` and by its catch fallback.
+ * @typedef {{summary: {critical: number, high: number}}} AiFraudDetectionExpectedResult
+ * @typedef {'payment_reduction' | 'forced_checkout' | 'multiple_edits' | 'suspicious_batch' | 'large_discount'} AiBookingFraudAlertType
+ * @typedef {{type: AiBookingFraudAlertType, booking_id: string, guest: unknown, amount: number, timestamp: string, user: unknown, reason: string, evidence: string[], isHighValue?: boolean, score?: number, risk_score?: number, severity?: string}} AiBookingFraudAlert
+ * @typedef {AiBookingFraudAlert & {score: number}} ScoredAiBookingFraudAlert
+ * Alerts after the existing per-user scoring loop has assigned risk_score and severity.
+ * @typedef {ScoredAiBookingFraudAlert & {risk_score: number, severity: string}} AiRiskScoredBookingFraudAlert
+ * @typedef {{type: 'user_risk_cluster', user: string, risk_score: number, severity: string, alerts: AiRiskScoredBookingFraudAlert[]}} AiUserRiskCluster
+ */
+
+/**
+ * Maintenance satisfaction risk row built by `get_maintenance_satisfaction_risk`.
+ * @typedef {{ticket_id: unknown, booking_id: unknown, guest: unknown, room_number: unknown, issue: unknown, priority: unknown, opened_at: unknown}} ExpectedMaintenanceSatisfactionRiskItem
+ */
+
+/**
+ * UI context sent by `src/renderer/src/components/OpsAi.jsx`
+ * (`uiContext` useMemo) and forwarded by the `ai:turn` IPC handler in
+ * `src/main/index.js`. `OpsAi.jsx` constructs all six properties; property
+ * reads from other compatible inputs may still be undefined. This is an
+ * expected-data view only: renderer fields remain unvalidated.
+ * @typedef {{sourceRoute: string | null | undefined, screenLabel: unknown, activeTabLabel: unknown, activeBookingId: unknown, activeGuestName: unknown, roomNumber: unknown}} AiUiContextExpectedData
+ */
+
+/**
+ * Input of `turn` from the `ai:turn` IPC handler: `message`/`threadId` are
+ * trimmed strings, `model` stays unknown and `route`/`uiContext` are optional.
+ * @typedef {{message: string, model?: unknown, route?: string | null | undefined, threadId?: string, uiContext?: AiUiContextExpectedData | null}} AiTurnInput
+ */
+
+/** Optional compatibility query names used by the assistant's legacy/local database adapter and test doubles. A missing method remains missing and follows the existing optional-call/fallback path. @typedef {{getSettingsSync?: () => unknown, getAllMaintenanceTickets?: () => unknown, getLowStock?: () => unknown}} AiDatabaseCompatibilityReadView */
+/** @typedef {typeof import('../database.js') & AiDatabaseCompatibilityReadView} AiOrchestratorDatabase */
+/** The existing local resolver destructures route with a null default, so explicit undefined is accepted and normalized there. Preserve the present own route property when forwarding. @typedef {{message?: unknown, route?: string|null|undefined, liveContext?: unknown, uiContext?: AiUiContextExpectedData|null}} AiAssistantResolveExpectedInput */
+/** @typedef {Omit<ReturnType<typeof createLocalAssistantSession>, 'resolve'> & {resolve: (input: AiAssistantResolveExpectedInput) => ReturnType<typeof resolveLocalAssistantTurn>}} AiAssistantSessionExpectedView */
+
+/**
+ * Tool runner over the database facade namespace that `src/main/index.js`
+ * passes to `createAiOrchestrator`. `appUserDataPath` is optional because the
+ * read-only local runner is created without it; audit writes are guarded by
+ * the existing truthiness check.
+ * @param {{db: AiOrchestratorDatabase, appUserDataPath?: string, now?: () => Date}} options
+ */
 function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
   // Injectable clock: production defaults to wall time; tests pass a fixed
   // `now` so date-relative tools (unpaid buckets, overdue, forecasts) are
   // deterministic. Audit timestamps intentionally keep real time (nowIso).
+  /** @param {unknown} [ref] */
   const todayKey = (ref) => (ref instanceof Date && !Number.isNaN(ref.getTime()) ? ref : now()).toISOString().slice(0, 10)
   const nowMs = () => now().getTime()
+  /**
+   * Tool dispatch by registry name. Params are the untrusted model/parser
+   * object; each branch reads only the keys it knows and every result shape
+   * below is this module's own construction, so the union stays unknown here.
+   * @param {string} tool
+   * @param {Record<string, unknown>} params
+   * @returns {Promise<unknown>}
+   */
   return async function runTool(tool, params) {
     switch (tool) {
       case 'get_attention': {
         const today = todayKey()
-        const [stats, maintenance, lowStock, bookings, syncStatus, onlineRequests, backupInfo] = await Promise.all([
+        const [stats, maintenance, lowStock, bookings, syncStatus, onlineRequests, backupInfo] = /** @type {[unknown, unknown, unknown, ExpectedBookingRow[], import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot | null, unknown, ExpectedBackupInfo | null]} */ (await Promise.all([
           safeDbCall(() => db.getDashboardStats(), null),
           safeDbCall(() => db.getAllMaintenanceTickets?.(), []),
           safeDbCall(() => db.getLowStockItems?.() ?? db.getLowStock?.(), []),
@@ -861,7 +1054,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
           safeDbCall(() => db.getSyncStatus?.(), null),
           safeDbCall(() => db.getPendingOnlineBookings?.(), []),
           safeDbCall(() => db.getBackupInfo?.(), { backups: [] })
-        ])
+        ]))
         const maintenanceOpen = Array.isArray(maintenance)
           ? maintenance.filter((t) => String(t.status || '').toLowerCase() === 'open').slice(0, 10)
           : []
@@ -880,9 +1073,9 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
             balance: computeBookingBalance(b)
           }))
         const items = []
-        if ((syncStatus?.failed || 0) > 0) {
+        if (syncStatus != null && (syncStatus.failed || 0) > 0) {
           items.push({ kind: 'sync_failed', severity: 'high', title: `${syncStatus.failed} sync item${syncStatus.failed === 1 ? '' : 's'} failing`, detail: 'Open System Health before trusting remote totals.', action: 'How do I fix failed sync?' })
-        } else if ((syncStatus?.pending || 0) > 0) {
+        } else if (syncStatus != null && (syncStatus.pending || 0) > 0) {
           items.push({ kind: 'sync_pending', severity: 'medium', title: `${syncStatus.pending} item${syncStatus.pending === 1 ? '' : 's'} pending sync`, detail: 'This device still has work waiting to sync.', action: 'Show sync impact.' })
         }
         if (overdueCheckouts.length > 0) {
@@ -935,13 +1128,13 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         }
       }
       case 'get_today_revenue': {
-        const mix = await safeDbCall(() => db.getTodayBookingPaymentMix(), null)
+        const mix = /** @type {ExpectedTodayBookingPaymentMix | null} */ (await safeDbCall(() => db.getTodayBookingPaymentMix(), null))
         const today = now()
         const yesterday = new Date(today.getTime())
         yesterday.setDate(today.getDate() - 1)
         const yesterdayKey = yesterday.toISOString().slice(0, 10)
-        const yesterdayMix = await safeDbCall(() => db.getTodayBookingPaymentMix(yesterdayKey), null)
-        const result = mix || { total_collected: 0, by_method: {}, payment_count: 0, date: today.toISOString().slice(0, 10) }
+        const yesterdayMix = /** @type {ExpectedTodayBookingPaymentMix | null} */ (await safeDbCall(() => (/** @type {AiPaymentMixDateQueryView} */ (db)).getTodayBookingPaymentMix(yesterdayKey), null))
+        const result = mix || /** @type {ExpectedTodayBookingPaymentMix} */ ({ total_collected: 0, by_method: {}, payment_count: 0, date: today.toISOString().slice(0, 10) })
         const yesterdayTotal = Number(yesterdayMix?.total_collected ?? yesterdayMix?.gross_collected ?? 0)
         const todayTotal = Number(result.total_collected ?? result.gross_collected ?? 0)
         if (yesterdayMix) {
@@ -966,7 +1159,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
           const day = new Date(base.getTime())
           day.setDate(base.getDate() - i)
           const dateKey = day.toISOString().slice(0, 10)
-          const mix = await safeDbCall(() => db.getTodayBookingPaymentMix(dateKey), null)
+          const mix = /** @type {ExpectedTodayBookingPaymentMix | null} */ (await safeDbCall(() => (/** @type {AiPaymentMixDateQueryView} */ (db)).getTodayBookingPaymentMix(dateKey), null))
           series.push({ date: dateKey, total: Number(mix?.total_collected ?? mix?.gross_collected ?? 0), count: Number(mix?.payment_count || 0) })
         }
         const bestDay = [...series].sort((a, b) => b.total - a.total)[0] || null
@@ -1018,7 +1211,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
       }
       case 'get_overdue_checkouts': {
         const todayStr = todayKey()
-        const allBookings = await safeDbCall(() => db.getAllBookings(), [])
+        const allBookings = /** @type {ExpectedBookingRow[]} */ (await safeDbCall(() => db.getAllBookings(), []))
         const overdue = allBookings.filter(b => b.check_out && b.check_out.slice(0, 10) < todayStr && (b.status === 'checked_in' || b.status === 'confirmed'))
         return {
           count: overdue.length,
@@ -1041,6 +1234,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         const days = Math.max(1, Math.min(14, Number(params?.days || 1)))
         const roomNumber = params?.room_number ? String(params.room_number).toLowerCase() : null
         const today = now()
+        /** @type {string[]} */
         const range = []
         for (let i = 0; i < days; i++) {
           const date = new Date(today.getTime())
@@ -1149,7 +1343,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
       }
       case 'get_occupancy_forecast': {
         const days = Math.max(3, Math.min(30, Number(params?.days || 7)))
-        const series = await safeDbCall(() => db.getForecast(days), [])
+        const series = /** @type {ExpectedForecastRow[]} */ (await safeDbCall(() => db.getForecast(days), []))
         const best = [...series].sort((a, b) => b.rate - a.rate)[0] || null
         const firstRate = Number(series[0]?.rate || 0)
         const lastRate = Number(series[series.length - 1]?.rate || 0)
@@ -1195,7 +1389,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         }
       }
       case 'get_backup_status': {
-        const info = await safeDbCall(() => db.getBackupInfo?.(), { backupDir: '', backups: [], policy: null })
+        const info = /** @type {ExpectedBackupInfo | null} */ (await safeDbCall(() => db.getBackupInfo?.(), { backupDir: '', backups: [], policy: null }))
         const backups = Array.isArray(info?.backups) ? info.backups : []
         const newest = backups[0] || null
         const newestAt = newest?.createdAt || newest?.created_at || null
@@ -1211,14 +1405,14 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         }
       }
       case 'get_handover_report': {
-        const [activity, rooms, maintenance, syncStatus, lowStock, onlineRequests] = await Promise.all([
+        const [activity, rooms, maintenance, syncStatus, lowStock, onlineRequests] = /** @type {[ExpectedTodayActivity, unknown, unknown, import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot | null, unknown, unknown]} */ (await Promise.all([
           safeDbCall(() => db.getTodayActivity(), { checkins_today: [], checkouts_today: [], checkins_tomorrow: [] }),
           safeDbCall(() => db.getAllRooms(), []),
           safeDbCall(() => db.getAllMaintenanceTickets?.(), []),
           safeDbCall(() => db.getSyncStatus?.(), null),
           safeDbCall(() => db.getLowStockItems?.(), []),
           safeDbCall(() => db.getPendingOnlineBookings?.(), [])
-        ])
+        ]))
         const dirtyRooms = (Array.isArray(rooms) ? rooms : []).filter((room) => /dirty|cleanup|clean/i.test(String(room.housekeeping_status || room.status || '')))
         const openMaintenance = (Array.isArray(maintenance) ? maintenance : []).filter((item) => String(item.status || '').toLowerCase() === 'open')
         return {
@@ -1233,11 +1427,12 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         }
       }
       case 'get_sync_impact': {
-        const details = await safeDbCall(() => db.getSyncDetails?.(), null)
+        const details = /** @type {ExpectedSyncDetails | null} */ (await safeDbCall(() => db.getSyncDetails?.(), null))
         const pending = Array.isArray(details?.pending) ? details.pending : []
         const failed = Array.isArray(details?.failed) ? details.failed : []
         const financialPending = pending.filter((item) => item.isFinancial)
         const financialFailed = failed.filter((item) => item.isFinancial)
+        /** @param {ExpectedSyncQueueItem[]} rows */
         const sumAmount = (rows) => rows.reduce((sum, item) => sum + Number(item?.data?.amount || item?.data?.total_amount || item?.data?.payload?.amount || 0), 0)
         const financialAtRisk = sumAmount(financialPending) + sumAmount(financialFailed)
         return {
@@ -1268,7 +1463,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
           const roomKey = String(booking?.room_number || booking?.room_id || '').trim()
           if (roomKey) activeByRoom.set(roomKey, booking)
         }
-        const items = (Array.isArray(maintenance) ? maintenance : [])
+        const items = /** @type {ExpectedMaintenanceSatisfactionRiskItem[]} */ ((Array.isArray(maintenance) ? maintenance : [])
           .filter((ticket) => String(ticket?.status || '').toLowerCase() === 'open')
           .map((ticket) => {
             const roomKey = String(ticket?.room_number || ticket?.room_id || '').trim()
@@ -1284,7 +1479,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
               opened_at: ticket.created_at || ticket.createdAt || null
             }
           })
-          .filter(Boolean)
+          .filter(Boolean))
         return {
           count: items.length,
           risk_level: items.some((item) => String(item.priority).toLowerCase() === 'high') ? 'high' : items.length ? 'medium' : 'low',
@@ -1334,14 +1529,14 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         const yesterday = new Date(now().getTime())
         yesterday.setDate(yesterday.getDate() - 1)
         const yesterdayStr = yesterday.toISOString().slice(0, 10)
-        const [stats, paymentMix, maintenance, allBookings, syncStatus] = await Promise.all([
+        const [stats, paymentMix, maintenance, allBookings, syncStatus] = /** @type {[ExpectedDashboardStats | null, ExpectedTodayBookingPaymentMix | null, unknown, ExpectedBookingRow[], import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot | null]} */ (await Promise.all([
           safeDbCall(() => db.getDashboardStats(), null),
           safeDbCall(() => db.getTodayBookingPaymentMix(), null),
           safeDbCall(() => db.getAllMaintenanceTickets?.(), []),
           safeDbCall(() => db.getAllBookings(), []),
           safeDbCall(() => db.getSyncStatus?.(), null)
-        ])
-        const fraudResult = await runTool('detect_payment_anomalies', {}).catch(() => ({ summary: { critical: 0, high: 0, medium: 0, low: 0 } }))
+        ]))
+        const fraudResult = /** @type {AiFraudDetectionExpectedResult} */ (await runTool('detect_payment_anomalies', {}).catch(() => ({ summary: { critical: 0, high: 0, medium: 0, low: 0 } })))
         let revenueToday = paymentMix?.total_collected || stats?.revenue || 0
         let outstanding = 0
         let checkIns = 0
@@ -1351,7 +1546,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         let activeBookings = 0
         const todaySnapshot = computeBookingSnapshot(allBookings, todayStr, stats?.total_rooms || 20)
         const yesterdaySnapshot = computeBookingSnapshot(allBookings, yesterdayStr, stats?.total_rooms || 20)
-        const yesterdayMix = await safeDbCall(() => db.getTodayBookingPaymentMix(yesterdayStr), null)
+        const yesterdayMix = /** @type {ExpectedTodayBookingPaymentMix | null} */ (await safeDbCall(() => (/** @type {AiPaymentMixDateQueryView} */ (db)).getTodayBookingPaymentMix(yesterdayStr), null))
         for (const b of allBookings) {
           if ((b.status || '') === 'cancelled') continue
           const total = Number(b.total_amount || 0) + Number(b.charges_total || 0)
@@ -1396,6 +1591,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
             if (wins.length > 0) wins[0].webContents.send('ai:alert', { type: 'daily_briefing_priority', message: 'Immediate attention required: ' + (fraudResult.summary?.critical > 0 ? 'Critical Fraud Detected' : 'High Outstanding Balances') })
           } catch {}
         }
+        /** @type {{type: string, label: string, priority: 'critical'|'high'|'medium'}[]} */
         const actions = []
         if (outstanding > 0) actions.push({ type: 'fix_unpaid', label: `Collect P ${outstanding.toFixed(2)} from ${unpaidCount} booking${unpaidCount > 1 ? 's' : ''}`, priority: outstanding > 10000 ? 'critical' : 'high' })
         if (overdueCheckouts > 0) actions.push({ type: 'resolve_overdue', label: `Resolve ${overdueCheckouts} overdue checkout${overdueCheckouts > 1 ? 's' : ''}`, priority: 'medium' })
@@ -1468,7 +1664,8 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         }
       }
       case 'detect_payment_anomalies': {
-        const bookings = await safeDbCall(() => db.getAllBookings(), [])
+        const bookings = /** @type {ExpectedBookingRow[]} */ (await safeDbCall(() => db.getAllBookings(), []))
+        /** @type {ScoredAiBookingFraudAlert[]} */
         const rawAlerts = []
         const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
         const recentBookings = bookings.filter((b) => {
@@ -1476,7 +1673,9 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
           return dateStr ? new Date(dateStr).getTime() > oneWeekAgo : true
         })
         const allRecentPayments = []
+        /** @type {Record<AiBookingFraudAlertType, number>} */
         const BASE_SCORE = { payment_reduction: 40, forced_checkout: 50, multiple_edits: 25, suspicious_batch: 30, large_discount: 35 }
+        /** @param {number} score */
         const getSeverity = (score) => score >= 80 ? 'critical' : score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low'
         for (const b of recentBookings) {
           const total = Number(b.total_amount || 0) + Number(b.charges_total || 0)
@@ -1486,10 +1685,11 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
           const updateTime = b.updated_at || b.created_at || new Date().toISOString()
           const updatedBy = b.updated_by || b.created_by || 'system'
           const isHighValue = total > 2000
+          /** @type {AiBookingFraudAlert[]} */
           const bookingAlerts = []
           if ((b.status === 'checked_out' || b.status === 'completed') && balance > 0.01) bookingAlerts.push({ type: 'forced_checkout', booking_id: b.id, guest: guestName, amount: balance, timestamp: updateTime, user: updatedBy, reason: 'Forced checkout with balance', evidence: [`Status marked as ${b.status}`, `Outstanding balance: P${balance.toFixed(2)}`], isHighValue })
           if ((b.payment_status === 'paid' || b.status === 'completed') && paid > 0 && paid < total * 0.7) bookingAlerts.push({ type: 'large_discount', booking_id: b.id, guest: guestName, amount: total - paid, timestamp: updateTime, user: updatedBy, reason: 'Large discount or underpayment', evidence: [`Total expected: P${total.toFixed(2)}`, `Total paid: P${paid.toFixed(2)}`, 'Difference is >30%'], isHighValue })
-          const payments = await safeDbCall(() => db.getBookingPayments(b.id), [])
+          const payments = /** @type {ExpectedBookingPaymentRow[]} */ (await safeDbCall(() => db.getBookingPayments(b.id), []))
           if (payments.length > 0) {
             payments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
             allRecentPayments.push(...payments.map((p) => ({ ...p, booking_id: b.id, guest: guestName })))
@@ -1512,11 +1712,13 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
               a.score = BASE_SCORE[a.type] || 0
               if (a.isHighValue) a.score += 15
               if (hasMultipleRules) a.score += 25
-              rawAlerts.push(a)
+              // The local scorer above assigns score before this alert enters the shared result list.
+              rawAlerts.push(/** @type {ScoredAiBookingFraudAlert} */ (a))
             })
           }
         }
         allRecentPayments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        /** @type {Record<string, (ExpectedBookingPaymentRow & {booking_id: string, guest: unknown})[]>} */
         const userPayments = {}
         for (const p of allRecentPayments) {
           const user = p.user_id || p.created_by || 'system'
@@ -1532,6 +1734,7 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
             }
           }
         }
+        /** @type {ScoredAiBookingFraudAlert[]} */
         const dedupAlerts = []
         const seen = new Set()
         for (const a of rawAlerts) {
@@ -1542,11 +1745,13 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
             dedupAlerts.push(a)
           }
         }
+        /** @type {Record<string, ScoredAiBookingFraudAlert[]>} */
         const alertsByUser = {}
         for (const a of dedupAlerts) {
           alertsByUser[a.user] ||= []
           alertsByUser[a.user].push(a)
         }
+        /** @type {AiUserRiskCluster[]} */
         const clusters = []
         for (const user in alertsByUser) {
           const userAlerts = alertsByUser[user]
@@ -1556,8 +1761,9 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
             a.risk_score = Math.min(a.score, 100)
             a.severity = getSeverity(a.risk_score)
           })
-          userAlerts.sort((a, b) => b.risk_score - a.risk_score)
-          clusters.push({ type: 'user_risk_cluster', user, risk_score: userAlerts[0].risk_score, severity: getSeverity(userAlerts[0].risk_score), alerts: userAlerts })
+          // Each alert in this same array has just received both fields above; these expected views add no checks.
+          userAlerts.sort((a, b) => (/** @type {AiRiskScoredBookingFraudAlert} */ (b)).risk_score - (/** @type {AiRiskScoredBookingFraudAlert} */ (a)).risk_score)
+          clusters.push({ type: 'user_risk_cluster', user, risk_score: (/** @type {AiRiskScoredBookingFraudAlert[]} */ (userAlerts))[0].risk_score, severity: getSeverity((/** @type {AiRiskScoredBookingFraudAlert[]} */ (userAlerts))[0].risk_score), alerts: /** @type {AiRiskScoredBookingFraudAlert[]} */ (userAlerts) })
         }
         clusters.sort((a, b) => b.risk_score - a.risk_score)
         let totalCritical = 0; let totalHigh = 0; let totalMedium = 0; let totalLow = 0
@@ -1571,12 +1777,12 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
         const maxClusterScore = clusters.length > 0 ? clusters[0].risk_score : 0
         let shouldEmit = false
         if (clusters.length > 0) {
-          if (Date.now() - (global.lastFraudEmitTimestamp || 0) > 15 * 60 * 1000) shouldEmit = true
-          else if (maxClusterScore > (global.lastFraudHighestScore || 0)) shouldEmit = true
+          if (Date.now() - (/** @type {AiProcessGlobals} */ (global).lastFraudEmitTimestamp || 0) > 15 * 60 * 1000) shouldEmit = true
+          else if (maxClusterScore > (/** @type {AiProcessGlobals} */ (global).lastFraudHighestScore || 0)) shouldEmit = true
         }
         if (shouldEmit) {
-          global.lastFraudEmitTimestamp = Date.now()
-          global.lastFraudHighestScore = maxClusterScore
+          (/** @type {AiProcessGlobals} */ (global)).lastFraudEmitTimestamp = Date.now();
+          (/** @type {AiProcessGlobals} */ (global)).lastFraudHighestScore = maxClusterScore
           try {
             const wins = BrowserWindow.getAllWindows()
             if (wins.length > 0) wins[0].webContents.send('ai:alert', { type: 'fraud_alert', severity: getSeverity(maxClusterScore), message: 'Suspicious payment activity detected', count: summary.total_alerts })
@@ -1595,9 +1801,16 @@ function createToolRunner({ db, appUserDataPath, now = () => new Date() }) {
   }
 }
 
+/**
+ * Read-only wrapper around `createToolRunner`. `db` is the module namespace
+ * passed by `src/main/index.js` (`import * as db from './database.js'`);
+ * `appUserDataPath` is intentionally omitted, so the runner has no audit path.
+ * @param {{db: typeof import('../database.js'), now?: () => Date}} options
+ */
 export function createLocalReadToolRunner({ db, now = () => new Date() }) {
   const runTool = createToolRunner({ db, now })
   return {
+    /** @param {string} tool @param {Record<string, unknown>} [params] @returns {Promise<unknown>} */
     runTool(tool, params = {}) {
       const spec = TOOL_SPEC_MAP.get(tool)
       if (!spec) throw new Error(`Unknown tool: ${tool}`)
@@ -1609,9 +1822,23 @@ export function createLocalReadToolRunner({ db, now = () => new Date() }) {
 
 // ─── ORCHESTRATOR ────────────────────────────────────────────────────────
 
+/**
+ * Orchestrator factory. `db` is the `src/main/database.js` namespace and
+ * `requireCapability` is the async gate defined in `src/main/index.js`; the
+ * call site also passes `requireCommercialFeature`, which this factory does
+ * not destructure or use.
+ * @param {{
+ *   appUserDataPath: string,
+ *   db: typeof import('../database.js'),
+ *   requireCapability: (capability: string, errorMessage?: string) => unknown,
+ *   requireCommercialFeature?: unknown,
+ *   now?: () => Date
+ * }} options
+ */
 export function createAiOrchestrator({ appUserDataPath, db, requireCapability, now = () => new Date() }) {
   const localAssistantSessions = new Map()
 
+  /** @type {Record<string, string | undefined>} */
   const toolCaps = {
     get_attention: 'dashboard.view',
     get_today_revenue: 'dashboard.view',
@@ -1641,6 +1868,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
     bulk_check_out: 'bookings.manage'
   }
 
+  /** @returns {AiAssistantSessionExpectedView} The imported resolver defaults explicit undefined route to null. */
   function getAssistantSession(threadId = 'default') {
     const key = String(threadId || 'default')
     if (!localAssistantSessions.has(key)) {
@@ -1658,12 +1886,12 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
   // there are local-only records awaiting sync.
 
   async function buildContextSnapshot() {
-    const [stats, upcoming, paymentMix, syncStatus] = await Promise.all([
+    const [stats, upcoming, paymentMix, syncStatus] = /** @type {[ExpectedDashboardStats | null, ExpectedUpcomingCheckins, ExpectedTodayBookingPaymentMix | null, import('../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot | null]} */ (await Promise.all([
       safeDbCall(() => db.getDashboardStats(), null),
       safeDbCall(() => db.getUpcomingCheckins(), { today: [], tomorrow: [], dayAfter: [] }),
       safeDbCall(() => db.getTodayBookingPaymentMix(), null),
       safeDbCall(() => db.getSyncStatus?.(), null)
-    ])
+    ]))
 
     // Build a rich sync health summary
     let syncHealth = null
@@ -1694,6 +1922,9 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
     }
   }
 
+  /**
+   * @param {AiTurnInput} input
+   */
   async function turn({ message, model, route, threadId, uiContext = null }) {
     const user = db.getCurrentUser?.() || null
     const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null
@@ -1775,7 +2006,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
     const localTurn = getAssistantSession(threadId).resolve({ message, route, liveContext, uiContext })
     const provider = resolveProvider()
 
-    if (localTurn?.tool) {
+    if (localTurn && 'tool' in localTurn && localTurn.tool) {
       const toolName = localTurn.tool
       const toolSpec = TOOL_SPEC_MAP.get(toolName)
 
@@ -1790,7 +2021,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
           success: true,
           assistantText: recommendationGuidance(recommendation, localTurn.assistantText || ''),
           recommendation,
-          localHelp: resolveLocalAssistantTurn({ message: `how do I ${message}`, route, liveContext, uiContext })?.localHelp || null,
+          localHelp: resolveLocalAssistantTurn({ message: `how do I ${message}`, route: route ?? null, liveContext, uiContext })?.localHelp || null,
           proposal: null
         }
       }
@@ -1805,13 +2036,13 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
         success: true,
         assistantText: localTurn.assistantText || '',
         toolResult: { tool: toolName, result },
-        localIntent: localTurn.localIntent || null,
-        localHelp: localTurn.localHelp || null,
+        localIntent: ('localIntent' in localTurn ? localTurn.localIntent : undefined) || null,
+        localHelp: ('localHelp' in localTurn ? localTurn.localHelp : undefined) || null,
         proposal: null
       }
     }
 
-    if (localTurn?.localHelp && (provider === 'local' || localTurn.localHelp.confidence !== 'low')) {
+    if (localTurn && 'localHelp' in localTurn && localTurn.localHelp && (provider === 'local' || localTurn.localHelp.confidence !== 'low')) {
       // Device-local unresolved-query signal for the monthly synonym/backlog
       // review. Truncated prompt text only; never leaves this device.
       if (localTurn.localHelp.mode === 'fallback') {
@@ -1827,7 +2058,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
     }
 
     // Disambiguation case — return it so the UI can render both options
-    if (localTurn?.localHelp?.mode === 'disambiguation') {
+    if (localTurn && 'localHelp' in localTurn && localTurn.localHelp?.mode === 'disambiguation') {
       return {
         success: true,
         assistantText: localTurn.assistantText || '',
@@ -1866,7 +2097,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
     const cap = toolCaps[toolName]
     if (cap) await requireCapability(cap)
 
-    const params = cmdResult.params && typeof cmdResult.params === 'object' ? cmdResult.params : {}
+    const params = /** @type {Record<string, unknown>} */ (cmdResult.params && typeof cmdResult.params === 'object' ? cmdResult.params : {})
 
     // Read tools execute immediately (they change nothing). Confirm tools
     // NEVER execute and NEVER become proposals: they become recommendations
@@ -1900,6 +2131,7 @@ export function createAiOrchestrator({ appUserDataPath, db, requireCapability, n
   // renderers fail closed with guidance instead of hanging: every call is
   // rejected and audit-logged. Operator actions happen on normal screens.
 
+  /** @returns {Promise<never>} */
   async function execute() {
     const user = db.getCurrentUser?.() || null
     const lodgeId = db.getActiveProfile?.()?.lodge_id || user?.lodge_id || null

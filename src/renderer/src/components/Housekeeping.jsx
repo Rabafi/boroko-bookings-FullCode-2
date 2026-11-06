@@ -43,6 +43,25 @@ const HOUSEKEEPING_STATES = [
   { key: 'inspected', label: 'Inspected', icon: Sparkles, tone: 'bg-purple-100 text-purple-700 border-purple-200' }
 ]
 
+/** Room rows from rooms:getAll; main selects these fields and may serve its existing cache fallback. The view does not validate IPC data. */
+/** @typedef {{id: string, room_number?: string|null, room_type?: string|null, status?: string|null, housekeeping_status?: string|null, housekeeping_notes?: string|null, accommodation_kind?: string|null, lodge_id?: string|null, rate_per_night?: number|string|null}} HousekeepingRoomExpectedView */
+/** Booking rows consumed by the arrival-priority view; the date-range handler joins cached booking, room and guest fields without schema validation. */
+/** @typedef {{id: string, room_id?: string|null, room_number?: string|null, room_type?: string|null, check_in?: string|null, check_out?: string|null, status?: string|null, customer_name?: string|null}} HousekeepingBookingExpectedView */
+/** The current dashboard RPC returns counters, assignments and inspections; its result may be null and is not validated here. */
+/** @typedef {{success?: boolean, dirty_rooms?: number|null, clean_rooms?: number|null, available_rooms?: number|null, date?: string|null, assignments?: HousekeepingAssignmentExpectedView[], inspections?: HousekeepingInspectionExpectedView[]}} HousekeepingDashboardExpectedView */
+/** @typedef {{id: string, room_id?: string|null, room_number?: string|null, assigned_to?: string|null, assigned_name?: string|null, assignment_date?: string|null, shift?: string|null, status?: string|null, notes?: string|null}} HousekeepingAssignmentExpectedView */
+/** @typedef {{id: string, room_id?: string|null, room_number?: string|null, inspector_name?: string|null, status?: string|null, failed_items?: string[]|null}} HousekeepingInspectionExpectedView */
+/** Checklist RPC rows consumed by the configuration table. */
+/** @typedef {{id: string, item_name: string, category?: string|null, is_required?: boolean, sort_order?: number|null}} HousekeepingChecklistExpectedView */
+/** Supply inventory and allocation rows are expected IPC/cache views; the handler preserves the online item_id and offline supply_item_id variants. */
+/** @typedef {{id: string, name: string, category?: string|null, unit?: string|null, current_stock?: number|string|null, latest_unit_cost?: number|string|null}} HousekeepingSupplyItemExpectedView */
+/** @typedef {{id: string, room_id: string, item_id: string, quantity: number|string, week_start: string, lodge_id: string, created_at: string|null, updated_at: string|null}} HousekeepingSupplyWeekLiveExpectedView */
+/** @typedef {{id?: string, room_id: string|null, supply_item_id: string, units_used?: number|string, total_cost?: number|string, week_start: string|null, entry_date?: string, date?: string, source?: string}} HousekeepingSupplyWeekCacheExpectedView */
+/** @typedef {HousekeepingSupplyWeekLiveExpectedView|HousekeepingSupplyWeekCacheExpectedView} HousekeepingSupplyAllocationExpectedView */
+/** rooms:updateHousekeeping wraps the domain result in these IPC success/failure branches. */
+/** @typedef {{success: true}|{success: false, error?: unknown}} HousekeepingUpdateResultExpectedView */
+
+/** @param {string} value */
 function statusLabel(value) {
   return HOUSEKEEPING_STATES.find((entry) => entry.key === value)?.label || 'Clean'
 }
@@ -113,10 +132,10 @@ function BoardTab() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const features = useFeatures()
-  const [rooms, setRooms] = useState([])
-  const [todayBookings, setTodayBookings] = useState([])
-  const [saving, setSaving] = useState(null)
-  const [noteEdits, setNoteEdits] = useState({})
+  const [rooms, setRooms] = useState(/** @type {HousekeepingRoomExpectedView[]} */ ([]))
+  const [todayBookings, setTodayBookings] = useState(/** @type {HousekeepingBookingExpectedView[]} */ ([]))
+  const [saving, setSaving] = useState(/** @type {string|null} */ (null))
+  const [noteEdits, setNoteEdits] = useState(/** @type {Record<string, string>} */ ({}))
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -143,8 +162,10 @@ function BoardTab() {
   const loadRooms = async () => {
     setLoading(true)
     setError('')
+    /** @type {string[]} */
     const warnings = []
     try {
+      /** @template T @param {string} label @param {Promise<T>} promise @returns {Promise<T|null>} */
       const settle = async (label, promise) => {
         try {
           return await promise
@@ -166,8 +187,8 @@ function BoardTab() {
         setTodayBookings([])
         return
       }
-      setRooms(Array.isArray(roomData) ? roomData : [])
-      setTodayBookings(Array.isArray(bookingData) ? bookingData : [])
+      setRooms(Array.isArray(roomData) ? /** @type {HousekeepingRoomExpectedView[]} */ (/** @type {unknown} */ (roomData)) : [])
+      setTodayBookings(Array.isArray(bookingData) ? /** @type {HousekeepingBookingExpectedView[]} */ (/** @type {unknown} */ (bookingData)) : [])
       if (warnings.length) {
         setError(`Partial load: ${warnings.join(' · ')}`)
       }
@@ -188,7 +209,7 @@ function BoardTab() {
     setSaving(room.id)
     const notes = noteEdits[room.id] ?? room.housekeeping_notes ?? ''
     try {
-      const result = await window.api.rooms.updateHousekeeping(room.id, newStatus, notes)
+      const result = /** @type {HousekeepingUpdateResultExpectedView} */ (/** @type {unknown} */ (await window.api.rooms.updateHousekeeping(room.id, newStatus, notes)))
       if (result && result.success === false) {
         setError(`Update failed: ${result.error || 'Unknown error'}. Make sure you have run the housekeeping SQL migration.`)
         setRooms((prev) =>
@@ -443,10 +464,10 @@ function BoardTab() {
 }
 
 function TurnoverTab() {
-  const [rooms, setRooms] = useState([])
-  const [arrivals, setArrivals] = useState([])
-  const [departures, setDepartures] = useState([])
-  const [savingRoomId, setSavingRoomId] = useState(null)
+  const [rooms, setRooms] = useState(/** @type {HousekeepingRoomExpectedView[]} */ ([]))
+  const [arrivals, setArrivals] = useState(/** @type {HousekeepingBookingExpectedView[]} */ ([]))
+  const [departures, setDepartures] = useState(/** @type {HousekeepingBookingExpectedView[]} */ ([]))
+  const [savingRoomId, setSavingRoomId] = useState(/** @type {string|null} */ (null))
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -460,9 +481,9 @@ function TurnoverTab() {
         window.api.hotel.getArrivals(),
         window.api.hotel.getDepartures()
       ])
-      setRooms(Array.isArray(roomRows) ? roomRows : [])
-      setArrivals(Array.isArray(arrivalRows) ? arrivalRows : [])
-      setDepartures(Array.isArray(departureRows) ? departureRows : [])
+      setRooms(Array.isArray(roomRows) ? /** @type {HousekeepingRoomExpectedView[]} */ (/** @type {unknown} */ (roomRows)) : [])
+      setArrivals(Array.isArray(arrivalRows) ? /** @type {HousekeepingBookingExpectedView[]} */ (/** @type {unknown} */ (arrivalRows)) : [])
+      setDepartures(Array.isArray(departureRows) ? /** @type {HousekeepingBookingExpectedView[]} */ (/** @type {unknown} */ (departureRows)) : [])
     } catch (err) {
       setError(err?.message || 'Could not load turnover board.')
     } finally {
@@ -516,7 +537,7 @@ function TurnoverTab() {
       entry.id === room.id ? { ...entry, housekeeping_status: nextStatus } : entry
     )))
     try {
-      const result = await window.api.rooms.updateHousekeeping(room.id, nextStatus, room.housekeeping_notes || '')
+      const result = /** @type {HousekeepingUpdateResultExpectedView} */ (/** @type {unknown} */ (await window.api.rooms.updateHousekeeping(room.id, nextStatus, room.housekeeping_notes || '')))
       if (result?.success === false) throw new Error(result.error || 'Housekeeping update failed')
       await loadData()
     } catch (err) {
@@ -639,8 +660,8 @@ function TurnoverTab() {
 
 function AssignmentsTab() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [dashboard, setDashboard] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [dashboard, setDashboard] = useState(/** @type {HousekeepingDashboardExpectedView|null} */ (null))
   const [activeTab, setActiveTab] = useState('board')
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10))
   const [selectedRoom, setSelectedRoom] = useState('')
@@ -653,7 +674,7 @@ function AssignmentsTab() {
     setError(null)
     try {
       const dash = await window.api.housekeepingCommandCenter.getDashboard(selectedDate)
-      setDashboard(dash)
+      setDashboard(/** @type {HousekeepingDashboardExpectedView|null} */ (/** @type {unknown} */ (dash)))
     } catch (err) {
       setError(err?.message || 'Failed to load assignments')
     } finally {
@@ -852,9 +873,9 @@ function AssignmentsTab() {
 
 function InspectionTab() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [dashboard, setDashboard] = useState(null)
-  const [checklistItems, setChecklistItems] = useState([])
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [dashboard, setDashboard] = useState(/** @type {HousekeepingDashboardExpectedView|null} */ (null))
+  const [checklistItems, setChecklistItems] = useState(/** @type {HousekeepingChecklistExpectedView[]} */ ([]))
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10))
 
   const loadData = useCallback(async () => {
@@ -865,14 +886,14 @@ function InspectionTab() {
         throw new Error('Housekeeping command center API is not available')
       }
       const dash = await window.api.housekeepingCommandCenter.getDashboard(selectedDate)
-      setDashboard(dash)
+      setDashboard(/** @type {HousekeepingDashboardExpectedView|null} */ (/** @type {unknown} */ (dash)))
       let items = []
       try {
         items = await window.api.housekeepingCommandCenter.getChecklistItems()
       } catch (itemsErr) {
         setError(`Dashboard loaded; checklist items failed: ${itemsErr?.message || 'unknown error'}`)
       }
-      setChecklistItems(Array.isArray(items) ? items : [])
+      setChecklistItems(Array.isArray(items) ? /** @type {HousekeepingChecklistExpectedView[]} */ (/** @type {unknown} */ (items)) : [])
     } catch (err) {
       setError(err?.message || 'Failed to load inspection data')
       setDashboard(null)
@@ -1031,9 +1052,9 @@ function SuppliesTab() {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const features = useFeatures()
-  const [rooms, setRooms] = useState([])
-  const [supplyItems, setSupplyItems] = useState([])
-  const [weekAllocations, setWeekAllocations] = useState([])
+  const [rooms, setRooms] = useState(/** @type {HousekeepingRoomExpectedView[]} */ ([]))
+  const [supplyItems, setSupplyItems] = useState(/** @type {HousekeepingSupplyItemExpectedView[]} */ ([]))
+  const [weekAllocations, setWeekAllocations] = useState(/** @type {HousekeepingSupplyAllocationExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -1053,7 +1074,9 @@ function SuppliesTab() {
     setError('')
     try {
       const suppliesEnabled = Object.keys(features).length > 0 && features.supplies
+      /** @type {string[]} */
       const warn = []
+      /** @template T @param {string} label @param {Promise<T>} promise @returns {Promise<T|null>} */
       const settle = async (label, promise) => {
         try {
           return await promise
@@ -1079,9 +1102,9 @@ function SuppliesTab() {
         setWeekAllocations([])
         return
       }
-      setRooms(Array.isArray(roomData) ? roomData : [])
-      setSupplyItems(Array.isArray(itemData) ? itemData : [])
-      setWeekAllocations(Array.isArray(allocationData) ? allocationData : [])
+      setRooms(Array.isArray(roomData) ? /** @type {HousekeepingRoomExpectedView[]} */ (/** @type {unknown} */ (roomData)) : [])
+      setSupplyItems(Array.isArray(itemData) ? /** @type {HousekeepingSupplyItemExpectedView[]} */ (/** @type {unknown} */ (itemData)) : [])
+      setWeekAllocations(Array.isArray(allocationData) ? /** @type {HousekeepingSupplyAllocationExpectedView[]} */ (/** @type {unknown} */ (allocationData)) : [])
       if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (e) {
       setError(e?.message || 'Could not load supplies board.')

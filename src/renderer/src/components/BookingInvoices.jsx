@@ -32,6 +32,7 @@ const PAYMENT_METHODS = [
 /** @typedef {BookingPaymentHistoryRow[] & {success?: boolean; error?: string} | {success: false; error?: string}} BookingPaymentHistoryResult */
 /** @typedef {{payment_method?: string | null, payment_type?: string | null, amount_paid?: number | null, payment_status?: string | null, charges_total?: number | null, description?: string | null, category?: string | null, amount?: number | null, void_reason?: string | null, payment_id?: string | null, notes?: string | null, total_amount?: number | null}} FinancialAuditSnapshotDisplay */
 /** @typedef {{id: string, action: string, created_at: string, amount_delta: number | null, before_snapshot: FinancialAuditSnapshotDisplay | null, after_snapshot: FinancialAuditSnapshotDisplay | null}} FinancialAuditRow */
+/** @typedef {{id: string, booking_date: string, client_name: string, room_name: string | null, total_amount: unknown, deposit_paid: unknown, payment_status: string | null}} ConferenceBookingInvoiceExpectedRow */
 /**
  * Consumer expectation for invoice rows constructed by getBookingInvoices.
  * Fields used only for accommodation/event variants are optional; these
@@ -833,7 +834,7 @@ export default function BookingInvoices() {
   const location = useLocation()
 
   // RPC/cache rows and conference rows are not shape-validated before display.
-  const [invoices, setInvoices] = useState(/** @type {unknown[]} */ ([]))
+  const [invoices, setInvoices] = useState(/** @type {BookingInvoiceDisplay[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [isOffline, setIsOffline] = useState(false)
   const [search, setSearch] = useState('')
@@ -841,13 +842,13 @@ export default function BookingInvoices() {
   const [bookingFilter, setBookingFilter] = useState('all')
   const [sortBy, setSortBy] = useState('issued_desc')
   const [density, setDensity] = useState(/** @type {'compact' | 'comfortable'} */ ('comfortable'))
-  const [selectedInvoice, setSelectedInvoice] = useState(/** @type {unknown} */ (null))
-  const [receiptInvoice, setReceiptInvoice] = useState(/** @type {unknown} */ (null))
-  const [ledgerInvoice, setLedgerInvoice] = useState(/** @type {unknown} */ (null))
-  const [auditInvoice, setAuditInvoice] = useState(/** @type {unknown} */ (null))
-  const [deliveryInvoice, setDeliveryInvoice] = useState(/** @type {unknown} */ (null))
-  const [refundInvoice, setRefundInvoice] = useState(/** @type {unknown} */ (null))
-  const [groupPaymentInvoice, setGroupPaymentInvoice] = useState(/** @type {unknown} */ (null))
+  const [selectedInvoice, setSelectedInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [receiptInvoice, setReceiptInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [ledgerInvoice, setLedgerInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [auditInvoice, setAuditInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [deliveryInvoice, setDeliveryInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [refundInvoice, setRefundInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
+  const [groupPaymentInvoice, setGroupPaymentInvoice] = useState(/** @type {BookingInvoiceDisplay | null} */ (null))
   const [groupPaymentForm, setGroupPaymentForm] = useState({ amount: '', method: 'cash' })
   const [groupPaymentError, setGroupPaymentError] = useState('')
   const [groupPaymentSaving, setGroupPaymentSaving] = useState(false)
@@ -868,8 +869,13 @@ export default function BookingInvoices() {
     ])
     // getBookingInvoices returns constructed SQL rows or the existing cache
     // value; neither source validates each row before this display consumer.
-    const fresh = Array.isArray(data) ? /** @type {unknown[]} */ (data) : []
-    const confInvoices = (Array.isArray(confData) ? /** @type {unknown[]} */ (confData) : [])
+    // The main producer returns its constructed booking invoice rows, but its
+    // offline cache and IPC values are not runtime-validated here.
+    const fresh = Array.isArray(data) ? /** @type {BookingInvoiceDisplay[]} */ (data) : []
+    // conference:getAll selects these columns and also reads an unvalidated
+    // local cache. This remains an expected consumer view, not a validator.
+    const conferenceBookings = Array.isArray(confData) ? /** @type {ConferenceBookingInvoiceExpectedRow[]} */ (confData) : []
+    const confInvoices = conferenceBookings
       .filter((cb) => Number(cb.total_amount || 0) > 0 && Number(cb.deposit_paid || 0) < Number(cb.total_amount || 0))
       .map((cb) => ({
         booking_id: cb.id,

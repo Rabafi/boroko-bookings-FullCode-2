@@ -64,9 +64,12 @@ const RULE_LABELS = {
 
 const timeAgo = sharedTimeAgo
 
-/** @typedef {{id: string, lodge_id: string, lodge_name: string}} AdminCompanyReadView */
+/** @typedef {{lodge_id: string, lodge_name: string}} AdminCompanyReadView */
 
-/** @param {{onOpenCompany: (company: AdminCompanyReadView) => void, companies: AdminCompanyReadView[]}} props */
+/**
+ * @template {AdminCompanyReadView} TCompany
+ * @param {{onOpenCompany?: (company: TCompany) => void, companies: TCompany[]}} props
+ */
 function InboxTab({ onOpenCompany, companies }) {
   const [notifications, setNotifications] = useState(/** @type {unknown} */ ([]))
   const [unreadCount, setUnreadCount] = useState(/** @type {unknown} */ (0))
@@ -345,7 +348,10 @@ function EventsTab() {
   )
 }
 
-/** @param {{onOpenCompany: (company: AdminCompanyReadView) => void, companies?: AdminCompanyReadView[]}} props */
+/**
+ * @template {AdminCompanyReadView} TCompany
+ * @param {{onOpenCompany?: (company: TCompany) => void, companies?: TCompany[]}} props
+ */
 export default function Notifications({ onOpenCompany, companies = [] }) {
   const [tab, setTab] = useState('inbox')
 

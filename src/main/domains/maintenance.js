@@ -8,6 +8,13 @@ import { queueOperation, readCache, refreshCache, writeCache, dedupePromise } fr
 const MAINTENANCE_TICKET_SELECT = 'id, room_id, title, issue, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, completed_at, created_at, updated_at, rooms(room_number, room_type)';
 const MAINTENANCE_TICKET_LEGACY_SELECT = 'id, room_id, title, description, status, priority, reported_date, labour_cost, parts_cost, total_cost, vendor_name, cost_notes, created_at, rooms(room_number, room_type)';
 
+/**
+ * Fields consumed from the existing maintenance SELECT/cache writers. Cache
+ * JSON and Supabase rows are not validated by this expected-data view.
+ * @typedef {Record<string, unknown> & {id: unknown, room_id?: unknown, title?: unknown, issue?: unknown, description?: unknown, notes?: unknown, status: unknown, reported_date?: unknown, total_cost?: unknown, room_number?: unknown, room_type?: unknown, _pending_sync?: unknown, rooms?: {room_number?: unknown, room_type?: unknown}|null}} MaintenanceTicketCacheReadView
+ * @typedef {Record<string, unknown> & {id: unknown, status?: unknown, _pending_sync?: unknown}} MaintenanceRoomCacheReadView
+ */
+
 /** @param {unknown} rows @param {string} source @param {boolean} complete */
 function withReadMetadata(rows, source, complete) {
   const result = /** @type {unknown[]} */ (Array.isArray(rows) ? rows : [])
@@ -71,7 +78,7 @@ async function _getMaintenanceTickets() {
     writeCache('maintenance', rows, { source: 'remote' });
     return rows;
   }
-  return readCache('maintenance').map(normalizeMaintenanceTicketRow);
+  return /** @type {MaintenanceTicketCacheReadView[]} */ (readCache('maintenance')).map(normalizeMaintenanceTicketRow);
 }
 
 export function getMaintenanceTickets() {
@@ -81,7 +88,7 @@ export function getMaintenanceTickets() {
 /** @param {unknown} id */
 export async function getMaintenanceTicketById(id) {
   if (!id) return null;
-  if (!state.isOnline) return readCache('maintenance').map(normalizeMaintenanceTicketRow).find((ticket) => ticket?.id === id) || null;
+  if (!state.isOnline) return readCache('maintenance').map(normalizeMaintenanceTicketRow).find((ticket) => /** @type {MaintenanceTicketCacheReadView|null|undefined} */ (ticket)?.id === id) || null;
   const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).
   from('maintenance_tickets').
   select('*').
@@ -125,9 +132,9 @@ export async function createMaintenanceTicket(data) {
     created_at: new Date().toISOString(),
     _pending_sync: true
   };
-  writeCache('maintenance', [queuedTicket, ...readCache('maintenance')]);
+  writeCache('maintenance', [queuedTicket, .../** @type {MaintenanceTicketCacheReadView[]} */ (readCache('maintenance'))]);
   if (input.room_id) {
-    const rooms = readCache('rooms');
+    const rooms = /** @type {MaintenanceRoomCacheReadView[]} */ (readCache('rooms'));
     const roomIndex = rooms.findIndex((room) => String(room.id) === String(input.room_id));
     if (roomIndex >= 0) rooms[roomIndex] = { ...rooms[roomIndex], status: 'maintenance' };
     writeCache('rooms', rooms);
@@ -165,7 +172,7 @@ export async function updateMaintenanceTicket(id, data) {
     await refreshCache('maintenance');
     return { success: true };
   }
-  const cached = readCache('maintenance');
+  const cached = /** @type {MaintenanceTicketCacheReadView[]} */ (readCache('maintenance'));
   const idx = cached.findIndex((ticket) => ticket?.id === id);
   if (idx < 0) return { success: false, error: 'Maintenance ticket not found in offline cache' };
   const existing = cached[idx];
@@ -204,7 +211,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
     await refreshCache('maintenance');
     return { success: true };
   }
-  const cached = readCache('maintenance');
+  const cached = /** @type {MaintenanceTicketCacheReadView[]} */ (readCache('maintenance'));
   const idx = cached.findIndex((ticket) => ticket?.id === id);
   if (idx < 0) return { success: false, error: 'Maintenance ticket not found in offline cache' };
   const existing = cached[idx];
@@ -221,7 +228,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
   };
   writeCache('maintenance', next);
   if (roomId) {
-    const rooms = readCache('rooms');
+    const rooms = /** @type {MaintenanceRoomCacheReadView[]} */ (readCache('rooms'));
     const roomIndex = rooms.findIndex((room) => String(room.id) === String(roomId));
     if (roomIndex >= 0) {
       rooms[roomIndex] = { ...rooms[roomIndex], status: 'available', _pending_sync: true };
@@ -241,7 +248,7 @@ export async function resolveMaintenanceTicket(id, roomId) {
 
 /** @param {unknown} startDate @param {unknown} endDate */
 export async function getMaintenanceRowsForPeriod(startDate, endDate) {
-  const cachedRows = readCache('maintenance').
+  const cachedRows = /** @type {MaintenanceTicketCacheReadView[]} */ (readCache('maintenance')).
   filter((row) => (!startDate || String(row.reported_date || '').slice(0, 10) >= startDate) && (!endDate || String(row.reported_date || '').slice(0, 10) <= endDate)).
   map((row) => ({
     id: row.id || row._queue_id || null,

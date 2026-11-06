@@ -37,7 +37,7 @@ test('hardware verification fields cannot be self-attested by renderer settings'
   assert.match(adapter, /verified: false/)
   assert.match(adapter, /success: true, verified: true/)
   assert.match(adapter, /no receipt was sent/)
-  assert.match(main, /result\.success === true && result\.verified === true/)
+  assert.match(main, /success: expectedResult\.success === true && expectedResult\.verified === true/)
 })
 
 test('daily close uses detected checklist state and protected Bar clock-out uses the PIN RPC', () => {

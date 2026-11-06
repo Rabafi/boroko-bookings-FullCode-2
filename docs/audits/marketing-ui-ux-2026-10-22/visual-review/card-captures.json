@@ -1,0 +1,50 @@
+[
+  {
+    "name": "index",
+    "width": 1440,
+    "index": 12,
+    "file": "suite-cards-1440.png"
+  },
+  {
+    "name": "manager-app",
+    "width": 1440,
+    "index": 3,
+    "file": "phone-cards-1440.png"
+  },
+  {
+    "name": "restaurant-pos",
+    "width": 1440,
+    "index": 12,
+    "file": "photo-cards-1440.png"
+  },
+  {
+    "name": "booking-site",
+    "width": 1440,
+    "index": 3,
+    "file": "booking-proof-1440.png"
+  },
+  {
+    "name": "index",
+    "width": 390,
+    "index": 12,
+    "file": "suite-cards-390.png"
+  },
+  {
+    "name": "manager-app",
+    "width": 390,
+    "index": 3,
+    "file": "phone-cards-390.png"
+  },
+  {
+    "name": "restaurant-pos",
+    "width": 390,
+    "index": 12,
+    "file": "photo-cards-390.png"
+  },
+  {
+    "name": "booking-site",
+    "width": 390,
+    "index": 3,
+    "file": "booking-proof-390.png"
+  }
+]

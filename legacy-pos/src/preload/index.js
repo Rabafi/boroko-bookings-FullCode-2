@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+/** IPC event payloads cross an unvalidated boundary and remain unknown. The
+ * listener still forwards the exact value and returns off's actual result. */
+/** @param {string} channel @param {(value: unknown) => void} cb */
 const onIpc = (channel, cb) => {
+  /** @param {import('electron').IpcRendererEvent} _event @param {unknown} value */
   const listener = (_event, value) => cb(value);
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.off(channel, listener);
@@ -8,43 +12,43 @@ const onIpc = (channel, cb) => {
 
 const posAPI = {
   // Auth
-  login: (email, password, lodgeId = null) => ipcRenderer.invoke('pos:auth-login', { email, password, lodgeId }),
-  restoreSession: (credentials) => ipcRenderer.invoke('pos:auth-restore', credentials),
-  hasTrustedSession: (email) => ipcRenderer.invoke('pos:auth-has-trusted-session', email),
+  login: (/** @type {string} */ email, /** @type {string} */ password, /** @type {string|null} */ lodgeId = null) => ipcRenderer.invoke('pos:auth-login', { email, password, lodgeId }),
+  restoreSession: (/** @type {unknown} */ credentials) => ipcRenderer.invoke('pos:auth-restore', credentials),
+  hasTrustedSession: (/** @type {string} */ email) => ipcRenderer.invoke('pos:auth-has-trusted-session', email),
   logout: () => ipcRenderer.invoke('pos:auth-logout'),
   getConfig: () => ipcRenderer.invoke('pos:config'),
-  saveConfig: (data) => ipcRenderer.invoke('pos:save-config', data),
+  saveConfig: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:save-config', data),
   barLocal: {
     getStatus: () => ipcRenderer.invoke('pos:bar-local:get-status'),
     selectCloudWorkspace: () => ipcRenderer.invoke('pos:bar-local:select-cloud-workspace'),
-    pairDevice: (request) => ipcRenderer.invoke('pos:bar-local:pair-device', request),
-    reconnectServer: (request) => ipcRenderer.invoke('pos:bar-local:reconnect-server', request),
+    pairDevice: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:pair-device', request),
+    reconnectServer: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:reconnect-server', request),
     resumeProvisioning: () => ipcRenderer.invoke('pos:bar-local:resume-provisioning'),
-    login: (staffId, pin) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
+    login: (/** @type {string | {email: string, password: string}} */ staffId, /** @type {string|undefined} */ pin) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
     logout: () => ipcRenderer.invoke('pos:bar-local:logout'),
-    startPairing: (request) => ipcRenderer.invoke('pos:bar-local:start-pairing', request),
+    startPairing: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:start-pairing', request),
     adminStatus: () => ipcRenderer.invoke('pos:bar-local:admin-status'),
     adminBackups: () => ipcRenderer.invoke('pos:bar-local:admin-backups'),
-    adminRunBackup: (request) => ipcRenderer.invoke('pos:bar-local:admin-run-backup', request),
-    adminVerifyBackup: (request) => ipcRenderer.invoke('pos:bar-local:admin-verify-backup', request),
-    adminRestoreDrill: (request) => ipcRenderer.invoke('pos:bar-local:admin-restore-drill', request),
+    adminRunBackup: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-run-backup', request),
+    adminVerifyBackup: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-verify-backup', request),
+    adminRestoreDrill: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-restore-drill', request),
     adminReplicationStatus: () => ipcRenderer.invoke('pos:bar-local:admin-replication-status'),
-    adminSetDurability: (request) => ipcRenderer.invoke('pos:bar-local:admin-set-durability', request),
-    adminSwitchover: (request) => ipcRenderer.invoke('pos:bar-local:admin-switchover', request),
+    adminSetDurability: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-set-durability', request),
+    adminSwitchover: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-switchover', request),
     adminUpdateStatus: () => ipcRenderer.invoke('pos:bar-local:admin-update-status'),
     adminCloudSyncStatus: () => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-status'),
-    adminCloudSyncConfig: (request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-config', request),
-    adminCloudSyncRun: (request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-run', request),
-    query: (name, filters) => ipcRenderer.invoke('pos:bar-local:query', name, filters),
-    events: (after, limit) => ipcRenderer.invoke('pos:bar-local:events', after, limit),
-    requestApproval: (command, payload, pin, options) => ipcRenderer.invoke('pos:bar-local:request-approval', command, payload, pin, options),
-    command: (command, payload, options) => ipcRenderer.invoke('pos:bar-local:command', command, payload, options),
-    retry: (operationId) => ipcRenderer.invoke('pos:bar-local:retry', operationId),
+    adminCloudSyncConfig: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-config', request),
+    adminCloudSyncRun: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:admin-cloud-sync-run', request),
+    query: (/** @type {string} */ name, /** @type {unknown} */ filters) => ipcRenderer.invoke('pos:bar-local:query', name, filters),
+    events: (/** @type {unknown} */ after, /** @type {number} */ limit) => ipcRenderer.invoke('pos:bar-local:events', after, limit),
+    requestApproval: (/** @type {string} */ command, /** @type {unknown} */ payload, /** @type {string} */ pin, /** @type {unknown} */ options) => ipcRenderer.invoke('pos:bar-local:request-approval', command, payload, pin, options),
+    command: (/** @type {string} */ command, /** @type {unknown} */ payload, /** @type {unknown} */ options) => ipcRenderer.invoke('pos:bar-local:command', command, payload, options),
+    retry: (/** @type {string} */ operationId) => ipcRenderer.invoke('pos:bar-local:retry', operationId),
     getOpenIntents: () => ipcRenderer.invoke('pos:bar-local:get-open-intents'),
-    getOperation: (operationId) => ipcRenderer.invoke('pos:bar-local:get-operation', operationId),
-    resolveOperation: (operationId) => ipcRenderer.invoke('pos:bar-local:resolve-operation', operationId),
+    getOperation: (/** @type {string} */ operationId) => ipcRenderer.invoke('pos:bar-local:get-operation', operationId),
+    resolveOperation: (/** @type {string} */ operationId) => ipcRenderer.invoke('pos:bar-local:resolve-operation', operationId),
     refreshReadiness: () => ipcRenderer.invoke('pos:bar-local:refresh-readiness'),
-    printReceipt: (saleId) => ipcRenderer.invoke('pos:bar-local:print-receipt', saleId)
+    printReceipt: (/** @type {string} */ saleId) => ipcRenderer.invoke('pos:bar-local:print-receipt', saleId)
   },
 
   // Connection
@@ -54,22 +58,22 @@ const posAPI = {
 
   // Menu Items
   getMenuItems: () => ipcRenderer.invoke('pos:get-menu-items'),
-  getMenuItemById: (id) => ipcRenderer.invoke('pos:get-menu-item-by-id', id),
-  createMenuItem: (data) => ipcRenderer.invoke('pos:create-menu-item', data),
-  updateMenuItem: (id, data) => ipcRenderer.invoke('pos:update-menu-item', id, data),
-  deleteMenuItem: (id) => ipcRenderer.invoke('pos:delete-menu-item', id),
-  setBarPackTemplate: (data) => ipcRenderer.invoke('pos:set-bar-pack-template', data),
+  getMenuItemById: (/** @type {string} */ id) => ipcRenderer.invoke('pos:get-menu-item-by-id', id),
+  createMenuItem: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:create-menu-item', data),
+  updateMenuItem: (/** @type {string} */ id, /** @type {unknown} */ data) => ipcRenderer.invoke('pos:update-menu-item', id, data),
+  deleteMenuItem: (/** @type {string} */ id) => ipcRenderer.invoke('pos:delete-menu-item', id),
+  setBarPackTemplate: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:set-bar-pack-template', data),
 
   // Orders
-  createOrder: (data) => ipcRenderer.invoke('pos:create-order', data),
-  getOrders: (filters) => ipcRenderer.invoke('pos:get-orders', filters),
-  voidOrder: (payload) => ipcRenderer.invoke('pos:void-order', payload),
-  partialReturn: (payload) => ipcRenderer.invoke('pos:partial-return', payload),
+  createOrder: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:create-order', data),
+  getOrders: (/** @type {unknown} */ filters) => ipcRenderer.invoke('pos:get-orders', filters),
+  voidOrder: (/** @type {unknown} */ payload) => ipcRenderer.invoke('pos:void-order', payload),
+  partialReturn: (/** @type {unknown} */ payload) => ipcRenderer.invoke('pos:partial-return', payload),
 
   // Cash-Up
-  createCashup: (payload) => ipcRenderer.invoke('pos:create-cashup', payload),
-  getCashups: (filters) => ipcRenderer.invoke('pos:get-cashups', filters),
-  getCashupSummary: (filters) => ipcRenderer.invoke('pos:get-cashup-summary', filters),
+  createCashup: (/** @type {unknown} */ payload) => ipcRenderer.invoke('pos:create-cashup', payload),
+  getCashups: (/** @type {unknown} */ filters) => ipcRenderer.invoke('pos:get-cashups', filters),
+  getCashupSummary: (/** @type {unknown} */ filters) => ipcRenderer.invoke('pos:get-cashup-summary', filters),
 
   // Outlets
   getOutlets: () => ipcRenderer.invoke('pos:get-outlets'),
@@ -88,30 +92,30 @@ const posAPI = {
 
   // Tables & Tabs
   getTables: () => ipcRenderer.invoke('pos:get-tables'),
-  saveTable: (table) => ipcRenderer.invoke('pos:save-table', table),
+  saveTable: (/** @type {unknown} */ table) => ipcRenderer.invoke('pos:save-table', table),
   getTabs: () => ipcRenderer.invoke('pos:get-tabs'),
-  saveTab: (tab) => ipcRenderer.invoke('pos:save-tab', tab),
-  updateTabStatus: (data) => ipcRenderer.invoke('pos:update-tab-status', data),
-  transferTabWaiter: (data) => ipcRenderer.invoke('pos:transfer-tab-waiter', data),
+  saveTab: (/** @type {unknown} */ tab) => ipcRenderer.invoke('pos:save-tab', tab),
+  updateTabStatus: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:update-tab-status', data),
+  transferTabWaiter: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:transfer-tab-waiter', data),
 
   // Prep Tickets
-  getTickets: (filters) => ipcRenderer.invoke('pos:get-tickets', filters),
-  updateTicketStatus: (data) => ipcRenderer.invoke('pos:update-ticket-status', data),
+  getTickets: (/** @type {unknown} */ filters) => ipcRenderer.invoke('pos:get-tickets', filters),
+  updateTicketStatus: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:update-ticket-status', data),
 
   // Hardware
   getHardwareSettings: () => ipcRenderer.invoke('pos:get-hardware-settings'),
-  saveHardwareSettings: (settings) => ipcRenderer.invoke('pos:save-hardware-settings', settings),
-  printReceipt: (data) => ipcRenderer.invoke('pos:print-receipt', data),
-  openCashDrawer: (settings) => ipcRenderer.invoke('pos:open-cash-drawer', settings),
-  testHardware: (data) => ipcRenderer.invoke('pos:test-hardware', data),
-  sendPaymentTerminalTotal: (data) => ipcRenderer.invoke('pos:send-payment-terminal-total', data),
+  saveHardwareSettings: (/** @type {unknown} */ settings) => ipcRenderer.invoke('pos:save-hardware-settings', settings),
+  printReceipt: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:print-receipt', data),
+  openCashDrawer: (/** @type {unknown} */ settings) => ipcRenderer.invoke('pos:open-cash-drawer', settings),
+  testHardware: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:test-hardware', data),
+  sendPaymentTerminalTotal: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:send-payment-terminal-total', data),
   getReceiptPrinters: () => ipcRenderer.invoke('pos:get-receipt-printers'),
   getDisplays: () => ipcRenderer.invoke('pos:get-displays'),
 
   // Customer Display
   openCustomerDisplay: () => ipcRenderer.invoke('pos:open-customer-display'),
   closeCustomerDisplay: () => ipcRenderer.invoke('pos:close-customer-display'),
-  updateCustomerDisplay: (snapshot) => ipcRenderer.invoke('pos:update-customer-display', snapshot),
+  updateCustomerDisplay: (/** @type {unknown} */ snapshot) => ipcRenderer.invoke('pos:update-customer-display', snapshot),
   getCustomerDisplay: () => ipcRenderer.invoke('pos:get-customer-display'),
 
   // Kitchen Display
@@ -120,23 +124,23 @@ const posAPI = {
 
   // Shifts
   getShifts: () => ipcRenderer.invoke('pos:get-shifts'),
-  openShift: (data) => ipcRenderer.invoke('pos:open-shift', data),
-  closeShift: (data) => ipcRenderer.invoke('pos:close-shift', data),
+  openShift: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:open-shift', data),
+  closeShift: (/** @type {unknown} */ data) => ipcRenderer.invoke('pos:close-shift', data),
 
   // Modifier Groups
   getModifierGroups: () => ipcRenderer.invoke('pos:get-modifier-groups'),
-  saveModifierGroups: (groups) => ipcRenderer.invoke('pos:save-modifier-groups', groups),
+  saveModifierGroups: (/** @type {unknown} */ groups) => ipcRenderer.invoke('pos:save-modifier-groups', groups),
 
   // Promotions
   getPromotions: () => ipcRenderer.invoke('pos:get-promotions'),
-  savePromotions: (promos) => ipcRenderer.invoke('pos:save-promotions', promos),
+  savePromotions: (/** @type {unknown} */ promos) => ipcRenderer.invoke('pos:save-promotions', promos),
 
   // Floor Layout
   getFloorLayout: () => ipcRenderer.invoke('pos:get-floor-layout'),
-  saveFloorLayout: (layout) => ipcRenderer.invoke('pos:save-floor-layout', layout),
+  saveFloorLayout: (/** @type {unknown} */ layout) => ipcRenderer.invoke('pos:save-floor-layout', layout),
 
   // Export
-  exportHistory: (filters) => ipcRenderer.invoke('pos:export-history', filters),
+  exportHistory: (/** @type {unknown} */ filters) => ipcRenderer.invoke('pos:export-history', filters),
 
   // Sync
   getSyncStatus: () => ipcRenderer.invoke('pos:get-sync-status'),
@@ -151,14 +155,14 @@ const posAPI = {
 
   // App Updates
   updates: {
-    onAvailable: (cb) => onIpc('pos:update-available', cb),
-    onNotAvailable: (cb) => onIpc('pos:update-not-available', cb),
-    onProgress: (cb) => onIpc('pos:update-progress', cb),
-    onReady: (cb) => onIpc('pos:update-ready', cb),
-    onError: (cb) => onIpc('pos:update-error', cb),
+    onAvailable: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-available', cb),
+    onNotAvailable: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-not-available', cb),
+    onProgress: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-progress', cb),
+    onReady: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-ready', cb),
+    onError: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-error', cb),
     check: () => ipcRenderer.invoke('pos:update-check'),
     download: () => ipcRenderer.invoke('pos:update-download'),
-    install: (options) => ipcRenderer.invoke('pos:update-install', options || {}),
+    install: (/** @type {unknown} */ options) => ipcRenderer.invoke('pos:update-install', options || {}),
     getState: () => ipcRenderer.invoke('pos:update-get-state'),
     getInstallSafety: () => ipcRenderer.invoke('pos:update-get-install-safety')
   },
@@ -166,7 +170,7 @@ const posAPI = {
     getStatus: () => ipcRenderer.invoke('pos:get-mesh-status'),
     syncNow: () => ipcRenderer.invoke('pos:mesh-sync-now'),
     refreshDiscovery: () => ipcRenderer.invoke('pos:mesh-refresh-discovery'),
-    connectManual: (address) => ipcRenderer.invoke('pos:mesh-connect-manual', address)
+    connectManual: (/** @type {string} */ address) => ipcRenderer.invoke('pos:mesh-connect-manual', address)
   },
 
   // Bootstrap & Window

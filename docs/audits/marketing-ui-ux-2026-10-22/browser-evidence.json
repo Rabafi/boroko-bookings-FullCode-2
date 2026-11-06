@@ -1,0 +1,1930 @@
+{
+  "date": "2026-10-22",
+  "base": "http://127.0.0.1:57778",
+  "csp": "default-src 'self'; script-src 'self' https://www.googletagmanager.com https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tsabonno.com; connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co; font-src 'self';",
+  "pages": [
+    {
+      "name": "index",
+      "width": 1440,
+      "title": "Tsa Bonno | Hospitality Software for Lodges, Hotels, Restaurants and Bars",
+      "scrollWidth": 1440,
+      "height": 6328,
+      "words": 954,
+      "headings": [
+        "Run a stronger hospitality business—starting with your lodge.",
+        "Start with Lodge. Grow with a product family built for the whole hospitality industry.",
+        "The problems that quietly cost lodges money.",
+        "Everything a lodge needs, organised around how the property actually works.",
+        "Designed for lodges that want something practical, modern, and sustainable.",
+        "A practical path from first setup to fully running the property.",
+        "How Tsa Bonno works in a day at your lodge.",
+        "Desktop for reception, Manager App for owners, Booking Site for guests, and a control layer for management.",
+        "Structured to be useful on day one and worth upgrading as the lodge grows.",
+        "A quick package comparison for sales conversations.",
+        "Each part of the lodge gets a clearer place to work.",
+        "Simple examples that help prospects quickly see themselves in Tsa Bonno.",
+        "Built for local hospitality work, not generic admin.",
+        "Go deeper into the product story.",
+        "Ready to choose the right Tsa Bonno application for your business?",
+        "Common questions from hospitality owners."
+      ],
+      "images": [
+        "./assets/photos/reception.jpg",
+        "./assets/photos/financial-dashboard.jpg",
+        "./assets/photos/inventory-tablet.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/guest-room.jpg",
+        "./assets/photos/reception.jpg",
+        "./assets/photos/guest-room.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/bar-stock.jpg",
+        "./assets/screenshots/desktop-dashboard.png",
+        "./assets/screenshots/pwa-dashboard.png",
+        "./assets/screenshots/booking-site-lodge.png",
+        "./assets/screenshots/desktop-reports.png",
+        "./assets/screenshots/desktop-bookings.png",
+        "./assets/screenshots/desktop-room-grid.png",
+        "./assets/screenshots/desktop-reports.png",
+        "./assets/screenshots/desktop-pos.png",
+        null
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 50,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 50,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 50,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 50,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 50,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 50,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "lodge-app",
+      "width": 1440,
+      "title": "Tsa Bonno LodgingOS | Lodge Operations, POS and Direct Bookings",
+      "scrollWidth": 1440,
+      "height": 3781,
+      "words": 407,
+      "headings": [
+        "Protect every booking. Control every part of the property.",
+        "Your existing lodge core stays intact. The wider property becomes easier to control.",
+        "From guest enquiry to a controlled end of day.",
+        "Run Tsa Bonno with your real lodge setup.",
+        "Start at the level your property needs."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 439.40625,
+            "y": 30,
+            "w": 63.46875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 504.875,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 564.609375,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 686.109375,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 761.828125,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 844.40625,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "version": "Tsa Bonno HospitalityOS v1.5.5 — Windows 10+ (64-bit)",
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "hotel",
+      "width": 1440,
+      "title": "Tsa Bonno HotelOS | Front Desk, Folios, Rates and Night Audit",
+      "scrollWidth": 1440,
+      "height": 3690,
+      "words": 392,
+      "headings": [
+        "A hotel front desk that thinks in arrivals, rooms, folios and close.",
+        "Every shift starts with what the hotel needs to know now.",
+        "Fast at the desk. Controlled at close.",
+        "Put your hotel workflow through a real operating day.",
+        "Hotel Core from P37,998, with add-ons chosen around your operation."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 420.8125,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 485.203125,
+            "y": 30,
+            "w": 59.203125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 546.40625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 667.90625,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 743.625,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 826.203125,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "version": "Tsa Bonno HotelOS installer is preparing for release. Contact us for early access.",
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "restaurant-pos",
+      "width": 1440,
+      "title": "Tsa Bonno Restaurant & Bar POS | Point of Sale for Restaurants & Bars",
+      "scrollWidth": 1440,
+      "height": 11654,
+      "words": 1966,
+      "headings": [
+        "Know your pour cost. Close without surprises. Never stop selling.",
+        "Seven workspaces. One application.",
+        "See every table. Manage every reservation.",
+        "Orders appear instantly. Tickets route by station.",
+        "From menu items to prep batches. All connected.",
+        "Know what you have. Know what to order.",
+        "Know who is working. Know who is performing.",
+        "Open with a float. Close with certainty.",
+        "Exceptions, checklists, feedback, and policies.",
+        "The transaction screen your staff will actually use.",
+        "Features that keep your bar running.",
+        "Know your pour cost. Stop the bleed.",
+        "From first pour to last count. Five steps.",
+        "Built for the way you work.",
+        "Built for Southern Africa. Priced for reality.",
+        "Ready to run service with more control?",
+        "Choose the depth of restaurant control you need."
+      ],
+      "images": [
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/financial-dashboard.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/inventory-tablet.jpg",
+        "./assets/photos/restaurant.jpg",
+        "./assets/photos/bar-stock.jpg",
+        "./assets/photos/financial-dashboard.jpg"
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30.050243377685547,
+            "w": 62.390625,
+            "h": 34.000003814697266
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30.050243377685547,
+            "w": 57.734375,
+            "h": 34.000003814697266
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30.050243377685547,
+            "w": 123.015625,
+            "h": 34.000003814697266
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 707.640625,
+            "y": 30.050243377685547,
+            "w": 73.71875,
+            "h": 34.000003814697266
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 783.359375,
+            "y": 30.050243377685547,
+            "w": 80.578125,
+            "h": 34.000003814697266
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 865.9375,
+            "y": 30.050243377685547,
+            "w": 71.828125,
+            "h": 34.000003814697266
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "bar-pos",
+      "width": 1440,
+      "title": "Tsa Bonno Bar POS | Point of Sale for Bars, Pubs & Shebeens",
+      "scrollWidth": 1440,
+      "height": 4793,
+      "words": 834,
+      "headings": [
+        "Ring up drinks.\n                Track your stock.\n                Close your till.",
+        "No fluff. Just the tools that sell drinks.",
+        "Open. Sell. Close.",
+        "Built for Botswana bars. Priced for reality.",
+        "Extend Bar POS Base only when the operation needs more.",
+        "Your bar deserves better than a notebook.",
+        "Bar POS Base. P4,500 for one year."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 130,
+            "y": 48,
+            "w": 44.125,
+            "h": 21
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 174.125,
+            "y": 48,
+            "w": 38.40625,
+            "h": 21
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 212.53125,
+            "y": 48,
+            "w": 108.96875,
+            "h": 21
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 321.5,
+            "y": 48,
+            "w": 56.78125,
+            "h": 21
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 378.28125,
+            "y": 48,
+            "w": 64.625,
+            "h": 21
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 442.90625,
+            "y": 48,
+            "w": 54.71875,
+            "h": 21
+          }
+        }
+      ],
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "packages",
+      "width": 1440,
+      "title": "Tsa Bonno LodgingOS Packages | Starter, Standard, Pro",
+      "scrollWidth": 1440,
+      "height": 8968,
+      "words": 1461,
+      "headings": [
+        "Choose the Tsa Bonno product that matches the way your business operates.",
+        "Three packages for accommodation businesses.",
+        "What changes as the lodge grows.",
+        "Hotel Core first. Add specialist capabilities as you need them.",
+        "Three restaurant packages. Nothing from Lodge or Bar mixed in.",
+        "Bar POS Base: one focused bar product. One clear price.",
+        "How to think about the right package.",
+        "The upgrade path should feel like relief, not pressure."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 82.546875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 864.390625,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "enterprise",
+      "width": 1440,
+      "title": "Tsa Bonno HotelOS | Hotel PMS quotation",
+      "scrollWidth": 1440,
+      "height": 3321,
+      "words": 400,
+      "headings": [
+        "Hotel-grade PMS for serious hospitality operations.",
+        "Select optional hotel services.",
+        "Tell us about your property."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 2,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-0awRfu8xuG5Rz6f3+JSjeuheWwMlS0Rm36dPfr6uW04='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "contact",
+      "width": 1440,
+      "title": "Contact Tsa Bonno HospitalityOS | Free 1-Month Trial",
+      "scrollWidth": 1440,
+      "height": 2847,
+      "words": 397,
+      "headings": [
+        "Start a real Tsa Bonno HospitalityOS conversation around your property.",
+        "Tell us a little about the lodge and what you want to improve.",
+        "Questions a prospect may still have before sending the enquiry."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 30,
+            "w": 73.46875,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "download",
+      "width": 1440,
+      "title": "Download Tsa Bonno HospitalityOS | Lodge Management Software",
+      "scrollWidth": 1440,
+      "height": 4487,
+      "words": 538,
+      "headings": [
+        "Get Tsa Bonno HospitalityOS for Windows.",
+        "Windows may ask you to confirm the installer",
+        "From download to first booking in a few steps.",
+        "Full-featured trial, no limits.",
+        "Tsa Bonno is more than just the desktop app."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "version": "Tsa Bonno HospitalityOS v1.5.5 — Windows 10+ (64-bit)",
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "manager-app",
+      "width": 1440,
+      "title": "Tsa Bonno Manager App | Business Management on Your Phone",
+      "scrollWidth": 1440,
+      "height": 7769,
+      "words": 969,
+      "headings": [
+        "Your business in your pocket. See what matters, from anywhere.",
+        "Everything a manager needs. Nothing they don't.",
+        "Managers see and ask. Front desk does.",
+        "What managers can and can't do on mobile",
+        "No install. No app store. Just open your browser.",
+        "Ready to see your lodge from anywhere?"
+      ],
+      "images": [
+        "./assets/screenshots/pwa-alerts.png"
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "booking-site",
+      "width": 1440,
+      "title": "Tsa Bonno Online Booking Site | Your Guests Book Direct",
+      "scrollWidth": 1440,
+      "height": 5515,
+      "words": 761,
+      "headings": [
+        "Your own branded booking page. Guests book direct.",
+        "A complete booking experience, branded to your lodge.",
+        "Stop paying commission. Let guests find you.",
+        "Bookings go straight into your system.",
+        "Guests book from their phone. It just works.",
+        "Ready to give your lodge its own booking page?"
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 458.5,
+            "y": 30,
+            "w": 62.390625,
+            "h": 34
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 522.890625,
+            "y": 30,
+            "w": 57.734375,
+            "h": 34
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 582.625,
+            "y": 30,
+            "w": 119.5,
+            "h": 34
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 704.125,
+            "y": 30,
+            "w": 73.71875,
+            "h": 34
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 779.84375,
+            "y": 30,
+            "w": 80.578125,
+            "h": 34
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 862.421875,
+            "y": 30,
+            "w": 71.828125,
+            "h": 34
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "index",
+      "width": 390,
+      "title": "Tsa Bonno | Hospitality Software for Lodges, Hotels, Restaurants and Bars",
+      "scrollWidth": 390,
+      "height": 13341,
+      "words": 915,
+      "headings": [
+        "Run a stronger hospitality business—starting with your lodge.",
+        "Start with Lodge. Grow with a product family built for the whole hospitality industry.",
+        "The problems that quietly cost lodges money.",
+        "Everything a lodge needs, organised around how the property actually works.",
+        "Designed for lodges that want something practical, modern, and sustainable.",
+        "A practical path from first setup to fully running the property.",
+        "How Tsa Bonno works in a day at your lodge.",
+        "Desktop for reception, Manager App for owners, Booking Site for guests, and a control layer for management.",
+        "Structured to be useful on day one and worth upgrading as the lodge grows.",
+        "A quick package comparison for sales conversations.",
+        "Each part of the lodge gets a clearer place to work.",
+        "Simple examples that help prospects quickly see themselves in Tsa Bonno.",
+        "Built for local hospitality work, not generic admin.",
+        "Go deeper into the product story.",
+        "Ready to choose the right Tsa Bonno application for your business?",
+        "Common questions from hospitality owners."
+      ],
+      "images": [
+        "./assets/photos/reception.jpg",
+        "./assets/photos/financial-dashboard.jpg",
+        "./assets/photos/inventory-tablet.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/guest-room.jpg",
+        "./assets/photos/reception.jpg",
+        "./assets/photos/guest-room.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/bar-stock.jpg",
+        "./assets/screenshots/desktop-dashboard.png",
+        "./assets/screenshots/pwa-dashboard.png",
+        "./assets/screenshots/booking-site-lodge.png",
+        "./assets/screenshots/desktop-reports.png",
+        "./assets/screenshots/desktop-bookings.png",
+        "./assets/screenshots/desktop-room-grid.png",
+        "./assets/screenshots/desktop-reports.png",
+        "./assets/screenshots/desktop-pos.png",
+        null
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "lodge-app",
+      "width": 390,
+      "title": "Tsa Bonno LodgingOS | Lodge Operations, POS and Direct Bookings",
+      "scrollWidth": 390,
+      "height": 6073,
+      "words": 396,
+      "headings": [
+        "Protect every booking. Control every part of the property.",
+        "Your existing lodge core stays intact. The wider property becomes easier to control.",
+        "From guest enquiry to a controlled end of day.",
+        "Run Tsa Bonno with your real lodge setup.",
+        "Start at the level your property needs."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "version": "Tsa Bonno HospitalityOS v1.5.5 — Windows 10+ (64-bit)",
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "hotel",
+      "width": 390,
+      "title": "Tsa Bonno HotelOS | Front Desk, Folios, Rates and Night Audit",
+      "scrollWidth": 390,
+      "height": 5778,
+      "words": 381,
+      "headings": [
+        "A hotel front desk that thinks in arrivals, rooms, folios and close.",
+        "Every shift starts with what the hotel needs to know now.",
+        "Fast at the desk. Controlled at close.",
+        "Put your hotel workflow through a real operating day.",
+        "Hotel Core from P37,998, with add-ons chosen around your operation."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "version": "Tsa Bonno HotelOS installer is preparing for release. Contact us for early access.",
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "restaurant-pos",
+      "width": 390,
+      "title": "Tsa Bonno Restaurant & Bar POS | Point of Sale for Restaurants & Bars",
+      "scrollWidth": 390,
+      "height": 20932,
+      "words": 1957,
+      "headings": [
+        "Know your pour cost. Close without surprises. Never stop selling.",
+        "Seven workspaces. One application.",
+        "See every table. Manage every reservation.",
+        "Orders appear instantly. Tickets route by station.",
+        "From menu items to prep batches. All connected.",
+        "Know what you have. Know what to order.",
+        "Know who is working. Know who is performing.",
+        "Open with a float. Close with certainty.",
+        "Exceptions, checklists, feedback, and policies.",
+        "The transaction screen your staff will actually use.",
+        "Features that keep your bar running.",
+        "Know your pour cost. Stop the bleed.",
+        "From first pour to last count. Five steps.",
+        "Built for the way you work.",
+        "Built for Southern Africa. Priced for reality.",
+        "Ready to run service with more control?",
+        "Choose the depth of restaurant control you need."
+      ],
+      "images": [
+        "./assets/photos/restaurant.jpg",
+        "./assets/photos/inventory-tablet.jpg",
+        "./assets/photos/bar-stock.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/financial-dashboard.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/inventory-tablet.jpg",
+        "./assets/photos/restaurant.jpg",
+        "./assets/photos/bar-stock.jpg",
+        "./assets/photos/financial-dashboard.jpg"
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "bar-pos",
+      "width": 390,
+      "title": "Tsa Bonno Bar POS | Point of Sale for Bars, Pubs & Shebeens",
+      "scrollWidth": 390,
+      "height": 8573,
+      "words": 834,
+      "headings": [
+        "Ring up drinks.\n                Track your stock.\n                Close your till.",
+        "No fluff. Just the tools that sell drinks.",
+        "Open. Sell. Close.",
+        "Built for Botswana bars. Priced for reality.",
+        "Extend Bar POS Base only when the operation needs more.",
+        "Your bar deserves better than a notebook.",
+        "Bar POS Base. P4,500 for one year."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 16,
+            "y": 41,
+            "w": 44.125,
+            "h": 21
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 60.125,
+            "y": 41,
+            "w": 38.40625,
+            "h": 21
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 98.53125,
+            "y": 41,
+            "w": 108.96875,
+            "h": 21
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 16,
+            "y": 41,
+            "w": 214.375,
+            "h": 42
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 45.53125,
+            "y": 62,
+            "w": 64.625,
+            "h": 21
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 110.15625,
+            "y": 62,
+            "w": 54.71875,
+            "h": 21
+          }
+        }
+      ],
+      "inlineScripts": 0,
+      "errors": [],
+      "consoleErrors": [
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "packages",
+      "width": 390,
+      "title": "Tsa Bonno LodgingOS Packages | Starter, Standard, Pro",
+      "scrollWidth": 390,
+      "height": 15989,
+      "words": 1452,
+      "headings": [
+        "Choose the Tsa Bonno product that matches the way your business operates.",
+        "Three packages for accommodation businesses.",
+        "What changes as the lodge grows.",
+        "Hotel Core first. Add specialist capabilities as you need them.",
+        "Three restaurant packages. Nothing from Lodge or Bar mixed in.",
+        "Bar POS Base: one focused bar product. One clear price.",
+        "How to think about the right package.",
+        "The upgrade path should feel like relief, not pressure."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "enterprise",
+      "width": 390,
+      "title": "Tsa Bonno HotelOS | Hotel PMS quotation",
+      "scrollWidth": 390,
+      "height": 4962,
+      "words": 391,
+      "headings": [
+        "Hotel-grade PMS for serious hospitality operations.",
+        "Select optional hotel services.",
+        "Tell us about your property."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 2,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-0awRfu8xuG5Rz6f3+JSjeuheWwMlS0Rm36dPfr6uW04='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-hotel-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "contact",
+      "width": 390,
+      "title": "Contact Tsa Bonno HospitalityOS | Free 1-Month Trial",
+      "scrollWidth": 390,
+      "height": 4674,
+      "words": 388,
+      "headings": [
+        "Start a real Tsa Bonno HospitalityOS conversation around your property.",
+        "Tell us a little about the lodge and what you want to improve.",
+        "Questions a prospect may still have before sending the enquiry."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "download",
+      "width": 390,
+      "title": "Download Tsa Bonno HospitalityOS | Lodge Management Software",
+      "scrollWidth": 390,
+      "height": 6326,
+      "words": 529,
+      "headings": [
+        "Get Tsa Bonno HospitalityOS for Windows.",
+        "Windows may ask you to confirm the installer",
+        "From download to first booking in a few steps.",
+        "Full-featured trial, no limits.",
+        "Tsa Bonno is more than just the desktop app."
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "version": "Tsa Bonno HospitalityOS v1.5.5 — Windows 10+ (64-bit)",
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "manager-app",
+      "width": 390,
+      "title": "Tsa Bonno Manager App | Business Management on Your Phone",
+      "scrollWidth": 390,
+      "height": 13419,
+      "words": 960,
+      "headings": [
+        "Your business in your pocket. See what matters, from anywhere.",
+        "Everything a manager needs. Nothing they don't.",
+        "Managers see and ask. Front desk does.",
+        "What managers can and can't do on mobile",
+        "No install. No app store. Just open your browser.",
+        "Ready to see your lodge from anywhere?"
+      ],
+      "images": [
+        "./assets/screenshots/pwa-bookings.png",
+        "./assets/screenshots/pwa-rooms.png",
+        "./assets/screenshots/pwa-money.png",
+        "./assets/screenshots/pwa-alerts.png"
+      ],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    },
+    {
+      "name": "booking-site",
+      "width": 390,
+      "title": "Tsa Bonno Online Booking Site | Your Guests Book Direct",
+      "scrollWidth": 390,
+      "height": 9409,
+      "words": 752,
+      "headings": [
+        "Your own branded booking page. Guests book direct.",
+        "A complete booking experience, branded to your lodge.",
+        "Stop paying commission. Let guests find you.",
+        "Bookings go straight into your system.",
+        "Guests book from their phone. It just works.",
+        "Ready to give your lodge its own booking page?"
+      ],
+      "images": [],
+      "nav": [
+        {
+          "text": "Lodge",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Hotel",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Restaurant POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Bar POS",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Packages",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        },
+        {
+          "text": "Contact",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 0,
+            "h": 0
+          }
+        }
+      ],
+      "inlineScripts": 1,
+      "errors": [],
+      "consoleErrors": [
+        "Executing inline script violates the following Content Security Policy directive 'script-src 'self' https://www.googletagmanager.com https://unpkg.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-4+eA7Ub04Gr2vlDBtnqffXNT8pc6TRIcBdCOyN7VWLk='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked.",
+        "Connecting to 'https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest' violates the following Content Security Policy directive: \"connect-src 'self' https://oicgpknsmtvcsjacymum.supabase.co\". The action has been blocked.",
+        "Fetch API cannot load https://api.github.com/repos/Rabafi/boroko-bookings-releases/releases/latest. Refused to connect because it violates the document's Content Security Policy."
+      ]
+    }
+  ],
+  "interactions": [
+    {
+      "name": "modal-focus",
+      "value": {
+        "tag": "A",
+        "text": "Start free trial",
+        "dialog": true
+      }
+    },
+    {
+      "name": "modal-escape",
+      "open": true
+    },
+    {
+      "name": "hotel-quote-selection-1440",
+      "summary": "No add-ons selected yet."
+    },
+    {
+      "name": "mobile-escape",
+      "open": "false"
+    },
+    {
+      "name": "hotel-quote-selection-390",
+      "summary": "No add-ons selected yet."
+    },
+    {
+      "name": "lead-http500",
+      "url": "http://127.0.0.1:57778/bar-pos.html",
+      "requests": [
+        {
+          "url": "https://api.github.com/repos/Rabafi/boroko-hospitality-pos-releases/releases/latest",
+          "method": "GET",
+          "payload": null
+        },
+        {
+          "url": "https://oicgpknsmtvcsjacymum.supabase.co/rest/v1/analytics_events",
+          "method": "POST",
+          "payload": "{\"action\":\"modal_open\",\"label\":\"download\",\"url\":\"/bar-pos.html\",\"ts\":\"2026-10-22T21:05:27.826Z\"}"
+        },
+        {
+          "url": "https://oicgpknsmtvcsjacymum.supabase.co/rest/v1/analytics_events",
+          "method": "POST",
+          "payload": "{\"action\":\"lead_created\",\"label\":\"download\",\"url\":\"/bar-pos.html\",\"ts\":\"2026-10-22T21:05:28.948Z\"}"
+        },
+        {
+          "url": "https://oicgpknsmtvcsjacymum.supabase.co/functions/v1/send-welcome-email",
+          "method": "POST",
+          "payload": "{\"contactName\":\"Audit\",\"lodgeName\":\"AUDIT ONLY\",\"email\":\"audit@example.invalid\"}"
+        },
+        {
+          "url": "https://oicgpknsmtvcsjacymum.supabase.co/rest/v1/marketing_leads",
+          "method": "POST",
+          "payload": "{\"lodge_name\":\"AUDIT ONLY\",\"contact_name\":\"Audit\",\"email\":\"audit@example.invalid\",\"phone\":null,\"interest\":\"Tsa Bonno Restaurant & Bar POS trial\",\"notes\":\"Self-service trial registration for Tsa Bonno Restaurant & Bar POS\",\"source\":\"website-download-hospitality-pos\"}"
+        },
+        {
+          "url": "https://oicgpknsmtvcsjacymum.supabase.co/rest/v1/analytics_events",
+          "method": "POST",
+          "payload": "{\"action\":\"download_started\",\"label\":\"download\",\"url\":\"/bar-pos.html\",\"ts\":\"2026-10-22T21:05:29.179Z\"}"
+        },
+        {
+          "url": "https://example.invalid/audit.exe",
+          "method": "GET",
+          "payload": null
+        }
+      ]
+    }
+  ]
+}

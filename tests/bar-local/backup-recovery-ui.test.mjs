@@ -5,7 +5,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const modernPanel = join(root, 'src/renderer/src/components/hospitality-pos/BarLocalAdminPanel.jsx')
 const legacyPanel = join(root, 'legacy-pos/src/renderer/src/components/BarLocalAdminPanel.jsx')
 const modernClient = join(root, 'src/main/bar-local/client.js')
 const legacyClient = join(root, 'legacy-pos/src/main/bar-local/client.js')
@@ -36,21 +35,6 @@ test('restore drill IPC is registered and exposed for both applications', () => 
   assert.match(readFileSync(legacyRuntime, 'utf8'), /adminRestoreDrill\(request\)/)
 })
 
-test('Modern admin panel reports scheduled backup health and never claims PITR', () => {
-  const source = readFileSync(modernPanel, 'utf8')
-  assert.match(source, /Scheduled backups/)
-  assert.match(source, /backupSchedule/)
-  assert.match(source, /schedule_message/)
-  assert.match(source, /last_run_result/)
-  assert.match(source, /latest_backup_age_hours/)
-  assert.match(source, /not point-in-time recovery/)
-  assert.match(source, /Guarded restore drill \(same PC\)/)
-  assert.match(source, /adminRestoreDrill/)
-  assert.match(source, /evidence_path/)
-  assert.match(source, /temporary cluster/i)
-  assert.match(source, /live database/i)
-})
-
 test('Legacy admin panel reports scheduled backup health and never claims PITR', () => {
   const source = readFileSync(legacyPanel, 'utf8')
   assert.match(source, /Scheduled backups/)
@@ -63,13 +47,10 @@ test('Legacy admin panel reports scheduled backup health and never claims PITR',
   assert.match(source, /temporary cluster/i)
 })
 
-test('restore drill UI requires an authorising name, a reason and an exact confirmation', () => {
-  for (const file of [modernPanel, legacyPanel]) {
-    const source = readFileSync(file, 'utf8')
-    assert.match(source, /authorizedBy\.length < 3|authorizedBy\.trim\(\)\.length < 3/)
-    assert.match(source, /reason\.length < 8|reason\.trim\(\)\.length < 8/)
-    assert.match(source, /drillConfirm !== 'RESTORE_DRILL'/)
-    // The drill control must never offer to replace the live database.
-    assert.doesNotMatch(source, /replace the live database/i)
-  }
+test('Legacy restore drill UI requires an authorising name, reason and exact confirmation', () => {
+  const source = readFileSync(legacyPanel, 'utf8')
+  assert.match(source, /authorizedBy\.length < 3|authorizedBy\.trim\(\)\.length < 3/)
+  assert.match(source, /reason\.length < 8|reason\.trim\(\)\.length < 8/)
+  assert.match(source, /drillConfirm !== 'RESTORE_DRILL'/)
+  assert.doesNotMatch(source, /replace the live database/i)
 })

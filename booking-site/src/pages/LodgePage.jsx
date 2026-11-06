@@ -44,9 +44,9 @@ import tsaBonnoLodgingLogo from '../assets/tsa-bonno-lodgingos-logo-color.png'
  * @typedef {{key?: string|null, name?: string|null}} PublicDayUseTemplateView
  * @typedef {{success: boolean, offers?: PublicBookingOfferFlags, day_use?: {templates: PublicDayUseTemplateView[]}}} PublicBookingOffersResponse
  * @typedef {{message: unknown, status: number}} PublicRpcErrorView
- * @template T
- * @typedef {{data: T|null, error: PublicRpcErrorView|null}} PublicRpcResponse
  */
+
+/** @template T @typedef {{data: T|null, error: PublicRpcErrorView|null}} PublicRpcResponse */
 
 function SkeletonCard() {
   return (
@@ -114,7 +114,7 @@ export default function LodgePage() {
   const [rooms, setRooms] = useState(/** @type {PublicAccommodationUnit[]|null} */ (null))
   const [campsites, setCampsites] = useState(/** @type {PublicAccommodationUnit[]|null} */ (null))
   const [loadingRooms, setLoadingRooms] = useState(false)
-  const [roomError, setRoomError] = useState(null)
+  const [roomError, setRoomError] = useState(/** @type {string|null} */ (null))
   const [searched, setSearched] = useState(false)
   const [sortBy, setSortBy] = useState('recommended')
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
@@ -410,7 +410,7 @@ export default function LodgePage() {
   const websiteUrl = sanitizeWebsiteUrl(lodge?.website)
   const hasContact = lodge?.phone || lodge?.email || websiteUrl || lodge?.whatsapp_number
   const whatsappUrl = buildWhatsAppUrl(lodge?.whatsapp_number)
-  const enabledOffers = offers?.offers || {}
+  const enabledOffers = /** @type {Partial<PublicBookingOfferFlags>} */ (offers?.offers || {})
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-transparent">
@@ -651,11 +651,11 @@ export default function LodgePage() {
                 <div className="mb-4 flex items-center gap-2">
                   <TentTree size={18} className="text-[var(--brand)]" />
                   <h4 className="font-display text-2xl text-[var(--text)]">
-                    {campsites.length} campsite{campsites.length !== 1 ? 's' : ''}
+                    {/** @type {PublicAccommodationUnit[]} */ (campsites).length} campsite{/** @type {PublicAccommodationUnit[]} */ (campsites).length !== 1 ? 's' : ''}
                   </h4>
                 </div>
                 <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-                  {campsites.map((site) => (
+                  {/** @type {PublicAccommodationUnit[]} */ (campsites).map((site) => (
                     <RoomCard
                       key={site.id}
                       room={site}
@@ -672,7 +672,7 @@ export default function LodgePage() {
             {(rooms?.length || 0) > 0 && (
               <div className="mb-4">
                 <h4 className="font-display text-2xl text-[var(--text)]">
-                  {rooms.length} room{rooms.length !== 1 ? 's' : ''} & units
+                  {/** @type {PublicAccommodationUnit[]} */ (rooms).length} room{/** @type {PublicAccommodationUnit[]} */ (rooms).length !== 1 ? 's' : ''} & units
                 </h4>
               </div>
             )}
@@ -730,7 +730,7 @@ export default function LodgePage() {
 
             {(rooms?.length || 0) > 0 && (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-              {[...rooms]
+              {[.../** @type {PublicAccommodationUnit[]} */ (rooms)]
                 .sort((a, b) => {
                   if (sortBy === 'price') return Number(a.rate_per_night || 0) - Number(b.rate_per_night || 0)
                   if (sortBy === 'guests') return Number(b.max_occupancy || 0) - Number(a.max_occupancy || 0)

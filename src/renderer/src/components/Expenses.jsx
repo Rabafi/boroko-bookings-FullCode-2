@@ -10,6 +10,19 @@ import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import { unpackTransport } from '../transportUnpack'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** Expected fields from expenses:getAll and the existing expense cache projection; IPC data is not validated here. */
+/** @typedef {{id: string, date: string, description: string, category: string, amount: number|string, notes?: string|null, outlet_id?: string|null, outlets?: {name?: string|null}|null}} ExpenseExpectedView */
+/** Existing outlet rows returned by outlets:getAll; IPC data is not validated here. */
+/** @typedef {{id?: string|null, name?: string|null}} ExpenseOutletExpectedView */
+/** Expected nested stock purchase fields consumed from inventory/supply spend reports. */
+/** @typedef {{id?: unknown, item_id?: unknown, date?: unknown, total_cost?: unknown, notes?: unknown, inventory_items?: {name?: unknown, category?: unknown, outlet_id?: unknown}|null, supply_items?: {name?: unknown}|null}} ExpenseStockPurchaseExpectedView */
+/** Expected report summary fields from the existing report producers; leaves retain producer values. */
+/** @typedef {{total?: unknown, purchases?: ExpenseStockPurchaseExpectedView[]}} ExpenseSpendExpectedView */
+/** Expected maintenance ticket fields consumed by this display projection. */
+/** @typedef {{id?: unknown, _queue_id?: unknown, reported_date?: unknown, created_at?: unknown, date?: unknown, title?: unknown, issue?: unknown, description?: unknown, room_number?: unknown, room_type?: unknown, status?: unknown, total_cost?: unknown}} ExpenseMaintenanceExpectedView */
+/** Expected result fields from expense mutations; forwarded error text is not runtime-validated. */
+/** @typedef {{success?: boolean, error?: string, id?: string}} ExpenseMutationExpectedView */
+
 const LODGE_CATEGORIES = [
   'Food & Beverage',
   'Utilities',
@@ -43,10 +56,12 @@ const monthStart = () => {
   return localToday().slice(0, 8) + '01'
 }
 
+/** @param {number|string|null|undefined} v */
 function fmt(v) {
   return Number(v || 0).toFixed(2)
 }
 
+/** @param {ExpenseMaintenanceExpectedView} [row] */
 function normalizeMaintenanceRow(row = {}) {
   const date = String(row.reported_date || row.created_at || row.date || '').slice(0, 10)
   const title = row.title || row.issue || row.description || 'Maintenance repair'
@@ -77,9 +92,9 @@ export default function Expenses() {
   const fnbReturn = searchParams.get('from') === 'food-beverage'
   const fnbBackTo = fnbOutlet ? `/food-beverage/close?outlet=${encodeURIComponent(fnbOutlet)}` : '/food-beverage/close'
 
-  const [expenses, setExpenses] = useState([])
-  const [inventorySpend, setInventorySpend] = useState({ total: 0, purchases: [] })
-  const [supplySpend, setSupplySpend] = useState({ total: 0, purchases: [] })
+  const [expenses, setExpenses] = useState(/** @type {ExpenseExpectedView[]} */ ([]))
+  const [inventorySpend, setInventorySpend] = useState(/** @type {ExpenseSpendExpectedView} */ ({ total: 0, purchases: [] }))
+  const [supplySpend, setSupplySpend] = useState(/** @type {ExpenseSpendExpectedView} */ ({ total: 0, purchases: [] }))
   const [maintenanceSpend, setMaintenanceSpend] = useState({ total: 0, rows: [] })
   const [loading, setLoading] = useState(false)
   const [pageError, setPageError] = useState('')
@@ -88,7 +103,7 @@ export default function Expenses() {
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('all')
   const [sortBy, setSortBy] = useState('date_desc')
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {ExpenseOutletExpectedView[]} */ ([]))
   const [selectedOutlet, setSelectedOutlet] = useState('all')
 
   // Consume the F&B outlet query state on entry; operator changes afterwards win.
@@ -99,21 +114,21 @@ export default function Expenses() {
   }, [fnbOutlet, fnbScope])
 
   const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {ExpenseExpectedView|null} */ (null))
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(/** @type {{date:string, description:string, category:string, amount:string, notes:string, outlet_id:string}} */ ({
     date: today(),
     description: '',
     category: CATEGORIES[0],
     amount: '',
     notes: '',
     outlet_id: ''
-  })
+  }))
 
   useEffect(() => {
-    window.api.outlets.getAll().then((d) => setOutlets(d || [])).catch(() => {})
+    window.api.outlets.getAll().then((d) => setOutlets(/** @type {ExpenseOutletExpectedView[]} */ (/** @type {unknown} */ (d || [])))).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -136,16 +151,16 @@ export default function Expenses() {
           ? window.api.reports.maintenanceRows(start, end).then(unpackTransport).catch(() => [])
           : Promise.resolve([])
       ])
-      setExpenses(expenseData || [])
-      setInventorySpend(inventoryData || { total: 0, purchases: [] })
-      setSupplySpend(supplyData || { total: 0, purchases: [] })
-      const rows = (maintenanceData || []).map(normalizeMaintenanceRow).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      setExpenses(/** @type {ExpenseExpectedView[]} */ (/** @type {unknown} */ (expenseData || [])))
+      setInventorySpend(/** @type {ExpenseSpendExpectedView} */ (/** @type {unknown} */ (inventoryData || { total: 0, purchases: [] })))
+      setSupplySpend(/** @type {ExpenseSpendExpectedView} */ (/** @type {unknown} */ (supplyData || { total: 0, purchases: [] })))
+      const rows = /** @type {ExpenseMaintenanceExpectedView[]} */ (/** @type {unknown} */ (maintenanceData || [])).map(normalizeMaintenanceRow).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
       setMaintenanceSpend({
         total: rows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
         rows
       })
     } catch (err) {
-      setPageError(err?.message || 'Could not load expenses right now.')
+      setPageError((/** @type {{message?:string}|null|undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not load expenses right now.')
       setInventorySpend({ total: 0, purchases: [] })
       setSupplySpend({ total: 0, purchases: [] })
       setMaintenanceSpend({ total: 0, rows: [] })
@@ -159,9 +174,10 @@ export default function Expenses() {
     const unsubscribe = window.api.sync.onStatusChanged(() => {
       load(true)
     })
-    return () => unsubscribe?.()
+    return () => /** @type {void} */ (unsubscribe?.())
   }, [start, end, selectedOutlet])
 
+  /** @param {ExpenseExpectedView} expense */
   const expenseMatchesCurrentOutlet = (expense) => {
     if (!selectedOutlet || selectedOutlet === 'all') return true
     if (selectedOutlet === 'unassigned') return !expense?.outlet_id
@@ -175,6 +191,7 @@ export default function Expenses() {
     setFormOpen(true)
   }
 
+  /** @param {ExpenseExpectedView} exp */
   const openEdit = (exp) => {
     setEditing(exp)
     setForm({
@@ -189,7 +206,7 @@ export default function Expenses() {
     setFormOpen(true)
   }
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (/** @type {React.FormEvent<HTMLFormElement>} */ e) => {
     e.preventDefault()
     setSaving(true)
     setFormError('')
@@ -199,9 +216,9 @@ export default function Expenses() {
         amount: parseFloat(form.amount),
         outlet_id: form.outlet_id || null
       }
-      const result = editing
+      const result = /** @type {ExpenseMutationExpectedView} */ (/** @type {unknown} */ (editing
         ? await window.api.expenses.update(editing.id, payload)
-        : await window.api.expenses.create(payload)
+        : await window.api.expenses.create(payload)))
 
       if (!result?.success) {
         setFormError(result?.error || 'Could not save this expense right now.')
@@ -235,16 +252,17 @@ export default function Expenses() {
 
       setFormOpen(false)
     } catch (err) {
-      setFormError(err?.message || 'Could not save this expense right now.')
+      setFormError((/** @type {{message?:string}|null|undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not save this expense right now.')
       return
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {ExpenseExpectedView} exp */
   const handleDelete = async (exp) => {
     if (!confirm(`Delete "${exp.description}"?\n\nThis permanently removes the expense from the period totals and category summaries.`)) return
-    const result = await window.api.expenses.delete(exp.id).catch((err) => ({ success: false, error: err?.message || 'Could not delete this expense.' }))
+    const result = /** @type {ExpenseMutationExpectedView} */ (/** @type {unknown} */ (await window.api.expenses.delete(exp.id).catch((err) => ({ success: false, error: (/** @type {{message?:string}|null|undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not delete this expense.' }))))
     if (!result?.success) {
       alert(result?.error || 'Could not delete this expense right now.')
       return

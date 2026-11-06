@@ -22,12 +22,33 @@ import { isRestaurantOnly } from '../../../shared/propertyTypes'
  * @typedef {OccupancyReportRow[] & { readonly _source?: ReportSource, readonly _complete?: boolean }} OccupancyReportRows
  * @typedef {{ id: string, room_number: string, room_type: string, occupancy_rate: number, revenue: number, supply_cost: number, maintenance_cost: number, running_cost: number, contribution: number, margin_pct: number, supply_units_used: number, maintenance_count: number, open_maintenance_count: number, source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean }} RoomProfitabilityRow
  * @typedef {RoomProfitabilityRow[] & { readonly _source?: ReportSource, readonly _complete?: boolean }} RoomProfitabilityRows
- * @typedef {{ source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean, total_revenue?: number, regular_revenue?: number, event_revenue?: number, event_count?: number, total_bookings?: number, avg_booking_value?: number, confirmed_count?: number, checked_in_count?: number, checked_out_count?: number, cancelled_count?: number, paid_revenue?: number, refunds_issued?: number, retained_revenue?: number, outstanding_amount?: number, unpaid_count?: number, partial_count?: number, vat_enabled?: boolean, vat_mixed?: boolean, vat_rate?: number, vat_amount?: number, net_revenue?: number, booking_payment_by_method?: Record<string, number>, complete?: boolean }} BookingRevenueReport
+ * @typedef {{ group_id: string, check_in: string, check_out: string, nights: number, daily_rate: number, total: number, room_count: number, charges_total?: number, status?: string, payment_status?: string, amount_paid?: number }} RevenueEventBookingExpectedView
+ * @typedef {{ source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean, total_revenue?: number, regular_revenue?: number, event_revenue?: number, event_count: number, event_bookings: RevenueEventBookingExpectedView[], total_bookings?: number, avg_booking_value?: number, confirmed_count?: number, checked_in_count?: number, checked_out_count?: number, cancelled_count?: number, paid_count?: number, paid_revenue?: number, gross_collected?: number, refunds_issued?: number, retained_revenue?: number, outstanding_amount?: number, unpaid_count?: number, partial_count?: number, vat_enabled?: boolean, vat_mixed?: boolean, vat_rate?: number, vat_amount?: number, net_revenue?: number, booking_payment_by_method?: Record<string, number>, complete?: boolean }} BookingRevenueReport
  * @typedef {{ source: 'server'|'local', _source: 'server'|'derived-estimate', _complete: boolean, bookingRevenue: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, retainedRevenue: number, totalRevenue: number, totalExpenses: number, invCosts: number, supCosts: number, maintenanceCosts: number, totalCosts: number, grossProfit: number, grossMarginPct: number, vatAmount: number, netRevenue: number, totalBookings: number, avgBookingValue: number, refundsIssued: number, outstandingAmount: number, vatEnabled?: boolean, vatMixed?: boolean, vatRate?: number, expByCategory?: Record<string, number>, bookingPaymentByMethod: Record<string, number> }} ProfitLossReport
  * @typedef {{ key: string, name: string, posRevenue: number, bookingRevenue: number, revenue: number, inventoryCost: number, supplyCost: number, maintenanceCost?: number, expenses: number, profit: number }} OutletProfitLossRow
  * @typedef {{ posRevenue: number, bookingRevenue: number, revenue: number, inventoryCost: number, supplyCost: number, maintenanceCost?: number, expenses: number, profit: number }} OutletProfitLossTotals
  * @typedef {{ source: 'server'|'local', outlets: OutletProfitLossRow[], combined: OutletProfitLossTotals }} OutletProfitLossReport
+ * @typedef {{ todayRev: number, weekRev: number, monthRev: number, lastMonthRev: number, monthRefunds: number, lastMonthRefunds: number, monthRetainedRevenue: number, lastMonthRetainedRevenue: number, monthRetainedCount: number, lastMonthRetainedCount: number, monthOcc: number, lastMonthOcc: number, currentOcc: number, totalRooms: number, unpaidTotal: number, unpaidCount: number, monthExpenses: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, source: 'server', _source: 'server', _complete: boolean, complete?: boolean, revenueUnavailable?: undefined, as_of: string, last_synced_at: string|null }} ServerReportsSnapshotExpectedView
+ * @typedef {{ todayRev: number|null, weekRev: number|null, monthRev: number|null, lastMonthRev: number|null, monthRefunds: number|null, lastMonthRefunds: number|null, monthRetainedRevenue: number|null, lastMonthRetainedRevenue: number|null, monthRetainedCount: number|null, lastMonthRetainedCount: number|null, revenueUnavailable: boolean, complete?: undefined, monthOcc: number, lastMonthOcc: number, currentOcc: number, totalRooms: number, unpaidTotal: number, unpaidCount: number, monthExpenses: number, maintenanceCosts: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, source: 'fallback'|'offline', _complete: false, as_of: string, last_synced_at: string|null }} LocalReportsSnapshotExpectedView
+ * @typedef {ServerReportsSnapshotExpectedView|LocalReportsSnapshotExpectedView} ReportsSnapshotExpectedView
+ * @typedef {{ reported_date?: unknown, created_at?: unknown, date?: unknown, title?: unknown, issue?: unknown, description?: unknown, room_number?: unknown, status?: unknown, id?: unknown, _queue_id?: unknown, total_cost?: unknown }} MaintenanceExpenseExpectedView
+ * @typedef {{ id: string, date?: string|null, purchased_at?: string|null, item_name?: string|null, quantity_purchased?: number|null, unit_cost?: number|string|null, total_cost?: number|string|null, inventory_items?: {name?: string|null, category?: string|null}|null, supply_items?: {name?: string|null}|null }} SpendPurchaseExpectedView
+ * @typedef {{ source: 'server'|'local', _complete?: boolean, total: number, by_category: Record<string, number>, purchases: SpendPurchaseExpectedView[] }} InventorySpendExpectedView
+ * @typedef {{ source: 'server'|'local', _complete?: boolean, total: number, purchases: SpendPurchaseExpectedView[] }} SupplySpendExpectedView
+ * @typedef {{ id: unknown, is_exclusive_event?: boolean|null, notes?: string|null, customer_id?: unknown, customer_name?: string|null, check_in?: string|null, check_out?: string|null, created_at?: string|null, status?: string|null, room_number?: string|number|null, room_type?: string|null, total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null, _event_group?: boolean, _event_booking_ids?: unknown[], room_count?: number }} EventBookingGroupInput
+ * @typedef {{ name?: string|null, quantity?: number|string|null, unit_price?: number|string|null }} DayUseReportExtraExpectedView
+ * @typedef {{ id: string, phone?: string|null, extras?: DayUseReportExtraExpectedView[]|null }} DayUseReportEntryExpectedView
  */
+/** @typedef {{id: string, booking_date: string, start_time?: string|null, end_time?: string|null, client_name: string, company?: string|null, attendees?: number|null, room_name?: string|null, total_amount?: number|null, deposit_paid?: number|null, payment_status?: string|null}} ConferenceBookingReportExpectedView */
+/** @typedef {{id: string, date: string, category?: string|null, description: string, amount: unknown}} ExpenseReportExpectedView */
+/** Expense metadata is attached to the array by the existing loader. */
+/** @typedef {ExpenseReportExpectedView[] & {readonly _source?: string, readonly _complete?: boolean}} ExpenseReportRows */
+/** @typedef {{customer_id: string, customer_name: string|null, total_receipts?: unknown, total_allocations?: unknown, total_refunds?: unknown, balance?: unknown, last_activity?: string|null}} CustomerCreditReportExpectedView */
+/** @typedef {{id: string, name: string}} ReportOutletExpectedView */
+/** @typedef {{source?: string, complete?: boolean, financial_truth?: string, total_revenue: number, total_orders: number, avg_order: number, net_revenue?: number, gross_revenue?: number, discount_total?: number, returns_total?: number, tax_total?: number, tip_total?: number, by_payment: Record<string, number>, by_cashier?: Record<string, number>, top_items: Array<{name: string, qty: number, revenue: number, margin?: number|null}>, daily: Array<{date: string, total: number}>}} PosSalesReportExpectedView */
+/** The status IPC payload is not runtime-validated in this consumer. */
+/** @typedef {Omit<import('../types/desktop-api.js').SyncStatusSnapshot, 'isOnline'> & {isOnline?: unknown, lastSuccessfulSyncAt?: unknown}} ReportsSyncStatusExpectedView */
+/** @typedef {{key: string, label: string, value: string, tone: string, title?: string}} ReportSourceBadge */
 
 function formatLocalDate(value = new Date()) {
   const d = value instanceof Date ? value : new Date(value)
@@ -46,6 +67,7 @@ function monthEnd() {
   return formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0))
 }
 
+/** @param {number} rate Occupancy rows already expose this numeric presentation field. */
 function occColor(rate) {
   if (rate >= 70) return { bar: 'bg-green-500',  text: 'text-green-700',  bg: 'bg-green-50' }
   if (rate >= 30) return { bar: 'bg-yellow-400', text: 'text-yellow-700', bg: 'bg-yellow-50' }
@@ -56,9 +78,16 @@ const PAYMENT_LABELS = {
   folio: 'Room Folio'
 }
 
+/**
+ * Read only the named amount fields from the existing report row projections.
+ * The dynamic-key view documents this presentation helper; it does not validate
+ * IPC or persisted row data.
+ * @param {object|null|undefined} row
+ * @param {string[]} keys
+ */
 function recordedAmount(row = {}, keys = ['total_cost', 'amount']) {
   for (const key of keys) {
-    const raw = row?.[key]
+    const raw = (/** @type {Record<string, unknown>|null|undefined} */ (row))?.[key]
     if (raw === null || raw === undefined || raw === '') continue
     const value = Number(raw)
     if (Number.isFinite(value)) return value
@@ -66,16 +95,19 @@ function recordedAmount(row = {}, keys = ['total_cost', 'amount']) {
   return null
 }
 
+/** @param {unknown} value */
 function reportMoney(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value)) ? 'Unavailable' : Number(value).toFixed(2)
 }
 
+/** @param {EventBookingGroupInput} booking Expected row from the existing bookings:getAll IPC producer; no runtime validation is added. */
 function getEventGroupId(booking) {
   if (!booking?.is_exclusive_event && !String(booking?.notes || '').includes('[GROUP:')) return null
   const match = String(booking?.notes || '').match(/\[GROUP:([^\]]+)\]/)
   return match?.[1] || `${booking.customer_id || booking.customer_name || 'event'}-${booking.check_in}-${booking.check_out}`
 }
 
+/** @param {EventBookingGroupInput[]} rows Expected rows from bookings:getAll; malformed IPC data keeps its prior behavior. */
 function groupEventBookings(rows = []) {
   const grouped = []
   const groups = new Map()
@@ -136,6 +168,7 @@ function slugifyFilenamePart(value, fallback = 'report') {
     .toLowerCase() || fallback
 }
 
+/** @param {MaintenanceExpenseExpectedView} row Expected fields from the maintenance IPC producer; raw cache/IPC values are not runtime-validated here. */
 function normalizeMaintenanceExpense(row = {}) {
   const date = String(row.reported_date || row.created_at || row.date || '').slice(0, 10)
   const title = row.title || row.issue || row.description || 'Maintenance repair'
@@ -206,11 +239,11 @@ export default function Reports() {
   // Bookings tab
   const [occupancy, setOccupancy] = useState(/** @type {OccupancyReportRows} */ ([]))
   const [revenue, setRevenue]     = useState(/** @type {BookingRevenueReport|null} */ (null))
-  const [reportBookings, setReportBookings] = useState([])
-  const [conferenceBookings, setConferenceBookings] = useState([])
-  const [dayUseEntries, setDayUseEntries] = useState([])
-  const [snapshot, setSnapshot]   = useState(null)
-  const [syncStatus, setSyncStatus] = useState(null)
+  const [reportBookings, setReportBookings] = useState(/** @type {EventBookingGroupInput[]} */ ([]))
+  const [conferenceBookings, setConferenceBookings] = useState(/** @type {ConferenceBookingReportExpectedView[]} */ ([]))
+  const [dayUseEntries, setDayUseEntries] = useState(/** @type {DayUseReportEntryExpectedView[]} */ ([]))
+  const [snapshot, setSnapshot]   = useState(/** @type {ReportsSnapshotExpectedView|null} */ (null))
+  const [syncStatus, setSyncStatus] = useState(/** @type {ReportsSyncStatusExpectedView|null} */ (null))
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
   const [tabError, setTabError]   = useState('')
@@ -219,16 +252,16 @@ export default function Reports() {
   const [exportSuccess, setExportSuccess] = useState('')
 
   // Expenses tab
-  const [expenses, setExpenses]     = useState([])
+  const [expenses, setExpenses]     = useState(/** @type {ExpenseReportRows} */ ([]))
   const [expLoading, setExpLoading] = useState(false)
 
   // POS Sales tab
-  const [posSales, setPosSales]       = useState(null)
+  const [posSales, setPosSales]       = useState(/** @type {PosSalesReportExpectedView|null} */ (null))
   const [posLoading, setPosLoading]   = useState(false)
 
   // Costs tab
-  const [invSpend, setInvSpend]     = useState(null)
-  const [supSpend, setSupSpend]     = useState(null)
+  const [invSpend, setInvSpend]     = useState(/** @type {InventorySpendExpectedView|null} */ (null))
+  const [supSpend, setSupSpend]     = useState(/** @type {SupplySpendExpectedView|null} */ (null))
   const [costsLoading, setCostsLoading] = useState(false)
 
   // P&L tab
@@ -236,11 +269,11 @@ export default function Reports() {
   const [plLoading, setPlLoading]   = useState(false)
   const [outletPL, setOutletPL]     = useState(/** @type {OutletProfitLossReport|null} */ (null))
   const [roomProfitability, setRoomProfitability] = useState(/** @type {RoomProfitabilityRows} */ ([]))
-  const [customerCredits, setCustomerCredits] = useState([])
+  const [customerCredits, setCustomerCredits] = useState(/** @type {CustomerCreditReportExpectedView[]} */ ([]))
   const [creditLoading, setCreditLoading] = useState(false)
 
   // Outlet filter — applies to POS, Expenses, and Costs (inventory) tabs only
-  const [outlets, setOutlets]           = useState([])
+  const [outlets, setOutlets]           = useState(/** @type {ReportOutletExpectedView[]} */ ([]))
   const [selectedOutlet, setSelectedOutlet] = useState('all')
   // Canonical cross-module navigation (F&B Phase 2): consume the F&B outlet
   // query state and preserve the return context on tab switches.
@@ -311,7 +344,7 @@ export default function Reports() {
   }, [dayUseEntries])
 
   useEffect(() => {
-    window.api.outlets.getAll().then(d => setOutlets(d || [])).catch(() => {})
+    window.api.outlets.getAll().then((/** @type {unknown} */ d) => setOutlets(/** @type {ReportOutletExpectedView[]} */ (d || []))).catch(() => {})
   }, [])
 
   // Consume the F&B outlet query state on entry; operator changes afterwards win.
@@ -347,7 +380,7 @@ export default function Reports() {
             _source: { value: expenseData?._source === 'server' && (maintenanceData?._source === 'server' || !showPropertyWideCosts) ? 'server' : 'cache', enumerable: true, configurable: true },
             _complete: { value: expenseData?._complete === true && (maintenanceData?._complete === true || !showPropertyWideCosts), enumerable: true, configurable: true }
           })
-          setExpenses(combinedExpenses)
+          setExpenses(/** @type {ExpenseReportRows} */ (combinedExpenses))
         } catch (err) {
           setExpenses([])
           setTabError(`Could not load expenses: ${err?.message || 'Unknown error'}`)
@@ -359,7 +392,9 @@ export default function Reports() {
         setPosLoading(true)
         try {
           const data = await window.api.reports.posSales(start, end, selectedOutlet)
-          setPosSales(data)
+          // getPosRevenueSummary returns the report fields used below; this
+          // expected view does not validate the RPC or IPC object.
+          setPosSales(/** @type {PosSalesReportExpectedView|null} */ (data))
         } catch (err) {
           setPosSales(null)
           setTabError(`Could not load POS sales: ${err?.message || 'Unknown error'}`)
@@ -374,8 +409,10 @@ export default function Reports() {
             window.api.reports.inventorySpend(start, end, selectedOutlet),
             window.api.reports.supplySpend(start, end)
           ])
-          setInvSpend(inv)
-          setSupSpend(sup)
+          // Expected views from getInventorySpend/getSupplySpend and their
+          // reporting RPCs; the IPC/RPC values are not runtime-validated here.
+          setInvSpend(/** @type {InventorySpendExpectedView} */ (inv))
+          setSupSpend(/** @type {SupplySpendExpectedView} */ (sup))
         } catch (err) {
           setInvSpend(null)
           setSupSpend(null)
@@ -408,7 +445,9 @@ export default function Reports() {
         try {
           const rows = await window.api.customerCredit.getSummary(null, 100, 0)
           if (rows?.success === false) throw new Error(rows.error)
-          setCustomerCredits(Array.isArray(rows) ? rows : [])
+          // getCustomerCreditSummary guards the array envelope, while its RPC
+          // row fields remain expected data rather than runtime-validated data.
+          setCustomerCredits(/** @type {CustomerCreditReportExpectedView[]} */ (Array.isArray(rows) ? rows : []))
         } catch (err) {
           setCustomerCredits([])
           setTabError(`Could not load customer-credit liability: ${err?.message || 'Unknown error'}`)
@@ -434,7 +473,7 @@ export default function Reports() {
         setReportBookings([])
         setConferenceBookings([])
         setDayUseEntries([])
-        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
+        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? /** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot) : null)
         setRoomProfitability([])
       } else {
         const [occ, rev, bookings, reportsSnapshot, confBookings, dayUseRows] = await Promise.all([
@@ -449,10 +488,16 @@ export default function Reports() {
         // expected row/result views; these casts do not validate IPC payloads.
         setOccupancy(/** @type {OccupancyReportRows} */ (Array.isArray(occ) ? occ : []))
         setRevenue(rev && typeof rev === 'object' ? /** @type {BookingRevenueReport} */ (rev) : null)
-        setReportBookings(Array.isArray(bookings) ? bookings : [])
-        setConferenceBookings(Array.isArray(confBookings) ? confBookings : [])
-        setDayUseEntries(Array.isArray(dayUseRows) ? dayUseRows : [])
-        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? reportsSnapshot : null)
+        // These are existing bookings:getAll and conference:getAll row
+        // projections. The array guards remain unchanged; row contents are not
+        // validated by these consumer-side expected views.
+        setReportBookings(/** @type {EventBookingGroupInput[]} */ (Array.isArray(bookings) ? bookings : []))
+        setConferenceBookings(/** @type {ConferenceBookingReportExpectedView[]} */ (Array.isArray(confBookings) ? confBookings : []))
+        // dayuse:getAll returns the existing pool-day-use query/cache rows. The
+        // container guard preserves current malformed-payload behavior; it does
+        // not validate row contents at this IPC boundary.
+        setDayUseEntries(/** @type {DayUseReportEntryExpectedView[]} */ (Array.isArray(dayUseRows) ? dayUseRows : []))
+        setSnapshot(reportsSnapshot && typeof reportsSnapshot === 'object' ? /** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot) : null)
         const roomRows = await window.api.reports.roomProfitability(s, e).then(unpackTransport).catch(() => [])
         setRoomProfitability(/** @type {RoomProfitabilityRows} */ (Array.isArray(roomRows) ? roomRows : []))
         // TEMP DIAG: report metadata dump (remove after diagnosis)
@@ -461,7 +506,7 @@ export default function Reports() {
           revenue: rev && { source: rev.source, _source: rev._source, complete: rev.complete, _complete: rev._complete, status: rev.status, financial_truth: rev.financial_truth },
           occupancy: occ && { _source: occ._source, _complete: occ._complete, len: occ.length },
           roomProfit: roomRows && { _source: roomRows._source, _complete: roomRows._complete, len: roomRows.length },
-          snapshot: reportsSnapshot && { source: reportsSnapshot.source, _complete: reportsSnapshot._complete, complete: reportsSnapshot.complete, last_synced_at: reportsSnapshot.last_synced_at }
+          snapshot: reportsSnapshot && { source: (/** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot)).source, _complete: (/** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot))._complete, complete: (/** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot)).complete, last_synced_at: (/** @type {ReportsSnapshotExpectedView} */ (reportsSnapshot)).last_synced_at }
         }))
       }
     } catch (err) {
@@ -744,6 +789,7 @@ export default function Reports() {
   const supplySpendReady = supSpend?.source === 'server' && supSpend?._complete === true
   const expenseRowsReady = Array.isArray(expenses) && expenses.every((row) => recordedAmount(row, ['amount']) !== null)
   const exportPeriod = `${start} to ${end}`
+  /** @param {unknown} value */
   const formatSyncTs = (value) => {
     if (!value) return 'unknown'
     try { return new Date(value).toLocaleString('en-GB') } catch { return String(value) }
@@ -765,7 +811,9 @@ export default function Reports() {
   )
   const offlineDataLabel = `Offline data (last synced: ${formatSyncTs(syncStatus?.lastSuccessfulSyncAt || summarySnapshot?.last_synced_at || summarySnapshot?.as_of || null)})`
   const reportSourceBadges = useMemo(() => {
+    /** @type {ReportSourceBadge[]} */
     const badges = []
+    /** @param {ReportSourceBadge} badge */
     const addBadge = ({ key, label, value, tone, title }) => {
       if (!value) return
       badges.push({ key, label, value, tone, title })
@@ -1422,9 +1470,12 @@ export default function Reports() {
       {/* ── EXPENSES TAB ─────────────────────────────────────────────────────── */}
       {activeTab === 'expenses' && (() => {
         const byCategory = expenses.reduce((acc, e) => {
-          acc[e.category] = (acc[e.category] || 0) + Number(e.amount || 0)
+          // A plain object key coerces nullable SQL text the same way as the
+          // prior bracket expression for JSON-backed expense rows.
+          const category = String(e.category)
+          acc[category] = (acc[category] || 0) + Number(e.amount || 0)
           return acc
-        }, {})
+        }, /** @type {Record<string, number>} */ ({}))
         const total = expenses.reduce((s, e) => s + Number(e.amount || 0), 0)
         return (
           <div>
@@ -2275,6 +2326,7 @@ export default function Reports() {
   )
 }
 
+/** @param {{label: string, value: string, bold?: boolean, muted?: boolean}} props */
 function PLRow({ label, value, bold, muted }) {
   return (
     <div className={`flex justify-between border-b border-slate-100 py-1 text-sm ${bold ? 'border-t border-slate-200 pt-2 font-semibold' : ''} ${muted ? 'text-slate-400' : 'text-slate-700'}`}>
@@ -2284,6 +2336,7 @@ function PLRow({ label, value, bold, muted }) {
   )
 }
 
+/** @param {{icon: import('lucide-react').LucideIcon, label: import('react').ReactNode, value: import('react').ReactNode, sub?: import('react').ReactNode, color: string}} props */
 function SummaryCard({ icon: Icon, label, value, sub, color }) {
   return (
     <div className="bb-card p-4">
@@ -2297,6 +2350,7 @@ function SummaryCard({ icon: Icon, label, value, sub, color }) {
   )
 }
 
+/** @param {{label: import('react').ReactNode, value: import('react').ReactNode, color: string}} props */
 function StatusStat({ label, value, color }) {
   return (
     <div className="flex items-center gap-3">

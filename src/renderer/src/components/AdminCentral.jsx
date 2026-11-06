@@ -41,17 +41,21 @@ import {
   trackUpgradeIntent
 } from '../../../shared/subscriptionPlans'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '../../../shared/supportThreads'
+import { buildSupportMailto } from '../../../shared/publicEndpoints'
 import {
   LayoutDashboard, Building2, CreditCard, ToggleRight, Megaphone,
   LifeBuoy, Activity, LogOut, Shield, RefreshCw, Plus, Trash2,
   Copy, CheckCircle, XCircle, Key, ChevronRight, X, AlertTriangle,
   Clock, TrendingUp, Users, Home, Wrench, DollarSign, Edit3,
-  Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText,
+  Mail, Send, CheckCircle2, Eye, EyeOff, Receipt, FileText, AlertCircle,
   BarChart3, Filter, Wallet, Printer, Bell, Server, Rocket,
   Zap, Search, CheckSquare
 } from 'lucide-react'
 import { formatLocalDate, localToday } from '../utils/localDate'
 import { TRIAL_LENGTH_DAYS, DEFAULT_TAX_RATE, ACTION_ICON } from '../constants/adminConstants'
+
+/** Local callback shared by the AdminCentral page and its dashboard quick actions. */
+/** @typedef {Window & {__adminNavigate?: (section: string) => void}} AdminCentralNavigationWindow */
 import ErrorBoundary from './shared/ErrorBoundary'
 import { BIZ_EMOJI, BIZ_LABEL, ALL_FEATURES, FEAT_LABEL, INVOICE_CURRENCIES } from '../constants/adminConstants'
 import { resolveProductFamily } from '../../../shared/productIdentity'
@@ -92,26 +96,59 @@ const DEFAULT_PLAN = 'Starter'
  * Dashboard rows mirror the fields consumed from normalized admin queries and
  * the get_command_central_audit_log RPC. These are expected IPC views only.
  * @typedef {{bookings: number, rooms: number, users: number}} CompanyUsageMetrics
- * @typedef {{label: string, recommendedPlan: string, reason: string, tone?: string, strong?: boolean, details?: string, currentUsage?: CompanyUsageMetrics, currentUsagePct?: CompanyUsageMetrics, metrics?: unknown[]}} CompanyUsageRecommendation
+ * @typedef {{label: string, recommendedPlan: string|null, reason: string, tone?: string, strong?: boolean, details?: string, currentUsage?: CompanyUsageMetrics, currentUsagePct?: CompanyUsageMetrics, metrics?: unknown[]}} CompanyUsageRecommendation
  * @typedef {{ id: string, auth_user_id: string|null, name: string|null, email: string|null, role: string, status: string|null, lodge_id: string, created_at: string|null, pwa_enabled: boolean|null, pwa_password_set_at: string|null, pwa_disabled_reason: string|null, pwa_password_reset_by: string|null }} CompanySecurityUser
  * @typedef {{ lodge_id: string, lodge_name: string }} AdminCompanyIdentity
- * @typedef {{ lodge_id: string, lodge_name: string, company_name: string, business_type: string, property_type: string, city: string, country: string, email: string, phone: string, operating_profile: Record<string, unknown>, updated_at: string|null, setup_complete: boolean, trial_started_at: string|null, deleted: boolean }} AdminCompanyRecord
+ * @typedef {{ lodge_id: string, lodge_name: string, company_name: string, business_type: string, property_type: string, city: string, country: string, email: string, phone: string, operating_profile: object, updated_at: string|null, setup_complete: boolean, trial_started_at: string|null, deleted: boolean }} AdminCompanyRecord
  * @typedef {{success: true}|{success: false, error: string}} CompanyLifecycleResultExpected
+ * Main staff mutation handlers return their domain success value or convert a caught Error to `{success:false,error}`. IPC values are not validated by this expected-data view.
+ * @typedef {{success: true, audit?: unknown}|{success: false, error: string}} AdminStaffMutationResultExpected
  * @typedef {{lodge_id: string, event_group: string, kept_booking_id: string, removed_booking_count: number}} DuplicateEventRepairRowExpected
  * @typedef {{success: true, repaired: DuplicateEventRepairRowExpected[]}|{success: false, error: string}} DuplicateEventRepairResultExpected
  * @typedef {Record<string, unknown> & {percentUsed?: number}} CompanyUsageStatus
- * @typedef {{ rooms: number, users: number, bookings_30d: number, monthly_confirmed_bookings: number, monthly_created_bookings: number, plan: string, usage: {monthlyBookings: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, usage_limits: Record<string, number|null>, usage_status: {bookings: CompanyUsageStatus, booking_target_month: CompanyUsageStatus, booking_creation_month: CompanyUsageStatus, rooms: CompanyUsageStatus, users: CompanyUsageStatus}, warning: string, recommendation: Record<string, unknown>, next_recommended_plan: string, monthly_reset_copy: string, expenses_30d: number, open_maintenance: number, last_booking_date: string|null}} CompanyUsageStats
- * @typedef {{ id: string, lodge_id: string|null, lodge_name: string, business_type: string, subscription_plan: string, subscription_state: string, payment_status: string, is_active: boolean, monthly_fee: number|string|null, currency: string|null, issued_at: string|null, expires_at: string|null, next_due_date: string|null, last_payment_date: string|null, created_at?: string|null, updated_at?: string|null }} CompanyLicenseUsageView
+ * @typedef {{ rooms: number, users: number, bookings_30d: number, monthly_confirmed_bookings: number, monthly_created_bookings: number, plan: string, usage: {monthlyBookings: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, usage_limits: Record<string, number|null>, usage_status: {bookings: CompanyUsageStatus, booking_target_month: CompanyUsageStatus, booking_creation_month: CompanyUsageStatus, rooms: CompanyUsageStatus, users: CompanyUsageStatus}, warning: string, recommendation: CompanyUsageRecommendation, next_recommended_plan: string, monthly_reset_copy: string, expenses_30d: number, open_maintenance: number, last_booking_date: string|null}} CompanyUsageStats
+ * @typedef {{label: string, cls: string, key: string, plan: string, recommendation: CompanyUsageRecommendation, usage?: {bookings: number, rooms: number, users: number}, usageLimits?: Record<string, number|null>, bookingStatus?: CompanyUsageStatus, bookingStateKey?: string, roomStatus?: CompanyUsageStatus, roomStateKey?: string, userStatus?: CompanyUsageStatus, userStateKey?: string, statusKey?: string, lastBookingDate?: string|null}} CompanyUsageRollupExpectedView
+ * @typedef {{ id: string, lodge_id: string|null, lodge_name: string|null, business_type: string|null, subscription_plan: string, subscription_state: string, payment_status: string, is_active: boolean|null, monthly_fee: number|string|null, currency: string|null, issued_at: string|null, expires_at: string|null, next_due_date: string|null, last_payment_date: string|null, created_at?: string|null, updated_at?: string|null }} CompanyLicenseUsageView
  * @typedef {{ id: string, invoice_number: string, lodge_id: string, lodge_name: string, product_id: string, status: string, currency: string, issued_date: string|null, due_date: string|null, amount: number|string, balance_due: number|string|null, package_name: string|null, description: string|null, paid_date?: unknown, notes?: unknown }} CommercialInvoiceRow
  * @typedef {{ rows?: unknown }} CommercialInvoiceListExpected
  * @typedef {{ month: string, amount: number|string }} CommercialBillingMonth
  * @typedef {{ success: true, source: string, currency: string, total: number|string, outstanding: number|string, paid_count: number, pending_count: number, byMonth: CommercialBillingMonth[] }} CommercialBillingSummary
  * @typedef {{ id: string, date: string, category: string|null, amount: number|string, description: string, currency?: unknown, vendor?: unknown }} AdminExpenseRow
  * @typedef {{ type: 'invoice'|'expense', id: string }} BookkeepingConfirmState
+ * Main IPC handlers rethrow these failures as Error; this expected read view does not validate rejection values.
+ * @typedef {{message?: string}|null|undefined} AdminRejectedErrorMessageExpectedView
+ * IPC-backed operations normally reject with Error instances rethrown by the main handlers, so their .message is expected to be a string. Caught values and message fields remain unvalidated: these views add no instanceof/typeof guard or coercion, and a truthy non-string message still passes through unchanged.
+ * @typedef {{message?: unknown}|null|undefined} AdminCaughtErrorMessageReadView
  * @typedef {CompanyLicenseUsageView & {billing_cycle?: unknown}} AdminDashboardLicense
- * @typedef {{id: string, status: string, priority: string}} AdminDashboardSupportTicket
+ * @typedef {{id: string, status: string|null, priority: string|null}} AdminDashboardSupportTicket
+ * @typedef {'open'|'in_progress'|'resolved'|'closed'} AdminDashboardChartSupportStatus
+ * @typedef {Partial<Record<AdminDashboardChartSupportStatus, number>> & Record<string, unknown>} AdminDashboardSupportTicketCounts
  * @typedef {{id: string, lodge_id: string|null, lodge_name: string|null, action: string, created_at: string}} AdminDashboardActivityLog
+ * @typedef {{id: string, lodge_id: string|null, action: string, created_at: string, actor_email?: string|null, lodge_name?: string|null, entity_type?: string|null, entity_id?: string|null, details?: Record<string, unknown>|null}} AdminAuditLogExpectedView
+ * @typedef {{action: string, count: number, last_at: string}} AdminAuditSummaryExpectedView
+ * The source constant contains exactly these feature names; this is a type view over its current values.
+ * @typedef {'reports'|'expenses'|'staff'|'pwa'|'audit'|'conference'|'pool'|'import'|'pos'|'inventory'|'supplies'} AdminFeatureName
+ * The audit action RPC accepts arbitrary action text; these views preserve normal object-key coercion and inherited-key lookup.
+ * @typedef {Record<string, string>} AdminActionLabelLookupView
+ * @typedef {Record<string, string>} AdminActionIconLookupView
+ * @typedef {{host: string, port: number|string, user: string, pass: string, from: string, to: string, allow_insecure_tls: boolean}} AdminEmailConfigExpectedView
+ * @typedef {{type: 'success'|'error', text: string}} AdminFlashExpectedView
+ * @typedef {{mode: string, days: number|string, reason: string, confirmation: string}} AdminTestResetFormExpectedView
+ * @typedef {{deleted_counts?: Record<string, unknown>, counts?: Record<string, unknown>}} AdminTestResetPreviewExpectedView
+ * @typedef {{id: string, reset_mode: string, created_at: string, triggered_by_name?: string|null, reason?: string|null, deleted_counts?: Record<string, unknown>}} AdminTestResetAuditExpectedView
+ * Command Central reauth response views mirror the main IPC handlers. These expected shapes do not validate IPC values.
+ * @typedef {{ok: true, verified: boolean, expires_at: number|null}} AdminCommandCentralReauthStatusExpected
+ * @typedef {{ok: true, verified: true, expires_at: number|null}|{ok: false, verified: false, error: string}} AdminCommandCentralReauthResultExpected
+ * @typedef {Partial<Record<string, number>> & {total: number, near_limit: number, critical: number, in_grace: number, blocked: number, above_plan: number, pro: number, upgradeOpportunities: number}} AdminUsageFilterCounts
  * @typedef {DateConstructor & {new(value: string|null): Date}} CompanyDateConstructor
+ * The master-admin App branch mounts this component under ToastProvider, whose callable hook value has these attached methods.
+ * @typedef {((message: string, options?: {duration?: number}) => number) & {error: (message: string, options?: {duration?: number}) => number, success: (message: string, options?: {duration?: number}) => number, warning: (message: string, options?: {duration?: number}) => number}} AdminToastApi
+ * Marketing lead rows mirror the CRM query/migration columns; they remain expected-data views, not runtime validation.
+ * The marketing_leads schema has no country column. This remains an unknown optional compatibility read from unvalidated IPC rows, not a claim about the SQL producer.
+ * @typedef {{id: string, lodge_name: string, contact_name: string, email: string, status: string, stage: string, created_at: string, phone?: string|null, interest?: string|null, notes?: string|null, source?: string, updated_at?: string|null, follow_up_at?: string|null, sales_notes?: string|null, estimated_value?: number|string|null, probability?: number|null, lost_reason?: string|null, converted_lodge_id?: string|null, country?: unknown}} MarketingLeadExpectedView
+ * @typedef {MarketingLeadExpectedView[]|{leads?: MarketingLeadExpectedView[]}} AdminMarketingLeadReadExpectedView
+ * @typedef {{success: true}|{success: false, error?: string}} AdminEmailConfigSaveExpectedView
+ * @typedef {{ok: true, msg: string}|{ok: false, msg: string}} AdminEmailConfigStatusView
  */
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -214,7 +251,7 @@ function usageBadgeMeta(status = {}) {
   return presentation
 }
 
-/** @param {CompanyUsageStats|null} [stats] @param {CompanyLicenseUsageView[]} [licenses] @param {AdminCompanyRecord|null} [company] */
+/** @param {CompanyUsageStats|null} [stats] @param {CompanyLicenseUsageView[]} [licenses] @param {AdminCompanyRecord|null} [company] @returns {CompanyUsageRollupExpectedView} */
 function getCompanyUsageRollup(stats = null, licenses = [], company = null) {
   if (!stats?.usage_status) {
     return {
@@ -273,6 +310,7 @@ function usagePriorityScore(key = '') {
 }
 const timeAgo = sharedTimeAgo
 
+/** @param {{text: string}} props CopyBtn is rendered with the known lodge identity strings below. */
 function CopyBtn({ text }) {
   const [copied, setCopied] = useState(false)
   return (
@@ -334,6 +372,7 @@ function StatCard({ label, value, color = 'text-white', sub }) {
 /** @param {{title: string, onClose: () => void, children: import('react').ReactNode, wide?: boolean}} props */
 function Modal({ title, onClose, children, wide }) {
   useEffect(() => {
+    /** @param {KeyboardEvent} e */
     const handleKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose?.() } }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
@@ -397,20 +436,30 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
   const activeFinancial = licenses.filter(l => l.is_active && l.payment_status !== 'free')
   const financialCurrencies = [...new Set(activeFinancial.map((license) => String(license.currency || 'BWP').toUpperCase()))]
   const financialCurrency = financialCurrencies.length === 1 ? financialCurrencies[0] : financialCurrencies.length > 1 ? 'MIXED' : 'BWP'
-  const mrr = activeFinancial.reduce((sum, l) => {
+  const mrr = activeFinancial.reduce(/** @type {(sum: number, l: AdminDashboardLicense) => number} */ ((sum, l) => {
     const amt = Number(l.monthly_fee || 0)
     if (l.billing_cycle === 'annual') return sum + (amt / 12)
     return sum + amt
-  }, 0)
+  }), 0)
   const openTickets = tickets.filter(t => t.status === 'open' || t.status === 'in_progress').length
   const urgentTickets = tickets.filter(t => t.priority === 'urgent' || t.priority === 'critical').length
   const trialsExpired = companies.filter(c => getTrialInfo(c, licenses).label === 'Trial Expired').length
   const trialsActive = companies.filter(c => getTrialInfo(c, licenses).label.startsWith('Trial:')).length
-  const byType = companies.reduce((a, c) => { const t = c.business_type || 'lodge'; a[t] = (a[t] || 0) + 1; return a }, {})
+  const byType = companies.reduce(
+    (counts, company) => { const type = company.business_type || 'lodge'; counts[type] = (counts[type] || 0) + 1; return counts },
+    /** @type {Record<string, number>} */ ({}),
+  )
   const recent5 = [...companies].sort((a, b) => companyTimestamp(b.updated_at) - companyTimestamp(a.updated_at)).slice(0, 5)
   const recentLogs = activityLogs.slice(0, 8)
 
-  const ticketByStatus = tickets.reduce((a, t) => { a[t.status] = (a[t.status] || 0) + 1; return a }, {})
+  // The database status text is nullable and unconstrained, and IPC rows are not validated here.
+  // String() preserves computed-property coercion for this nullable primitive
+  // (including null -> "null"); lookup still uses the same plain object's inherited keys.
+  const ticketByStatus = tickets.reduce(
+    /** @param {AdminDashboardSupportTicketCounts} counts @param {AdminDashboardSupportTicket} ticket */
+    (counts, ticket) => { counts[String(ticket.status)] = (counts[String(ticket.status)] || 0) + 1; return counts },
+    /** @type {AdminDashboardSupportTicketCounts} */ ({}),
+  )
   const ticketChartData = [
     { label: 'Open', value: ticketByStatus.open || 0, color: '#f59e0b' },
     { label: 'In Progress', value: ticketByStatus.in_progress || 0, color: '#3b82f6' },
@@ -440,7 +489,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
           { label: 'Finance', section: 'finance', icon: DollarSign },
           { label: 'Broadcasts', section: 'broadcasts', icon: Megaphone },
         ].map(({ label, section, icon: Icon }) => (
-          <button key={section} onClick={() => window.__adminNavigate?.(section)}
+          <button key={section} onClick={() => (/** @type {AdminCentralNavigationWindow} */ (window)).__adminNavigate?.(section)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors border border-gray-700">
             <Icon size={12} /> {label}
           </button>
@@ -477,7 +526,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
             <DonutChart
               label="Business Types"
               data={Object.entries(byType).map(([type, count]) => ({
-                label: BIZ_LABEL[type] || type,
+                label: (/** @type {Partial<Record<string, string>>} */ (BIZ_LABEL))[type] || type,
                 value: count,
                 color: type === 'lodge' ? '#a855f7' : type === 'hotel' ? '#3b82f6' : '#10b981'
               }))}
@@ -525,7 +574,7 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
                 <div key={c.lodge_id} className="flex items-center justify-between group">
                   <button onClick={() => onOpenCompany?.(c)} className="text-left">
                     <p className="text-sm font-medium text-purple-400 group-hover:text-purple-300 transition-colors">{c.lodge_name || '—'}</p>
-                    <p className="text-xs text-gray-500">{BIZ_EMOJI[c.business_type] || '🏢'} {BIZ_LABEL[c.business_type] || c.business_type}</p>
+                    <p className="text-xs text-gray-500">{(/** @type {Partial<Record<string, string>>} */ (BIZ_EMOJI))[c.business_type] || '🏢'} {(/** @type {Partial<Record<string, string>>} */ (BIZ_LABEL))[c.business_type] || c.business_type}</p>
                   </button>
                   <p className="text-xs text-gray-500">{fmt(c.updated_at)}</p>
                 </div>
@@ -543,9 +592,9 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
             <div className="space-y-2.5">
               {recentLogs.map(log => (
                 <div key={log.id} className="flex items-start gap-2">
-                  <span className="text-base leading-none mt-0.5">{ACTION_ICON[log.action] || ACTION_ICON.default}</span>
+                    <span className="text-base leading-none mt-0.5">{/** @type {AdminActionIconLookupView} */ (ACTION_ICON)[log.action] || ACTION_ICON.default}</span>
                   <div className="min-w-0">
-                    <p className="text-xs text-gray-200 truncate">{ACTION_LABELS[log.action] || log.action.replace(/_/g, ' ')}</p>
+                    <p className="text-xs text-gray-200 truncate">{/** @type {AdminActionLabelLookupView} */ (ACTION_LABELS)[log.action] || log.action.replace(/_/g, ' ')}</p>
                     <p className="text-[10px] text-gray-500">{log.lodge_name || log.lodge_id?.slice(0, 8)} · {timeAgo(log.created_at)}</p>
                   </div>
                 </div>
@@ -561,15 +610,20 @@ function Dashboard({ companies, licenses, tickets, activityLogs, onOpenCompany }
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Companies
 // ════════════════════════════════════════════════════════════════════
+/**
+ * Expected rows come from admin.getAllCompanies/getLicenses, normalized in the
+ * main process. Parent array checks do not validate individual IPC rows.
+ * @param {{companies: AdminCompanyRecord[], licenses: CompanyLicenseUsageView[], loading: boolean, onReload: () => Promise<void>}} props
+ */
 function Companies({ companies, licenses, loading, onReload }) {
-  const toast = useToast()
+  const toast = /** @type {AdminToastApi} */ (useToast())
   const [selected, setSelected] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [detailTab, setDetailTab] = useState('overview')
   const [stats, setStats] = useState(/** @type {CompanyUsageStats|null} */ (null))
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState('')
   const [usageStatsByLodge, setUsageStatsByLodge] = useState(/** @type {Record<string, CompanyUsageStats>} */ ({}))
-  const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState({})
+  const [peakBookingUsageByLodge, setPeakBookingUsageByLodge] = useState(/** @type {Record<string, number>} */ ({}))
   const [usageFilter, setUsageFilter] = useState('all')
   const [companySearch, setCompanySearch] = useState('')
 
@@ -634,7 +688,7 @@ function Companies({ companies, licenses, loading, onReload }) {
   }
 
   /** @param {string} targetLodgeId */
-  const loadCompanyUsers = useCallback(async (targetLodgeId) => {
+  const loadCompanyUsers = useCallback(async (/** @type {string} */ targetLodgeId) => {
     setPwaUsersLoading(true)
     setPwaUsersError('')
     try {
@@ -655,7 +709,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     } catch (error) {
       setCompanyUsers([])
       applyPwaUser(null)
-      setPwaUsersError(error?.message || 'Company users are unavailable.')
+      setPwaUsersError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Company users are unavailable.'))
     } finally {
       setPwaUsersLoading(false)
     }
@@ -675,7 +729,7 @@ function Companies({ companies, licenses, loading, onReload }) {
       setStats(s)
       setUsageStatsByLodge((current) => ({ ...current, [company.lodge_id]: s }))
     } catch (error) {
-      setStatsError(error?.message || 'Company statistics are unavailable')
+      setStatsError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Company statistics are unavailable'))
     } finally {
       setStatsLoading(false)
     }
@@ -726,17 +780,21 @@ function Companies({ companies, licenses, loading, onReload }) {
 
   const { page: companyPage, setPage: setCompanyPage, totalPages: companyTotalPages, paginated: paginatedCompanies, total: companyTotal } = usePagination(sortedCompanies)
 
-  const usageFilterCounts = useMemo(() => companyUsageRows.reduce((acc, row) => {
-    acc.total += 1
-    acc[row.rollup.key] = (acc[row.rollup.key] || 0) + 1
-    if (row.rollup.key === 'critical') {
-      acc.critical += 1
-      acc.near_limit += 1
-    }
-    if (row.rollup.plan === 'Pro') acc.pro += 1
-    if (row.rollup.recommendation?.recommendedPlan && row.rollup.recommendation.recommendedPlan !== row.rollup.plan) acc.upgradeOpportunities += 1
-    return acc
-  }, { total: 0, near_limit: 0, critical: 0, in_grace: 0, blocked: 0, above_plan: 0, pro: 0, upgradeOpportunities: 0 }), [companyUsageRows])
+  const usageFilterCounts = useMemo(() => companyUsageRows.reduce(
+    /** @param {AdminUsageFilterCounts} acc */
+    (acc, row) => {
+      acc.total += 1
+      acc[row.rollup.key] = (acc[row.rollup.key] || 0) + 1
+      if (row.rollup.key === 'critical') {
+        acc.critical += 1
+        acc.near_limit += 1
+      }
+      if (row.rollup.plan === 'Pro') acc.pro += 1
+      if (row.rollup.recommendation?.recommendedPlan && row.rollup.recommendation.recommendedPlan !== row.rollup.plan) acc.upgradeOpportunities += 1
+      return acc
+    },
+    { total: 0, near_limit: 0, critical: 0, in_grace: 0, blocked: 0, above_plan: 0, pro: 0, upgradeOpportunities: 0 },
+  ), [companyUsageRows])
 
   const attentionRows = useMemo(() => [...companyUsageRows]
     .sort((a, b) => usagePriorityScore(b.rollup.key) - usagePriorityScore(a.rollup.key) || (b.rollup.recommendation?.currentUsagePct?.bookings || 0) - (a.rollup.recommendation?.currentUsagePct?.bookings || 0))
@@ -854,7 +912,7 @@ function Companies({ companies, licenses, loading, onReload }) {
     })
     const externalOpen = window.api?.shell?.openExternal
     if (typeof externalOpen === 'function') {
-      await externalOpen(`mailto:support@boroko.io?subject=${encodeURIComponent(message.emailSubject)}&body=${encodeURIComponent(message.emailBody)}`).catch(() => {})
+      await externalOpen(buildSupportMailto(message.emailSubject, message.emailBody)).catch(() => {})
     }
   }
 
@@ -913,7 +971,7 @@ function Companies({ companies, licenses, loading, onReload }) {
       setPinResetUserId(active[0]?.id || '')
       if (active.length === 0) setPinResetUsersError('This company has no active staff accounts.')
     } catch (error) {
-      setPinResetUsersError(error?.message || 'Company users are unavailable.')
+      setPinResetUsersError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Company users are unavailable.'))
     } finally {
       setPinResetUsersLoading(false)
     }
@@ -943,13 +1001,13 @@ function Companies({ companies, licenses, loading, onReload }) {
     setPinResetSaving(true)
     setPinResetError('')
     try {
-      const result = await window.api.admin.resetCompanyUserPin(pinResetTarget.lodge_id, pinResetUserId, pin)
+      const result = /** @type {AdminStaffMutationResultExpected} */ (await window.api.admin.resetCompanyUserPin(pinResetTarget.lodge_id, pinResetUserId, pin))
       if (result?.success === false) throw new Error(result.error || 'Could not reset staff PIN')
       const who = pinResetUsers.find((user) => user.id === pinResetUserId)
       toast.success(`Staff PIN reset for ${who?.name || 'staff member'}. Share it with the verified manager only, then reply on their support ticket.`)
       closePinReset()
     } catch (err) {
-      setPinResetError(err?.message || 'Could not reset staff PIN')
+      setPinResetError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (err))?.message || 'Could not reset staff PIN'))
     } finally {
       setPinResetSaving(false)
     }
@@ -973,7 +1031,7 @@ function Companies({ companies, licenses, loading, onReload }) {
         setResetLoading(false)
         return
       }
-      const result = await window.api.admin.resetCompanyUserPassword(target.lodge_id, admin.id, password)
+      const result = /** @type {AdminStaffMutationResultExpected} */ (await window.api.admin.resetCompanyUserPassword(target.lodge_id, admin.id, password))
       if (result?.success === false) {
         throw new Error(result.error || 'Failed to reset password')
       }
@@ -1001,7 +1059,7 @@ function Companies({ companies, licenses, loading, onReload }) {
 
     setPwaSaving(true)
     try {
-      const result = await window.api.admin.updateCompanyUserPwaAccess(
+      const result = /** @type {AdminStaffMutationResultExpected} */ (await window.api.admin.updateCompanyUserPwaAccess(
         pwaTarget.lodge_id,
         selectedCompanyUserId,
         {
@@ -1009,7 +1067,7 @@ function Companies({ companies, licenses, loading, onReload }) {
           pwa_password: pwaPassword.trim(),
           pwa_disabled_reason: pwaEnabled ? '' : pwaDisabledReason.trim()
         }
-      )
+      ))
       if (result?.success === false) {
         throw new Error(result.error || 'Could not update manager mobile app access')
       }
@@ -1017,7 +1075,8 @@ function Companies({ companies, licenses, loading, onReload }) {
       toast.success('Manager mobile app access updated')
     } catch (err) {
       console.error(err)
-      toast.error(err.message || 'Failed to update manager mobile app access')
+      // getCompanyUsers rethrows an Error from its main handler; this expected rejection view does not validate the IPC error.
+      toast.error((/** @type {{message?: string}} */ (err)).message || 'Failed to update manager mobile app access')
     } finally {
       setPwaSaving(false)
     }
@@ -1211,7 +1270,7 @@ function Companies({ companies, licenses, loading, onReload }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
-              {paginatedCompanies.map((c) => (
+              {paginatedCompanies.map((/** @type {AdminCompanyRecord} */ c) => (
                 (() => {
                   const rollup = getCompanyUsageRollup(usageStatsByLodge[c.lodge_id], licenses, c)
                   const assignedPlan = getAssignedPlanForLodge(licenses, c?.lodge_id)
@@ -1283,7 +1342,7 @@ function Companies({ companies, licenses, loading, onReload }) {
           <div>
             <p className="text-lg font-bold text-white">{selected.lodge_name}</p>
             {selected.company_name && <p className="text-xs text-gray-400">{selected.company_name}</p>}
-            <p className="text-xs text-gray-500 mt-1">{BIZ_EMOJI[selected.business_type]} {BIZ_LABEL[selected.business_type] || selected.business_type}</p>
+            <p className="text-xs text-gray-500 mt-1">{(/** @type {Partial<Record<string, string>>} */ (BIZ_EMOJI))[selected.business_type]} {(/** @type {Partial<Record<string, string>>} */ (BIZ_LABEL))[selected.business_type] || selected.business_type}</p>
           </div>
           <div className="text-xs text-gray-400 space-y-1 border-t border-gray-700 pt-3">
             {selected.city || selected.country ? <p>📍 {[selected.city, selected.country].filter(Boolean).join(', ')}</p> : null}
@@ -1780,9 +1839,11 @@ function Companies({ companies, licenses, loading, onReload }) {
   )
 }
 
+/** @param {string|null} [description] */
 function parseUpgradeRequest(description = '') {
   const text = String(description || '')
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  /** @param {string} prefix */
   const read = (prefix) => lines.find((line) => line.startsWith(prefix))?.slice(prefix.length).trim() || ''
   return {
     currentPlan: read('Current plan:'),
@@ -1799,12 +1860,9 @@ function parseUpgradeRequest(description = '') {
 // ════════════════════════════════════════════════════════════════════
 /** @typedef {{ feature_name: string, enabled: boolean|null }} FeatureOverrideExpectedRow */
 /** @typedef {AdminCompanyRecord & {business_type: string}} FeatureFlagCompany */
-/** @typedef {'reports'|'expenses'|'staff'|'pwa'|'audit'|'conference'|'pool'|'import'|'pos'|'inventory'|'supplies'} AdminFeatureName */
 /** String-key reads may hit missing or inherited properties; values remain unknown.
  * @typedef {Record<string, unknown>} FeatureFlagMap
  */
-/** @typedef {((message: string, options?: {duration?: number}) => number) & {error: (message: string, options?: {duration?: number}) => number, success: (message: string, options?: {duration?: number}) => number}} AdminFeatureToastApi */
-
 /** @param {{companies: FeatureFlagCompany[], selectedLodge: FeatureFlagCompany|null, onSelect: (company: FeatureFlagCompany) => void}} props */
 function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
   const [search, setSearch] = useState('')
@@ -1822,7 +1880,7 @@ function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
           <button key={c.lodge_id} onClick={() => onSelect(c)}
             className={`w-full px-4 py-3 text-left text-sm transition-colors ${selectedLodge?.lodge_id === c.lodge_id ? 'bg-purple-600/20 text-purple-300' : 'text-gray-300 hover:bg-gray-700'}`}>
             <p className="font-medium truncate">{c.lodge_name || '—'}</p>
-            <p className="text-xs text-gray-500">{BIZ_EMOJI[c.business_type]} {BIZ_LABEL[c.business_type]}</p>
+            <p className="text-xs text-gray-500">{(/** @type {Partial<Record<string, string>>} */ (BIZ_EMOJI))[c.business_type]} {(/** @type {Partial<Record<string, string>>} */ (BIZ_LABEL))[c.business_type]}</p>
           </button>
         ))}
         {filtered.length === 0 && <p className="px-4 py-6 text-sm text-gray-500 text-center">No companies match</p>}
@@ -1835,7 +1893,7 @@ function FeatureFlagSearch({ companies, selectedLodge, onSelect }) {
 function FeatureFlags({ companies, licenses }) {
   // AdminCentral is rendered under the app's ToastProvider, whose producer
   // attaches these methods to the callable toast function.
-  const toast = /** @type {AdminFeatureToastApi} */ (useToast())
+  const toast = /** @type {AdminToastApi} */ (useToast())
   const [selectedLodge, setSelectedLodge] = useState(/** @type {FeatureFlagCompany|null} */ (null))
   const [selectedPlan, setSelectedPlan] = useState(/** @type {string|null} */ (DEFAULT_PLAN))
   const [baseFlags, setBaseFlags] = useState(/** @type {FeatureFlagMap} */ (getPlanFlags(DEFAULT_PLAN)))
@@ -1885,7 +1943,7 @@ function FeatureFlags({ companies, licenses }) {
     setSaving(true)
     /** @type {string[]} */
     const errors = []
-    await Promise.all(ALL_FEATURES.map(async (/** @type {AdminFeatureName} */ featureName) => {
+    await Promise.all((/** @type {AdminFeatureName[]} */ (ALL_FEATURES)).map(async (featureName) => {
       try {
         const isBaseValue = flags[featureName] === baseFlags[featureName]
         if (isBaseValue) {
@@ -1981,7 +2039,7 @@ function FeatureFlags({ companies, licenses }) {
               </div>
             </div>
             <div className="space-y-3 pt-2">
-              {ALL_FEATURES.map((/** @type {AdminFeatureName} */ f) => (
+              {/** @type {AdminFeatureName[]} */ (ALL_FEATURES).map((f) => (
                 <div key={f} className="flex items-center justify-between py-3 border-b border-gray-700">
                   <div>
                     <p className="text-sm font-medium text-white">{FEAT_LABEL[f]}</p>
@@ -2012,14 +2070,20 @@ function FeatureFlags({ companies, licenses }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Broadcasts
 // ════════════════════════════════════════════════════════════════════
+/**
+ * The admin IPC selects these broadcast fields from the database. The array
+ * check below establishes only the container, not the shape of each row.
+ * @typedef {{id: string, title: string, message: string, is_active: boolean | null,
+ *   expires_at: string | null, created_at: string | null}} AdminBroadcastExpectedView
+ */
 function Broadcasts() {
-  const toast = useToast()
-  const [broadcasts, setBroadcasts] = useState([])
+  const toast = /** @type {AdminToastApi} */ (useToast())
+  const [broadcasts, setBroadcasts] = useState(/** @type {AdminBroadcastExpectedView[]} */ ([]))
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ title: '', message: '', expires_at: '' })
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [confirmState, setConfirmState] = useState(null)
+  const [confirmState, setConfirmState] = useState(/** @type {{type: 'broadcast', item: AdminBroadcastExpectedView} | null} */ (null))
   const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
@@ -2028,9 +2092,9 @@ function Broadcasts() {
     try {
       const data = await window.api.admin.getBroadcasts()
       if (!Array.isArray(data)) throw new Error('Broadcast response was not authoritative')
-      setBroadcasts(data)
+      setBroadcasts(/** @type {AdminBroadcastExpectedView[]} */ (data))
     } catch (error) {
-      setLoadError(error?.message || 'Announcements are unavailable.')
+      setLoadError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Announcements are unavailable.'))
     } finally {
       setLoading(false)
     }
@@ -2038,7 +2102,7 @@ function Broadcasts() {
 
   useEffect(() => { load() }, [load])
 
-  const handleCreate = async (e) => {
+  const handleCreate = async (/** @type {import('react').FormEvent<HTMLFormElement>} */ e) => {
     e.preventDefault(); setSaving(true)
     try {
       const r = await window.api.admin.createBroadcast({ ...form, expires_at: form.expires_at || null })
@@ -2047,11 +2111,11 @@ function Broadcasts() {
     } catch (e) { console.error('Broadcast create error:', e); toast.error('Failed to create broadcast'); setSaving(false) }
   }
 
-  const toggle = async (b) => {
+  const toggle = async (/** @type {AdminBroadcastExpectedView} */ b) => {
     try { await window.api.admin.updateBroadcast(b.id, { is_active: !b.is_active }); load() }
     catch (e) { console.error('Broadcast toggle error:', e); toast.error('Failed to toggle broadcast') }
   }
-  const del = (b) => setConfirmState({ type: 'broadcast', item: b })
+  const del = (/** @type {AdminBroadcastExpectedView} */ b) => setConfirmState({ type: 'broadcast', item: b })
   const confirmDeleteBroadcast = async () => {
     if (!confirmState?.item) return
     try { await window.api.admin.deleteBroadcast(confirmState.item.id); load() }
@@ -2059,7 +2123,7 @@ function Broadcasts() {
     setConfirmState(null)
   }
 
-  const isActive = (b) => b.is_active && (!b.expires_at || new Date(b.expires_at) > new Date())
+  const isActive = (/** @type {AdminBroadcastExpectedView} */ b) => b.is_active && (!b.expires_at || new Date(b.expires_at) > new Date())
 
   return (
     <div className="space-y-4">
@@ -2157,7 +2221,7 @@ function Broadcasts() {
  */
 /** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void}} props */
 function SupportTickets({ companies, onOpenCompany }) {
-  const toast = useToast()
+  const toast = /** @type {AdminToastApi} */ (useToast())
   const [tickets, setTickets] = useState(/** @type {SupportTicketExpectedView[]} */ ([]))
   const [filter, setFilter] = useState(/** @type {SupportTicketFilter} */ ({ status: '', priority: '', q: '' }))
   const [detail, setDetail] = useState(/** @type {SupportTicketExpectedView|null} */ (null))
@@ -2309,7 +2373,7 @@ function SupportTickets({ companies, onOpenCompany }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
-              {paginatedTickets.map(t => (
+              {paginatedTickets.map((/** @type {SupportTicketExpectedView} */ t) => (
                 <tr key={t.id} className="hover:bg-gray-700 transition-colors cursor-pointer" onClick={() => openDetail(t)}>
                   <td className="px-4 py-3 text-xs">
                     <button onClick={(e) => { e.stopPropagation(); const c = companies.find(co => co.lodge_id === t.lodge_id); if (c && onOpenCompany) onOpenCompany(c) }} className="text-purple-400 hover:text-purple-300 hover:underline truncate max-w-[120px] block">{t.lodge_name || t.lodge_id?.slice(0, 8)}</button>
@@ -2471,9 +2535,10 @@ function SupportTickets({ companies, onOpenCompany }) {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Activity Log
 // ════════════════════════════════════════════════════════════════════
+/** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void}} props */
 function ActivityLog({ companies, onOpenCompany }) {
-  const [logs, setLogs] = useState([])
-  const [summary, setSummary] = useState([])
+  const [logs, setLogs] = useState(/** @type {AdminAuditLogExpectedView[]} */ ([]))
+  const [summary, setSummary] = useState(/** @type {AdminAuditSummaryExpectedView[]} */ ([]))
   const [filter, setFilter] = useState({ lodge_id: '', start: '', end: '' })
   const [limit, setLimit] = useState(100)
   const [logSearch, setLogSearch] = useState('')
@@ -2488,9 +2553,9 @@ function ActivityLog({ companies, onOpenCompany }) {
       window.api.admin.getAuditSummary({ start: filter.start || null, end: filter.end || null })
     ])
     const errors = []
-    if (logsResult.status === 'fulfilled') setLogs(Array.isArray(logsResult.value) ? logsResult.value : [])
+    if (logsResult.status === 'fulfilled') setLogs(Array.isArray(logsResult.value) ? /** @type {AdminAuditLogExpectedView[]} */ (logsResult.value) : [])
     else errors.push(`entries: ${logsResult.reason?.message || 'unavailable'}`)
-    if (summaryResult.status === 'fulfilled') setSummary(Array.isArray(summaryResult.value) ? summaryResult.value : [])
+    if (summaryResult.status === 'fulfilled') setSummary(Array.isArray(summaryResult.value) ? /** @type {AdminAuditSummaryExpectedView[]} */ (summaryResult.value) : [])
     else errors.push(`summary: ${summaryResult.reason?.message || 'unavailable'}`)
     setLoadError(errors.length > 0 ? `Authoritative audit data is unavailable (${errors.join('; ')}).` : '')
     setLoading(false)
@@ -2501,7 +2566,7 @@ function ActivityLog({ companies, onOpenCompany }) {
   const { page: logPage, setPage: setLogPage, totalPages: logTotalPages, paginated: paginatedLogs } = usePagination(logs)
 
   const filteredLogs = logSearch
-    ? paginatedLogs.filter(log =>
+    ? paginatedLogs.filter((/** @type {AdminAuditLogExpectedView} */ log) =>
         log.action?.toLowerCase().includes(logSearch.toLowerCase()) ||
         log.actor_email?.toLowerCase().includes(logSearch.toLowerCase()) ||
         log.lodge_name?.toLowerCase().includes(logSearch.toLowerCase()) ||
@@ -2607,7 +2672,7 @@ function ActivityLog({ companies, onOpenCompany }) {
           <div className="px-6 py-16 text-center text-gray-500"><Activity size={32} className="mx-auto mb-3 opacity-40" /><p>No audit entries yet.</p></div>
         ) : (
           <div className="divide-y divide-gray-700">
-            {filteredLogs.map(log => (
+            {filteredLogs.map((/** @type {AdminAuditLogExpectedView} */ log) => (
               <div key={log.id} className="flex items-start gap-3 px-5 py-3">
                 <span className="text-base mt-0.5">{ACTION_ICON[log.action] || '📌'}</span>
                 <div className="flex-1 min-w-0">
@@ -2644,33 +2709,34 @@ function ActivityLog({ companies, onOpenCompany }) {
 const EMPTY_CONFIG = { host: '', port: '587', user: '', pass: '', from: '', to: '', allow_insecure_tls: false }
 
 function EmailSettings() {
-  const [config, setConfig] = useState(EMPTY_CONFIG)
+  const [config, setConfig] = useState(/** @type {AdminEmailConfigExpectedView} */ (EMPTY_CONFIG))
   const [loaded, setLoaded] = useState(false)
   const [showPass, setShowPass] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [status, setStatus] = useState(null) // { ok: bool, msg: string }
+  const [status, setStatus] = useState(/** @type {AdminEmailConfigStatusView|null} */ (null)) // { ok: bool, msg: string }
 
   useEffect(() => {
-    window.api.email.getConfig().then(c => {
-      if (c) setConfig(c)
+    window.api.email.getConfig().then((/** @type {unknown} */ c) => {
+      if (c) setConfig(/** @type {AdminEmailConfigExpectedView} */ (c))
       setLoaded(true)
     }).catch(() => setLoaded(true))
   }, [])
 
   const inp = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500'
+  /** @param {keyof AdminEmailConfigExpectedView} k @param {AdminEmailConfigExpectedView[keyof AdminEmailConfigExpectedView]} v */
   const set = (k, v) => setConfig(prev => ({ ...prev, [k]: v }))
 
   const save = async () => {
     setSaving(true); setStatus(null)
-    const r = await window.api.email.saveConfig(config).catch(() => ({ success: false, error: 'Unknown error' }))
+    const r = /** @type {AdminEmailConfigSaveExpectedView} */ (await window.api.email.saveConfig(config).catch(() => ({ success: false, error: 'Unknown error' })))
     setStatus(r.success ? { ok: true, msg: 'Settings saved!' } : { ok: false, msg: r.error || 'Save failed.' })
     setSaving(false)
   }
 
   const test = async () => {
     setTesting(true); setStatus(null)
-    const r = await window.api.email.test(config).catch(() => ({ success: false, error: 'Unknown error' }))
+    const r = /** @type {AdminEmailConfigSaveExpectedView} */ (await window.api.email.test(config).catch(() => ({ success: false, error: 'Unknown error' })))
     setStatus(r.success
       ? { ok: true, msg: 'Test email sent! Check your inbox.' }
       : { ok: false, msg: r.error || 'Test failed. Check your SMTP settings.' })
@@ -2811,6 +2877,7 @@ function EmailSettings() {
 // ════════════════════════════════════════════════════════════════════
 // SECTION: Bookkeeping
 // ════════════════════════════════════════════════════════════════════
+/** @param {{invoice: CommercialInvoiceRow|null, onClose: () => void, taxRate?: number}} props */
 function InvoicePreview({ invoice, onClose, taxRate = DEFAULT_TAX_RATE }) {
   if (!invoice) return null
 
@@ -2934,7 +3001,7 @@ const STATUS_COLORS = {
 
 /** @param {{companies: AdminCompanyRecord[]}} props */
 function Bookkeeping({ companies }) {
-  const toast = useToast()
+  const toast = /** @type {AdminToastApi} */ (useToast())
   const [subTab, setSubTab] = useState('invoices')
   const [invoices, setInvoices] = useState(/** @type {CommercialInvoiceRow[]} */ ([]))
   const [loading, setLoading] = useState(true)
@@ -2985,13 +3052,13 @@ function Bookkeeping({ companies }) {
     // Expected view of admin_list_commercial_invoices rows after its existing
     // container guard; neither IPC nor individual rows are runtime-validated.
     if (invoicesResult.status === 'fulfilled' && Array.isArray((/** @type {CommercialInvoiceListExpected} */ (invoicesResult.value))?.rows)) setInvoices(/** @type {CommercialInvoiceRow[]} */ ((/** @type {CommercialInvoiceListExpected} */ (invoicesResult.value)).rows))
-    else errors.push(`invoices: ${invoicesResult.reason?.message || 'unavailable'}`)
+    else errors.push(`invoices: ${(/** @type {AdminRejectedErrorMessageExpectedView} */ ('reason' in invoicesResult ? invoicesResult.reason : undefined))?.message || 'unavailable'}`)
     // Expected view of the SQL-backed summary; the IPC value is not validated.
     if (summaryResult.status === 'fulfilled') setSummary(/** @type {CommercialBillingSummary} */ (summaryResult.value))
-    else errors.push(`summary: ${summaryResult.reason?.message || 'unavailable'}`)
+    else errors.push(`summary: ${(/** @type {AdminRejectedErrorMessageExpectedView} */ ('reason' in summaryResult ? summaryResult.reason : undefined))?.message || 'unavailable'}`)
     // The existing array guard is retained; cache rows are not normalized or validated.
     if (expensesResult.status === 'fulfilled' && Array.isArray(expensesResult.value)) setExpenses(/** @type {AdminExpenseRow[]} */ (expensesResult.value))
-    else errors.push(`expenses: ${expensesResult.reason?.message || 'unavailable'}`)
+    else errors.push(`expenses: ${(/** @type {AdminRejectedErrorMessageExpectedView} */ (expensesResult.reason))?.message || 'unavailable'}`)
     setLoadError(errors.length > 0 ? `Authoritative bookkeeping data is unavailable (${errors.join('; ')}).` : '')
     setLoading(false)
   }, [])
@@ -3731,6 +3798,7 @@ function DashboardHub({ companies, licenses, tickets, activityLogs, onOpenCompan
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], licenses: CompanyLicenseUsageView[], tickets: SupportTicketExpectedView[], onRefresh: () => Promise<void>, initialTab?: string}} props */
 function LicensingHub({ companies, licenses, tickets, onRefresh, initialTab = 'workbench' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -3747,6 +3815,7 @@ function LicensingHub({ companies, licenses, tickets, onRefresh, initialTab = 'w
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void, initialTab?: string}} props */
 function ClientDesk({ companies, onOpenCompany, initialTab = 'support' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -3763,6 +3832,7 @@ function ClientDesk({ companies, onOpenCompany, initialTab = 'support' }) {
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void, initialTab?: string}} props */
 function CommunicationsHub({ companies, onOpenCompany, initialTab = 'notifications' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -3780,6 +3850,7 @@ function CommunicationsHub({ companies, onOpenCompany, initialTab = 'notificatio
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], onOpenCompany?: (company: AdminCompanyRecord) => void, initialTab?: string}} props */
 function PlatformOperations({ companies, onOpenCompany, initialTab = 'health' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -3799,6 +3870,7 @@ function PlatformOperations({ companies, onOpenCompany, initialTab = 'health' })
   )
 }
 
+/** @param {{companies?: Array<AdminCompanyRecord & {name?: string|null}>}} props */
 function ImplementationAddons({ companies = [] }) {
   const [tab, setTab] = useState('website')
   const [selectedLodgeId, setSelectedLodgeId] = useState('')
@@ -3835,6 +3907,7 @@ function ImplementationAddons({ companies = [] }) {
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[], onNavigate: (section: string) => void, onOpenCompany?: (company: AdminCompanyRecord) => void, initialTab?: string}} props */
 function AdminTools({ companies, onNavigate, onOpenCompany, initialTab = 'search' }) {
   const [tab, setTab] = useState(initialTab)
   const tabs = [
@@ -3852,6 +3925,7 @@ function AdminTools({ companies, onNavigate, onOpenCompany, initialTab = 'search
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[]}} props */
 function FinanceOffice({ companies }) {
   const [tab, setTab] = useState('accounting')
   return (
@@ -3875,29 +3949,31 @@ function FinanceOffice({ companies }) {
   )
 }
 
+/** @param {{companies: AdminCompanyRecord[]}} props */
 function TestResetMaintenance({ companies }) {
-  const [selectedLodge, setSelectedLodge] = useState(null)
+  const [selectedLodge, setSelectedLodge] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [testModeEnabled, setTestModeEnabled] = useState(false)
   const [loading, setLoading] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [running, setRunning] = useState(false)
-  const [flash, setFlash] = useState(null)
-  const [preview, setPreview] = useState(null)
-  const [auditRows, setAuditRows] = useState([])
-  const [form, setForm] = useState({
+  const [flash, setFlash] = useState(/** @type {AdminFlashExpectedView|null} */ (null))
+  const [preview, setPreview] = useState(/** @type {AdminTestResetPreviewExpectedView|null} */ (null))
+  const [auditRows, setAuditRows] = useState(/** @type {AdminTestResetAuditExpectedView[]} */ ([]))
+  const [form, setForm] = useState(/** @type {AdminTestResetFormExpectedView} */ ({
     mode: 'full_demo_reset',
     days: 30,
     reason: '',
     confirmation: ''
-  })
+  }))
   const confirmationValid = String(form.confirmation || '').trim().toUpperCase() === 'RESET TEST DATA'
 
+  /** @param {'success'|'error'} type @param {string} text */
   const pushFlash = (type, text) => {
     setFlash({ type, text })
     setTimeout(() => setFlash(null), 4000)
   }
 
-  const loadLodgeState = useCallback(async (company) => {
+  const loadLodgeState = useCallback(async (/** @type {AdminCompanyRecord|null} */ company) => {
     if (!company?.lodge_id) return
     setLoading(true)
     try {
@@ -3907,12 +3983,13 @@ function TestResetMaintenance({ companies }) {
       ])
       const enabled = Array.isArray(features) && features.some((row) => row.feature_name === 'test_mode_enabled' && row.enabled === true)
       setTestModeEnabled(enabled)
-      setAuditRows(Array.isArray(audit) ? audit : [])
+      setAuditRows(Array.isArray(audit) ? /** @type {AdminTestResetAuditExpectedView[]} */ (audit) : [])
     } finally {
       setLoading(false)
     }
   }, [])
 
+  /** @param {AdminCompanyRecord} company */
   const selectLodge = (company) => {
     setSelectedLodge(company)
     setPreview(null)
@@ -3920,6 +3997,7 @@ function TestResetMaintenance({ companies }) {
     loadLodgeState(company)
   }
 
+  /** @param {boolean} enabled */
   const toggleTestMode = async (enabled) => {
     if (!selectedLodge?.lodge_id) return
     setLoading(true)
@@ -3942,7 +4020,7 @@ function TestResetMaintenance({ companies }) {
       }
       await loadLodgeState(selectedLodge)
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not update test mode.')
+      pushFlash('error', /** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Could not update test mode.'))
     } finally {
       setLoading(false)
     }
@@ -3960,7 +4038,7 @@ function TestResetMaintenance({ companies }) {
       setPreview(result)
       pushFlash('success', 'Reset preview loaded.')
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not load preview.')
+      pushFlash('error', /** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Could not load preview.'))
     } finally {
       setPreviewLoading(false)
     }
@@ -3983,7 +4061,7 @@ function TestResetMaintenance({ companies }) {
       setForm((current) => ({ ...current, confirmation: '' }))
       await loadLodgeState(selectedLodge)
     } catch (error) {
-      pushFlash('error', error?.message || 'Could not run test reset.')
+      pushFlash('error', /** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Could not run test reset.'))
     } finally {
       setRunning(false)
     }
@@ -4207,17 +4285,18 @@ const STAGES = [
   { id: 'lost', label: 'Lost', color: 'bg-red-500/20 text-red-300', dot: 'bg-red-400' }
 ]
 
+/** @param {{lead: MarketingLeadExpectedView|null, onClose: () => void, onUpdate: (id: string, stage: string) => Promise<void>}} props */
 function LeadDrawer({ lead, onClose, onUpdate }) {
   if (!lead) return null
   const stage = lead.stage || lead.status || 'new'
   const stageObj = STAGES.find(s => s.id === stage)
   const isOverdue = lead.follow_up_at && new Date(lead.follow_up_at) < new Date() && !['won', 'lost'].includes(stage)
 
-  const activityTimeline = [
+  const activityTimeline = /** @type {Array<{time: string, action: string, detail: string}>} */ ([
     lead.created_at && { time: lead.created_at, action: 'Lead created', detail: `from ${lead.source || 'website'}` },
     lead.updated_at && lead.updated_at !== lead.created_at && { time: lead.updated_at, action: 'Last updated', detail: lead.sales_notes ? 'notes added' : 'details changed' },
     lead.follow_up_at && { time: lead.follow_up_at, action: isOverdue ? 'Follow-up overdue' : 'Follow-up scheduled', detail: new Date(lead.follow_up_at).toLocaleDateString() },
-  ].filter(Boolean).sort((a, b) => new Date(b.time) - new Date(a.time))
+  ].filter(Boolean)).sort((a, b) => new Date(b.time) - new Date(a.time))
 
   const quickActions = [
     { label: 'Mark Contacted', stage: 'contacted', hidden: stage !== 'new' },
@@ -4276,7 +4355,7 @@ function LeadDrawer({ lead, onClose, onUpdate }) {
               <div><span className="text-gray-500">Phone:</span> <span className="text-white">{lead.phone || '—'}</span></div>
               <div><span className="text-gray-500">Source:</span> <span className="text-white">{lead.source || 'website'}</span></div>
               <div><span className="text-gray-500">Interest:</span> <span className="text-white">{lead.interest || '—'}</span></div>
-              <div><span className="text-gray-500">Country:</span> <span className="text-white">{lead.country || '—'}</span></div>
+              <div><span className="text-gray-500">Country:</span> <span className="text-white">{/** @type {import('react').ReactNode} */ (lead.country || '—')}</span></div>
             </div>
           </div>
 
@@ -4321,16 +4400,16 @@ function LeadDrawer({ lead, onClose, onUpdate }) {
 }
 
 function Leads() {
-  const [leads, setLeads] = useState([])
+  const [leads, setLeads] = useState(/** @type {MarketingLeadExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
   const [filterStage, setFilterStage] = useState('')
   const [filterInterest, setFilterInterest] = useState('')
-  const [updating, setUpdating] = useState(null)
+  const [updating, setUpdating] = useState(/** @type {string|null} */ (null))
   const [viewMode, setViewMode] = useState('table') // table | pipeline
-  const [editingLead, setEditingLead] = useState(null)
-  const [editForm, setEditForm] = useState({})
-  const [selectedLead, setSelectedLead] = useState(null)
+  const [editingLead, setEditingLead] = useState(/** @type {MarketingLeadExpectedView|null} */ (null))
+  const [editForm, setEditForm] = useState(/** @type {Partial<MarketingLeadExpectedView>} */ ({}))
+  const [selectedLead, setSelectedLead] = useState(/** @type {MarketingLeadExpectedView|null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -4339,10 +4418,10 @@ function Leads() {
       const filters = {}
       if (filterStage) filters.stage = filterStage
       if (filterInterest) filters.interest = filterInterest
-      const result = await window.api.admin.getMarketingLeads(filters)
+      const result = /** @type {AdminMarketingLeadReadExpectedView} */ (await window.api.admin.getMarketingLeads(filters))
       const allLeads = Array.isArray(result) ? result : (result?.leads || [])
       setLeads(allLeads.filter(l => l.status !== 'dropped'))
-    } catch (e) { setError(e?.message || 'Failed to load leads') }
+    } catch (e) { setError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (e))?.message || 'Failed to load leads')) }
     setLoading(false)
   }, [filterStage, filterInterest])
 
@@ -4352,6 +4431,7 @@ function Leads() {
 
   const { page: leadPage, setPage: setLeadPage, totalPages: leadTotalPages, paginated: paginatedLeads } = usePagination(sortedLeads)
 
+  /** @param {string} id @param {string} stage */
   const updateStage = async (id, stage) => {
     setUpdating(id)
     try {
@@ -4371,6 +4451,7 @@ function Leads() {
     } finally { setUpdating(null) }
   }
 
+  /** @param {MarketingLeadExpectedView} lead */
   const startEdit = (lead) => {
     setEditingLead(lead)
     setEditForm({
@@ -4383,6 +4464,7 @@ function Leads() {
     })
   }
 
+  /** @param {string} s */
   const stageColor = (s) => STAGES.find(st => st.id === s)?.color || 'bg-gray-500/20 text-gray-300'
 
   const overdueFollowUps = leads.filter(l => l.follow_up_at && new Date(l.follow_up_at) < new Date() && !['won', 'lost'].includes(l.stage || l.status))
@@ -4529,7 +4611,8 @@ function Leads() {
                     <div key={lead.id} className="bg-gray-750 border border-gray-700 rounded-lg p-2 cursor-pointer hover:border-gray-600" onClick={() => startEdit(lead)}>
                       <p className="text-xs text-white font-medium truncate">{lead.contact_name}</p>
                       <p className="text-[10px] text-gray-500 truncate">{lead.lodge_name}</p>
-                      {lead.estimated_value > 0 && <p className="text-[10px] text-green-400 mt-1">${Number(lead.estimated_value).toLocaleString()}</p>}
+                      {/** The CRM numeric column is read here as an expected number; the assertion retains JavaScript's original relational coercion. */}
+                      {/** @type {number} */ (lead.estimated_value) > 0 && <p className="text-[10px] text-green-400 mt-1">${Number(lead.estimated_value).toLocaleString()}</p>}
                     </div>
                   ))}
                 </div>
@@ -4618,35 +4701,43 @@ function Leads() {
 export default function AdminCentral() {
   const { logout } = useAuth()
   const [section, setSection] = useState('dashboard')
-  const [companies, setCompanies] = useState([])
-  const [licenses, setLicenses] = useState([])
-  const [tickets, setTickets] = useState([])
-  const [activityLogs, setActivityLogs] = useState([])
+  const [companies, setCompanies] = useState(/** @type {AdminCompanyRecord[]} */ ([]))
+  const [licenses, setLicenses] = useState(/** @type {CompanyLicenseUsageView[]} */ ([]))
+  const [tickets, setTickets] = useState(/** @type {SupportTicketExpectedView[]} */ ([]))
+  const [activityLogs, setActivityLogs] = useState(/** @type {AdminDashboardActivityLog[]} */ ([]))
   const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
-  const [loadWarnings, setLoadWarnings] = useState(null)
+  const [loadError, setLoadError] = useState(/** @type {string|null} */ (null))
+  const [loadWarnings, setLoadWarnings] = useState(/** @type {string|null} */ (null))
   const [viewClient360, setViewClient360] = useState(/** @type {AdminCompanyRecord|null} */ (null))
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [connected, setConnected] = useState(true)
   const [reauthVerified, setReauthVerified] = useState(false)
-  const [reauthExpiresAt, setReauthExpiresAt] = useState(null)
+  const [reauthExpiresAt, setReauthExpiresAt] = useState(/** @type {number|null} */ (null))
   const [showReauth, setShowReauth] = useState(false)
   const [reauthPassword, setReauthPassword] = useState('')
   const [reauthLoading, setReauthLoading] = useState(false)
   const [reauthError, setReauthError] = useState('')
   // Expose navigate for Dashboard quick actions
-  useEffect(() => { window.__adminNavigate = (s) => setSection(s); return () => { delete window.__adminNavigate } }, [])
+  useEffect(() => {
+    const adminWindow = /** @type {AdminCentralNavigationWindow} */ (window)
+    adminWindow.__adminNavigate = (s) => setSection(s)
+    return () => { delete adminWindow.__adminNavigate }
+  }, [])
 
   // Keyboard shortcuts
   useEffect(() => {
+    /** @param {KeyboardEvent} e */
     const handleKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault()
         setSection('search')
         return
       }
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return
+      // This view supplies the DOM target's existing tagName property only;
+      // direct reads preserve the original null-target behavior and guard.
+      if ((/** @type {EventTarget & {tagName: string}} */ (e.target)).tagName === 'INPUT' || (/** @type {EventTarget & {tagName: string}} */ (e.target)).tagName === 'TEXTAREA' || (/** @type {EventTarget & {tagName: string}} */ (e.target)).tagName === 'SELECT') return
       if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return }
+      /** @type {Record<string, string>} */
       const sectionMap = { '1': 'dashboard', '2': 'companies', '3': 'licensing', '4': 'finance', '5': 'client-desk', '6': 'communications', '7': 'platform', '8': 'activity', '9': 'tools' }
       if (sectionMap[e.key]) { e.preventDefault(); setSection(sectionMap[e.key]) }
     }
@@ -4666,10 +4757,12 @@ export default function AdminCentral() {
         window.api.admin.getActivityLogs({ limit: 200 })
       )
       const [c, l, t, a] = data
-      setCompanies(Array.isArray(c) ? c : [])
-      setLicenses(Array.isArray(l) ? l : [])
-      setTickets(Array.isArray(t) ? t : [])
-      setActivityLogs(Array.isArray(a) ? a : [])
+      // These container guards do not validate untrusted IPC/RPC rows. The
+      // projections mirror the existing main-process query producers above.
+      setCompanies(Array.isArray(c) ? /** @type {AdminCompanyRecord[]} */ (c) : [])
+      setLicenses(Array.isArray(l) ? /** @type {CompanyLicenseUsageView[]} */ (l) : [])
+      setTickets(Array.isArray(t) ? /** @type {SupportTicketExpectedView[]} */ (t) : [])
+      setActivityLogs(Array.isArray(a) ? /** @type {AdminDashboardActivityLog[]} */ (a) : [])
       if (hasPartialFailures(errors)) {
         setLoadWarnings(getFailureSummary(errors, ['Companies', 'Licenses', 'Tickets', 'Activity Logs']))
       }
@@ -4685,7 +4778,7 @@ export default function AdminCentral() {
 
   const refreshReauthStatus = useCallback(async () => {
     try {
-      const status = await window.api.admin.getCommandCentralReauthStatus()
+      const status = /** @type {AdminCommandCentralReauthStatusExpected} */ (await window.api.admin.getCommandCentralReauthStatus())
       setReauthVerified(status?.verified === true)
       setReauthExpiresAt(status?.expires_at || null)
     } catch {
@@ -4700,19 +4793,20 @@ export default function AdminCentral() {
     return () => clearInterval(interval)
   }, [refreshReauthStatus])
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submitReauth = async (event) => {
     event.preventDefault()
     setReauthLoading(true)
     setReauthError('')
     try {
-      const result = await window.api.admin.reauthenticateCommandCentral(reauthPassword)
+      const result = /** @type {AdminCommandCentralReauthResultExpected} */ (await window.api.admin.reauthenticateCommandCentral(reauthPassword))
       if (!result?.ok) throw new Error(result?.error || 'Master password was not accepted')
       setReauthVerified(true)
       setReauthExpiresAt(result.expires_at || null)
       setReauthPassword('')
       setShowReauth(false)
     } catch (error) {
-      setReauthError(error?.message || 'Could not unlock sensitive changes')
+      setReauthError(/** @type {string} */ ((/** @type {AdminCaughtErrorMessageReadView} */ (error))?.message || 'Could not unlock sensitive changes'))
     } finally {
       setReauthLoading(false)
     }

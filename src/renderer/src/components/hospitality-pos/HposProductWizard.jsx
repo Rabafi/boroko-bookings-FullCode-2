@@ -16,6 +16,7 @@ import { createBarcodeScannerDecoder } from "../../../../shared/barcodeScanner";
  * quantity leads to Count/Receive actions instead. Recipe products get a
  * read-only recovery panel (no casual conversion).
  */
+/** @param {string} [initialBarcode] */
 const emptyForm = (initialBarcode = "") => ({
   mode: "product",
   name: "",
@@ -57,6 +58,18 @@ const SERVER_RECIPE_FORCED_CATEGORIES = Object.freeze([
   "breakfast", "starters", "mains", "sides", "desserts", "cocktails", "food",
 ]);
 
+/** @typedef {Record<string, unknown> & {id: string, sku?: string, name: string, category: string, price: number|string|null, barcode?: string|null, inventory_item_id?: string|null, stock_method?: string|null, depletion_qty?: number|string|null, available?: boolean, is_available?: boolean, product_version?: number, updated_at?: string|null, tax_rate?: number|string|null, track_stock?: boolean, archived_at?: string|null}} HposWizardProductExpectedView */
+/** @typedef {Record<string, unknown> & {id: string, unit?: string|null, outlet_id?: string|null, reorder_level?: number|string|null, latest_unit_cost?: number|string|null, selling_price?: number|string|null, stock_version?: number, updated_at?: string|null}} HposWizardStockExpectedView */
+/** Retry IPC may be absent from an older preload/API object; this expected view preserves that undefined result. */
+/** @typedef {{success: true, publication?: string, error?: string}|{success: false, error?: string}|undefined} HposWizardRetryExpectedView */
+/** @typedef {{pack6?: boolean, pack12?: boolean, pack24?: boolean, pack6Barcode?: string|null, pack12Barcode?: string|null, pack24Barcode?: string|null}} HposWizardPacksExpectedView */
+/** @typedef {{id: string, name: string, applies_to_categories: string[], min_selections: number, max_selections: number, options: {name: string, price_delta: number}[], active?: boolean}} HposWizardModifierGroupExpectedView */
+/** @typedef {ReturnType<typeof emptyForm>} HposWizardForm */
+/** @typedef {HposWizardForm & {pack6: boolean, pack12: boolean, pack24: boolean, pack6Barcode: string, pack12Barcode: string, pack24Barcode: string}} HposWizardFormState */
+/** @typedef {Record<string, unknown> & {id: string|number, name?: string, barcode?: string|null, is_active?: boolean, current_stock?: number|string, unit?: string|null, outlet_id?: string|null, type?: string|null}} HposWizardInventoryExpectedView */
+/** @typedef {Record<string, unknown> & {id: string|number|null, name: string, type?: string|null, is_active?: boolean}} HposWizardOutletExpectedView */
+/** @typedef {{success?: boolean, code?: string, barcode?: string}} HposWizardScanExpectedView */
+/** @param {{initialBarcode?: string, initialProduct?: HposWizardProductExpectedView|null, initialStock?: HposWizardStockExpectedView|null, initialPacks?: HposWizardPacksExpectedView|null, initialAvailable?: boolean, hasRecipe?: boolean, modifierGroups?: HposWizardModifierGroupExpectedView[], onManageModifiers?: (() => void)|null, onEditExisting?: ((duplicate: HposWizardProductExpectedView) => void)|null, onClose?: (() => void)|null, onSaved?: ((result: {success: true}, options: {addAnother: boolean}) => void)|null}} props */
 export default function HposProductWizard({
   initialBarcode = "",
   initialProduct = null,
@@ -71,9 +84,10 @@ export default function HposProductWizard({
   onSaved = null,
 }) {
   const { settings } = useSettings();
+  const localAuthority = settings?.authority_mode === 'bar_local';
   const currency = settings?.currency || "P";
   const editing = Boolean(initialProduct?.id);
-  const [form, setForm] = useState(() => {
+  const [form, setForm] = useState(/** @type {HposWizardFormState} */ (() => {
     const base = emptyForm(initialBarcode);
     if (!initialProduct) return { ...base, operationKey: newOperationKey() };
     const packs = initialPacks || {};
@@ -100,15 +114,15 @@ export default function HposProductWizard({
       pack12Barcode: packs.pack12Barcode || "",
       pack24Barcode: packs.pack24Barcode || "",
     };
-  });
-  const [menuItems, setMenuItems] = useState([]);
-  const [inventoryItems, setInventoryItems] = useState([]);
-  const [outlets, setOutlets] = useState([]);
+  }));
+  const [menuItems, setMenuItems] = useState(/** @type {HposWizardProductExpectedView[]} */ ([]));
+  const [inventoryItems, setInventoryItems] = useState(/** @type {HposWizardInventoryExpectedView[]} */ ([]));
+  const [outlets, setOutlets] = useState(/** @type {HposWizardOutletExpectedView[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [publicationNotice, setPublicationNotice] = useState("");
-  const [scanTarget, setScanTarget] = useState(null);
+  const [scanTarget, setScanTarget] = useState(/** @type {'barcode'|'pack6Barcode'|'pack12Barcode'|'pack24Barcode'|null} */ (null));
   const [scanStatus, setScanStatus] = useState("");
   const [unknownOutcome, setUnknownOutcome] = useState(false);
   // After a failed save, the operation key retires only when the operator
@@ -117,10 +131,12 @@ export default function HposProductWizard({
   // corrected values need a fresh key (no overwrite collisions).
   const failedRef = useRef(false);
   const lastSubmittedRef = useRef(null);
+  /** @param {HposWizardForm} values */
   const businessKey = (values) => {
     const { operationKey: _ignored, ...rest } = values || {};
     return JSON.stringify(rest);
   };
+  /** @param {Partial<HposWizardForm>} patch */
   const set = (patch) => {
     setForm((current) => {
       const next = { ...current, ...patch };
@@ -137,6 +153,19 @@ export default function HposProductWizard({
   // another" the just-created stock must appear in Link existing stock
   // instead of waiting for the wizard to be closed and reopened.
   const refreshLists = async () => {
+    if (localAuthority) {
+      const [menu, stock, outletRows] = await Promise.all([
+        window.api.barLocal.readHposMenu('menu'),
+        window.api.barLocal.readHposMenu('stock'),
+        window.api.barLocal.readHposMenu('outlets')
+      ]);
+      if (menu?.complete !== true || stock?.complete !== true) throw new Error('The local Bar product or stock list is incomplete. Refresh before saving.');
+      setMenuItems(Array.isArray(menu.rows) ? menu.rows : []);
+      setInventoryItems((Array.isArray(stock.rows) ? stock.rows : []).filter((row) => row?.is_active !== false));
+      const rows = Array.isArray(outletRows?.rows) ? outletRows.rows : [];
+      setOutlets(rows);
+      return rows;
+    }
     const [menu, stock, outletRows] = await Promise.all([
       window.api?.pos?.getMenuItems?.() ?? [],
       window.api?.inventory?.getItems?.() ?? [],
@@ -177,8 +206,10 @@ export default function HposProductWizard({
   useEffect(() => {
     if (!scanTarget) return undefined;
     const decoder = createBarcodeScannerDecoder();
+    /** @type {number | ReturnType<typeof setTimeout> | null} */
     let idleTimer = null;
-    const finish = (result = {}) => {
+    /** @param {HposWizardScanExpectedView} [result] */
+    const finish = (/** @type {HposWizardScanExpectedView} */ result = {}) => {
       setScanTarget(null);
       if (!result.success) {
         setScanStatus(`Barcode scan failed: ${result.code || "invalid_scan"}.`);
@@ -187,6 +218,7 @@ export default function HposProductWizard({
       set({ [scanTarget]: result.barcode });
       setScanStatus(`Barcode captured: ${result.barcode}`);
     };
+    /** @param {KeyboardEvent} event */
     const onKeyDown = (event) => {
       const key = String(event.key || "");
       if (!(key.length === 1 || key === "Enter" || key === "NumpadEnter" || key === "Tab")) return;
@@ -319,12 +351,12 @@ export default function HposProductWizard({
     menu_item_id: editing ? initialProduct.id : null,
     inventory_item_id:
       form.stockChoice === "link" ? form.linkStockId : initialStock?.id || undefined,
-    expected_menu_version: editing ? initialProduct.updated_at || null : null,
+    expected_menu_version: editing ? (localAuthority ? Number(initialProduct.product_version || 0) : initialProduct.updated_at || null) : null,
     // Linking needs the selected row's version: a product that currently
     // tracks nothing has no stock version of its own to offer.
     expected_stock_version: form.stockChoice === "link"
-      ? linkedStock?.updated_at || initialStock?.updated_at || null
-      : initialStock?.updated_at || null,
+      ? (localAuthority ? Number(linkedStock?.stock_version ?? initialStock?.stock_version ?? 0) : linkedStock?.updated_at || initialStock?.updated_at || null)
+      : (localAuthority ? Number(initialStock?.stock_version ?? 0) : initialStock?.updated_at || null),
     name: form.name.trim(),
     category: form.category.trim() || "Beer",
     price: Number(form.price),
@@ -334,6 +366,7 @@ export default function HposProductWizard({
     // sold-out unless the operator explicitly re-enables it.
     is_available: editing ? form.available !== false : true,
     stock_mode: form.stockChoice === "link" ? "link" : "create",
+    track_stock: form.stockChoice !== "none",
     stock_name: String(form.stockName || "").trim() || form.name.trim(),
     stock_category: form.category.trim() || "Beer",
     stock_unit: form.unit,
@@ -365,7 +398,35 @@ export default function HposProductWizard({
     setPublicationNotice("");
     setUnknownOutcome(false);
     try {
-      if (form.mode === "stock-only") {
+      if (localAuthority) {
+        let localRequest;
+        if (form.mode === 'stock-only') {
+          localRequest = { operation_key: form.operationKey, local_stock_only: true,
+            name: String(form.stockName || form.name).trim(), category: form.category.trim() || 'Other',
+            unit: form.unit, barcode: form.barcode.trim() || null, outlet_id: form.outletId || null,
+            opening_stock: String(form.openingStock || '0'), reorder_level: String(form.reorderLevel || '0'),
+            unit_cost: form.unitCost === '' ? null : String(form.unitCost) };
+        } else if (hasRecipe && editing) {
+          localRequest = {
+            operation_key: form.operationKey,
+            local_recipe_update: true,
+            menu_item_id: initialProduct.id,
+            expected_menu_version: Number(initialProduct.product_version || 0),
+            sku: initialProduct.sku,
+            name: form.name.trim(),
+            category: form.category.trim() || initialProduct.category || 'Beer',
+            price: Number(form.price),
+            tax_rate: String(initialProduct.tax_rate ?? '0'),
+            track_stock: initialProduct.track_stock === true,
+            active: initialProduct.archived_at == null
+          };
+        } else {
+          localRequest = buildPayload();
+        }
+        const localResult = await window.api.barLocal.saveHposBarProduct(localRequest.local_stock_only === true
+          ? localRequest : { ...localRequest, track_stock: localRequest.track_stock ?? (form.stockChoice !== 'none') });
+        if (!localResult?.success) throw new Error(localResult?.error || (localResult?.outcome === 'unknown' ? 'The local outcome is unknown. Retry this same operation before changing the product.' : 'The local Bar service refused this product change.'));
+      } else if (form.mode === "stock-only") {
         // Stock-only creation carries no operation key on the legacy stock
         // contract, so an ambiguous failure must not auto-retry: the
         // operator verifies in Stock first, then explicitly retries.
@@ -462,7 +523,9 @@ export default function HposProductWizard({
       // sweeps its outlets, and marks the request, so the notice always
       // agrees with the Products banner. Sweeping the form outlet directly
       // could report success without touching the request's outlets.
-      const result = await window.api?.pos?.retryProductRequest?.(form.operationKey);
+      const result = localAuthority
+        ? /** @type {HposWizardRetryExpectedView} */ (/** @type {unknown} */ (await window.api.barLocal.retryHposBarProduct(form.operationKey)))
+        : /** @type {HposWizardRetryExpectedView} */ (/** @type {unknown} */ (await window.api?.pos?.retryProductRequest?.(form.operationKey)));
       if (!result?.success) throw new Error(result?.error || "Publication is still pending.");
       if (result?.publication === "published") {
         setPublicationNotice("Catalog published.");
@@ -476,6 +539,7 @@ export default function HposProductWizard({
     }
   };
 
+  /** @param {'barcode'|'pack6Barcode'|'pack12Barcode'|'pack24Barcode'} key @param {string} label @param {string} placeholder */
   const barcodeField = (key, label, placeholder) => (
     <label>
       {label}

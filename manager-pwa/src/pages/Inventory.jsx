@@ -4,14 +4,19 @@ import { useAuth } from '../contexts/AuthContext'
 import { listInventory } from '../lib/api'
 import { money } from '../lib/format'
 
+/** @typedef {{id: string, name: string, category?: string | null, unit?: string | null, current_stock?: number | null, reorder_level?: number | null, latest_unit_cost?: number | null}} InventoryExpectedView */
+
 export default function Inventory() {
-  const { user } = useAuth()
-  const [items, setItems] = useState([])
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const [items, setItems] = useState(/** @type {InventoryExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
-    const data = await listInventory(user.lodge_id).catch(() => [])
+    // Query/cache contents are not validated here; this is the existing view
+    // expected by the read-only page.
+    const data = /** @type {InventoryExpectedView[]} */ (await listInventory(user.lodge_id).catch(() => []))
     setItems(data)
     setLoading(false)
   }

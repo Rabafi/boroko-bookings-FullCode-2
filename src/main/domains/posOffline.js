@@ -4,10 +4,14 @@ import { readSyncQueue } from './syncStore.js';
 import { isPosCreateOrderQueueItem } from './syncShared.js';
 
 /**
- * Cache, query, and queue records are persisted/wire objects. These views only
- * describe the fields this projection reads; their values remain unknown and
- * the view does not claim that JSON or RPC payloads were validated.
- * @typedef {Record<string, unknown> & {type?: unknown, table?: unknown, data?: unknown, _inventory_extras?: unknown}} PosOfflineQueueView
+ * Cache, query, and queue records are persisted/wire objects. These expected-
+ * data views describe fields this projection reads; JSON/RPC payloads are not
+ * validated here, and the runtime continues to see the original values.
+ * @typedef {Record<string, unknown> & {type?: string, table?: string, data?: (Record<string, unknown> & {payload?: Record<string, unknown>})|null, _inventory_extras?: unknown}} PosOfflineQueueView
+ * @typedef {Record<string, unknown> & {id?: unknown, order_id?: unknown, name?: unknown, inventory_item_id?: unknown, depletion_qty?: unknown, item_name?: unknown, outlet_id?: unknown, quantity?: unknown, synced_current_stock?: unknown, current_stock?: unknown, _sync_state?: unknown}} PosOfflineRowView
+ * @typedef {Record<string, unknown> & {menu_item_id?: unknown, inventory_item_id?: unknown, depletion_qty?: unknown, item_name?: unknown, quantity?: unknown}} PosOfflineEntryView
+ * @typedef {Record<string, unknown> & {item_id?: unknown, quantity?: unknown, actual_qty?: unknown}} PosOfflineStockLineView
+ * @typedef {Record<string, unknown> & {p_lines?: unknown, p_item_id?: unknown, p_delta?: unknown, payload?: Record<string, unknown>}} PosOfflineRpcDataView
  * @typedef {Map<string, unknown>} PosMenuIndex
  * @typedef {Map<string, unknown[]>} PosInventoryNameIndex
  * @typedef {Map<unknown, number>} InventoryUsage
@@ -31,7 +35,7 @@ export function buildPosMenuIndex(menuRows = []) {
   const byId = new Map();
   // Keep the existing cache row property reads. Row shape remains unchecked.
   for (const rawRow of /** @type {unknown[]} */ (Array.isArray(menuRows) ? menuRows : [])) {
-    const row = rawRow;
+    const row = /** @type {PosOfflineRowView|null|undefined} */ (rawRow);
     if (row?.id) byId.set(String(row.id), row);
   }
   return byId;
@@ -43,23 +47,30 @@ export function buildInventoryNameIndex(inventoryRows = []) {
   const byName = new Map();
   // Keep the existing inventory row property reads. Row shape remains unchecked.
   for (const rawRow of /** @type {unknown[]} */ (Array.isArray(inventoryRows) ? inventoryRows : [])) {
-    const row = rawRow;
+    const row = /** @type {PosOfflineRowView|null|undefined} */ (rawRow);
     const key = String(row?.name || '').trim().toLowerCase();
     if (!key) continue;
-    if (!byName.has(key)) byName.set(key, []);
-    byName.get(key).push(row);
+    let namedRows = byName.get(key);
+    if (!namedRows) {
+      namedRows = [];
+      byName.set(key, namedRows);
+    }
+    namedRows.push(row);
   }
   return byName;
 }
 
-/** @param {unknown} entry @param {{outletId?: unknown}} [options] */
+/** @param {PosOfflineEntryView} [entry] @param {{outletId?: unknown}} [options] */
 function resolveQueuedPosInventoryLink(entry = {}, { outletId = null } = {}) {
   // Legacy single-line path: reads caches once per call. Hot paths below pass
   // prebuilt indexes via resolveQueuedPosInventoryLinkIndexed instead, so a
   // 30k-order projection does not re-parse pos-menu-items.json per line.
   const menuRows = entry?.menu_item_id ? readCache('pos-menu-items') : [];
   const menuById = entry?.menu_item_id ? buildPosMenuIndex(menuRows) : new Map();
-  const inventoryRows = entry?.item_name && !entry?.inventory_item_id && !entry?.menu_item_id ? readCache('inventory-items') : [];
+  // Cache parsing is intentionally not validation. This projection expects the
+  // inventory cache sequence written by existing producers; retain the
+  // original .length behavior for malformed non-array JSON values.
+  const inventoryRows = /** @type {unknown[]} */ (entry?.item_name && !entry?.inventory_item_id && !entry?.menu_item_id ? readCache('inventory-items') : []);
   return resolveQueuedPosInventoryLinkIndexed(entry, {
     outletId,
     menuById,
@@ -68,8 +79,8 @@ function resolveQueuedPosInventoryLink(entry = {}, { outletId = null } = {}) {
 }
 
 /**
- * @param {unknown} entry
- * @param {{outletId?: unknown, menuById?: PosMenuIndex, inventoryByName?: PosInventoryNameIndex}} [options]
+ * @param {PosOfflineEntryView} [entry]
+ * @param {{outletId?: unknown, menuById?: PosMenuIndex|undefined, inventoryByName?: PosInventoryNameIndex|undefined}} [options]
  */
 export function resolveQueuedPosInventoryLinkIndexed(entry = {}, { outletId = null, menuById = new Map(), inventoryByName = new Map() } = {}) {
   if (entry.inventory_item_id) {
@@ -80,7 +91,7 @@ export function resolveQueuedPosInventoryLinkIndexed(entry = {}, { outletId = nu
   }
 
   if (entry.menu_item_id && menuById && typeof menuById.get === 'function') {
-    const menuItem = menuById.get(String(entry.menu_item_id));
+    const menuItem = /** @type {PosOfflineRowView|null|undefined} */ (menuById.get(String(entry.menu_item_id)));
     if (menuItem?.inventory_item_id) {
       return {
         inventoryItemId: menuItem.inventory_item_id,
@@ -91,11 +102,14 @@ export function resolveQueuedPosInventoryLinkIndexed(entry = {}, { outletId = nu
 
   const itemName = String(entry.item_name || '').trim().toLowerCase();
   if (!itemName) return { inventoryItemId: null, depletionQty: normalizePositiveQty(entry.depletion_qty, 1) };
-  const matches = (inventoryByName?.get?.(itemName) || []).filter((item) =>
-  !outletId || !item?.outlet_id || item.outlet_id === outletId
-  );
+  const matches = (inventoryByName?.get?.(itemName) || []).filter((rawItem) => {
+    const item = /** @type {PosOfflineRowView|null|undefined} */ (rawItem);
+    return !outletId || !item?.outlet_id || item.outlet_id === outletId;
+  });
   return {
-    inventoryItemId: matches.length === 1 ? matches[0].id : null,
+    // Exactly one filter result guarantees an element under the native Array
+    // contract; this assertion preserves the current result without a fallback.
+    inventoryItemId: matches.length === 1 ? /** @type {PosOfflineRowView} */ (matches[0]).id : null,
     depletionQty: normalizePositiveQty(entry.depletion_qty, 1)
   };
 }
@@ -109,7 +123,9 @@ function buildQueuedPosInventoryUsage(items = [], { outletId = null, menuById = 
   const sharedMenuById = menuById || buildPosMenuIndex(readCache('pos-menu-items'));
   const sharedNameIndex = inventoryByName || buildInventoryNameIndex(readCache('inventory-items'));
   for (const rawEntry of items || []) {
-    const entry = rawEntry;
+    // This helper directly reads entry fields. Keep its call-site type non-null
+    // without adding a guard; malformed queue rows retain their existing throw.
+    const entry = /** @type {PosOfflineEntryView} */ (rawEntry);
     const link = resolveQueuedPosInventoryLinkIndexed(entry, { outletId, menuById: sharedMenuById, inventoryByName: sharedNameIndex });
     const inventoryItemId = link.inventoryItemId;
     const depletionQty = link.depletionQty;
@@ -121,12 +137,14 @@ function buildQueuedPosInventoryUsage(items = [], { outletId = null, menuById = 
   return usage;
 }
 
-/** @param {unknown[]} items @param {{outletId?: unknown, menuById: PosMenuIndex, inventoryByName: PosInventoryNameIndex}} [options] @returns {InventoryUsage} */
+/** @param {unknown[]} items @param {{outletId?: unknown, menuById?: PosMenuIndex|undefined, inventoryByName?: PosInventoryNameIndex|undefined}} [options] @returns {InventoryUsage} */
 function buildIndexedOrderUsage(items = [], { outletId = null, menuById, inventoryByName } = {}) {
   /** @type {InventoryUsage} */
   const usage = new Map();
   for (const rawEntry of items || []) {
-    const entry = rawEntry;
+    // The resolver's direct property reads intentionally retain their prior
+    // malformed-entry failure behavior.
+    const entry = /** @type {PosOfflineEntryView} */ (rawEntry);
     const link = resolveQueuedPosInventoryLinkIndexed(entry, { outletId, menuById, inventoryByName });
     if (!link.inventoryItemId) continue;
     const quantity = Number(entry.quantity || 0);
@@ -152,7 +170,8 @@ export function collectQueuedBarStockDeltas(queueItems = []) {
     const item = /** @type {PosOfflineQueueView|null|undefined} */ (rawItem);
     if (item?.type !== 'rpc') continue;
     if (item.table === 'post_bar_simple_delivery') {
-      for (const line of Array.isArray(item?.data?.p_lines) ? /** @type {unknown[]} */ (item.data.p_lines) : []) {
+      for (const rawLine of Array.isArray(item?.data?.p_lines) ? /** @type {unknown[]} */ (item.data.p_lines) : []) {
+        const line = /** @type {PosOfflineStockLineView|null|undefined} */ (rawLine);
         const id = String(line?.item_id || '').trim();
         const qty = Number(line?.quantity || 0);
         if (!id || !Number.isFinite(qty) || qty <= 0) continue;
@@ -160,7 +179,8 @@ export function collectQueuedBarStockDeltas(queueItems = []) {
         touched.add(id);
       }
     } else if (item.table === 'post_bar_physical_count') {
-      for (const line of Array.isArray(item?.data?.p_lines) ? /** @type {unknown[]} */ (item.data.p_lines) : []) {
+      for (const rawLine of Array.isArray(item?.data?.p_lines) ? /** @type {unknown[]} */ (item.data.p_lines) : []) {
+        const line = /** @type {PosOfflineStockLineView|null|undefined} */ (rawLine);
         const id = String(line?.item_id || '').trim();
         const actual = Number(line?.actual_qty);
         if (!id || !Number.isFinite(actual) || actual < 0) continue;
@@ -174,7 +194,8 @@ export function collectQueuedBarStockDeltas(queueItems = []) {
       adjustDeltas.set(id, (adjustDeltas.get(id) || 0) + delta);
       touched.add(id);
     } else if (item.table === 'add_inventory_purchase') {
-      const payload = item?.data?.payload || {};
+      const data = /** @type {PosOfflineRpcDataView|null|undefined} */ (item?.data);
+      const payload = data?.payload || {};
       const id = String(payload?.item_id || '').trim();
       const qty = Number(payload?.quantity_purchased || 0);
       if (!id || !Number.isFinite(qty) || qty <= 0) continue;
@@ -185,6 +206,7 @@ export function collectQueuedBarStockDeltas(queueItems = []) {
   return { deliveryDeltas, adjustDeltas, purchaseDeltas, countOverrides, touched };
 }
 
+/** @param {unknown[]} [items] @param {{outletId?: unknown}} [options] */
 export function getOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
   return [...buildQueuedPosInventoryUsage(items, { outletId }).entries()].
   map(([inventory_item_id, quantity]) => ({ inventory_item_id, quantity }));
@@ -195,7 +217,7 @@ function buildDayUseInventoryUsage(extras = []) {
   /** @type {InventoryUsage} */
   const usage = new Map();
   for (const rawEntry of extras || []) {
-    const entry = rawEntry;
+    const entry = /** @type {PosOfflineEntryView} */ (rawEntry);
     const inventoryItemId = entry?.inventory_item_id || null;
     if (!inventoryItemId) continue;
     const quantity = Math.max(0, Number(entry.quantity || 0));
@@ -215,9 +237,9 @@ export function getOfflineDayUseInventoryReservation(extras = []) {
 export function applyOfflineDayUseInventoryReservation(extras = []) {
   const usage = buildDayUseInventoryUsage(extras);
   if (usage.size === 0) return [];
-  const inventory = readCache('inventory-items');
+  const inventory = /** @type {PosOfflineRowView[]} */ (readCache('inventory-items'));
   const next = inventory.map((rawItem) => {
-    const item = rawItem;
+    const item = /** @type {PosOfflineRowView} */ (rawItem);
     const used = usage.get(item?.id) || 0;
     if (!used) return item;
     return {
@@ -235,9 +257,9 @@ export function applyOfflineDayUseInventoryReservation(extras = []) {
 export function restoreOfflineDayUseInventoryReservation(extras = []) {
   const usage = buildDayUseInventoryUsage(extras);
   if (usage.size === 0) return [];
-  const inventory = readCache('inventory-items');
+  const inventory = /** @type {PosOfflineRowView[]} */ (readCache('inventory-items'));
   const next = inventory.map((rawItem) => {
-    const item = rawItem;
+    const item = /** @type {PosOfflineRowView} */ (rawItem);
     const restored = usage.get(item?.id) || 0;
     if (!restored) return item;
     return {
@@ -251,7 +273,7 @@ export function restoreOfflineDayUseInventoryReservation(extras = []) {
   return getOfflineDayUseInventoryReservation(extras);
 }
 
-/** @param {unknown[]} items @param {{outletId?: unknown}} [options] */
+/** @param {unknown[]} [items] @param {{outletId?: unknown}} [options] */
 export function applyOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
   const usage = buildQueuedPosInventoryUsage(items, { outletId });
   if (usage.size === 0) return [];
@@ -259,7 +281,7 @@ export function applyOfflinePosInventoryReservation(items = [], { outletId = nul
   return getOfflinePosInventoryReservation(items, { outletId });
 }
 
-/** @param {unknown[]} items @param {{outletId?: unknown}} [options] */
+/** @param {unknown[]} [items] @param {{outletId?: unknown}} [options] */
 export function restoreOfflinePosInventoryReservation(items = [], { outletId = null } = {}) {
   // Pending voids and returns must never make stock sellable. The authoritative
   // server refresh after a successful RPC applies the restoration.
@@ -275,10 +297,10 @@ function writeLocalPosVoidHistory(rows = []) {
   writeCache('pos-void-history', rows);
 }
 
-/** @param {unknown} entry */
+/** @param {PosOfflineRowView} [entry] */
 export function upsertLocalPosVoidHistory(entry = {}) {
   if (!entry?.id && !entry?.order_id) return null;
-  const rows = readLocalPosVoidHistory();
+  const rows = /** @type {PosOfflineRowView[]} */ (readLocalPosVoidHistory());
   const normalized = {
     ...entry,
     id: entry.id || `local-void-${entry.order_id}-${Date.now()}`,
@@ -288,7 +310,7 @@ export function upsertLocalPosVoidHistory(entry = {}) {
   const next = [
   normalized,
   ...rows.filter((rawRow) => {
-    const row = rawRow;
+    const row = /** @type {PosOfflineRowView|null|undefined} */ (rawRow);
     return row?.id !== normalized.id && row?.order_id !== normalized.order_id;
   })];
 
@@ -299,11 +321,13 @@ export function upsertLocalPosVoidHistory(entry = {}) {
 /** @param {unknown} logId @param {unknown} patch */
 export function patchLocalPosVoidHistory(logId, patch = {}) {
   if (!logId) return false;
-  const rows = readLocalPosVoidHistory();
+  const rows = /** @type {PosOfflineRowView[]} */ (readLocalPosVoidHistory());
   const index = rows.findIndex((rawRow) => rawRow?.id === logId);
   if (index < 0) return false;
   const next = [...rows];
-  next[index] = { ...next[index], ...patch };
+  // Object spread retains existing JavaScript coercion for malformed patches.
+  // This view describes the record shape expected by current callers only.
+  next[index] = { ...next[index], .../** @type {Record<string, unknown>} */ (patch) };
   writeLocalPosVoidHistory(next);
   return true;
 }
@@ -315,7 +339,7 @@ export function patchLocalPosVoidHistory(logId, patch = {}) {
 export function removeLocalPosVoidHistory(logIds = []) {
   const ids = new Set((Array.isArray(logIds) ? /** @type {unknown[]} */ (logIds) : [logIds]).map((value) => String(value || '').trim()).filter(Boolean));
   if (ids.size === 0) return 0;
-  const rows = readLocalPosVoidHistory();
+  const rows = /** @type {PosOfflineRowView[]} */ (readLocalPosVoidHistory());
   const next = rows.filter((row) => !ids.has(String(row?.id || '')));
   const removed = rows.length - next.length;
   if (removed > 0) writeLocalPosVoidHistory(next);
@@ -324,7 +348,7 @@ export function removeLocalPosVoidHistory(logIds = []) {
 
 /** @param {unknown} remoteInventoryRows */
 export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
-  const rows = /** @type {unknown[]} */ (Array.isArray(remoteInventoryRows) ? remoteInventoryRows : []);
+  const rows = /** @type {PosOfflineRowView[]} */ (Array.isArray(remoteInventoryRows) ? remoteInventoryRows : []);
   if (rows.length === 0) return rows;
   // Single-parse inputs: one queue read + one menu read per computation, with
   // shared indexes for every queued line (previously one full file parse per
@@ -342,7 +366,7 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
   /** @type {Map<string, number>} */
   const baseById = new Map();
   for (const rawRow of rows) {
-    const row = rawRow;
+    const row = /** @type {PosOfflineRowView|null|undefined} */ (rawRow);
     if (!row?.id) continue;
     baseById.set(String(row.id), normalizeInventoryStockValue(row.synced_current_stock ?? row.current_stock));
   }
@@ -368,13 +392,19 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
     if (!isPosCreateOrderQueueItem(item)) continue;
     const queueData = item?.data;
     const payload = queueData?.payload || {};
-    const orderUsage = buildIndexedOrderUsage(payload.items || [], { outletId: payload.outlet_id || null, menuById, inventoryByName });
+    // The queue predicate selects POS create-order rows. The expected item
+    // sequence is not validated; passing it through unchanged preserves the
+    // old failure behavior for malformed truthy non-array values.
+    const orderUsage = buildIndexedOrderUsage(/** @type {unknown[]} */ (payload.items || []), { outletId: payload.outlet_id || null, menuById, inventoryByName });
     for (const [inventoryItemId, quantity] of orderUsage.entries()) {
       salesUsage.set(inventoryItemId, (salesUsage.get(inventoryItemId) || 0) + quantity);
       touched.add(inventoryItemId);
     }
   }
   for (const [id, used] of salesUsage.entries()) {
+    // baseById is populated only with String(row.id) keys. Map lookup would
+    // reject every non-string key, so narrow without changing that behavior.
+    if (typeof id !== 'string') continue;
     if (!baseById.has(id)) continue;
     projected.set(id, (projected.get(id) ?? baseById.get(id) ?? 0) - used);
   }
@@ -399,7 +429,7 @@ export function applyQueuedPosInventoryReservations(remoteInventoryRows = []) {
 }
 
 export function refreshOfflinePosInventoryProjection() {
-  const inventory = readCache('inventory-items');
+  const inventory = /** @type {PosOfflineRowView[]} */ (readCache('inventory-items'));
   const projected = applyQueuedPosInventoryReservations(inventory);
   writeCache('inventory-items', projected, { source: 'local-projection' });
   return projected;
@@ -410,24 +440,25 @@ export function applyQueuedDayUseInventoryReservations(remoteInventoryRows = [])
   const queuedItems = readSyncQueue().filter((rawItem) => {
     // readSyncQueue returns parsed object queue entries; nested fields remain unvalidated.
     const item = /** @type {PosOfflineQueueView} */ (rawItem);
-    return item.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table);
+    return item.type === 'rpc' && typeof item.table === 'string' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item.table);
   });
   if (queuedItems.length === 0) return remoteInventoryRows || [];
 
   const usage = new Map();
   for (const item of queuedItems) {
-    const data = item?.data;
+    const queueItem = /** @type {PosOfflineQueueView} */ (item);
+    const data = /** @type {PosOfflineRpcDataView|null|undefined} */ (queueItem?.data);
     const payload = data?.payload || {};
-    const extras = Array.isArray(payload?.extras) ? payload.extras : Array.isArray(item?._inventory_extras) ? item._inventory_extras : [];
+    const extras = Array.isArray(payload?.extras) ? payload.extras : Array.isArray(queueItem?._inventory_extras) ? queueItem._inventory_extras : [];
     const extraUsage = buildDayUseInventoryUsage(extras);
     for (const [inventoryItemId, quantity] of extraUsage.entries()) {
-      const multiplier = item?.table === 'delete_pool_day_use' ? -1 : 1;
+      const multiplier = queueItem?.table === 'delete_pool_day_use' ? -1 : 1;
       usage.set(inventoryItemId, (usage.get(inventoryItemId) || 0) + quantity * multiplier);
     }
   }
 
-  return (/** @type {unknown[]} */ (remoteInventoryRows || [])).map((rawRow) => {
-    const row = rawRow;
+  return (/** @type {PosOfflineRowView[]} */ (remoteInventoryRows || [])).map((rawRow) => {
+    const row = /** @type {PosOfflineRowView} */ (rawRow);
     const used = usage.get(row?.id) || 0;
     if (!used) return row;
     return {

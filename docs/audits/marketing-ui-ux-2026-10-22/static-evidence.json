@@ -1,0 +1,191 @@
+[
+  {
+    "file": "404.html",
+    "missing": [],
+    "bytes": 9618,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "admin.html",
+    "missing": [],
+    "bytes": 19232,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "bar-pos.html",
+    "missing": [],
+    "bytes": 28405,
+    "hasSkipLink": false,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-choose-lodge-management-system.html",
+    "missing": [],
+    "bytes": 12464,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-payment-tracking-for-lodges.html",
+    "missing": [],
+    "bytes": 10580,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-reduce-waste-in-bar-and-kitchen.html",
+    "missing": [],
+    "bytes": 9172,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-signs-youve-outgrown-manual-admin.html",
+    "missing": [],
+    "bytes": 9216,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-what-owners-should-expect.html",
+    "missing": [],
+    "bytes": 9139,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog-when-to-add-online-reservations.html",
+    "missing": [],
+    "bytes": 10554,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "blog.html",
+    "missing": [],
+    "bytes": 17903,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "booking-site.html",
+    "missing": [],
+    "bytes": 27635,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "brochure.html",
+    "missing": [],
+    "bytes": 53495,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "contact.html",
+    "missing": [],
+    "bytes": 16549,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "control-center.html",
+    "missing": [],
+    "bytes": 20925,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "download.html",
+    "missing": [],
+    "bytes": 18491,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "enterprise.html",
+    "missing": [],
+    "bytes": 37987,
+    "hasSkipLink": true,
+    "inlineScripts": 2
+  },
+  {
+    "file": "features.html",
+    "missing": [],
+    "bytes": 30850,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "hotel.html",
+    "missing": [],
+    "bytes": 7953,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "index.html",
+    "missing": [],
+    "bytes": 71042,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "lodge-app.html",
+    "missing": [],
+    "bytes": 8547,
+    "hasSkipLink": true,
+    "inlineScripts": 0
+  },
+  {
+    "file": "manager-app.html",
+    "missing": [],
+    "bytes": 36497,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "packages.html",
+    "missing": [],
+    "bytes": 32346,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "privacy.html",
+    "missing": [],
+    "bytes": 10659,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "restaurant-pos.html",
+    "missing": [],
+    "bytes": 77141,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "terms.html",
+    "missing": [],
+    "bytes": 10614,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "thank-you.html",
+    "missing": [],
+    "bytes": 14445,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  },
+  {
+    "file": "why-switch.html",
+    "missing": [],
+    "bytes": 15339,
+    "hasSkipLink": true,
+    "inlineScripts": 1
+  }
+]

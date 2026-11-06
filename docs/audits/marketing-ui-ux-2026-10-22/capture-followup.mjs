@@ -1,0 +1,22 @@
+import {createRequire} from 'node:module';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import http from 'node:http';
+const root=process.cwd();
+const require=createRequire(path.join(root,'package.json'));
+const {chromium}=require('playwright');
+const out=path.join(root,'docs/audits/marketing-ui-ux-2026-10-22');
+await fs.mkdir(out,{recursive:true});
+const config=await fs.readFile('marketing-site/netlify.toml','utf8');
+const csp=config.match(/Content-Security-Policy = "([^"]+)"/)[1];
+const server=http.createServer(async(req,res)=>{try{let url=new URL(req.url,'http://localhost');let rel=url.pathname==='/'?'index.html':decodeURIComponent(url.pathname).slice(1);let f=path.join(root,'marketing-site',rel);let body=await fs.readFile(f);res.setHeader('Content-Security-Policy',csp);res.setHeader('Content-Type',({'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.webp':'image/webp','.svg':'image/svg+xml','.jpg':'image/jpeg'})[path.extname(f)]||'application/octet-stream');res.end(body)}catch{res.writeHead(404);res.end('Not found')}});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base='http://127.0.0.1:'+server.address().port;
+
+let browser;const result={};try{browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,timeout:25000});const context=await browser.newContext({viewport:{width:1440,height:900}});await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.fulfill({status:200,body:'{}',contentType:'application/json'}));const page=await context.newPage();result.heroes=[];
+for(const name of ['lodge-app','hotel']){await page.goto(base+'/'+name+'.html');result.heroes.push({name,data:await page.evaluate(()=>{const i=document.querySelector('.app-proof-panel img'),a=document.querySelector('.app-hero [data-action="download"]');return{image:{naturalWidth:i.naturalWidth,naturalHeight:i.naturalHeight,width:i.getBoundingClientRect().width,height:i.getBoundingClientRect().height},cta:{top:a.getBoundingClientRect().top,bottom:a.getBoundingClientRect().bottom},heroHeight:document.querySelector('.app-hero').getBoundingClientRect().height}})});}
+await page.goto(base+'/index.html');await page.locator('.hero-actions [data-action="download"]').first().click();result.dialog=await page.locator('.download-modal').evaluate(x=>({role:x.getAttribute('role'),ariaModal:x.getAttribute('aria-modal'),focusInside:x.contains(document.activeElement)}));
+await page.setViewportSize({width:390,height:900});await page.goto(base+'/bar-pos.html');result.barNav=await page.locator('header nav a').evaluateAll(xs=>xs.map(x=>({text:x.textContent,width:x.getBoundingClientRect().width,height:x.getBoundingClientRect().height})));result.contrast=await page.locator('.installer-security-hint').evaluate(x=>({foreground:getComputedStyle(x).color,background:getComputedStyle(x.closest('section')).backgroundColor}));
+// Reach each lazy asset before judging load failures. Also reveal page sections.
+result.afterScroll=[];for(const name of ['index','restaurant-pos','packages']){await page.goto(base+'/'+name+'.html');if(await page.locator('.cookie-decline').count())await page.locator('.cookie-decline').click();for(let y=0;y<await page.evaluate(()=>document.documentElement.scrollHeight);y+=650){await page.evaluate(y=>scrollTo(0,y),y);await page.waitForTimeout(40)}await page.waitForTimeout(700);result.afterScroll.push({name,images:await page.evaluate(()=>[...document.images].filter(x=>x.getAttribute('src')&&(!x.complete||!x.naturalWidth)).map(x=>x.getAttribute('src'))),hiddenSections:await page.evaluate(()=>[...document.querySelectorAll('.section.reveal:not(.is-visible)')].map(x=>({height:x.offsetHeight,text:x.querySelector('h2')?.textContent})))});if(name==='index'){if(await page.locator('#product-apps').count())await page.locator('#product-apps').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(out,'product-chooser-390.png')})}if(name==='packages'){await page.locator('[data-hotel-addon-builder]').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(out,'hotel-builder-390.png')})}}
+await context.close();}catch(e){result.error=e.stack}finally{await fs.writeFile(path.join(out,'followup-evidence.json'),JSON.stringify(result,null,2));if(browser)await browser.close();await new Promise(r=>server.close(r))}console.log(JSON.stringify(result));

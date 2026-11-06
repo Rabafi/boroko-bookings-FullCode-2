@@ -51,7 +51,7 @@ export interface QueryScope extends Payload {
 }
 
 export interface QueryResult extends Payload {
-  data: Payload | unknown[]
+  data: Payload | unknown[] | null
   pagination: QueryPagination
   snapshot_watermark: number
   scope: QueryScope
@@ -156,9 +156,12 @@ export function validateCommandOutcome(value: unknown): CommandOutcome {
   return outcome as CommandOutcome
 }
 
-export function validateQueryResult(value: unknown): QueryResult {
+export function validateQueryResult(value: unknown, options: { allowNullData?: boolean } = {}): QueryResult {
   const result = object(value, 'query')
-  if (Array.isArray(result.data)) {
+  if (result.data === null && options.allowNullData === true) {
+    // A singular read may legitimately find no record. Callers must opt in
+    // for the one documented nullable query; null is never a generic success.
+  } else if (Array.isArray(result.data)) {
     array(result.data, 'query.data', { max: 10000 })
   } else {
     object(result.data, 'query.data')
@@ -232,7 +235,16 @@ function validateEventRecord(value: unknown, index: number): EventRecord {
 }
 
 export function validateEventFeed(value: unknown): EventFeed {
-  const feed = object(value, 'events')
+  const rawFeed = object(value, 'events')
+  // PostgreSQL max(commit_sequence) is NULL on an empty outbox in older local
+  // schemas. An empty event page has an exact zero watermark; normalize only
+  // that known aggregate case while continuing to reject other null cursors.
+  const feed = rawFeed.latest_event_sequence === null
+    && Array.isArray(rawFeed.events)
+    && rawFeed.events.length === 0
+    && rawFeed.event_count === 0
+    ? { ...rawFeed, latest_event_sequence: 0 }
+    : rawFeed
   const events = array(feed.events, 'events.events', { max: 1000 })
     .map((event, index) => validateEventRecord(event, index))
   const eventCount = integer(feed.event_count, 'events.event_count', { min: 0, max: 1000 })

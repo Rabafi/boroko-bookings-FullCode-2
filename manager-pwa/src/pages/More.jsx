@@ -36,6 +36,10 @@ import {
   subscribeToAppUpdate
 } from '../lib/appUpdate'
 
+/** @typedef {{sound: boolean, vibration: boolean, urgentOnly: boolean, frontDeskReplies: boolean}} NotificationSettingsExpectedView */
+/** @typedef {{lodge_id: string, lodge_display_name?: string | null, product_family_label?: string | null, product_family?: string | null, package_label?: string | null, pwa_enabled?: boolean, pwa_feature_enabled?: boolean}} ManagerMembershipExpectedView */
+
+/** @param {{to: string, title: string, sub: string, icon: import('lucide-react').LucideIcon}} props */
 function SectionCard({ to, title, sub, icon: Icon }) {
   return (
     <Link to={to} className="bg-gray-800 rounded-2xl p-3 flex items-center gap-3 active:scale-[0.98] transition-transform">
@@ -50,6 +54,7 @@ function SectionCard({ to, title, sub, icon: Icon }) {
   )
 }
 
+/** @param {{label: string, children: import('react').ReactNode}} props */
 function SectionGroup({ label, children }) {
   return (
     <div>
@@ -59,6 +64,7 @@ function SectionGroup({ label, children }) {
   )
 }
 
+/** @param {{label: string, description: string, icon: import('lucide-react').LucideIcon, enabled: boolean, onChange: () => void}} props */
 function NotifToggle({ label, description, icon: Icon, enabled, onChange }) {
   return (
     <div className="bg-gray-800 rounded-2xl p-3 flex items-center gap-3">
@@ -82,22 +88,28 @@ function NotifToggle({ label, description, icon: Icon, enabled, onChange }) {
 }
 
 export default function More() {
-  const { logout, user, availableMemberships, switchMembership } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { logout, user, availableMemberships, switchMembership } = /** @type {Omit<ReturnType<typeof useAuth>, 'user'> & {user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const { can, features, isEnabled } = useFeatures()
   const shell = getPwaShellConfig(user?.product_family)
   const isRestaurant = shell.restaurantModules === true
-  const barOnly = isRestaurant && isBarHospitalityMode(user?.hospitality_mode)
+  const barOnly = isRestaurant && isBarHospitalityMode(/** @type {string | null | undefined} */ (user?.hospitality_mode))
   const isAccommodation = shell.accommodationModules === true
   const isHotel = shell.productFamily === 'hotel'
   const isLodge = shell.productFamily === 'lodge-camp'
   const isDark = document.documentElement.classList.contains('dark-mode')
-  const [notifPrefs, setNotifPrefs] = useState(() => getNotificationSettings())
-  const [switchLoadingId, setSwitchLoadingId] = useState(null)
+  // Persisted notification settings are not validated by the getter; retain
+  // this page's existing expected property view at that boundary.
+  const [notifPrefs, setNotifPrefs] = useState(() => /** @type {NotificationSettingsExpectedView} */ (getNotificationSettings()))
+  const [switchLoadingId, setSwitchLoadingId] = useState(/** @type {string | null} */ (null))
   const [switchError, setSwitchError] = useState('')
   const [updateState, setUpdateState] = useState(() => getAppUpdateSnapshot())
 
-  useEffect(() => subscribeToAppUpdate(setUpdateState), [])
+  // Keep the original cleanup function; React ignores its existing boolean
+  // return value when it is invoked during effect cleanup.
+  useEffect(() => /** @type {() => void} */ (subscribeToAppUpdate(setUpdateState)), [])
 
+  /** @param {keyof NotificationSettingsExpectedView} key */
   const updateNotifPref = (key) => {
     const next = { ...notifPrefs, [key]: !notifPrefs[key] }
     setNotifPrefs(next)
@@ -106,13 +118,14 @@ export default function More() {
     if (key === 'vibration' && next.vibration) vibratePulse('reply', { vibration: true })
   }
 
+  /** @param {ManagerMembershipExpectedView} membership */
   const chooseBusiness = async (membership) => {
     setSwitchError('')
     setSwitchLoadingId(membership?.lodge_id || null)
     try {
       await switchMembership(membership)
     } catch (error) {
-      setSwitchError(error.message || 'Could not switch businesses.')
+      setSwitchError((/** @type {{message?: string}} */ (error)).message || 'Could not switch businesses.')
     } finally {
       setSwitchLoadingId(null)
     }
@@ -125,8 +138,8 @@ export default function More() {
       <div className="bg-gray-900 px-4 pt-2 pb-3">
         <h1 className="text-lg font-bold text-white">Menu</h1>
         <p className="text-xs text-gray-400">
-          {shell.productFamilyLabel}
-          {user?.package_label ? ` · ${user.package_label}` : ''}
+          {/** @type {string} */ (shell.productFamilyLabel)}
+          {user?.package_label ? ` · ${/** @type {string} */ (user.package_label)}` : ''}
           {' · '}all manager pages in one place
         </p>
       </div>
@@ -135,7 +148,7 @@ export default function More() {
         {hasMultipleBusinesses && (
           <SectionGroup label="Businesses">
             <div className="space-y-2">
-              {availableMemberships.map((membership) => {
+              {/** @type {ManagerMembershipExpectedView[]} */ (availableMemberships).map((membership) => {
                 const lodgeId = String(membership?.lodge_id || '').trim().toLowerCase()
                 const current = lodgeId === String(user?.lodge_id || '').trim().toLowerCase()
                 const selectable = membership?.pwa_enabled === true && membership?.pwa_feature_enabled === true
@@ -193,32 +206,32 @@ export default function More() {
           {isAccommodation && can('prepayments.view') && <SectionCard to="/prepayments" title="Guest Deposits" sub="Read-only, server-confirmed customer-credit balances" icon={WalletCards} />}
           {isAccommodation && <SectionCard to="/housekeeping" title="Housekeeping" sub="Room readiness and cleaning watch" icon={Wrench} />}
           {isAccommodation && can('maintenance.view') && <SectionCard to="/maintenance" title="Maintenance" sub="Tickets and new requests" icon={Wrench} />}
-          {can('pos.reports') && isEnabled('pos') && <SectionCard to="/pos" title={isRestaurant ? 'Sales' : 'POS Sales'} sub="Live sales and transaction history" icon={ShoppingCart} />}
-          {isRestaurant && (!barOnly || features?.owner_mobile_view === true) && <SectionCard to="/restaurant-owner" title={barOnly ? 'Bar Owner View' : 'Owner View'} sub={barOnly ? "Today's bar overview" : "Today's restaurant overview"} icon={Briefcase} />}
-          {isRestaurant && <SectionCard to="/restaurant/service" title={barOnly ? 'Open Tabs' : 'Service Watch'} sub={barOnly ? 'Open bar tabs and live settlement flow' : 'Open tables, tabs, and live service flow'} icon={ShoppingCart} />}
+          {can('pos.reports') && isEnabled('pos') && <SectionCard to="/pos" title={isRestaurant ? 'Sales' : 'POS Sales'} sub={barOnly ? 'Available after verified local sync is connected' : 'Live sales and transaction history'} icon={ShoppingCart} />}
+          {isRestaurant && (!barOnly || features?.owner_mobile_view === true) && <SectionCard to="/restaurant-owner" title={barOnly ? 'Bar Owner View' : 'Owner View'} sub={barOnly ? 'Waiting for verified local sync' : "Today's restaurant overview"} icon={Briefcase} />}
+          {isRestaurant && !barOnly && <SectionCard to="/restaurant/service" title="Service Watch" sub="Open tables, tabs, and live service flow" icon={ShoppingCart} />}
           {isRestaurant && !barOnly && <SectionCard to="/restaurant/floor" title="Floor & Service" sub="Live table readiness and service status" icon={Building2} />}
           {isRestaurant && !barOnly && <SectionCard to="/restaurant/kitchen-workspace" title="Kitchen" sub="Live prep tickets and ticket status" icon={Package} />}
-          {isRestaurant && <SectionCard to="/restaurant/menu-production" title={barOnly ? 'Bar Products' : 'Menu & Products'} sub="Live POS catalogue and availability" icon={Package} />}
-          {isRestaurant && <SectionCard to="/restaurant/cash-close" title="Cash & Close" sub="Sales, returns, cash, and close readiness" icon={WalletCards} />}
+          {isRestaurant && !barOnly && <SectionCard to="/restaurant/menu-production" title="Menu & Products" sub="Live POS catalogue and availability" icon={Package} />}
+          {isRestaurant && !barOnly && <SectionCard to="/restaurant/cash-close" title="Cash & Close" sub="Sales, returns, cash, and close readiness" icon={WalletCards} />}
           {isAccommodation && can('conference.view') && isEnabled('conference') && <SectionCard to="/conference" title="Events & Venues" sub="Event and venue bookings" icon={Building2} />}
           {isAccommodation && can('pool.view') && isEnabled('pool') && <SectionCard to="/day-use" title="Day Use" sub="Walk-in activity visibility" icon={Briefcase} />}
-          {can('inventory.view') && isEnabled('inventory') && <SectionCard to="/inventory" title={barOnly ? 'Bar Stock' : isRestaurant ? 'Stock' : 'Inventory'} sub="Low stock and replenishment watch" icon={Package} />}
+          {can('inventory.view') && isEnabled('inventory') && <SectionCard to="/inventory" title={barOnly ? 'Bar Stock' : isRestaurant ? 'Stock' : 'Inventory'} sub={barOnly ? 'Available after verified local sync is connected' : 'Low stock and replenishment watch'} icon={Package} />}
           {isAccommodation && can('supplies.view') && isEnabled('supplies') && <SectionCard to="/supplies" title="Room Supplies" sub="Store and in-room consumables" icon={Package} />}
         </SectionGroup>
 
         <SectionGroup label="Finance and reporting">
-          {can('dashboard.view') && <SectionCard to="/performance" title="Activity & performance" sub="Cross-property operations, trends, and recent activity" icon={Activity} />}
+          {can('dashboard.view') && <SectionCard to="/performance" title="Activity & performance" sub={barOnly ? 'Available after verified local sync is connected' : 'Cross-property operations, trends, and recent activity'} icon={Activity} />}
           {can('reports.view') && isEnabled('reports') && (
             <SectionCard
               to="/reports"
               title="Reports"
-              sub={isRestaurant ? 'Sales, expenses, and operating snapshot' : 'Cash, occupancy, usage, and operating snapshot'}
+              sub={barOnly ? 'Available after verified local sync is connected' : isRestaurant ? 'Sales, expenses, and operating snapshot' : 'Cash, occupancy, usage, and operating snapshot'}
               icon={FileText}
             />
           )}
           {isAccommodation && can('quotations.view') && <SectionCard to="/quotations" title="Quotations" sub="Review quotes and conversion status" icon={ClipboardCheck} />}
           {isAccommodation && can('invoices.view') && <SectionCard to="/invoices" title="Invoices" sub="Guest invoices, paid amounts, and balances" icon={ReceiptText} />}
-          {can('expenses.view') && <SectionCard to="/expenses" title="Expenses" sub="Operating spend and maintenance costs" icon={WalletCards} />}
+          {can('expenses.view') && <SectionCard to="/expenses" title="Expenses" sub={barOnly ? 'Available after verified local sync is connected' : 'Operating spend and maintenance costs'} icon={WalletCards} />}
           {can('audit.view') && !barOnly && <SectionCard to="/audit" title="Financial Audit" sub="Payment activity and validation signals" icon={Shield} />}
         </SectionGroup>
 
@@ -275,8 +288,8 @@ export default function More() {
             onChange={() => updateNotifPref('urgentOnly')}
           />
           <NotifToggle
-            label="Front-desk replies"
-            description="Get notified when front desk responds"
+            label={barOnly ? 'Bar support replies' : 'Front-desk replies'}
+            description={barOnly ? 'Get notified when Bar Support responds' : 'Get notified when front desk responds'}
             icon={MessageCircle}
             enabled={notifPrefs.frontDeskReplies}
             onChange={() => updateNotifPref('frontDeskReplies')}

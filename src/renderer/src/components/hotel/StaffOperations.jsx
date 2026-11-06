@@ -3,18 +3,45 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Users, Calendar, CheckSquare, BookOpen, BarChart3, Layers, Clock, Plus, Edit3, Trash2, RefreshCw, AlertTriangle, X, CheckCircle } from 'lucide-react'
 import { ErrorNotice } from '../shared/ErrorNotice'
 
+/** Expected RPC/cache view; neither the values nor nested cache rows are runtime-validated here. */
+/** @typedef {Record<string, unknown> & {id: string, name: string, description: string|null, color: string|null, is_active: boolean}} StaffDepartmentView */
+/** @typedef {Record<string, unknown> & {id: string, name: string, start_time: string, end_time: string, department_id: string|null, department_name: string|null, required_roles: string[], break_duration_minutes: number, is_active: boolean}} StaffShiftTemplateView */
+/** @typedef {Record<string, unknown> & {id: string, name: string, color: string|null}} StaffTaskCategoryView */
+/** @typedef {Record<string, unknown> & {id: string, title: string, description: string|null, staff_id: string, staff_name: string, task_category_id: string|null, category_name: string|null, category_color: string|null, priority: string, status: string, due_date: string|null}} StaffTaskView */
+/** @typedef {{id: string, title: string, is_optional: boolean}} StaffChecklistItemView */
+/** @typedef {Record<string, unknown> & {id: string, title: string, description: string|null, department_id: string|null, department_name: string|null, is_required: boolean, items: StaffChecklistItemView[]}} StaffChecklistView */
+/** @typedef {Record<string, unknown> & {id: string, staff_id: string, staff_name: string, checklist_id: string, checklist_title: string|null, completed_at: string, completed_by: string|null, completed_by_name: string|null, notes: string|null}} StaffTrainingRecordView */
+/** @typedef {Record<string, unknown> & {id: string, from_staff_id: string, from_staff_name: string, to_staff_id: string, to_staff_name: string, shift_date: string, notes: string|null, pending_tasks: unknown, completed_at: string|null}} StaffHandoverView */
+/** @typedef {Record<string, unknown> & {staff_id: string, staff_name: string, metric_date: string, tasks_completed: number, tasks_on_time: number, avg_completion_time_minutes: number|null, incidents: number, rating: number|null}} StaffProductivityMetricView */
+/** @typedef {{total_tasks?: number|null, on_time_tasks?: number|null, total_incidents?: number|null, avg_rating?: number|null, staff_count?: number|null}} StaffProductivitySummaryView */
+/** @typedef {{metrics: StaffProductivityMetricView[], summary: StaffProductivitySummaryView}} StaffProductivityView */
+/** @typedef {{id?: string, name: string, description: string, color: string, is_active: boolean}} StaffDepartmentDraft */
+/** @typedef {{id?: string, name: string, start_time: string|undefined, end_time: string|undefined, department_id: string|null, required_roles: string[], break_duration_minutes: number, is_active: boolean}} StaffShiftTemplateDraft */
+/** @typedef {{id?: string, title: string, description: string, staff_id: string, task_category_id: string, priority: string, due_date: string}} StaffTaskDraft */
+/** @typedef {{checklist_id: string, staff_id: string, notes: string}} StaffTrainingDraft */
+/** @typedef {{from_staff_id: string, to_staff_id: string, shift_date: string, notes: string, pending_tasks: unknown[]}} StaffHandoverDraft */
+/** @typedef {{type: 'department'|'template', id: string, name: string}} StaffDeleteConfirmation */
+/** @typedef {{message?: string}} StaffThrownMessageExpectedView */
+/** @typedef {{success?: unknown, error?: string}} StaffDeleteResultExpectedView */
+/** @typedef {{staff_id: unknown, staff_name: string, days: number, completed: number, onTime: number, incidents: number, timeTotal: number, timeTasks: number, ratingTotal: number, ratingDays: number}} StaffProductivityRollupRow */
+/** @typedef {{productivityStartDate?: string, productivityEndDate?: string}} StaffOperationsProductivityRangeOptions */
+
+/** @param {unknown[]} [metrics] */
 function rollupProductivity(metrics = []) {
+  /** @type {Map<string, StaffProductivityRollupRow>} */
   const grouped = new Map()
-  for (const metric of Array.isArray(metrics) ? metrics : []) {
+  for (const value of Array.isArray(metrics) ? /** @type {unknown[]} */ (metrics) : []) {
+    const metric = value
     if (!metric || typeof metric !== 'object') continue
-    const name = String(metric.staff_name || metric.user_name || 'Unknown').trim() || 'Unknown'
-    const key = String(metric.staff_id || name)
-    const row = grouped.get(key) || { staff_id: metric.staff_id || null, staff_name: name, days: 0, completed: 0, onTime: 0, incidents: 0, timeTotal: 0, timeTasks: 0, ratingTotal: 0, ratingDays: 0 }
-    const completed = Math.max(0, Number(metric.tasks_completed) || 0)
-    const onTime = Math.min(completed, Math.max(0, Number(metric.tasks_on_time) || 0))
-    const avgTime = Number(metric.avg_completion_time_minutes)
-    const rating = Number(metric.rating)
-    row.days += 1; row.completed += completed; row.onTime += onTime; row.incidents += Math.max(0, Number(metric.incidents) || 0)
+    const metricView = /** @type {Record<string, unknown>} */ (metric)
+    const name = String(metricView.staff_name || metricView.user_name || 'Unknown').trim() || 'Unknown'
+    const key = String(metricView.staff_id || name)
+    const row = grouped.get(key) || { staff_id: metricView.staff_id || null, staff_name: name, days: 0, completed: 0, onTime: 0, incidents: 0, timeTotal: 0, timeTasks: 0, ratingTotal: 0, ratingDays: 0 }
+    const completed = Math.max(0, Number(metricView.tasks_completed) || 0)
+    const onTime = Math.min(completed, Math.max(0, Number(metricView.tasks_on_time) || 0))
+    const avgTime = Number(metricView.avg_completion_time_minutes)
+    const rating = Number(metricView.rating)
+    row.days += 1; row.completed += completed; row.onTime += onTime; row.incidents += Math.max(0, Number(metricView.incidents) || 0)
     if (Number.isFinite(avgTime) && completed > 0) { row.timeTotal += avgTime * completed; row.timeTasks += completed }
     if (Number.isFinite(rating)) { row.ratingTotal += rating; row.ratingDays += 1 }
     grouped.set(key, row)
@@ -23,6 +50,7 @@ function rollupProductivity(metrics = []) {
 }
 
 
+/** @type {Array<[string, string, import('lucide-react').LucideIcon]>} */
 const TABS = [
   ['schedule', 'Schedule', Calendar],
   ['departments', 'Departments', Layers],
@@ -33,6 +61,7 @@ const TABS = [
   ['productivity', 'Productivity', BarChart3]
 ]
 
+/** @param {string} p */
 function priorityColor(p) {
   if (p === 'urgent') return 'text-red-600 bg-red-50'
   if (p === 'high') return 'text-orange-600 bg-orange-50'
@@ -40,6 +69,7 @@ function priorityColor(p) {
   return 'text-slate-600 bg-slate-50'
 }
 
+/** @param {string} s */
 function statusColor(s) {
   if (s === 'completed') return 'text-emerald-600 bg-emerald-50'
   if (s === 'in_progress') return 'text-blue-600 bg-blue-50'
@@ -47,6 +77,7 @@ function statusColor(s) {
   return 'text-amber-600 bg-amber-50'
 }
 
+/** @param {string} s */
 function statusLabel(s) {
   if (s === 'in_progress') return 'In Progress'
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Pending'
@@ -54,27 +85,27 @@ function statusLabel(s) {
 
 export default function StaffOperations() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [warnings, setWarnings] = useState([])
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [warnings, setWarnings] = useState(/** @type {string[]} */ ([]))
   const [activeTab, setActiveTab] = useState('schedule')
 
-  const [departments, setDepartments] = useState([])
-  const [templates, setTemplates] = useState([])
-  const [categories, setCategories] = useState([])
-  const [tasks, setTasks] = useState([])
-  const [checklists, setChecklists] = useState([])
-  const [trainingRecords, setTrainingRecords] = useState([])
-  const [handovers, setHandovers] = useState([])
-  const [productivity, setProductivity] = useState({ metrics: [], summary: {} })
+  const [departments, setDepartments] = useState(/** @type {StaffDepartmentView[]} */ ([]))
+  const [templates, setTemplates] = useState(/** @type {StaffShiftTemplateView[]} */ ([]))
+  const [categories, setCategories] = useState(/** @type {StaffTaskCategoryView[]} */ ([]))
+  const [tasks, setTasks] = useState(/** @type {StaffTaskView[]} */ ([]))
+  const [checklists, setChecklists] = useState(/** @type {StaffChecklistView[]} */ ([]))
+  const [trainingRecords, setTrainingRecords] = useState(/** @type {StaffTrainingRecordView[]} */ ([]))
+  const [handovers, setHandovers] = useState(/** @type {StaffHandoverView[]} */ ([]))
+  const [productivity, setProductivity] = useState(/** @type {StaffProductivityView} */ ({ metrics: [], summary: {} }))
   const [productivityStartDate, setProductivityStartDate] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
   const [productivityEndDate, setProductivityEndDate] = useState(() => new Date().toISOString().slice(0, 10))
 
-  const [deptModal, setDeptModal] = useState(null)
-  const [templateModal, setTemplateModal] = useState(null)
-  const [taskModal, setTaskModal] = useState(null)
-  const [trainingModal, setTrainingModal] = useState(null)
-  const [handoverModal, setHandoverModal] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [deptModal, setDeptModal] = useState(/** @type {StaffDepartmentDraft|null} */ (null))
+  const [templateModal, setTemplateModal] = useState(/** @type {StaffShiftTemplateDraft|null} */ (null))
+  const [taskModal, setTaskModal] = useState(/** @type {StaffTaskDraft|null} */ (null))
+  const [trainingModal, setTrainingModal] = useState(/** @type {StaffTrainingDraft|null} */ (null))
+  const [handoverModal, setHandoverModal] = useState(/** @type {false|StaffHandoverDraft} */ (false))
+  const [confirmDelete, setConfirmDelete] = useState(/** @type {StaffDeleteConfirmation|null} */ (null))
   const [filterDept, setFilterDept] = useState('')
 
   const today = new Date().toISOString().slice(0, 10)
@@ -85,17 +116,22 @@ export default function StaffOperations() {
     return new Date(d.setDate(diff)).toISOString().slice(0, 10)
   }, [])
 
-  const loadAll = useCallback(async (options = {}) => {
+  const loadAll = useCallback(/** @param {unknown} [options] */ async (options = {}) => {
+    // The button passes its click event directly; this type-only view preserves
+    // the existing property reads without treating the event or data as validated.
+    const productivityOptions = /** @type {StaffOperationsProductivityRangeOptions} */ (options)
     setLoading(true)
     setError(null)
     setWarnings([])
+    /** @type {string[]} */
     const warn = []
+    /** @param {string} label @param {Promise<unknown>} promise */
     const settle = async (label, promise) => {
-      try { return await promise } catch (e) { warn.push(`${label}: ${e?.message || 'failed'}`); return null }
+      try { return await promise } catch (e) { warn.push(`${label}: ${/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'failed'}`); return null }
     }
     try {
-      const rangeStart = options.productivityStartDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
-      const rangeEnd = options.productivityEndDate || today
+      const rangeStart = productivityOptions.productivityStartDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const rangeEnd = productivityOptions.productivityEndDate || today
       const [depts, tpls, cats, tks, cls, records, hovers, prod] = await Promise.all([
         settle('Departments', window.api.staffOperations.getStaffDepartments()),
         settle('Templates', window.api.staffOperations.getShiftTemplates()),
@@ -111,16 +147,21 @@ export default function StaffOperations() {
         return
       }
       setWarnings(warn)
-      if (depts) setDepartments(depts)
-      if (tpls) setTemplates(tpls)
-      if (cats) setCategories(cats)
-      if (tks) setTasks(tks)
-      if (cls) setChecklists(cls)
-      if (records) setTrainingRecords(records)
-      if (hovers) setHandovers(hovers)
-      if (prod) setProductivity(prod)
+      // These views describe only the existing success-path consumer
+      // expectation. Main can fulfill with {success:false,error}, which preload
+      // forwards unchanged. These assertions do not validate the response.
+      // Preserve the current truthiness assignments and downstream failure
+      // behavior; this remains an unresolved contract/behavior defect.
+      if (depts) setDepartments(/** @type {StaffDepartmentView[]} */ (depts))
+      if (tpls) setTemplates(/** @type {StaffShiftTemplateView[]} */ (tpls))
+      if (cats) setCategories(/** @type {StaffTaskCategoryView[]} */ (cats))
+      if (tks) setTasks(/** @type {StaffTaskView[]} */ (tks))
+      if (cls) setChecklists(/** @type {StaffChecklistView[]} */ (cls))
+      if (records) setTrainingRecords(/** @type {StaffTrainingRecordView[]} */ (records))
+      if (hovers) setHandovers(/** @type {StaffHandoverView[]} */ (hovers))
+      if (prod) setProductivity(/** @type {StaffProductivityView} */ (prod))
     } catch (e) {
-      setError(e?.message || 'Failed to load staff operations')
+      setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to load staff operations')
     } finally {
       setLoading(false)
     }
@@ -129,7 +170,7 @@ export default function StaffOperations() {
   useEffect(() => { loadAll() }, [loadAll])
 
   const deptMap = useMemo(() => {
-    const m = {}
+    const m = /** @type {Record<string, string>} */ ({})
     for (const d of departments) m[d.id] = d.name
     return m
   }, [departments])
@@ -140,7 +181,7 @@ export default function StaffOperations() {
   }, [templates, filterDept])
 
   const tasksByStatus = useMemo(() => {
-    const groups = { pending: [], in_progress: [], completed: [], cancelled: [] }
+    const groups = /** @type {Record<string, StaffTaskView[]>} */ ({ pending: [], in_progress: [], completed: [], cancelled: [] })
     for (const t of tasks) {
       const s = t.status || 'pending'
       if (groups[s]) groups[s].push(t)
@@ -167,16 +208,17 @@ export default function StaffOperations() {
       }
       setDeptModal(null)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to save department') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to save department') }
   }
 
+  /** @param {string} id */
   const handleDeleteDepartment = async (id) => {
     try {
-      const result = await window.api.staffOperations.deleteStaffDepartment(id)
+      const result = /** @type {StaffDeleteResultExpectedView} */ (await window.api.staffOperations.deleteStaffDepartment(id))
       if (result?.success === false) { setError(result.error || 'Cannot delete department'); return }
       setConfirmDelete(null)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to delete department') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to delete department') }
   }
 
   // ── Template handlers ──────────────────────────────────────────────────────
@@ -190,7 +232,7 @@ export default function StaffOperations() {
       }
       setTemplateModal(null)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to save template') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to save template') }
   }
 
   // ── Task handlers ──────────────────────────────────────────────────────────
@@ -204,14 +246,15 @@ export default function StaffOperations() {
       }
       setTaskModal(null)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to save task') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to save task') }
   }
 
+  /** @param {string} id @param {string} notes */
   const handleCompleteTask = async (id, notes) => {
     try {
       await window.api.staffOperations.completeTaskAssignment(id, notes)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to complete task') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to complete task') }
   }
 
   // ── Training handler ───────────────────────────────────────────────────────
@@ -221,17 +264,17 @@ export default function StaffOperations() {
       await window.api.staffOperations.recordTrainingCompletion(trainingModal.staff_id, trainingModal.checklist_id, trainingModal.notes)
       setTrainingModal(null)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to record training') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to record training') }
   }
 
   // ── Handover handler ───────────────────────────────────────────────────────
   const handleSaveHandover = async () => {
-    if (!handoverModal.from_staff_id || !handoverModal.to_staff_id) return
+    if (!(/** @type {StaffHandoverDraft} */ (handoverModal)).from_staff_id || !(/** @type {StaffHandoverDraft} */ (handoverModal)).to_staff_id) return
     try {
       await window.api.staffOperations.createShiftHandover(handoverModal)
       setHandoverModal(false)
       loadAll()
-    } catch (e) { setError(e?.message || 'Failed to create handover') }
+    } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Failed to create handover') }
   }
 
   if (loading && !departments.length && !tasks.length) {
@@ -909,7 +952,7 @@ export default function StaffOperations() {
             </div>
             <div className="flex gap-2">
               <button onClick={() => setConfirmDelete(null)} className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Cancel</button>
-              <button onClick={() => confirmDelete.type === 'department' ? handleDeleteDepartment(confirmDelete.id) : (async () => { try { await window.api.staffOperations.deleteShiftTemplate(confirmDelete.id); setConfirmDelete(null); loadAll() } catch (e) { setError(e?.message || 'Delete failed') } })()} className="flex-1 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 transition-colors">Delete</button>
+              <button onClick={() => confirmDelete.type === 'department' ? handleDeleteDepartment(confirmDelete.id) : (async () => { try { await window.api.staffOperations.deleteShiftTemplate(confirmDelete.id); setConfirmDelete(null); loadAll() } catch (e) { setError(/** @type {StaffThrownMessageExpectedView|null|undefined} */ (e)?.message || 'Delete failed') } })()} className="flex-1 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 transition-colors">Delete</button>
             </div>
           </div>
         </div>

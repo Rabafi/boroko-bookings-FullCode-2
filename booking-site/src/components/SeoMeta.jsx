@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router'
+import { buildPublicBookingUrl } from '../lib/publicSiteUrl.js'
 
 /**
  * SeoMeta — injects per-page SEO tags into <head> via runtime DOM manipulation.
@@ -15,10 +16,7 @@ export default function SeoMeta({
   const location = useLocation()
 
   useEffect(() => {
-    const baseUrl = window.location.origin
-    const canonical = canonicalPath
-      ? `${baseUrl}${canonicalPath}`
-      : `${baseUrl}${location.pathname}`
+    const canonical = buildPublicBookingUrl(canonicalPath || location.pathname)
 
     // Title
     document.title = title ? `${title} — Reservations` : 'Reservations'

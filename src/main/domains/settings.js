@@ -68,16 +68,59 @@ const DEFAULT_SETTINGS = {
   setup_complete: false,
   operating_profile: {}
 };
+/** @typedef {Record<string, unknown> & {lodge_id: string | null, setup_complete?: boolean, property_type?: string, business_type?: string, operating_profile?: Record<string, unknown>}} SettingsRecordExpectedView */
+/** @typedef {Error & {code?: string}} SettingsErrorExpectedView */
+/**
+ * @typedef {object} SettingsInputExpectedView
+ * @property {string} [lodge_name]
+ * @property {string} [company_name]
+ * @property {string} [address]
+ * @property {string} [city]
+ * @property {string} [country]
+ * @property {string} [phone]
+ * @property {string} [email]
+ * @property {string} [website]
+ * @property {string} [vat_number]
+ * @property {boolean} [vat_enabled]
+ * @property {number|string} [vat_rate]
+ * @property {string} [currency]
+ * @property {string} [logo]
+ * @property {string} [business_type]
+ * @property {string} [property_type]
+ * @property {boolean} [assistant_enabled]
+ * @property {string} [slug]
+ * @property {string} [booking_tagline]
+ * @property {string} [booking_description]
+ * @property {string} [hero_image]
+ * @property {string} [whatsapp_number]
+ * @property {string} [booking_check_in_from]
+ * @property {string} [booking_check_out_until]
+ * @property {string} [booking_cancellation_policy]
+ * @property {string} [booking_payment_terms]
+ * @property {string} [booking_house_rules]
+ * @property {unknown} [booking_faq]
+ * @property {boolean} [public_offer_rooms]
+ * @property {boolean} [public_offer_multi_room]
+ * @property {boolean} [public_offer_full_lodge]
+ * @property {boolean} [public_offer_day_use]
+ * @property {boolean} [public_offer_events]
+ * @property {Record<string, unknown>} [operating_profile]
+ */
 const SETTINGS_QUERY_TIMEOUT_MS = 15000;
 const SETTINGS_BACKGROUND_REFRESH_TIMEOUT_MS = 10000;
 const SETTINGS_SAVE_TIMEOUT_MS = 15000;
+// Infrastructure installs `state.supabase` before online settings operations.
+// The direct type views below preserve the same access and its existing throw
+// if the client is absent; they add no guard or fallback.
+/** @type {Promise<void> | null} */
 let settingsRefreshInFlight = null;
 
+/** @template T @param {PromiseLike<T>} promise @param {number} timeoutMs @param {string} message @returns {Promise<T>} */
 async function withTimeout(promise, timeoutMs, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      const error = new Error(message);
+      const error = /** @type {SettingsErrorExpectedView} */ (new Error(message));
       error.code = 'settings_save_timeout';
       reject(error);
     }, timeoutMs);
@@ -96,8 +139,9 @@ function getDefaultSettings() {
   };
 }
 
+/** @param {string | null} [targetLodgeId] */
 async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
-  const queryPromise = state.supabase.from('settings').select('*').eq('lodge_id', targetLodgeId).maybeSingle();
+  const queryPromise = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').select('*').eq('lodge_id', targetLodgeId).maybeSingle();
   const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('settings query timeout')), SETTINGS_QUERY_TIMEOUT_MS));
   let result = await Promise.race([queryPromise, timeoutPromise]);
   if (!result.error) {
@@ -106,11 +150,13 @@ async function getRemoteSettingsRecord(targetLodgeId = state.lodgeId) {
   if (!/column .*lodge_id/i.test(result.error.message || '')) {
     throw new Error(result.error.message);
   }
-  const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
+  const err = /** @type {SettingsErrorExpectedView} */ (new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.'));
   err.code = 'backend_auth_schema_outdated';
   throw err;
 }
 
+/** @param {Record<string, unknown> & {lodge_id?: unknown}} [row] */
+/** @param {Record<string, unknown> & {lodge_id?: unknown}} [row] @returns {SettingsRecordExpectedView} */
 function normalizeSettingsRow(row = {}) {
   return {
     ...row,
@@ -118,8 +164,9 @@ function normalizeSettingsRow(row = {}) {
   };
 }
 
+/** @returns {SettingsRecordExpectedView | null} */
 function getCachedSettings() {
-  const cached = readCache('settings');
+  const cached = /** @type {Array<Record<string, unknown>>} */ (readCache('settings'));
   return cached[0] ? normalizeSettingsRow(cached[0]) : null;
 }
 
@@ -140,13 +187,14 @@ function refreshSettingsCacheInBackground() {
         updateProfileMetadata(state.lodgeId, { label: profileLabelFromSettings(normalized, activeProfile.label) });
       }
     } catch (error) {
-      console.warn('[SETTINGS] background refresh delayed:', error?.message || error);
+      console.warn('[SETTINGS] background refresh delayed:', /** @type {{message?: unknown}|null|undefined} */ (error)?.message || error);
     } finally {
       settingsRefreshInFlight = null;
     }
   })();
 }
 
+/** @param {string} [message] */
 function isRowLevelSecurityError(message = '') {
   return /row-level security|violates row-level security|permission denied for table settings/i.test(String(message || ''));
 }
@@ -156,6 +204,7 @@ function isRowLevelSecurityError(message = '') {
  * app_lodge_access requires an existing lodge session/user. Prefer service-role
  * admin client when available, otherwise the security-definer bootstrap RPC.
  */
+/** @param {Record<string, unknown> & {lodge_id: string | null}} settings @param {{skippedColumns?: string[], timeoutMs?: number}} [options] */
 async function bootstrapRemoteSettingsRecord(settings, { skippedColumns = [], timeoutMs = SETTINGS_SAVE_TIMEOUT_MS } = {}) {
   if (state.adminDb) {
     const result = await withTimeout(
@@ -173,23 +222,23 @@ async function bootstrapRemoteSettingsRecord(settings, { skippedColumns = [], ti
   }
 
   const { data, error } = await withTimeout(
-    state.supabase.rpc('bootstrap_company_settings', { p_payload: settings }),
+    /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('bootstrap_company_settings', { p_payload: settings }),
     timeoutMs,
     'Saving settings timed out while contacting the server. Check the internet connection and try again.'
   );
   if (error) {
     const message = error.message || 'Could not bootstrap company settings.';
     if (/function .*bootstrap_company_settings|could not find the function/i.test(message)) {
-      const err = new Error(
+      const err = /** @type {SettingsErrorExpectedView} */ (new Error(
         'This database is missing the company setup bootstrap function. Apply migration 20260712120000_bootstrap_company_settings.sql, then retry setup.'
-      );
+      ));
       err.code = 'backend_auth_schema_outdated';
       throw err;
     }
     throw new Error(message);
   }
   if (!data?.success) {
-    const err = new Error(data?.error || 'Could not bootstrap company settings.');
+    const err = /** @type {SettingsErrorExpectedView} */ (new Error(data?.error || 'Could not bootstrap company settings.'));
     err.code = data?.code || 'settings_bootstrap_failed';
     throw err;
   }
@@ -200,6 +249,7 @@ async function bootstrapRemoteSettingsRecord(settings, { skippedColumns = [], ti
   };
 }
 
+/** @param {Record<string, unknown> & {lodge_id: string | null}} settings @param {{allowBootstrap?: boolean, deadline?: number}} [options] */
 async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, deadline = Date.now() + SETTINGS_SAVE_TIMEOUT_MS } = {}) {
   const optionalRemoteColumns = new Set([
     'assistant_enabled',
@@ -229,12 +279,12 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, dead
   for (;;) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      const error = new Error('Saving settings timed out while contacting the server. Check the internet connection and try again.');
+      const error = /** @type {SettingsErrorExpectedView} */ (new Error('Saving settings timed out while contacting the server. Check the internet connection and try again.'));
       error.code = 'settings_save_timeout';
       throw error;
     }
     const result = await withTimeout(
-      state.supabase.from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle(),
+      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').upsert(remoteSettings, { onConflict: 'lodge_id' }).select().maybeSingle(),
       remainingMs,
       'Saving settings timed out while contacting the server. Check the internet connection and try again.'
     );
@@ -249,9 +299,9 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, dead
     // boundary. Surface it as an actionable reload-and-retry error — never
     // mask it as a generic save failure.
     if (/classification_locked/i.test(message)) {
-      const err = new Error(
+      const err = /** @type {SettingsErrorExpectedView} */ (new Error(
         'The property type changed on the server (another device committed a property-type transition, or this device used a stale type). Reload settings to get the current type, then save again without changing the property type — use the Property type section for reclassification.'
-      );
+      ));
       err.code = 'classification_locked';
       throw err;
     }
@@ -274,7 +324,7 @@ async function saveRemoteSettingsRecord(settings, { allowBootstrap = false, dead
     if (!/column .*lodge_id|constraint|on conflict/i.test(message)) {
       throw new Error(message);
     }
-    const err = new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.');
+    const err = /** @type {SettingsErrorExpectedView} */ (new Error('The Supabase settings table is missing the required lodge_id UUID contract. Apply the current settings migration, then try again.'));
     err.code = 'backend_auth_schema_outdated';
     throw err;
   }
@@ -307,27 +357,28 @@ export async function getSettings() {
         return normalized;
       }
     } catch (e) {
-      console.warn('[SETTINGS] load delayed; using defaults until cache is available:', e.message);
+      console.warn('[SETTINGS] load delayed; using defaults until cache is available:', /** @type {{message?: unknown}|null|undefined} */ (e)?.message);
     }
   }
   return getDefaultSettings();
 }
 
+/** @param {string} [expectedLodgeId] */
 export async function getLodgeDiagnostics(expectedLodgeId = '') {
   await checkOnline();
   const expected = normalizeLodgeId(expectedLodgeId);
   const queue = readSyncQueue();
-  const authEntries = readAuthCache().filter((entry) => entry.lodge_id === state.lodgeId);
-  const users = readCache('users').filter((entry) => !entry.lodge_id || entry.lodge_id === state.lodgeId);
+  const authEntries = /** @type {Array<Record<string, unknown>>} */ (readAuthCache()).filter((entry) => entry.lodge_id === state.lodgeId);
+  const users = /** @type {Array<Record<string, unknown>>} */ (readCache('users')).filter((entry) => !entry.lodge_id || entry.lodge_id === state.lodgeId);
   let remoteSettings = null;
   let expectedSettings = null;
   const activeProfile = getActiveProfile();
 
   if (state.isOnline && state.lodgeId) {
-    const { data } = await state.supabase.from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', state.lodgeId).maybeSingle();
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', state.lodgeId).maybeSingle();
     remoteSettings = data || null;
     if (expected) {
-      const { data: match } = await state.supabase.from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', expected).maybeSingle();
+      const { data: match } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').select('lodge_id, lodge_name, company_name, setup_complete, updated_at').eq('lodge_id', expected).maybeSingle();
       expectedSettings = match || null;
     }
   }
@@ -349,6 +400,7 @@ export async function getLodgeDiagnostics(expectedLodgeId = '') {
   };
 }
 
+/** @param {unknown} expectedLodgeId */
 export async function relinkLodge(expectedLodgeId) {
   const nextLodgeId = normalizeLodgeId(expectedLodgeId);
   if (!nextLodgeId) throw new Error('Enter the correct lodge ID first.');
@@ -360,13 +412,13 @@ export async function relinkLodge(expectedLodgeId) {
   await checkOnline();
   const queue = readSyncQueue();
   if (queue.length > 0) {
-    const err = new Error(`This lodge profile has ${queue.length} unsynced offline change(s). Sync them before relinking it.`);
+    const err = /** @type {SettingsErrorExpectedView} */ (new Error(`This lodge profile has ${queue.length} unsynced offline change(s). Sync them before relinking it.`));
     err.code = 'draft_profile_blocked_by_unsynced_changes';
     throw err;
   }
 
   if (state.isOnline) {
-    const { data } = await state.supabase.
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('settings').
     select('lodge_id, lodge_name, company_name, setup_complete').
     eq('lodge_id', nextLodgeId).
@@ -431,13 +483,14 @@ export async function relinkLodge(expectedLodgeId) {
 }
 
 export function resetToNewLodge() {
-  const draftProfile = sanitizeProfile({
+  // randomUUID() supplies the valid UUID required by sanitizeProfile here.
+  const draftProfile = /** @type {NonNullable<ReturnType<typeof sanitizeProfile>>} */ (sanitizeProfile({
     lodge_id: randomUUID(),
     label: 'New Lodge',
     status: PROFILE_STATUS.DRAFT,
     created_at: new Date().toISOString(),
     last_used_at: new Date().toISOString()
-  });
+  }));
 
   const registry = readProfilesRegistry();
   const nextProfiles = registry.profiles.filter((profile) => profile.lodge_id !== draftProfile.lodge_id);
@@ -465,6 +518,10 @@ export function resetToNewLodge() {
   return draftProfile.lodge_id;
 }
 
+/**
+ * @param {SettingsInputExpectedView} data Expected IPC settings payload; this view adds no runtime validation.
+ * @param {{allowBootstrap?: boolean, includeMeta?: boolean}} [options]
+ */
 export async function saveSettings(data, options = {}) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving settings.');
   const allowBootstrap = options?.allowBootstrap === true;
@@ -544,7 +601,7 @@ export async function saveSettings(data, options = {}) {
     // backstop, not the only defense. Setup-incomplete bootstrap still sends
     // classification so first-time setup keeps working.
     const setupLocked = existingSettings?.setup_complete === true;
-    const remotePayload = { ...settings };
+  const remotePayload = /** @type {Record<string, unknown>} */ ({ ...settings });
     if (setupLocked) {
       delete remotePayload.property_type;
       delete remotePayload.business_type;
@@ -568,7 +625,7 @@ export async function saveSettings(data, options = {}) {
       } else {
         try {
           const { error } = await withTimeout(
-            state.supabase.from('settings').
+            /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').
             update({ trial_started_at: new Date().toISOString() }).
             eq('lodge_id', state.lodgeId).
             is('trial_started_at', null),
@@ -626,6 +683,7 @@ export async function saveSettings(data, options = {}) {
   return settings;
 }
 
+/** @param {Record<string, unknown>} profile */
 export async function updateOperatingProfile(profile) {
   if (!state.lodgeId) throw new Error('Choose a lodge profile on this computer before saving operating profile.');
 
@@ -658,25 +716,26 @@ export async function updateOperatingProfile(profile) {
 
   if (state.isOnline) {
     try {
-      const { error } = await state.supabase.from('settings').upsert(
+      const { error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('settings').upsert(
         { lodge_id: state.lodgeId, operating_profile: sendableProfile, updated_at: new Date().toISOString() },
         { onConflict: 'lodge_id' }
       );
       if (error && /classification_locked/i.test(error.message || '')) {
-        const err = new Error(
+        const err = /** @type {SettingsErrorExpectedView} */ (new Error(
           'The property type changed on the server. Reload settings to get the current type, then save again — use the Property type section for reclassification.'
-        );
+        ));
         err.code = 'classification_locked';
         throw err;
       }
     } catch (e) {
-      if (e?.code === 'classification_locked') throw e;
-      console.warn('[SETTINGS] Failed to save operating profile to remote:', e.message);
+      if (/** @type {{code?: unknown}|null|undefined} */ (e)?.code === 'classification_locked') throw e;
+      console.warn('[SETTINGS] Failed to save operating profile to remote:', /** @type {{message?: unknown}|null|undefined} */ (e)?.message);
     }
   }
   return updated;
 }
 
+/** @param {{settings?: SettingsInputExpectedView, admin?: {email?: string, name?: string, password?: string, role?: string}}} setupPayload */
 export async function initializeCompanySetup({ settings, admin }) {
   // A Bar is commissioned through the local Bar server, never as a cloud
   // company. This runs before any profile, queue or Supabase work so a renderer
@@ -710,7 +769,7 @@ export async function initializeCompanySetup({ settings, admin }) {
     );
   }
 
-  const { data: remoteSettings } = await state.supabase.
+  const { data: remoteSettings } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('settings').
   select('setup_complete, lodge_name, company_name').
   eq('lodge_id', state.lodgeId).
@@ -737,8 +796,8 @@ export async function initializeCompanySetup({ settings, admin }) {
     // the first admin user exists (required for multi-product same-email setup).
     savedSettings = await saveSettings(settings, { allowBootstrap: true });
   } catch (error) {
-    if (error?.code) throw error;
-    const message = error?.message || 'Could not save lodge settings.';
+    if (/** @type {{code?: unknown}|null|undefined} */ (error)?.code) throw error;
+    const message = /** @type {{message?: string}|null|undefined} */ (error)?.message || 'Could not save lodge settings.';
     const code = isBackendAuthSchemaError(message)
       ? 'backend_auth_schema_outdated'
       : isRowLevelSecurityError(message)

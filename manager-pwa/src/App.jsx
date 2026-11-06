@@ -7,12 +7,14 @@ import { InboxProvider, useInbox } from './contexts/InboxContext'
 import { getSubscriptionPlan, normalizeSubscriptionPlan } from '@shared/subscriptionPlans'
 import { supabase } from './lib/supabase'
 import BottomNav from './components/BottomNav'
+import BarLocalProjectionBoundary from './components/BarLocalProjectionBoundary'
 import { flushOfflineQueue, getQueueStatus } from './lib/api'
 import { dismissPwaNotification, getNotificationSettings, getPwaQueueHealth, getRuntimeMeta, getUnreadOperationalNotificationCount, listPwaNotifications, markPwaNotificationRead, publishPwaHealth, subscribeRuntimeEvent } from './lib/runtime'
 import { shortDateTime } from './lib/format'
 import { normalizeSupportMessages, supportMessageSide, supportSenderMeta, supportSenderName } from '@shared/supportThreads'
 import { playNotificationSound, vibratePulse } from './lib/notificationSound'
 import { serviceWorkerUrl, shortBuildId } from './lib/buildInfo'
+import BarOwnerProjection from './components/BarOwnerProjection'
 import {
   applyAppUpdate,
   checkForAppUpdate,
@@ -25,7 +27,7 @@ import {
 
 import Login from './pages/Login'
 import ResetPassword from './pages/ResetPassword'
-import { getPwaShellConfig, isPwaRouteAllowed, isRestaurantProductFamily } from './lib/productShell'
+import { getPwaAuthenticatedShellConfig, isPwaRouteAllowed, isRestaurantProductFamily } from './lib/productShell'
 import { getPwaProductLogo } from './lib/productLogos'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -60,7 +62,22 @@ const Prepayments = lazy(() => import('./pages/Prepayments'))
 const HotelRevenue = lazy(() => import('./pages/HotelRevenue'))
 const RoomSupplies = lazy(() => import('./pages/RoomSupplies'))
 
-const ToastContext = createContext({ showToast: () => {} })
+/** @typedef {{id: string, title: string, message: string, tone: 'error'|'queued'|'success'}} ToastItemExpectedView */
+/** @typedef {{title: string, message?: string, tone?: 'error'|'queued'|'success', duration?: number}} ToastOptionsExpectedView */
+/** @typedef {{showToast: (toast: ToastOptionsExpectedView) => void}} ToastContextExpectedView */
+/** @typedef {{id: string, title: string, message: string}} BroadcastExpectedView */
+/** @typedef {Event & {prompt: () => Promise<unknown>}} BeforeInstallPromptExpectedView */
+/** @typedef {{active: boolean, startX: number, startY: number, swiped: boolean, pointerId: number|null, offsetX?: number}} NotificationGestureState */
+/** @typedef {{id: string, title: string, message?: string, category: string, tone?: string, readAt?: unknown, createdAt?: unknown, updatedAt?: unknown, sourceKey?: string, href?: string, lodgeId?: string, meta?: {sentAt?: unknown, updatedAt?: unknown, requestBody?: unknown, deskResponse?: unknown, requestStatus?: unknown, requestCategory?: unknown, requestId?: unknown, messages?: unknown}}} NotificationExpectedView */
+/** @typedef {{lodgeId?: unknown, items?: unknown, latest?: NotificationExpectedView, isNew?: boolean, frontDeskUpdated?: boolean}|null|undefined} NotificationRuntimeEventExpectedView */
+/** @typedef {{frontDeskReplies: boolean, urgentOnly: boolean, sound?: boolean, vibration?: boolean}} NotificationSettingsExpectedView */
+/** @typedef {{updatedAt?: string|null, processed?: unknown, remaining?: unknown}} LastSyncExpectedView */
+/** @typedef {{queueLength: number, blockedCount: number, deadLetterCount: number, unresolvedItems: unknown[], deviceOnly: true, checkedAt: string}} PwaQueueHealthExpectedView */
+
+const ToastContext = createContext(/** @type {ToastContextExpectedView} */ ({ showToast: () => {} }))
+
+/** AppShell renders these consumers only after its existing user guard. */
+/** @typedef {ReturnType<typeof useAuth> & {user: NonNullable<ReturnType<typeof useAuth>['user']>}} AuthenticatedAppAuthExpectedView */
 
 function PageLoader() {
   return (
@@ -70,6 +87,7 @@ function PageLoader() {
   )
 }
 
+/** @type {ServiceWorkerRegistration|null} */
 let swRegistration = null
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -110,6 +128,7 @@ if ('serviceWorker' in navigator) {
   })
 }
 
+/** @param {string} base64String */
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
@@ -117,6 +136,7 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)))
 }
 
+/** @param {{id: unknown, lodge_id: string}} user */
 async function subscribeToPush(user) {
   try {
     if (!swRegistration || !import.meta.env.VITE_VAPID_PUBLIC_KEY) return
@@ -131,14 +151,16 @@ async function subscribeToPush(user) {
       lodge_id: user.lodge_id,
       user_id: user.id,
       endpoint: json.endpoint,
-      p256dh: json.keys.p256dh,
-      auth: json.keys.auth
+      // Successful browser push subscriptions provide these key fields; this assertion preserves the existing catch behavior if absent.
+      p256dh: /** @type {{p256dh: string, auth: string}} */ (json.keys).p256dh,
+      auth: /** @type {{p256dh: string, auth: string}} */ (json.keys).auth
     }, { onConflict: 'lodge_id,endpoint' })
   } catch {
     // Best-effort only.
   }
 }
 
+/** @param {{lodge_id: string}} user */
 async function unsubscribeFromPush(user) {
   try {
     if (!swRegistration) return
@@ -151,6 +173,7 @@ async function unsubscribeFromPush(user) {
   }
 }
 
+/** @returns {[boolean, import('react').Dispatch<import('react').SetStateAction<boolean>>]} */
 function useDarkMode() {
   const [dark, setDark] = useState(() => {
     try {
@@ -179,7 +202,7 @@ function useDarkMode() {
 }
 
 function BroadcastBanners() {
-  const [banners, setBanners] = useState([])
+  const [banners, setBanners] = useState(/** @type {BroadcastExpectedView[]} */ ([]))
 
   useEffect(() => {
     let interval
@@ -227,16 +250,18 @@ function BroadcastBanners() {
 }
 
 function PwaLifecyclePrompts() {
-  const [installPrompt, setInstallPrompt] = useState(null)
+  const [installPrompt, setInstallPrompt] = useState(/** @type {BeforeInstallPromptExpectedView|null} */ (null))
   const [updateState, setUpdateState] = useState(() => getAppUpdateSnapshot())
   const [dismissedInstall, setDismissedInstall] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     const unsubscribeUpdateState = subscribeToAppUpdate(setUpdateState)
+    /** @param {Event} event */
     const handleInstallPrompt = (event) => {
       event.preventDefault()
-      setInstallPrompt(event)
+      // This browser event is emitted with the install-prompt method in supported PWA browsers.
+      setInstallPrompt(/** @type {BeforeInstallPromptExpectedView} */ (event))
       setDismissedInstall(false)
     }
     const handleInstalled = () => {
@@ -318,12 +343,14 @@ function PwaLifecyclePrompts() {
 }
 
 function SyncBanner() {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
+  const barOnly = user?.product_family === 'hospitality_pos' && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only'
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine)
-  const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? getQueueStatus(user.lodge_id).count : 0)
+  // getQueueStatus derives count from the local queue array's length; JSON rows remain unvalidated.
+  const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? /** @type {number} */ (getQueueStatus(user.lodge_id).count) : 0)
   const [unresolvedCount, setUnresolvedCount] = useState(() => {
     try {
-      const health = user?.lodge_id ? getPwaQueueHealth(user.lodge_id) : null
+      const health = user?.lodge_id ? /** @type {PwaQueueHealthExpectedView} */ (getPwaQueueHealth(user.lodge_id)) : null
       return (health?.blockedCount || 0) + (health?.deadLetterCount || 0)
     } catch {
       return 0
@@ -332,13 +359,13 @@ function SyncBanner() {
   const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
-    if (!user?.lodge_id) return undefined
+    if (!user?.lodge_id || barOnly) return undefined
 
     const refresh = () => {
       setOnline(navigator.onLine)
-      setQueueCount(getQueueStatus(user.lodge_id).count)
+      setQueueCount(/** @type {number} */ (getQueueStatus(user.lodge_id).count))
       try {
-        const health = getPwaQueueHealth(user.lodge_id)
+        const health = /** @type {PwaQueueHealthExpectedView} */ (getPwaQueueHealth(user.lodge_id))
         setUnresolvedCount((health?.blockedCount || 0) + (health?.deadLetterCount || 0))
       } catch {
         // Health is best effort; the count above is the source of truth.
@@ -368,7 +395,14 @@ function SyncBanner() {
       window.removeEventListener('offline', refresh)
       unsubscribe?.()
     }
-  }, [user?.lodge_id])
+  }, [barOnly, user?.lodge_id])
+
+  if (barOnly) {
+    return <div className="mx-3 mt-2 rounded-2xl border border-amber-900 bg-amber-950/40 px-4 py-3 text-sm text-amber-100" role="status">
+      <p className="font-semibold">Bar sync is not connected</p>
+      <p className="mt-1 text-xs opacity-80">This status is separate from the Bar computer's committed upload. No Bar sales, stock or financial changes are sent from this app.</p>
+    </div>
+  }
 
   if (online && queueCount === 0 && !syncing) return null
 
@@ -392,6 +426,7 @@ function SyncBanner() {
   )
 }
 
+/** @param {{side?: string, label: string, meta?: string, time?: string|number|null, children: import('react').ReactNode, muted?: boolean}} props */
 function ConversationBubble({ side = 'desk', label, meta, time, children, muted = false }) {
   const isManager = side === 'manager'
   return (
@@ -408,9 +443,11 @@ function ConversationBubble({ side = 'desk', label, meta, time, children, muted 
   )
 }
 
+/** @param {{item: NotificationExpectedView|null, onClose: () => void, onClear: (item: NotificationExpectedView) => void}} props */
 function NotificationDetailSheet({ item, onClose, onClear }) {
   if (!item) return null
 
+  /** @param {unknown} value */
   const prettify = (value) => String(value || '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/_/g, ' ')
@@ -456,19 +493,20 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
         <div className="mt-4 space-y-3">
           {threadMessages.length > 0 ? (
             threadMessages.map((message) => (
+              // Support records use API ids/timestamps; the normalizer can preserve unknown API values and does not validate them.
               <ConversationBubble
-                key={message.id}
+                key={/** @type {string|number} */ (message.id)}
                 side={supportMessageSide(message)}
                 label={supportSenderName(message)}
                 meta={supportSenderMeta(message)}
-                time={message.created_at}
+                time={/** @type {string|number|null} */ (message.created_at)}
               >
                 {message.body}
               </ConversationBubble>
             ))
           ) : (
             <ConversationBubble side="desk" label="Front desk" muted>
-              Waiting for front desk to reply or update the request status.
+              Waiting for the business team to reply or update the request status.
             </ConversationBubble>
           )}
 
@@ -482,11 +520,11 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Sent</p>
-              <p className="mt-1 text-sm text-white">{sentAt ? shortDateTime(sentAt) : 'Just now'}</p>
+            <p className="mt-1 text-sm text-white">{sentAt ? shortDateTime(/** @type {string|number} */ (sentAt)) : 'Just now'}</p>
             </div>
             <div className="rounded-2xl border border-gray-800 bg-gray-900 px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Updated</p>
-              <p className="mt-1 text-sm text-white">{updatedAt ? shortDateTime(updatedAt) : 'Waiting'}</p>
+              <p className="mt-1 text-sm text-white">{updatedAt ? shortDateTime(/** @type {string|number} */ (updatedAt)) : 'Waiting'}</p>
             </div>
           </div>
 
@@ -517,9 +555,10 @@ function NotificationDetailSheet({ item, onClose, onClear }) {
   )
 }
 
+/** @param {{item: NotificationExpectedView, onOpen: (item: NotificationExpectedView) => void, onClear: (item: NotificationExpectedView) => void}} props */
 function NotificationCard({ item, onOpen, onClear }) {
   const [dragX, setDragX] = useState(0)
-  const gestureRef = useRef({ active: false, startX: 0, startY: 0, swiped: false, pointerId: null })
+  const gestureRef = useRef(/** @type {NotificationGestureState} */ ({ active: false, startX: 0, startY: 0, swiped: false, pointerId: null }))
   const isRead = Boolean(item.readAt)
   const toneClasses = item.tone === 'error'
     ? 'border-red-900 bg-red-950/45 text-red-100'
@@ -527,6 +566,7 @@ function NotificationCard({ item, onOpen, onClear }) {
       ? 'border-amber-900 bg-amber-950/45 text-amber-100'
       : 'border-blue-900 bg-blue-950/45 text-blue-100'
 
+  /** @param {import('react').PointerEvent<HTMLButtonElement>} event */
   const handlePointerDown = (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return
     gestureRef.current = {
@@ -540,6 +580,7 @@ function NotificationCard({ item, onOpen, onClear }) {
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
 
+  /** @param {import('react').PointerEvent<HTMLButtonElement>} event */
   const handlePointerMove = (event) => {
     if (!gestureRef.current.active) return
     const deltaX = event.clientX - gestureRef.current.startX
@@ -619,35 +660,47 @@ function NotificationCard({ item, onOpen, onClear }) {
   )
 }
 
+/** @param {{notificationCount: number, setNotificationCount: import('react').Dispatch<import('react').SetStateAction<number>>}} props */
 function NotificationCenter({ notificationCount, setNotificationCount }) {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const { showToast } = useToast()
-  const [notifications, setNotifications] = useState([])
-  const lastAnnouncedRef = useRef(null)
+  const barOnly = user?.product_family === 'hospitality_pos' && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only'
+  const [notifications, setNotifications] = useState(/** @type {NotificationExpectedView[]} */ ([]))
+  const lastAnnouncedRef = useRef(/** @type {string|null} */ (null))
   const readyRef = useRef(false)
-  const [activeNotification, setActiveNotification] = useState(null)
+  const [activeNotification, setActiveNotification] = useState(/** @type {NotificationExpectedView|null} */ (null))
   const [sheetOpen, setSheetOpen] = useState(false)
 
   useEffect(() => {
+    if (barOnly) {
+      setNotifications([])
+      setNotificationCount(0)
+      readyRef.current = true
+      return undefined
+    }
     if (!user?.lodge_id) return undefined
-    const current = listPwaNotifications(user.lodge_id, 6)
+    // The runtime reads persisted JSON without validating it; this view records the fields emitted by existing producers.
+    const current = /** @type {NotificationExpectedView[]} */ (listPwaNotifications(user.lodge_id, 6))
     const latestUnread = current.find((n) => !n.readAt && n.category !== 'frontDeskRequest')
     if (latestUnread) {
       lastAnnouncedRef.current = `${latestUnread.id}:${latestUnread.updatedAt || latestUnread.createdAt || ''}`
     }
     readyRef.current = true
-  }, [user?.lodge_id])
+  }, [barOnly, setNotificationCount, user?.lodge_id])
 
   useEffect(() => {
+    if (barOnly) return undefined
     if (!user?.lodge_id) return undefined
+    /** @param {unknown} detail */
     const refresh = (detail) => {
-      const next = listPwaNotifications(user.lodge_id, 6)
+      // Local storage remains unvalidated; notification fields here describe existing producers/consumers only.
+      const next = /** @type {NotificationExpectedView[]} */ (listPwaNotifications(user.lodge_id, 6))
       setNotifications(next)
       setNotificationCount(getUnreadOperationalNotificationCount(user.lodge_id))
       if (!readyRef.current) return
-      const latest = detail?.latest
+      const latest = /** @type {NotificationRuntimeEventExpectedView} */ (detail)?.latest
       const announcementId = latest ? `${latest.id}:${latest.updatedAt || latest.createdAt || ''}` : ''
-      const isNewEvent = detail?.isNew || detail?.frontDeskUpdated
+      const isNewEvent = /** @type {NotificationRuntimeEventExpectedView} */ (detail)?.isNew || /** @type {NotificationRuntimeEventExpectedView} */ (detail)?.frontDeskUpdated
       if (
         latest &&
         isNewEvent &&
@@ -663,7 +716,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
             if (supportMessageSide(lastMsg) === 'manager') return
           }
         }
-        const prefs = getNotificationSettings()
+        const prefs = /** @type {NotificationSettingsExpectedView} */ (getNotificationSettings())
         if (isFrontDesk && !prefs.frontDeskReplies) return
         const isUrgent = latest.tone === 'error' || latest.tone === 'warn'
         const vibrateType = isFrontDesk ? 'reply' : isUrgent ? 'urgent' : 'ordinary'
@@ -686,7 +739,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     refresh({})
     const unsubscribe = subscribeRuntimeEvent('boroko:pwa-notifications', refresh)
     return () => unsubscribe?.()
-  }, [setNotificationCount, showToast, user?.lodge_id, user?.id])
+  }, [barOnly, setNotificationCount, showToast, user?.lodge_id, user?.id])
 
   useEffect(() => {
     if (!activeNotification) return
@@ -696,6 +749,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
     }
   }, [activeNotification, notifications])
 
+  /** @param {NotificationExpectedView} item */
   const clearNotification = (item) => {
     dismissPwaNotification(user.lodge_id, item.sourceKey || item.id)
     if (activeNotification?.id === item.id) {
@@ -729,7 +783,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <p className="text-lg font-bold text-white">Notifications</p>
-                <p className="mt-1 text-xs text-gray-400">Lodge alerts and operational updates. Swipe left to clear.</p>
+                <p className="mt-1 text-xs text-gray-400">{user?.hospitality_mode === 'bar_only' ? 'Bar alerts and operational updates. Swipe left to clear.' : user?.product_family === 'hotel' ? 'Hotel alerts and operational updates. Swipe left to clear.' : user?.product_family === 'hospitality_pos' ? 'Restaurant and Bar operational updates. Swipe left to clear.' : 'Lodge alerts and operational updates. Swipe left to clear.'}</p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/80">
@@ -741,7 +795,9 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
               </div>
             </div>
 
-            {notifications.length === 0 ? (
+            {barOnly ? (
+              <div className="py-8 text-center text-sm text-gray-400">Bar sync alerts are not connected yet. This view will show verified updates after owner sync is enabled.</div>
+            ) : notifications.length === 0 ? (
               <div className="py-8 text-center text-sm text-gray-500">No notifications right now.</div>
             ) : (
               <div className="space-y-2">
@@ -771,6 +827,7 @@ function NotificationCenter({ notificationCount, setNotificationCount }) {
   )
 }
 
+/** @param {{title?: string}} props */
 function LockedView({ title = 'Access Restricted' }) {
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center px-6 text-center">
@@ -780,6 +837,7 @@ function LockedView({ title = 'Access Restricted' }) {
   )
 }
 
+/** @param {{toasts: ToastItemExpectedView[]}} props */
 function ToastViewport({ toasts }) {
   if (!toasts.length) return null
 
@@ -804,10 +862,11 @@ function ToastViewport({ toasts }) {
   )
 }
 
+/** @param {{children: import('react').ReactNode}} props */
 function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([])
+  const [toasts, setToasts] = useState(/** @type {ToastItemExpectedView[]} */ ([]))
 
-  const showToast = useMemo(() => (
+  const showToast = useMemo(() => /** @type {ToastContextExpectedView['showToast']} */ (
     ({ title, message = '', tone = 'success', duration = 2600 }) => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       setToasts((current) => [...current, { id, title, message, tone }])
@@ -830,18 +889,20 @@ export function useToast() {
 }
 
 function GlobalStatusFooter() {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const location = useLocation()
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
-  const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? getQueueStatus(user.lodge_id).count : 0)
-  const [lastSync, setLastSync] = useState(() => user?.lodge_id ? getRuntimeMeta(user.lodge_id, 'last-sync', null) : null)
+  // Queue count is read from the local queue array length; persisted queue rows remain unknown.
+  const [queueCount, setQueueCount] = useState(() => user?.lodge_id ? /** @type {number} */ (getQueueStatus(user.lodge_id).count) : 0)
+  // api.js writes this exact last-sync view; runtime storage does not validate persisted JSON.
+  const [lastSync, setLastSync] = useState(() => user?.lodge_id ? /** @type {LastSyncExpectedView|null} */ (getRuntimeMeta(user.lodge_id, 'last-sync', null)) : null)
 
   useEffect(() => {
     if (!user?.lodge_id) return undefined
     const refresh = () => {
       setOnline(typeof navigator === 'undefined' ? true : navigator.onLine)
-      setQueueCount(getQueueStatus(user.lodge_id).count)
-      setLastSync(getRuntimeMeta(user.lodge_id, 'last-sync', null))
+      setQueueCount(/** @type {number} */ (getQueueStatus(user.lodge_id).count))
+      setLastSync(/** @type {LastSyncExpectedView|null} */ (getRuntimeMeta(user.lodge_id, 'last-sync', null)))
     }
     const unsubscribeQueue = subscribeRuntimeEvent('boroko:pwa-queue', refresh)
     const unsubscribeCache = subscribeRuntimeEvent('boroko:pwa-cache', refresh)
@@ -856,6 +917,7 @@ function GlobalStatusFooter() {
     }
   }, [user?.lodge_id])
 
+  /** @type {Record<string, string>} */
   const pageLabels = {
     '/': 'Home',
     '/bookings': 'Bookings',
@@ -866,7 +928,10 @@ function GlobalStatusFooter() {
     '/control': 'Inbox'
   }
   const pageLabel = pageLabels[location.pathname] || location.pathname.replace('/', '').replace('-', ' ')
-  const syncLabel = !online
+  const barOnly = user?.product_family === 'hospitality_pos' && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only'
+  const syncLabel = barOnly
+    ? 'Bar sync unavailable'
+    : !online
     ? 'Offline mode'
     : queueCount > 0
       ? `${queueCount} request${queueCount === 1 ? '' : 's'} waiting`
@@ -877,13 +942,14 @@ function GlobalStatusFooter() {
   return (
     <div className="px-4 pb-20 pt-2 text-[11px] text-gray-500 flex items-center justify-between gap-3">
       <span className="truncate capitalize">{pageLabel}</span>
-      <span className={`shrink-0 rounded-full px-2 py-1 ${!online ? 'bg-amber-950/40 text-amber-300' : queueCount > 0 ? 'bg-blue-950/40 text-blue-300' : 'bg-green-950/30 text-green-300'}`}>
+      <span className={`shrink-0 rounded-full px-2 py-1 ${barOnly || !online ? 'bg-amber-950/40 text-amber-300' : queueCount > 0 ? 'bg-blue-950/40 text-blue-300' : 'bg-green-950/30 text-green-300'}`}>
         {syncLabel}
       </span>
     </div>
   )
 }
 
+/** @param {{capability?: string, children: import('react').ReactNode}} props */
 function Guard({ capability, children }) {
   const { access, can } = useFeatures()
   if (capability && access && !can(capability)) return <LockedView />
@@ -891,7 +957,7 @@ function Guard({ capability, children }) {
 }
 
 function ManagerPwaPlanLocked() {
-  const { user, logout } = useAuth()
+  const { user, logout } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const { entitlement } = useFeatures()
   const proPlan = getSubscriptionPlan('Pro')
 
@@ -902,7 +968,7 @@ function ManagerPwaPlanLocked() {
         <p className="text-xs uppercase tracking-[0.25em] text-purple-300">Pro Feature</p>
         <h1 className="text-2xl font-bold text-white mt-3">Manager mobile app locked</h1>
         <p className="text-sm text-gray-300 mt-3">
-          {user?.lodge_display_name || entitlement?.lodge_name || 'This lodge'} is not currently entitled to the manager mobile app.
+          {/** @type {import('react').ReactNode} */ (user?.lodge_display_name || entitlement?.lodge_name || (user?.hospitality_mode === 'bar_only' ? 'This Bar' : user?.product_family === 'hotel' ? 'This hotel' : 'This lodge'))} is not currently entitled to the manager mobile app.
         </p>
         <p className="text-sm text-gray-400 mt-2">
           The manager mobile app sits inside the {proPlan.name} plan because {proPlan.pitch.toLowerCase()}.
@@ -921,10 +987,11 @@ function ManagerPwaPlanLocked() {
   )
 }
 
+/** @param {{alertCount: number, dark: boolean, setAlertCount: import('react').Dispatch<import('react').SetStateAction<number>>, notificationCount: number, setNotificationCount: import('react').Dispatch<import('react').SetStateAction<number>>}} props */
 function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount, setNotificationCount }) {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const { entitlement, features, loading: entitlementLoading } = useFeatures()
-  const lastUserRef = useRef(null)
+  const lastUserRef = useRef(/** @type {AuthenticatedAppAuthExpectedView['user']|null} */ (null))
 
   useEffect(() => {
     if (user) {
@@ -945,17 +1012,27 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
     let cancelled = false
     const inventoryEnabled = Object.keys(features || {}).length === 0 || features?.inventory !== false
     const restaurantMode = isRestaurantProductFamily(user?.product_family)
+    const barOnly = restaurantMode && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only'
+    if (barOnly) {
+      // The old hosted inventory table is not the Bar-local stock authority.
+      // Do not poll it for Bar alerts until verified projections are connected.
+      setAlertCount(0)
+      return undefined
+    }
 
+    /** @param {PromiseLike<{data: unknown, error: unknown}>} query @returns {Promise<{id?: unknown, current_stock?: unknown, reorder_level?: unknown}[]>} */
     const safeRows = async (query) => {
       try {
         const { data, error } = await query
         if (error) return []
-        return Array.isArray(data) ? data : []
+        // These inventory queries select exactly these columns; rows are not runtime-validated here.
+        return Array.isArray(data) ? /** @type {{id?: unknown, current_stock?: unknown, reorder_level?: unknown}[]} */ (data) : []
       } catch {
         return []
       }
     }
 
+    /** @param {PromiseLike<{count: unknown, error: unknown}>} query */
     const safeCount = async (query) => {
       try {
         const { count, error } = await query
@@ -1025,7 +1102,7 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisible)
     }
-  }, [features, setAlertCount, user?.lodge_id, user?.product_family])
+  }, [features, setAlertCount, user?.lodge_id, user?.product_family, user?.hospitality_mode])
 
   if (entitlementLoading) {
     return (
@@ -1042,11 +1119,12 @@ function AuthenticatedShell({ alertCount, dark, setAlertCount, notificationCount
   return <AuthenticatedApp alertCount={alertCount} dark={dark} setAlertCount={setAlertCount} notificationCount={notificationCount} setNotificationCount={setNotificationCount} />
 }
 
+/** @param {{alertCount: number, dark: boolean, setAlertCount: import('react').Dispatch<import('react').SetStateAction<number>>, notificationCount: number, setNotificationCount: import('react').Dispatch<import('react').SetStateAction<number>>}} props */
 function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, setNotificationCount }) {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const { features } = useFeatures()
   const { unreadCount: inboxUnreadCount } = useInbox()
-  const shell = getPwaShellConfig(user?.product_family)
+  const shell = getPwaAuthenticatedShellConfig(user?.product_family, user?.hospitality_mode)
   const logoSrc = getPwaProductLogo(shell.productFamily, { light: dark })
 
   useEffect(() => {
@@ -1054,7 +1132,8 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
     document.documentElement.classList.add(shell.rootClass)
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
       'content',
-      dark ? shell.themeColor : '#f8f4ed'
+      // Product shell records define themeColor as a string; the dynamic family lookup loses that field type.
+      dark ? /** @type {string} */ (shell.themeColor) : '#f8f4ed'
     )
     return () => {
       document.documentElement.classList.remove(shell.rootClass)
@@ -1069,9 +1148,9 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
             <img src={logoSrc} alt={shell.brandTitle} className="max-h-full max-w-full object-contain" draggable="false" />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-xs font-semibold text-white">{user.lodge_display_name || 'Manager'}</p>
+            <p className="truncate text-xs font-semibold text-white">{/** @type {import('react').ReactNode} */ (user.lodge_display_name || 'Manager')}</p>
             <p className="truncate text-[10px] text-gray-400">
-              {shell.productFamilyLabel || user.product_family_label}
+              {/** @type {import('react').ReactNode} */ (shell.productFamilyLabel || user.product_family_label)}
               {user.package_label ? ` · ${user.package_label}` : ''}
             </p>
           </div>
@@ -1088,21 +1167,21 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
           <Route path="/" element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
           <Route path="/rooms" element={<ProductRouteGuard path="/rooms" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Rooms /></Suspense></ProductRouteGuard>} />
           <Route path="/bookings" element={<ProductRouteGuard path="/bookings" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Bookings /></Suspense></ProductRouteGuard>} />
-          <Route path="/reports" element={<Suspense fallback={<PageLoader />}><Guard capability="reports.view"><Reports /></Guard></Suspense>} />
-          <Route path="/performance" element={<Suspense fallback={<PageLoader />}><Guard capability="dashboard.view"><Performance /></Guard></Suspense>} />
-          <Route path="/alerts" element={<Suspense fallback={<PageLoader />}><Alerts onCountChange={setAlertCount} /></Suspense>} />
-          <Route path="/money" element={<Suspense fallback={<PageLoader />}><Money /></Suspense>} />
+          <Route path="/reports" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="reports.view"><Reports /></Guard></Suspense></BarLocalProjectionBoundary>} />
+          <Route path="/performance" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="dashboard.view"><Performance /></Guard></Suspense></BarLocalProjectionBoundary>} />
+          <Route path="/alerts" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Alerts onCountChange={setAlertCount} /></Suspense></BarLocalProjectionBoundary>} />
+          <Route path="/money" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Money /></Suspense></BarLocalProjectionBoundary>} />
           <Route path="/more" element={<Suspense fallback={<PageLoader />}><More /></Suspense>} />
           <Route path="/quotations" element={<ProductRouteGuard path="/quotations" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="quotations.view"><Quotations /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/invoices" element={<ProductRouteGuard path="/invoices" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="invoices.view"><Invoices /></Guard></Suspense></ProductRouteGuard>} />
-          <Route path="/expenses" element={<Suspense fallback={<PageLoader />}><Guard capability="expenses.view"><Expenses /></Guard></Suspense>} />
+          <Route path="/expenses" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="expenses.view"><Expenses /></Guard></Suspense></BarLocalProjectionBoundary>} />
           <Route path="/audit" element={<ProductRouteGuard path="/audit" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="audit.view"><Audit /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/guests" element={<ProductRouteGuard path="/guests" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="guests.view"><Guests /></Guard></Suspense></ProductRouteGuard>} />
-          <Route path="/staff" element={<Suspense fallback={<PageLoader />}><Guard capability="staff.view"><Staff /></Guard></Suspense>} />
+          <Route path="/staff" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="staff.view"><Staff /></Guard></Suspense></BarLocalProjectionBoundary>} />
           <Route path="/conference" element={<ProductRouteGuard path="/conference" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="conference.view"><Conference /></Guard></Suspense></ProductRouteGuard>} />
           <Route path="/day-use" element={<ProductRouteGuard path="/day-use" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="pool.view"><DayUse /></Guard></Suspense></ProductRouteGuard>} />
-          <Route path="/inventory" element={<Suspense fallback={<PageLoader />}><Guard capability="inventory.view"><Inventory /></Guard></Suspense>} />
-          <Route path="/pos" element={<Suspense fallback={<PageLoader />}><Guard capability="pos.reports"><PosSales /></Guard></Suspense>} />
+          <Route path="/inventory" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="inventory.view"><Inventory /></Guard></Suspense></BarLocalProjectionBoundary>} />
+          <Route path="/pos" element={<BarLocalProjectionBoundary><Suspense fallback={<PageLoader />}><Guard capability="pos.reports"><PosSales /></Guard></Suspense></BarLocalProjectionBoundary>} />
           <Route path="/restaurant-owner" element={<ProductRouteGuard path="/restaurant-owner" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><RestaurantOwner /></Suspense></ProductRouteGuard>} />
           <Route path="/hotel-dashboard" element={<ProductRouteGuard path="/hotel-dashboard" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><HotelFrontDesk /></Suspense></ProductRouteGuard>} />
           <Route path="/folios" element={<ProductRouteGuard path="/folios" productFamily={user?.product_family}><Suspense fallback={<PageLoader />}><Guard capability="folios.view"><HotelFolios /></Guard></Suspense></ProductRouteGuard>} />
@@ -1130,11 +1209,12 @@ function AuthenticatedApp({ alertCount, dark, setAlertCount, notificationCount, 
   )
 }
 
+/** @param {{path: string, productFamily: string|null|undefined, children: import('react').ReactNode}} props */
 function ProductRouteGuard({ path, productFamily, children }) {
-  const { user } = useAuth()
+  const { user } = /** @type {AuthenticatedAppAuthExpectedView} */ (useAuth())
   const { features, loading } = useFeatures()
   if (loading) return <PageLoader />
-  if (!isPwaRouteAllowed(path, productFamily, user?.hospitality_mode, features)) {
+  if (!isPwaRouteAllowed(path, productFamily, /** @type {string|null|undefined} */ (user?.hospitality_mode), features)) {
     return <Navigate to="/" replace />
   }
   return children
@@ -1190,6 +1270,7 @@ function AppShell() {
   )
 }
 
+/** @param {{lodgeId: string}} props */
 function DeviceHealthHeartbeat({ lodgeId }) {
   useEffect(() => {
     if (!lodgeId) return undefined
@@ -1216,11 +1297,10 @@ function DeviceHealthHeartbeat({ lodgeId }) {
 export default function App() {
   return (
     <HashRouter>
-      <AuthProvider>
-        <ToastProvider>
-          <AppShell />
-        </ToastProvider>
-      </AuthProvider>
+      <Routes>
+        <Route path="/bar-owner" element={<BarOwnerProjection />} />
+        <Route path="*" element={<AuthProvider><ToastProvider><AppShell /></ToastProvider></AuthProvider>} />
+      </Routes>
     </HashRouter>
   )
 }

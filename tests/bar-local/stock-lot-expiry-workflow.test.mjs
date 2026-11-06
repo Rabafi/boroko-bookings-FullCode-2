@@ -5,7 +5,6 @@ import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const modern = readFileSync(path.join(root, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx'), 'utf8')
 const legacyScreen = readFileSync(path.join(root, 'legacy-pos/src/renderer/src/screens/BarLocalWorkspace.jsx'), 'utf8')
 const legacyPanel = readFileSync(path.join(root, 'legacy-pos/src/renderer/src/components/BarLocalOperationsPanel.jsx'), 'utf8')
 const contracts = readFileSync(path.join(root, 'packages/bar-contracts/src/registry.ts'), 'utf8')
@@ -13,16 +12,14 @@ const migration = readFileSync(path.join(root, 'services/bar-local/db/migrations
 const { QUERIES } = await import(pathToFileURL(path.join(root, 'packages/bar-contracts/dist/index.js')).href)
 const { getCommand } = await import(pathToFileURL(path.join(root, 'packages/bar-contracts/dist/index.js')).href)
 
-test('Modern and Legacy expose current FEFO lot balances separately from immutable receipt history', () => {
-  for (const source of [modern, legacyScreen]) assert.match(source, /stock\.lot_balances/)
-  for (const source of [modern, legacyScreen]) {
-    assert.match(source, /stock\.lot_expiry/)
-    assert.match(source, /Current lot balances and FEFO status/)
-    assert.match(source, /Pre-existing stock without a recorded lot remains labelled as unknown provenance/)
-    assert.match(source, /received_quantity/)
-    assert.match(source, /remaining_quantity/)
-    assert.match(source, /expires_on/)
-  }
+test('Legacy local workspace exposes FEFO balances separately from immutable receipt history', () => {
+  assert.match(legacyScreen, /stock\.lot_balances/)
+  assert.match(legacyScreen, /stock\.lot_expiry/)
+  assert.match(legacyScreen, /Current lot balances and FEFO status/)
+  assert.match(legacyScreen, /Pre-existing stock without a recorded lot remains labelled as unknown provenance/)
+  assert.match(legacyScreen, /received_quantity/)
+  assert.match(legacyScreen, /remaining_quantity/)
+  assert.match(legacyScreen, /expires_on/)
 })
 
 test('live lot-balance query has a separate inventory-view contract and server authority', () => {
@@ -38,9 +35,6 @@ test('live lot-balance query has a separate inventory-view contract and server a
 })
 
 test('both local stock panels expose manager-approved exact-lot waste and inspected quarantine release', () => {
-  const modernPanel = readFileSync(path.join(root, 'src/renderer/src/components/hospitality-pos/bar-local/BarLocalOperationsPanel.jsx'), 'utf8')
-  assert.match(modernPanel, /stock\.lot\.waste/)
-  assert.match(modernPanel, /stock\.lot\.release/)
   assert.match(legacyPanel, /stock\.lot\.waste/)
   assert.match(legacyPanel, /stock\.lot\.release/)
   const waste = getCommand('stock.lot.waste').validate({ lot_id: '51000000-0000-4000-8000-000000000001', product_id: '51000000-0000-4000-8000-000000000002', expected_version: 2, quantity: '1.25', reason: 'Damaged packaging' })

@@ -1,7 +1,7 @@
 // @ts-check
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createModernBarLocalAdapter, openIntentJournal } from './index.js'
 import { createHttpTransport } from './client.js'
@@ -11,9 +11,11 @@ import { openSqliteIntentJournal } from './sqliteIntents.js'
 import { ServerSetupOrchestrator } from './serverSetup.js'
 import { importUpdatePackageDirectory } from './updates.js'
 import { TrainingSupervisor } from './training.ts'
+import { readNativeHposMenu, retryNativeHposBarProduct, saveNativeHposBarProduct } from './nativeHposMenu.js'
+import { isLocalProfileId, linkLocalBarChooserDraft, readLocalBarChooserEntry } from './chooserEntry.js'
 import { spawn } from 'node:child_process'
-import { createServer } from 'node:http'
 import { verifyBarReplacement } from '../../shared/barLocalReplacement.js'
+import { BAR_WORKSPACE_SELECTION_FILE, makeBarWorkspaceSelection, parseBarWorkspaceSelection } from '../../shared/barWorkspaceSelection.js'
 import {
   LEGACY_LOCAL_BAR_SETUP_REQUEST_VERSION,
   LOCAL_BAR_SETUP_REQUEST_FILE,
@@ -24,11 +26,12 @@ import {
   buildWorkspaceLaunchArguments,
   buildWorkspacePrefill,
   dedicatedWorkspacePrefillPath,
-  normalizeLocalBarSetupRequest,
-  sanitizeWorkspaceEnvironment
+  normalizeLocalBarSetupRequest
 } from './localBarWorkspace.ts'
 
 /** @typedef {ReturnType<ReturnType<typeof createModernBarLocalAdapter>['requireClient']>} BarLocalClient */
+/** @typedef {import('./intents.js').Payload} BarLocalPayload */
+/** Renderer BarReplacementConnection supplies the replacement endpoint plus these proof fields; IPC values remain unvalidated here and verifyBarReplacement checks the proof inputs. @typedef {Parameters<typeof verifyBarReplacement>[2] & {base_url: string, certificate_fingerprint: string}} BarLocalReconnectServerExpectedRequest */
 /** @typedef {import('./authority.js').AuthorityConfig} AuthorityConfig */
 /** @typedef {import('./authority.js').NormalizedAuthorityConfig} NormalizedAuthorityConfig */
 /** @typedef {{device_id: string, device_token: string, label?: unknown}} BarLocalDeviceCredentialReadExpectedView */
@@ -105,6 +108,7 @@ export class BarLocalElectronRuntime {
     // This process may have already started cloud workers. Only a fresh
     // local-authority process may open a local session or execute commands.
     this.restartRequired = false
+    this.switchingWorkspace = false
     this.setupOwnerStaffId = null
     this.postSetupNoticePending = false
     this.training = process.argv.includes('--bar-training')
@@ -112,36 +116,65 @@ export class BarLocalElectronRuntime {
     // with an existing cloud business uses to create a new local Bar. It owns a
     // different userData root, so it can never share credentials, journals,
     // caches or a single-instance lock with the cloud workspace.
-    this.dedicatedLocalWorkspace = isDedicatedLocalBarWorkspaceArgv(process.argv)
+    this.dedicatedLocalWorkspace = isDedicatedLocalBarWorkspaceArgv(process.argv) || basename(this.userDataPath) === 'local-bar-workspace'
     /** @type {TrainingSupervisor|null} */
     this.trainingSupervisor = null
     this.#loadAdapter()
     // A new shared Restaurant/Bar installation must make its workspace
     // decision before any cloud database, replay queue or timer is started.
     this.cloudStartupDeferred = this.buildProductId === 'hospitality-pos'
-      && this.mode === AUTHORITY_MODES.CLOUD && !this.#hasCloudWorkspaceChoice()
+      && this.mode === AUTHORITY_MODES.CLOUD && this.#selectedWorkspace() !== 'cloud'
   }
 
-  #hasCloudWorkspaceChoice() {
-    try {
-      const choice = JSON.parse(readFileSync(join(this.root, 'workspace-choice.json'), 'utf8'))
-      return choice?.version === 1 && choice.workspace === 'cloud'
-    } catch { return false }
+  #selectedWorkspace() {
+    try { return parseBarWorkspaceSelection(readFileSync(join(this.userDataPath, BAR_WORKSPACE_SELECTION_FILE), 'utf8')) }
+    catch { return null }
   }
 
-  selectCloudWorkspace() {
+  selectLocalBarWorkspace() {
+    if (this.dedicatedLocalWorkspace || this.mode !== AUTHORITY_MODES.CLOUD || this.provisioning || this.restartRequired) {
+      throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Select a saved Bar from the ordinary business chooser before signing in.')
+    }
+    const entry = this.localBarChooserEntry()
+    // Parent and child Electron profiles may have distinct OS-storage keys.
+    // A parent-side decryption failure proves neither corruption nor readiness.
+    // Explicitly switch to the saved child; #readConfig validates its protected
+    // authority in that child's own secure-storage context before any login.
+    // This selection marker grants no session, financial capability or fallback.
+    if (!['ready', 'draft', 'recovery'].includes(entry.status)) {
+      throw new BarLocalAdapterError('SETUP_NOT_FOUND', 'No saved local Bar setup was found. No new Bar was created.')
+    }
+    writeDurableAtomic(join(this.root, 'workspace-choice.json'), makeBarWorkspaceSelection('local_bar'))
+    this.switchingWorkspace = true
+    return { restart_required: true, workspace: 'local_bar' }
+  }
+
+  async selectCloudWorkspace() {
+    if (this.provisioning || this.restartRequired || this.switchingWorkspace) {
+      throw new BarLocalAdapterError('WORKSPACE_SWITCH_BLOCKED', 'Workspace switching is unavailable while Bar setup or recovery is running.')
+    }
     if (this.dedicatedLocalWorkspace) {
-      throw new BarLocalAdapterError(
-        'DEDICATED_LOCAL_WORKSPACE',
-        'This is the local Bar window. Continue Bar setup here; it will not open another workspace.'
-      )
+      if (this.mode === AUTHORITY_MODES.BAR_LOCAL) {
+        const open = this.getOpenIntents()
+        if (open.length > 0) throw new BarLocalAdapterError('LOCAL_INTENT_RECOVERY_REQUIRED', 'Resolve the saved Bar operation before switching businesses. The original operation is preserved.', { operationId: open[0].operation_id, retrySameOperation: true })
+        this.switchingWorkspace = true
+        await this.logout()
+      } else if (this.mode !== AUTHORITY_MODES.CLOUD) {
+        throw new BarLocalAdapterError('WRONG_AUTHORITY', 'This Bar authority cannot be converted into a cloud business.')
+      }
+      // Return to the parent Restaurant profile. Never write the Restaurant
+      // selection into the isolated Bar user-data tree.
+      writeDurableAtomic(join(dirname(this.userDataPath), BAR_WORKSPACE_SELECTION_FILE), makeBarWorkspaceSelection('cloud'))
+      this.switchingWorkspace = true
+      return { restart_required: true, workspace: 'cloud' }
     }
-    if (this.mode !== AUTHORITY_MODES.CLOUD || this.provisioning || this.restartRequired) {
-      throw new BarLocalAdapterError('WRONG_AUTHORITY', 'A local Bar cannot switch to cloud. Keep its saved operations and contact the owner for recovery.')
-    }
-    writeDurableAtomic(join(this.root, 'workspace-choice.json'), JSON.stringify({ version: 1, workspace: 'cloud' }))
-    // The running process stays deferred. Cloud services start only on restart.
-    return { restart_required: this.cloudStartupDeferred }
+    if (this.mode !== AUTHORITY_MODES.CLOUD) throw new BarLocalAdapterError('WRONG_AUTHORITY', 'This Bar authority cannot be converted into a cloud business.')
+    // The regular cloud profile is already open; do not fence it and leave it
+    // unusable when a stale renderer repeats the current selection.
+    if (!this.cloudStartupDeferred) return { restart_required: false, workspace: 'cloud' }
+    writeDurableAtomic(join(this.root, 'workspace-choice.json'), makeBarWorkspaceSelection('cloud'))
+    this.switchingWorkspace = true
+    return { restart_required: this.cloudStartupDeferred, workspace: 'cloud' }
   }
 
   /**
@@ -153,7 +186,7 @@ export class BarLocalElectronRuntime {
     try {
       /** @type {Record<string, unknown>} */
       const prefill = JSON.parse(readFileSync(join(this.userDataPath, LOCAL_BAR_SETUP_REQUEST_FILE), 'utf8'))
-      if (!prefill || ![LEGACY_LOCAL_BAR_SETUP_REQUEST_VERSION, LOCAL_BAR_SETUP_REQUEST_VERSION].includes(prefill.version)) return null
+      if (!prefill || !/** @type {unknown[]} */ ([LEGACY_LOCAL_BAR_SETUP_REQUEST_VERSION, LOCAL_BAR_SETUP_REQUEST_VERSION]).includes(prefill.version)) return null
       const businessName = typeof prefill.business_name === 'string' ? prefill.business_name.trim().slice(0, 200) : ''
       const currency = typeof prefill.currency === 'string' && /^[A-Za-z]{2,4}$/.test(prefill.currency.trim())
         ? prefill.currency.trim().toUpperCase()
@@ -161,6 +194,7 @@ export class BarLocalElectronRuntime {
       const rawProfile = prefill.business_profile && typeof prefill.business_profile === 'object' && !Array.isArray(prefill.business_profile)
         ? /** @type {Record<string, unknown>} */ (prefill.business_profile)
         : {}
+      /** @type {Record<string, string>} */
       const business_profile = {}
       for (const [key, max] of Object.entries({ company_name: 200, address: 240, city: 120, country: 120, phone: 80, email: 254, website: 240, vat_number: 80 })) {
         const value = rawProfile[key]
@@ -400,6 +434,8 @@ export class BarLocalElectronRuntime {
       configured: this.adapter !== null,
       workspace_choice_required: this.cloudStartupDeferred,
       workspace_isolation: this.dedicatedLocalWorkspace ? 'dedicated_bar' : 'standard',
+      selected_workspace: this.#selectedWorkspace(),
+      can_switch_workspace: this.dedicatedLocalWorkspace && this.mode === AUTHORITY_MODES.BAR_LOCAL,
       setup_prefill: this.dedicatedLocalWorkspace ? this.#readSetupPrefill() : null,
       has_saved_cloud_business: this.hasSavedCloudBusiness(),
       restart_required: this.restartRequired,
@@ -418,7 +454,24 @@ export class BarLocalElectronRuntime {
     })
   }
 
+  /** Public, read-only view for the shared business chooser. */
+  localBarChooserEntry() {
+    if (this.dedicatedLocalWorkspace || this.training) return { status: 'none', label: null, origin_profile_id: null }
+    return readLocalBarChooserEntry({ userDataPath: this.userDataPath, safeStorage: this.safeStorage })
+  }
+
+  /** @param {unknown} profileId */
+  linkLocalBarChooserDraft(profileId) {
+    if (this.dedicatedLocalWorkspace || this.training) throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Choose this saved Bar from the shared business chooser.')
+    try {
+      return linkLocalBarChooserDraft({ userDataPath: this.userDataPath, safeStorage: this.safeStorage, profileId })
+    } catch (error) {
+      throw new BarLocalAdapterError('VALIDATION_FAILED', error instanceof Error ? error.message : 'That profile could not be linked to the saved Bar.')
+    }
+  }
+
   /** Bind the practice client's protected authority to its own verified service. */
+  /** @param {string} baseUrl */
   assertTrainingEndpoint(baseUrl) {
     if (!this.training) throw new Error('This is not a practice workspace.')
     const profile = JSON.parse(this.safeStorage.decryptString(readFileSync(this.configPath)))
@@ -685,6 +738,13 @@ export class BarLocalElectronRuntime {
     return this.status()
   }
 
+  /** @param {{staff_id:string,pin:string}} request */
+  async verifyManagerPin(request) {
+    const client = this.#requireClient()
+    return client.verifyManagerPin(request)
+  }
+
+  /** @param {BarLocalPayload} request */
   async recoverOwnerPassword(request) {
     const client = this.#requireClient()
     return client.recoverOwnerPassword(request)
@@ -800,6 +860,7 @@ export class BarLocalElectronRuntime {
     return this.#requireClient().adminStatus()
   }
 
+  /** @param {BarLocalReconnectServerExpectedRequest} request */
   async reconnectServer(request) {
     if (this.training || this.mode !== AUTHORITY_MODES.BAR_LOCAL || this.provisioning) throw new Error('Only an existing live local Bar till can connect to its replacement server.')
     const current = this.#readConfig()
@@ -831,25 +892,31 @@ export class BarLocalElectronRuntime {
   async adminRecoveryStatus() {
     return this.#requireClient().adminRecoveryStatus()
   }
+  /** @param {BarLocalPayload} request */
   async adminCopyRecoverySet(request) {
     return this.#requireClient().adminCopyRecoverySet(request)
   }
+  /** @param {BarLocalPayload} request */
   async adminSetRecoveryDestination(request) {
     return this.#requireClient().adminSetRecoveryDestination(request)
   }
 
+  /** @param {string} id */
   async adminRecoveryJob(id) {
     return this.#requireClient().adminRecoveryJob(id)
   }
 
+  /** @param {BarLocalPayload} request */
   async adminCreateRecoveryBase(request) {
     return this.#requireClient().adminCreateRecoveryBase(request)
   }
 
+  /** @param {BarLocalPayload} request */
   async adminVerifyRecoveryPoint(request) {
     return this.#requireClient().adminVerifyRecoveryPoint(request)
   }
 
+  /** @param {BarLocalPayload} request */
   async adminExportRecoveryKeys(request) {
     return this.#requireClient().adminExportRecoveryKeys(request)
   }
@@ -996,18 +1063,23 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
     const channelName = String(channel)
     const isLocalAuthorityOperation = channelName.startsWith('barLocal:')
     const isOfflineGuideOperation = channelName.startsWith('barGuides:')
-    if (runtime.training && (channelName.startsWith('barLocal:serverSetup') || ['barLocal:selectCloudWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:pairDevice', 'barLocal:startPairing', 'barLocal:setupOwner', 'barLocal:resumeProvisioning'].includes(channelName))) {
+    if (runtime.training && (channelName.startsWith('barLocal:serverSetup') || ['barLocal:selectCloudWorkspace', 'barLocal:selectLocalBarWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:pairDevice', 'barLocal:startPairing', 'barLocal:setupOwner', 'barLocal:resumeProvisioning'].includes(channelName))) {
       throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Practice mode cannot install a live server, join another Bar or switch to cloud.')
     }
-    if (runtime.restartRequired && isLocalAuthorityOperation && channelName !== 'barLocal:getStatus') {
+    if (runtime.restartRequired && isLocalAuthorityOperation && !['barLocal:getStatus', 'barLocal:getChooserEntry'].includes(channelName)) {
       throw new BarLocalAdapterError('LOCAL_RESTART_REQUIRED', 'Local setup was committed. Restart this application before signing in or trading; do not repeat setup or pairing.')
     }
-    if ((runtime.mode === AUTHORITY_MODES.BAR_LOCAL || runtime.provisioning || runtime.restartRequired || runtime.cloudStartupDeferred) && !isLocalAuthorityOperation && !isOfflineGuideOperation) {
+    if ((runtime.mode === AUTHORITY_MODES.BAR_LOCAL || runtime.provisioning || runtime.restartRequired || runtime.cloudStartupDeferred || runtime.switchingWorkspace) && !isLocalAuthorityOperation && !isOfflineGuideOperation) {
       throw new BarLocalAdapterError('LOCAL_WORKSPACE_NOT_ROUTED', 'This Bar installation is committed to its local authority. This cloud-backed action is blocked until its local workflow is connected.')
+    }
+    if (runtime.switchingWorkspace && isLocalAuthorityOperation && !['barLocal:getStatus', 'barLocal:selectCloudWorkspace', 'barLocal:selectLocalBarWorkspace'].includes(channelName)) {
+      throw new BarLocalAdapterError('WORKSPACE_SWITCHING', 'The selected business is changing. Wait for the normal app to reopen before continuing.')
     }
     return listener(event, ...args)
   })
   ipcMain.handle('barLocal:getStatus', () => runtime.status())
+  ipcMain.handle('barLocal:getChooserEntry', () => runtime.localBarChooserEntry())
+  ipcMain.handle('barLocal:linkChooserDraft', (_event, request) => runtime.linkLocalBarChooserDraft(request?.profile_id))
   ipcMain.handle('barLocal:adminRecoveryStatus', () => runtime.adminRecoveryStatus())
   ipcMain.handle('barLocal:adminCopyRecoverySet', (_event, request) => runtime.adminCopyRecoverySet(request))
   ipcMain.handle('barLocal:adminChooseRecoveryDestination', async () => {
@@ -1063,66 +1135,50 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:serverSetupUpdateOwnerEmail', (_event, request) => serverSetup.updateOwnerEmail(request))
   ipcMain.handle('barLocal:serverSetupResume', (_event, request) => provisionAndRestart(() => serverSetup.resume(request)))
   ipcMain.handle('barLocal:serverSetupCancel', () => serverSetup.cancel())
-  ipcMain.handle('barLocal:selectCloudWorkspace', () => {
-    const result = runtime.selectCloudWorkspace()
+  const relaunchWorkspace = () => {
+    app.relaunch({ args: app.isPackaged ? [] : [app.getAppPath()] })
+    app.exit(0)
+  }
+  ipcMain.handle('barLocal:selectLocalBarWorkspace', () => {
+    const result = runtime.selectLocalBarWorkspace()
+    if (result.restart_required) relaunchWorkspace()
+    return result
+  })
+  ipcMain.handle('barLocal:selectCloudWorkspace', async () => {
+    const result = await runtime.selectCloudWorkspace()
     if (result.restart_required) {
-      try { app.relaunch(); app.exit(0) }
+      try { relaunchWorkspace() }
       catch (error) { runtime.logger.error?.('[BarLocal] Restart required to open the cloud workspace.', error) }
     }
     return result
   })
-  // Hand a new local Bar to its own isolated workspace window. This process may
-  // already be running another workspace, so commissioning here would mix two
-  // authorities. Carry only the Bar's own details and require a visible-window
-  // acknowledgement before reporting success.
+  // A new Bar setup reopens this same application in the isolated Bar profile.
+  // The Restaurant process exits first, so there is never a competing
+  // operational window or shared user-data/queue state.
   ipcMain.handle('barLocal:openLocalBarWorkspace', async (_event, request) => {
     runtime.assertCanOpenLocalBarWorkspace()
     if (request?.resume_existing === true) {
       const saved = join(dirname(dedicatedWorkspacePrefillPath(app.getPath('userData'))), 'bar-local', 'server-setup', 'server-setup.bin')
-      if (!existsSync(saved)) throw new BarLocalAdapterError('SETUP_NOT_FOUND', 'No saved local Bar installation was found in this Windows profile. No new Bar was created. Contact support if you used another profile.')
+      if (!existsSync(saved) && runtime.localBarChooserEntry().status === 'none') throw new BarLocalAdapterError('SETUP_NOT_FOUND', 'No saved local Bar was found in this Windows profile. No new Bar was created. Contact support if you used another profile.')
     } else {
       const prefill = normalizeLocalBarSetupRequest(request)
       writeDurableAtomic(
         dedicatedWorkspacePrefillPath(app.getPath('userData')),
         JSON.stringify(buildWorkspacePrefill(prefill, new Date().toISOString()))
       )
-    }
-    const handoffToken = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')
-    let acknowledge
-    let rejectReady
-    const ready = new Promise((resolve, reject) => { acknowledge = resolve; rejectReady = reject })
-    const handoffServer = createServer((req, res) => {
-      if (req.method !== 'POST' || req.url !== `/ready/${handoffToken}`) {
-        res.writeHead(404).end()
-        return
+      // Associate only the exact draft that opened a genuinely new Bar
+      // workspace. Existing saved attempts are never matched by business name.
+      const originProfileId = request && typeof request === 'object' ? request.origin_profile_id : null
+      if (isLocalProfileId(originProfileId) && runtime.localBarChooserEntry().status === 'none') {
+        const linkPath = join(dirname(dedicatedWorkspacePrefillPath(app.getPath('userData'))), 'bar-local', 'chooser-link.bin')
+        writeDurableAtomic(linkPath, safeStorage.encryptString(JSON.stringify({ version: 1, profile_id: originProfileId })))
       }
-      res.writeHead(204).end()
-      acknowledge?.()
-    })
-    await new Promise((resolve, reject) => {
-      handoffServer.once('error', reject)
-      handoffServer.listen(0, '127.0.0.1', resolve)
-    })
-    const address = handoffServer.address()
-    if (!address || typeof address === 'string') throw new Error('The local Bar setup window could not be confirmed.')
-    const child = spawn(
-      process.execPath,
-      [...buildWorkspaceLaunchArguments({ isPackaged: app.isPackaged === true, appPath: app.getAppPath() }), `--bar-local-workspace-ready=${address.port}.${handoffToken}`],
-      { env: sanitizeWorkspaceEnvironment(process.env), windowsHide: false, stdio: 'ignore' }
-    )
-    const timeout = setTimeout(() => rejectReady?.(new Error('The local Bar setup window did not become visible. Try again or restart the app.')), 25000)
-    const exited = (code, signal) => rejectReady?.(new Error(`The local Bar setup window closed before it was ready (${signal || code || 'startup error'}). Try again or restart the app.`))
-    child.once('error', (error) => rejectReady?.(new Error(`The local Bar setup window could not start: ${error.message}`)))
-    child.once('exit', exited)
-    try {
-      await ready
-      child.unref()
-      return { opened: true, workspace: 'dedicated_local_bar' }
-    } finally {
-      clearTimeout(timeout)
-      child.off('exit', exited)
-      handoffServer.close()
     }
+    writeDurableAtomic(join(runtime.userDataPath, BAR_WORKSPACE_SELECTION_FILE), makeBarWorkspaceSelection('local_bar'))
+    runtime.switchingWorkspace = true
+    app.relaunch({ args: buildWorkspaceLaunchArguments({ isPackaged: app.isPackaged === true, appPath: app.getAppPath() }) })
+    app.exit(0)
+    return { opened: true, restart_required: true, workspace: 'dedicated_local_bar' }
   })
   /** @param {() => Promise<unknown>} operation */
   const provisionAndRestart = async (operation) => {
@@ -1144,6 +1200,7 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:reconnectServer', (_event, request) => provisionAndRestart(() => runtime.reconnectServer(request)))
   ipcMain.handle('barLocal:resumeProvisioning', (_event, request) => provisionAndRestart(() => runtime.resumeProvisioning(request)))
   ipcMain.handle('barLocal:login', (_event, request) => runtime.login(request))
+  ipcMain.handle('barLocal:verifyManagerPin', (_event, request) => runtime.verifyManagerPin(request))
   ipcMain.handle('barLocal:consumePostSetupNotice', () => runtime.consumePostSetupNotice())
   ipcMain.handle('barLocal:recoverOwnerPassword', (_event, request) => serverSetup.recoverOwnerPassword(request))
   ipcMain.handle('barLocal:logout', () => runtime.logout())
@@ -1180,6 +1237,9 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   }
   ipcMain.handle('barLocal:command', (_event, request) => executeFinancialIntent(() => runtime.command(request), request?.operation_id))
   ipcMain.handle('barLocal:retryOperation', (_event, operationId) => executeFinancialIntent(() => runtime.retryOperation(operationId), operationId))
+  ipcMain.handle('barLocal:nativeHposProductSave', (_event, request) => executeFinancialIntent(() => saveNativeHposBarProduct(runtime, request), request?.operation_key))
+  ipcMain.handle('barLocal:nativeHposProductRetry', (_event, operationId) => executeFinancialIntent(() => retryNativeHposBarProduct(runtime, operationId), operationId))
+  ipcMain.handle('barLocal:nativeHposMenuRead', (_event, kind) => readNativeHposMenu(runtime, kind))
   ipcMain.handle('barLocal:getOpenIntents', () => runtime.getOpenIntents())
   ipcMain.handle('barLocal:getOperation', (_event, operationId) => runtime.getOperation(operationId))
   ipcMain.handle('barLocal:adminStatus', () => runtime.adminStatus())

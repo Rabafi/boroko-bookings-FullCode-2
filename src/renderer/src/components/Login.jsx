@@ -9,6 +9,7 @@ import { isBarOnlyMode } from '../../../shared/propertyTypes'
 import { getUiVocabulary } from '../../../shared/uiVocabulary'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
 import { ErrorNotice } from './shared/ErrorNotice'
+import SavedLocalBarLoginChoice from './hospitality-pos/SavedLocalBarLoginChoice'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_HOSPITALITY_POS = BUILD_PRODUCT.id === 'hospitality-pos'
@@ -386,6 +387,7 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
           <p className={`mt-1 text-sm ${IS_HOTEL ? HOTEL_CHROME.mute : 'text-slate-500'}`}>{loginTagline}</p>
         </div>
 
+        {IS_HOSPITALITY_POS && !localBarAuthority && <SavedLocalBarLoginChoice />}
         {localBarAuthority ? (
           <div className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3" data-testid="selected-lodge-panel">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected Bar</p>

@@ -18,7 +18,7 @@ const EMAIL_LEGAL_OWNER = ECOSYSTEM_BRAND.legalOwner
 /** @typedef {Record<string, unknown>} EmailConfigRecord */
 /** @typedef {{provider: unknown, host: unknown, port: number, user: unknown, pass: unknown, from: unknown, to: unknown, reply_to: unknown, allow_insecure_tls: boolean, auto_send_quotations: boolean, auto_send_booking_invoice: boolean, auto_send_booking_confirmation: boolean, auto_send_booking_cancellation: boolean}} NormalizedEmailConfig */
 /** @typedef {NormalizedEmailConfig & {pass_encrypted?: unknown, pass_encryption?: string}} PersistedEmailConfig */
-/** @typedef {Record<string, unknown> & {status?: string, issued_date?: string | number, due_date?: string | number, paid_date?: string | number, issued_at?: string | number, created_at?: string | number, check_in?: string | number, check_out?: string | number, valid_until?: string | number}} EmailTemplateRecord */
+/** @typedef {Record<string, unknown> & {status?: string | null | undefined, issued_date?: string | number, due_date?: string | number, paid_date?: string | number, issued_at?: string | number, created_at?: string | number, check_in?: string | number, check_out?: string | number, valid_until?: string | number}} EmailTemplateRecord */
 /** @typedef {EmailTemplateRecord & {status: string}} InvoiceEmailTemplateRecord */
 /** @typedef {{to: string, purchaseOrder: EmailTemplateRecord & {supplier?: {name?: unknown}}, businessName: unknown, currency?: unknown, pdfBuffer?: Buffer | null, filename?: string}} PurchaseOrderEmailInput */
 /** @typedef {{to: string, licenseKey: unknown, lodgeName: unknown, plan: unknown, expiresAt?: string | number | null, lodgeId: unknown, notes?: unknown, invoice: EmailTemplateRecord}} LicenseEmailInput */

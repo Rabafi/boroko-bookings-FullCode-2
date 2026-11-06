@@ -225,6 +225,7 @@ test('base bar sales and day close reuse authoritative shared reporting without 
 
 test('expired Bar POS access offers its compatible base package and selectable annual add-ons through the authoritative quote request path', () => {
   const app = read('src/renderer/src/App.jsx')
+  const endpoints = read('src/shared/publicEndpoints.js')
   const commercialEntitlements = read('src/shared/commercialEntitlements.js')
   assert.match(app, /isCommercialSelectionEligible/)
   assert.match(app, /commercialPackageKey: tier\.commercialPackageKey/)
@@ -239,7 +240,8 @@ test('expired Bar POS access offers its compatible base package and selectable a
   assert.match(app, /tier\.salesCopy/)
   assert.match(app, /tier\.includedFeatures\.slice\(0, 5\)/)
   assert.match(app, /commercialPriceLabel\(tier\)/)
-  assert.match(app, /sales@tsabonno\.com/)
+  assert.match(app, /SUPPORT_EMAIL/)
+  assert.match(endpoints, /SUPPORT_EMAIL\s*=\s*'support@tsabonno\.com'/)
   assert.doesNotMatch(app, /tier\.modules\.slice/)
   assert.doesNotMatch(app, /catch \{ setSubmitted\(true\) \}/)
   assert.match(commercialEntitlements, /bar_stock_purchasing_pro/)
@@ -256,9 +258,9 @@ test('Bar annual add-ons are collected in the first annual invoice as well as an
     propertyType: 'restaurant',
     trialAlreadyUsed: true
   })
-  assert.equal(quote.totals.total_due_now, 18500)
-  assert.equal(quote.totals.recurring_annual, 18500)
-  assert.deepEqual(quote.lines.filter((line) => line.line_type === 'addon').map((line) => line.amount_due_now), [3000, 6000, 5000])
+  assert.equal(quote.totals.total_due_now, 12500)
+  assert.equal(quote.totals.recurring_annual, 12500)
+  assert.deepEqual(quote.lines.filter((line) => line.line_type === 'addon').map((line) => line.amount_due_now), [2500, 3500, 2000])
 
   // Trial once per property: P0 due now but full annual still shown.
   const trialQuote = buildCommercialOfferSnapshot({
@@ -270,7 +272,7 @@ test('Bar annual add-ons are collected in the first annual invoice as well as an
     trialAlreadyUsed: false
   })
   assert.equal(trialQuote.totals.total_due_now, 0)
-  assert.equal(trialQuote.totals.recurring_annual, 18500)
+  assert.equal(trialQuote.totals.recurring_annual, 12500)
   assert.equal(trialQuote.trial.eligible, true)
 
   const migration = read('supabase/migrations/20260816090000_command_central_subscription_truth_hardening.sql')

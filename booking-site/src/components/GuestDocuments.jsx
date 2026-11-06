@@ -3,6 +3,11 @@ import { FileText, Eye, Download, File } from 'lucide-react'
 import { rpc } from '../lib/publicApi.js'
 import { useGuestPortal } from './GuestPortalSession.jsx'
 
+/** Expected row from `get_guest_portal_documents`; this view does not validate RPC JSON. */
+/** @typedef {{id: string|null, document_type: string|null, document_number: string|null, created_at: string|null}} GuestDocumentViewData */
+/** @typedef {{success?: boolean, error?: string|null, documents?: GuestDocumentViewData[]|null}} GuestDocumentsResponse */
+
+/** @type {Record<string, typeof FileText>} */
 const DOC_ICONS = {
   invoice: FileText,
   receipt: FileText,
@@ -11,6 +16,7 @@ const DOC_ICONS = {
   statement: FileText
 }
 
+/** @type {Record<string, string>} */
 const DOC_LABELS = {
   invoice: 'Invoice',
   receipt: 'Receipt',
@@ -21,9 +27,9 @@ const DOC_LABELS = {
 
 export default function GuestDocuments() {
   const { token } = useGuestPortal()
-  const [documents, setDocuments] = useState([])
+  const [documents, setDocuments] = useState(/** @type {GuestDocumentViewData[]} */ ([]))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
 
   useEffect(() => {
     let cancelled = false
@@ -34,10 +40,12 @@ export default function GuestDocuments() {
         const { data, error: rpcErr } = await rpc('get_guest_portal_documents', { p_token: token })
         if (cancelled) return
         if (rpcErr) { setError(rpcErr.message); return }
-        if (!data || data.success === false) { setError(data?.error || 'Could not load documents.'); return }
-        setDocuments(data.documents || [])
+        // SQL defines this row shape; API JSON remains unvalidated at runtime.
+        const response = /** @type {GuestDocumentsResponse|null} */ (data)
+        if (!response || response.success === false) { setError(response?.error || 'Could not load documents.'); return }
+        setDocuments(response.documents || [])
       } catch (e) {
-        if (!cancelled) setError(e.message || 'Network error.')
+        if (!cancelled) setError((/** @type {Error} */ (e)).message || 'Network error.')
       } finally {
         if (!cancelled) setLoading(false)
       }

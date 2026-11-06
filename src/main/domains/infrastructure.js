@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { clearPosSubmitAttempt, commitPosSubmitAttempt, reopenPosSubmitAttempt } from './posSubmitJournal.js';
@@ -243,14 +243,23 @@ export {
 // Lodge customer machines will NOT have this variable → adminDb stays null →
 // admin-only functions return a clear error instead of exposing privileged access.
 // ─────────────────────────────────────────────────────────────────────────────
-import { state } from "../state.js";const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+import { state } from "../state.js";
+
+/** @typedef {import('./syncShared.js').ReplayQueueItemExpectedView} ReplayQueueItemExpectedView */
+/** @typedef {Record<string, unknown>} CachedRowExpectedView Open-ended cache row projection; values remain unknown and the cache is not validated here. */
+/**
+ * The drift monitor compares locally cached values with the refreshed cache.
+ * These are expected row views only; the cache reader performs no row validation.
+ * @typedef {{total_amount?: unknown, amount_paid?: unknown, customer_id?: unknown, room_id?: unknown, status?: unknown, payment_status?: unknown, invoice_number?: unknown}} BookingDriftSnapshot
+ */
+/** @typedef {CachedRowExpectedView & {id: string, _pending_sync?: unknown, total_amount?: unknown, amount_paid?: unknown, customer_id?: unknown, room_id?: unknown, status?: unknown, payment_status?: unknown, invoice_number?: unknown}} CachedBookingDriftExpectedView */
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
-
-
-
-
-
+// Queue readers preserve parsed objects without validating their shape. These
+// expected-data assertions rely on queue producers and ensureQueuedItem while
+// preserving existing malformed-row behavior.
 
 
 
@@ -393,6 +402,8 @@ function isBookingUpdateConflictError(message = '') {
   return /modified on another device|booking conflict|refresh and try again/i.test(String(message || ''));
 }
 
+// Server and transport error fields are read as unknown; this view does not validate a response.
+/** @param {ReplayQueueItemExpectedView} item @param {unknown} [errorMessage] @param {{message?: unknown, code?: unknown, manual_review_required?: unknown, serverData?: unknown}|null} [errorObj] */
 function shouldManualReviewSyncItem(item, errorMessage = '', errorObj = null) {
   // Product save validation and uniqueness failures are definitive, but they
   // cannot prove that a queued product matches an existing row. Park the item
@@ -438,11 +449,13 @@ export function isAmbiguousPosOrderReplayError(message = '') {
   return /fetch failed|network|timeout|timed out|ambiguous|uncertain|till_operator_|till_shift_closed|shift_not_open|pos_submit_recovery_required|idempotency_conflict|idempotency_expired|statement timeout|canceling statement|connection|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(String(message || ''));
 }
 
+/** @param {ReplayQueueItemExpectedView} item @param {unknown} [errorMessage] */
 function isTerminalPosVoidFailure(item, errorMessage = '') {
   if (item?.type !== 'rpc' || item?.table !== 'approve_pos_void_with_pin') return false;
   return /Order not found|Cannot void a settled order|Order is already voided|idempotency_conflict|idempotency_receipt_unavailable|operation_key_required|outlet_scope_conflict/i.test(String(errorMessage || ''));
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function isCreateBookingQueueItem(item) {
   return item?.type === 'rpc' && [
     'create_booking',
@@ -451,22 +464,27 @@ function isCreateBookingQueueItem(item) {
   ].includes(item?.table);
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function isConvertQuotationQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'convert_quotation_to_booking';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function isCreateQuotationQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'create_quotation';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function isUpdateQuotationQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'update_quotation';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function isMarkQuotationSentQueueItem(item) {
   return item?.type === 'rpc' && item?.table === 'mark_quotation_sent';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function getQueuedBookingId(item) {
   const bookingId = String(item?.data?.p_booking_id || '').trim();
   if (bookingId) return bookingId;
@@ -484,6 +502,7 @@ function getQueuedBookingId(item) {
   return null;
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function getQueuedQuotationId(item) {
   const quotationId = String(item?.data?.p_quotation_id || item?.data?.payload?.id || '').trim();
   if (quotationId) return quotationId;
@@ -497,19 +516,22 @@ function getQueuedQuotationId(item) {
   return null;
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function getQueuedBookingIds(item) {
   const groupIds = Array.isArray(item?._local_booking_ids) ?
-    item._local_booking_ids.map((value) => String(value || '').trim()).filter(Boolean) : [];
+    item._local_booking_ids.map((/** @type {unknown} */ value) => String(value || '').trim()).filter(Boolean) : [];
   const singleId = groupIds.length > 0 ? null : getQueuedBookingId(item);
   return [...new Set([...groupIds, ...(singleId ? [singleId] : [])])];
 }
 
+/** @param {ReplayQueueItemExpectedView} item @param {Record<string, unknown>} [patch] */
 function patchQueuedBookingSyncStates(item, patch = {}) {
   for (const bookingId of getQueuedBookingIds(item)) {
     patchCachedBookingSyncState(bookingId, patch);
   }
 }
 
+/** @param {ReplayQueueItemExpectedView[]} pending @param {string} localId @param {string} serverId @param {{fieldNames?: string[], dependsPrefix?: string}} [options] */
 function rewriteQueuedEntityReference(pending = [], localId, serverId, { fieldNames = [], dependsPrefix = '' } = {}) {
   if (!localId || !serverId || localId === serverId) return pending;
   return pending.map((item) => {
@@ -543,6 +565,7 @@ function isQuotationNumberConflict(message = '') {
   return /quotations_lodge_id_quotation_number_key|duplicate key value/i.test(String(message || ''));
 }
 
+/** @template T @param {T} currentNumber @returns {T|string} */
 function getNextQuotationNumberAfterLocal(currentNumber) {
   const match = String(currentNumber || '').match(/^(Q-\d{4}-)(\d+)$/);
   if (!match) return currentNumber;
@@ -550,6 +573,7 @@ function getNextQuotationNumberAfterLocal(currentNumber) {
   return `${prefix}${String(Number(seq) + 1).padStart(seq.length, '0')}`;
 }
 
+/** @param {unknown} left @param {unknown} right */
 function valuesEqualForDrift(left, right) {
   if (left == null && right == null) return true;
   const leftNum = Number(left);
@@ -560,10 +584,12 @@ function valuesEqualForDrift(left, right) {
   return String(left) === String(right);
 }
 
+/** @param {unknown} value */
 function hasDriftBaselineValue(value) {
   return value !== undefined && value !== null && String(value).trim() !== '';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function queueItemNeedsBookingRefresh(item) {
   if (!item) return false;
   if (isPosCreateOrderQueueItem(item)) {
@@ -591,6 +617,7 @@ function queueItemNeedsBookingRefresh(item) {
   return item?.table === 'bookings';
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function queueItemNeedsInventoryRefresh(item) {
   // create_inventory_item: always refresh so the local pending-sync item is
   // replaced by the definitive server row (with the confirmed UUID).
@@ -608,17 +635,18 @@ function queueItemNeedsInventoryRefresh(item) {
   if (isInventoryAdjustmentQueueItem(item)) return true;
   if (isPosCreateOrderQueueItem(item) || isPosVoidQueueItem(item)) {
     const items = Array.isArray(item?.data?.payload?.items) ? item.data.payload.items : [];
-    return items.some((entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id);
+    return items.some((/** @type {Record<string, unknown>} */ entry) => !!entry?.menu_item_id || !!entry?.inventory_item_id);
   }
   if (item?.type === 'rpc' && ['add_pool_day_use', 'delete_pool_day_use'].includes(item?.table)) {
     const extras = Array.isArray(item?.data?.payload?.extras) ?
     item.data.payload.extras :
     Array.isArray(item?._inventory_extras) ? item._inventory_extras : [];
-    return extras.some((entry) => !!entry?.inventory_item_id && Number(entry?.quantity || 0) > 0);
+    return extras.some((/** @type {Record<string, unknown>} */ entry) => !!entry?.inventory_item_id && Number(entry?.quantity || 0) > 0);
   }
   return false;
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function queueItemNeedsSupplyRefresh(item) {
   return item?.type === 'rpc' && [
     'create_supply_item',
@@ -640,6 +668,7 @@ function queueItemNeedsSupplyRefresh(item) {
   ].includes(item.table);
 }
 
+/** @param {ReplayQueueItemExpectedView} item */
 function queueItemNeedsRateOverrideRefresh(item) {
   return item?.type === 'rpc' && [
     'create_room_rate_override',
@@ -648,12 +677,14 @@ function queueItemNeedsRateOverrideRefresh(item) {
   ].includes(item.table);
 }
 
+/** @param {unknown} _item @param {unknown} _error */
 function isAlreadyAppliedInsertError(_item, _error) {
   // A uniqueness violation proves only that a conflicting row exists. Inserts
   // have no immutable operation receipt, so preserve the queue failure.
   return false;
 }
 
+/** @param {unknown} _item @param {unknown} _errorOrMessage */
 function isAlreadyAppliedRpcError(_item, _errorOrMessage) {
   // Error prose, SQLSTATE 23505 and entity IDs are not authoritative receipts.
   // Only a successful RPC response for the exact operation may acknowledge it.
@@ -669,6 +700,7 @@ function isAlreadyAppliedRpcError(_item, _errorOrMessage) {
 // disk arrivals are only appended, never reordered or deduplicated beyond id.
 // Pure merge helpers live in syncShared.js (importable without Electron) and
 // are re-exported via the syncShared export block above.
+/** @param {ReplayQueueItemExpectedView[]} [pending] @param {{completedQueueIds?: Set<string>, deadLetter?: ReplayQueueItemExpectedView[], inFlightItem?: ReplayQueueItemExpectedView|null}} [options] */
 export function absorbNewDiskQueueArrivals(pending = [], { completedQueueIds = new Set(), deadLetter = [], inFlightItem = null } = {}) {
   let disk = [];
   try {
@@ -683,13 +715,17 @@ export function absorbNewDiskQueueArrivals(pending = [], { completedQueueIds = n
     deadIds,
     inFlightId: inFlightItem?._queue_id || null
   });
-  for (const arrival of arrivals) pending.push(arrival);
+  // The merge helper carries forward parsed queue rows after its existing
+  // object check and queue-id normalization. This remains an expected-data
+  // view only; persisted JSON is not validated here.
+  for (const arrival of arrivals) pending.push(/** @type {ReplayQueueItemExpectedView} */ (arrival));
   if (arrivals.length > 0) {
     console.log(`[Sync] Preserved ${arrivals.length} operation(s) queued during replay`);
   }
   return arrivals.length;
 }
 
+/** @param {ReplayQueueItemExpectedView[]} [pending] @param {{inFlightItem?: ReplayQueueItemExpectedView|null, completedQueueIds?: Set<string>, deadLetter?: ReplayQueueItemExpectedView[]}} [options] */
 function writeReplayQueue(pending = [], { inFlightItem = null, completedQueueIds = new Set(), deadLetter = [] } = {}) {
   absorbNewDiskQueueArrivals(pending, { completedQueueIds, deadLetter, inFlightItem });
   if (inFlightItem) {
@@ -705,12 +741,13 @@ function writeReplayQueue(pending = [], { inFlightItem = null, completedQueueIds
 // reads sync-failed.json). Persist each dead letter incrementally; the run-end
 // flush below is a deduped upsert so it cannot duplicate or resurrect clears
 // made concurrently from review surfaces beyond re-showing them for review.
+/** @param {ReplayQueueItemExpectedView} deadItem */
 export function persistDeadLetterIncrementally(deadItem) {
   if (!deadItem || typeof deadItem !== 'object') return;
   try {
     writeFailedSyncQueue(mergeDeadLetterQueues(readFailedSyncQueue(), [deadItem]));
   } catch (error) {
-    console.error('[Sync] Incremental dead-letter persist failed (will retry at run end):', error?.message || error);
+    console.error('[Sync] Incremental dead-letter persist failed (will retry at run end):', /** @type {{message?: unknown}} */ (error).message || error);
   }
 }
 
@@ -718,6 +755,7 @@ export function persistDeadLetterIncrementally(deadItem) {
 // children on the parent-pending wait cadence. Once the parent commits those
 // waits are obsolete: clear the child's wait deadline so the next pick runs it
 // without waiting out a delay that no longer means anything.
+/** @param {ReplayQueueItemExpectedView[]} [pending] @param {string} [parentQueueId] */
 function releaseChildrenWaitingOnCompletedParent(pending = [], parentQueueId = '') {
   const parentId = String(parentQueueId || '').trim();
   if (!parentId) return 0;
@@ -726,7 +764,7 @@ function releaseChildrenWaitingOnCompletedParent(pending = [], parentQueueId = '
     const dependencyIds = [...new Set([
       row?._depends_on,
       ...(Array.isArray(row?._depends_on_all) ? row._depends_on_all : [])
-    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    ].map((/** @type {unknown} */ value) => String(value || '').trim()).filter(Boolean))];
     if (!dependencyIds.includes(parentId)) continue;
     if (row?._next_retry_at || row?._outcome_class === REPLAY_OUTCOME.PARENT_PENDING) {
       delete row._next_retry_at;
@@ -781,14 +819,16 @@ async function _runSyncQueue() {
   await requeueContractParkedHistoricalReplayItems().catch((contractError) => {
     console.warn('[Sync] Contract-parked requeue skipped:', getErrorMessage(contractError));
   });
-  let queue = readSyncQueue().
-  map((item) => ensureQueuedItem(item, item?.type || 'op')).
-  map(normalizeQueuedSyncItemForReplay);
+  /** @type {ReplayQueueItemExpectedView[]} Persisted queue rows are expected-data views; this is not JSON validation. */
+  let queue = /** @type {ReplayQueueItemExpectedView[]} */ (readSyncQueue().
+  map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))).
+  map((item) => /** @type {ReplayQueueItemExpectedView} */ (normalizeQueuedSyncItemForReplay(item))));
   if (queue.length === 0) return;
 
   // Normalize items left over from a previous (possibly crashed) run.
   // committed → drop (RPC already succeeded; do not retry)
   // in_flight → reset to pending (result unknown; retry — safe for all current operations)
+  /** @type {ReplayQueueItemExpectedView[]} */
   const normalized = [];
   for (const item of queue) {
     if (item._state === 'committed') {
@@ -804,16 +844,19 @@ async function _runSyncQueue() {
   writeSyncMeta({ lastSyncStartedAt: new Date().toISOString(), lastSyncOutcome: 'in_progress', lastSyncError: '' });
 
   console.log(`Syncing ${queue.length} offline operation(s)...`);
+  /** @type {ReplayQueueItemExpectedView[]} */
   const deadLetter = [];
   let successCount = 0;
   // Tracks _queue_ids of items that failed — dependents will be skipped.
   // Pre-seeded from sync-failed.json so children of a previously dead-lettered
   // parent are blocked immediately, not executed against a non-existent booking.
   // readFailedSyncQueue always returns []; corrupted file cannot crash this path.
-  const _priorDeadLetter = readFailedSyncQueue();
+  /** @type {ReplayQueueItemExpectedView[]} Persisted rows remain expected data, not validated records. */
+  const _priorDeadLetter = /** @type {ReplayQueueItemExpectedView[]} */ (readFailedSyncQueue());
   const failedQueueIds = new Set(_priorDeadLetter.map((item) => item._queue_id).filter(Boolean));
   const completedQueueIds = new Set();
   console.log('[SYNC PRELOAD FAILED IDS]', [...failedQueueIds]);
+  /** @type {ReplayQueueItemExpectedView[]} */
   const pending = [...queue];
   // Persisted replay scheduling (R7): every attempt must be due according to
   // the row's own `_next_retry_at`. The pass-start timestamp is the reference
@@ -860,14 +903,16 @@ async function _runSyncQueue() {
     if (nextIndex === -1) {
       const blockedAt = new Date().toISOString();
       while (pending.length > 0) {
-        const blockedItem = {
+        // The loop invariant guarantees a pending queue row is shifted here;
+        // this expected view does not validate the row's persisted contents.
+        const blockedItem = /** @type {ReplayQueueItemExpectedView} */ ({
           ...pending.shift(),
           _state: 'pending',
           retryCount: MAX_SYNC_RETRIES,
           lastError: 'Blocked: unresolved sync dependency cycle',
           lastAttemptedAt: blockedAt,
           manualRetryOnly: true
-        };
+        });
         if (blockedItem?._queue_id) failedQueueIds.add(blockedItem._queue_id);
         appendOperationJournalEntry('blocked', blockedItem, {
           financial: isFinancialSyncItem(blockedItem),
@@ -908,7 +953,7 @@ async function _runSyncQueue() {
     const dependencyIds = [...new Set([
       item?._depends_on,
       ...(Array.isArray(item?._depends_on_all) ? item._depends_on_all : [])
-    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    ].map((/** @type {unknown} */ value) => String(value || '').trim()).filter(Boolean))];
     const failedDependencyId = dependencyIds.find((dependencyId) => failedQueueIds.has(dependencyId) && !completedQueueIds.has(dependencyId));
     if (failedDependencyId) {
       console.warn('[SYNC SKIPPED DEPENDENT]', { operation: item.table, queueId: item._queue_id, dependsOn: failedDependencyId });
@@ -1012,6 +1057,8 @@ async function _runSyncQueue() {
     writeReplayQueue(pending, { inFlightItem: item, completedQueueIds, deadLetter });
 
     let supabaseError = null;
+    /** @type {unknown} RPC response data remains unvalidated until an operation-specific consumer uses its expected fields. */
+    /** @type {unknown} */
     let rpcResultData = null;
     try {
       if (item.type === 'insert') {
@@ -1020,7 +1067,8 @@ async function _runSyncQueue() {
           lodge_id: item.data.lodge_id || state.lodgeId
         };
 
-        const { data, error } = await state.supabase.
+        const replaySupabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+        const { data, error } = await replaySupabase.
         from(item.table).
         insert(payload).
         select();
@@ -1042,7 +1090,8 @@ async function _runSyncQueue() {
         // the outage — the update is silently lost. We surface this as a health fault
         // rather than treating it as a success.
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || state.lodgeId;
-        const { data: updData, error: updError } = await state.supabase.
+        const replaySupabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+        const { data: updData, error: updError } = await replaySupabase.
         from(item.table).
         update(item.data).
         eq('id', item.id).
@@ -1057,9 +1106,13 @@ async function _runSyncQueue() {
         }
       } else if (item.type === 'delete') {
         const itemLodgeId = item.data?.lodge_id || item.lodge_id || state.lodgeId;
-        ({ error: supabaseError } = await state.supabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
+        const replaySupabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+        ({ error: supabaseError } = await replaySupabase.from(item.table).delete().eq('id', item.id).eq('lodge_id', itemLodgeId));
       } else if (item.type === 'rpc') {
-        const replayData = resolveQueuedRpcData(item.data);
+        // Decryption preserves the queued value shape; this expected view does not validate persisted bytes.
+        // The decryptor recursively preserves object keys and values; this
+        // assertion reuses the queue item's expected data shape, not validation.
+        const replayData = /** @type {ReplayQueueItemExpectedView['data']} */ (resolveQueuedRpcData(item.data));
         // Tab saves still need an OPEN shift on the server; the waiter, outlet,
         // amounts and timestamps are never rewritten. Sale settlement
         // (create_pos_order_v3) is deliberately NOT reattributed here: moving a
@@ -1140,7 +1193,8 @@ async function _runSyncQueue() {
           };
           replayRpc = 'clock_out_staff_offline';
         }
-        const { data, error } = await state.supabase.rpc(replayRpc, authoritativeReplayData);
+        const replaySupabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+        const { data, error } = await replaySupabase.rpc(replayRpc, authoritativeReplayData);
         rpcResultData = data || null;
         if (error) {
           if (isAlreadyAppliedRpcError({ ...item, table: replayRpc }, error)) {
@@ -1189,7 +1243,8 @@ async function _runSyncQueue() {
             message: 'The server refused this replay because the sale\'s shift is no longer open; retrying once through the reviewed original-shift contract with the same operation key and bytes.'
           });
           const fallbackRequest = buildHistoricalReplayRequest(item, replayData.payload);
-          const { data: fallbackData, error: fallbackError } = await state.supabase.rpc(POS_HISTORICAL_REPLAY_RPC, fallbackRequest);
+          const replaySupabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
+          const { data: fallbackData, error: fallbackError } = await replaySupabase.rpc(POS_HISTORICAL_REPLAY_RPC, fallbackRequest);
           rpcResultData = fallbackData || null;
           if (fallbackError) {
             console.error(`❌ RPC ${POS_HISTORICAL_REPLAY_RPC} FAILED:`, fallbackError);
@@ -1214,15 +1269,17 @@ async function _runSyncQueue() {
         }
       }
     } catch (e) {
-      supabaseError = { message: e.message };
+      supabaseError = { message: /** @type {{message?: unknown}} */ (e).message };
     }
 
     if (supabaseError) {
       // Track failed queue IDs so dependents are skipped
       if (item._queue_id) failedQueueIds.add(item._queue_id);
-      const errorMessage = supabaseError?.code
+      // Expected Supabase/JavaScript error-message view; preserve raw malformed
+      // values from getErrorMessage without coercion or runtime validation.
+      const errorMessage = /** @type {string} */ (supabaseError?.code
         ? `${getErrorMessage(supabaseError)} (${supabaseError.code})`
-        : getErrorMessage(supabaseError);
+        : getErrorMessage(supabaseError));
       if (isPosCreateOrderQueueItem(item)) {
         const orderId = getQueuedPosOrderId(item);
         if (orderId) {
@@ -1313,7 +1370,7 @@ async function _runSyncQueue() {
         // Notify renderer about every affected child in a failed group.
         if (isConflict && bookingIds.length > 0) {
           try {
-            BrowserWindow.getAllWindows().forEach((win) => {
+            BrowserWindow.getAllWindows().forEach((/** @type {import('electron').BrowserWindow} */ win) => {
               if (!win.isDestroyed()) {
                 for (const bookingId of bookingIds) {
                   win.webContents.send('booking:sync-conflict', {
@@ -1407,10 +1464,11 @@ async function _runSyncQueue() {
       // the legacy prose classifiers only fill in for rows whose only evidence
       // is wording, so free text can never override a structured outcome and
       // dead-letter a resumable sale.
+      const replayErrorView = /** @type {{code?: unknown, manual_review_required?: unknown} | null} */ (supabaseError);
       const classification = classifyReplayOutcomeDetailed({
         message: errorMessage,
-        code: supabaseError?.code || null,
-        manualReviewRequired: supabaseError?.manual_review_required === true
+        code: replayErrorView?.code || null,
+        manualReviewRequired: replayErrorView?.manual_review_required === true
       });
       const outcomeClass = classification.outcomeClass;
       const structuredOutcomeControls = classification.source === REPLAY_OUTCOME_SOURCE.MANUAL_FLAG ||
@@ -1433,7 +1491,7 @@ async function _runSyncQueue() {
           { ...item, retryCount: manualReviewOnly ? MAX_SYNC_RETRIES : retryCount },
           {
             outcomeClass,
-            code: supabaseError?.code || null,
+            code: replayErrorView?.code || null,
             message: errorMessage,
             baseDelayMs: SYNC_RETRY_BASE_DELAY_MS,
             maxDelayMs: SYNC_RETRY_MAX_DELAY_MS
@@ -1446,7 +1504,7 @@ async function _runSyncQueue() {
           financial: isFinancialSyncItem(updatedItem),
           message: errorMessage
         });
-        deadLetter.push(updatedItem);
+        deadLetter.push(/** @type {ReplayQueueItemExpectedView} */ (updatedItem));
         persistDeadLetterIncrementally(updatedItem);
         // A dead provisional order replay reached a dead end. Ambiguous
         // outcomes (timeout/network/till/shift/receipt identity) reopen the
@@ -1473,7 +1531,7 @@ async function _runSyncQueue() {
           const deadTabId = String(updatedItem?.data?.payload?.tab_id || '').trim();
           if (deadTabId) {
             try {
-              const tabRows = readCache('pos-tabs') || [];
+              const tabRows = /** @type {CachedRowExpectedView[]} */ (readCache('pos-tabs')) || [];
               const deadTab = tabRows.find((row) => String(row?.id || '') === deadTabId);
               if (deadTab && String(deadTab.status || '').toLowerCase() === 'closed') {
                 writeCache('pos-tabs', tabRows.map((row) =>
@@ -1533,8 +1591,8 @@ async function _runSyncQueue() {
         const productKey = String(item?.data?.payload?.operation_key || '').trim();
         if (productKey) {
           try {
-            let realMenuId = String(rpcResultData?.menu_item_id || '').trim() || null;
-            let realInventoryId = String(rpcResultData?.inventory_item_id || '').trim() || null;
+            let realMenuId = String((/** @type {{menu_item_id?: unknown} | null} */ (rpcResultData))?.menu_item_id || '').trim() || null;
+            let realInventoryId = String((/** @type {{inventory_item_id?: unknown} | null} */ (rpcResultData))?.inventory_item_id || '').trim() || null;
             if (!realMenuId) {
               const wanted = String(item?.data?.payload?.product?.name || '').trim();
               if (wanted && state?.supabase) {
@@ -1559,10 +1617,10 @@ async function _runSyncQueue() {
             /* Rewrite is best-effort; unreconciled dependents dead-letter visibly. */
           }
           try {
-            const menuRows = readCache('pos-menu-items') || [];
+            const menuRows = /** @type {CachedRowExpectedView[]} */ (readCache('pos-menu-items')) || [];
             const keptMenu = menuRows.filter((row) => row?._operation_key !== productKey);
             if (keptMenu.length !== menuRows.length) writeCache('pos-menu-items', keptMenu);
-            const stockRows = readCache('inventory-items') || [];
+            const stockRows = /** @type {CachedRowExpectedView[]} */ (readCache('inventory-items')) || [];
             const keptStock = stockRows.filter((row) => row?._operation_key !== productKey);
             if (keptStock.length !== stockRows.length) writeCache('inventory-items', keptStock);
           } catch {
@@ -1590,8 +1648,9 @@ async function _runSyncQueue() {
       }
       if (isCreateBookingQueueItem(item)) {
         const localBookingIds = getQueuedBookingIds(item);
-        const serverBookingIds = Array.isArray(rpcResultData?.booking_ids) ?
-          rpcResultData.booking_ids.map((value) => String(value || '').trim()).filter(Boolean) : [];
+        const bookingIdsResult = /** @type {{booking_ids?: unknown} | null} */ (rpcResultData);
+        const serverBookingIds = Array.isArray(bookingIdsResult?.booking_ids) ?
+          bookingIdsResult.booking_ids.map((/** @type {unknown} */ value) => String(value || '').trim()).filter((value) => Boolean(value)) : [];
         localBookingIds.forEach((localBookingId, index) => {
           const serverBookingId = serverBookingIds[index] || null;
           if (serverBookingId && serverBookingId !== localBookingId) {
@@ -1615,7 +1674,9 @@ async function _runSyncQueue() {
       if (isConvertQuotationQueueItem(item)) {
         const quotationId = getSyncItemQuotationId(item);
         const localBookingId = item._local_booking_id || null;
-        const serverBookingId = rpcResultData?.booking_id || rpcResultData?.id || null;
+        // The current conversion wrapper adds a verified booking_id, while the legacy RPC returned its UUID as id.
+        const bookingResult = /** @type {{booking_id?: unknown, id?: unknown} | null} */ (rpcResultData);
+        const serverBookingId = bookingResult?.booking_id || bookingResult?.id || null;
         if (quotationId) {
           patchCachedQuotationSyncState(quotationId, {
             ...(serverBookingId ? { converted_booking_id: serverBookingId } : {}),
@@ -1642,11 +1703,12 @@ async function _runSyncQueue() {
           });
         }
       }
+      const multiRoomBookingResult = /** @type {{quotation_recovery_required?: unknown, quotation_id?: unknown, quotation_error?: unknown} | null} */ (rpcResultData);
       if (item?.type === 'rpc' && item.table === 'create_multi_room_booking' &&
-        rpcResultData?.quotation_recovery_required === true && rpcResultData?.quotation_id) {
-        const recoveryMessage = String(rpcResultData.quotation_error ||
+        multiRoomBookingResult?.quotation_recovery_required === true && multiRoomBookingResult?.quotation_id) {
+        const recoveryMessage = String(multiRoomBookingResult.quotation_error ||
           'The booking group is server-confirmed, but its quotation link needs manual review. Preserve the original group and quotation.');
-        patchCachedQuotationSyncState(rpcResultData.quotation_id, {
+        patchCachedQuotationSyncState(multiRoomBookingResult.quotation_id, {
           _pending_sync: true,
           _pending_conversion: true,
           _sync_state: 'failed',
@@ -1657,7 +1719,7 @@ async function _runSyncQueue() {
           financial: true,
           message: recoveryMessage,
           group_server_confirmed: true,
-          quotation_id: rpcResultData.quotation_id
+          quotation_id: multiRoomBookingResult.quotation_id
         });
       }
       if (isCreateQuotationQueueItem(item)) {
@@ -1698,13 +1760,14 @@ async function _runSyncQueue() {
       }
       if (item?.type === 'rpc' && item?.table === 'add_booking_charge') {
         const localChargeId = item._local_charge_id || null;
-        const serverChargeId = rpcResultData?.id || rpcResultData?.charge_id || null;
+          const chargeResult = /** @type {{id?: unknown, charge_id?: unknown} | null} */ (rpcResultData);
+          const serverChargeId = chargeResult?.id || chargeResult?.charge_id || null;
         if (localChargeId && serverChargeId && localChargeId !== serverChargeId) {
-          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localChargeId, serverChargeId, {
+          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localChargeId, /** @type {string} */ (serverChargeId), {
             fieldNames: ['p_charge_id'],
             dependsPrefix: 'booking-charge'
           }));
-          const charges = readCache('booking-charges');
+          const charges = /** @type {CachedRowExpectedView[]} */ (readCache('booking-charges'));
           writeCache('booking-charges', charges.map((charge) => charge?.id === localChargeId ? {
             ...charge,
             id: serverChargeId,
@@ -1717,13 +1780,14 @@ async function _runSyncQueue() {
       }
       if (item?.type === 'rpc' && item?.table === 'add_event_line_item') {
         const localLineId = item._local_line_item_id || null;
-        const serverLineId = rpcResultData?.line_item_id || rpcResultData?.id || null;
+          const eventLineResult = /** @type {{line_item_id?: unknown, id?: unknown} | null} */ (rpcResultData);
+          const serverLineId = eventLineResult?.line_item_id || eventLineResult?.id || null;
         if (localLineId && serverLineId && localLineId !== serverLineId) {
-          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localLineId, serverLineId, {
+          pending.splice(0, pending.length, ...rewriteQueuedEntityReference(pending, localLineId, /** @type {string} */ (serverLineId), {
             fieldNames: ['p_line_item_id'],
             dependsPrefix: 'event-line'
           }));
-          const lines = readCache('event-line-items');
+          const lines = /** @type {CachedRowExpectedView[]} */ (readCache('event-line-items'));
           writeCache('event-line-items', lines.map((line) => line?.id === localLineId ? {
             ...line,
             id: serverLineId,
@@ -1809,7 +1873,7 @@ async function _runSyncQueue() {
       ].includes(item.table)) shouldRefreshPosMenu = true;
       if (item.type === 'rpc' && item.table === 'publish_pos_catalog_snapshot_offline') {
         const snapshotId = item?.data?.payload?.snapshot_id;
-        if (snapshotId) writeCache('pos-catalog-snapshots', readCache('pos-catalog-snapshots').map((row) => row?.snapshot_id === snapshotId ? {
+        if (snapshotId) writeCache('pos-catalog-snapshots', /** @type {CachedRowExpectedView[]} */ (readCache('pos-catalog-snapshots')).map((row) => row?.snapshot_id === snapshotId ? {
           ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
         } : row));
       }
@@ -1833,7 +1897,7 @@ async function _runSyncQueue() {
         'clock_out_staff_with_attendance_pin'
       ].includes(item.table)) {
         const attendanceShiftId = item?.data?.payload?.shift_id;
-        if (attendanceShiftId) writeCache('restaurant-shifts', readCache('restaurant-shifts').map((row) => row?.id === attendanceShiftId ? {
+        if (attendanceShiftId) writeCache('restaurant-shifts', /** @type {CachedRowExpectedView[]} */ (readCache('restaurant-shifts')).map((row) => row?.id === attendanceShiftId ? {
           ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
         } : row));
       }
@@ -1843,7 +1907,7 @@ async function _runSyncQueue() {
         'review_pos_cashup_submission_offline'
       ].includes(item.table)) {
         const submissionKey = item?.data?.payload?.submission_idempotency_key || item?.data?.payload?.idempotency_key;
-        if (submissionKey) writeCache('pos-cashup-submissions', readCache('pos-cashup-submissions').map((row) => row?.idempotency_key === submissionKey ? {
+        if (submissionKey) writeCache('pos-cashup-submissions', /** @type {CachedRowExpectedView[]} */ (readCache('pos-cashup-submissions')).map((row) => row?.idempotency_key === submissionKey ? {
           ...row, _pending_sync: false, _sync_state: 'synced', _synced_at: new Date().toISOString()
         } : row));
       }
@@ -1910,7 +1974,7 @@ async function _runSyncQueue() {
 
   // P2-16: snapshot optimistic booking state before refresh so we can detect drift afterwards
   const preSyncBookingSnapshot = shouldRefreshBookings ?
-  readCache('bookings').
+  /** @type {CachedBookingDriftExpectedView[]} */ (readCache('bookings')).
   filter((b) => !b._pending_sync).
   reduce((map, b) => {
     map[b.id] = {
@@ -1922,10 +1986,11 @@ async function _runSyncQueue() {
       payment_status: b.payment_status
     };
     return map;
-  }, {}) :
+  }, /** @type {Record<string, BookingDriftSnapshot>} */ ({})) :
   null;
 
   // P1-8: widen canonical post-sync refresh
+  /** @type {string[]} */
   const refreshTargets = [];
   if ((successCount > 0 && shouldRefreshBookings) || shouldRefreshBookingsAfterFailure) refreshTargets.push('bookings', 'booking-charges');
   if (successCount > 0 && shouldRefreshBookingGroups) {
@@ -1961,7 +2026,7 @@ async function _runSyncQueue() {
   // P2-16: compare post-refresh server values against pre-refresh optimistic state
   if (preSyncBookingSnapshot && successCount > 0) {
     try {
-      const postSyncBookings = readCache('bookings');
+      const postSyncBookings = /** @type {CachedBookingDriftExpectedView[]} */ (readCache('bookings'));
       for (const b of postSyncBookings) {
         const pre = preSyncBookingSnapshot[b.id];
         if (!pre) continue;
@@ -2005,13 +2070,15 @@ async function _runSyncQueue() {
 }
 
 export async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO_RETRY_AFTER_MS) {
-  const failed = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const failed = /** @type {ReplayQueueItemExpectedView[]} */ (readFailedSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   if (failed.length === 0) return { retried: 0, remaining: 0 };
 
   const now = Date.now();
-  const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const queue = /** @type {ReplayQueueItemExpectedView[]} */ (readSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   const existingIds = new Set(queue.map((item) => item._queue_id));
+  /** @type {ReplayQueueItemExpectedView[]} */
   const keepFailed = [];
+  /** @type {ReplayQueueItemExpectedView[]} */
   const retryItems = [];
 
   for (const item of failed) {
@@ -2022,13 +2089,13 @@ export async function requeueEligibleFailedSyncItems(minAgeMs = DEAD_LETTER_AUTO
       continue;
     }
 
-    const cleanItem = normalizeQueuedSyncItemForReplay({
+    const cleanItem = /** @type {ReplayQueueItemExpectedView} */ (normalizeQueuedSyncItemForReplay({
       ...item,
       _state: 'pending',
       retryCount: 0,
       lastError: '',
       lastAttemptedAt: null
-    });
+    }));
 
     if (!existingIds.has(cleanItem._queue_id)) {
       queue.push(cleanItem);
@@ -2108,7 +2175,7 @@ async function probeHistoricalReplayContractAvailability() {
  * Uses destination-before-source durability like every other requeue path.
  */
 export async function requeueContractParkedHistoricalReplayItems() {
-  const failed = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const failed = /** @type {ReplayQueueItemExpectedView[]} */ (readFailedSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   // Probe only when this deployment actually parked sales for the contract:
   // an ordinary sync run must not add network calls or perturb replay order.
   const parked = failed.filter((item) =>
@@ -2124,9 +2191,9 @@ export async function requeueContractParkedHistoricalReplayItems() {
   // written during the probe is dropped, manual retries stay manual, and a
   // same-ID collision with different content fails closed instead of being
   // auto-requeued or overwritten.
-  const failedNow = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const failedNow = /** @type {ReplayQueueItemExpectedView[]} */ (readFailedSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   const staleById = new Map(parked.map((item) => [item._queue_id, item]));
-  const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const queue = /** @type {ReplayQueueItemExpectedView[]} */ (readSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   const existingById = new Map(queue.map((item) => [item._queue_id, item]));
   const requeuedIds = new Set();
 
@@ -2149,7 +2216,7 @@ export async function requeueContractParkedHistoricalReplayItems() {
       continue;
     }
 
-    const cleanItem = normalizeQueuedSyncItemForReplay({
+    const cleanItem = /** @type {ReplayQueueItemExpectedView} */ (normalizeQueuedSyncItemForReplay({
       ...fresh,
       _state: 'pending',
       retryCount: 0,
@@ -2159,7 +2226,7 @@ export async function requeueContractParkedHistoricalReplayItems() {
       _outcome_class: null,
       _next_retry_at: null,
       _review_reason: null
-    });
+    }));
 
     const existing = existingById.get(cleanItem._queue_id);
     if (existing) {
@@ -2194,14 +2261,15 @@ export async function requeueContractParkedHistoricalReplayItems() {
   return { retried: requeuedIds.size, remaining: keepFailed.length };
 }
 
-/**
- * @param {string | null} [id=null] Existing row/operation identity when a caller provides one.
- */
+/** @param {string} type @param {string} table @param {unknown} data @param {unknown} [id] Existing row/operation identity when a caller provides one. @param {Record<string, unknown>} [meta] */
 export function queueOperation(type, table, data, id = null, meta = {}) {
-  const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  // queueOperation is called with locally constructed operation payloads; this
+  // expected-data view only types existing property reads, not queue JSON.
+  const dataView = /** @type {Record<string, unknown> & {payload?: Record<string, unknown> | null, p_idempotency_key?: unknown}} */ (data);
+  const queue = /** @type {ReplayQueueItemExpectedView[]} */ (readSyncQueue().map((item) => /** @type {ReplayQueueItemExpectedView} */ (ensureQueuedItem(item, /** @type {string} */ (item?.type) || 'op'))));
   const derivedMeta = {
-    ...(type === 'rpc' && table === 'create_quotation' && data?.payload?.id ?
-    { _queue_id: `quotation-${data.payload.id}` } :
+    ...(type === 'rpc' && table === 'create_quotation' && dataView?.payload?.id ?
+    { _queue_id: `quotation-${dataView.payload.id}` } :
     {}),
     ...meta
   };
@@ -2220,11 +2288,11 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
   }, type);
 
   // Deduplication: skip if an identical RPC with same idempotency key is already queued
-  if (type === 'rpc' && data?.p_idempotency_key) {
+  if (type === 'rpc' && dataView?.p_idempotency_key) {
     const existingItem = queue.find(
       (item) => item.type === 'rpc' &&
       item.table === table &&
-      item.data?.p_idempotency_key === data.p_idempotency_key
+      item.data?.p_idempotency_key === dataView.p_idempotency_key
     );
     if (existingItem?._queue_id) {
       console.warn('[SYNC QUEUE] Duplicate idempotent RPC detected — reusing existing queue item', {
@@ -2241,7 +2309,7 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
     return queuedItem._queue_id;
   }
 
-  queue.push(queuedItem);
+  queue.push(/** @type {ReplayQueueItemExpectedView} */ (queuedItem));
   writeSyncQueue(queue);
   appendOperationJournalEntry('queued', queuedItem, {
     financial: isFinancialSyncItem(queuedItem),
@@ -2253,7 +2321,7 @@ state.queueOperation = queueOperation;
 
 function clearActivityLogForInfrastructure() {
   try {
-    fs.writeFileSync(path.join(state.cacheDir, 'activity-log.json'), '[]', 'utf-8');
+    fs.writeFileSync(path.join(/** @type {string} */ (state.cacheDir), 'activity-log.json'), '[]', 'utf-8');
   } catch (e) {
     console.error('Clear activity log failed:', e);
   }
@@ -2270,7 +2338,7 @@ export function createBackup() {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const backupPath = path.join(backupDir, `backup-${ts}.json`);
 
-    const users = readCache('users').map(({ password_hash, ...u }) => u);
+    const users = /** @type {CachedRowExpectedView[]} */ (readCache('users')).map(({ password_hash, ...u }) => u);
 
     const backup = {
       timestamp: new Date().toISOString(),
@@ -2315,7 +2383,7 @@ export async function initDatabase() {
   // terminal output. Markers are additive logging only; they change no
   // behavior and never block.
   const bootAt = Date.now();
-  const bootMark = (phase) => {
+  const bootMark = (/** @type {string} */ phase) => {
     try { console.log(`[BOOT] ${phase} (+${Date.now() - bootAt}ms)`); } catch {}
   };
   bootMark('initDatabase start');
@@ -2396,7 +2464,9 @@ export async function initDatabase() {
       try {
         const wasOffline = !state.isOnline;
         const nowOnline = await checkOnline();
-        const hasPendingSync = readSyncQueue().length > 0 || readFailedSyncQueue().some((item) => item?.manualRetryOnly !== true);
+        // Persisted failed rows are expected to carry the replay metadata
+        // written by the queue producer; this view does not validate JSON.
+        const hasPendingSync = readSyncQueue().length > 0 || readFailedSyncQueue().some((item) => /** @type {{manualRetryOnly?: unknown}} */ (item)?.manualRetryOnly !== true);
         if (nowOnline && state.lodgeId && state.replayAuthReady && (wasOffline || hasPendingSync)) {
           console.log('Back online - syncing changes...');
           await requeueEligibleFailedSyncItems();

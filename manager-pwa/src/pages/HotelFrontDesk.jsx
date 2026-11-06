@@ -6,14 +6,19 @@ import { listBookings, listRooms } from '../lib/api'
 import EmptyState from '../components/EmptyState'
 import DataFreshness from '../components/DataFreshness'
 
+/** @typedef {{id: string, status: string, customer_name?: string | null, guest_name?: string | null, customer?: {name?: string | null} | null, room_number?: string | null, room?: {room_number?: string | null} | null, check_in: string, check_out: string}} FrontDeskBookingExpectedView */
+/** @typedef {{id: string, status?: string | null, housekeeping_status?: string | null}} FrontDeskRoomExpectedView */
+
 function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
+/** @param {FrontDeskBookingExpectedView} booking */
 function guestName(booking) {
   return booking.customer_name || booking.guest_name || booking.customer?.name || 'Guest'
 }
 
+/** @param {{title: string, icon: import('lucide-react').LucideIcon, rows: FrontDeskBookingExpectedView[], empty: string, tone?: string}} props */
 function StayList({ title, icon: Icon, rows, empty, tone = 'text-white' }) {
   return (
     <section className="rounded-2xl bg-gray-800 p-4">
@@ -52,12 +57,13 @@ function StayList({ title, icon: Icon, rows, empty, tone = 'text-white' }) {
 }
 
 export default function HotelFrontDesk() {
-  const { user } = useAuth()
-  const [bookings, setBookings] = useState([])
-  const [rooms, setRooms] = useState([])
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const [bookings, setBookings] = useState(/** @type {FrontDeskBookingExpectedView[]} */ ([]))
+  const [rooms, setRooms] = useState(/** @type {FrontDeskRoomExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string | null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -67,11 +73,12 @@ export default function HotelFrontDesk() {
         listBookings(user.lodge_id, { forceFresh: true }),
         listRooms(user.lodge_id)
       ])
-      setBookings(bookingRows || [])
-      setRooms(roomRows || [])
+      // These helpers can serve persisted query-cache JSON without row validation.
+      setBookings(/** @type {FrontDeskBookingExpectedView[]} */ (bookingRows || []))
+      setRooms(/** @type {FrontDeskRoomExpectedView[]} */ (roomRows || []))
       setUpdatedAt(new Date().toISOString())
     } catch (loadError) {
-      setError(loadError?.message || 'Hotel front desk could not load.')
+      setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || 'Hotel front desk could not load.')
     } finally {
       setLoading(false)
     }

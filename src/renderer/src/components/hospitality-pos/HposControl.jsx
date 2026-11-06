@@ -23,7 +23,30 @@ import {
   HposStatusBadge,
 } from './HposUi';
 
+
+/**
+ * Read views mirror the existing SQL/cache producer fields consumed below.
+ * The IPC/RPC JSON and persisted cache rows are not validated by these types.
+ * @typedef {{id: string, completed?: boolean, is_completed: boolean, text?: string|null, item_label: string, label?: string|null, _pending_sync?: boolean}} HposChecklistItemExpectedView
+ * @typedef {{id: string, name?: string|null, type?: string|null, checklist_type: string, items: HposChecklistItemExpectedView[]}} HposChecklistExpectedView
+ * @typedef {{id: string, category: string, severity: string, message: string|null, created_at: string, is_resolved: boolean, acknowledged_at: string|null, acknowledged_by: string|null|undefined, acknowledgement_reason: string|null, resolved_at: string|null, resolved_by: string|null|undefined, resolved_reason: string|null, title?: string|null, detail?: string|null, description?: string|null}} HposAlertExpectedView
+ * @typedef {{template_key: string, name: string}} HposBarChecklistTemplateExpectedView
+ * @typedef {{id: string, created_at: string, title: string, incident_type: string, description: string|null, severity: string}} HposIncidentExpectedView
+ * @typedef {HposIncidentExpectedView|(HposIncidentCreateResultExpectedView & {id: string})} HposIncidentDisplayExpectedView
+ * @typedef {'stock'|'financial'|'compliance'|'operational'} HposAlertCategory
+ * @typedef {{success: boolean, error?: string|null, offline?: boolean, id?: string|null, acknowledged_at?: string|null, acknowledged_by?: string|null, resolved_at?: string|null, resolved_by?: string|null}} HposActionExpectedView
+ * @typedef {HposActionExpectedView & {incident?: HposIncidentExpectedView|null}} HposIncidentCreateResultExpectedView
+ * @typedef {{message?: string}|null|undefined} HposCaughtErrorExpectedView
+ * @typedef {{title: string, incident_type: string, description: string, severity: string}} HposIncidentForm
+ * @typedef {{onClose: () => void, onLogged?: (created: HposIncidentExpectedView|HposIncidentCreateResultExpectedView|null) => void, onNotice?: (message: string) => void}} HposIncidentLogModalProps
+ * @typedef {{categories: string[], value: string, onChange: (value: string) => void, severity: string, onSeverityChange: (value: string) => void, showResolved: boolean, onToggleResolved: () => void}} HposAlertToolbarProps
+ */
+
+/** @param {HposChecklistItemExpectedView} item */
+/** @param {HposChecklistItemExpectedView} item */
 const isComplete = (item) => item.completed === true || item.is_completed === true;
+
+/** @param {HposChecklistItemExpectedView} item @returns {string} */
 const itemLabel = (item) => item.text || item.item_label || item.label || 'Checklist item';
 
 export default function HposControl() {
@@ -37,11 +60,11 @@ export default function HposControl() {
   // BusinessControl's Control & safety tab remains the Growth analytics home.
   const canViewIncidents = canAccessCapability(access, 'incident_log.view');
   const canLogIncidents = canAccessCapability(access, 'incident_log.manage') || canManage;
-  const [checklists, setChecklists] = useState([]);
-  const [alerts, setAlerts] = useState([]);
-  const [alertHistory, setAlertHistory] = useState([]);
-  const [barTemplates, setBarTemplates] = useState([]);
-  const [incidents, setIncidents] = useState([]);
+  const [checklists, setChecklists] = useState(/** @type {HposChecklistExpectedView[]} */ ([]));
+  const [alerts, setAlerts] = useState(/** @type {HposAlertExpectedView[]} */ ([]));
+  const [alertHistory, setAlertHistory] = useState(/** @type {HposAlertExpectedView[]} */ ([]));
+  const [barTemplates, setBarTemplates] = useState(/** @type {HposBarChecklistTemplateExpectedView[]} */ ([]));
+  const [incidents, setIncidents] = useState(/** @type {HposIncidentDisplayExpectedView[]} */ ([]));
   const [incidentModalOpen, setIncidentModalOpen] = useState(false);
   const [alertCategory, setAlertCategory] = useState('all');
   const [alertSeverity, setAlertSeverity] = useState('all');
@@ -51,8 +74,8 @@ export default function HposControl() {
   const [activeTab, setActiveTab] = useState('checklists');
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
-  const alertOperationIds = useRef(new Map());
-  const checklistOperationIds = useRef(new Map());
+  const alertOperationIds = useRef(/** @type {Map<string, string>} */ (new Map()));
+  const checklistOperationIds = useRef(/** @type {Map<string, string>} */ (new Map()));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,13 +92,14 @@ export default function HposControl() {
         barOnly ? (window.api?.pos?.getBarChecklistTemplates?.() ?? []) : [],
         canViewIncidents ? (window.api?.incidents?.getAll?.() ?? []) : [],
       ]);
-      setChecklists(Array.isArray(checklistResult) ? checklistResult : []);
-      setAlerts(Array.isArray(alertResult) ? alertResult : []);
-      setAlertHistory(Array.isArray(historyResult) ? historyResult : []);
-      setBarTemplates(Array.isArray(templateResult) ? templateResult : []);
-      setIncidents(Array.isArray(incidentResult) ? incidentResult : []);
+      // SQL/cache/API shapes remain unvalidated. The guards prove only array-ness; these local views describe rows consumed below.
+      setChecklists(Array.isArray(checklistResult) ? /** @type {HposChecklistExpectedView[]} */ (checklistResult) : []);
+      setAlerts(Array.isArray(alertResult) ? /** @type {HposAlertExpectedView[]} */ (alertResult) : []);
+      setAlertHistory(Array.isArray(historyResult) ? /** @type {HposAlertExpectedView[]} */ (historyResult) : []);
+      setBarTemplates(Array.isArray(templateResult) ? /** @type {HposBarChecklistTemplateExpectedView[]} */ (templateResult) : []);
+      setIncidents(Array.isArray(incidentResult) ? /** @type {HposIncidentDisplayExpectedView[]} */ (incidentResult) : []);
     } catch (error) {
-      setActionError(error?.message || 'Control information could not be loaded.');
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Control information could not be loaded.');
     } finally {
       setLoading(false);
     }
@@ -90,13 +114,15 @@ export default function HposControl() {
     [checklists],
   );
 
+  /** @param {HposChecklistItemExpectedView} item */
   const toggleChecklistItem = async (item) => {
     if (isComplete(item) || !item.id || !canManage) return;
     setBusyId(item.id);
     setActionError('');
     setNotice('');
     try {
-      const result = await window.api?.pos?.completeChecklistItem?.({ itemId: item.id });
+      // The handler forwards the RPC result or its explicit offline/failure envelope; this view does not validate JSON.
+      const result = /** @type {HposActionExpectedView|null|undefined} */ (await window.api?.pos?.completeChecklistItem?.({ itemId: item.id }));
       if (!result?.success) throw new Error(result?.error || 'Could not complete this item.');
       setChecklists((previous) =>
         previous.map((checklist) => ({
@@ -108,12 +134,13 @@ export default function HposControl() {
       );
       setNotice(result?.offline === true ? `Completed (sends when online): ${itemLabel(item)}` : `Completed: ${itemLabel(item)}`);
     } catch (error) {
-      setActionError(error?.message || 'Could not complete this item.');
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not complete this item.');
     } finally {
       setBusyId('');
     }
   };
 
+  /** @param {HposBarChecklistTemplateExpectedView} template */
   const createTemplateChecklist = async (template) => {
     if (!template?.template_key || !canManage) return;
     setBusyId(`template:${template.template_key}`);
@@ -121,7 +148,8 @@ export default function HposControl() {
     try {
       const operationId = checklistOperationIds.current.get(template.template_key) || crypto.randomUUID();
       checklistOperationIds.current.set(template.template_key, operationId);
-      const result = await window.api?.pos?.createBarChecklistFromTemplate?.({ templateKey: template.template_key, operationId });
+      // The RPC returns a JSON result and the offline path returns its explicit queued envelope.
+      const result = /** @type {HposActionExpectedView|null|undefined} */ (await window.api?.pos?.createBarChecklistFromTemplate?.({ templateKey: template.template_key, operationId }));
       if (!result?.success) throw new Error(result?.error || 'Could not start this checklist.');
       // Offline the checklist is queued: keep the operation id so retries
       // replay the same key instead of starting a duplicate checklist.
@@ -130,12 +158,13 @@ export default function HposControl() {
       const refreshed = await window.api?.pos?.getChecklists?.();
       setChecklists(Array.isArray(refreshed) ? refreshed : []);
     } catch (error) {
-      setActionError(error?.message || 'Could not start this checklist.');
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not start this checklist.');
     } finally {
       setBusyId('');
     }
   };
 
+  /** @param {HposAlertExpectedView} alert */
   const acknowledgeAlert = async (alert) => {
     if (!alert.id || !canManage) return;
     const reason = window.prompt('Why is this alert being acknowledged for follow-up?', alert.acknowledgement_reason || '');
@@ -146,22 +175,25 @@ export default function HposControl() {
     try {
       const operationId = alertOperationIds.current.get(`ack:${alert.id}`) || crypto.randomUUID();
       alertOperationIds.current.set(`ack:${alert.id}`, operationId);
-      const result = await window.api?.pos?.acknowledgeAlert?.(alert.id, reason.trim(), operationId);
+      // Main returns the RPC JSON result unchanged, or the handler failure envelope.
+      const result = /** @type {HposActionExpectedView|null|undefined} */ (await window.api?.pos?.acknowledgeAlert?.(alert.id, reason.trim(), operationId));
       if (!result?.success) throw new Error(result?.error || 'Could not acknowledge this alert.');
       if (!result.acknowledged_at) throw new Error('The server did not return acknowledgement evidence. Refresh and retry the original action.');
       const acknowledgedAt = result.acknowledged_at;
+      /** @param {HposAlertExpectedView} row */
       const update = (row) => row.id === alert.id ? { ...row, acknowledged_at: acknowledgedAt, acknowledged_by: result.acknowledged_by } : row;
       setAlerts((previous) => previous.map(update));
       setAlertHistory((previous) => previous.map(update));
       alertOperationIds.current.delete(`ack:${alert.id}`);
       setNotice('Alert acknowledged; it remains active until resolved.');
     } catch (error) {
-      setActionError(error?.message || 'Could not acknowledge this alert.');
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not acknowledge this alert.');
     } finally {
       setBusyId('');
     }
   };
 
+  /** @param {HposAlertExpectedView} alert */
   const resolveAlert = async (alert) => {
     if (!alert.id || !canManage) return;
     const reason = window.prompt('Why is this alert being resolved?', alert.resolved_reason || '');
@@ -172,15 +204,17 @@ export default function HposControl() {
     try {
       const operationId = alertOperationIds.current.get(`resolve:${alert.id}`) || crypto.randomUUID();
       alertOperationIds.current.set(`resolve:${alert.id}`, operationId);
-      const result = await window.api?.pos?.resolveAlert?.(alert.id, reason.trim(), operationId);
+      // Main returns the RPC JSON result unchanged, or the handler failure envelope.
+      const result = /** @type {HposActionExpectedView|null|undefined} */ (await window.api?.pos?.resolveAlert?.(alert.id, reason.trim(), operationId));
       if (!result?.success) throw new Error(result?.error || 'Could not resolve this alert.');
       if (!result.resolved_at) throw new Error('The server did not return resolution evidence. Refresh and retry the original action.');
+      const resolvedAt = result.resolved_at;
       setAlerts((previous) => previous.filter((row) => row.id !== alert.id));
-      setAlertHistory((previous) => previous.map((row) => row.id === alert.id ? { ...row, is_resolved: true, resolved_at: result.resolved_at, resolved_by: result.resolved_by, resolved_reason: reason.trim() } : row));
+      setAlertHistory((previous) => previous.map((row) => row.id === alert.id ? { ...row, is_resolved: true, resolved_at: resolvedAt, resolved_by: result.resolved_by, resolved_reason: reason.trim() } : row));
       alertOperationIds.current.delete(`resolve:${alert.id}`);
       setNotice('Alert resolved and removed from the active queue.');
     } catch (error) {
-      setActionError(error?.message || 'Could not resolve this alert.');
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not resolve this alert.');
     } finally {
       setBusyId('');
     }
@@ -291,24 +325,28 @@ export default function HposControl() {
             {incidents.length === 0 ? (
               <HposEmptyState icon={ShieldCheck} title="No incidents logged" description="Safety, service, staff and security events appear here for manager follow-up." />
             ) : (
-              incidents.slice(0, 20).map((row) => (
-                <article key={row.id || row.created_at}>
-                  <span className="hpos-alert-icon"><ShieldCheck size={19} /></span>
-                  <div>
-                    <strong>{row.title || row.incident_type || 'Incident'}</strong>
-                    <p>{String(row.incident_type || 'safety')} · {row.description || 'Review for manager follow-up.'}</p>
-                    <small>{row.created_at ? new Date(row.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable'}</small>
-                  </div>
-                  <HposStatusBadge tone={['critical', 'high'].includes(String(row.severity || '').toLowerCase()) ? 'danger' : 'warning'}>{String(row.severity || 'medium')}</HposStatusBadge>
-                </article>
-              ))
+              incidents.slice(0, 20).map((row) => {
+                // The table projection has no `success` column; the create RPC action envelope does.
+                const incident = 'success' in row ? null : row;
+                return (
+                  <article key={row.id || incident?.created_at}>
+                    <span className="hpos-alert-icon"><ShieldCheck size={19} /></span>
+                    <div>
+                      <strong>{incident?.title || incident?.incident_type || 'Incident'}</strong>
+                      <p>{String(incident?.incident_type || 'safety')} · {incident?.description || 'Review for manager follow-up.'}</p>
+                      <small>{incident?.created_at ? new Date(incident.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable'}</small>
+                    </div>
+                    <HposStatusBadge tone={['critical', 'high'].includes(String(incident?.severity || '').toLowerCase()) ? 'danger' : 'warning'}>{String(incident?.severity || 'medium')}</HposStatusBadge>
+                  </article>
+                );
+              })
             )}
             {incidentModalOpen && (
               <IncidentLogModal
                 onClose={() => setIncidentModalOpen(false)}
                 onLogged={(created) => {
                   setIncidentModalOpen(false);
-                  setIncidents((prev) => (created?.id ? [created, ...prev] : prev));
+                  setIncidents((prev) => (created?.id ? [/** @type {HposIncidentDisplayExpectedView} */ (created), ...prev] : prev));
                   setNotice('Incident logged for manager follow-up.');
                   load();
                 }}
@@ -352,18 +390,21 @@ export default function HposControl() {
   );
 }
 
+/** @param {HposIncidentLogModalProps} props */
 function IncidentLogModal({ onClose, onLogged, onNotice }) {
-  const [form, setForm] = useState({ title: '', incident_type: 'safety', description: '', severity: 'medium' });
+  const [form, setForm] = useState(/** @type {HposIncidentForm} */ ({ title: '', incident_type: 'safety', description: '', severity: 'medium' }));
   const [saving, setSaving] = useState(false);
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const save = async (event) => {
     event.preventDefault();
     setSaving(true);
     try {
-      const result = await window.api?.incidents?.create?.(form);
+      // The main handler forwards create_incident_log JSON unchanged; this expected-data view is not validation.
+      const result = /** @type {HposIncidentCreateResultExpectedView|null|undefined} */ (await window.api?.incidents?.create?.(form));
       if (result?.success === false) throw new Error(result?.error || 'Could not log incident.');
       onLogged?.(result?.incident || result || null);
     } catch (error) {
-      onNotice?.(error?.message || 'Could not log incident.');
+      onNotice?.((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not log incident.');
     } finally {
       setSaving(false);
     }
@@ -383,20 +424,25 @@ function IncidentLogModal({ onClose, onLogged, onNotice }) {
   );
 }
 
+/** @param {HposAlertToolbarProps} props */
 function AlertToolbar({ categories, value, onChange, severity, onSeverityChange, showResolved, onToggleResolved }) {
-  return <div className="hpos-alert-toolbar"><label>Category <select value={value} onChange={(event) => onChange(event.target.value)}><option value="all">All categories</option>{categories.map((category) => <option key={category} value={category}>{formatAlertCategory(category)}</option>)}</select></label><label>Severity <select value={severity} onChange={(event) => onSeverityChange(event.target.value)}><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="warning">Warning</option><option value="low">Low</option><option value="info">Info</option></select></label><HposButton onClick={onToggleResolved}>{showResolved ? 'Hide resolved history' : 'Show resolved history'}</HposButton></div>;
+  return <div className="hpos-alert-toolbar"><label>Category <select value={value} onChange={/** @param {import('react').ChangeEvent<HTMLSelectElement>} event */ (event) => onChange(event.target.value)}><option value="all">All categories</option>{categories.map((category) => <option key={category} value={category}>{formatAlertCategory(category)}</option>)}</select></label><label>Severity <select value={severity} onChange={/** @param {import('react').ChangeEvent<HTMLSelectElement>} event */ (event) => onSeverityChange(event.target.value)}><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="warning">Warning</option><option value="low">Low</option><option value="info">Info</option></select></label><HposButton onClick={onToggleResolved}>{showResolved ? 'Hide resolved history' : 'Show resolved history'}</HposButton></div>;
 }
 
+/** @param {unknown} category */
 function formatAlertCategory(category) {
   const value = String(category || 'operational').toLowerCase();
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+/** @param {{category?: unknown}} props */
 function AlertCategoryIcon({ category }) {
-  const Icon = { stock: Package, financial: DollarSign, compliance: ShieldCheck, operational: BriefcaseBusiness }[String(category || 'operational').toLowerCase()] || AlertTriangle;
+  // get_restaurant_alert_history emits only these SQL-constrained categories (20260820130000_bar_setup_alert_checklist_controls.sql).
+  const Icon = ({ stock: Package, financial: DollarSign, compliance: ShieldCheck, operational: BriefcaseBusiness })[/** @type {HposAlertCategory} */ (String(category || 'operational').toLowerCase())] || AlertTriangle;
   return <Icon size={19} />;
 }
 
+/** @param {{alerts: HposAlertExpectedView[]}} props */
 function AlertHistoryList({ alerts }) {
   if (!alerts.length) return null;
   return <section className="hpos-alert-history"><h2>Resolved alert history</h2>{alerts.map((alert) => <article key={`history-${alert.id}`}><strong>{alert.message || 'Operational alert'}</strong><small>{formatAlertCategory(alert.category)} · {alert.resolved_at ? new Date(alert.resolved_at).toLocaleString('en-GB') : 'Resolved time unavailable'}{alert.resolved_reason ? ` · ${alert.resolved_reason}` : ''}</small></article>)}</section>;

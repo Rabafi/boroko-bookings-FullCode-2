@@ -63,6 +63,103 @@ export interface AdminNotificationsReadResult {
   count: unknown;
 }
 
+/** Main returns numeric sums from the database query or the same zero summary in its catch branch. */
+export interface BookingCollectionsSummary {
+  count: number;
+  amount: number;
+}
+
+/**
+ * Expected profile data returned by the local profile registry. The registry
+ * originates in JSON and is normalized by the main profile producer; this
+ * declaration does not validate values at the IPC boundary.
+ */
+export interface DesktopProfileReadView {
+  lodge_id: string;
+  label: string;
+  status: string;
+  created_at: unknown;
+  last_used_at: unknown;
+}
+
+export interface DesktopProfileListReadView extends DesktopProfileReadView {
+  active: boolean;
+}
+
+export interface DesktopProfileSettingsReadView {
+  lodge_id: string | null;
+}
+
+export type DesktopProfileSelectionDataReadView =
+  | (DesktopProfileReadView & { settings: DesktopProfileSettingsReadView })
+  | { settings: DesktopProfileSettingsReadView };
+
+export type DesktopProfileSelectResult =
+  | { success: true; data: DesktopProfileSelectionDataReadView }
+  | { success: false; error: unknown };
+
+export type DesktopProfileCreateDraftResult =
+  | { success: true; data: DesktopProfileReadView }
+  | { success: false; error: unknown };
+
+export type DesktopProfileRemoveDraftResult =
+  | {
+      success: true;
+      active_profile: DesktopProfileReadView | null;
+      profiles: DesktopProfileListReadView[];
+    }
+  | { success: false; code: unknown; error: unknown };
+
+/** Expected mapped booking projection; its Supabase/cache origin is not validated here. */
+export interface PendingOnlineBookingReadView extends Record<string, unknown> {
+  id: string;
+  source?: string | null | undefined;
+  status?: string | null | undefined;
+  customer_name?: unknown;
+  customer_phone?: unknown;
+  customer_email?: unknown;
+  room_number?: unknown;
+  room_type?: unknown;
+}
+
+/** Expected open-shift row from the existing query/cache producer; no IPC validation is implied. */
+export interface DesktopPosCurrentShiftReadView extends Record<string, unknown> {
+  id: string;
+  status?: string | null;
+  cashier_name?: string | null;
+  opened_at?: string | null;
+  opening_float?: unknown;
+}
+
+/** Backup policy fields produced by normalizeManagedBackupPolicy/buildManagedBackupStatus. */
+export interface ManagedBackupStatusReadView {
+  enabled: boolean;
+  target_dir: string;
+  export_json: boolean;
+  export_excel: boolean;
+  frequency_days: number;
+  last_run_at: unknown;
+  last_success_at: unknown;
+  last_error: string;
+  last_json_path: string;
+  last_excel_path: string;
+  enforcement_level: 'reminder' | 'warning' | 'strict';
+  next_due_at: string | null;
+  overdue: boolean | null;
+  requires_setup: boolean;
+  has_recent_success: boolean;
+  compliance_state: 'setup_required' | 'overdue' | 'healthy' | 'pending_first_run' | 'disabled';
+}
+
+/** The backup handler returns local file metadata and normalized policy, or its capability-failure empty envelope. */
+export type BackupInfoReadResult =
+  | {
+      backupDir: string;
+      backups: Array<{ name: string; size: number; created: string }>;
+      policy: ManagedBackupStatusReadView;
+    }
+  | { backupDir: null; backups: []; policy?: undefined };
+
 /** The external URL handler reports a protocol rejection or successful shell call. */
 export type ShellOpenExternalResult =
   | { success: false; error: string }
@@ -396,6 +493,15 @@ export interface DesktopIpcResultContracts {
   'app:getVersion': string;
   'app:getProduct': ProductInfo;
   'inventory:getItemsWithReadStatus': InventoryItemsReadStatus;
+  'bookings:getCollectionsSummary': BookingCollectionsSummary;
+  'profiles:list': DesktopProfileListReadView[];
+  'profiles:getActive': DesktopProfileReadView | null;
+  'profiles:select': DesktopProfileSelectResult;
+  'profiles:createDraft': DesktopProfileCreateDraftResult;
+  'profiles:removeDraft': DesktopProfileRemoveDraftResult;
+  'bookings:getPendingOnline': PendingOnlineBookingReadView[];
+  'pos:getCurrentShift': DesktopPosCurrentShiftReadView | null;
+  'backup:getInfo': BackupInfoReadResult;
   'admin:markNotificationsRead': AdminNotificationsReadResult;
   'admin:cleanupNotifications': AdminNotificationsCleanupResult;
   'shell:openExternal': ShellOpenExternalResult;

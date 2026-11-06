@@ -96,6 +96,7 @@ const STATE_PHASE_LABELS = Object.freeze({
  *     install_dir: string, data_dir: string, pg_data_dir: string, backup_dir: string,
  *     pg_bin: string, node_path: string, server_root: string, installer_script: string,
  *     http_port: number, db_port: number, base_url: string, upgrade: boolean,
+ *     resume_existing?: boolean,
  *     tls_cert_file?: string, tls_key_file?: string, certificate_fingerprint?: string
  *   },
  *   secrets: {setup_secret: string, backup_key: string, replication_password: string},
@@ -106,7 +107,7 @@ const STATE_PHASE_LABELS = Object.freeze({
  *   completed_at: string | null
  * }} ServerSetupState
  */
-/** @typedef {{code: string, message: string, details?: Record<string, unknown>}} SetupBlocker */
+/** @typedef {{code: string, message: string, details?: Record<string, unknown>|undefined}} SetupBlocker */
 
 /** @param {string} value */
 function psQuote(value) {
@@ -184,6 +185,7 @@ export function hashFileSha256(file) {
   })
 }
 
+/** @param {string} root */
 function measuredDirectoryBytes(root) {
   let total = 0n
   for (const name of readdirSync(root)) {
@@ -246,6 +248,7 @@ export async function verifyServerPayload({ payloadDir, hashFile = hashFileSha25
   }
 }
 
+/** @param {unknown} freeBytes @param {unknown} payloadBytes */
 export function computeSetupStorage(freeBytes, payloadBytes) {
   const free = typeof freeBytes === 'bigint' && freeBytes >= 0n ? freeBytes : null
   const payload = typeof payloadBytes === 'bigint' && payloadBytes >= 0n ? payloadBytes : null
@@ -253,6 +256,7 @@ export function computeSetupStorage(freeBytes, payloadBytes) {
   const recommended = required === null ? null : required + RECOMMENDED_OPERATIONAL_HEADROOM_BYTES
   const shortfall = free === null || required === null || free >= required ? 0n : required - free
   const status = free === null ? 'unknown' : required !== null && free < required ? 'blocked' : recommended !== null && free < recommended ? 'advisory' : 'ok'
+  /** @param {bigint|null} bytes @param {boolean} [roundUp] @returns {number|null} */
   const gib = (bytes, roundUp = false) => bytes === null ? null : roundUp
     ? Math.ceil(Number(bytes) / Number(GIB) * 10) / 10
     : Math.floor(Number(bytes) / Number(GIB) * 10) / 10
@@ -265,7 +269,8 @@ export function computeSetupStorage(freeBytes, payloadBytes) {
     free_gib: gib(free),
     required_free_gib: gib(required, true),
     recommended_free_gib: gib(recommended, true),
-    shortfall_gib: shortfall > 0n ? Math.max(0.1, gib(shortfall, true)) : 0
+    // shortfall is a bigint here, so gib cannot take its null branch.
+    shortfall_gib: shortfall > 0n ? Math.max(0.1, /** @type {number} */ (gib(shortfall, true))) : 0
   }
 }
 
@@ -273,6 +278,7 @@ export function computeSetupStorage(freeBytes, payloadBytes) {
 export function probeTcpPort(port, host = '127.0.0.1') {
   return new Promise((resolvePromise) => {
     const socket = connect({ port, host })
+    /** @param {boolean} free */
     const done = (free) => { socket.destroy(); resolvePromise(free) }
     socket.setTimeout(750)
     socket.once('connect', () => done(false))
@@ -338,6 +344,7 @@ export function normalizeOwnerDraft(value) {
   const profileInput = input.business_profile && typeof input.business_profile === 'object' && !Array.isArray(input.business_profile)
     ? /** @type {Record<string, unknown>} */ (input.business_profile)
     : input
+  /** @type {Record<string, string>} */
   const business_profile = {}
   for (const [key, max] of Object.entries({ company_name: 200, address: 240, city: 120, country: 120, phone: 80, email: 254, website: 240, vat_number: 80 })) {
     const value = profileInput[key]
@@ -604,7 +611,7 @@ export function publicSetupState(state) {
 
 /**
  * @param {string} baseUrl
- * @param {{timeoutMs?: number, intervalMs?: number, certificate_fingerprint?: string}} [options]
+ * @param {{timeoutMs?: number, intervalMs?: number, certificate_fingerprint?: string|undefined}} [options]
  */
 export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs = 1200, certificate_fingerprint } = {}) {
   const deadline = Date.now() + timeoutMs
@@ -614,7 +621,9 @@ export async function probeServiceLive(baseUrl, { timeoutMs = 60000, intervalMs 
       let response
       try { response = await transport.get('/v1/health/live') } finally { transport.close() }
       if (response.status === 200) {
-        const body = response.body
+        // The health endpoint's JSON remains untrusted; these are only the
+        // fields this existing success check reads.
+        const body = /** @type {{ok?: unknown, status?: unknown}|null} */ (response.body)
         if (body && body.ok === true && body.status === 'live') return true
       }
     } catch {}
@@ -678,7 +687,7 @@ export class ServerSetupOrchestrator {
    *   isPortFree?: (port: number, host: string) => Promise<boolean>,
    *   diskFree?: (path: string) => bigint | null,
    *   serviceDetected?: () => Promise<boolean>,
-   *   serviceLive?: (baseUrl: string, options?: {certificate_fingerprint?: string}) => Promise<boolean>
+   *   serviceLive?: (baseUrl: string, options?: {certificate_fingerprint?: string|undefined}) => Promise<boolean>
    * }} options
    */
   constructor(options) {
@@ -799,9 +808,13 @@ export class ServerSetupOrchestrator {
     if (storage.status === 'unknown') warnings.push('Free disk space could not be checked here. The installer will check the destination again before copying files.')
     else if (storage.status === 'blocked') {
       const drive = /^[A-Za-z]:/.exec(this.installRoot)?.[0] ?? 'installation drive'
-      blockers.push({ code: 'INSUFFICIENT_DISK', message: `More storage space is needed — Free another ${storage.shortfall_gib.toFixed(1)} GiB on ${drive}, then select Check again. Setup needs ${storage.required_free_gib.toFixed(1)} GiB for the verified Bar files and initial database.` })
+      // computeSetupStorage selects blocked only when free and required bytes
+      // are both known, so required_free_gib cannot be null in this branch.
+      blockers.push({ code: 'INSUFFICIENT_DISK', message: `More storage space is needed — Free another ${storage.shortfall_gib.toFixed(1)} GiB on ${drive}, then select Check again. Setup needs ${/** @type {number} */ (storage.required_free_gib).toFixed(1)} GiB for the verified Bar files and initial database.` })
     } else if (storage.status === 'advisory') {
-      warnings.push(`Storage space is low. Setup can finish with ${storage.free_gib.toFixed(1)} GiB free; keep at least ${storage.recommended_free_gib.toFixed(1)} GiB free for the recommended backup and growth headroom. Actual backup space depends on your Bar database size.`)
+      // Advisory is selected only with known free, required, and recommended
+      // byte values; the latter two display values are therefore non-null.
+      warnings.push(`Storage space is low. Setup can finish with ${/** @type {number} */ (storage.free_gib).toFixed(1)} GiB free; keep at least ${/** @type {number} */ (storage.recommended_free_gib).toFixed(1)} GiB free for the recommended backup and growth headroom. Actual backup space depends on your Bar database size.`)
     }
     let ports = null
     if (!state) {
@@ -981,7 +994,7 @@ export class ServerSetupOrchestrator {
     }
   }
 
-  /** @param {ServerSetupState} state */
+  /** @param {ServerSetupState} state @param {Record<string, unknown>|null} status */
   #acceptInstalled(state, status) {
     if (state.install.tls_cert_file) {
       if (typeof status?.certificate_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(status.certificate_fingerprint)) {
@@ -1140,6 +1153,7 @@ export class ServerSetupOrchestrator {
     }
   }
 
+  /** @param {Record<string, unknown>} request */
   async recoverOwnerPassword(request) {
     const state = this.readState()
     if (!state || state.phase !== 'complete' || !state.secrets.setup_secret || !this.runtime.recoverOwnerPassword) {

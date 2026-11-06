@@ -109,9 +109,9 @@ export function useSessionForm(key, initialState) {
  * Trap focus inside a container element (e.g., modal or lightbox).
  * Returns a ref to attach to the container.
  */
-/** @param {boolean} isActive @returns {import('react').RefObject<HTMLElement|null>} */
+/** @param {boolean} isActive @returns {import('react').RefObject<HTMLDivElement|null>} */
 export function useFocusTrap(isActive) {
-  const containerRef = useRef(/** @type {HTMLElement|null} */ (null))
+  const containerRef = useRef(/** @type {HTMLDivElement|null} */ (null))
   const previousActiveElement = useRef(/** @type {(Element & {focus():void})|null} */ (null))
 
   useEffect(() => {

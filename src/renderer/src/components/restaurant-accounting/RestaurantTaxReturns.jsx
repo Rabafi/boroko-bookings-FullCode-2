@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, FileCheck2, RefreshCw, Stamp } from 'lucide-react'
-import { useAccess } from '../../app-context'
+import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { createBarLocalTaxReturnsApi } from './barLocalTaxReturnsApi.js'
 import { AccountingButton, AccountingExportButton, AccountingLoading, AccountingNotice, AccountingPage, AccountingPanel, EmptyState, accountingInvoke, firstOfMonth, inputClass, labelClass, money, runIdempotent, today, unwrap } from './RestaurantAccountingUi'
 
-export default function RestaurantTaxReturns(){
+function CloudRestaurantTaxReturns(){
  const access=useAccess(),canManage=canAccessCapability(access,'accounting.manage'),canFile=canAccessCapability(access,'accounting.tax_file')
  const [accounts,setAccounts]=useState([]),[data,setData]=useState({configurations:[],working_papers:[]}),[adjustments,setAdjustments]=useState([])
  const [config,setConfig]=useState({jurisdictionCode:'BW',ruleVersion:'',effectiveFrom:today(),effectiveTo:'',outputTaxAccountId:'',inputTaxAccountId:''})
@@ -32,5 +33,35 @@ export default function RestaurantTaxReturns(){
    </div>
   </div>}
  </AccountingPage>
+}
+
+function LocalBarTaxReturns(){
+ const {user}=useAuth(),{settings}=useSettings(),access=useAccess()
+ const canManage=canAccessCapability(access,'accounting.manage')
+ const api=useMemo(()=>{try{return createBarLocalTaxReturnsApi(window.api?.barLocal,{businessId:settings?.lodge_id||user?.lodge_id,outletId:settings?.outlet_id,staffId:user?.id})}catch{return null}},[settings?.lodge_id,settings?.outlet_id,user?.id,user?.lodge_id])
+ const [data,setData]=useState({codes:[],returns:[]}),[period,setPeriod]=useState(new Date().toISOString().slice(0,7))
+ const [code,setCode]=useState({code:'',name:'',rate:'0.14'}),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
+ const load=useCallback(async()=>{setLoading(true);setError('');try{if(!api)throw new Error('Local accounting scope is unavailable. Sign in again before continuing.');setData(await api.load())}catch(e){setError(e.message)}finally{setLoading(false)}},[api])
+ useEffect(()=>{void load()},[load])
+ const saveCode=async(e)=>{e.preventDefault();setBusy(true);setError('');setNotice('');try{const normalized=code.code.trim().toUpperCase(),current=data.codes.find(row=>row.code.toUpperCase()===normalized),payload={code:normalized,name:code.name.trim(),rate:code.rate,active:true,...(current?{expected_version:current.version}:{})};const result=await api.submit('accounting.tax_code.upsert',payload,`code:${normalized}:v${current?.version||0}`);if(result.outcome==='refused')throw new Error(result.error?.message||'The local authority refused this tax code.');setCode({code:'',name:'',rate:'0.14'});setNotice('Versioned tax code saved locally. Tax rates are configured evidence; the app does not determine statutory treatment.');await load()}catch(err){setError(err.message)}finally{setBusy(false)}}
+ const generate=async(e)=>{e.preventDefault();setBusy(true);setError('');setNotice('');try{if(data.returns.some(row=>row.period===period)&&!window.confirm(`Replace the existing ${period} draft with a new immutable source snapshot? Its revision number will increase.`))return;const result=await api.submit('accounting.tax_return.prepare',{period},`return:${period}`);if(result.outcome==='refused')throw new Error(result.error?.message||'The local authority refused this draft.');setNotice(`Local ${period} tax working-paper draft generated. Revision and source hash are retained by the local database.`);await load()}catch(err){setError(err.message)}finally{setBusy(false)}}
+ return <AccountingPage title="Tax working papers" description="Use the existing Accounting Pro tax screen to prepare local ledger snapshots and maintain versioned tax-code evidence." actions={<AccountingButton tone="secondary" onClick={()=>void load()}><RefreshCw size={15}/>Refresh</AccountingButton>}>
+  <AccountingNotice type="warning">Local Bar can prepare a draft from recorded sales and approved supplier invoices. It does not decide tax law, support tax adjustments or approval, record statutory filing, or submit a return. Complete review and filing with your tax authority outside this app.</AccountingNotice>
+  {error&&<AccountingNotice type="error">{error}</AccountingNotice>}{notice&&<AccountingNotice type="success">{notice}</AccountingNotice>}
+  {loading?<AccountingLoading/>:<div className="space-y-4">
+   {canManage&&<div className="grid gap-4 xl:grid-cols-2">
+    <AccountingPanel title="Versioned local tax codes" description="Codes and rates are retained as reference data; statutory treatment must be confirmed by your adviser."><form className="grid gap-3 sm:grid-cols-3" onSubmit={saveCode}><label className={labelClass}>Code<input required maxLength="32" className={inputClass} value={code.code} onChange={e=>setCode({...code,code:e.target.value})}/></label><label className={labelClass}>Name<input required maxLength="160" className={inputClass} value={code.name} onChange={e=>setCode({...code,name:e.target.value})}/></label><label className={labelClass}>Rate (0–1)<input required type="number" min="0" max="1" step="0.0001" className={inputClass} value={code.rate} onChange={e=>setCode({...code,rate:e.target.value})}/></label><AccountingButton busy={busy} type="submit">Save tax-code version</AccountingButton></form>
+     {data.codes.length>0&&<div className="mt-4 overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs text-slate-500"><th className="py-2">Code</th><th>Name</th><th>Rate</th><th>Status / version</th></tr></thead><tbody>{data.codes.map(row=><tr key={row.id} className="border-b border-slate-100"><td className="py-2">{row.code}</td><td>{row.name}</td><td>{row.rate}</td><td>{row.active?'Active':'Inactive'} · v{row.version}</td></tr>)}</tbody></table></div>}
+    </AccountingPanel>
+    <AccountingPanel title="Prepare monthly draft" description="The local authority totals posted sales tax and approved supplier-invoice tax for the selected month; it snapshots its sources and hash."><form className="space-y-3" onSubmit={generate}><label className={labelClass}>Tax period<input required type="month" className={inputClass} value={period} onChange={e=>setPeriod(e.target.value)}/></label><AccountingButton busy={busy} type="submit">Generate local draft</AccountingButton></form></AccountingPanel>
+   </div>}
+   <AccountingPanel title="Local draft history">{data.returns.length===0?<EmptyState title="No local tax drafts" description="Create a versioned tax code or generate a monthly draft when accounting data is ready."/>:<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs text-slate-500"><th className="py-2">Period / revision</th><th className="text-right">Output tax</th><th className="text-right">Input tax</th><th className="text-right">Net due</th><th>Status</th><th>Source hash</th></tr></thead><tbody>{data.returns.map(row=><tr key={row.id} className="border-b border-slate-100"><td className="py-2">{row.period} · v{row.revision}</td><td className="text-right">{money(row.output_tax)}</td><td className="text-right">{money(row.input_tax)}</td><td className="text-right font-bold">{money(row.net_due)}</td><td>{row.status} · external filing required</td><td className="font-mono text-xs">{row.snapshot_hash.slice(0,16)}…</td></tr>)}</tbody></table></div>}</AccountingPanel>
+  </div>}
+ </AccountingPage>
+}
+
+export default function RestaurantTaxReturns(){
+ const {user}=useAuth()
+ return user?.localAuthority===true?<LocalBarTaxReturns/>:<CloudRestaurantTaxReturns/>
 }
 

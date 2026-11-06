@@ -109,15 +109,27 @@ for (const [option, value, expected] of [
 }
 const expected = inventory(resolve(root, 'src/main'));
 const configured = new Set(parsed.fileNames.map((path) => resolve(path)));
+const mainDirectory = resolve(root, 'src/main');
+const expectedTypeSupportFiles = new Set([resolve(root, 'src/main/importMeta.d.ts')]);
+const configuredFiles = parsed.fileNames.map((path) => resolve(path));
+const configuredTypeSupportFiles = new Set(configuredFiles.filter((path) => path.endsWith('.d.ts')));
 const missingRoots = expected.filter((path) => !configured.has(path));
-const extraRoots = parsed.fileNames.map((path) => resolve(path)).filter((path) => path.startsWith(resolve(root, 'src/main') + sep) && !expected.includes(path));
-if (missingRoots.length || extraRoots.length) {
-  throw new Error(`configured source inventory mismatch: missing roots=${missingRoots.map(rel).join(', ')}; unexpected roots=${extraRoots.map(rel).join(', ')}`);
+const extraRoots = configuredFiles.filter((path) => path.startsWith(mainDirectory + sep) && path.endsWith('.js') && !expected.includes(path));
+const missingTypeSupportFiles = [...expectedTypeSupportFiles].filter((path) => !configuredTypeSupportFiles.has(path));
+const unexpectedTypeSupportFiles = [...configuredTypeSupportFiles].filter((path) => !expectedTypeSupportFiles.has(path));
+if (missingRoots.length || extraRoots.length || missingTypeSupportFiles.length || unexpectedTypeSupportFiles.length) {
+  throw new Error(`configured source inventory mismatch: missing roots=${missingRoots.map(rel).join(', ')}; unexpected roots=${extraRoots.map(rel).join(', ')}; missing type-support files=${missingTypeSupportFiles.map(rel).join(', ')}; unexpected type-support files=${unexpectedTypeSupportFiles.map(rel).join(', ')}`);
 }
 
 const program = ts.createProgram(parsed.fileNames, parsed.options);
 const actual = new Set(program.getSourceFiles().map((file) => resolve(file.fileName)));
 assertInventory(expected, configured, actual);
+const actualTypeSupportFiles = new Set([...actual].filter((path) => path.startsWith(mainDirectory + sep) && path.endsWith('.d.ts')));
+const missingActualTypeSupportFiles = [...expectedTypeSupportFiles].filter((path) => !actualTypeSupportFiles.has(path));
+const unexpectedActualTypeSupportFiles = [...actualTypeSupportFiles].filter((path) => !expectedTypeSupportFiles.has(path));
+if (missingActualTypeSupportFiles.length || unexpectedActualTypeSupportFiles.length) {
+  throw new Error(`main type-support program inventory mismatch: missing=${missingActualTypeSupportFiles.map(rel).join(', ')}; unexpected=${unexpectedActualTypeSupportFiles.map(rel).join(', ')}`);
+}
 for (const path of expected) {
   const sourceFile = program.getSourceFile(path);
   if (!sourceFile) throw new Error(`production source missing from actual compiler program: ${rel(path)}`);
@@ -229,6 +241,7 @@ const diagnosticMetadata = {
   inventory: {
     productionRoots: expected.length,
     actualProgramSourceFiles: actual.size,
+    explicitTypeSupportFiles: [...actualTypeSupportFiles].map(rel),
     importedLocalJavaScriptOutsideRoots: importedLocalJs.length,
     productionRootsWithDiagnostics: rootsWithErrors,
     productionRootsWithoutDiagnostics: expected.length - rootsWithErrors,

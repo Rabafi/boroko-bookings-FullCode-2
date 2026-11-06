@@ -7,6 +7,24 @@ import { ErrorNotice } from './shared/ErrorNotice'
 const RULE_TYPES = ['availability', 'pricing', 'restriction', 'upsell']
 const UPSELL_TYPES = ['room_upgrade', 'addon_service', 'package']
 
+/**
+ * Expected projection from get_booking_engine_rules. The IPC and JSON RPC
+ * values are not runtime-validated here.
+ * @typedef {{id: number, name: string, rule_type: string, active: boolean, conditions: unknown, actions: unknown, priority: number}} BookingRuleReadExpectedView
+ */
+/**
+ * Expected projection from get_booking_upsells_list. The IPC and JSON RPC
+ * values are not runtime-validated here.
+ * @typedef {{id: number, name: string, description: string | null, upsell_type: string, active: boolean, price_adjustment: number, sort_order: number, conditions: unknown}} BookingUpsellReadExpectedView
+ */
+/** @typedef {{name: string, rule_type: string, priority: number | string, conditions: string, actions: string, active: boolean}} BookingRuleForm */
+/** @typedef {{name: string, description: string, upsell_type: string, price_adjustment: number | string, sort_order: number | string, conditions: string, active: boolean}} BookingUpsellForm */
+/** @typedef {{room_type_id: string, check_in: string, check_out: string, guests: number | string, rooms: number | string, promo_code: string}} BookingPreviewForm */
+/** @typedef {{total?: number, total_amount?: number, currency?: string}} BookingPreviewPriceExpectedView */
+/** @typedef {{available?: boolean}} BookingPreviewAvailabilityExpectedView */
+/** @typedef {{price: BookingPreviewPriceExpectedView, availability: BookingPreviewAvailabilityExpectedView, upsells: unknown[]}} BookingPreviewResultExpectedView */
+/** @typedef {{message?: string} | null | undefined} BookingErrorMessageExpectedView */
+
 const emptyRule = {
   name: '',
   rule_type: 'pricing',
@@ -26,6 +44,7 @@ const emptyUpsell = {
   active: true
 }
 
+/** @param {unknown} value @param {string} [fallback] */
 function toJsonText(value, fallback = '{}') {
   if (typeof value === 'string') return value
   try {
@@ -35,6 +54,7 @@ function toJsonText(value, fallback = '{}') {
   }
 }
 
+/** @param {string} value @param {string} label */
 function parseJsonField(value, label) {
   try {
     return value?.trim() ? JSON.parse(value) : {}
@@ -43,34 +63,36 @@ function parseJsonField(value, label) {
   }
 }
 
+/** @param {unknown} amount @param {string} [currency] */
 function formatMoney(amount, currency = 'BWP') {
   return `${currency} ${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {boolean} active */
 function statusClass(active) {
   return active ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-500 border-slate-200'
 }
 
 export default function BookingEngine() {
-  const [rules, setRules] = useState([])
-  const [upsells, setUpsells] = useState([])
+  const [rules, setRules] = useState(/** @type {BookingRuleReadExpectedView[]} */ ([]))
+  const [upsells, setUpsells] = useState(/** @type {BookingUpsellReadExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [ruleModal, setRuleModal] = useState(null)
-  const [upsellModal, setUpsellModal] = useState(null)
-  const [ruleForm, setRuleForm] = useState(emptyRule)
-  const [upsellForm, setUpsellForm] = useState(emptyUpsell)
-  const [preview, setPreview] = useState({
+  const [ruleModal, setRuleModal] = useState(/** @type {Partial<BookingRuleReadExpectedView> | null} */ (null))
+  const [upsellModal, setUpsellModal] = useState(/** @type {Partial<BookingUpsellReadExpectedView> | null} */ (null))
+  const [ruleForm, setRuleForm] = useState(/** @type {BookingRuleForm} */ (emptyRule))
+  const [upsellForm, setUpsellForm] = useState(/** @type {BookingUpsellForm} */ (emptyUpsell))
+  const [preview, setPreview] = useState(/** @type {BookingPreviewForm} */ ({
     room_type_id: '',
     check_in: '',
     check_out: '',
     guests: 2,
     rooms: 1,
     promo_code: ''
-  })
-  const [previewResult, setPreviewResult] = useState(null)
+  }))
+  const [previewResult, setPreviewResult] = useState(/** @type {BookingPreviewResultExpectedView | null} */ (null))
   const [previewing, setPreviewing] = useState(false)
 
   const activeRuleCount = useMemo(() => rules.filter((rule) => rule.active !== false).length, [rules])
@@ -84,10 +106,11 @@ export default function BookingEngine() {
         window.api.bookingEngine.getRules().catch(() => []),
         window.api.bookingEngine.getUpsellsList().catch(() => [])
       ])
-      setRules(Array.isArray(ruleRows) ? ruleRows : [])
-      setUpsells(Array.isArray(upsellRows) ? upsellRows : [])
+      // Array checks establish only the collection boundary, not row validity.
+      setRules(Array.isArray(ruleRows) ? /** @type {BookingRuleReadExpectedView[]} */ (ruleRows) : [])
+      setUpsells(Array.isArray(upsellRows) ? /** @type {BookingUpsellReadExpectedView[]} */ (upsellRows) : [])
     } catch (err) {
-      setError(err?.message || 'Failed to load booking engine')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to load booking engine')
     } finally {
       setLoading(false)
     }
@@ -101,6 +124,7 @@ export default function BookingEngine() {
     return () => clearTimeout(timer)
   }, [success])
 
+  /** @param {BookingRuleReadExpectedView | null} [rule] */
   const openRule = (rule = null) => {
     setError('')
     setRuleModal(rule || {})
@@ -114,6 +138,7 @@ export default function BookingEngine() {
     } : emptyRule)
   }
 
+  /** @param {BookingUpsellReadExpectedView | null} [upsell] */
   const openUpsell = (upsell = null) => {
     setError('')
     setUpsellModal(upsell || {})
@@ -128,6 +153,7 @@ export default function BookingEngine() {
     } : emptyUpsell)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const saveRule = async (event) => {
     event.preventDefault()
     if (!ruleForm.name.trim()) { setError('Rule name is required'); return }
@@ -148,12 +174,13 @@ export default function BookingEngine() {
       setSuccess('Booking rule saved')
       load()
     } catch (err) {
-      setError(err?.message || 'Failed to save booking rule')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to save booking rule')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const saveUpsell = async (event) => {
     event.preventDefault()
     if (!upsellForm.name.trim()) { setError('Upsell name is required'); return }
@@ -175,12 +202,13 @@ export default function BookingEngine() {
       setSuccess('Booking upsell saved')
       load()
     } catch (err) {
-      setError(err?.message || 'Failed to save booking upsell')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to save booking upsell')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {BookingRuleReadExpectedView} rule */
   const deleteRule = async (rule) => {
     if (!rule?.id) return
     setError('')
@@ -189,10 +217,11 @@ export default function BookingEngine() {
       setSuccess('Booking rule deleted')
       load()
     } catch (err) {
-      setError(err?.message || 'Failed to delete booking rule')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to delete booking rule')
     }
   }
 
+  /** @param {BookingUpsellReadExpectedView} upsell */
   const deleteUpsell = async (upsell) => {
     if (!upsell?.id) return
     setError('')
@@ -201,10 +230,11 @@ export default function BookingEngine() {
       setSuccess('Booking upsell deleted')
       load()
     } catch (err) {
-      setError(err?.message || 'Failed to delete booking upsell')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to delete booking upsell')
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const runPreview = async (event) => {
     event.preventDefault()
     if (!preview.room_type_id || !preview.check_in || !preview.check_out) {
@@ -228,9 +258,15 @@ export default function BookingEngine() {
         window.api.bookingEngine.checkAvailability(request),
         window.api.bookingEngine.getUpsells(request)
       ])
-      setPreviewResult({ price, availability, upsells: Array.isArray(availableUpsells) ? availableUpsells : [] })
+      // These are expected consumer views of the existing RPC results, not
+      // runtime validation of PostgREST/IPC JSON.
+      setPreviewResult(/** @type {BookingPreviewResultExpectedView} */ ({
+        price,
+        availability,
+        upsells: Array.isArray(availableUpsells) ? /** @type {unknown[]} */ (availableUpsells) : []
+      }))
     } catch (err) {
-      setError(err?.message || 'Failed to calculate booking preview')
+      setError((/** @type {BookingErrorMessageExpectedView} */ (err))?.message || 'Failed to calculate booking preview')
     } finally {
       setPreviewing(false)
     }

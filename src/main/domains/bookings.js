@@ -28,32 +28,91 @@ import { patchCachedQuotationSyncState } from './syncCache.js';
 import { computeStayTotal, isCampsitePriced, normalizeRateMode, validateAccommodationOccupancy } from '../../shared/accommodation.js';
 import { getBookingFinancialView } from '../../shared/bookingFinancials.js';
 
+// initDatabase installs this client before the connectivity probe can mark the
+// app online and before IPC handlers call this domain. The local non-null views
+// below preserve existing dereferences; they do not add runtime validation.
 /** @typedef {import('../../shared/desktopIpcContracts.js').ReadMetadataRows} ReadMetadataRows */
 /**
  * Expected query projection and locally merged booking view used by the list
  * readers below. Cache JSON remains unvalidated; this view documents the fields
  * those readers already consume.
- * @typedef {{id: string, booking_id?: string, lodge_id?: string | null, customer_id?: string | null, room_id?: string | null, check_in: string, check_out?: string | null, status?: string | null, payment_status?: string | null, total_amount?: number | string | null, amount_paid?: number | string | null, charges_total?: number | string | null, deposit_amount?: number | string | null, notes?: string | null, is_exclusive_event?: boolean, invoice_number?: string | null, created_at?: string | null, updated_at?: string | null, customer_name?: string | null, customer_phone?: string | null, customer_email?: string | null, room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean, _pending_refund_request?: BookingRefundRequestExpectedData, refund_request_pending?: boolean, refund_request_saved_at?: string | null, refund_settled?: boolean, refund_amount?: number | null, retained_amount?: number | null, retained_percent?: number | null, refund_method?: string | null, refund_approved_at?: string | null, customers?: {name?: string | null, phone?: string | null, email?: string | null} | null, rooms?: {room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null} | null}} BookingListExpectedData
+ * @typedef {{id: string, booking_id?: string, lodge_id?: string | null | undefined, customer_id?: string | null | undefined, room_id?: string | null | undefined, check_in: string, check_out?: string | null | undefined, status?: string | null | undefined, payment_status?: string | null | undefined, total_amount?: number | string | null | undefined, amount_paid?: number | string | null | undefined, charges_total?: number | string | null | undefined, deposit_amount?: number | string | null | undefined, notes?: string | null | undefined, is_exclusive_event?: boolean, invoice_number?: string | null | undefined, _local_invoice_number?: unknown, created_at?: string | null, updated_at?: string | null, customer_name?: string | null | undefined, customer_phone?: string | null | undefined, customer_email?: string | null | undefined, room_number?: string | null | undefined, room_type?: string | null | undefined, rate_per_night?: number | string | null | undefined, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean, _pending_payment?: boolean, _pricing_estimate?: boolean, _sync_created_offline?: boolean, _queue_id?: unknown, _estimated_total_amount?: number | string | null, _estimated_amount_paid?: number | string | null, _estimated_payment_status?: unknown, _pending_refund_request?: BookingRefundRequestExpectedData, refund_request_pending?: boolean, refund_request_saved_at?: string | null, refund_settled?: boolean, refund_amount?: number | null, retained_amount?: number | null, retained_percent?: number | null, refund_method?: string | null, refund_approved_at?: string | null, customers?: {name?: string | null, phone?: string | null, email?: string | null} | null, rooms?: {room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null} | null}} BookingListExpectedData
+ * @typedef {BookingListExpectedData & {source?: string | null}} PendingOnlineBookingExpectedData
  * @typedef {{booking_id: string, refund_amount: number, retained_amount: number, retained_percent: number, method: string, created_at: string}} RefundSettlementExpectedData
+ * @typedef {{customer_id: string|null|undefined, room_id: string|null|undefined, check_in: string, check_out: string, adults?: number|string|null, children?: number|string|null, tents?: number|string|null, vehicles?: number|string|null, total_amount?: number|string|null, deposit_amount?: number|string|null, payment_method?: string|null, notes?: string|null, created_by?: string|null, allow_total_override?: boolean, corporate_account_id?: string|null}} BookingCreateExpectedData
+ * @typedef {{room_id: string|null|undefined, check_in: string, check_out: string, adults?: number|string|null, children?: number|string|null, tents?: number|string|null, tents_count?: number|string|null, vehicles?: number|string|null, vehicles_count?: number|string|null, customer_id?: string|null, total_amount?: number|string|null, deposit_amount?: number|string|null, payment_method?: string|null, notes?: string|null, expected_updated_at?: string|null, corporate_account_id?: string|null}} BookingUpdateExpectedData
+ * @typedef {{event_name: string, check_in: string, check_out: string, operation_id?: string|null, contact_email?: string|null, contact_phone?: string|null, created_by?: string|null, deposit_amount?: number|string|null, event_daily_rate?: number|string|null, notes?: string|null, payment_method?: string|null}} EventBookingCreateExpectedData
+ * Room fields consumed by the existing booking pricing path; getRoomById returns an expected-data row without runtime validation.
+ * @typedef {Record<string, unknown> & {max_occupancy?: number|string|null, rate_per_night?: number|string|null, accommodation_kind?: unknown, rate_mode?: unknown}} BookingPricingRoomExpectedData
  * @typedef {{id: string, booking_id: string, status: string, updated_at?: string | null, created_at?: string | null, approved_at?: string | null, retained_percent?: number | string | null, method?: string | null, notes?: string | null, proof_reference?: string | null, approval_note?: string | null, [field: string]: unknown}} BookingRefundRequestExpectedData
- * @typedef {{id: string, customer_id?: string | null, name?: string | null, phone?: string | null, email?: string | null}} BookingCustomerCacheExpectedData
- * @typedef {{id: string, room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null}} BookingRoomCacheExpectedData
+ * The multi-room idempotency checks read persisted queue rows through this existing reader view; fields remain unknown and are not validated.
+ * @typedef {ReturnType<typeof readSyncQueue>[number] & {
+ *   data: (NonNullable<ReturnType<typeof readSyncQueue>[number]['data']> & {
+ *     p_group_key: unknown | undefined,
+ *     p_total_amount: unknown | undefined,
+ *     p_id: unknown | undefined,
+ *     payload: ({id: unknown | undefined, quotation_id: unknown | undefined} & Record<string, unknown>) | null | undefined
+ *   }) | null | undefined,
+ *   _local_booking_ids: unknown | undefined
+ * }} MultiRoomBookingQueueReadView
+ *
+ * Fields consumed from the booking-refund IPC payload and legacy aliases.
+ * This is an expected read view only: the IPC payload is not validated, and
+ * optional keys preserve the existing partial/default-input behavior.
+ * @typedef {{retained_percent?: unknown, retainedPercent?: unknown, method?: unknown, notes?: unknown, proof_reference?: unknown, proofReference?: unknown, approval_note?: unknown, approvalNote?: unknown, approver_pin?: unknown, approverPin?: unknown, request_id?: unknown, requestId?: unknown}} RefundBookingOptionsExpectedData
+ * @typedef {{id: string, customer_id?: string | null, name?: string | null, phone?: string | null, email?: string | null, _pending_sync?: boolean}} BookingCustomerCacheExpectedData
+ * The event customer lookup selects only `id`; this is an expected PostgREST row view, not runtime validation.
+ * @typedef {{id: string}} EventCustomerIdQueryExpectedData
+ * @typedef {{id: string, room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null, status?: string|null}} BookingRoomCacheExpectedData
+ * Offline quotation conversion reads these fields from the persisted room cache; JSON remains unvalidated.
+ * @typedef {BookingRoomCacheExpectedData & {status?: unknown, rate_mode?: unknown}} OfflineQuotationRoomCacheExpectedData
+ * Quotations selected from public.quotations or read back from the local cache. Cache/RPC rows are expected data, not validated by this view.
+ * room_number and customer_email are optional legacy-cache display fallbacks, not columns in public.quotations.
+ * @typedef {{id: string, quotation_number?: string | null | undefined, quotation_type?: string | null, event_name?: string | null, event_daily_rate?: number | string | null, customer_id?: string | null | undefined, customer_name?: string | null | undefined, customer_phone?: string | null, customer_email?: string | null, room_id?: string | null, room_name?: string | null, room_number?: string | null, check_in?: string | null, check_out?: string | null, adults?: number | string | null, children?: number | string | null, subtotal?: number | string | null, tax_amount?: number | string | null, tax_rate?: number | string | null, total_amount?: number | string | null, currency?: string | null, notes?: string | null, status?: string | null | undefined, valid_until?: string | null, converted_booking_id?: string | null, accommodation_lines?: unknown, customers?: {email?: string | null} | null, created_at?: string | null, updated_at?: string | null}} QuotationExpectedData
+ * Offline createQuotation adds _pending_sync before updateQuotation and markQuotationSent consume these cached rows.
+ * @typedef {QuotationExpectedData & {_pending_sync?: boolean}} QuotationLifecycleCacheExpectedData
+ * Read-only customer fields consumed by quotation presentation; cached customer JSON is not runtime-validated.
+ * @typedef {{id: string, name?: string | null, phone?: string | null, email?: string | null}} QuotationCustomerExpectedData
+ * Read-only room fields consumed by quotation presentation; cached room JSON is not runtime-validated.
+ * @typedef {{id: string, room_number?: string | null, room_type?: string | null, rate_per_night?: number | string | null}} QuotationRoomExpectedData
+ * Renderer create and duplicateQuotation construct this field set before passing it through the existing quotations IPC call. The IPC payload and duplicate source are expected data only; neither is runtime-validated here. duplicateQuotation may pass tax_amount, but buildQuotationRecord currently recalculates it from tax_rate and ignores the supplied amount. Optional tax_rate and parent_quotation_id reflect their absence from one or both producers.
+ * @typedef {{customer_id: string | null | undefined, customer_name: string | null | undefined, customer_phone: string | null | undefined, quotation_type: string | null | undefined, event_name: string | null | undefined, event_daily_rate: number | string | null | undefined, room_id: string | null | undefined, room_name: string | null | undefined, accommodation_lines: unknown, check_in: string | null | undefined, check_out: string | null | undefined, adults: number | string | null | undefined, children: number | string | null | undefined, subtotal: number | string | null | undefined, tax_amount?: number | string | null, currency: string | null | undefined, notes: string | null | undefined, valid_until: string | null | undefined, tax_rate?: number | string | null, parent_quotation_id?: string | null}} QuotationRecordInputExpectedData
+ * Partial field overrides used only by createQuotation's online/offline record creation branches.
+ * @typedef {{id?: string, quotation_number?: string, created_at?: string, updated_at?: string}} QuotationRecordOverridesExpectedData
+ * Booking projection returned by the local quotation link query and cached bookings; this does not validate returned or persisted JSON.
+ * @typedef {{id: string, quotation_id: string | null}} QuotationBookingLinkExpectedData
+
+/** Error metadata already read/written by booking operation branches. The view
+ * preserves existing thrown values and does not add runtime validation.
+ * @typedef {Error & {code?: string, booking_id?: string, definitiveIntent?: boolean}} BookingOperationErrorExpectedView
+ */
+/** @typedef {{message?: string} | null | undefined} BookingThrownMessageReadView */
+/** @typedef {{message: string}} BookingDirectThrownMessageReadView */
 
 /**
- * @typedef {{id: string, lodge_id: string, group_key: string, customer_id: string | null, invoice_number: string, issued_at: string, due_date?: string | null, notes: string | null, created_by?: string | null, created_at: string, updated_at: string, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean}} BookingInvoiceGroupCacheRow
+ * Local/offline cache writes preserve the current profile's nullable lodge id and raw actor id; cache values are not validated.
+ * @typedef {{id: string, lodge_id: string | null, group_key: string, customer_id: string | null, invoice_number: string, issued_at: string, due_date?: string | null, notes: string | null, created_by?: unknown, created_at: string, updated_at: string, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean}} BookingInvoiceGroupCacheRow
  * @typedef {Omit<BookingInvoiceGroupCacheRow, 'id' | 'group_key'> & ({id: string, group_key?: string} | {id?: string, group_key: string})} BookingInvoiceGroupInput
  * @typedef {{group_id: string, booking_id: string, lodge_id: string, line_order: number, created_at?: string | null, _pending_sync?: boolean, _sync_state?: string}} BookingInvoiceGroupLineCacheRow
  * @typedef {{booking_id: string, line_order?: number, lodge_id?: string | null, group_id?: string, created_at?: string | null, _pending_sync?: boolean, _sync_state?: string}} BookingInvoiceGroupLineInput
- * @typedef {{id: string, booking_id: string, lodge_id: string, invoice_number: string, issued_at: string, due_date?: string | null, notes?: string | null, created_at?: string | null}} BookingInvoiceRecord
+ * @typedef {{id: string, booking_id: string, lodge_id: string, invoice_number: string | null, issued_at: string, due_date?: string | null, notes?: string | null, created_at?: string | null}} BookingInvoiceRecord
+ * Group-invoice consumer view assembled by getBookingInvoices; cached and query source rows remain expected data, not runtime-validated.
+ * @typedef {{booking_id: string, balance_due?: unknown, amount_paid?: unknown}} BookingInvoiceGroupConsumerLineExpectedData
+ * @typedef {{booking_id: string, invoice_number: string, _accommodation_group?: unknown, accommodation_group_id?: unknown, balance_due?: unknown, _room_lines?: BookingInvoiceGroupConsumerLineExpectedData[]}} BookingInvoiceGroupConsumerExpectedData
  * @typedef {{success: true, group_id: string, group_key: string, invoice_number: string, booking_ids: string[]} | {success: false, error: string}} CreateBookingInvoiceGroupRpcResult
  * Multi-room request and row views document existing producer/consumer expectations; persisted/cache input is not validated by these declarations.
  * @typedef {{room_id: string, adults?: number | string | null, children?: number | string | null, tents?: number | string | null, vehicles?: number | string | null}} MultiRoomBookingRoomInput
- * @typedef {{customer_id: string, check_in: string, check_out: string, rooms: MultiRoomBookingRoomInput[], deposit_amount?: number | string | null, total_amount?: number | string | null, payment_method?: string | null, notes?: string | null, group_id?: string, idempotency_key?: string, created_by?: string | null, quotation_id?: string, corporate_account_id?: string, tents?: number | string | null, vehicles?: number | string | null, lodge_id?: string | null} | Record<string, undefined>} MultiRoomBookingRequest
+ * @typedef {{customer_id: string, check_in: string | null, check_out: string | null, rooms: MultiRoomBookingRoomInput[], deposit_amount?: number | string | null, total_amount?: number | string | null, payment_method?: string | null, notes?: string | null, group_id?: string, idempotency_key?: string, created_by?: string | null, quotation_id?: string, corporate_account_id?: string, tents?: number | string | null, vehicles?: number | string | null, lodge_id?: string | null} | Record<string, undefined>} MultiRoomBookingRequest
+ * @typedef {{room_id: string, adults: number, children: number, tents: number, vehicles: number}} MultiRoomBookingRoomLineExpectedData
  * @typedef {{p_lodge_id: string | null, p_customer_id: string, p_check_in: string, p_check_out: string, p_rooms: Array<{room_id: string, adults: number, children: number, tents: number, vehicles: number}>, p_total_amount: number | string | null, p_deposit_amount: number, p_deposit_method: string | null, p_notes: string, p_created_by: string | null, p_group_key: string, p_idempotency_key: string}} CreateMultiRoomBookingRpcPayload
  * @typedef {{id: string, notes?: string | null, _estimated_total_amount?: number | string | null, _estimated_amount_paid?: number | string | null, room_id?: string | null, room_number?: string | null, _pending_sync?: boolean, _financial_estimate?: boolean}} MultiRoomCachedBooking
  * @typedef {{id: string, room_number?: string | null, max_occupancy?: number | string | null, rate_per_night?: number | string | null}} MultiRoomExpectedRoom
+ * The offline reschedule path reads these database/cache columns. Cache JSON and IPC input remain unvalidated expected data.
+ * @typedef {Record<string, unknown> & {id: string, status: string, room_id?: string | null, check_in: string, check_out: string, updated_at?: string | null, customer_id?: string | null, adults?: number | string | null, children?: number | string | null, tents?: number | string | null, tents_count?: number | string | null, vehicles?: number | string | null, vehicles_count?: number | string | null, total_amount?: number | string | null, amount_paid?: number | string | null, charges_total?: number | string | null, _estimated_total_amount?: number | string | null, _estimated_amount_paid?: number | string | null, _estimated_payment_status?: unknown, _financial_estimate?: boolean, _pending_payment?: boolean, _pricing_estimate?: boolean, _sync_created_offline?: boolean, _pending_sync?: boolean, _sync_state?: string}} BookingRescheduleCacheExpectedData
+ * Local room columns consumed by rescheduling; persisted cache values are not validated here.
+ * @typedef {Record<string, unknown> & {id: string, status: string, room_number: string, rate_per_night: number | string, accommodation_kind?: unknown, kind?: unknown, rate_mode?: unknown, rate_per_person?: number | string | null, rate_per_tent?: number | string | null, rate_per_vehicle?: number | string | null}} BookingRescheduleRoomExpectedData
  * Quotation fields consumed by the multi-room conversion branch. Online SQL rows and cached quotation projections are expected-data inputs; this view does not validate either source.
- * @typedef {{id: string, status: string, customer_id?: string | null, check_in: string | null, check_out: string | null, accommodation_lines: unknown, notes?: string | null, subtotal: number | string | null, converted_booking_id?: unknown}} MultiRoomQuotationConversionExpectedData
+ * @typedef {{id: string, status: string, quotation_type?: unknown, customer_id?: string | null, check_in: string | null, check_out: string | null, accommodation_lines: unknown, notes?: string | null, subtotal: number | string | null, converted_booking_id?: unknown}} MultiRoomQuotationConversionExpectedData
  * @typedef {{room_id: string, adults: number, children: number, tents: number, vehicles: number, room: MultiRoomExpectedRoom, campsite: boolean, total: number}} MultiRoomPlan
  * @typedef {{booking_id: string, room_id: string, room_number: string | null, total_amount: number, deposit_amount: number, _local_booking_id: string, _estimated_total_amount: number, _estimated_amount_paid: number, _estimated_payment_status: string, _pending_sync: true, _financial_estimate: true, _sync_created_offline: true, _sync_state: 'pending'}} MultiRoomLocalChild
  * SQL RPC envelope; local pending flags are added only by the offline producer below.
@@ -109,6 +168,7 @@ function appendAccommodationGroupMetadata(notes = '', groupId = '', roomCount = 
   join(' ');
 }
 
+/** @param {string | null} [notes] */
 function parseAccommodationGroupId(notes = '') {
   return String(notes || '').match(/\[STAY_GROUP:([^\]]+)\]/)?.[1] || null;
 }
@@ -118,6 +178,7 @@ function parseAccommodationRoomCount(notes = '') {
   return Number.isFinite(count) && count > 0 ? count : null;
 }
 
+/** @param {string | null} [notes] */
 function stripAccommodationGroupMetadata(notes = '') {
   return String(notes || '').
   replace(/\[STAY_GROUP:[^\]]+\]/g, '').
@@ -128,12 +189,14 @@ function stripAccommodationGroupMetadata(notes = '') {
 /**
  * Project the already-constructed group invoice intent and lines into cache.
  * These views describe this module's cache/RPC producer shapes; cache JSON is
- * not validated here, preserving the existing cache behavior.
- * @param {BookingInvoiceGroupInput} group
+ * not validated here, preserving the existing cache behavior. The asserted
+ * empty default is an existing sentinel: the id/group_key guard returns before
+ * any required group field is consumed.
+ * @param {BookingInvoiceGroupInput} [group]
  * @param {BookingInvoiceGroupLineInput[]} lines
  * @returns {(BookingInvoiceGroupInput & {id: string}) | null}
  */
-function upsertCachedBookingInvoiceGroup(group = {}, lines = []) {
+function upsertCachedBookingInvoiceGroup(group = /** @type {BookingInvoiceGroupInput} */ ({}), lines = []) {
   if (!group?.id && !group?.group_key) return null;
   const groupId = group.id || `local-${group.group_key}`;
   const normalizedGroup = { ...group, id: groupId };
@@ -165,7 +228,9 @@ async function createBookingInvoiceGroup({ groupKey, customerId, bookingIds, not
   const cleanBookingIds = [...new Set((bookingIds || []).filter(Boolean))];
   if (!groupKey || cleanBookingIds.length < 2) return null;
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('create_booking_invoice_group', {
+    // initializeInfrastructure creates the client before connectivity can mark
+    // the app online; retain this RPC's existing call/failure behavior.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_booking_invoice_group', {
       p_lodge_id: state.lodgeId,
       p_group_key: groupKey,
       p_customer_id: customerId || null,
@@ -234,6 +299,7 @@ async function createBookingInvoiceGroup({ groupKey, customerId, bookingIds, not
   return group;
 }
 
+/** @param {unknown} totalAmount @param {unknown} [depositAmount] */
 function buildOfflineBookingFinancialState(totalAmount, depositAmount = 0) {
   const total = Math.max(0, Number(totalAmount || 0));
   const paid = Math.max(0, Number(depositAmount || 0));
@@ -251,10 +317,12 @@ const VALID_STATUS_TRANSITIONS = {
   checked_in: ['checked_out']
 };
 
+/** @param {string} bookingId */
 export function createBookingIdempotencyKey(bookingId) {
   return `create-booking:${bookingId}`;
 }
 
+/** @param {string} prefix @param {Record<string, unknown>} [payload] */
 function createOperationIdempotencyKey(prefix, payload = {}) {
   const digest = crypto.
   createHash('sha256').
@@ -264,6 +332,7 @@ function createOperationIdempotencyKey(prefix, payload = {}) {
   return `${prefix}:${digest}`.slice(0, 128);
 }
 
+/** @param {unknown} totalOwed @param {unknown} amountPaid */
 function calculateBookingPaymentStatus(totalOwed, amountPaid) {
   const total = Math.max(0, Number(totalOwed || 0));
   const paid = Math.max(0, Number(amountPaid || 0));
@@ -275,12 +344,18 @@ function calculateBookingPaymentStatus(totalOwed, amountPaid) {
 /**
  * These views describe only fields already read or written in the booking,
  * charge and rate-override caches. Cache JSON remains unvalidated.
- * @typedef {{id?: unknown, _estimated_total_amount?: unknown, total_amount?: unknown, charges_total?: unknown, _estimated_amount_paid?: unknown, amount_paid?: unknown}} BookingFinancialEstimateCacheReadView
+ * @typedef {{id?: unknown, _estimated_total_amount?: unknown, total_amount?: unknown, charges_total?: unknown, _estimated_amount_paid?: unknown, amount_paid?: unknown, _estimated_payment_status?: unknown}} BookingFinancialEstimateCacheReadView
  * @typedef {{id?: unknown, booking_id?: unknown, created_at?: unknown, voided_at?: unknown}} BookingChargeExpectedDataReadView
  * @typedef {{id?: unknown, lodge_id?: unknown, room_id?: unknown, name?: unknown, start_date?: unknown, end_date?: unknown, rate_per_night?: unknown, _pending_sync?: unknown, _deleted_offline?: unknown, _sync_state?: unknown}} RateOverrideExpectedDataReadView
- * @typedef {{is_exclusive_event?: unknown, status?: unknown, check_in?: unknown, check_out?: unknown, notes?: unknown}} ExclusiveEventBookingExpectedDataReadView
+ * @typedef {{is_exclusive_event?: unknown, status?: unknown, check_in: string, check_out: string, notes?: string|null}} ExclusiveEventBookingExpectedDataReadView
+  * The Rooms rate form and booking-charge form supply these IPC payload fields; IPC values are still unvalidated expected data.
+  * @typedef {{id?: unknown, room_id: unknown, name: unknown, start_date: unknown, end_date: unknown, rate_per_night: unknown}} RateOverrideMutationExpectedData
+  * @typedef {{description: unknown, quantity: unknown, unit_price: unknown, category?: unknown, amount?: unknown, outlet_id?: unknown, id?: unknown, idempotency_key?: unknown}} BookingChargeMutationExpectedData
+ * @typedef {{id?: string, lodge_id?: string|null, room_id?: string|null, status?: string|null, check_in: string, check_out: string, customer_name?: unknown, customers?: {name?: unknown}|Array<{name?: unknown}>|null}} CachedActiveBookingReadExpectedData
+ * @typedef {{id?: unknown, customer_id?: unknown, customer_name?: unknown, customers?: {name?: unknown}|Array<{name?: unknown}>|null}} ActiveBookingServerReadExpectedData
+  * @typedef {{id?: unknown, name?: unknown}} BookingOutletCacheExpectedData
  * Date columns are text in SQL and UI form values are date strings; this view is only used at the existing comparisons.
- * @typedef {{start_date?: string, end_date?: string}} RateOverrideDateExpectedDataReadView
+  * @typedef {{start_date: string, end_date: string}} RateOverrideDateExpectedDataReadView
  */
 
 /** @param {unknown} bookingId @param {object} [patch] */
@@ -375,7 +450,7 @@ function getCachedRateOverrideById(id) {
   return /** @type {RateOverrideExpectedDataReadView[]} */ (readCache('room-rate-overrides')).find((override) => override?.id === id) || null;
 }
 
-/** @param {string} roomId @param {string} checkIn @param {string} checkOut */
+/** @param {string | null | undefined} roomId @param {string} checkIn @param {string} checkOut */
 function findApplicableRateOverrideFromCache(roomId, checkIn, checkOut) {
   if (!checkIn || !checkOut) return null;
   const overrides = readActiveRateOverrideCache().filter((override) =>
@@ -444,7 +519,14 @@ const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adul
 const BOOKING_PAGE_SIZE = 1000;
 const BOOKING_MAX_ROWS = 10000;
 
+/**
+ * @template T
+ * @param {() => {range: (from: number, to: number) => PromiseLike<{data: T[] | null, error: {message: string} | null}>}} buildQuery
+ * @param {number} [maxRows]
+ * @returns {Promise<T[]>}
+ */
 async function fetchPagedBookingRows(buildQuery, maxRows = BOOKING_MAX_ROWS) {
+  /** @type {T[]} */
   const rows = [];
   for (let from = 0; from < maxRows; from += BOOKING_PAGE_SIZE) {
     const to = Math.min(from + BOOKING_PAGE_SIZE - 1, maxRows - 1);
@@ -460,10 +542,12 @@ async function fetchPagedBookingRows(buildQuery, maxRows = BOOKING_MAX_ROWS) {
   return rows;
 }
 
-/** @param {string[]} [bookingIds] @returns {Promise<Map<string, RefundSettlementExpectedData>>} */
+/** @param {string[]} [bookingIds] @returns {Promise<Map<string | undefined, RefundSettlementExpectedData>>} */
 async function fetchRefundSettlementMap(bookingIds = []) {
   if (!state.isOnline || !state.lodgeId) return new Map();
-  let query = state.supabase.
+  // This query is reachable only after the online guard; initialization creates
+  // the client before connectivity can mark the app online.
+  let query = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('refund_approval_log').
     select('booking_id, refund_amount, retained_amount, retained_percent, method, created_at').
     eq('lodge_id', state.lodgeId).
@@ -479,6 +563,7 @@ async function fetchRefundSettlementMap(bookingIds = []) {
     return new Map();
   }
 
+  /** @type {Map<string | undefined, RefundSettlementExpectedData>} */
   const byBooking = new Map();
   for (const row of /** @type {RefundSettlementExpectedData[]} */ (data || [])) {
     if (row?.booking_id && !byBooking.has(row.booking_id)) {
@@ -488,7 +573,7 @@ async function fetchRefundSettlementMap(bookingIds = []) {
   return byBooking;
 }
 
-/** @param {BookingListExpectedData[]} rows @param {Map<string, RefundSettlementExpectedData>} settlementMap */
+/** @param {BookingListExpectedData[]} rows @param {Map<string | undefined, RefundSettlementExpectedData>} settlementMap */
 function applyRefundSettlementState(rows, settlementMap) {
   return rows.map((row) => {
     const settlement = settlementMap.get(row.id || row.booking_id);
@@ -516,6 +601,9 @@ function getPendingRefundRequestForBooking(bookingId) {
   find((request) => request.booking_id === bookingId) || null;
 }
 
+/** @overload @param {BookingListExpectedData} row @returns {BookingListExpectedData} */
+/** @overload @param {Record<string, undefined>} [row] @returns {Record<string, undefined>} */
+/** @overload @param {BookingListExpectedData | Record<string, undefined>} [row] @returns {BookingListExpectedData | Record<string, undefined>} */
 /** @param {BookingListExpectedData | Record<string, undefined>} [row] */
 function clearRefundRequestFields(row = {}) {
   const next = { ...(row || {}) };
@@ -525,7 +613,11 @@ function clearRefundRequestFields(row = {}) {
   return next;
 }
 
-/** @param {BookingListExpectedData | Record<string, undefined>} [row] @param {BookingRefundRequestExpectedData | null} [request] */
+/** @typedef {{_pending_refund_request: BookingRefundRequestExpectedData, refund_request_pending: true, refund_request_saved_at: string | null}} PendingRefundRequestOverlayExpectedData */
+/** @overload @param {BookingListExpectedData} row @param {BookingRefundRequestExpectedData | null | undefined} [request] @returns {BookingListExpectedData} */
+/** @overload @param {Record<string, undefined>} [row] @param {BookingRefundRequestExpectedData | null | undefined} [request] @returns {Record<string, undefined> | PendingRefundRequestOverlayExpectedData} */
+/** @overload @param {BookingListExpectedData | Record<string, undefined>} [row] @param {BookingRefundRequestExpectedData | null | undefined} [request] @returns {BookingListExpectedData | Record<string, undefined> | PendingRefundRequestOverlayExpectedData} */
+/** @param {BookingListExpectedData | Record<string, undefined>} [row] @param {BookingRefundRequestExpectedData | null | undefined} [request] @returns {BookingListExpectedData | Record<string, undefined> | PendingRefundRequestOverlayExpectedData} */
 function applyRefundRequestState(row = {}, request = null) {
   if (!request || request.status !== 'pending_approval' || row?.refund_settled === true) {
     return clearRefundRequestFields(row);
@@ -555,7 +647,7 @@ function annotateRowsWithLocalRefundRequests(rows = []) {
 
 /** @overload @param {BookingRefundRequestExpectedData} request @returns {BookingRefundRequestExpectedData} */
 /** @overload @param {Record<string, undefined>} [request] @returns {BookingRefundRequestExpectedData | null} */
-/** @param {BookingRefundRequestExpectedData | Record<string, undefined>} [request] @returns {BookingRefundRequestExpectedData | null} */
+/** @param {BookingRefundRequestExpectedData | Record<string, undefined>} [request] @returns {BookingRefundRequestExpectedData | Record<string, undefined> | null} */
 function writeRefundRequest(request = {}) {
   if (!request?.id || !request?.booking_id) return null;
   // The persisted cache is unvalidated; this view preserves the existing .filter call/error behavior.
@@ -608,7 +700,7 @@ function patchCachedBookingRefundRequest(bookingId, request = null) {
 
 async function _getAllBookings() {
   try {
-    const data = await fetchPagedBookingRows(() => state.supabase.
+    const data = await fetchPagedBookingRows(() => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('bookings').
       select(`${BOOKING_LIST_SELECT}, customers(name, phone, email), rooms(room_number, room_type, rate_per_night)`).
       eq('lodge_id', state.lodgeId).
@@ -648,9 +740,9 @@ async function _getAllBookings() {
     );
   } catch (error) {
     if (state.isOnline) {
-      const cached = readCache('bookings');
+      const cached = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
       if (cached.length > 0) {
-        console.warn('getAllBookings falling back to cache:', error?.message || error);
+        console.warn('getAllBookings falling back to cache:', (/** @type {BookingThrownMessageReadView} */ (error))?.message || error);
       } else if (error) {
         console.error('getAllBookings failed:', error);
       }
@@ -678,7 +770,7 @@ async function _getAllBookings() {
 
   return withReadMetadata(
     annotateRowsWithLocalRefundRequests(mappedBookings).
-    sort((a, b) => new Date(b.check_in) - new Date(a.check_in)),
+    sort((a, b) => new Date(b.check_in).getTime() - new Date(a.check_in).getTime()),
     state.isOnline ? 'cache' : 'offline-cache',
     false
   );
@@ -818,10 +910,11 @@ export async function getCollectionsSummary() {
   }
 }
 
+/** @param {string} id */
 export async function getBookingById(id) {
   if (!id) return null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('*').
     eq('id', id).
@@ -830,14 +923,15 @@ export async function getBookingById(id) {
     if (error) throw error;
     return data || null;
   } catch {
-    return readCache('bookings').find((booking) => booking.id === id) || null;
+    return /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((booking) => booking.id === id) || null;
   }
 }
 
+/** @returns {Promise<import('../../shared/desktopIpcContracts.js').PendingOnlineBookingReadView[]>} */
 export async function getPendingOnlineBookings() {
   try {
     if (state.isOnline) {
-      const { data, error } = await state.supabase.
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('bookings').
       select(`id, lodge_id, customer_id, room_id, check_in, check_out, adults, children, total_amount, amount_paid, payment_status, status, source, created_at, notes, customers(name, phone, email), rooms(room_number, room_type)`).
       eq('lodge_id', state.lodgeId).
@@ -846,7 +940,9 @@ export async function getPendingOnlineBookings() {
       order('created_at', { ascending: false }).
       limit(100);
       if (error) throw error;
-      return (data || []).map((b) => ({
+      // This consumer expects the same object-shaped booking/customer/room view
+      // as getAllBookings; the Supabase response is not runtime-validated here.
+      return (/** @type {PendingOnlineBookingExpectedData[]} */ (data || [])).map((b) => ({
         ...b,
         customer_name: b.customers?.name,
         customer_phone: b.customers?.phone,
@@ -856,17 +952,18 @@ export async function getPendingOnlineBookings() {
       }));
     }
     // Offline fallback — filter from cache
-    const cached = readCache('bookings');
+    const cached = /** @type {PendingOnlineBookingExpectedData[]} */ (readCache('bookings'));
     return cached.filter((b) => b.source === 'online' && b.status === 'pending');
   } catch {
-    const cached = readCache('bookings');
+    const cached = /** @type {PendingOnlineBookingExpectedData[]} */ (readCache('bookings'));
     return cached.filter((b) => b.source === 'online' && b.status === 'pending');
   }
 }
 
+/** @param {string} startDate @param {string} endDate */
 export async function getBookingsByDateRange(startDate, endDate) {
   if (state.isOnline) {
-    const data = await fetchPagedBookingRows(() => state.supabase.
+    const data = await fetchPagedBookingRows(() => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('bookings').
       select(`*, customers(name), rooms(room_number, room_type, rate_per_night)`).
       eq('lodge_id', state.lodgeId).
@@ -886,13 +983,14 @@ export async function getBookingsByDateRange(startDate, endDate) {
     return [];
   }
 
-  const bookings = readCache('bookings');
-  const customers = readCache('customers');
-  const rooms = readCache('rooms');
+  const bookings = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
+  const customers = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'));
+  const rooms = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms'));
 
+  // public.bookings.check_out is NOT NULL; this expected-data view does not validate persisted cache JSON.
   return bookings.
   filter(
-    (b) => b.status !== 'cancelled' && b.check_in <= endDate && b.check_out > startDate
+    (b) => b.status !== 'cancelled' && b.check_in <= endDate && /** @type {string} */ (b.check_out) > startDate
   ).
   map((b) => {
     const customer = customers.find((c) => c.id === b.customer_id);
@@ -908,10 +1006,12 @@ export async function getBookingsByDateRange(startDate, endDate) {
   sort((a, b) => (a.room_number || '').localeCompare(b.room_number || ''));
 }
 
+/** @param {unknown} [value] */
 function normalizeEventBookingName(value = '') {
   return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/** @param {{eventName: unknown, checkIn: unknown, checkOut: unknown}} input */
 function buildEventGroupId({ eventName, checkIn, checkOut }) {
   const signature = [
   normalizeLodgeId(state.lodgeId) || 'no-lodge',
@@ -922,6 +1022,7 @@ function buildEventGroupId({ eventName, checkIn, checkOut }) {
   return `evt-${crypto.createHash('sha256').update(signature).digest('hex').slice(0, 24)}`;
 }
 
+/** @param {string} groupId */
 function buildEventBookingId(groupId) {
   const bytes = crypto.createHash('sha256').update('tsa-bonno-event-booking:' + String(groupId)).digest().subarray(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
@@ -929,27 +1030,33 @@ function buildEventBookingId(groupId) {
   const hex = bytes.toString('hex');
   return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
 }
+/** @param {string | null} [notes] */
 function parseEventRoomCount(notes = '') {
   const match = String(notes || '').match(/\[ROOMS:(\d+)\]/);
   const count = Number(match?.[1] || 0);
   return Number.isFinite(count) && count > 0 ? count : null;
 }
 
+/** @param {string | null} [notes] */
 function stripEventMetadata(notes = '') {
   return String(notes || '').replace(/\[GROUP:[^\]]+\]/g, '').replace(/\[ROOMS:\d+\]/g, '').trim();
 }
 
+/** Cache lookup view only; this does not validate persisted booking JSON. */
+/** @typedef {{is_exclusive_event?: unknown, notes?: unknown, status?: unknown}} CachedEventBookingLookupExpectedData */
+/** @param {string} groupId */
 function findCachedEventBookingByGroup(groupId) {
-  return readCache('bookings').find((booking) =>
+  return /** @type {CachedEventBookingLookupExpectedData[]} */ (readCache('bookings')).find((booking) =>
   booking?.is_exclusive_event &&
   String(booking?.notes || '').includes(`[GROUP:${groupId}]`) &&
   String(booking?.status || '').toLowerCase() !== 'cancelled'
   );
 }
 
+/** @param {string} groupId */
 async function findRemoteEventBookingByGroup(groupId) {
   if (!state.isOnline) return null;
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('bookings').
   select('id, notes, total_amount, check_in, check_out').
   eq('lodge_id', state.lodgeId).
@@ -961,6 +1068,7 @@ async function findRemoteEventBookingByGroup(groupId) {
   return data?.[0] || null;
 }
 
+/** @param {string | null | undefined} checkIn @param {string | null | undefined} checkOut */
 function validateBookingDates(checkIn, checkOut) {
   if (!checkIn || !checkOut) throw new Error('Check-in and check-out dates are required');
   const inMs = new Date(checkIn).getTime();
@@ -972,11 +1080,12 @@ function validateBookingDates(checkIn, checkOut) {
   return { nights };
 }
 
+/** @param {string | null | undefined} roomId @param {string} checkIn @param {string} checkOut @param {string|null} [excludeId] */
 async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
   await checkExclusiveEventConflict(checkIn, checkOut);
   const existingBookings = state.isOnline ?
   (() => {
-    let q = state.supabase.
+    let q = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('id, check_in, check_out').
     eq('lodge_id', state.lodgeId).
@@ -986,7 +1095,7 @@ async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
     return q;
   })().then((r) => r.data || []) :
   Promise.resolve(
-    readCache('bookings').filter(
+    (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).filter(
       (b) => b.room_id === roomId && b.status !== 'cancelled' && b.id !== excludeId
     )
   );
@@ -996,6 +1105,7 @@ async function checkRoomConflict(roomId, checkIn, checkOut, excludeId = null) {
   if (conflict) throw new Error('Room is already booked for these dates');
 }
 
+/** @param {BookingCreateExpectedData} data */
 export async function createBooking(data) {
   try {
     await assertCreationWithinUsageLimit('booking', {
@@ -1005,7 +1115,7 @@ export async function createBooking(data) {
     const { nights } = validateBookingDates(data.check_in, data.check_out);
     await checkRoomConflict(data.room_id, data.check_in, data.check_out);
 
-    const room = await getRoomById(data.room_id);
+    const room = /** @type {BookingPricingRoomExpectedData|null} */ (await getRoomById(data.room_id));
     if (!room) throw new Error('Room not found');
     // Priced family (campsite + tent kinds) takes the campsite RPC/pricing
     // path and the independent server-mirrored caps with NO earlier generic
@@ -1144,7 +1254,7 @@ export async function createBooking(data) {
         p_deposit_method: deposit > 0 ? paymentMethod : null,
         p_allow_total_override: allowTotalOverride
       };
-      const { data: result, error } = await state.supabase.rpc(rpcName, rpcPayload);
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(rpcName, rpcPayload);
 
       if (error) {
         if (/function create_booking|function create_campsite_booking|p_booking_id|p_idempotency_key|create_idempotency_key|p_allow_total_override/i.test(error.message || '')) {
@@ -1159,23 +1269,23 @@ export async function createBooking(data) {
         throw new Error(result?.error || 'Booking failed');
       }
       await refreshCache('bookings');
-      const _r = readCache('rooms').find((r) => r.id === booking.room_id);
-      const _c = readCache('customers').find((c) => c.id === booking.customer_id);
+      const _r = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms')).find((r) => r.id === booking.room_id);
+      const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === booking.customer_id);
       logActivity('booking_created', `Booking created · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${booking.check_in} → ${booking.check_out}`);
       createBackup();
 
       const bookingId = result.booking_id || id;
       if (result.depositWarning) {
-        const err = new Error(result.depositWarning);
+        const err = /** @type {BookingOperationErrorExpectedView} */ (new Error(result.depositWarning));
         err.code = 'DEPOSIT_FAILED';
         err.booking_id = bookingId;
         throw err;
       }
       return bookingId;
     } else {
-      const cached = readCache('bookings');
+      const cached = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
       const cachedCustomer = booking.customer_id ?
-      readCache('customers').find((customer) => customer.id === booking.customer_id) :
+      (/** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'))).find((customer) => customer.id === booking.customer_id) :
       null;
       const optimisticPayment = buildOfflineBookingFinancialState(total, deposit);
       const newBooking = {
@@ -1220,8 +1330,8 @@ export async function createBooking(data) {
       cached.push(newBooking);
       writeCache('bookings', cached);
 
-      const _r = readCache('rooms').find((r) => r.id === newBooking.room_id);
-      const _c = readCache('customers').find((c) => c.id === newBooking.customer_id);
+      const _r = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms')).find((r) => r.id === newBooking.room_id);
+      const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === newBooking.customer_id);
 
       logActivity(
         'booking_created',
@@ -1250,6 +1360,7 @@ export async function createBooking(data) {
  */
 export async function createMultiRoomBooking(data = {}) {
   const requestedRooms = Array.isArray(data.rooms) ? data.rooms : [];
+  /** @type {MultiRoomBookingRoomLineExpectedData[]} */
   const roomLines = requestedRooms.
   map((entry) => ({
     room_id: String(entry?.room_id || '').trim(),
@@ -1295,7 +1406,7 @@ export async function createMultiRoomBooking(data = {}) {
 
   if (!state.isOnline) {
     const queueId = `booking-group-${groupId}`;
-    const priorGroupIntent = [...readSyncQueue(), ...readFailedSyncQueue()].find((item) =>
+    const priorGroupIntent = /** @type {MultiRoomBookingQueueReadView[]} */ ([...readSyncQueue(), ...readFailedSyncQueue()]).find((item) =>
       item?._queue_id === queueId || item?.data?.p_idempotency_key === groupIdempotencyKey
     );
     if (priorGroupIntent) {
@@ -1363,16 +1474,18 @@ export async function createMultiRoomBooking(data = {}) {
     return { ...result, offline: false };
   }
 
+  // validateBookingDates above has already rejected missing dates. These
+  // expected-input views preserve the original values without coercing them.
   await assertCreationWithinUsageLimit('booking', {
     forceRemoteRefresh: false,
-    monthDate: new Date(data.check_in),
+    monthDate: new Date(/** @type {string} */ (data.check_in)),
     requestedUnits: roomLines.length
   });
-  await checkExclusiveEventConflict(data.check_in, data.check_out);
+  await checkExclusiveEventConflict(/** @type {string} */ (data.check_in), /** @type {string} */ (data.check_out));
   /** @type {MultiRoomPlan[]} */
   const roomPlans = [];
   for (const line of roomLines) {
-    await checkRoomConflict(line.room_id, data.check_in, data.check_out);
+    await checkRoomConflict(line.room_id, /** @type {string} */ (data.check_in), /** @type {string} */ (data.check_out));
     const room = await getRoomById(line.room_id);
     if (!room) throw new Error('Room not found');
     // getRoomById reads this room from the current rooms query or the matching cache projection.
@@ -1422,7 +1535,7 @@ export async function createMultiRoomBooking(data = {}) {
         const quotedTotal = campsite ? Number(quote) : Number(quote?.total);
         if (!quoteError && Number.isFinite(quotedTotal) && quotedTotal > 0) effectiveRate = quotedTotal;
       } else {
-        const override = await getApplicableRate(line.room_id, data.check_in, data.check_out);
+        const override = await getApplicableRate(line.room_id, /** @type {string} */ (data.check_in), /** @type {string} */ (data.check_out));
         if (override && Number.isFinite(Number(override.rate)) && Number(override.rate) > 0) {
           effectiveRate = Number(override.rate) * nights;
         }
@@ -1490,24 +1603,24 @@ export async function createMultiRoomBooking(data = {}) {
   // Persist the single authoritative group intent before exposing optimistic
   // children. If queue persistence fails, no local booking projection is
   // allowed to imply that recoverable work exists.
-  /** @type {Set<string>} */
+  /** Queue IDs are copied exactly as read; the queue reader leaves persisted values unknown. @type {Set<unknown>} */
   const groupDependencies = new Set();
   if (/** @type {Array<{id: string, _pending_sync?: boolean}>} */ (readCache('customers')).find((customer) => customer.id === data.customer_id)?._pending_sync) {
     groupDependencies.add(`customer-${data.customer_id}`);
   }
   if (data.quotation_id) {
     const quotation = /** @type {Array<{id: string, status?: string, _pending_sync?: boolean}>} */ (readCache('quotations')).find((entry) => entry?.id === data.quotation_id);
-    const quotationQueueItems = [...readSyncQueue(), ...readFailedSyncQueue()].filter((item) => {
+    const quotationQueueItems = /** @type {MultiRoomBookingQueueReadView[]} */ ([...readSyncQueue(), ...readFailedSyncQueue()]).filter((item) => {
       if (item?.type !== 'rpc' || !item?._queue_id) return false;
       const itemQuotationId = item?.data?.p_id || item?.data?.payload?.id || item?.data?.payload?.quotation_id;
       return itemQuotationId === data.quotation_id &&
-        ['create_quotation', 'update_quotation', 'mark_quotation_sent'].includes(item.table);
+        /** @type {unknown[]} */ (['create_quotation', 'update_quotation', 'mark_quotation_sent']).includes(item.table);
     });
     if (quotation?._pending_sync && quotationQueueItems.length === 0) {
       throw new Error('This quotation is marked pending, but its saved server operation is missing. Reconnect and review it in System Health before converting it.');
     }
-    if (quotation?._pending_sync && ['sent', 'accepted'].includes(quotation.status) &&
-      !quotationQueueItems.some((item) => ['update_quotation', 'mark_quotation_sent'].includes(item.table))) {
+    if (quotation?._pending_sync && /** @type {unknown[]} */ (['sent', 'accepted']).includes(quotation.status) &&
+      !quotationQueueItems.some((item) => /** @type {unknown[]} */ (['update_quotation', 'mark_quotation_sent']).includes(item.table))) {
       throw new Error('This quotation’s pending acceptance has no saved server operation. Reconnect and review it before converting it.');
     }
     for (const item of quotationQueueItems) groupDependencies.add(item._queue_id);
@@ -1543,7 +1656,7 @@ export async function createMultiRoomBooking(data = {}) {
   return {
     success: true,
     group_id: groupId,
-    group_invoice_number: (readCache('booking-invoice-groups') || []).find((group) => group?.group_key === groupId)?.invoice_number || null,
+    group_invoice_number: (/** @type {BookingInvoiceGroupCacheRow[]} */ (readCache('booking-invoice-groups') || [])).find((group) => group?.group_key === groupId)?.invoice_number || null,
     booking_ids: created.map((entry) => entry.booking_id),
     bookings: created,
     total_amount: groupTotal,
@@ -1551,12 +1664,13 @@ export async function createMultiRoomBooking(data = {}) {
   };
 }
 
+/** @param {string} id @param {BookingUpdateExpectedData} data */
 export async function updateBooking(id, data) {
   try {
     const { nights } = validateBookingDates(data.check_in, data.check_out);
     await checkRoomConflict(data.room_id, data.check_in, data.check_out, id);
 
-    const room = await getRoomById(data.room_id);
+    const room = /** @type {BookingPricingRoomExpectedData|null} */ (await getRoomById(data.room_id));
     if (!room) throw new Error('Room not found');
     // Same priced-family ordering as create: independent caps first for
     // campsite/tent kinds, generic max_occupancy gate for room/unit only.
@@ -1623,14 +1737,14 @@ export async function updateBooking(id, data) {
         }
       }
     } catch (quoteError) {
-      if (state.isOnline) throw new Error(`Could not verify the booking quote: ${quoteError.message}`);
+      if (state.isOnline) throw new Error(`Could not verify the booking quote: ${(/** @type {BookingDirectThrownMessageReadView} */ (quoteError)).message}`);
     }
     if (isNaN(total) || total <= 0) throw new Error('Invalid total — check room rate and dates');
 
     // Local payment_status estimate for the offline cache only.
     // The server ALWAYS recomputes payment_status authoritatively (Phase 2 hardening).
     // payment_status is intentionally NOT sent in the RPC payload — the server ignores it anyway.
-    const currentBooking = readCache('bookings').find((b) => b.id === id);
+    const currentBooking = /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((b) => b.id === id);
     const expectedUpdatedAt = data.expected_updated_at || currentBooking?.updated_at || null;
     const currentFinancial = getBookingFinancialView(currentBooking || {});
     const amountPaid = currentFinancial.amountPaid;
@@ -1672,7 +1786,7 @@ export async function updateBooking(id, data) {
 
     if (state.isOnline) {
       const updateRpc = campsite ? 'update_campsite_booking' : 'update_booking';
-      const { data: result, error } = await state.supabase.rpc(updateRpc, {
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(updateRpc, {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: rpcPayload,
@@ -1683,7 +1797,7 @@ export async function updateBooking(id, data) {
       if (!result?.success) throw new Error(result?.error || 'Could not update booking');
       await refreshCache('bookings');
     } else {
-      const cached = readCache('bookings');
+      const cached = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
       const idx = cached.findIndex((b) => b.id === id);
       const _updDepend = cached[idx]?._pending_sync ? `booking-${id}` : null;
       // Queue FIRST — dependency resolved from pre-write cache; no second read needed
@@ -1723,11 +1837,17 @@ export async function updateBooking(id, data) {
   }
 }
 
+/**
+ * @param {string} id
+ * @param {string} status
+ */
 export async function updateBookingStatus(id, status) {
   // Enforce state machine — read current status from cache first
-  const currentBooking = readCache('bookings').find((b) => b.id === id);
+  const currentBooking = /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((b) => b.id === id);
   if (currentBooking) {
-    const allowed = VALID_STATUS_TRANSITIONS[currentBooking.status];
+    // Cache JSON is unvalidated. String preserves the property-key coercion
+    // used by the original bracket access for JSON values, including null.
+    const allowed = VALID_STATUS_TRANSITIONS[String(currentBooking.status)];
     if (allowed && !allowed.includes(status)) {
       throw new Error(`Cannot transition booking from '${currentBooking.status}' to '${status}'`);
     }
@@ -1760,25 +1880,25 @@ export async function updateBookingStatus(id, status) {
   status === 'checked_in' ? 'occupied' :
   status === 'checked_out' || status === 'cancelled' ? 'available' : null;
 
-  const actionLabel = {
+  const actionLabel = ({
     checked_in: 'Check-in',
     checked_out: 'Check-out',
     cancelled: 'Booking cancelled',
     confirmed: 'Booking confirmed'
-  }[status] || `Status → ${status}`;
+  })[status] || `Status → ${status}`;
 
-  const actionKey = {
+  const actionKey = ({
     checked_in: 'check_in',
     checked_out: 'check_out',
     cancelled: 'booking_cancelled',
     confirmed: 'booking_confirmed'
-  }[status] || 'booking_updated';
+  })[status] || 'booking_updated';
 
   if (state.isOnline) {
-    const { data: booking } = await state.supabase.
+    const { data: booking } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').select('room_id, customer_id').
     eq('id', id).eq('lodge_id', state.lodgeId).single();
-    const { data: result, error } = await state.supabase.rpc('update_booking_status', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_booking_status', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_status: status,
@@ -1788,12 +1908,12 @@ export async function updateBookingStatus(id, status) {
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update booking status');
     await refreshCache('bookings', 'rooms');
-    const _r = readCache('rooms').find((r) => r.id === booking?.room_id);
-    const _c = readCache('customers').find((c) => c.id === booking?.customer_id);
+    const _r = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms')).find((r) => r.id === booking?.room_id);
+    const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === booking?.customer_id);
     logActivity(actionKey, `${actionLabel} · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''}`);
     if (status === 'checked_in' || status === 'checked_out') createBackup();
   } else {
-    const bookings = readCache('bookings');
+    const bookings = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
     const idx = bookings.findIndex((b) => b.id === id);
     const bk = bookings[idx] || {};
     const roomId = bk.room_id;
@@ -1814,12 +1934,12 @@ export async function updateBookingStatus(id, status) {
     writeCache('bookings', bookings);
     // Cache SECOND — room (read rooms only when needed; room variable preserved for logActivity)
     if (roomStatus && roomId) {
-      const rooms = readCache('rooms');
+      const rooms = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms'));
       const rIdx = rooms.findIndex((r) => r.id === roomId);
       const room = rooms[rIdx];
       if (rIdx >= 0) rooms[rIdx] = { ...rooms[rIdx], status: roomStatus };
       writeCache('rooms', rooms);
-      const _c = readCache('customers').find((c) => c.id === bk.customer_id);
+      const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === bk.customer_id);
       logActivity(actionKey, `${actionLabel} · ${_c?.name || 'Guest'} · Room ${room?.room_number || ''}`);
     } else {
       logActivity(actionKey, `${actionLabel} · Booking #${id}`);
@@ -1828,9 +1948,17 @@ export async function updateBookingStatus(id, status) {
   }
 }
 
+/**
+ * @param {string} id
+ * @param {number | string | null | undefined} paymentAmount
+ * @param {string | null} [paymentMethod]
+ * @param {'payment' | 'refund'} [type]
+ * @param {string | null} [dependsOn]
+ * @param {string | null} [callerKey]
+ */
 export async function updateBookingPayment(id, paymentAmount, paymentMethod, type = 'payment', dependsOn = null, callerKey = null) {
   const numericAmount = Number(paymentAmount) || 0;
-  const currentBooking = readCache('bookings').find((b) => b.id === id) || null;
+  const currentBooking = /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((b) => b.id === id) || null;
   const expectedUpdatedAt = currentBooking?.updated_at || null;
   if (type === 'refund') {
     if (numericAmount >= 0) throw new Error('Refund amount must be negative');
@@ -1847,7 +1975,7 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
   createPaymentIdempotencyKey(id, type, callerKey) :
   createPaymentIdempotencyKey(id, type, null, fallbackSignature);
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_booking_payment', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_booking_payment', {
       p_booking_id: id,
       p_lodge_id: state.lodgeId,
       p_amount: numericAmount,
@@ -1861,14 +1989,14 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
     if (!result?.success) throw new Error(result?.error || 'Payment failed');
 
     await refreshCache('bookings');
-    const bk = readCache('bookings').find((b) => b.id === id);
-    const _c = readCache('customers').find((c) => c.id === bk?.customer_id);
+    const bk = /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((b) => b.id === id);
+    const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === bk?.customer_id);
     const activityLabel = type === 'refund' ? 'refund_processed' : 'payment_updated';
     const verb = type === 'refund' ? 'Refund recorded' : 'Payment updated';
     logActivity(activityLabel, `${verb} · ${_c?.name || 'Guest'} · ${result.payment_status} · ${Math.abs(numericAmount).toFixed(2)} (${paymentMethod})`);
     return { success: true, offline: false, ...result };
   } else {
-    const cached = readCache('bookings');
+    const cached = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
     const idx = cached.findIndex((b) => b.id === id);
     if (idx >= 0) {
       const b = cached[idx];
@@ -1913,7 +2041,7 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
         updated_at: new Date().toISOString()
       };
       writeCache('bookings', cached);
-      const _c = readCache('customers').find((c) => c.id === b.customer_id);
+      const _c = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((c) => c.id === b.customer_id);
       const activityLabel = type === 'refund' ? 'refund_processed' : 'payment_updated';
       const verb = type === 'refund' ? 'Refund recorded (offline)' : 'Payment updated (offline)';
       logActivity(activityLabel, `${verb} · ${_c?.name || 'Guest'} · Pending sync · ${Math.abs(numericAmount).toFixed(2)} (${paymentMethod})`);
@@ -1935,12 +2063,13 @@ export async function updateBookingPayment(id, paymentAmount, paymentMethod, typ
   }
 }
 
+/** @param {string|null|undefined} bookingId */
 export async function getBookingPayments(bookingId) {
   if (!bookingId) return [];
   // NOTE: Payment history is only available when online.
   // When offline, callers should display the booking's amount_paid and note that detailed payment history is unavailable.
   if (!state.isOnline) return [];
-  const { data, error } = await state.supabase.rpc('get_booking_payments', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_booking_payments', {
     p_booking_id: bookingId,
     p_lodge_id: state.lodgeId
   });
@@ -1948,11 +2077,12 @@ export async function getBookingPayments(bookingId) {
   return Array.isArray(data) ? data : [];
 }
 
+/** @param {string} groupId @param {number} amount @param {string} method @param {string|null} [intentKey] */
 export async function updateGroupInvoicePayment(groupId, amount, method, intentKey = null) {
   if (!groupId) throw new Error('Group invoice is required');
   const paymentAmount = Math.max(0, Number(amount || 0));
   if (paymentAmount <= 0) throw new Error('Payment amount must be greater than zero');
-  const invoices = await getBookingInvoices();
+  const invoices = /** @type {BookingInvoiceGroupConsumerExpectedData[]} */ (await getBookingInvoices());
   const group = invoices.find((invoice) => invoice?._accommodation_group && invoice.accommodation_group_id === groupId);
   if (!group) throw new Error('Group invoice not found');
   let remaining = Math.min(paymentAmount, Math.max(0, Number(group.balance_due || 0)));
@@ -1979,9 +2109,10 @@ export async function updateGroupInvoicePayment(groupId, amount, method, intentK
   };
 }
 
+/** @param {string} groupId @param {Record<string, unknown>} [options] */
 export async function refundGroupInvoice(groupId, options = {}) {
   if (!groupId) throw new Error('Group invoice is required');
-  const invoices = await getBookingInvoices();
+  const invoices = /** @type {BookingInvoiceGroupConsumerExpectedData[]} */ (await getBookingInvoices());
   const group = invoices.find((invoice) => invoice?._accommodation_group && invoice.accommodation_group_id === groupId);
   if (!group) throw new Error('Group invoice not found');
   const lines = (group._room_lines || []).filter((line) => line?.booking_id && Number(line.amount_paid || 0) > 0.01);
@@ -2004,9 +2135,12 @@ export async function refundGroupInvoice(groupId, options = {}) {
   };
 }
 
+/** @param {string} bookingId @param {RefundBookingOptionsExpectedData} [options] @returns {Promise<import('../../shared/desktopIpcContracts.js').BookingRefundSuccessResult>} */
 export async function refundBooking(bookingId, options = {}) {
   try {
-    const booking = (await getAllBookings()).find((entry) => entry.id === bookingId);
+    // The reader can return server rows or unvalidated cache JSON; this view
+    // types the existing consumer only and adds no runtime validation.
+    const booking = (/** @type {BookingListExpectedData[]} */ (await getAllBookings())).find((entry) => entry.id === bookingId);
     if (!booking) throw new Error('Booking not found');
     const bookingStatus = String(booking.status || '').toLowerCase();
     if (bookingStatus === 'checked_in') {
@@ -2068,7 +2202,8 @@ export async function refundBooking(bookingId, options = {}) {
         message: 'Booking refund request saved locally; live manager approval is still required online.'
       });
 
-      const customer = readCache('customers').find((entry) => entry.id === booking.customer_id);
+      // Cache JSON is unvalidated; preserve the same direct array operation.
+      const customer = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((entry) => entry.id === booking.customer_id);
       logActivity(
         'refund_requested',
         `Refund request saved locally · ${customer?.name || booking.customer_name || 'Guest'} · refundable ${refundAmount.toFixed(2)} · retained ${retainedAmount.toFixed(2)} (${retainedPercent.toFixed(2)}%)`
@@ -2091,14 +2226,14 @@ export async function refundBooking(bookingId, options = {}) {
     }
     if (!approverPin) throw new Error('Manager/Admin approval PIN is required');
 
-    const { data: approver, error: approverError } = await state.supabase.rpc('verify_refund_approver_pin', {
+    const { data: approver, error: approverError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('verify_refund_approver_pin', {
       p_lodge_id: state.lodgeId,
       p_pin: approverPin
     });
     if (approverError) throw new Error(approverError.message);
     if (!approver?.success) throw new Error(approver?.error || 'Invalid approval PIN or unauthorized approver');
 
-    const { data, error } = await state.supabase.rpc('approve_booking_refund', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('approve_booking_refund', {
       p_booking_id: bookingId,
       p_lodge_id: state.lodgeId,
       p_retained_percent: retainedPercent,
@@ -2133,7 +2268,8 @@ export async function refundBooking(bookingId, options = {}) {
 
     await refreshCache('bookings');
 
-    const customer = readCache('customers').find((entry) => entry.id === booking.customer_id);
+    // Cache JSON is unvalidated; preserve the same direct array operation.
+    const customer = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers')).find((entry) => entry.id === booking.customer_id);
     logActivity(
       isCreditTransfer ? 'customer_credit_adjusted' : 'refund_processed',
       isCreditTransfer
@@ -2163,6 +2299,7 @@ export async function refundBooking(bookingId, options = {}) {
   }
 }
 
+/** @param {EventBookingCreateExpectedData} data */
 export async function createEventBooking(data) {
   let customerId;
   let bookingCustomerDepend = null;
@@ -2181,19 +2318,22 @@ export async function createEventBooking(data) {
   };
 
   if (state.isOnline) {
-    const { data: existing } = await state.supabase.
-    from('customers').select('id').eq('lodge_id', state.lodgeId).eq('name', eventName).order('created_at', { ascending: true }).order('id', { ascending: true }).limit(1);
-    if (existing?.length > 0) {
-      customerId = existing[0].id;
+    const { data: existing } = /** @type {{data: EventCustomerIdQueryExpectedData[]|null}} */ (
+      await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
+        from('customers').select('id').eq('lodge_id', state.lodgeId).eq('name', eventName).order('created_at', { ascending: true }).order('id', { ascending: true }).limit(1)
+    )
+    if (existing && existing.length > 0) {
+      // The preceding length check establishes a nonempty selected row array; this view adds no validation.
+      customerId = (/** @type {[EventCustomerIdQueryExpectedData, ...EventCustomerIdQueryExpectedData[]]} */ (existing))[0].id;
     } else {
       const newCustomer = { ...contactCustomer, id: randomUUID() };
-      const { data: result, error } = await state.supabase.rpc('create_customer', { payload: newCustomer });
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_customer', { payload: newCustomer });
       if (error) throw new Error(error.message);
       if (!result?.success) throw new Error(result?.error || 'Could not create customer');
       customerId = result?.id;
     }
   } else {
-    const cached = readCache('customers');
+    const cached = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'));
     const existing = cached.find((c) => c.name === eventName);
     if (existing) {
       customerId = existing.id;
@@ -2220,7 +2360,7 @@ export async function createEventBooking(data) {
   const allRooms = await getAllRooms();
   const bookableRooms = allRooms.filter((r) => r.status !== 'maintenance');
 
-  const conflicting = state.isOnline ? [] : readCache('bookings').filter(
+  const conflicting = state.isOnline ? [] : (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).filter(
     (b) =>
     b.status !== 'cancelled' &&
     b.check_in < data.check_out &&
@@ -2288,10 +2428,10 @@ export async function createEventBooking(data) {
   let authoritativeEventResult = null;
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_booking_record', eventRpcData);
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_booking_record', eventRpcData);
     if (error) throw new Error(error.message);
     if (!result?.success) {
-      const rejection = new Error(result?.error || 'Could not create event booking');
+      const rejection = /** @type {BookingOperationErrorExpectedView} */ (new Error(result?.error || 'Could not create event booking'));
       rejection.definitiveIntent = result?.operation_id === eventIdempotencyKey;
       throw rejection;
     }
@@ -2331,7 +2471,7 @@ export async function createEventBooking(data) {
       }
       return { bookingId, count: parseEventRoomCount(eventNotes) || 1, groupId, rooms: [], totalPrice: totalEventPrice, nights, pendingSync: true, idempotent: true };
     }
-    if (readCache('bookings').some((entry) => entry?.id === bookingId)) {
+    if ((/** @type {{id?: unknown}[]} */ (readCache('bookings'))).some((entry) => entry?.id === bookingId)) {
       throw new Error('This event already exists in the local booking cache without a matching pending operation. Reconnect and review it before creating another event.');
     }
     // Queue FIRST — crash before cache write means booking syncs but won't appear locally until refresh.
@@ -2339,7 +2479,7 @@ export async function createEventBooking(data) {
       _queue_id: eventQueueId,
       ...(bookingCustomerDepend ? { _depends_on: bookingCustomerDepend } : {})
     });    // Cache SECOND.
-    const cachedBookings = readCache('bookings');
+    const cachedBookings = /** @type {{id?: unknown}[]} */ (readCache('bookings'));
     cachedBookings.push(newBooking);
     writeCache('bookings', cachedBookings);
   }
@@ -2364,9 +2504,10 @@ export async function createEventBooking(data) {
   };
 }
 
+/** @param {string} bookingId */
 export async function getBookingCharges(bookingId) {
   if (state.isOnline) {
-    const { data } = await state.supabase.
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('booking_charges').
     select('*, outlets(name)').
     eq('lodge_id', state.lodgeId).
@@ -2375,15 +2516,16 @@ export async function getBookingCharges(bookingId) {
     order('created_at');
     return mergeCachedBookingChargesForBooking(bookingId, data || []);
   }
-  return readCache('booking-charges').
+  return /** @type {BookingChargeExpectedDataReadView[]} */ (readCache('booking-charges')).
   filter((charge) => charge?.booking_id === bookingId && !charge?.voided_at).
   sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
 }
 
+/** @param {string} chargeId */
 export async function getBookingChargeById(chargeId) {
   if (!chargeId) return null;
   if (state.isOnline) {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('booking_charges').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -2395,10 +2537,11 @@ export async function getBookingChargeById(chargeId) {
   return getCachedBookingChargeById(chargeId);
 }
 
+/** @param {string} bookingId @param {BookingChargeMutationExpectedData} data */
 export async function addBookingCharge(bookingId, data) {
   try {
     if (Number(data.unit_price) <= 0) throw new Error('Charge unit price must be greater than zero');
-    const currentBooking = readCache('bookings').find((booking) => booking.id === bookingId) || null;
+    const currentBooking = /** @type {BookingListExpectedData[]} */ (readCache('bookings')).find((booking) => booking.id === bookingId) || null;
     if (!currentBooking && !state.isOnline) throw new Error('Booking not found in offline cache');
     const quantity = Number(data.quantity) || 1;
     const unitPrice = Number(data.unit_price) || 0;
@@ -2411,7 +2554,7 @@ export async function addBookingCharge(bookingId, data) {
       outlet_id: data.outlet_id || null
     });
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('add_booking_charge', {
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('add_booking_charge', {
         p_booking_id: bookingId,
         p_lodge_id: state.lodgeId,
         p_description: data.description,
@@ -2429,7 +2572,7 @@ export async function addBookingCharge(bookingId, data) {
 
     const chargeId = data.id || randomUUID();
     const amount = Math.round(quantity * unitPrice * 100) / 100;
-    const outlet = readCache('outlets').find((entry) => entry?.id === data.outlet_id) || null;
+    const outlet = /** @type {BookingOutletCacheExpectedData[]} */ (readCache('outlets')).find((entry) => entry?.id === data.outlet_id) || null;
     const queuedCharge = {
       id: chargeId,
       lodge_id: state.lodgeId,
@@ -2477,15 +2620,16 @@ export async function addBookingCharge(bookingId, data) {
   }
 }
 
+/** @param {string} chargeId @param {string} [reason] */
 export async function deleteBookingCharge(chargeId, reason = '') {
   try {
     const charge = await getBookingChargeById(chargeId).catch(() => null);
     if (!charge && !state.isOnline) throw new Error('Charge not found in offline cache');
     const currentBooking = charge?.booking_id ?
-    readCache('bookings').find((booking) => booking.id === charge.booking_id) || null :
+    (/** @type {BookingListExpectedData[]} */ (readCache('bookings'))).find((booking) => booking.id === charge.booking_id) || null :
     null;
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('delete_booking_charge', {
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_booking_charge', {
         p_charge_id: chargeId,
         p_lodge_id: state.lodgeId,
         p_reason: reason || null,
@@ -2530,7 +2674,7 @@ export async function deleteBookingCharge(chargeId, reason = '') {
 
 export async function getRateOverrides() {
   if (state.isOnline) {
-    const { data } = await state.supabase.
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_rate_overrides').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -2540,10 +2684,11 @@ export async function getRateOverrides() {
   return readActiveRateOverrideCache();
 }
 
+/** @param {string} id */
 export async function getRateOverrideById(id) {
   if (!id) return null;
   if (!state.isOnline) return getCachedRateOverrideById(id);
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('room_rate_overrides').
   select('*').
   eq('lodge_id', state.lodgeId).
@@ -2553,6 +2698,7 @@ export async function getRateOverrideById(id) {
   return data || null;
 }
 
+/** @param {RateOverrideMutationExpectedData} data */
 export async function createRateOverride(data) {
   const id = data.id || randomUUID();
   const override = {
@@ -2565,7 +2711,7 @@ export async function createRateOverride(data) {
     rate_per_night: Number(data.rate_per_night)
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_room_rate_override', { payload: override });
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_room_rate_override', { payload: override });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create rate override');
     return { success: true, id: result?.id };
@@ -2578,13 +2724,14 @@ export async function createRateOverride(data) {
     _sync_state: 'pending',
     _sync_error: null
   };
-  writeCache('room-rate-overrides', [offlineRow, ...readCache('room-rate-overrides').filter((row) => row?.id !== id)]);
+  writeCache('room-rate-overrides', [offlineRow, .../** @type {RateOverrideExpectedDataReadView[]} */ (readCache('room-rate-overrides')).filter((row) => row?.id !== id)]);
   queueOperation('rpc', 'create_room_rate_override', { payload: override }, null, {
     _queue_id: `rate-override-${id}`
   });
   return { success: true, id, offline: true, queued: true };
 }
 
+/** @param {string} id @param {RateOverrideMutationExpectedData} data */
 export async function updateRateOverride(id, data) {
   const update = {
     room_id: data.room_id || null,
@@ -2594,7 +2741,7 @@ export async function updateRateOverride(id, data) {
     rate_per_night: Number(data.rate_per_night)
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_room_rate_override', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_room_rate_override', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       payload: update
@@ -2605,7 +2752,7 @@ export async function updateRateOverride(id, data) {
   }
   const existing = getCachedRateOverrideById(id);
   if (!existing) return { success: false, error: 'Rate override not found in offline cache' };
-  writeCache('room-rate-overrides', readCache('room-rate-overrides').map((row) => row?.id === id ? {
+  writeCache('room-rate-overrides', /** @type {RateOverrideExpectedDataReadView[]} */ (readCache('room-rate-overrides')).map((row) => row?.id === id ? {
     ...row,
     ...update,
     _pending_sync: true,
@@ -2624,9 +2771,10 @@ export async function updateRateOverride(id, data) {
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {string} id */
 export async function deleteRateOverride(id) {
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_room_rate_override', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_room_rate_override', {
       p_id: id,
       p_lodge_id: state.lodgeId
     });
@@ -2636,7 +2784,7 @@ export async function deleteRateOverride(id) {
   }
   const existing = getCachedRateOverrideById(id);
   if (!existing) return { success: false, error: 'Rate override not found in offline cache' };
-  writeCache('room-rate-overrides', readCache('room-rate-overrides').map((row) => row?.id === id ? {
+  writeCache('room-rate-overrides', /** @type {RateOverrideExpectedDataReadView[]} */ (readCache('room-rate-overrides')).map((row) => row?.id === id ? {
     ...row,
     _deleted_offline: true,
     _pending_sync: true,
@@ -2654,10 +2802,11 @@ export async function deleteRateOverride(id) {
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {string | null | undefined} roomId @param {string} checkIn @param {string} checkOut */
 export async function getApplicableRate(roomId, checkIn, checkOut) {
   if (!state.isOnline) return findApplicableRateOverrideFromCache(roomId, checkIn, checkOut);
   try {
-    const { data: overrides } = await state.supabase.
+    const { data: overrides } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_rate_overrides').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -2674,10 +2823,11 @@ export async function getApplicableRate(roomId, checkIn, checkOut) {
   }
 }
 
+/** @param {string} roomId */
 function getCachedActiveBookingForRoom(roomId) {
   if (!roomId) return null;
   const today = new Date().toISOString().split('T')[0];
-  const cached = (readCache('bookings') || []).find((entry) =>
+  const cached = (/** @type {CachedActiveBookingReadExpectedData[]} */ (readCache('bookings')) || []).find((entry) =>
     entry?.lodge_id === state.lodgeId &&
     entry?.room_id === roomId &&
     ['confirmed', 'checked_in'].includes(String(entry?.status || '').toLowerCase()) &&
@@ -2687,15 +2837,16 @@ function getCachedActiveBookingForRoom(roomId) {
   if (!cached) return null;
   return {
     ...cached,
-    customer_name: cached.customer_name || cached.customers?.name || null
+      customer_name: cached.customer_name || (/** @type {{name?: unknown}|null|undefined} */ (cached.customers))?.name || null
   };
 }
 
+/** @param {string} roomId */
 export async function getActiveBookingForRoom(roomId) {
   if (!state.isOnline) return getCachedActiveBookingForRoom(roomId);
   const today = new Date().toISOString().split('T')[0];
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('bookings').
     select('id, customer_id, customers(name)').
     eq('lodge_id', state.lodgeId).
@@ -2706,10 +2857,11 @@ export async function getActiveBookingForRoom(roomId) {
     limit(1).
     maybeSingle();
     if (error) throw error;
-    return data ?
+    const bookingView = /** @type {ActiveBookingServerReadExpectedData|null} */ (data);
+    return bookingView ?
     {
-      ...data,
-      customer_name: data.customer_name || data.customers?.name || null
+      ...bookingView,
+      customer_name: bookingView.customer_name || (/** @type {{name?: unknown}|null|undefined} */ (bookingView.customers))?.name || null
     } :
     null;
   } catch {
@@ -2717,6 +2869,11 @@ export async function getActiveBookingForRoom(roomId) {
   }
 }
 
+/**
+ * Values sent by the existing Bookings reschedule form; the IPC boundary does not validate them.
+ * @param {string} bookingId
+ * @param {{newRoomId: string, newCheckIn: string, newCheckOut: string, reason: string, overpaymentAction?: string, allowTotalOverride?: boolean, overrideTotal?: unknown}} input
+ */
 export async function rescheduleBooking(bookingId, {
   newRoomId,
   newCheckIn,
@@ -2736,7 +2893,7 @@ export async function rescheduleBooking(bookingId, {
       throw new Error('overpayment_action must be reject or transfer_to_customer_credit');
     }
 
-    const currentBooking = readCache('bookings').find((b) => b.id === bookingId) || null;
+    const currentBooking = (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).find((b) => b.id === bookingId) || null;
     const expectedUpdatedAt = currentBooking?.updated_at || null;
 
     const idempotencyKey = createOperationIdempotencyKey(`booking:reschedule:${bookingId}`, {
@@ -2751,7 +2908,7 @@ export async function rescheduleBooking(bookingId, {
     });
 
     if (state.isOnline) {
-      const { data: result, error } = await state.supabase.rpc('reschedule_accommodation_booking', {
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('reschedule_accommodation_booking', {
         p_booking_id: bookingId,
         p_lodge_id: state.lodgeId,
         p_new_room_id: newRoomId,
@@ -2769,9 +2926,9 @@ export async function rescheduleBooking(bookingId, {
       if (!result?.success) throw new Error(result?.error || 'Could not reschedule booking');
 
       await refreshCache('bookings');
-      const bk = readCache('bookings').find((b) => b.id === bookingId);
-      const _c = readCache('customers').find((c) => c.id === bk?.customer_id);
-      const _r = readCache('rooms').find((r) => r.id === newRoomId);
+      const bk = (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).find((b) => b.id === bookingId);
+      const _c = (/** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'))).find((c) => c.id === bk?.customer_id);
+      const _r = (/** @type {BookingRescheduleRoomExpectedData[]} */ (readCache('rooms'))).find((r) => r.id === newRoomId);
       logActivity(
         'booking_rescheduled',
         `Rescheduled · ${_c?.name || 'Guest'} · Room ${_r?.room_number || ''} · ${newCheckIn} → ${newCheckOut}`
@@ -2788,7 +2945,7 @@ export async function rescheduleBooking(bookingId, {
         offline: false
       };
     } else {
-      const cached = readCache('bookings');
+      const cached = /** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'));
       const idx = cached.findIndex((b) => b.id === bookingId);
       if (idx < 0) throw new Error('Booking not found in local cache');
 
@@ -2797,11 +2954,11 @@ export async function rescheduleBooking(bookingId, {
         throw new Error(`Cannot reschedule a booking in status "${b.status}"`);
       }
 
-      const room = readCache('rooms').find((r) => r.id === newRoomId);
+      const room = (/** @type {BookingRescheduleRoomExpectedData[]} */ (readCache('rooms'))).find((r) => r.id === newRoomId);
       if (!room) throw new Error('Room not found');
       if (room.status === 'maintenance') throw new Error('Selected room is under maintenance');
 
-      const conflict = readCache('bookings').find((bk) =>
+      const conflict = (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).find((bk) =>
         bk.room_id === newRoomId &&
         bk.status !== 'cancelled' &&
         bk.id !== bookingId &&
@@ -2810,7 +2967,7 @@ export async function rescheduleBooking(bookingId, {
       );
       if (conflict) throw new Error('Room is already booked for these dates');
 
-      const eventConflict = readCache('bookings').find((bk) =>
+      const eventConflict = (/** @type {BookingRescheduleCacheExpectedData[]} */ (readCache('bookings'))).find((bk) =>
         bk.is_exclusive_event &&
         bk.status !== 'cancelled' &&
         bk.check_in < newCheckOut &&
@@ -2818,7 +2975,7 @@ export async function rescheduleBooking(bookingId, {
       );
       if (eventConflict) throw new Error('The lodge is fully reserved for an exclusive event on these dates');
 
-      const nights = Math.ceil((new Date(newCheckOut) - new Date(newCheckIn)) / (1000 * 60 * 60 * 24));
+      const nights = Math.ceil((new Date(newCheckOut).getTime() - new Date(newCheckIn).getTime()) / (1000 * 60 * 60 * 24));
       // Priced family (campsite + tent) reprices via the campsite estimator;
       // room/unit kinds keep the nightly-rate path.
       const campsite = isCampsitePriced(room);
@@ -2914,7 +3071,7 @@ export async function rescheduleBooking(bookingId, {
 
 async function getNextBookingInvoiceNumber() {
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('get_next_invoice_number', { p_lodge_id: state.lodgeId });
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_next_invoice_number', { p_lodge_id: state.lodgeId });
     if (error) {
       if (!isMissingInvoiceNumberRpcError(error)) {
         throw new Error('Failed to generate invoice number: ' + error.message);
@@ -2930,7 +3087,14 @@ async function getNextBookingInvoiceNumber() {
 }
 
 export async function getBookingInvoices() {
-  const bookings = await getAllBookings();
+  // The row list is produced by the booking reader and its existing local
+  // merge; this expected-data view does not validate cached or RPC values.
+  /**
+   * The SQL booking table requires both stay dates; invoice_number is nullable
+   * in that schema and offline values remain unvalidated expected data.
+   * @typedef {BookingListExpectedData & {check_out: string, adults?: number | string | null, children?: number | string | null, _local_invoice_number?: string | null}} BookingInvoiceBookingExpectedData
+   */
+  const bookings = /** @type {(BookingInvoiceBookingExpectedData[] & ReadMetadataRows)} */ (await getAllBookings());
   let authoritative = state.isOnline && bookings?._complete === true;
   /** @type {BookingInvoiceRecord[]} */
   let invoiceRows = [];
@@ -2940,14 +3104,24 @@ export async function getBookingInvoices() {
   let groupLineRows = /** @type {BookingInvoiceGroupLineCacheRow[]} */ (readCache('booking-invoice-group-lines') || []);
 
   if (state.isOnline) {
-    const loadRows = async (table, select, orderColumn, configure = null) => {
+    /**
+     * Paginate the selected invoice projections. Query/cache values remain
+     * expected data and are narrowed at each table-specific consumer below.
+     * @param {string} table
+     * @param {string} select
+     * @param {string} orderColumn
+     * @param {boolean} [excludeUnlinkedInvoices]
+     * @returns {Promise<{data: unknown[] | null, error: {message: string} | null}>}
+     */
+    const loadRows = async (table, select, orderColumn, excludeUnlinkedInvoices = false) => {
+      /** @type {unknown[]} */
       const rows = [];
       for (let from = 0; from < 100000; from += 500) {
-        let query = state.supabase.from(table).select(select).eq('lodge_id', state.lodgeId);
-        if (configure) query = configure(query);
+        let query = /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).from(table).select(select).eq('lodge_id', state.lodgeId);
+        if (excludeUnlinkedInvoices) query = query.not('booking_id', 'is', null);
         const { data, error } = await query.order(orderColumn, { ascending: false }).range(from, from + 499);
         if (error) return { data: null, error };
-        const page = data || [];
+        const page = /** @type {unknown[]} */ (data || []);
         rows.push(...page);
         if (page.length < 500) break;
       }
@@ -2958,14 +3132,14 @@ export async function getBookingInvoices() {
       'invoices',
       'id, booking_id, lodge_id, invoice_number, issued_at, due_date, notes, created_at',
       'issued_at',
-      (query) => query.not('booking_id', 'is', null)
+      true
     );
     if (invoiceResult.error) {
       invoiceResult = await loadRows(
         'invoices',
         'id, booking_id, lodge_id, invoice_number, issued_at',
         'issued_at',
-        (query) => query.not('booking_id', 'is', null)
+        true
       );
     }
 
@@ -3011,7 +3185,7 @@ export async function getBookingInvoices() {
     const charges_total = Number(booking.charges_total || 0); // || 0 guards against null on older rows
     const nights = Math.max(
       0,
-      Math.ceil((new Date(booking.check_out) - new Date(booking.check_in)) / (1000 * 60 * 60 * 24))
+      Math.ceil((new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / (1000 * 60 * 60 * 24))
     );
 
     return {
@@ -3037,10 +3211,17 @@ export async function getBookingInvoices() {
     };
   }).
   filter(Boolean);
+  // The mapper above emits only a row object or null, so Boolean removes the
+  // null sentinel here while retaining the original runtime predicate.
+  const nonNullRows = /** @type {Array<NonNullable<(typeof rows)[number]>>} */ (rows);
 
-  const regularRows = rows.filter((row) => !row.is_exclusive_event);
-  const eventRows = rows.filter((row) => row.is_exclusive_event);
-  const groupById = new Map((groupRows || []).map((group) => [group.id, group]));
+  const regularRows = nonNullRows.filter((row) => !row.is_exclusive_event);
+  const eventRows = nonNullRows.filter((row) => row.is_exclusive_event);
+  // Cache IDs are not validated; retain the original Map lookup semantics for
+  // every runtime key, including null and other malformed values.
+  const groupById = new Map((groupRows || []).map((group) =>
+    /** @type {readonly [unknown, BookingInvoiceGroupCacheRow]} */ ([group.id, group])
+  ));
   const groupIdByBookingId = new Map(
     (groupLineRows || []).
     filter((line) => line?.booking_id && line?.group_id).
@@ -3148,7 +3329,7 @@ async function getNextQuotationNumber() {
   const prefix = `Q-${year}-`;
   let nums = [];
   if (state.isOnline) {
-    const { data } = await state.supabase.
+    const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('quotations').
     select('quotation_number').
     eq('lodge_id', state.lodgeId).
@@ -3157,15 +3338,17 @@ async function getNextQuotationNumber() {
     map((r) => parseInt((r.quotation_number || '').replace(prefix, ''), 10)).
     filter((n) => !isNaN(n));
   } else {
-    nums = readCache('quotations').
+    nums = /** @type {QuotationExpectedData[]} */ (readCache('quotations')).
     filter((q) => (q.quotation_number || '').startsWith(prefix)).
-    map((q) => parseInt(q.quotation_number.replace(prefix, ''), 10)).
+    // The preceding filter excludes absent/empty numbers before this existing replace call.
+    map((q) => parseInt((/** @type {string} */ (q.quotation_number)).replace(prefix, ''), 10)).
     filter((n) => !isNaN(n));
   }
   const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
   return `${prefix}${String(next).padStart(4, '0')}`;
 }
 
+/** @param {unknown} currentNumber */
 function getNextQuotationNumberAfter(currentNumber) {
   const match = String(currentNumber || '').match(/^(Q-\d{4}-)(\d+)$/);
   if (!match) return getNextQuotationNumber();
@@ -3177,6 +3360,7 @@ function isQuotationNumberConflict(message = '') {
   return /quotations_lodge_id_quotation_number_key|duplicate key value/i.test(String(message));
 }
 
+/** @param {{quotation_type?: unknown} | null | undefined} [quotation] */
 function isExclusiveEventQuotation(quotation = {}) {
   return quotation?.quotation_type === 'exclusive_event';
 }
@@ -3200,6 +3384,7 @@ function normalizeQuotationAccommodationLines(value = []) {
   filter((line) => line.room_id);
 }
 
+/** @param {string|null|undefined} checkIn @param {string|null|undefined} checkOut */
 function getQuotationNights(checkIn, checkOut) {
   if (!checkIn || !checkOut) return 0;
   const start = new Date(checkIn).getTime();
@@ -3208,6 +3393,7 @@ function getQuotationNights(checkIn, checkOut) {
   return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
 }
 
+/** @param {unknown} value @param {unknown} [fallback] */
 function normalizeQuotationCurrency(value, fallback = 'BWP') {
   const candidate = String(value || '').trim();
   if (candidate && candidate.length <= 8 && !/\d/.test(candidate)) return candidate;
@@ -3215,6 +3401,7 @@ function normalizeQuotationCurrency(value, fallback = 'BWP') {
   return safeFallback && safeFallback.length <= 8 && !/\d/.test(safeFallback) ? safeFallback : 'BWP';
 }
 
+/** @param {{id: unknown, event_name?: unknown, customer_name?: unknown, notes?: unknown}} quotation @param {number} roomCount */
 function buildQuotationEventNotes(quotation, roomCount) {
   const groupId = `evt-quotation-${quotation.id}`;
   const notes = [
@@ -3225,17 +3412,20 @@ function buildQuotationEventNotes(quotation, roomCount) {
   return notes.join('\n');
 }
 
+/** @param {QuotationRecordInputExpectedData} data @param {QuotationRecordOverridesExpectedData} [overrides] */
 function buildQuotationRecord(data, overrides = {}) {
-  const customer = readCache('customers').find((c) => c.id === data.customer_id);
+  const customers = /** @type {QuotationCustomerExpectedData[]} */ (readCache('customers'));
+  const customer = customers.find((c) => c.id === data.customer_id);
   const quotationType = data.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
   const isEvent = quotationType === 'exclusive_event';
-  const room = !isEvent && data.room_id ? readCache('rooms').find((r) => r.id === data.room_id) : null;
+  const room = !isEvent && data.room_id ?
+  /** @type {QuotationRoomExpectedData[]} */ (readCache('rooms')).find((r) => r.id === data.room_id) : null;
 
   const eventDailyRate = isEvent ? Number(data.event_daily_rate || 0) : null;
-  const eventTotal = isEvent ? eventDailyRate * getQuotationNights(data.check_in, data.check_out) : null;
+  const eventTotal = isEvent ? /** @type {number} */ (eventDailyRate) * getQuotationNights(data.check_in, data.check_out) : null;
   const accommodationLines = isEvent ? [] : normalizeQuotationAccommodationLines(data.accommodation_lines);
   const linesTotal = accommodationLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
-  const subtotal = isEvent ? eventTotal : (linesTotal > 0 ? linesTotal : Number(data.subtotal ?? 0));
+  const subtotal = isEvent ? /** @type {number} */ (eventTotal) : (linesTotal > 0 ? linesTotal : Number(data.subtotal ?? 0));
   const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
 
@@ -3270,6 +3460,10 @@ function buildQuotationRecord(data, overrides = {}) {
   };
 }
 
+/**
+ * @param {QuotationExpectedData} q Expected row from the quotation query/cache; not runtime-validated here.
+ * @param {{customer?: QuotationCustomerExpectedData | null | undefined, room?: QuotationRoomExpectedData | null | undefined, convertedBookingId?: string | null | undefined, todayStr?: string | null | undefined, status?: string | null | undefined}} [options]
+ */
 function normalizeQuotationForDisplay(q, { customer = null, room = null, convertedBookingId = null, todayStr = null } = {}) {
   if (!q || typeof q !== 'object') return q;
   const quotationType = q.quotation_type === 'exclusive_event' ? 'exclusive_event' : 'room';
@@ -3314,10 +3508,11 @@ function normalizeQuotationForDisplay(q, { customer = null, room = null, convert
 }
 
 export async function getAllQuotations() {
-  const cachedQuotations = readCache('quotations');
+  const cachedQuotations = /** @type {QuotationExpectedData[]} */ (readCache('quotations'));
   if (state.isOnline) {
+    /** @type {QuotationBookingLinkExpectedData[]} */
     let linkedBookings = [];
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('quotations').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -3330,18 +3525,18 @@ export async function getAllQuotations() {
       throw new Error(error.message);
     }
 
-    const customers = readCache('customers');
-    const rooms = readCache('rooms');
-    const liveRows = (data || []).length === 0 && cachedQuotations.length > 0 ?
+    const customers = /** @type {QuotationCustomerExpectedData[]} */ (readCache('customers'));
+    const rooms = /** @type {QuotationRoomExpectedData[]} */ (readCache('rooms'));
+    const liveRows = /** @type {QuotationExpectedData[]} */ ((data || []).length === 0 && cachedQuotations.length > 0 ?
     cachedQuotations :
-    data || [];
+    data || []);
     try {
-      const bookingsResult = await state.supabase.
+      const bookingsResult = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('bookings').
       select('id, quotation_id').
       eq('lodge_id', state.lodgeId).
       not('quotation_id', 'is', null);
-      linkedBookings = bookingsResult?.data || [];
+      linkedBookings = /** @type {QuotationBookingLinkExpectedData[]} */ (bookingsResult?.data || []);
     } catch {
       linkedBookings = [];
     }
@@ -3359,9 +3554,9 @@ export async function getAllQuotations() {
     return mapped;
   }
   const quotations = cachedQuotations;
-  const customers = readCache('customers');
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
+  const customers = /** @type {QuotationCustomerExpectedData[]} */ (readCache('customers'));
+  const rooms = /** @type {QuotationRoomExpectedData[]} */ (readCache('rooms'));
+  const bookings = /** @type {QuotationBookingLinkExpectedData[]} */ (readCache('bookings'));
   const convertedIds = new Map(
     (bookings || []).filter((booking) => booking?.quotation_id).map((booking) => [booking.quotation_id, booking.id])
   );
@@ -3373,18 +3568,22 @@ export async function getAllQuotations() {
     // Auto-expire offline (UI-only; DB will be corrected when back online)
     const convertedBookingId = q.converted_booking_id || convertedIds.get(q.id) || null;
     const baseStatus = convertedBookingId ? 'converted' : q.status;
-    const status = q.valid_until && q.valid_until < todayStr && ['draft', 'sent', 'accepted'].includes(baseStatus) ?
+    // The cached status may be nullish; widening this literal's read type
+    // keeps includes()'s existing false result for nonmatching values.
+    const status = q.valid_until && q.valid_until < todayStr && /** @type {Array<string | null | undefined>} */ (['draft', 'sent', 'accepted']).includes(baseStatus) ?
     'expired' :
     baseStatus;
     return normalizeQuotationForDisplay(q, { customer, room, convertedBookingId, todayStr, status });
   }).
-  sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
+/** @param {number | string | null | undefined} subtotal @param {number | string | null | undefined} [rate] */
 function calcTax(subtotal, rate = 0) {
   return Math.round(Number(subtotal || 0) * Number(rate || 0)) / 100;
 }
 
+/** @param {QuotationRecordInputExpectedData & {status?: string|null, converted_booking_id?: string|null, adults?: number|string|null, children?: number|string|null, tax_rate?: number|string|null}} data */
 export async function createQuotation(data) {
   if (state.isOnline) {
     let quotation_number = await getNextQuotationNumber();
@@ -3395,11 +3594,12 @@ export async function createQuotation(data) {
         id: randomUUID(),
         quotation_number
       });
-      const { data: result, error } = await state.supabase.rpc('create_quotation', { payload: record });
+      const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_quotation', { payload: record });
       const failureMessage = error?.message || result?.error || '';
 
       if (!error && result?.success) {
-        writeCache('quotations', [record, ...readCache('quotations').filter((q) => q.id !== record.id)]);
+        // This unvalidated cache filter reads only the quotation identity.
+        writeCache('quotations', [record, .../** @type {{id: string}[]} */ (readCache('quotations')).filter((q) => q.id !== record.id)]);
         await refreshCache('quotations');
         logActivity('quotation_created', `Quotation ${quotation_number} created for ${record.customer_name}`);
         return { id: record.id, quotation_number };
@@ -3423,7 +3623,8 @@ export async function createQuotation(data) {
       _sync_state: 'pending',
       _sync_error: null
     };
-    const cached = readCache('quotations');
+    // Expected local cache row shape; readCache returns unknown and does not validate it.
+    const cached = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations'));
     cached.unshift(offlineRecord);
     writeCache('quotations', cached);
     queueOperation('rpc', 'create_quotation', { payload: record }, null, {
@@ -3434,16 +3635,20 @@ export async function createQuotation(data) {
   }
 }
 
+/**
+ * @param {string} id
+ * @param {QuotationExpectedData} data Expected form update payload; IPC data is not runtime-validated here.
+ */
 export async function updateQuotation(id, data) {
   // Determine if financial fields are locked (sent/accepted/converted)
   const LOCKED_STATUSES = ['sent', 'accepted', 'converted'];
-  const cachedQuotations = readCache('quotations');
+  const cachedQuotations = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations'));
   const current = cachedQuotations.find((q) => q.id === id);
 
   // When online, verify lock status from server — cache may be stale
-  let isLocked = current && LOCKED_STATUSES.includes(current.status);
+  let isLocked = current && /** @type {Array<string | null | undefined>} */ (LOCKED_STATUSES).includes(current.status);
   if (state.isOnline) {
-    const { data: live } = await state.supabase.
+    const { data: live } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('quotations').select('status').eq('id', id).eq('lodge_id', state.lodgeId).single();
     if (live) isLocked = LOCKED_STATUSES.includes(live.status);
   }
@@ -3454,7 +3659,7 @@ export async function updateQuotation(id, data) {
   const accommodationLines = isEvent ? [] : normalizeQuotationAccommodationLines(data.accommodation_lines);
   const linesTotal = accommodationLines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const subtotal = isEvent ?
-  eventDailyRate * getQuotationNights(data.check_in, data.check_out) :
+  /** @type {number} */ (eventDailyRate) * getQuotationNights(data.check_in, data.check_out) :
   (linesTotal > 0 ? linesTotal : Number(data.subtotal ?? 0));
   const tax_amount = isEvent ? 0 : Number(calcTax(subtotal, data.tax_rate ?? 0));
   const total_amount = subtotal + tax_amount;
@@ -3494,7 +3699,7 @@ export async function updateQuotation(id, data) {
   const expectedUpdatedAt = current?.updated_at || null;
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_quotation', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_quotation', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       payload: update,
@@ -3502,7 +3707,7 @@ export async function updateQuotation(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update quotation');
-    const cached = readCache('quotations');
+    const cached = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations'));
     const idx = cached.findIndex((q) => q.id === id);
     if (idx >= 0) {
       cached[idx] = { ...cached[idx], ...update };
@@ -3510,7 +3715,7 @@ export async function updateQuotation(id, data) {
     }
     await refreshCache('quotations');
   } else {
-    const cached = readCache('quotations');
+    const cached = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations'));
     const idx = cached.findIndex((q) => q.id === id);
     if (idx >= 0) cached[idx] = { ...cached[idx], ...update };
     writeCache('quotations', cached);
@@ -3526,17 +3731,18 @@ export async function updateQuotation(id, data) {
   logActivity('quotation_updated', `Quotation ${id} updated — status: ${data.status}`);
 }
 
+/** @param {string} id */
 export async function markQuotationSent(id) {
   const update = { status: 'sent', updated_at: new Date().toISOString() };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('mark_quotation_sent', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('mark_quotation_sent', {
       p_id: id,
       p_lodge_id: state.lodgeId
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not mark quotation as sent');
   } else {
-    const cached = readCache('quotations');
+    const cached = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations'));
     const idx = cached.findIndex((q) => q.id === id);
     if (idx >= 0 && cached[idx].status === 'draft') {
       cached[idx] = { ...cached[idx], ...update };
@@ -3553,10 +3759,11 @@ export async function markQuotationSent(id) {
   }
 }
 
+/** @param {string} id */
 export async function duplicateQuotation(id) {
   const source = state.isOnline ?
-  (await state.supabase.from('quotations').select('*').eq('id', id).eq('lodge_id', state.lodgeId).single()).data :
-  readCache('quotations').find((q) => q.id === id);
+  (await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('quotations').select('*').eq('id', id).eq('lodge_id', state.lodgeId).single()).data :
+  /** @type {QuotationExpectedData[]} */ (readCache('quotations')).find((q) => q.id === id);
   if (!source) throw new Error('Quotation not found');
 
   return createQuotation({
@@ -3582,10 +3789,11 @@ export async function duplicateQuotation(id) {
   });
 }
 
+/** @param {string} id */
 export async function getQuotationById(id) {
   if (!id) return null;
   if (state.isOnline) {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('quotations').
     select('*').
     eq('lodge_id', state.lodgeId).
@@ -3594,9 +3802,11 @@ export async function getQuotationById(id) {
     if (error) throw new Error(error.message);
     return data || null;
   }
-  return readCache('quotations').find((quotation) => quotation.id === id) || null;
+  const cachedQuotations = /** @type {QuotationExpectedData[]} */ (readCache('quotations'));
+  return cachedQuotations.find((quotation) => quotation.id === id) || null;
 }
 
+/** @param {string} quotationId @param {number|string} [depositAmount] @param {string} [paymentMethod] */
 export async function convertQuotationToBooking(quotationId, depositAmount = 0, paymentMethod = 'cash') {
   const deposit = Number(depositAmount) || 0;
   const method = paymentMethod || 'cash';
@@ -3664,15 +3874,16 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   };
 
   if (!state.isOnline) {
-    const quotation = readCache('quotations').find((q) => q.id === quotationId);
+    const quotation = /** @type {QuotationLifecycleCacheExpectedData[]} */ (readCache('quotations')).find((q) => q.id === quotationId);
     if (!quotation) throw new Error('Quotation not found');
     if (quotation.converted_booking_id || quotation.status === 'converted') {
       throw new Error('This quotation has already been converted to a booking.');
     }
-    if (!['sent', 'accepted'].includes(quotation.status)) {
+    if (!(/** @type {Array<string | null | undefined>} */ (['sent', 'accepted'])).includes(quotation.status)) {
       throw new Error('Quotation must be sent or accepted before conversion.');
     }
-    const multiRoomResult = await convertMultiRoomQuotation(quotation);
+    // The status guard above establishes the allowed state; the conversion helper consumes the persisted quotation columns without validating cached JSON.
+    const multiRoomResult = await convertMultiRoomQuotation(/** @type {MultiRoomQuotationConversionExpectedData} */ (quotation));
     if (multiRoomResult) return multiRoomResult;
     const isEvent = isExclusiveEventQuotation(quotation);
     if (!isEvent && quotation.room_id && quotation.check_in && quotation.check_out) {
@@ -3683,7 +3894,7 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
     const now = new Date().toISOString();
     const total = Number(quotation.total_amount || 0);
     const optimisticPayment = buildOfflineBookingFinancialState(total, deposit);
-    const cachedRooms = readCache('rooms');
+    const cachedRooms = /** @type {OfflineQuotationRoomCacheExpectedData[]} */ (readCache('rooms'));
     const eventRooms = isEvent ? cachedRooms.filter((entry) => entry.status !== 'maintenance') : [];
     // Single-line campsite carry (display projection only): mirror the server
     // conversion contract so the pending row shows the quoted occupancy until
@@ -3714,10 +3925,11 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       if (!room || eventRooms.length === 0) {
         throw new Error('No rooms are available for an exclusive event booking.');
       }
-      const conflict = readCache('bookings').find((booking) =>
+      // Baseline schema declares public.bookings.check_out NOT NULL (20260526101632_baseline_20260526_remote_schema.sql:9608); this is an expected-data view only, and cached JSON is not validated (same assumption as getAllBookings above).
+      const conflict = (/** @type {BookingListExpectedData[]} */ (readCache('bookings'))).find((booking) =>
       booking.status !== 'cancelled' &&
-      booking.check_in < quotation.check_out &&
-      booking.check_out > quotation.check_in
+      booking.check_in < /** @type {string} */ (quotation.check_out) &&
+      /** @type {string} */ (booking.check_out) > /** @type {string} */ (quotation.check_in)
       );
       if (conflict) {
         throw new Error('Cannot create exclusive event — the lodge already has bookings during these dates.');
@@ -3736,12 +3948,14 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
       check_out: quotation.check_out || null,
       adults: isEvent ? 1 : Number(quotation.adults) || 1,
       children: isEvent ? 0 : Number(quotation.children) || 0,
-      // Single-line campsite occupancy is display-only here; the queued RPC
-      // writes the authoritative counts, kind and totals on replay.
-      tents: offlineSingleCampsite ? offlineSingleLine.tents : 0,
-      vehicles: offlineSingleCampsite ? offlineSingleLine.vehicles : 0,
+      // The campsite flag is true only when both source values are present and
+      // the room is campsite-priced; these casts express that existing guard.
+      // Occupancy is display-only here; the queued RPC writes authoritative
+      // counts, kind and totals on replay.
+      tents: offlineSingleCampsite ? /** @type {NonNullable<typeof offlineSingleLine>} */ (offlineSingleLine).tents : 0,
+      vehicles: offlineSingleCampsite ? /** @type {NonNullable<typeof offlineSingleLine>} */ (offlineSingleLine).vehicles : 0,
       accommodation_kind: offlineSingleCampsite ? 'campsite' : null,
-      rate_mode: offlineSingleCampsite ? normalizeRateMode(offlineSingleRoom.rate_mode) : null,
+      rate_mode: offlineSingleCampsite ? normalizeRateMode(/** @type {NonNullable<typeof offlineSingleRoom>} */ (offlineSingleRoom).rate_mode) : null,
       // Keep canonical money fields unconfirmed while this conversion is
       // offline.  The queued RPC will write the authoritative ledger values.
       total_amount: 0,
@@ -3774,7 +3988,7 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
 
     writeCache('bookings', [
     localBooking,
-    ...readCache('bookings').filter((booking) => booking.id !== localBookingId)]
+    .../** @type {BookingListExpectedData[]} */ (readCache('bookings')).filter((booking) => booking.id !== localBookingId)]
     );
     patchCachedQuotationSyncState(quotationId, {
       status: 'converted',
@@ -3812,7 +4026,7 @@ export async function convertQuotationToBooking(quotationId, depositAmount = 0, 
   const multiRoomResult = await convertMultiRoomQuotation(fullQuotation);
   if (multiRoomResult) return multiRoomResult;
 
-  const { data: result, error } = await state.supabase.rpc('convert_quotation_to_booking', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('convert_quotation_to_booking', {
     p_quotation_id: quotationId,
     p_lodge_id: state.lodgeId,
     p_deposit_amount: deposit,

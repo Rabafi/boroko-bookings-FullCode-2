@@ -6,7 +6,7 @@ import { computeEffectiveFeatures } from '../../../shared/entitlementMerge'
 import { buildSubscriptionRequest, generateQuoteNumber, SUBSCRIPTION_REQUEST_TYPES, SUBSCRIPTION_REQUEST_STATUS } from '../../../shared/subscriptionRequest'
 import { ENTERPRISE_ADDON_CATALOG } from '../../../shared/enterpriseAddons'
 import { buildCommercialPricingSnapshot, buildSubscriptionCommercialDocument, formatCommercialMoney, getAdvertisedEnterpriseAddons, getCommercialPackageCatalog, getCommercialPackageLabel, getCommercialPackageDisplayName, TRIAL_POLICY } from '../../../shared/commercialPackages'
-import { getCommercialAddonOffers } from '../../../shared/commercialEntitlements'
+import { expandCommercialAddonKeys, getCommercialAddon, getCommercialAddonDependents, getCommercialAddonOffers } from '../../../shared/commercialEntitlements'
 import { getCommercialFeatureSet } from '../../../shared/commercialAccess'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { getHospitalityMode, isBarOnlyMode } from '../../../shared/propertyTypes'
@@ -22,6 +22,7 @@ export default function SubscriptionPackageBuilder() {
     IS_HOTEL_PRODUCT ? 'hotel_core' : BUILD_PRODUCT.id === 'hospitality-pos' ? (barOnly ? 'bar_pos' : 'restaurant_growth') : 'pro'
   )
   const [selectedAddons, setSelectedAddons] = useState([])
+  const [addonNotice, setAddonNotice] = useState(null)
   const [roomCount, setRoomCount] = useState('')
   const [userCount, setUserCount] = useState('')
   const [expectedBookings, setExpectedBookings] = useState('')
@@ -78,7 +79,41 @@ export default function SubscriptionPackageBuilder() {
     : computeEffectiveFeatures(settings?.subscription_plan || 'Starter', selectedAddons)
 
   const toggleAddon = (key) => {
-    setSelectedAddons((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key])
+    const addon = getCommercialAddon(BUILD_PRODUCT.id, key)
+    if (selectedAddons.includes(key)) {
+      const dependents = getCommercialAddonDependents(BUILD_PRODUCT.id, key)
+        .filter((entry) => selectedAddons.includes(entry.addonKey))
+      if (dependents.length) {
+        const names = dependents.map((entry) => entry.displayName).join(', ')
+        setAddonNotice({
+          type: 'warning',
+          message: `${names} requires ${addon?.displayName || key}. Remove ${names} first if you no longer want both.`,
+          removeKeys: [key, ...dependents.map((entry) => entry.addonKey)]
+        })
+        return
+      }
+      setSelectedAddons((prev) => prev.filter((entry) => entry !== key))
+      setAddonNotice(null)
+      return
+    }
+    const expanded = expandCommercialAddonKeys(BUILD_PRODUCT.id, [...selectedAddons, key])
+    const added = expanded.filter((entry) => entry !== key && !selectedAddons.includes(entry))
+    setSelectedAddons(expanded)
+    if (added.length) {
+      const addedNames = added.map((entry) => getCommercialAddon(BUILD_PRODUCT.id, entry)?.displayName || entry).join(', ')
+      setAddonNotice({
+        type: 'info',
+        message: `${addon?.displayName || key} requires ${addedNames}. Both are now selected and included in the quote total.`
+      })
+    } else {
+      setAddonNotice(null)
+    }
+  }
+
+  const removeAddonNoticeSelection = () => {
+    if (!addonNotice?.removeKeys) return
+    setSelectedAddons((prev) => prev.filter((key) => !addonNotice.removeKeys.includes(key)))
+    setAddonNotice(null)
   }
 
   const buildRequest = useCallback((status = SUBSCRIPTION_REQUEST_STATUS.draft) => {
@@ -253,7 +288,7 @@ export default function SubscriptionPackageBuilder() {
               {visibleCommercialPackages.map((plan) => (
                 <button
                   key={plan.commercialPackageKey}
-                  onClick={() => setSelectedPackageKey(plan.commercialPackageKey)}
+                  onClick={() => { setSelectedPackageKey(plan.commercialPackageKey); setAddonNotice(null) }}
                   className={`rounded-xl border p-3 text-left text-sm transition-colors ${
                     selectedPackageKey === plan.commercialPackageKey ? 'border-[#174c3a] bg-emerald-50 ring-1 ring-[#174c3a]' : 'border-slate-200 hover:border-slate-300'
                   }`}
@@ -287,13 +322,45 @@ export default function SubscriptionPackageBuilder() {
             <section className="bb-card p-5">
               <h2 className="mb-1 text-sm font-bold text-slate-800">Optional bar bundles</h2>
               <p className="mb-3 text-xs text-slate-500">Each bundle is annual and unlocks a complete operating area without adding restaurant floor or kitchen screens.</p>
+              {addonNotice && (
+                <div className={`mb-3 rounded-xl border px-3 py-2 text-xs ${addonNotice.type === 'warning' ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`} role="status">
+                  <p>{addonNotice.message}</p>
+                  {addonNotice.removeKeys && (
+                    <button type="button" onClick={removeAddonNoticeSelection} className="mt-2 rounded-lg border border-amber-400 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-800">
+                      Remove both add-ons
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="space-y-2">
-                {eligibleAddons.map((addon) => (
+                {eligibleAddons.map((addon) => {
+                  const requiredAddons = (addon.requiredAddonKeys || []).flatMap((key) => {
+                    const required = getCommercialAddon(BUILD_PRODUCT.id, key)
+                    return required ? [required] : []
+                  })
+                  const missingRequired = requiredAddons.filter((entry) => !selectedAddons.includes(entry.addonKey))
+                  const combinedAnnual = Number(addon.annualPriceBwp || 0)
+                    + requiredAddons.reduce((sum, entry) => sum + Number(entry.annualPriceBwp || 0), 0)
+                  const combinedLabel = addon.addonKey === 'bar_accounting_workforce'
+                    ? 'Accounting & Purchasing'
+                    : `${addon.displayName} with ${requiredAddons.map((entry) => entry.displayName).join(', ')}`
+                  return (
                   <label key={addon.addonKey} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${selectedAddons.includes(addon.addonKey) ? 'border-[#174c3a] bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}>
                     <input type="checkbox" checked={selectedAddons.includes(addon.addonKey)} onChange={() => toggleAddon(addon.addonKey)} className="mt-0.5" />
-                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-800">{addon.displayName}</p><span className="text-xs font-bold text-emerald-800">{formatCommercialMoney(addon.annualPriceBwp)}/year</span></div><p className="mt-1 text-xs text-slate-500">{addon.description}</p></div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-800">{addon.displayName}</p><span className="text-xs font-bold text-emerald-800">{formatCommercialMoney(addon.annualPriceBwp)}/year</span></div>
+                      <p className="mt-1 text-xs text-slate-500">{addon.description}</p>
+                      {requiredAddons.length > 0 && (
+                        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2 text-[11px] text-amber-900">
+                          <p className="font-semibold">Requires {requiredAddons.map((entry) => entry.displayName).join(', ')}.</p>
+                          <p className="mt-1"><strong>{combinedLabel}: +{formatCommercialMoney(combinedAnnual)}/year</strong>{missingRequired.length > 0 ? ` — selecting this also selects ${missingRequired.map((entry) => entry.displayName).join(', ')}.` : ' — the required add-on is already selected.'}</p>
+                          <p className="mt-1 text-amber-800/80">{requiredAddons.map((entry) => `${entry.displayName} ${formatCommercialMoney(entry.annualPriceBwp)}`).concat(`${addon.displayName} ${formatCommercialMoney(addon.annualPriceBwp)}`).join(' + ')}.</p>
+                        </div>
+                      )}
+                    </div>
                   </label>
-                ))}
+                  )
+                })}
               </div>
             </section>
           )}

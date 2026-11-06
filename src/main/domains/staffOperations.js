@@ -2,9 +2,16 @@
 import { state } from '../state.js'
 import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
+/** Raw IPC fields consumed by the department update; property values are forwarded without validation. */
+/** @typedef {{name?: unknown, description?: unknown, color?: unknown, is_active?: unknown}} StaffDepartmentUpdateExpectedData */
+/** @typedef {Error & {onlineOnly?: boolean}} StaffOperationsOnlineError */
+
+/* initDatabase installs this client before the normal connectivity probe. The
+ * RPC-site assertions below only express that existing boot invariant; they
+ * add no runtime guard, so direct failures/catch fallbacks stay unchanged. */
 function requireOnline() {
   if (!state.isOnline) {
-    const err = new Error('Staff operations require an internet connection')
+    const err = /** @type {StaffOperationsOnlineError} */ (new Error('Staff operations require an internet connection'))
     err.onlineOnly = true
     throw err
   }
@@ -21,11 +28,12 @@ const PRODUCTIVITY_CACHE = 'staff-ops-productivity'
 const CONFLICTS_CACHE = 'staff-ops-conflicts'
 
 // ── Departments ───────────────────────────────────────────────────────────────
-async function _getStaffDepartments() {
+/** @param {...unknown} _args */
+async function _getStaffDepartments(..._args) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_departments', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_staff_departments', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
@@ -35,13 +43,15 @@ async function _getStaffDepartments() {
     return readCache(DEPARTMENTS_CACHE) || []
   }
 }
+/** @param {...unknown} args */
 export const getStaffDepartments = (...args) => dedupePromise('getStaffDepartments', () => _getStaffDepartments(...args))
 
+/** @param {unknown} name @param {unknown} description @param {unknown} color */
 export async function createStaffDepartment(name, description, color) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_staff_department', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_staff_department', {
     p_lodge_id: currentLodgeId,
     p_name: name,
     p_description: description || null,
@@ -51,11 +61,12 @@ export async function createStaffDepartment(name, description, color) {
   return data
 }
 
+/** @param {unknown} id @param {StaffDepartmentUpdateExpectedData} payload */
 export async function updateStaffDepartment(id, payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('update_staff_department', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_staff_department', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_name: payload.name || null,
@@ -67,11 +78,12 @@ export async function updateStaffDepartment(id, payload) {
   return data
 }
 
+/** @param {unknown} id */
 export async function deleteStaffDepartment(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('delete_staff_department', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_staff_department', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -80,11 +92,12 @@ export async function deleteStaffDepartment(id) {
 }
 
 // ── Shift Templates ───────────────────────────────────────────────────────────
-async function _getShiftTemplates(departmentId) {
+/** @param {unknown} departmentId @param {...unknown} _extraArgs */
+async function _getShiftTemplates(departmentId, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_shift_templates', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_shift_templates', {
       p_lodge_id: currentLodgeId,
       p_department_id: departmentId || null
     })
@@ -95,13 +108,15 @@ async function _getShiftTemplates(departmentId) {
     return readCache(TEMPLATES_CACHE) || []
   }
 }
+/** @type {(...args: Parameters<typeof _getShiftTemplates>) => ReturnType<typeof _getShiftTemplates>} */
 export const getShiftTemplates = (...args) => dedupePromise('getShiftTemplates', () => _getShiftTemplates(...args))
 
+/** @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function createShiftTemplate(payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_shift_template', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_shift_template', {
     p_lodge_id: currentLodgeId,
     p_payload: payload
   })
@@ -109,11 +124,12 @@ export async function createShiftTemplate(payload) {
   return data
 }
 
+/** @param {unknown} id @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function updateShiftTemplate(id, payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('update_shift_template', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_shift_template', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_payload: payload
@@ -122,11 +138,12 @@ export async function updateShiftTemplate(id, payload) {
   return data
 }
 
+/** @param {unknown} id */
 export async function deleteShiftTemplate(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('delete_shift_template', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_shift_template', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -135,11 +152,12 @@ export async function deleteShiftTemplate(id) {
 }
 
 // ── Task Categories ───────────────────────────────────────────────────────────
-async function _getTaskCategories() {
+/** @param {...unknown} _args */
+async function _getTaskCategories(..._args) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_task_categories', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_task_categories', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
@@ -149,13 +167,15 @@ async function _getTaskCategories() {
     return readCache(CATEGORIES_CACHE) || []
   }
 }
+/** @param {...unknown} args */
 export const getTaskCategories = (...args) => dedupePromise('getTaskCategories', () => _getTaskCategories(...args))
 
+/** @param {unknown} name @param {unknown} color */
 export async function createTaskCategory(name, color) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_task_category', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_task_category', {
     p_lodge_id: currentLodgeId,
     p_name: name,
     p_color: color || null
@@ -165,11 +185,12 @@ export async function createTaskCategory(name, color) {
 }
 
 // ── Task Assignments ──────────────────────────────────────────────────────────
-async function _getTaskAssignments(staffId, status, date) {
+/** @param {unknown} staffId @param {unknown} status @param {unknown} date @param {...unknown} _extraArgs */
+async function _getTaskAssignments(staffId, status, date, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_task_assignments', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_task_assignments', {
       p_lodge_id: currentLodgeId,
       p_staff_id: staffId || null,
       p_status: status || null,
@@ -182,13 +203,15 @@ async function _getTaskAssignments(staffId, status, date) {
     return readCache(TASKS_CACHE) || []
   }
 }
+/** @type {(...args: Parameters<typeof _getTaskAssignments>) => ReturnType<typeof _getTaskAssignments>} */
 export const getTaskAssignments = (...args) => dedupePromise('getTaskAssignments', () => _getTaskAssignments(...args))
 
+/** @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function createTaskAssignment(payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_task_assignment', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_task_assignment', {
     p_lodge_id: currentLodgeId,
     p_payload: payload
   })
@@ -196,11 +219,12 @@ export async function createTaskAssignment(payload) {
   return data
 }
 
+/** @param {unknown} id @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function updateTaskAssignment(id, payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('update_task_assignment', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_task_assignment', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_payload: payload
@@ -209,11 +233,12 @@ export async function updateTaskAssignment(id, payload) {
   return data
 }
 
+/** @param {unknown} id @param {unknown} notes */
 export async function completeTaskAssignment(id, notes) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('complete_task_assignment', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('complete_task_assignment', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_notes: notes || null
@@ -223,11 +248,12 @@ export async function completeTaskAssignment(id, notes) {
 }
 
 // ── Training ──────────────────────────────────────────────────────────────────
-async function _getTrainingChecklists(departmentId) {
+/** @param {unknown} departmentId @param {...unknown} _extraArgs */
+async function _getTrainingChecklists(departmentId, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_training_checklists', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_training_checklists', {
       p_lodge_id: currentLodgeId,
       p_department_id: departmentId || null
     })
@@ -238,13 +264,15 @@ async function _getTrainingChecklists(departmentId) {
     return readCache(CHECKLISTS_CACHE) || []
   }
 }
+/** @type {(...args: Parameters<typeof _getTrainingChecklists>) => ReturnType<typeof _getTrainingChecklists>} */
 export const getTrainingChecklists = (...args) => dedupePromise('getTrainingChecklists', () => _getTrainingChecklists(...args))
 
+/** @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function createTrainingChecklist(payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_training_checklist', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_training_checklist', {
     p_lodge_id: currentLodgeId,
     p_payload: payload
   })
@@ -252,11 +280,12 @@ export async function createTrainingChecklist(payload) {
   return data
 }
 
+/** @param {unknown} staffId @param {unknown} checklistId @param {unknown} notes */
 export async function recordTrainingCompletion(staffId, checklistId, notes) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('record_training_completion', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('record_training_completion', {
     p_lodge_id: currentLodgeId,
     p_staff_id: staffId,
     p_checklist_id: checklistId,
@@ -266,11 +295,12 @@ export async function recordTrainingCompletion(staffId, checklistId, notes) {
   return data
 }
 
-async function _getTrainingRecords(staffId) {
+/** @param {unknown} staffId @param {...unknown} _extraArgs */
+async function _getTrainingRecords(staffId, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_training_records', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_training_records', {
       p_lodge_id: currentLodgeId,
       p_staff_id: staffId || null
     })
@@ -281,14 +311,16 @@ async function _getTrainingRecords(staffId) {
     return readCache(TRAINING_RECORDS_CACHE) || []
   }
 }
+/** @type {(...args: Parameters<typeof _getTrainingRecords>) => ReturnType<typeof _getTrainingRecords>} */
 export const getTrainingRecords = (...args) => dedupePromise('getTrainingRecords', () => _getTrainingRecords(...args))
 
 // ── Handover ──────────────────────────────────────────────────────────────────
+/** @param {unknown} payload Raw IPC payload is forwarded without validation. */
 export async function createShiftHandover(payload) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('create_shift_handover', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_shift_handover', {
     p_lodge_id: currentLodgeId,
     p_payload: payload
   })
@@ -296,11 +328,12 @@ export async function createShiftHandover(payload) {
   return data
 }
 
-async function _getShiftHandovers(date) {
+/** @param {unknown} date @param {...unknown} _extraArgs */
+async function _getShiftHandovers(date, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_shift_handovers', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_shift_handovers', {
       p_lodge_id: currentLodgeId,
       p_date: date || null
     })
@@ -311,14 +344,16 @@ async function _getShiftHandovers(date) {
     return readCache(HANDOVERS_CACHE) || []
   }
 }
+/** @type {(...args: Parameters<typeof _getShiftHandovers>) => ReturnType<typeof _getShiftHandovers>} */
 export const getShiftHandovers = (...args) => dedupePromise('getShiftHandovers', () => _getShiftHandovers(...args))
 
 // ── Dashboard & Schedule ──────────────────────────────────────────────────────
-async function _getStaffProductivityDashboard(startDate, endDate) {
+/** @param {unknown} startDate @param {unknown} endDate @param {...unknown} _extraArgs */
+async function _getStaffProductivityDashboard(startDate, endDate, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { metrics: [], summary: {} }
   try {
-    const { data, error } = await state.supabase.rpc('get_staff_productivity_dashboard', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_staff_productivity_dashboard', {
       p_lodge_id: currentLodgeId,
       p_start_date: startDate,
       p_end_date: endDate
@@ -330,13 +365,15 @@ async function _getStaffProductivityDashboard(startDate, endDate) {
     return readCache(PRODUCTIVITY_CACHE) || { metrics: [], summary: {} }
   }
 }
+/** @type {(...args: Parameters<typeof _getStaffProductivityDashboard>) => ReturnType<typeof _getStaffProductivityDashboard>} */
 export const getStaffProductivityDashboard = (...args) => dedupePromise('getStaffProductivityDashboard', () => _getStaffProductivityDashboard(...args))
 
+/** @param {unknown} weekStart */
 export async function publishWeeklySchedule(weekStart) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('publish_weekly_schedule', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('publish_weekly_schedule', {
     p_lodge_id: currentLodgeId,
     p_week_start: weekStart
   })
@@ -344,11 +381,12 @@ export async function publishWeeklySchedule(weekStart) {
   return data
 }
 
-async function _getScheduleConflicts(weekStart) {
+/** @param {unknown} weekStart @param {...unknown} _extraArgs */
+async function _getScheduleConflicts(weekStart, ..._extraArgs) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return { has_conflicts: false, conflicts: [] }
   try {
-    const { data, error } = await state.supabase.rpc('get_schedule_conflicts', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_schedule_conflicts', {
       p_lodge_id: currentLodgeId,
       p_week_start: weekStart
     })
@@ -359,4 +397,5 @@ async function _getScheduleConflicts(weekStart) {
     return readCache(CONFLICTS_CACHE) || { has_conflicts: false, conflicts: [] }
   }
 }
+/** @type {(...args: Parameters<typeof _getScheduleConflicts>) => ReturnType<typeof _getScheduleConflicts>} */
 export const getScheduleConflicts = (...args) => dedupePromise('getScheduleConflicts', () => _getScheduleConflicts(...args))

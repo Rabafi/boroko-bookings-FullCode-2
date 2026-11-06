@@ -1,4 +1,15 @@
 // @ts-check
+/** Fields read from maintenance:getAll's normalized maintenance_tickets rows. Online database rows are projected by the main process; offline cache rows remain unvalidated, so this is an expected-data view only. */
+/** @typedef {{id: string, room_id?: string|null, title?: string|null, issue?: string|null, description?: string|null, notes?: string|null, status: string, priority: string, reported_date?: string|null, labour_cost?: number|string|null, parts_cost?: number|string|null, total_cost?: number|string|null, vendor_name?: string|null, cost_notes?: string|null, room_number?: string|null, room_type?: string|null}} MaintenanceTicketExpectedView */
+/** Room fields read by the maintenance selectors; the API/cache response is not validated here. */
+/** @typedef {{id: string, room_number?: string|null, room_type?: string|null, status?: string|null}} MaintenanceRoomExpectedView */
+/** @typedef {{room_id: string, title: string, description: string, priority: string, reported_date: string, labour_cost: string, parts_cost: string, total_cost: string, vendor_name: string, cost_notes: string}} MaintenanceFormExpectedView */
+/** @typedef {{id: string, title?: string|null, next_due_date?: string|null, frequency_days?: number|string|null, frequency_type?: string|null}} MaintenanceScheduleExpectedView */
+/** @typedef {{id: string, title?: string|null, next_due_date?: string|null, room_number?: string|null}} DueMaintenanceExpectedView */
+/** @typedef {{open_tickets?: number|string|null, rooms_out_of_order?: number|string|null, rooms_out_of_service?: number|string|null, avg_repair_days?: number|string|null}} MaintenanceDashboardExpectedView */
+/** @typedef {{id: string, start_date?: string|null, end_date?: string|null, downtime_type?: string|null, reason?: string|null}} MaintenanceDowntimeExpectedView */
+/** @typedef {{success?: boolean, error?: string|null, message?: string|null}} MaintenanceResultExpectedView */
+/** @typedef {{message?: string|null}} MaintenanceErrorExpectedView */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { Plus, CheckCircle, Wrench, AlertTriangle, RefreshCw } from 'lucide-react'
@@ -11,6 +22,7 @@ import { useFeatures } from '../app-context'
 const PRIORITIES = ['low', 'medium', 'high', 'urgent']
 const STATUSES = ['open', 'in_progress', 'resolved']
 
+/** @type {Record<string, string>} */
 const priorityColor = {
   low: 'bg-gray-100 text-gray-600',
   medium: 'bg-yellow-100 text-yellow-700',
@@ -18,6 +30,7 @@ const priorityColor = {
   urgent: 'bg-red-100 text-red-700'
 }
 
+/** @type {Record<string, string>} */
 const statusColor = {
   open: 'bg-red-50 text-red-600',
   in_progress: 'bg-blue-50 text-blue-700',
@@ -85,20 +98,20 @@ export default function Maintenance() {
 }
 
 function TicketsTab() {
-  const [tickets, setTickets] = useState([])
-  const [rooms, setRooms] = useState([])
+  const [tickets, setTickets] = useState(/** @type {MaintenanceTicketExpectedView[]} */ ([]))
+  const [rooms, setRooms] = useState(/** @type {MaintenanceRoomExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState('all')
 
   const [formOpen, setFormOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {MaintenanceTicketExpectedView|null} */ (null))
   const [saving, setSaving] = useState(false)
-  const [resolving, setResolving] = useState(null)
+  const [resolving, setResolving] = useState(/** @type {string|null} */ (null))
   const [error, setError] = useState('')
   const [loadError, setLoadError] = useState('')
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(/** @type {MaintenanceFormExpectedView} */ ({
     room_id: '',
     title: '',
     description: '',
@@ -109,7 +122,7 @@ function TicketsTab() {
     total_cost: '',
     vendor_name: '',
     cost_notes: ''
-  })
+  }))
 
   useEffect(() => {
     loadData()
@@ -123,10 +136,11 @@ function TicketsTab() {
         window.api.maintenance.getAll(),
         window.api.rooms.getAll()
       ])
-      setTickets(t || [])
-      setRooms(r || [])
+      // Main forwards database rows; the local cache remains unvalidated.
+      setTickets(/** @type {MaintenanceTicketExpectedView[]} */ (/** @type {unknown} */ (t || [])))
+      setRooms(/** @type {MaintenanceRoomExpectedView[]} */ (/** @type {unknown} */ (r || [])))
     } catch (err) {
-      setLoadError(err?.message || 'Maintenance records could not be loaded.')
+      setLoadError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Maintenance records could not be loaded.')
     } finally {
       setLoading(false)
     }
@@ -148,31 +162,34 @@ function TicketsTab() {
     setFormOpen(true)
   }
 
+  /** @param {MaintenanceTicketExpectedView} ticket */
   const openEdit = (ticket) => {
     setEditing(ticket)
     setEditOpen(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleCreate = async (e) => {
     e.preventDefault()
     setSaving(true)
     setError('')
     try {
-      const result = await window.api.maintenance.create({ ...form, room_id: form.room_id || null })
+      const result = /** @type {MaintenanceResultExpectedView} */ (/** @type {unknown} */ (await window.api.maintenance.create({ ...form, room_id: form.room_id || null })))
       if (result?.success === false) throw new Error(result.error || 'Failed to create ticket')
       setFormOpen(false)
       loadData()
     } catch (err) {
-      setError(err.message || 'Failed to create ticket')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err)).message || 'Failed to create ticket')
     } finally {
       setSaving(false)
     }
   }
 
+  /** @param {string} id @param {Record<string, string>} data */
   const handleUpdate = async (id, data) => {
     setError('')
     try {
-      const result = await window.api.maintenance.update(id, data)
+      const result = /** @type {MaintenanceResultExpectedView} */ (/** @type {unknown} */ (await window.api.maintenance.update(id, data)))
       if (result?.success === false) throw new Error(result.error || 'Failed to update ticket')
       setEditOpen(false)
       setEditing(null)
@@ -182,12 +199,13 @@ function TicketsTab() {
     }
   }
 
+  /** @param {MaintenanceTicketExpectedView} ticket */
   const handleResolve = async (ticket) => {
     if (!confirm(`Mark "${ticket.title || ticket.issue}" as resolved? The room will return to Available.`)) return
     setResolving(ticket.id)
     setError('')
     try {
-      const result = await window.api.maintenance.resolve(ticket.id, ticket.room_id)
+      const result = /** @type {MaintenanceResultExpectedView} */ (/** @type {unknown} */ (await window.api.maintenance.resolve(ticket.id, ticket.room_id)))
       if (result?.success === false) throw new Error(result.error || 'Failed to resolve ticket')
       await loadData()
     } catch (err) {
@@ -499,14 +517,16 @@ function TicketsTab() {
               <button
                 type="button"
                 onClick={() => {
-                  const status = document.getElementById('status-select').value
-                  const priority = document.getElementById('priority-select').value
-                  const notes = document.getElementById('notes-input').value
-                  const labour_cost = document.getElementById('labour-cost-input').value
-                  const parts_cost = document.getElementById('parts-cost-input').value
-                  const total_cost = document.getElementById('total-cost-input').value
-                  const vendor_name = document.getElementById('vendor-name-input').value
-                  const cost_notes = document.getElementById('cost-notes-input').value
+                  // These IDs are rendered by this open editor. Assertions retain the existing
+                  // direct access (including behavior if an expected element is absent).
+                  const status = (/** @type {HTMLSelectElement} */ (document.getElementById('status-select'))).value
+                  const priority = (/** @type {HTMLSelectElement} */ (document.getElementById('priority-select'))).value
+                  const notes = (/** @type {HTMLTextAreaElement} */ (document.getElementById('notes-input'))).value
+                  const labour_cost = (/** @type {HTMLInputElement} */ (document.getElementById('labour-cost-input'))).value
+                  const parts_cost = (/** @type {HTMLInputElement} */ (document.getElementById('parts-cost-input'))).value
+                  const total_cost = (/** @type {HTMLInputElement} */ (document.getElementById('total-cost-input'))).value
+                  const vendor_name = (/** @type {HTMLInputElement} */ (document.getElementById('vendor-name-input'))).value
+                  const cost_notes = (/** @type {HTMLTextAreaElement} */ (document.getElementById('cost-notes-input'))).value
                   handleUpdate(editing.id, { status, priority, notes, labour_cost, parts_cost, total_cost, vendor_name, cost_notes })
                 }}
                 className="btn-primary flex-1"
@@ -523,16 +543,16 @@ function TicketsTab() {
 
 function PreventiveTab() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [schedules, setSchedules] = useState([])
-  const [duePreventive, setDuePreventive] = useState([])
-  const [scheduleForm, setScheduleForm] = useState({
+  const [error, setError] = useState(/** @type {string|null|undefined} */ (null))
+  const [schedules, setSchedules] = useState(/** @type {MaintenanceScheduleExpectedView[]} */ ([]))
+  const [duePreventive, setDuePreventive] = useState(/** @type {DueMaintenanceExpectedView[]} */ ([]))
+  const [scheduleForm, setScheduleForm] = useState(/** @type {{title: string, description: string, frequency_days: number, frequency_type: string, next_due_date: string}} */ ({
     title: '',
     description: '',
     frequency_days: 30,
     frequency_type: 'days',
     next_due_date: new Date().toISOString().slice(0, 10)
-  })
+  }))
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -541,12 +561,14 @@ function PreventiveTab() {
       if (!window.api?.maintenanceEnterprise?.getAllPreventiveSchedules) {
         throw new Error('Maintenance enterprise API is not available')
       }
+      /** @type {string[]} */
       const warn = []
+      /** @param {string} label @param {Promise<unknown>} promise */
       const settle = async (label, promise) => {
         try {
           return await promise
         } catch (e) {
-          warn.push(`${label}: ${e?.message || 'failed'}`)
+          warn.push(`${label}: ${(/** @type {MaintenanceErrorExpectedView} */ (e))?.message || 'failed'}`)
           return null
         }
       }
@@ -560,11 +582,12 @@ function PreventiveTab() {
         setDuePreventive([])
         return
       }
-      setSchedules(Array.isArray(schedulesData) ? schedulesData : [])
-      setDuePreventive(Array.isArray(due) ? due : [])
+      // The array checks preserve the existing non-array fallback. Elements remain unvalidated.
+      setSchedules(Array.isArray(schedulesData) ? /** @type {MaintenanceScheduleExpectedView[]} */ (/** @type {unknown} */ (schedulesData)) : [])
+      setDuePreventive(Array.isArray(due) ? /** @type {DueMaintenanceExpectedView[]} */ (/** @type {unknown} */ (due)) : [])
       if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (err) {
-      setError(err?.message || 'Failed to load preventive maintenance data')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Failed to load preventive maintenance data')
       setSchedules([])
       setDuePreventive([])
     } finally {
@@ -580,16 +603,17 @@ function PreventiveTab() {
       setScheduleForm({ title: '', description: '', frequency_days: 30, frequency_type: 'days', next_due_date: new Date().toISOString().slice(0, 10) })
       await loadData()
     } catch (err) {
-      setError(err?.message)
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message)
     }
   }
 
+  /** @param {string} id */
   const handleCompletePreventive = async (id) => {
     try {
       await window.api.maintenanceEnterprise.completePreventive(id, null, null)
       await loadData()
     } catch (err) {
-      setError(err?.message)
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message)
     }
   }
 
@@ -691,9 +715,9 @@ function PreventiveTab() {
 
 function OooTab() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [dashboard, setDashboard] = useState(null)
-  const [rooms, setRooms] = useState([])
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [dashboard, setDashboard] = useState(/** @type {MaintenanceDashboardExpectedView|null} */ (null))
+  const [rooms, setRooms] = useState(/** @type {MaintenanceRoomExpectedView[]} */ ([]))
   const [selectedRoomId, setSelectedRoomId] = useState('')
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10))
@@ -706,24 +730,26 @@ function OooTab() {
       if (!window.api?.maintenanceEnterprise?.getMaintenanceDashboard) {
         throw new Error('Maintenance enterprise API is not available')
       }
+      /** @type {string[]} */
       const warn = []
       try {
         const dash = await window.api.maintenanceEnterprise.getMaintenanceDashboard()
-        setDashboard(dash)
+        // Dashboard fields are a consumer read view; RPC/cache data is not validated here.
+        setDashboard(/** @type {MaintenanceDashboardExpectedView|null} */ (/** @type {unknown} */ (dash)))
       } catch (e) {
-        warn.push(`Dashboard: ${e?.message || 'failed'}`)
+        warn.push(`Dashboard: ${(/** @type {MaintenanceErrorExpectedView} */ (e))?.message || 'failed'}`)
         setDashboard(null)
       }
       try {
         const roomRows = await window.api.rooms.getAll()
-        setRooms(Array.isArray(roomRows) ? roomRows : [])
+        setRooms(Array.isArray(roomRows) ? /** @type {MaintenanceRoomExpectedView[]} */ (/** @type {unknown} */ (roomRows)) : [])
       } catch (e) {
-        warn.push(`Rooms: ${e?.message || 'failed'}`)
+        warn.push(`Rooms: ${(/** @type {MaintenanceErrorExpectedView} */ (e))?.message || 'failed'}`)
         setRooms([])
       }
       if (warn.length) setError(`Partial load: ${warn.join(' · ')}`)
     } catch (err) {
-      setError(err?.message || 'Failed to load OOO data')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Failed to load OOO data')
       setDashboard(null)
     } finally {
       setLoading(false)
@@ -741,7 +767,7 @@ function OooTab() {
       setReason('')
       await loadData()
     } catch (err) {
-      setError(err?.message || 'Could not set room out of order')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Could not set room out of order')
     }
   }
 
@@ -754,7 +780,7 @@ function OooTab() {
       setReason('')
       await loadData()
     } catch (err) {
-      setError(err?.message || 'Could not set room out of service')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Could not set room out of service')
     }
   }
 
@@ -848,16 +874,16 @@ function OooTab() {
 }
 
 function DowntimeTab() {
-  const [error, setError] = useState(null)
-  const [rooms, setRooms] = useState([])
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [rooms, setRooms] = useState(/** @type {MaintenanceRoomExpectedView[]} */ ([]))
   const [selectedRoomId, setSelectedRoomId] = useState('')
-  const [downtimeHistory, setDowntimeHistory] = useState([])
+  const [downtimeHistory, setDowntimeHistory] = useState(/** @type {MaintenanceDowntimeExpectedView[]} */ ([]))
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     window.api?.rooms?.getAll?.()
-      .then((rows) => setRooms(Array.isArray(rows) ? rows : []))
-      .catch((err) => setError(err?.message || 'Could not load rooms for downtime history'))
+      .then((rows) => setRooms(Array.isArray(rows) ? /** @type {MaintenanceRoomExpectedView[]} */ (/** @type {unknown} */ (rows)) : []))
+      .catch((err) => setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Could not load rooms for downtime history'))
   }, [])
 
   const handleLoadDowntimeHistory = async () => {
@@ -869,22 +895,23 @@ function DowntimeTab() {
     setLoaded(false)
     try {
       const history = await window.api.maintenanceEnterprise.getRoomDowntimeHistory(selectedRoomId)
-      setDowntimeHistory(Array.isArray(history) ? history : [])
+      setDowntimeHistory(Array.isArray(history) ? /** @type {MaintenanceDowntimeExpectedView[]} */ (/** @type {unknown} */ (history)) : [])
       setLoaded(true)
     } catch (err) {
-      setError(err?.message || 'Could not load downtime history')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Could not load downtime history')
       setDowntimeHistory([])
       setLoaded(true)
     }
   }
 
+  /** @param {string} downtimeId */
   const handleReturnToService = async (downtimeId) => {
     try {
       setError(null)
       await window.api.maintenanceEnterprise.returnRoomToService(downtimeId)
       await handleLoadDowntimeHistory()
     } catch (err) {
-      setError(err?.message || 'Could not return room to service')
+      setError((/** @type {MaintenanceErrorExpectedView} */ (err))?.message || 'Could not return room to service')
     }
   }
 
@@ -961,12 +988,12 @@ function DowntimeTab() {
 }
 
 function CostsTab() {
-  const [tickets, setTickets] = useState([])
+  const [tickets, setTickets] = useState(/** @type {MaintenanceTicketExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     window.api.maintenance.getAll()
-      .then((data) => setTickets(Array.isArray(data) ? data : []))
+      .then((data) => setTickets(Array.isArray(data) ? /** @type {MaintenanceTicketExpectedView[]} */ (/** @type {unknown} */ (data)) : []))
       .catch(() => setTickets([]))
       .finally(() => setLoading(false))
   }, [])

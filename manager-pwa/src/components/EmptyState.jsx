@@ -1,3 +1,4 @@
+/** @param {{icon?: import('lucide-react').LucideIcon, title: import('react').ReactNode, message?: import('react').ReactNode, action?: import('react').ReactNode, secondary?: import('react').ReactNode, embedded?: boolean}} props */
 export default function EmptyState({ icon: Icon, title, message, action, secondary, embedded = false }) {
   return (
     <div className={`${embedded ? 'px-2 py-5' : 'rounded-2xl border border-gray-800 bg-gray-900 px-4 py-6'} text-center`}>

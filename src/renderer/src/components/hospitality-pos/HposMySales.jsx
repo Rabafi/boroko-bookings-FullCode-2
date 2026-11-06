@@ -1,10 +1,11 @@
 // @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, CalendarDays, ChevronRight, CircleDollarSign, Printer, ReceiptText, RefreshCw, Search } from 'lucide-react'
-import { useSettings } from '../../app-context'
+import { useAuth, useSettings } from '../../app-context'
 import { HposButton, HposEmptyState, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
 import { POSReceipt } from '../shared/POSReceipt'
 import { classifyPosTransaction, hasRecordedPosTenderEnvelope } from '../../../../shared/posFinancialTruth'
+import { createLocalHposMySalesApi } from './bar-local/hposMySalesApi.js'
 
 const dateKeyInTimeZone = (date, timeZone) => {
   const parts = new Intl.DateTimeFormat('en', { timeZone: timeZone || 'Africa/Gaborone', year: 'numeric', month: '2-digit', day: '2-digit' })
@@ -34,7 +35,9 @@ const paymentLabel = (order = {}) => {
 }
 
 export default function HposMySales() {
+  const { user } = useAuth()
   const { settings } = useSettings()
+  const localAuthority = settings?.authority_mode === 'bar_local'
   const currency = settings?.currency || 'P'
   const timeZone = settings?.timezone || 'Africa/Gaborone'
   const today = dateKeyInTimeZone(new Date(), timeZone)
@@ -57,6 +60,14 @@ export default function HposMySales() {
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
+      if (localAuthority) {
+        const localApi = createLocalHposMySalesApi(window.api?.barLocal, { outletId: settings?.outlet_id, staffId: user?.id })
+        const localOrders = await localApi.list({ from: start, to: end })
+        setOrders(localOrders)
+        setReadCompleteness({ source: 'local_database', complete: true })
+        setMessage('Showing receipts recorded by the local Bar database for your staff account.')
+        return
+      }
       const cached = await window.api?.pos?.getSharedTillHistory?.(start, end, { refresh: false })
       setOrders(cached?.orders || [])
       setReadCompleteness({ source: cached?.source || 'local_cache', complete: cached?.complete === true })
@@ -77,7 +88,7 @@ export default function HposMySales() {
       setReadCompleteness({ source: 'error', complete: false })
       setError(loadError?.message || 'Unlock Till with your Staff PIN to view your sales.')
     } finally { setLoading(false) }
-  }, [start, end])
+  }, [localAuthority, settings?.outlet_id, start, end, user?.id])
 
   useEffect(() => { load() }, [load])
   const visibleOrders = useMemo(() => {
@@ -97,6 +108,7 @@ export default function HposMySales() {
   const closeReceipt = () => { if (!voiding) { setSelected(null); setPrintOrder(null); setApprovalPin(''); setVoidReason(''); setVoidError('') } }
   const submitVoid = async (event) => {
     event.preventDefault()
+    if (localAuthority) { setVoidError('Sale corrections are not wired to the local Bar database yet. No correction request was sent.'); return }
     if (!selected?.id || !approvalPin || !voidReason.trim()) { setVoidError('A manager, supervisor or admin PIN and a reason are required.'); return }
     setVoiding(true); setVoidError('')
     try {
@@ -110,7 +122,7 @@ export default function HposMySales() {
   const selectedHasDirectStock = (selected?.pos_order_items || []).some((item) => item.inventory_item_id)
 
   return <div className="hpos-my-sales">
-    <HposPageHero eyebrow="Shared Till" title="My sales" description="These are the sales assigned to the Staff PIN that unlocked this Till. Open a receipt to request a manager-approved correction." actions={<div className="hpos-my-sales-actions"><HposButton icon={ArrowLeft} onClick={() => { window.location.hash = '/hpos/pos' }}>Back to Till</HposButton><HposButton icon={RefreshCw} onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>} />
+    <HposPageHero eyebrow="Shared Till" title="My sales" description={localAuthority ? 'Receipts assigned to your staff account in the local Bar database. Open a receipt to review its recorded items and tenders.' : 'These are the sales assigned to the Staff PIN that unlocked this Till. Open a receipt to request a manager-approved correction.'} actions={<div className="hpos-my-sales-actions"><HposButton icon={ArrowLeft} onClick={() => { window.location.hash = '/hpos/pos' }}>Back to Till</HposButton><HposButton icon={RefreshCw} onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>} />
     {error && <HposNotice tone="error">{error}</HposNotice>}
     {!error && <HposNotice tone={financialReady ? 'info' : 'warning'}>{financialReady ? (message || 'Loading your PIN-verified sales…') : 'Server confirmation is pending: figures marked * are last saved on this device, not confirmed totals.'}</HposNotice>}
     <section className="hpos-my-sales-summary">
@@ -119,16 +131,17 @@ export default function HposMySales() {
       <div><span><ReceiptText size={19}/></span><small>Receipts</small><strong>{est(String(completed.length))}</strong><p>Voided receipts remain visible below.</p></div>
       <div><span><CalendarDays size={19}/></span><small>Period</small><strong>{start === end ? start : `${start} – ${end}`}</strong><p>Business-day dates, not UTC dates.</p></div>
     </section>
-    {!financialReady && !error && <HposNotice tone="warning">* Last saved on this device — not yet confirmed by the server. Confirmed figures replace these estimates on refresh.</HposNotice>}
+    {localAuthority && !error && <HposNotice tone="info">These are local database receipts for your signed-in staff account. Sale correction is unavailable until the local manager-approved correction flow is enabled.</HposNotice>}
+    {!localAuthority && !financialReady && !error && <HposNotice tone="warning">* Last saved on this device — not yet confirmed by the server. Confirmed figures replace these estimates on refresh.</HposNotice>}
     <section className="hpos-my-sales-list">
-      <header><div><p className="hpos-eyebrow">PIN-verified history</p><h2>Transactions</h2><small>Tap a receipt to view the items and payment recorded.</small></div><div className="hpos-my-sales-filters"><label>From<input type="date" value={start} onChange={(event) => setStart(event.target.value)} /></label><label>To<input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div></header>
+      <header><div><p className="hpos-eyebrow">{localAuthority ? 'Local staff history' : 'PIN-verified history'}</p><h2>Transactions</h2><small>Tap a receipt to view the items and payment recorded.</small></div><div className="hpos-my-sales-filters"><label>From<input type="date" value={start} onChange={(event) => setStart(event.target.value)} /></label><label>To<input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div></header>
       <label className="hpos-my-sales-search"><Search size={17}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search receipt, table or payment" /></label>
       <div className="hpos-my-sales-rows">
         {visibleOrders.map((order) => { const state = transactionState(order); return <div key={order.id} className="hpos-my-sales-row"><button type="button" className="hpos-my-sales-row-open" onClick={() => selectOrder(order)} aria-label={`Open receipt ${orderLabel(order)}`}><div><strong>{orderLabel(order)}</strong><span>{order.table_name || order.service_mode || 'Counter'} · {paymentLabel(order)}{Number(order.tip_total || 0) > 0 ? ` · Tip ${est(money(order.tip_total, currency))}` : ''}</span></div><div><HposStatusBadge tone={state === 'sale' ? 'success' : state === 'pending' ? 'warning' : 'danger'}>{stateLabel(order)}</HposStatusBadge><strong>{est(money(order.total, currency))}</strong><ChevronRight size={18}/></div></button><button type="button" className="hpos-my-sales-row-print" onClick={() => setPrintOrder(order)} aria-label={`Print receipt ${orderLabel(order)}`}><Printer size={18}/></button></div> })}
-        {!loading && !visibleOrders.length && <HposEmptyState icon={ReceiptText} title="No sales in this period" description="Try another business day, or unlock Till with the Staff PIN used to take the sale." />}
+        {!loading && !visibleOrders.length && <HposEmptyState icon={ReceiptText} title="No sales in this period" description={localAuthority ? 'Try another business day. Only sales assigned to your signed-in local staff account appear here.' : 'Try another business day, or unlock Till with the Staff PIN used to take the sale.'} />}
       </div>
     </section>
-    {selected && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog hpos-my-sales-detail" role="dialog" aria-modal="true" aria-label="My sale receipt details"><header><div><p className="hpos-eyebrow">Receipt detail</p><h2>{orderLabel(selected)}</h2><p>{orderDate(selected)} · {selected.table_name || selected.service_mode || 'Counter'}</p></div><HposButton icon={Printer} onClick={() => { setSelected(null); setPrintOrder(selected); }} disabled={voiding}>Print receipt</HposButton><HposButton onClick={closeReceipt} disabled={voiding}>Close</HposButton></header><div className="hpos-my-sales-detail-total"><span>{paymentLabel(selected)} · {stateLabel(selected)}</span><strong>{est(money(selected.total, currency))}</strong></div>{Number(selected.tip_total || 0) > 0 && <div className="hpos-my-sales-tip"><span>Tip recorded</span><strong>{est(money(selected.tip_total, currency))}</strong><small>This is shown separately from sales so tip handling remains clear.</small></div>}<div className="hpos-my-sales-detail-items">{(selected.pos_order_items || []).map((item, index) => { const itemTotal = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || index}><span>{item.quantity} × {item.item_name}</span><strong>{itemTotal === null || itemTotal === undefined ? 'Unavailable' : est(money(itemTotal, currency))}</strong></p> })}{!(selected.pos_order_items || []).length && <p>Item detail is unavailable for this saved receipt.</p>}</div>{(isCompleted(selected) || transactionState(selected) === 'pending') ? <form className="hpos-my-sales-void" onSubmit={submitVoid}><h3>{selectedHasDirectStock ? 'Void sale / packaged return' : 'Record prepared-item cancellation'}</h3><p>{selectedHasDirectStock ? 'Choose what happened to the unopened packaged item, give the reason, then ask a supervisor, manager or admin to enter their PIN here.' : 'The food or cocktail was prepared, so its ingredients stay consumed. Give the reason, then ask a supervisor, manager or admin to enter their PIN to record the financial correction.'}{!financialReady ? ' Offline or unconfirmed: the correction queues and the server approves it on sync.' : ''}</p>{voidError && <HposNotice tone="error">{voidError}</HposNotice>}<label>Reason<input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength="200" placeholder="Explain why this sale must be corrected" disabled={voiding} required /></label>{selectedHasDirectStock && <label>Packaged stock outcome<select value={stockDisposition} onChange={(event) => setStockDisposition(event.target.value)} disabled={voiding}><option value="return_to_stock">Returned unopened — restore stock</option><option value="consumed_or_damaged">Opened, broken or damaged — keep stock depleted</option></select><small>Food, cocktails and recipe items always remain consumed.</small></label>}<label>Authorised approver PIN<input type="password" inputMode="numeric" value={approvalPin} onChange={(event) => setApprovalPin(event.target.value.replace(/\D/g, '').slice(0, 6))} maxLength="6" disabled={voiding} required /></label><footer><HposButton onClick={closeReceipt} disabled={voiding}>Cancel</HposButton><HposButton tone="primary" type="submit" disabled={voiding}>{voiding ? 'Authorising…' : selectedHasDirectStock ? 'Approve void / return' : 'Approve cancellation'}</HposButton></footer></form> : <p className="hpos-my-sales-detail-help">Only a server-confirmed completed sale can be corrected here. This transaction is {stateLabel(selected).toLowerCase()} and remains visible for audit.</p>}</section></div>}
+    {selected && <div className="hpos-modal-backdrop" role="presentation"><section className="hpos-service-dialog hpos-my-sales-detail" role="dialog" aria-modal="true" aria-label="My sale receipt details"><header><div><p className="hpos-eyebrow">Receipt detail</p><h2>{orderLabel(selected)}</h2><p>{orderDate(selected)} · {selected.table_name || selected.service_mode || 'Counter'}</p></div><HposButton icon={Printer} onClick={() => { setSelected(null); setPrintOrder(selected); }} disabled={voiding}>Print receipt</HposButton><HposButton onClick={closeReceipt} disabled={voiding}>Close</HposButton></header><div className="hpos-my-sales-detail-total"><span>{paymentLabel(selected)} · {stateLabel(selected)}</span><strong>{est(money(selected.total, currency))}</strong></div>{Number(selected.tip_total || 0) > 0 && <div className="hpos-my-sales-tip"><span>Tip recorded</span><strong>{est(money(selected.tip_total, currency))}</strong><small>This is shown separately from sales so tip handling remains clear.</small></div>}<div className="hpos-my-sales-detail-items">{(selected.pos_order_items || []).map((item, index) => { const itemTotal = item.net_subtotal ?? item.subtotal ?? item.gross_subtotal; return <p key={item.id || index}><span>{item.quantity} × {item.item_name}</span><strong>{itemTotal === null || itemTotal === undefined ? 'Unavailable' : est(money(itemTotal, currency))}</strong></p> })}{!(selected.pos_order_items || []).length && <p>Item detail is unavailable for this saved receipt.</p>}</div>{localAuthority ? <p className="hpos-my-sales-detail-help">Local sale corrections are pending. This receipt remains unchanged and no approval request was sent.</p> : (isCompleted(selected) || transactionState(selected) === 'pending') ? <form className="hpos-my-sales-void" onSubmit={submitVoid}><h3>{selectedHasDirectStock ? 'Void sale / packaged return' : 'Record prepared-item cancellation'}</h3><p>{selectedHasDirectStock ? 'Choose what happened to the unopened packaged item, give the reason, then ask a supervisor, manager or admin to enter their PIN here.' : 'The food or cocktail was prepared, so its ingredients stay consumed. Give the reason, then ask a supervisor, manager or admin to enter their PIN to record the financial correction.'}{!financialReady ? ' Offline or unconfirmed: the correction queues and the server approves it on sync.' : ''}</p>{voidError && <HposNotice tone="error">{voidError}</HposNotice>}<label>Reason<input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} maxLength="200" placeholder="Explain why this sale must be corrected" disabled={voiding} required /></label>{selectedHasDirectStock && <label>Packaged stock outcome<select value={stockDisposition} onChange={(event) => setStockDisposition(event.target.value)} disabled={voiding}><option value="return_to_stock">Returned unopened — restore stock</option><option value="consumed_or_damaged">Opened, broken or damaged — keep stock depleted</option></select><small>Food, cocktails and recipe items always remain consumed.</small></label>}<label>Authorised approver PIN<input type="password" inputMode="numeric" value={approvalPin} onChange={(event) => setApprovalPin(event.target.value.replace(/\D/g, '').slice(0, 6))} maxLength="6" disabled={voiding} required /></label><footer><HposButton onClick={closeReceipt} disabled={voiding}>Cancel</HposButton><HposButton tone="primary" type="submit" disabled={voiding}>{voiding ? 'Authorising…' : selectedHasDirectStock ? 'Approve void / return' : 'Approve cancellation'}</HposButton></footer></form> : <p className="hpos-my-sales-detail-help">Only a server-confirmed completed sale can be corrected here. This transaction is {stateLabel(selected).toLowerCase()} and remains visible for audit.</p>}</section></div>}
     {printOrder && <POSReceipt order={printOrder} onClose={() => setPrintOrder(null)} />}
   </div>
 }

@@ -16,18 +16,25 @@ const MODES = {
   service: { title: 'Service Watch', subtitle: 'Open tables, tabs, and current service flow', icon: ChefHat },
   'cash-close': { title: 'Cash & Close', subtitle: 'Live sales, cash, returns, and close readiness', icon: CircleDollarSign }
 }
+/** @typedef {import('../lib/api').ManagerPosSnapshotExpectedData & {returns_total: number, discount_total: number}} RestaurantOperationsSnapshotExpectedView */
+/** @typedef {{id: string, table_name?: string | null, tab_name?: string | null, walk_in_name?: string | null, receipt_number?: string | null, outlet_name?: string | null, created_at?: string | null, financial_complete?: boolean, total?: number | null, items: unknown, service_mode?: string | null}} RestaurantOperationsOrderExpectedView */
+/** @typedef {{quantity?: number | null, item_name?: string | null}} RestaurantOperationsItemExpectedView */
 
+/** @param {{mode: 'service' | 'cash-close'}} props */
 export default function RestaurantOperations({ mode }) {
-  const { user } = useAuth()
-  const barOnly = isBarHospitalityMode(user?.hospitality_mode)
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  // Session metadata is server-provided; the helper expects its existing
+  // string value. This assertion does not validate an external profile field.
+  const barOnly = isBarHospitalityMode(/** @type {string | null | undefined} */ (user?.hospitality_mode))
   const baseConfig = MODES[mode] || MODES.service
   const config = barOnly && mode === 'service' ? { ...baseConfig, title: 'Open Bar Tabs', subtitle: 'Open tabs and current bar settlement flow' } : baseConfig
   const Icon = config.icon
-  const [snapshot, setSnapshot] = useState(null)
-  const [transactions, setTransactions] = useState([])
+  const [snapshot, setSnapshot] = useState(/** @type {RestaurantOperationsSnapshotExpectedView | null} */ (null))
+  const [transactions, setTransactions] = useState(/** @type {RestaurantOperationsOrderExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string | null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -38,11 +45,13 @@ export default function RestaurantOperations({ mode }) {
         getManagerPosSnapshot(user.lodge_id, { startDate: day, endDate: day, forceFresh: true }),
         getManagerPosTransactions(user.lodge_id, { startDate: day, endDate: day, status: mode === 'service' ? 'open' : 'posted', limit: 30 })
       ])
-      setSnapshot(nextSnapshot)
-      setTransactions(openOrders.transactions || [])
+      setSnapshot(/** @type {RestaurantOperationsSnapshotExpectedView} */ (nextSnapshot))
+      // RPC transactions retain the existing expected view without claiming
+      // runtime validation of the server JSON.
+      setTransactions(/** @type {RestaurantOperationsOrderExpectedView[]} */ (openOrders.transactions || []))
       setUpdatedAt(new Date().toISOString())
     } catch (loadError) {
-      setError(loadError?.message || `${config.title} could not load.`)
+      setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || `${config.title} could not load.`)
     } finally {
       setLoading(false)
     }
@@ -64,7 +73,7 @@ export default function RestaurantOperations({ mode }) {
         {mode === 'cash-close' ? (
           <><section className="rounded-2xl bg-gray-800 p-4"><div className="flex items-center gap-2"><Banknote size={17} className="text-emerald-300" /><h2 className="text-sm font-semibold text-white">Cash position</h2></div><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><div className="rounded-xl bg-gray-900 p-3"><p className="text-xs text-gray-500">Cash recorded</p><p className="mt-1 font-bold text-white">{snapshotReady ? money(cashTotal) : 'Unavailable'}</p></div><div className="rounded-xl bg-gray-900 p-3"><p className="text-xs text-gray-500">Returns</p><p className="mt-1 font-bold text-rose-300">{snapshotReady ? money(snapshot.returns_total) : 'Unavailable'}</p></div><div className="rounded-xl bg-gray-900 p-3"><p className="text-xs text-gray-500">Discounts</p><p className="mt-1 font-bold text-amber-200">{snapshotReady ? money(snapshot.discount_total) : 'Unavailable'}</p></div><div className="rounded-xl bg-gray-900 p-3"><p className="text-xs text-gray-500">Posted sales</p><p className="mt-1 font-bold text-white">{snapshotReady ? Number(snapshot.sale_count || 0) : 'Unavailable'}</p></div></div></section><section className="rounded-2xl bg-gray-800 p-4"><p className="text-sm font-semibold text-white">Close readiness</p><p className="mt-2 text-sm text-gray-400">{openCount == null ? 'Open-order readiness is unavailable until the server confirms a complete POS snapshot.' : openCount === 0 ? 'No open POS orders are reported for today.' : `${openCount} open POS order${openCount === 1 ? '' : 's'} still need service or settlement.`}</p></section></>
         ) : (
-          <section><div className="mb-3 flex items-center gap-2"><Icon size={17} className="text-orange-300" /><h2 className="text-sm font-semibold text-white">Open service tickets</h2></div>{!loading && transactions.length === 0 ? <EmptyState icon={ShoppingCart} title="No open tickets" message="Open tables and tabs appear here while service is in progress." /> : <div className="space-y-2">{transactions.map((transaction) => <div key={transaction.id} className="rounded-2xl bg-gray-800 px-4 py-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-white">{transaction.table_name || transaction.tab_name || transaction.walk_in_name || transaction.receipt_number || 'Open order'}</p><p className="mt-1 text-xs text-gray-500">{transaction.outlet_name} · {shortDateTime(transaction.created_at)}</p></div><p className="text-sm font-bold text-white">{transaction.financial_complete === true && snapshotReady ? money(transaction.total) : 'Unavailable'}</p></div><p className="mt-2 text-xs text-gray-400">{(transaction.items || []).map((item) => `${item.quantity}× ${item.item_name}`).join(' · ') || titleCase(transaction.service_mode || 'service')}</p></div>)}</div>}</section>
+          <section><div className="mb-3 flex items-center gap-2"><Icon size={17} className="text-orange-300" /><h2 className="text-sm font-semibold text-white">Open service tickets</h2></div>{!loading && transactions.length === 0 ? <EmptyState icon={ShoppingCart} title="No open tickets" message="Open tables and tabs appear here while service is in progress." /> : <div className="space-y-2">{transactions.map((transaction) => <div key={transaction.id} className="rounded-2xl bg-gray-800 px-4 py-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-white">{transaction.table_name || transaction.tab_name || transaction.walk_in_name || transaction.receipt_number || 'Open order'}</p><p className="mt-1 text-xs text-gray-500">{transaction.outlet_name} · {shortDateTime(transaction.created_at)}</p></div><p className="text-sm font-bold text-white">{transaction.financial_complete === true && snapshotReady ? money(transaction.total) : 'Unavailable'}</p></div><p className="mt-2 text-xs text-gray-400">{/** @type {RestaurantOperationsItemExpectedView[]} */ (transaction.items || []).map((item) => `${item.quantity}× ${item.item_name}`).join(' · ') || titleCase(transaction.service_mode || 'service')}</p></div>)}</div>}</section>
         )}
         <MobileBoundaryNotice compact>These are live manager views. Starting sales, voids, discounts, returns, and settlement stay in the server-authorized POS terminal and cash-up workflow.</MobileBoundaryNotice>
       </main>

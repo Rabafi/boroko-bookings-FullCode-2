@@ -7,6 +7,10 @@ import DataFreshness from '../components/DataFreshness'
 import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 
+/** @typedef {{id: string, folio_number?: string | null, balance: number | string, label?: string | null, guest_name?: string | null, folio_type?: string | null, status?: string | null}} HotelFolioExpectedView */
+/** @typedef {{id: string, description?: string | null, line_type?: string | null, created_at?: string | null, amount: number | string}} HotelFolioLineExpectedView */
+
+/** @param {{folio: HotelFolioExpectedView, lines: HotelFolioLineExpectedView[], loading: boolean, onClose: () => void}} props */
 function FolioDetail({ folio, lines, loading, onClose }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-end bg-black/60" onClick={onClose}>
@@ -37,23 +41,26 @@ function FolioDetail({ folio, lines, loading, onClose }) {
 }
 
 export default function HotelFolios() {
-  const { user } = useAuth()
-  const [folios, setFolios] = useState([])
-  const [selected, setSelected] = useState(null)
-  const [lines, setLines] = useState([])
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const [folios, setFolios] = useState(/** @type {HotelFolioExpectedView[]} */ ([]))
+  const [selected, setSelected] = useState(/** @type {HotelFolioExpectedView | null} */ (null))
+  const [lines, setLines] = useState(/** @type {HotelFolioLineExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [lineLoading, setLineLoading] = useState(false)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string | null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      setFolios(await listHotelFolios(user.lodge_id))
+      // RPC rows are consumed as their existing folio view; no JSON validation
+      // is added at this page boundary.
+      setFolios(/** @type {HotelFolioExpectedView[]} */ (await listHotelFolios(user.lodge_id)))
       setUpdatedAt(new Date().toISOString())
     } catch (loadError) {
-      setError(loadError?.message || 'Hotel folios could not load.')
+      setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || 'Hotel folios could not load.')
     } finally {
       setLoading(false)
     }
@@ -61,14 +68,15 @@ export default function HotelFolios() {
 
   useEffect(() => { load() }, [load])
 
+  /** @param {HotelFolioExpectedView} folio */
   const openFolio = async (folio) => {
     setSelected(folio)
     setLines([])
     setLineLoading(true)
     try {
-      setLines(await getHotelFolioLines(user.lodge_id, folio.id))
+      setLines(/** @type {HotelFolioLineExpectedView[]} */ (await getHotelFolioLines(user.lodge_id, folio.id)))
     } catch (lineError) {
-      setError(lineError?.message || 'Folio lines could not load.')
+      setError((/** @type {{message?: string} | null | undefined} */ (lineError))?.message || 'Folio lines could not load.')
     } finally {
       setLineLoading(false)
     }

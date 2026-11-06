@@ -94,11 +94,29 @@ export function AccountingExportButton({ fileName, data, disabled = false, expor
   </div>
 }
 
-export function AccountingPage({ eyebrow, title, description, actions, children }) {
+export function AccountingPage({ eyebrow, title, description, actions, children, localAuthorityReady = false }) {
   const { settings } = useSettings()
   const barOnly = isBarOnlyMode(settings)
+  const localAuthority = settings?.authority_mode === 'bar_local'
   const [readiness, setReadiness] = useState(null)
-  useEffect(() => { let cancelled = false; accountingInvoke('getReadiness').then((result) => { if (!cancelled) setReadiness(unwrap(result, null)) }).catch((error) => { if (!cancelled) setReadiness({ error: error.message }) }); return () => { cancelled = true } }, [])
+  useEffect(() => {
+    let cancelled = false
+    if (localAuthority) {
+      if (!localAuthorityReady) {
+        setReadiness({ active: false, ready: false, missing_requirements: ['This Accounting screen is not connected to the local Bar database.'] })
+        return () => { cancelled = true }
+      }
+      Promise.resolve(window.api?.barLocal?.refreshReadiness?.()).then((result) => {
+        if (cancelled) return
+        setReadiness({ active: result?.ready === true, ready: result?.ready === true,
+          missing_requirements: Array.isArray(result?.blockers) ? result.blockers : [],
+          ...(result?.ready === true ? {} : { error: result?.error }) })
+      }).catch((error) => { if (!cancelled) setReadiness({ error: error?.message || 'Local Bar readiness could not be verified.' }) })
+      return () => { cancelled = true }
+    }
+    accountingInvoke('getReadiness').then((result) => { if (!cancelled) setReadiness(unwrap(result, null)) }).catch((error) => { if (!cancelled) setReadiness({ error: error.message }) })
+    return () => { cancelled = true }
+  }, [localAuthority, localAuthorityReady])
   const releaseReady = readiness?.active === true && readiness?.ready === true && !readiness?.error
   const resolvedEyebrow = eyebrow || (barOnly ? 'Bar Accounting & Workforce' : 'Restaurant Accounting')
   const readinessNotice = readiness?.error

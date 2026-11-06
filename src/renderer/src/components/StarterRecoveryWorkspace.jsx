@@ -2,6 +2,9 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, FileArchive, Loader2, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react'
 
+/** The fields rendered from AdminCentral's AdminCompanyRecord rows. */
+/** @typedef {{lodge_id: string, lodge_name: string, name?: string|null}} RecoveryCompanyProp */
+
 function safeError(value) {
   return String(value || 'The recovery action could not be completed.')
     .replace(/(passphrase\s*(?:value)?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[hidden]')
@@ -18,6 +21,7 @@ function StatusPill({ value }) {
   return <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${complete ? 'bg-emerald-500/15 text-emerald-300' : failed ? 'bg-red-500/15 text-red-300' : 'bg-amber-500/15 text-amber-300'}`}>{String(value || 'draft').replaceAll('_', ' ')}</span>
 }
 
+/** @param {{companies?: RecoveryCompanyProp[], unlocked?: boolean}} props */
 export default function StarterRecoveryWorkspace({ companies = [], unlocked = false }) {
   // The main recovery list reads persisted JSON and checks only the operation
   // ID before forwarding rows; the renderer's Array.isArray guard proves only

@@ -1,0 +1,27 @@
+import {createRequire} from 'node:module';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import http from 'node:http';
+const root=process.cwd();
+const require=createRequire(path.join(root,'package.json'));
+const {chromium}=require('playwright');
+const out=path.join(root,'docs/audits/marketing-ui-ux-2026-10-22/visual-review');
+await fs.mkdir(out,{recursive:true});
+const config=await fs.readFile('marketing-site/netlify.toml','utf8');
+const csp=config.match(/Content-Security-Policy = "([^"]+)"/)[1];
+const server=http.createServer(async(req,res)=>{try{let url=new URL(req.url,'http://localhost');let rel=url.pathname==='/'?'index.html':decodeURIComponent(url.pathname).slice(1);let f=path.join(root,'marketing-site',rel);let body=await fs.readFile(f);res.setHeader('Content-Security-Policy',csp);res.setHeader('Content-Type',({'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.webp':'image/webp','.svg':'image/svg+xml','.jpg':'image/jpeg'})[path.extname(f)]||'application/octet-stream');res.end(body)}catch{res.writeHead(404);res.end('Not found')}});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base='http://127.0.0.1:'+server.address().port;
+
+let browser;const result={pages:[],captures:[]};
+try{browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,timeout:25000});
+for(const width of [1440,390]){const context=await browser.newContext({viewport:{width,height:1000},reducedMotion:'reduce'});await context.addInitScript(()=>localStorage.setItem('boroko-cookie-consent','denied'));await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.fulfill({status:200,contentType:'application/json',body:'{}'}));const page=await context.newPage();
+for(const name of ['index','lodge-app','hotel','restaurant-pos','bar-pos','features','manager-app','booking-site','control-center','packages','enterprise','brochure']){
+await page.goto(base+'/'+name+'.html',{waitUntil:'load'});await page.evaluate(()=>document.fonts.ready);for(let y=0;y<await page.evaluate(()=>document.documentElement.scrollHeight);y+=800){await page.evaluate(y=>window.scrollTo({top:y,behavior:'instant'}),y);await page.waitForTimeout(50)}await page.waitForTimeout(300);await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}));await page.waitForTimeout(100);
+const data=await page.evaluate(()=>{const snap=r=>({x:r.x,y:r.y,width:r.width,height:r.height});return{height:document.documentElement.scrollHeight,images:[...document.images].map((im,index)=>{const rect=im.getBoundingClientRect(),cs=getComputedStyle(im),container=im.closest('article,figure,.app-proof-panel,.hero-surface,.phone-mockup,.page-hero-card,.showcase-card')||im.parentElement;return{index,src:im.getAttribute('src'),currentSrc:im.currentSrc,alt:im.alt,naturalWidth:im.naturalWidth,naturalHeight:im.naturalHeight,rect:snap(rect),objectFit:cs.objectFit,objectPosition:cs.objectPosition,filter:cs.filter,transform:cs.transform,visible:rect.width>0&&rect.height>0,containerClass:container.className,containerRect:snap(container.getBoundingClientRect()),stretchRatio:im.naturalWidth&&rect.width&&rect.height?(rect.width/rect.height)/(im.naturalWidth/im.naturalHeight):null}}),cards:[...document.querySelectorAll('article,[class*=card]')].filter(x=>x.getBoundingClientRect().width>0).map(x=>({class:x.className,rect:snap(x.getBoundingClientRect()),text:x.innerText.slice(0,90),scrollWidth:x.scrollWidth,clientWidth:x.clientWidth})),backgrounds:[...document.querySelectorAll('main *')].filter(x=>getComputedStyle(x).backgroundImage.includes('url(')).map(x=>({class:x.className,background:getComputedStyle(x).backgroundImage,size:getComputedStyle(x).backgroundSize,rect:snap(x.getBoundingClientRect())}))}});
+result.pages.push({name,width,...data});const topFile=name+'-'+width+'-top.png';await page.screenshot({path:path.join(out,topFile)});result.captures.push({name,width,file:topFile,kind:'top'});
+const candidates=data.images.filter(x=>x.visible&&x.rect.width>120&&x.rect.height>130&&x.src&&!/logo/.test(x.src));const picks=candidates.filter(x=>x.objectFit==='fill'&&x.stretchRatio&&(x.stretchRatio<0.85||x.stretchRatio>1.15));for(const x of candidates)if(picks.length<2&&!picks.some(y=>y.index===x.index))picks.push(x);for(const im of picks.slice(0,3)){await page.locator('img').nth(im.index).scrollIntoViewIfNeeded();await page.waitForTimeout(120);const f=name+'-'+width+'-image-'+im.index+'.png';await page.screenshot({path:path.join(out,f)});result.captures.push({name,width,file:f,kind:'image-context',src:im.src});if(im.rect.height<2500&&im.rect.width<2500){const crop=name+'-'+width+'-crop-'+im.index+'.png';await page.locator('img').nth(im.index).screenshot({path:path.join(out,crop)});result.captures.push({name,width,file:crop,kind:'image-detail',src:im.src})}}
+if(name==='index'&&await page.locator('#product-apps').count()){await page.locator('#product-apps').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(out,'product-cards-'+width+'.png')});result.captures.push({name,width,file:'product-cards-'+width+'.png',kind:'cards'})}
+console.log(name+' '+width+' captured');
+}await context.close();}
+}catch(e){result.error=e.stack;console.error(e)}finally{await fs.writeFile(path.join(out,'visual-evidence.json'),JSON.stringify(result,null,2));if(browser)await browser.close();await new Promise(r=>server.close(r));}console.log('Visual pages '+result.pages.length+'; captures '+result.captures.length);

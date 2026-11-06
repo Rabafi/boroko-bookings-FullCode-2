@@ -10,6 +10,38 @@ import { computeBodyHash } from './meshSecurity.js';
 import { readCache, writeCache } from '../cacheStore.js';
 import { broadcastSyncStatus } from '../connectivity.js';
 
+/** @typedef {{at: string, peerCount: number, perPeer: Array<Record<string, unknown>>}} MeshTeamSyncExpectedView */
+/** @type {typeof meshState & {lastTeamSync?: MeshTeamSyncExpectedView | null}} */
+const meshStateWithTeamSync = meshState;
+/** @typedef {{message?: unknown}} MeshErrorExpectedDataView */
+
+/** @typedef {Record<string, unknown> & {payload?: unknown}} MeshQueueDataExpectedView */
+/** A menu item queue payload mirrors the current pos.js writer; fields remain unvalidated after mesh receipt. */
+/** @typedef {Record<string, unknown> & {id?: unknown, name?: unknown, menu_item_id?: unknown}} MeshMenuItemPayloadExpectedView */
+/** Modifier and promotion arrays mirror the respective pos.js full-list queue writers; this view does not validate elements. */
+/** @typedef {Record<string, unknown> & {groups?: Record<string, unknown>[], promotions?: Record<string, unknown>[]}} MeshModifierPromotionPayloadExpectedView */
+/** Cache rows mirror the local checklist writer; persisted cache values remain unvalidated. */
+/** @typedef {Record<string, unknown> & {id?: unknown, items?: unknown}} MeshChecklistCacheExpectedView */
+/** @typedef {Record<string, unknown> & {id?: unknown, notes?: unknown}} MeshChecklistLineExpectedView */
+/** Pool-day-use cache values are expected rows from the existing list/write paths; persisted JSON is not validated. */
+/** @typedef {Record<string, unknown> & {id?: unknown, total?: unknown}} MeshPoolDayUseCacheExpectedView */
+/**
+ * @typedef {Record<string, unknown> & {
+ *   type: 'rpc',
+ *   table: string,
+ *   data: MeshQueueDataExpectedView,
+ *   _queue_id: string,
+ *   _mesh_source_node_id?: unknown,
+ *   timestamp?: unknown,
+ *   created_at?: unknown,
+ *   _local_booking_ids?: unknown,
+ *   _origin_lodge_id?: unknown
+ * }} MeshQueueItemExpectedView
+ * These effect helpers receive queue rows only after validateSyncQueueItem has
+ * established the RPC envelope and plain-object data. The view does not claim
+ * validation of individual fields or payload contents.
+ */
+
 const ALLOWED_RPC_TABLES = new Set([
   'create_booking',
   'create_campsite_booking',
@@ -117,17 +149,72 @@ const ALLOWED_RPC_TABLES = new Set([
   'save_bar_pos_product_with_packs_offline',
   'create_daily_checklist',
   'create_bar_checklist_from_template',
-  'complete_checklist_item'
+  'complete_checklist_item',
+  // Third wave (remote-Bar contract coverage): operations the desktop already
+  // queued for server replay but that were silently excluded from the mesh
+  // contract, so a peer could never take them over. Every payload below was
+  // verified PIN-free and mirrors its online RPC call.
+  'reschedule_accommodation_booking',
+  'move_booking_room',
+  'create_corporate_account',
+  'update_corporate_account',
+  'delete_corporate_account',
+  'create_floor_section',
+  'update_floor_section',
+  'delete_floor_section',
+  'create_fnb_room_service_order',
+  'create_fnb_meal_entitlement',
+  'redeem_fnb_meal',
+  'create_fnb_temperature_log',
+  'capture_fnb_supplier_invoice',
+  'set_rate_calendar_entry',
+  'set_rate_calendar_bulk',
+  'set_rate_restriction',
+  'create_promo_code',
+  'update_promo_code',
+  'delete_promo_code',
+  'create_season_label',
+  'update_season_label',
+  'delete_season_label',
+  'create_yield_rule',
+  'update_yield_rule',
+  'delete_yield_rule',
+  'create_rate_plan',
+  'update_rate_plan',
+  'delete_rate_plan',
+  'create_room_type',
+  'update_room_type',
+  'delete_room_type',
+  'publish_pos_catalog_snapshot_offline',
+  'save_bar_product_with_stock'
 ]);
 
 const ORIGIN_DEVICE_ONLY_RPC_TABLES = new Set([
   'approve_pos_void_with_pin',
-  'create_pos_return_v3'
+  'create_pos_return_v3',
+  // Cash, drawer, attendance, and till-operator operations carry raw PINs or
+  // custody authority bound to the physical device that collected them. They
+  // must replay only on that device; mesh failover would replay custody
+  // events on a till that never held the drawer.
+  'submit_pos_shift_cashup',
+  'submit_pos_shift_cashup_with_attendance_pin',
+  'record_pos_cash_movement',
+  'record_pos_cash_count',
+  'submit_pos_drawer_period_cashup',
+  'review_pos_drawer_period_cashup',
+  'review_pos_cashup_submission_offline',
+  'clock_in_staff_offline',
+  'clock_in_staff_with_attendance_pin_offline',
+  'clock_in_self_for_pos_offline',
+  'clock_out_staff_offline',
+  'clock_out_staff_with_attendance_pin',
+  'activate_shared_till_operator_offline',
+  'link_my_pos_shift_to_attendance'
 ]);
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isPlainObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value);
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 /** @param {unknown} value @returns {value is string} */
@@ -237,8 +324,9 @@ function containsMachineBoundSecret(value) {
 export function isMeshShareableQueueItem(item = {}) {
   const itemFields = /** @type {Record<string, unknown>} */ (item);
   if (!item || itemFields.type !== 'rpc') return false;
-  if (!ALLOWED_RPC_TABLES.has(String(itemFields.table || '').trim())) return false;
-  if (ORIGIN_DEVICE_ONLY_RPC_TABLES.has(/** @type {string} */ (itemFields.table))) return false;
+  const table = String(itemFields.table || '').trim();
+  if (!ALLOWED_RPC_TABLES.has(table)) return false;
+  if (ORIGIN_DEVICE_ONLY_RPC_TABLES.has(table)) return false;
   return !containsMachineBoundSecret(itemFields.data);
 }
 
@@ -259,7 +347,8 @@ function stripMeshMetadata(item = {}) {
 function stableMeshJson(value) {
   if (Array.isArray(value)) return '[' + value.map(stableMeshJson).join(',') + ']';
   if (value && typeof value === 'object') {
-    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + stableMeshJson(value[key])).join(',') + '}';
+    const record = /** @type {Record<string, unknown>} */ (value);
+    return '{' + Object.keys(record).sort().map((key) => JSON.stringify(key) + ':' + stableMeshJson(record[key])).join(',') + '}';
   }
   return JSON.stringify(value);
 }
@@ -305,10 +394,14 @@ function getQueueItemIntentId(item = {}) {
 /**
  * Validates a incoming P2P sync queue operation item against structural and safety schemas.
  */
-export function validateSyncQueueItem(item) {
-  if (!item || typeof item !== 'object') {
+/** @param {unknown} rawItem */
+export function validateSyncQueueItem(rawItem) {
+  if (!rawItem || typeof rawItem !== 'object') {
     return { isValid: false, reason: 'Payload is not an object' };
   }
+  // The checks below inspect untrusted fields one by one. This record view
+  // only enables the existing property reads; it does not validate the item.
+  const item = /** @type {Record<string, unknown>} */ (rawItem);
   if (typeof item._queue_id !== 'string' || !item._queue_id.trim()) {
     return { isValid: false, reason: 'Missing _queue_id' };
   }
@@ -335,7 +428,10 @@ export function validateSyncQueueItem(item) {
   if (item.data?.p_lodge_id && item.data.p_lodge_id !== meshState.lodgeId) {
     return { isValid: false, reason: 'Queue item lodge mismatch' };
   }
-  if (item.data?.payload?.lodge_id && item.data.payload.lodge_id !== meshState.lodgeId) {
+  // The payload is unknown in the shared queue view. These local expected-data
+  // views only preserve the existing property reads; they do not validate it.
+  if ((/** @type {Record<string, unknown> | null | undefined} */ (item.data?.payload))?.lodge_id &&
+      (/** @type {Record<string, unknown>} */ (item.data.payload)).lodge_id !== meshState.lodgeId) {
     return { isValid: false, reason: 'Queue item payload lodge mismatch' };
   }
 
@@ -356,17 +452,21 @@ export function validateSyncQueueItem(item) {
     if (!Array.isArray(data.p_rooms) || data.p_rooms.length < 2 || data.p_rooms.length > 50) {
       return { isValid: false, reason: 'create_multi_room_booking requires 2 to 50 rooms' };
     }
-    const roomIds = data.p_rooms.map((room) => String(room?.room_id || '').trim());
+    const rooms = /** @type {unknown[]} */ (data.p_rooms);
+    const roomIds = rooms.map((room) => String(/** @type {{room_id?: unknown} | null | undefined} */ (room)?.room_id || '').trim());
     if (roomIds.some((id) => !isUuid(id)) || new Set(roomIds).size !== roomIds.length) {
       return { isValid: false, reason: 'create_multi_room_booking has missing or duplicate room IDs' };
     }
-    for (const room of data.p_rooms) {
-      const adults = Number(room?.adults ?? 1);
+    for (const room of rooms) {
+      const roomFields = /** @type {{adults?: unknown, children?: unknown, tents?: unknown, vehicles?: unknown} | null | undefined} */ (room);
+      const adults = Number(roomFields?.adults ?? 1);
       if (!Number.isInteger(adults) || adults < 1) {
         return { isValid: false, reason: 'create_multi_room_booking has invalid adults' };
       }
-      for (const field of ['children', 'tents', 'vehicles']) {
-        if (!Number.isInteger(Number(room?.[field] ?? 0)) || Number(room?.[field] ?? 0) < 0) {
+      /** @type {Array<'children' | 'tents' | 'vehicles'>} */
+      const countFields = ['children', 'tents', 'vehicles'];
+      for (const field of countFields) {
+        if (!Number.isInteger(Number(roomFields?.[field] ?? 0)) || Number(roomFields?.[field] ?? 0) < 0) {
           return { isValid: false, reason: 'create_multi_room_booking has invalid ' + field };
         }
       }
@@ -422,6 +522,21 @@ export function validateSyncQueueItem(item) {
     const missing = required.filter((field) => !hasString(data[field]));
     if (missing.length > 0) return { isValid: false, reason: `reschedule_booking missing ${missing.join(', ')}` };
     if (!hasValidDateRange(data.p_new_check_in, data.p_new_check_out)) return { isValid: false, reason: 'reschedule_booking has invalid date range' };
+  }
+
+  if (item.table === 'reschedule_accommodation_booking') {
+    const data = item.data;
+    const required = ['p_booking_id', 'p_lodge_id', 'p_new_room_id', 'p_new_check_in', 'p_new_check_out', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `reschedule_accommodation_booking missing ${missing.join(', ')}` };
+    if (!hasValidDateRange(data.p_new_check_in, data.p_new_check_out)) return { isValid: false, reason: 'reschedule_accommodation_booking has invalid date range' };
+  }
+
+  if (item.table === 'move_booking_room') {
+    const data = item.data;
+    const required = ['p_booking_id', 'p_lodge_id', 'p_target_room_id', 'p_reason', 'p_idempotency_key'];
+    const missing = required.filter((field) => !hasString(data[field]));
+    if (missing.length > 0) return { isValid: false, reason: `move_booking_room missing ${missing.join(', ')}` };
   }
 
   if (item.table === 'update_booking_status' && !hasString(item.data.p_id)) {
@@ -867,9 +982,129 @@ export function validateSyncQueueItem(item) {
     }
   }
 
+  // Third-wave contract coverage. Each shape mirrors the payload the desktop
+  // domain emits for the online RPC, so a peer accepts exactly what the
+  // origin till queued instead of trusting free-form fields.
+  if (['create_corporate_account', 'create_floor_section', 'create_rate_plan', 'create_room_type'].includes(item.table)) {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.id) || !hasString(payload.lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing lodge-scoped entity` };
+    }
+  }
+
+  if (['update_corporate_account', 'update_floor_section', 'update_rate_plan', 'update_room_type'].includes(item.table)) {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id) || !isPlainObject(item.data.payload)) {
+      return { isValid: false, reason: `${item.table} missing entity, lodge, or payload` };
+    }
+  }
+
+  if (['delete_corporate_account', 'delete_floor_section', 'delete_rate_plan', 'delete_room_type'].includes(item.table)) {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing entity or lodge` };
+    }
+  }
+
+  if (['create_fnb_room_service_order', 'create_fnb_meal_entitlement', 'create_fnb_temperature_log', 'capture_fnb_supplier_invoice'].includes(item.table)) {
+    if (!hasString(item.data.p_lodge_id) || !hasString(item.data.p_operation_id) || !isPlainObject(item.data.p_payload)) {
+      return { isValid: false, reason: `${item.table} missing lodge, operation, or payload` };
+    }
+  }
+
+  if (item.table === 'redeem_fnb_meal') {
+    if (!hasString(item.data.p_entitlement_id) || !hasString(item.data.p_operation_id) || !isPlainObject(item.data.p_payload)) {
+      return { isValid: false, reason: 'redeem_fnb_meal missing entitlement, operation, or payload' };
+    }
+  }
+
+  if (item.table === 'set_rate_calendar_entry') {
+    const data = item.data;
+    if (!hasString(data.p_lodge_id) || !hasString(data.p_room_type_id) || !isValidDate(data.p_date)) {
+      return { isValid: false, reason: 'set_rate_calendar_entry missing lodge, room type, or date' };
+    }
+    if (!isFiniteNumber(data.p_amount) || Number(data.p_amount) < 0) {
+      return { isValid: false, reason: 'set_rate_calendar_entry has invalid amount' };
+    }
+  }
+
+  if (item.table === 'set_rate_calendar_bulk') {
+    if (!hasString(item.data.p_lodge_id) || !hasString(item.data.p_entries)) {
+      return { isValid: false, reason: 'set_rate_calendar_bulk missing lodge or entries' };
+    }
+  }
+
+  if (item.table === 'set_rate_restriction') {
+    const data = item.data;
+    if (!hasString(data.p_lodge_id) || !hasString(data.p_room_type_id) || !isValidDate(data.p_date) || data.p_restrictions == null) {
+      return { isValid: false, reason: 'set_rate_restriction missing lodge, room type, date, or restrictions' };
+    }
+  }
+
+  if (item.table === 'create_promo_code') {
+    const code = item.data.p_code;
+    if (!hasString(item.data.p_lodge_id) || !isPlainObject(code) || !hasString(code.id) || !hasString(code.code)) {
+      return { isValid: false, reason: 'create_promo_code missing lodge or code identity' };
+    }
+  }
+
+  if (item.table === 'update_promo_code') {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id) || !isPlainObject(item.data.p_code)) {
+      return { isValid: false, reason: 'update_promo_code missing entity, lodge, or code' };
+    }
+  }
+
+  if (['delete_promo_code', 'delete_season_label', 'delete_yield_rule'].includes(item.table)) {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id)) {
+      return { isValid: false, reason: `${item.table} missing entity or lodge` };
+    }
+  }
+
+  if (item.table === 'create_season_label') {
+    const season = item.data.p_season;
+    if (!hasString(item.data.p_lodge_id) || !isPlainObject(season) || !hasString(season.id) || !hasString(season.name)) {
+      return { isValid: false, reason: 'create_season_label missing lodge or season identity' };
+    }
+  }
+
+  if (item.table === 'update_season_label') {
+    if (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id) || !isPlainObject(item.data.p_season)) {
+      return { isValid: false, reason: 'update_season_label missing entity, lodge, or season' };
+    }
+  }
+
+  if (item.table === 'create_yield_rule') {
+    if (!hasString(item.data.p_lodge_id) || !hasString(item.data.p_name)) {
+      return { isValid: false, reason: 'create_yield_rule missing lodge or name' };
+    }
+  }
+
+  if (item.table === 'update_yield_rule' && (!hasString(item.data.p_id) || !hasString(item.data.p_lodge_id))) {
+    return { isValid: false, reason: 'update_yield_rule missing entity or lodge' };
+  }
+
+  if (item.table === 'publish_pos_catalog_snapshot_offline') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.snapshot_id)) {
+      return { isValid: false, reason: 'publish_pos_catalog_snapshot_offline missing lodge or snapshot' };
+    }
+  }
+
+  if (item.table === 'save_bar_product_with_stock') {
+    const payload = item.data.payload;
+    if (!isPlainObject(payload) || !hasString(payload.lodge_id) || !hasString(payload.operation_key) ||
+        !hasString(payload.inventory_item_id) || !isPlainObject(payload.product) || !hasString(payload.product.name)) {
+      return { isValid: false, reason: 'save_bar_product_with_stock missing lodge-scoped product identity' };
+    }
+  }
+
   return { isValid: true };
 }
 
+/**
+ * @template {Record<string, unknown>} T
+ * @param {T} row
+ * @param {MeshQueueItemExpectedView} item
+ * @returns {T & {_pending_sync: true, _sync_state: 'pending', _mesh_imported: true, _mesh_source_node_id: unknown, updated_at: unknown}}
+ */
 function stampMeshImported(row, item) {
   return {
     ...row,
@@ -886,6 +1121,7 @@ function stampMeshImported(row, item) {
  * on this till's Open Tabs before the server confirms. Status changes reuse
  * the offline trust root: uncertified totals, server prices at replay.
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedTabCacheEffects(items = []) {
   const tabs = readCache('pos-tabs');
   if (!Array.isArray(tabs)) return;
@@ -934,6 +1170,7 @@ function applyImportedTabCacheEffects(items = []) {
  * in-shift staff and handover views stay complete through a long outage.
  * Closes reconcile at replay; the server remains shift truth.
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedShiftCacheEffects(items = []) {
   const shifts = readCache('pos-shifts');
   if (!Array.isArray(shifts)) return;
@@ -941,7 +1178,8 @@ function applyImportedShiftCacheEffects(items = []) {
   let changed = false;
   for (const item of items) {
     if (item.table === 'open_pos_shift_with_id') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       const id = String(payload.shift_id || payload.id || '').trim();
       if (!id) continue;
       const row = stampMeshImported({
@@ -959,7 +1197,8 @@ function applyImportedShiftCacheEffects(items = []) {
       next = [row, ...next.filter((entry) => String(entry?.id) !== id)];
       changed = true;
     } else if (item.table === 'close_pos_shift_with_id') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       const id = String(payload.shift_id || payload.id || '').trim();
       if (!id) continue;
       const index = next.findIndex((entry) => String(entry?.id) === id);
@@ -979,6 +1218,7 @@ function applyImportedShiftCacheEffects(items = []) {
  * provisional rows (same trust root as own offline products: sellable
  * offline at the entered price, replayed by name, blocked once fresh).
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedMenuCacheEffects(items = []) {
   const menu = readCache('pos-menu-items');
   if (!Array.isArray(menu)) return;
@@ -986,14 +1226,14 @@ function applyImportedMenuCacheEffects(items = []) {
   let changed = false;
   for (const item of items) {
     if (item.table === 'create_pos_menu_item' || item.table === 'create_pos_menu_item_offline') {
-      const row = item.data?.payload;
+      const row = /** @type {MeshMenuItemPayloadExpectedView|null|undefined} */ (item.data?.payload);
       if (!row || typeof row !== 'object' || (!row.id && !row.name)) continue;
       const id = row.id || `pending:${item._queue_id || Date.now()}`;
       next = [stampMeshImported({ ...row, id }, item), ...next.filter((entry) => String(entry?.id) !== String(id))];
       changed = true;
     } else if (item.table === 'update_pos_menu_item' || item.table === 'update_pos_menu_item_offline') {
       const data = item.data || {};
-      const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      const payload = /** @type {MeshMenuItemPayloadExpectedView} */ (data.payload && typeof data.payload === 'object' ? data.payload : {});
       const id = String(data.p_id || payload.menu_item_id || '').trim();
       if (!id) continue;
       const index = next.findIndex((entry) => String(entry?.id) === id);
@@ -1014,12 +1254,15 @@ function applyImportedMenuCacheEffects(items = []) {
  * Modifier groups and promotions arrive as full-list replaces (the queue
  * payload already carries the whole list), mirroring the local save path.
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedModifierPromotionEffects(items = []) {
   for (const item of items) {
-    if (item.table === 'upsert_pos_modifier_groups' && Array.isArray(item.data?.payload?.groups)) {
-      writeCache('pos-modifier-groups', item.data.payload.groups.map((row) => stampMeshImported(row, item)).slice(0, 500));
-    } else if (item.table === 'upsert_pos_promotions' && Array.isArray(item.data?.payload?.promotions)) {
-      writeCache('pos-promotions', item.data.payload.promotions.map((row) => stampMeshImported(row, item)).slice(0, 500));
+    if (item.table === 'upsert_pos_modifier_groups' && Array.isArray((/** @type {MeshModifierPromotionPayloadExpectedView|null|undefined} */ (item.data?.payload))?.groups)) {
+      const groups = /** @type {Record<string, unknown>[]} */ (item.data?.payload?.groups);
+      writeCache('pos-modifier-groups', groups.map((row) => stampMeshImported(row, item)).slice(0, 500));
+    } else if (item.table === 'upsert_pos_promotions' && Array.isArray((/** @type {MeshModifierPromotionPayloadExpectedView|null|undefined} */ (item.data?.payload))?.promotions)) {
+      const promotions = /** @type {Record<string, unknown>[]} */ (item.data?.payload?.promotions);
+      writeCache('pos-promotions', promotions.map((row) => stampMeshImported(row, item)).slice(0, 500));
     }
   }
 }
@@ -1029,6 +1272,7 @@ function applyImportedModifierPromotionEffects(items = []) {
  * stock cache the same way a local offline post would (minus the movement
  * ledger rows, which stay device-local evidence and reconcile at replay).
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedStockReceiptEffects(items = []) {
   const inventory = readCache('inventory-items');
   if (!Array.isArray(inventory) || inventory.length === 0) return;
@@ -1036,22 +1280,22 @@ function applyImportedStockReceiptEffects(items = []) {
   let changed = false;
   const now = new Date().toISOString();
   for (const item of items) {
-    const lines = Array.isArray(item.data?.p_lines) ? item.data.p_lines : [];
+    const lines = Array.isArray(item.data?.p_lines) ? /** @type {Record<string, unknown>[]} */ (item.data.p_lines) : [];
     if (item.table === 'post_bar_simple_delivery') {
-      const byId = new Map(lines.map((line) => [String(line?.item_id || ''), Number(line?.quantity || 0)]));
+      const byId = /** @type {Map<string, number>} */ (new Map(lines.map((line) => /** @type {[string, number]} */ ([String(line?.item_id || ''), Number(line?.quantity || 0)]))));
       next = next.map((row) => {
         const incoming = byId.get(String(row?.id || ''));
-        if (!Number.isFinite(incoming) || incoming <= 0) return row;
+        if (!Number.isFinite(incoming) || (/** @type {number} */ (incoming)) <= 0) return row;
         changed = true;
-        return stampMeshImported({ ...row, current_stock: Number(row.current_stock || 0) + incoming, updated_at: now }, item);
+        return stampMeshImported({ ...row, current_stock: Number(row.current_stock || 0) + /** @type {number} */ (incoming), updated_at: now }, item);
       });
     } else if (item.table === 'post_bar_physical_count') {
-      const byId = new Map(lines.map((line) => [String(line?.item_id || ''), Number(line?.actual_qty)]));
+      const byId = /** @type {Map<string, number>} */ (new Map(lines.map((line) => /** @type {[string, number]} */ ([String(line?.item_id || ''), Number(line?.actual_qty)]))));
       next = next.map((row) => {
         const counted = byId.get(String(row?.id || ''));
-        if (!Number.isFinite(counted) || counted < 0) return row;
+        if (!Number.isFinite(counted) || (/** @type {number} */ (counted)) < 0) return row;
         changed = true;
-        return stampMeshImported({ ...row, current_stock: counted, updated_at: now }, item);
+        return stampMeshImported({ ...row, current_stock: /** @type {number} */ (counted), updated_at: now }, item);
       });
     }
   }
@@ -1064,6 +1308,7 @@ function applyImportedStockReceiptEffects(items = []) {
  * PIN-free open travels; drops, counts, submits, and reviews stay on their
  * own till and reconcile at replay.
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedDrawerOpenEffects(items = []) {
   const periods = readCache('pos-drawer-periods');
   if (!Array.isArray(periods)) return;
@@ -1071,7 +1316,8 @@ function applyImportedDrawerOpenEffects(items = []) {
   let changed = false;
   for (const item of items) {
     if (item.table !== 'open_pos_drawer_period') continue;
-    const payload = item.data?.payload || {};
+    /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+    const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
     if (!payload.outlet_id) continue;
     const id = String(item._queue_id || '').trim() || `mesh-drawer-${Date.now()}`;
     if (next.some((entry) => String(entry?.id || '') === id || String(entry?._queue_id || '') === String(item._queue_id || ''))) continue;
@@ -1096,32 +1342,39 @@ function applyImportedDrawerOpenEffects(items = []) {
  * unknown linked stock means skip (never invent a price), otherwise the rows
  * match the local shape exactly, including provisional marking.
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedProductPackEffects(items = []) {
   const menu = readCache('pos-menu-items');
-  const inventory = readCache('inventory-items') || [];
+  /** The cache reader does not validate rows; existing logic expects an array here. */
+  const inventory = /** @type {unknown[]} */ (readCache('inventory-items') || []);
   if (!Array.isArray(menu)) return;
   let next = menu;
   let changed = false;
   const now = new Date().toISOString();
   for (const item of items) {
     if (item.table === 'set_bar_pos_pack_template_offline') {
-      const payload = item.data?.payload || {};
-      const stock = inventory.find((row) => String(row?.id || '') === String(payload.inventory_item_id || ''));
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
+      const stock = inventory.find((/** @type {unknown} */ rawRow) => {
+        const row = /** @type {Record<string, unknown> | null | undefined} */ (rawRow);
+        return String(row?.id || '') === String(payload.inventory_item_id || '');
+      });
       if (!stock) continue;
+      const stockRow = /** @type {Record<string, unknown>} */ (stock);
       const packSize = Number(payload.pack_size || 0);
       if (![6, 12, 24].includes(packSize)) continue;
       const menuItemId = String(payload.menu_item_id || `pending:${item._queue_id || 'pack'}`).trim();
       const row = stampMeshImported({
         id: menuItemId,
         lodge_id: payload.lodge_id || meshState.lodgeId,
-        name: packSize === 24 ? `${stock.name} Case (24)` : `${stock.name} ${packSize} Pack`,
+        name: packSize === 24 ? `${stockRow.name} Case (24)` : `${stockRow.name} ${packSize} Pack`,
         category: 'Drinks',
-        price: Number(stock.selling_price || 0) * packSize,
+        price: Number(stockRow.selling_price || 0) * packSize,
         is_available: payload.enabled !== false,
         barcode: payload.barcode || null,
-        inventory_item_id: stock.id,
+        inventory_item_id: stockRow.id,
         depletion_qty: packSize,
-        outlet_id: stock.outlet_id || null,
+        outlet_id: stockRow.outlet_id || null,
         template_kind: 'bar_pack',
         template_pack_size: packSize,
         updated_at: now
@@ -1129,12 +1382,17 @@ function applyImportedProductPackEffects(items = []) {
       next = [row, ...next.filter((entry) => String(entry?.id) !== menuItemId)];
       changed = true;
     } else if (item.table === 'save_bar_pos_product_with_packs_offline') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       if (!payload.name) continue;
       const stock = payload.inventory_item_id
-        ? inventory.find((row) => String(row?.id || '') === String(payload.inventory_item_id))
+        ? inventory.find((/** @type {unknown} */ rawRow) => {
+          const row = /** @type {Record<string, unknown> | null | undefined} */ (rawRow);
+          return String(row?.id || '') === String(payload.inventory_item_id);
+        })
         : null;
       if (payload.inventory_item_id && !stock) continue;
+      const stockRow = /** @type {Record<string, unknown> | null} */ (stock);
       const localId = String(payload.id || payload.menu_item_id || `pending:${item._queue_id || 'product'}`).trim();
       const baseRow = stampMeshImported({
         id: localId,
@@ -1147,22 +1405,23 @@ function applyImportedProductPackEffects(items = []) {
         stock_method: payload.stock_method || 'direct',
         inventory_item_id: payload.inventory_item_id || null,
         depletion_qty: payload.depletion_qty || null,
-        outlet_id: payload.outlet_id || stock?.outlet_id || null,
+        outlet_id: payload.outlet_id || stockRow?.outlet_id || null,
         updated_at: now
       }, item);
-      const packRows = (Array.isArray(payload.packs) ? payload.packs : []).filter((pack) => pack?.enabled).map((pack) => {
+      const packs = Array.isArray(payload.packs) ? /** @type {Record<string, unknown>[]} */ (payload.packs) : [];
+      const packRows = packs.filter((pack) => pack?.enabled).map((pack) => {
         const packSize = Number(pack.pack_size || 0);
         return stampMeshImported({
           id: String(pack.menu_item_id || `pending:${item._queue_id || 'pack'}-${packSize}`).trim(),
           lodge_id: payload.lodge_id || meshState.lodgeId,
           name: packSize === 24 ? `${payload.name} Case (24)` : `${payload.name} ${packSize} Pack`,
           category: 'Drinks',
-          price: Number(stock?.selling_price || payload.price || 0) * packSize,
+          price: Number(stockRow?.selling_price || payload.price || 0) * packSize,
           is_available: true,
           barcode: pack.barcode || null,
           inventory_item_id: payload.inventory_item_id || null,
           depletion_qty: packSize,
-          outlet_id: payload.outlet_id || stock?.outlet_id || null,
+          outlet_id: payload.outlet_id || stockRow?.outlet_id || null,
           template_kind: 'bar_pack',
           template_pack_size: packSize,
           updated_at: now
@@ -1180,15 +1439,17 @@ function applyImportedProductPackEffects(items = []) {
  * Opening/closing routines stay visible across tills: created lists appear,
  * and check-offs tick by item id (unknown ids are skipped, never invented).
  */
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedChecklistEffects(items = []) {
-  const lists = readCache('pos-checklists');
+  const lists = /** @type {MeshChecklistCacheExpectedView[]} */ (readCache('pos-checklists'));
   if (!Array.isArray(lists)) return;
   let next = lists;
   let changed = false;
   const now = new Date().toISOString();
   for (const item of items) {
     if (item.table === 'create_daily_checklist') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       if (!payload.checklist_type) continue;
       const id = `mesh-checklist-${String(item._queue_id || payload.checklist_type).trim()}`;
       if (next.some((entry) => String(entry?.id || '') === id)) continue;
@@ -1196,16 +1457,17 @@ function applyImportedChecklistEffects(items = []) {
         id,
         lodge_id: payload.lodge_id || meshState.lodgeId,
         checklist_type: payload.checklist_type,
-        items: (Array.isArray(payload.items) ? payload.items : []).map((label) => ({
-          id: `${id}:${String(label?.label || label || '').trim()}`,
-          item_label: String(label?.label || label || ''),
+        items: (Array.isArray(payload.items) ? /** @type {unknown[]} */ (payload.items) : []).map((label) => ({
+          id: `${id}:${String((/** @type {Record<string, unknown> | null | undefined} */ (label))?.label || label || '').trim()}`,
+          item_label: String((/** @type {Record<string, unknown> | null | undefined} */ (label))?.label || label || ''),
           is_completed: false
         })),
         created_at: now
       }, item), ...next];
       changed = true;
     } else if (item.table === 'create_bar_checklist_from_template') {
-      const payload = item.data?.p_payload || {};
+      /** The matching validator branch requires a plain p_payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.p_payload || {});
       if (!payload.template_key || !payload.operation_id) continue;
       const id = `mesh-bar-checklist-${String(payload.operation_id).trim()}`;
       if (next.some((entry) => String(entry?.id || '') === id)) continue;
@@ -1219,17 +1481,18 @@ function applyImportedChecklistEffects(items = []) {
       }, item), ...next];
       changed = true;
     } else if (item.table === 'complete_checklist_item') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       const target = String(payload.item_id || '');
       if (!target) continue;
       next = next.map((entry) => {
-        const lines = Array.isArray(entry?.items) ? entry.items : [];
-        if (!lines.some((line) => String(line?.id || '') === target)) return entry;
+        const lines = Array.isArray(entry?.items) ? /** @type {unknown[]} */ (entry.items) : [];
+        if (!lines.some((line) => String((/** @type {MeshChecklistLineExpectedView|null|undefined} */ (line))?.id || '') === target)) return entry;
         changed = true;
         return stampMeshImported({
           ...entry,
-          items: lines.map((line) => String(line?.id || '') === target
-            ? { ...line, is_completed: true, notes: payload.notes || line?.notes || null, _pending_sync: true }
+          items: lines.map((line) => String((/** @type {MeshChecklistLineExpectedView|null|undefined} */ (line))?.id || '') === target
+            ? { .../** @type {MeshChecklistLineExpectedView|null|undefined} */ (line), is_completed: true, notes: payload.notes || (/** @type {MeshChecklistLineExpectedView|null|undefined} */ (line))?.notes || null, _pending_sync: true }
             : line)
         }, item);
       });
@@ -1238,6 +1501,7 @@ function applyImportedChecklistEffects(items = []) {
   if (changed) writeCache('pos-checklists', next);
 }
 
+/** @param {MeshQueueItemExpectedView[]} [items] */
 export function applyImportedBookingCacheEffects(items = []) {
   const imported = [];
   for (const item of items) {
@@ -1293,7 +1557,9 @@ export function applyImportedBookingCacheEffects(items = []) {
       const rooms = Array.isArray(data.p_rooms) ? data.p_rooms : [];
       const localIds = Array.isArray(item._local_booking_ids) ? item._local_booking_ids : [];
       if (rooms.length < 2 || localIds.length !== rooms.length) continue;
-      rooms.forEach((room, index) => {
+      /** @type {Record<string, unknown>[]} */
+      const roomViews = rooms;
+      roomViews.forEach((room, index) => {
         imported.push({
           id: localIds[index],
           lodge_id: data.p_lodge_id,
@@ -1319,7 +1585,8 @@ export function applyImportedBookingCacheEffects(items = []) {
         });
       });
     } else if (item.table === 'create_booking_record') {
-      const payload = item.data?.payload || {};
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+      const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
       const {
         total_amount,
         amount_paid,
@@ -1341,19 +1608,27 @@ export function applyImportedBookingCacheEffects(items = []) {
     }
   }
   if (imported.length === 0) return;
-  const existing = readCache('bookings');
+  /** Cache rows remain unvalidated; this consumer already relies on array operations. */
+  const existing = /** @type {unknown[]} */ (readCache('bookings'));
   const importedIds = new Set(imported.map((row) => row.id).filter(Boolean));
   writeCache('bookings', [
-    ...existing.filter((row) => !importedIds.has(row?.id)),
+    ...existing.filter((/** @type {unknown} */ rawRow) => !importedIds.has(
+      (/** @type {Record<string, unknown> | null | undefined} */ (rawRow))?.id
+    )),
     ...imported
   ]);
 }
+/** @param {MeshQueueItemExpectedView[]} [items] */
 function applyImportedOperationalCacheEffects(items = []) {
   for (const item of items) {
     if (item.table !== 'update_pool_day_use') continue;
-    const payload = item.data?.payload || {};
-    const rows = readCache('pool-day-use');
-    const index = rows.findIndex((row) => row?.id === payload.id);
+      /** The matching validator branch requires a plain payload object; its fields remain unknown. */
+    const payload = /** @type {Record<string, unknown>} */ (item.data?.payload || {});
+    /** The preexisting path assumes this cache value is an array and calls findIndex directly. */
+    const rows = /** @type {MeshPoolDayUseCacheExpectedView[]} */ (readCache('pool-day-use'));
+    const index = rows.findIndex((/** @type {unknown} */ rawRow) =>
+      (/** @type {Record<string, unknown> | null | undefined} */ (rawRow))?.id === payload.id
+    );
     if (index < 0) continue;
     const current = rows[index];
     const next = [...rows];
@@ -1377,9 +1652,12 @@ function applyImportedOperationalCacheEffects(items = []) {
 /**
  * Quarantines any invalid/corrupted JSON payloads obtained from the mesh network.
  */
+/** @param {unknown} item @param {unknown} reason */
 export function quarantineInvalidItem(item, reason) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, 'sync-mesh-quarantine.json');
+  /** Parsed quarantine entries are not validated; the existing writer expects an array. */
+  /** @type {unknown[]} */
   let quarantineList = [];
   try {
     if (fs.existsSync(filePath)) {
@@ -1403,8 +1681,10 @@ export function quarantineInvalidItem(item, reason) {
   }
 }
 
+/** @param {unknown} item @param {unknown} peerId @param {string} reason */
 function quarantineMeshIdentityConflict(item, peerId, reason) {
-  const queueId = String(item?._queue_id || '').slice(0, 160);
+  const itemFields = /** @type {Record<string, unknown> | null | undefined} */ (item);
+  const queueId = String(itemFields?._queue_id || '').slice(0, 160);
   const message = 'A nearby device sent a queued operation whose ID or financial key is already bound to different contents. The incoming operation was quarantined. A manager must review System Health and include local sync details in a support bundle; do not retry it under a new key.';
   quarantineInvalidItem(item, 'Mesh queue identity conflict: ' + reason);
   appendHealthFault({
@@ -1442,15 +1722,20 @@ export async function syncMeshQueues() {
   let totalImported = 0;
   let totalMissing = 0;
   let totalIdentityConflicts = 0;
+  /** @type {Array<{peer_id: unknown, queue_id: unknown, operation: unknown}>} */
   const identityConflictSamples = [];
   const repairPeers = [];
 
   for (const [peerId, peer] of meshState.peers.entries()) {
     try {
       const localPendingGroups = readSyncQueue().filter((item) => item.table === 'create_multi_room_booking');
+      /** Capabilities are untrusted network data, read only for this existing feature gate. */
+      /** @type {{protocolVersion?: unknown, queueFeatures?: unknown} | null} */
       let peerCapabilities = null;
       try {
-        peerCapabilities = await sendSignedMeshRequest(peer.address, peer.httpPort, 'GET', '/mesh/capabilities');
+        peerCapabilities = /** @type {{protocolVersion?: unknown, queueFeatures?: unknown}} */ (
+          await sendSignedMeshRequest(peer.address, peer.httpPort, 'GET', '/mesh/capabilities')
+        );
       } catch {
         peerCapabilities = null;
       }
@@ -1475,8 +1760,8 @@ export async function syncMeshQueues() {
 
       // Compare stable operation fingerprints before treating queue IDs and keys as duplicates.
       const localQueue = readSyncQueue();
-      const localByQueueId = new Map(localQueue.map((item) => [String(item?._queue_id || ''), item]));
-      const localByIntentId = new Map(localQueue.map((item) => [getQueueItemIntentId(item), item]).filter(([key]) => key));
+      const localByQueueId = new Map(localQueue.map((item) => /** @type {[string, (typeof localQueue)[number]]} */ ([String(item?._queue_id || ''), item])));
+      const localByIntentId = new Map(localQueue.map((item) => /** @type {[string, (typeof localQueue)[number]]} */ ([getQueueItemIntentId(item), item])).filter(([key]) => key));
       const localBodyHashes = new Set(localQueue.map(getQueueItemBodyHash).filter(Boolean));
       const localOperationHashes = new Set(localQueue.map(getQueueItemOperationHash));
       const missingSummaries = [];
@@ -1512,12 +1797,14 @@ export async function syncMeshQueues() {
         [...summariesById.entries()].map(([id, summary]) => [id, String(summary.bodyHash || '').trim()])
       );
       let peerIdentityConflicts = 0;
+      /** @param {unknown} item @param {string} reason */
       const recordIdentityConflict = (item, reason) => {
         quarantineMeshIdentityConflict(item, peer.nodeId || peerId, reason);
         peerIdentityConflicts += 1;
         totalIdentityConflicts += 1;
         if (identityConflictSamples.length < 8) {
-          identityConflictSamples.push({ peer_id: peer.nodeId || peerId, queue_id: item?._queue_id || null, operation: item?.table || null });
+          const itemFields = /** @type {Record<string, unknown> | null | undefined} */ (item);
+          identityConflictSamples.push({ peer_id: peer.nodeId || peerId, queue_id: itemFields?._queue_id || null, operation: itemFields?.table || null });
         }
       };
 
@@ -1535,6 +1822,8 @@ export async function syncMeshQueues() {
       }
 
       const requestedIds = new Set(missingIds);
+      /** Items are appended only after validateSyncQueueItem accepts the incoming row. */
+      /** @type {MeshQueueItemExpectedView[]} */
       const newValidItems = [];
       let importedFromPeer = 0;
       const batchSize = 30;
@@ -1575,6 +1864,13 @@ export async function syncMeshQueues() {
             continue;
           }
 
+          // A signed peer is authenticated, but it is not authority to move
+          // device-bound credentials or drawer custody to this machine.
+          if (!isMeshShareableQueueItem(item)) {
+            quarantineInvalidItem({ _queue_id: item._queue_id, type: item.type, table: item.table }, 'Operation is restricted to its originating device');
+            continue;
+          }
+
           const bodyHash = getQueueItemBodyHash(item);
           const expectedHash = expectedHashesById.get(item._queue_id);
           if ((expectedHash && expectedHash !== bodyHash) ||
@@ -1600,20 +1896,23 @@ export async function syncMeshQueues() {
           }
           if (duplicateOperation) continue;
 
-          newValidItems.push({
+          newValidItems.push(/** @type {MeshQueueItemExpectedView} */ ({
             ...item,
             _mesh_imported: true,
             _mesh_source_node_id: peer.nodeId || peerId,
             _mesh_imported_at: new Date().toISOString(),
             _mesh_body_hash: bodyHash
-          });
+          }));
         }
       }
 
       if (newValidItems.length > 0) {
         const latestLocalQueue = readSyncQueue();
-        const seenIds = new Map(latestLocalQueue.map((item) => [String(item?._queue_id || ''), item]));
-        const seenIntents = new Map(latestLocalQueue.map((item) => [getQueueItemIntentId(item), item]).filter(([key]) => key));
+        /** Values from local reads and already-validated peer items have different record views; hashes accept either as unknown. */
+        /** @type {Map<string, unknown>} */
+        const seenIds = new Map(latestLocalQueue.map((item) => /** @type {[string, (typeof latestLocalQueue)[number]]} */ ([String(item?._queue_id || ''), item])));
+        /** @type {Map<string, unknown>} */
+        const seenIntents = new Map(latestLocalQueue.map((item) => /** @type {[string, (typeof latestLocalQueue)[number]]} */ ([getQueueItemIntentId(item), item])).filter(([key]) => key));
         const seenOperations = new Set(latestLocalQueue.map(getQueueItemOperationHash));
         const deduplicatedNewItems = [];
         for (const item of newValidItems) {
@@ -1628,8 +1927,8 @@ export async function syncMeshQueues() {
           }
           if (seenOperations.has(operationHash)) continue;
           deduplicatedNewItems.push(item);
-          seenIds.set(String(item._queue_id), item);
-          if (intentId) seenIntents.set(intentId, item);
+        seenIds.set(String(item._queue_id), item);
+        if (intentId) seenIntents.set(intentId, item);
           seenOperations.add(operationHash);
         }
 
@@ -1671,15 +1970,16 @@ export async function syncMeshQueues() {
         lastError: ''
       });
     } catch (err) {
+      const errorView = /** @type {MeshErrorExpectedDataView} */ (err);
       repairPeers.push({
         nodeId: peer.nodeId || peerId,
         address: peer.address,
         remoteQueueSize: null,
         missingCount: 0,
         importedCount: 0,
-        lastError: err.message
+        lastError: errorView.message
       });
-      console.warn(`[MeshMerge] Queue sync iteration failed for Peer ${peerId}:`, err.message);
+      console.warn(`[MeshMerge] Queue sync iteration failed for Peer ${peerId}:`, errorView.message);
     }
   }
 
@@ -1699,10 +1999,11 @@ export async function syncMeshQueues() {
         error: outcome.applied === false ? (outcome.reason || 'refused') : ''
       });
     } catch (err) {
-      teamPeers.push({ nodeId: peer.nodeId || peerId, address: peer.address, added: {}, error: err.message });
+      const errorView = /** @type {MeshErrorExpectedDataView} */ (err);
+      teamPeers.push({ nodeId: peer.nodeId || peerId, address: peer.address, added: {}, error: errorView.message });
     }
   }
-  meshState.lastTeamSync = {
+  meshStateWithTeamSync.lastTeamSync = {
     at: new Date().toISOString(),
     peerCount: meshState.peers.size,
     perPeer: teamPeers.slice(-12)

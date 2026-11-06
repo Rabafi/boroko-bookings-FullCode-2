@@ -64,15 +64,51 @@ test('a failed renderer module exposes an actionable local retry instead of a bl
   const browser = await chromium.launch({ headless: true, executablePath: process.env.BAR_LOCAL_CHROMIUM_EXECUTABLE_PATH })
   try {
     const page = await browser.newPage()
+    await page.addInitScript(() => {
+      const original = window.setTimeout.bind(window)
+      window.setTimeout = (fn, ms, ...args) => {
+        if (ms === 45000) { window.__startupWatchdog = fn;return 0 }
+        return original(fn, ms, ...args)
+      }
+    })
     await page.goto(fixture.url, { waitUntil: 'commit' })
     await page.getByRole('heading', { name: 'Starting the application…' }).waitFor()
     await page.getByText('The application screen could not be loaded. Your saved records are unchanged. Try again.').waitFor({ timeout: 10000 })
+    await page.evaluate(() => window.__startupWatchdog())
+    await page.getByText('The application screen could not be loaded. Your saved records are unchanged. Try again.').waitFor()
     const retry = page.getByRole('button', { name: 'Try again' })
     assert.equal(await retry.isVisible(), true)
     await retry.click()
     await page.waitForFunction(() => Number(document.documentElement.dataset.retryCount || 0) > 0, { timeout: 1000 }).catch(() => {})
     assert.ok(fixture.pageLoads() >= 2, 'retry reloads the same local application page')
   } finally {
+    await browser.close()
+    await new Promise((resolve) => fixture.server.close(resolve))
+  }
+})
+
+test('stalled module offers recovery before React without naming another product', { timeout: 120000 }, async () => {
+  let release
+  const wait = new Promise((resolve) => { release = resolve })
+  const fixture = await startServer(async (_req, res) => { await wait;res.writeHead(500).end() })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.BAR_LOCAL_CHROMIUM_EXECUTABLE_PATH })
+  try {
+    const page = await browser.newPage()
+    await page.addInitScript(() => {
+      const original = window.setTimeout.bind(window)
+      window.setTimeout = (fn, ms, ...args) => {
+        if (ms === 45000) { window.__startupWatchdog = fn;return 0 }
+        return original(fn, ms, ...args)
+      }
+    })
+    await page.goto(fixture.url, { waitUntil: 'commit' })
+    await page.locator('#startup-message').waitFor()
+    await page.evaluate(() => window.__startupWatchdog())
+    await page.getByText('The screen is taking longer than expected. Your saved records are unchanged. Try again.').waitFor()
+    assert.equal(await page.getByRole('button', { name: 'Try again' }).isVisible(), true)
+    assert.doesNotMatch(await page.locator('#root').textContent(), /LodgingOS|Restaurant/i)
+  } finally {
+    release()
     await browser.close()
     await new Promise((resolve) => fixture.server.close(resolve))
   }

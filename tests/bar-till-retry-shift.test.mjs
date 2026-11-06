@@ -108,8 +108,13 @@ test('server-payload retry keeps journalled bytes and never rewrites the shift',
   assert.match(source, /buildHistoricalReplayRequest\(\{ _queue_id: submitIntentId \}, v3Payload\)/)
   assert.match(source, /POS_HISTORICAL_REPLAY_RPC/)
   // The journal-original-bytes contract itself is unchanged.
-  assert.match(source, /const storedRetry = getPosSubmitAttempt\(submitIntentId\)/)
-  assert.match(source, /if \(storedRetry\?\.payload\) v3Payload = \{ \.\.\.storedRetry\.payload \}/)
+  const retryStart = source.indexOf('// Retry byte-equivalence (mirrors the offline path)')
+  const recordAt = source.indexOf('const onlineAttempt = recordAttempt(v3Payload)', retryStart)
+  assert.ok(retryStart >= 0 && recordAt > retryStart, 'Journal retry resolution must precede recording the attempt')
+  const retryBlock = source.slice(retryStart, recordAt)
+  assert.match(retryBlock, /getPosSubmitAttempt\(submitIntentId\)/)
+  assert.match(retryBlock, /if \(storedRetry\?\.payload\)/)
+  assert.match(retryBlock, /v3Payload = \{ \.\.\.\/\*\* @type \{typeof v3Payload\} \*\/ \(storedRetry\.payload\) \}/)
 })
 
 function withJournalFile(run) {
@@ -199,8 +204,8 @@ test('Lounge P5 shape: rebuilt envelope conflicts, stored-bytes retry reuses', (
 
 test('online path swaps journalled bytes before recording the attempt', () => {
   const source = read('src/main/domains/pos.js')
-  const swapAt = source.indexOf('const storedRetry = getPosSubmitAttempt(submitIntentId)')
+  const swapAt = source.indexOf('const storedRetry =', source.indexOf('// Retry byte-equivalence (mirrors the offline path)'))
   assert.ok(swapAt > -1, 'pos.js loads the stored retry envelope')
-  const recordAt = source.indexOf('const onlineAttemptError = recordAttempt(v3Payload)')
+  const recordAt = source.indexOf('const onlineAttempt = recordAttempt(v3Payload)', swapAt)
   assert.ok(recordAt > swapAt, 'swap runs before the online journal record')
 })

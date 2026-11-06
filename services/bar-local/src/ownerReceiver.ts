@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createServer as httpServer } from 'node:http';
 import { createServer as httpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
@@ -7,31 +6,44 @@ import { readJson, readJsonWithText } from './http.js';
 import { hashOwnerPassword, verifyOwnerPassword, dummyOwnerPasswordVerify, normalizeOwnerEmail, assertOwnerPassword } from './password.js';
 import { digest, equalSignature, seal, sign, unseal } from './ownerCrypto.js';
 import { createRateLimiter } from './rate-limit.js';
+import type { Pool, PoolClient } from 'pg';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+interface OwnerReceiverOptions {
+    pool: Pool;
+    masterKey: string;
+    publicUrl: string;
+    pwaOrigin: string;
+    host?: string;
+    port?: number;
+    allowTestDatabase?: boolean;
+    tls?: { certFile: string; keyFile: string };
+    deliverVerification: (email: string, url: string) => Promise<void>;
+}
 class Refusal extends Error {
     status;
-    constructor(status, message) {
+    constructor(status: number, message: string) {
         super(message);
         this.status = status;
     }
 }
-const id = (value) => {
+const id = (value: unknown): string => {
     if (typeof value !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value))
         throw new Refusal(400, 'A valid identifier is required.');
     return value;
 };
-const keyIdentifier = (value) => {
+const keyIdentifier = (value: unknown): string => {
     if (typeof value !== 'string' || !/^[A-Za-z0-9._:-]{1,120}$/.test(value))
         throw new Refusal(400, 'A valid Bar connection identifier is required.');
     return value;
 };
-const text = (value, max = 240) => {
+const text = (value: unknown, max = 240): string => {
     if (typeof value !== 'string' || !value.trim() || value.length > max)
         throw new Refusal(400, 'The request has an invalid field.');
     return value.trim();
 };
 const token = () => randomBytes(32).toString('base64url');
-const loopback = (host) => ['127.0.0.1', 'localhost', '::1'].includes(host.replace(/^\[|\]$/g, ''));
-export async function startOwnerReceiver(options) {
+const loopback = (host: string): boolean => ['127.0.0.1', 'localhost', '::1'].includes(host.replace(/^\[|\]$/g, ''));
+export async function startOwnerReceiver(options: OwnerReceiverOptions) {
     const { pool } = options, host = options.host ?? '127.0.0.1';
     if (options.masterKey.length < 32)
         throw new Error('A protected receiver master key of at least 32 characters is required.');
@@ -47,7 +59,7 @@ export async function startOwnerReceiver(options) {
     if (db.trading && !(options.allowTestDatabase && process.env.BAR_LOCAL_TEST_DB === '1' && db.name.startsWith('bar_local_test_')))
         throw new Error('The receiver must use a separate database from local Bar trading.');
     const limiter = createRateLimiter({ windowMs: 15 * 60000, max: 30 });
-    const transaction = async (work) => {
+    const transaction = async <T>(work: (client: PoolClient) => Promise<T>): Promise<T> => {
         const c = await pool.connect();
         try {
             await c.query('BEGIN');
@@ -63,19 +75,19 @@ export async function startOwnerReceiver(options) {
             c.release();
         }
     };
-    async function account(req) {
+    async function account(req: IncomingMessage) {
         const raw = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{40,100})$/)?.[1];
         const result = raw ? (await pool.query('SELECT a.id,a.email FROM bar_owner.sessions s JOIN bar_owner.accounts a ON a.id=s.owner_id WHERE s.token_hash=$1 AND s.expires_at>now() AND a.verified_at IS NOT NULL', [digest(raw)])).rows[0] : null;
         if (!result)
             throw new Refusal(401, 'Sign in to your verified owner account.');
         return result;
     }
-    const handler = async (req, res) => {
+    const handler = async (req: IncomingMessage, res: ServerResponse) => {
         const url = new URL(req.url ?? '/', 'http://local');
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Referrer-Policy', 'no-referrer');
-        const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+        const send = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
         try {
             const origin = req.headers.origin;
             if (origin && origin !== pwaOrigin)
@@ -176,8 +188,8 @@ export async function startOwnerReceiver(options) {
                 const link = (await pool.query('SELECT l.* FROM bar_owner.links l WHERE key_id=$1', [keyId])).rows[0];
                 if (!link)
                     throw new Refusal(401, 'The owner link could not be authenticated.');
-                const secret = unseal(link.secret_box, options.masterKey);
-                if (!equalSignature(b.signature, sign(secret, { key_id: keyId, nonce })))
+                const secret = unseal(link.secret_box, options.masterKey) as string;
+                if (!equalSignature(text(b.signature, 128), sign(secret, { key_id: keyId, nonce })))
                     throw new Refusal(401, 'The owner link could not be authenticated.');
                 const proof = { key_id: keyId, nonce, authority_id: link.authority_id, business_id: link.business_id, outlet_id: link.outlet_id, active: link.active && !link.revoked, revoked: link.revoked };
                 send(200, { ...proof, signature: sign(secret, proof) });
@@ -189,9 +201,10 @@ export async function startOwnerReceiver(options) {
                     const link = (await c.query('SELECT * FROM bar_owner.links WHERE key_id=$1 FOR SHARE', [keyId])).rows[0];
                     if (!link || !link.active || link.revoked)
                         throw new Refusal(403, 'The verified owner has not approved this Bar connection.');
-                    const secret = unseal(link.secret_box, options.masterKey);
+                    const secret = unseal(link.secret_box, options.masterKey) as string;
                     const expected = createHmac('sha256', secret).update(`${keyId}.${b.batch_id}.${b.manifest_hash}`).digest('hex');
-                    if (!equalSignature(req.headers['x-bar-signature'], expected) || req.headers['x-bar-manifest-hash'] !== b.manifest_hash || req.headers['x-bar-batch-id'] !== b.batch_id || req.headers['x-bar-authority-id'] !== b.authority_id || b.authority_id !== link.authority_id || b.business_id !== link.business_id || b.outlet_id !== link.outlet_id)
+                    const signature = req.headers['x-bar-signature'];
+                    if (!equalSignature(Array.isArray(signature) ? signature[0] : signature, expected) || req.headers['x-bar-manifest-hash'] !== b.manifest_hash || req.headers['x-bar-batch-id'] !== b.batch_id || req.headers['x-bar-authority-id'] !== b.authority_id || b.authority_id !== link.authority_id || b.business_id !== link.business_id || b.outlet_id !== link.outlet_id)
                         throw new Refusal(401, 'The signed batch identity or scope is invalid.');
                     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [link.authority_id]);
                     await c.query('SELECT cloud_ingest.receive($1::jsonb)', [rawText]);
@@ -203,7 +216,9 @@ export async function startOwnerReceiver(options) {
             }
             const owner = await account(req);
             if (req.method === 'POST' && url.pathname === '/v1/logout') {
-                await pool.query('DELETE FROM bar_owner.sessions WHERE token_hash=$1', [digest(req.headers.authorization.slice(7))]);
+                const authorization = req.headers.authorization;
+                if (!authorization) throw new Refusal(401, 'Sign in to your verified owner account.');
+                await pool.query('DELETE FROM bar_owner.sessions WHERE token_hash=$1', [digest(authorization.slice(7))]);
                 send(200, { ok: true });
                 return;
             }
@@ -213,7 +228,7 @@ export async function startOwnerReceiver(options) {
                 send(201, { ok: true, enrollment_code: code, expires_in: 600 });
                 return;
             }
-            const manage = /^\/v1\/owner\/links\/([a-f0-9-]+)\/(approve|revoke)$/.exec(url.pathname);
+            const manage = /^\/v1\/owner\/links\/([A-Za-z0-9._:-]{1,120})\/(approve|revoke)$/.exec(url.pathname);
             if (req.method === 'POST' && manage) {
                 const keyId = keyIdentifier(manage[1]), active = manage[2] === 'approve';
                 const changed = await pool.query('UPDATE bar_owner.links SET active=$1,revoked=NOT $1,approved_at=CASE WHEN $1 THEN now() ELSE approved_at END WHERE key_id=$2 AND owner_id=$3 AND (NOT revoked OR NOT $1) RETURNING key_id', [active, keyId, owner.id]);
@@ -228,7 +243,7 @@ export async function startOwnerReceiver(options) {
                 send(200, { ok: true, email: owner.email, server_time: new Date().toISOString(), bars: rows.rows.map(row => ({ ...row, stale: !row.last_ingested_at || Date.now() - new Date(row.last_ingested_at).getTime() > 20 * 60000 })) });
                 return;
             }
-            const sales = /^\/v1\/owner\/bars\/([a-f0-9-]+)\/sales$/.exec(url.pathname);
+            const sales = /^\/v1\/owner\/bars\/([A-Za-z0-9._:-]{1,120})\/sales$/.exec(url.pathname);
             if (req.method === 'GET' && sales) {
                 const keyId = keyIdentifier(sales[1]);
                 const link = (await pool.query('SELECT authority_id,business_id,outlet_id,active,revoked FROM bar_owner.links WHERE key_id=$1 AND owner_id=$2', [keyId, owner.id])).rows[0];
@@ -336,6 +351,7 @@ export async function startOwnerReceiver(options) {
             SELECT *,
               CASE WHEN receipt->>'delta' ~ '^-?[0-9]+([.][0-9]{1,6})?$' THEN (receipt->>'delta')::numeric END AS stock_delta,
               CASE WHEN receipt->>'quantity' ~ '^-?[0-9]+([.][0-9]{1,6})?$' THEN (receipt->>'quantity')::numeric END AS stock_quantity,
+              CASE WHEN receipt->>'remaining_quantity' ~ '^-?[0-9]+([.][0-9]{1,6})?$' THEN (receipt->>'remaining_quantity')::numeric END AS remaining_quantity,
               CASE WHEN receipt->>'counted_cash' ~ '^-?[0-9]+([.][0-9]{1,2})?$' THEN (receipt->>'counted_cash')::numeric END AS counted_cash_value,
               CASE WHEN receipt->>'expected_cash' ~ '^-?[0-9]+([.][0-9]{1,2})?$' THEN (receipt->>'expected_cash')::numeric END AS expected_cash_value,
               CASE WHEN receipt->>'variance' ~ '^-?[0-9]+([.][0-9]{1,2})?$' THEN (receipt->>'variance')::numeric END AS variance_value
@@ -343,18 +359,49 @@ export async function startOwnerReceiver(options) {
           ), stock AS (
             SELECT event_type,operation_id,commit_sequence::text,business_date,
               receipt->>'product_id' AS product_id,receipt->>'sku' AS sku,
-              trim_scale(stock_delta)::text AS delta,trim_scale(stock_quantity)::text AS quantity,received_at,
-              stock_delta IS NULL OR stock_quantity IS NULL OR COALESCE(receipt->>'product_id','') !~* '^[a-f0-9-]{36}$' AS invalid
-            FROM selected WHERE event_type LIKE 'stock.%'
-          ), cashups AS (
+              trim_scale(stock_delta)::text AS delta,trim_scale(stock_quantity)::text AS quantity,
+              trim_scale(remaining_quantity)::text AS remaining_quantity,received_at,
+              stock_delta IS NULL OR COALESCE(receipt->>'product_id','') !~* '^[a-f0-9-]{36}$' AS invalid
+            FROM selected WHERE event_type LIKE 'stock.%' AND event_type <> 'stock.lot.released'
+          ), lot_events AS (
             SELECT event_type,operation_id,commit_sequence::text,business_date,
-              receipt->>'cashup_id' AS cashup_id,receipt->>'shift_id' AS shift_id,
-              counted_cash_value::text AS counted_cash,expected_cash_value::text AS expected_cash,
-              variance_value::text AS variance,receipt->>'status' AS status,received_at,
-              counted_cash_value IS NULL OR expected_cash_value IS NULL OR variance_value IS NULL AS invalid
-            FROM selected WHERE event_type IN ('cashup.submitted','cashup.reviewed','cashup.reopened')
+              receipt->>'product_id' AS product_id,receipt->>'lot_id' AS lot_id,
+              receipt->>'reason' AS reason,receipt->>'status' AS status,received_at
+            FROM selected WHERE event_type = 'stock.lot.released'
+          ), cashups AS (
+            SELECT selected.event_type,selected.operation_id,selected.commit_sequence::text,selected.business_date,
+              selected.receipt->>'cashup_id' AS cashup_id,COALESCE(selected.receipt->>'shift_id',source.receipt->>'shift_id') AS shift_id,
+              COALESCE(selected.counted_cash_value,source.counted_cash_value)::text AS counted_cash,
+              COALESCE(selected.expected_cash_value,source.expected_cash_value)::text AS expected_cash,
+              COALESCE(selected.variance_value,source.variance_value)::text AS variance,
+              selected.receipt->>'status' AS status,selected.receipt->>'reviewed_by' AS reviewed_by,
+              COALESCE(selected.receipt->>'submitted_by',source.receipt->>'submitted_by') AS submitted_by,selected.received_at,
+              COALESCE(selected.counted_cash_value,source.counted_cash_value) IS NULL
+                OR COALESCE(selected.expected_cash_value,source.expected_cash_value) IS NULL
+                OR COALESCE(selected.variance_value,source.variance_value) IS NULL AS invalid
+            FROM selected
+            LEFT JOIN LATERAL (
+              SELECT CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END AS receipt,
+                CASE WHEN (CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'counted_cash' ~ '^-?[0-9]+([.][0-9]{1,2})?$'
+                  THEN ((CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'counted_cash')::numeric END AS counted_cash_value,
+                CASE WHEN (CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'expected_cash' ~ '^-?[0-9]+([.][0-9]{1,2})?$'
+                  THEN ((CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'expected_cash')::numeric END AS expected_cash_value,
+                CASE WHEN (CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'variance' ~ '^-?[0-9]+([.][0-9]{1,2})?$'
+                  THEN ((CASE WHEN e.payload ? 'receipt' THEN e.payload->'receipt' ELSE e.payload END)->>'variance')::numeric END AS variance_value
+              FROM cloud_ingest.events e
+              WHERE e.authority_id=$1 AND e.business_id=$2 AND e.outlet_id=$3
+                AND e.event_type IN ('cashup.submitted','cashup.reopened')
+                AND e.commit_sequence < selected.commit_sequence
+                AND e.payload #>> '{receipt,cashup_id}' = selected.receipt->>'cashup_id'
+                OR e.authority_id=$1 AND e.business_id=$2 AND e.outlet_id=$3
+                AND e.event_type IN ('cashup.submitted','cashup.reopened')
+                AND e.commit_sequence < selected.commit_sequence
+                AND e.payload->>'cashup_id' = selected.receipt->>'cashup_id'
+              ORDER BY e.commit_sequence DESC LIMIT 1
+            ) source ON selected.event_type = 'cashup.reviewed'
+            WHERE selected.event_type IN ('cashup.submitted','cashup.reviewed','cashup.reopened')
           ), summary AS (
-            SELECT count(*) FILTER(WHERE event_type LIKE 'stock.%')::integer AS stock_movement_count,
+            SELECT count(*) FILTER(WHERE event_type LIKE 'stock.%' AND event_type <> 'stock.lot.released')::integer AS stock_movement_count,
               count(*) FILTER(WHERE event_type='cashup.submitted')::integer AS cashup_count,
               COALESCE(sum(variance_value) FILTER(WHERE event_type='cashup.submitted'),0)::text AS submitted_variance_total,
               ((SELECT count(*) FROM stock WHERE invalid)+(SELECT count(*) FROM cashups WHERE invalid))::integer AS invalid_rows
@@ -363,6 +410,7 @@ export async function startOwnerReceiver(options) {
           SELECT (SELECT row_to_json(summary) FROM summary) AS summary,
             COALESCE((SELECT jsonb_agg(to_jsonb(stock) - 'invalid' ORDER BY commit_sequence DESC) FROM stock),'[]'::jsonb) AS stock_movements,
             COALESCE((SELECT jsonb_agg(to_jsonb(cashups) - 'invalid' ORDER BY commit_sequence DESC) FROM cashups),'[]'::jsonb) AS cashups,
+            COALESCE((SELECT jsonb_agg(to_jsonb(lot_events) ORDER BY commit_sequence DESC) FROM lot_events),'[]'::jsonb) AS stock_lot_events,
             COALESCE((SELECT max(period_event_count) FROM selected),0)::integer AS period_event_count,
             (SELECT last_ingested_at FROM cloud_ingest.watermarks WHERE authority_id=$1) AS last_ingested_at,
             (SELECT max_ingested_sequence::text FROM cloud_ingest.watermarks WHERE authority_id=$1) AS max_ingested_sequence
@@ -371,22 +419,22 @@ export async function startOwnerReceiver(options) {
                 const complete = !truncated && Number(summary.invalid_rows) === 0;
                 const receivedAt = new Date().toISOString();
                 const stale = !row.last_ingested_at || Date.parse(receivedAt) - new Date(row.last_ingested_at).getTime() > 20 * 60_000;
-                send(200, { ok: true, bar: { key_id: keyId, business_id: link.business_id, outlet_id: link.outlet_id }, period: { from, to }, complete, truncated, summary: complete ? { stock_movement_count: summary.stock_movement_count, cashup_count: summary.cashup_count, submitted_variance_total: summary.submitted_variance_total } : null, stock_movements: complete ? row.stock_movements : [], cashups: complete ? row.cashups : [], last_ingested_at: row.last_ingested_at, max_ingested_sequence: row.max_ingested_sequence, received_at: receivedAt, stale });
+                send(200, { ok: true, bar: { key_id: keyId, business_id: link.business_id, outlet_id: link.outlet_id }, period: { from, to }, complete, truncated, summary: complete ? { stock_movement_count: summary.stock_movement_count, cashup_count: summary.cashup_count, submitted_variance_total: summary.submitted_variance_total } : null, stock_movements: complete ? row.stock_movements : [], stock_lot_events: complete ? row.stock_lot_events : [], cashups: complete ? row.cashups : [], last_ingested_at: row.last_ingested_at, max_ingested_sequence: row.max_ingested_sequence, received_at: receivedAt, stale });
                 return;
             }
             throw new Refusal(404, 'This operation is unavailable. The remote owner view cannot change Bar trading records.');
         }
         catch (error) {
-            const e = error;
+            const e = error as Error & { status?: number; httpStatus?: number; code?: string };
             const status = e.status ?? e.httpStatus ?? (e.code === '23505' || e.code === 'BL001' ? 409 : 500);
             send(status, { ok: false, message: status >= 500 ? 'The owner service could not complete this request. Retry safely.' : e.message ?? 'Request refused.' });
         }
     };
-    const listener = (req, res) => { void handler(req, res); };
+    const listener = (req: IncomingMessage, res: ServerResponse) => { void handler(req, res); };
     const server = options.tls ? httpsServer({ cert: readFileSync(options.tls.certFile), key: readFileSync(options.tls.keyFile) }, listener) : httpServer(listener);
     server.requestTimeout = 30000;
     server.headersTimeout = 15000;
     server.maxHeadersCount = 50;
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(options.port ?? 8792, host, () => { server.off('error', reject); resolve(); }); });
-    return { server, close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port ?? 8792, host, () => { server.off('error', reject); resolve(); }); });
+    return { server, close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
 }

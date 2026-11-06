@@ -78,8 +78,10 @@ test('offline reads fail fast to cache and errors read human', () => {
   // The preload bridge stays a dumb pipe (pinned by production guardrails);
   // human wording lives in a shared helper applied at display points.
   const preload = read('src/preload/index.js')
-  assert.match(preload, /const invoke = \(channel, \.\.\.args\) => ipcRenderer\.invoke\(channel, \.\.\.args\)/)
+  assert.match(preload, /createPreloadTransport\(ipcRenderer\)/)
   assert.doesNotMatch(preload, /cleanInvokeError/)
+  const transport = read('src/preload/transport.js')
+  assert.match(transport, /const invoke = \(channel, \.\.\.args\) => ipcRenderer\.invoke\(channel, \.\.\.args\)/)
   const helper = read('src/shared/transportErrors.js')
   assert.match(helper, /Error invoking remote method/)
   const stock = read('src/renderer/src/components/hospitality-pos/HposStock.jsx')

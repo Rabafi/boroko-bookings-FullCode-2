@@ -66,6 +66,7 @@ export interface CloudSyncWorkerConfig {
   enabled: boolean
   reason?: string
   business_id?: string
+  outlet_id?: string
   authority_id?: string
   authority_epoch?: number
   receiver_url?: string | null

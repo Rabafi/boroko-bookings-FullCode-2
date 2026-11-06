@@ -1,6 +1,7 @@
 // Campsite quotation conversion carry: SQL contract on the disposable database.
-// Applies supabase/migrations/20261014030000_campsite_quotation_conversion_carry.sql
-// on top of the fully-migrated disposable schema and exercises end to end:
+// Inspects and exercises the already-deployed disposable schema. It never
+// applies migrations, since the source rewrite is a one-time patch and later
+// wrappers must remain authoritative. Coverage includes:
 // - single-line campsite quotation converts with carried tents/vehicles,
 //   accommodation_kind and a details row, with the quoted total verified;
 // - quoted-total mismatch fails closed with a re-quote repair path;
@@ -29,9 +30,14 @@ try {
 }
 
 if (blocked || !connected) {
-  test('campsite quotation conversion SQL contract (no disposable database)', {
-    skip: 'LUNA_REMEDIATION_TEST_DB_URL absent: ' + (blocked?.message || 'no disposable database connection')
-  }, () => {})
+  const reason = blocked?.message || 'no disposable database connection'
+  if (process.env.LUNA_REMEDIATION_REQUIRE_DB === '1') {
+    test('campsite quotation conversion SQL contract requires the verified disposable database', () => {
+      throw new Error('BLOCKED campsite-quotation-disposable: ' + reason)
+    })
+  } else {
+    test('campsite quotation conversion SQL contract (no disposable database)', { skip: reason }, () => {})
+  }
 } else {
   const db = connected.client
 
@@ -67,7 +73,7 @@ if (blocked || !connected) {
   assert.ok(groupDefinition.includes('x.value->>\'tents\''), 'current multi-room wrapper carries quoted tent occupancy')
   assert.ok(groupDefinition.includes('x.value->>\'vehicles\''), 'current multi-room wrapper carries quoted vehicle occupancy')
 
-  const baseDate = String((await db.query('select current_date as today')).rows[0].today).slice(0, 10)
+  const baseDate = (await db.query('select current_date::text as today')).rows[0].today
   const day = (offset) => {
     const date = new Date(`${baseDate}T00:00:00Z`)
     date.setUTCDate(date.getUTCDate() + offset)
@@ -179,6 +185,11 @@ if (blocked || !connected) {
         `select count(*)::integer as c from public.bookings where lodge_id = $1 and quotation_id = $2`, [lodge, qid]
       )).rows[0].c)
       assert.equal(bookingCount, 1)
+      const detailsCount = Number((await db.query(
+        `select count(*)::integer as c from public.booking_accommodation_details where booking_id = $1 and lodge_id = $2`,
+        [bookingId, lodge]
+      )).rows[0].c)
+      assert.equal(detailsCount, 1, 'exact replay keeps one authoritative accommodation-details row')
     } finally {
       await endSession()
     }
@@ -197,14 +208,40 @@ if (blocked || !connected) {
     })
     await asSession()
     try {
-      await assert.rejects(
-        call('public.convert_quotation_to_booking($1, $2, 0, $3, null)', [qid, lodge, 'cash']),
-        /does not match the campsite rate/
-      )
+      const bookingsBefore = Number((await db.query(
+        'select count(*)::integer as c from public.bookings where lodge_id = $1', [lodge]
+      )).rows[0].c)
+      const detailsBefore = Number((await db.query(
+        'select count(*)::integer as c from public.booking_accommodation_details where lodge_id = $1', [lodge]
+      )).rows[0].c)
+      const invoicesBefore = Number((await db.query(
+        'select count(*)::integer as c from public.invoices where lodge_id = $1', [lodge]
+      )).rows[0].c)
+      await db.query('savepoint quoted_total_mismatch')
+      try {
+        await assert.rejects(
+          call('public.convert_quotation_to_booking($1, $2, 0, $3, null)', [qid, lodge, 'cash']),
+          /does not match the campsite rate/
+        )
+      } finally {
+        await db.query('rollback to savepoint quoted_total_mismatch')
+        await db.query('release savepoint quoted_total_mismatch')
+      }
       const count = Number((await db.query(
         `select count(*)::integer as c from public.bookings where lodge_id = $1 and quotation_id = $2`, [lodge, qid]
       )).rows[0].c)
       assert.equal(count, 0, 'no partial booking row on rejected conversion')
+      assert.equal(Number((await db.query(
+        'select count(*)::integer as c from public.bookings where lodge_id = $1', [lodge]
+      )).rows[0].c), bookingsBefore, 'failed conversion creates no other booking')
+      assert.equal(Number((await db.query(
+        'select count(*)::integer as c from public.booking_accommodation_details where lodge_id = $1', [lodge]
+      )).rows[0].c), detailsBefore, 'failed conversion creates no accommodation detail')
+      assert.equal(Number((await db.query(
+        'select count(*)::integer as c from public.invoices where lodge_id = $1', [lodge]
+      )).rows[0].c), invoicesBefore, 'failed conversion creates no invoice')
+      assert.equal((await db.query('select status from public.quotations where id = $1', [qid])).rows[0].status,
+        'accepted', 'failed conversion leaves the quotation available for correction')
     } finally {
       await endSession()
     }
@@ -265,13 +302,14 @@ if (blocked || !connected) {
     })
     await asSession()
     try {
+      const groupLines = [
+        { room_id: siteId, adults: 2, children: 0, tents: 2, vehicles: 0 },
+        { room_id: site2Id, adults: 2, children: 0, tents: 1, vehicles: 0 }
+      ]
       const converted = await call(
         'public.create_multi_room_booking($1, $2, $3, $4, $5, $6, 0, null, $7, $8, $9, $10)',
         [lodge, customerId, day(30), day(32),
-          JSON.stringify([
-            { room_id: siteId, adults: 2, children: 0, tents: 2, vehicles: 0 },
-            { room_id: site2Id, adults: 2, children: 0, tents: 1, vehicles: 0 }
-          ]),
+          JSON.stringify(groupLines),
           600, `[STAY_GROUP:quotation-${qid}] [STAY_ROOMS:2]`, userId,
           `quotation-${qid}`, `quotation-conversion:${qid}`]
       )
@@ -283,6 +321,48 @@ if (blocked || !connected) {
         [converted.booking_ids]
       )).rows[0].t
       assert.equal(tents, 3, 'per-line tent counts persisted across children')
+      const quotationState = (await db.query(
+        `select status, converted_booking_id from public.quotations where id = $1 and lodge_id = $2`, [qid, lodge]
+      )).rows[0]
+      assert.equal(quotationState.status, 'converted', 'authoritative multi-room conversion finalizes the source quotation')
+      assert.equal(quotationState.converted_booking_id, converted.booking_ids[0], 'quotation links to the lead group booking')
+
+      const groupLineCount = async () => Number((await db.query(
+        `select count(*)::integer as c from public.booking_invoice_group_lines where booking_id = any($1::uuid[]) and lodge_id = $2`,
+        [converted.booking_ids, lodge]
+      )).rows[0].c)
+      const beforeReplayLines = await groupLineCount()
+      assert.equal(beforeReplayLines, 2, 'every group booking belongs to the authoritative invoice group')
+      const invoicesBeforeReplay = Number((await db.query(
+        'select count(*)::integer as c from public.invoices where lodge_id = $1', [lodge]
+      )).rows[0].c)
+      const replay = await call(
+        'public.create_multi_room_booking($1, $2, $3, $4, $5, $6, 0, null, $7, $8, $9, $10)',
+        [lodge, customerId, day(30), day(32), JSON.stringify(groupLines), 600,
+          `[STAY_GROUP:quotation-${qid}] [STAY_ROOMS:2]`, userId,
+          `quotation-${qid}`, `quotation-conversion:${qid}`]
+      )
+      assert.equal(replay.success, true, 'exact multi-unit replay succeeds')
+      assert.deepEqual(replay.booking_ids, converted.booking_ids, 'exact multi-unit replay returns the saved ordered children')
+      const quotationAfterReplay = (await db.query(
+        `select status, converted_booking_id from public.quotations where id = $1 and lodge_id = $2`, [qid, lodge]
+      )).rows[0]
+      assert.equal(quotationAfterReplay.status, 'converted')
+      assert.equal(quotationAfterReplay.converted_booking_id, converted.booking_ids[0], 'replay preserves quotation-to-lead binding')
+      const replayBookingCount = Number((await db.query(
+        `select count(*)::integer as c from public.bookings where id = any($1::uuid[]) and lodge_id = $2`,
+        [converted.booking_ids, lodge]
+      )).rows[0].c)
+      const replayDetailsCount = Number((await db.query(
+        `select count(*)::integer as c from public.booking_accommodation_details where booking_id = any($1::uuid[]) and lodge_id = $2`,
+        [converted.booking_ids, lodge]
+      )).rows[0].c)
+      assert.equal(replayBookingCount, 2, 'replay creates no additional child booking')
+      assert.equal(replayDetailsCount, 2, 'replay creates no duplicate detail rows')
+      assert.equal(await groupLineCount(), beforeReplayLines, 'replay creates no additional invoice group membership')
+      assert.equal(Number((await db.query(
+        'select count(*)::integer as c from public.invoices where lodge_id = $1', [lodge]
+      )).rows[0].c), invoicesBeforeReplay, 'replay creates no additional invoice')
     } finally {
       await endSession()
     }

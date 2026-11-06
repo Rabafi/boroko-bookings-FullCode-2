@@ -146,6 +146,7 @@ export default function HposLayout() {
     access?.entitlement?.lodge_id || null
   )], [access?.entitlement]);
   const { user, logout } = useAuth();
+  const isLocalBarAuthority = user?.localAuthority === true;
   const [syncStatus, setSyncStatus] = useState({
     pending: 0,
     failed: 0,
@@ -216,6 +217,7 @@ export default function HposLayout() {
       location.pathname.startsWith('/hpos/checks/');
     let active = true;
     const poll = async () => {
+      if (isLocalBarAuthority) return;
       if (document.visibilityState === 'hidden') return;
       const [tabsResult, ticketsResult] = await Promise.allSettled([
         onChecksPage
@@ -260,7 +262,7 @@ export default function HposLayout() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisible);
     };
-  }, [barOnly, location.pathname]);
+  }, [barOnly, isLocalBarAuthority, location.pathname]);
 
   // Electron can retain stale hit-test rectangles after a route is lazy-loaded.
   // Force a settled layout on navigation instead of requiring a manual resize.
@@ -289,6 +291,7 @@ export default function HposLayout() {
   useEffect(() => {
     let active = true;
     const poll = async () => {
+      if (isLocalBarAuthority) return;
       try {
         const status = await window.api?.sync?.getStatus?.();
         if (active && status)
@@ -301,7 +304,7 @@ export default function HposLayout() {
       active = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [isLocalBarAuthority]);
 
   const role = String(access?.role || user?.role || '').toLowerCase();
   const dockItems = useMemo(
@@ -379,6 +382,24 @@ export default function HposLayout() {
     setManagePinBusy(true);
     setManagePinError('');
     try {
+      if (isLocalBarAuthority) {
+        if (typeof window.api?.barLocal?.verifyManagerPin !== 'function') {
+          setManagePinError('Local Manage PIN verification is unavailable in this app build. Fully close and reopen the app so its local service connection can be checked, then try again. Your PIN has not been verified.')
+          return
+        }
+        const result = await window.api?.barLocal?.verifyManagerPin?.({ staff_id: user.id, pin });
+        if (result?.success === true) {
+          const unlockedAt = Date.now();
+          setManageUnlockAt(unlockedAt);
+          try { sessionStorage.setItem(MANAGE_UNLOCK_STORAGE_KEY, String(unlockedAt)); } catch {}
+          const destination = pendingManageRoute || '/hpos/manage';
+          closeManagePin();
+          navigate(destination);
+          return;
+        }
+        setManagePinError(result?.error || 'This PIN is not authorized to unlock Manage.');
+        return;
+      }
       // Main-process code (IPC handler + capability) only loads on a full
       // relaunch. Without it every PIN would fail identically, so say so
       // instead of reporting a correct PIN as incorrect.
@@ -402,7 +423,7 @@ export default function HposLayout() {
     } finally {
       setManagePinBusy(false);
     }
-  }, [managePin, user, pendingManageRoute, closeManagePin, navigate]);
+  }, [isLocalBarAuthority, managePin, user, pendingManageRoute, closeManagePin, navigate]);
 
   // PIN dialog a11y: Escape-to-close, focus trap, and return focus to the
   // opener. Error/help status regions keep their alert/status live roles.
@@ -615,15 +636,16 @@ export default function HposLayout() {
 
   const startOrder = useCallback(() => navigate('/hpos/pos'), [navigate]);
   const searchActions = useMemo(
-    () =>
-      HPOS_SEARCH_ACTIONS.filter(
+    () => {
+      return HPOS_SEARCH_ACTIONS.filter(
         (action) =>
           (!action.restaurantOnly || !barOnly || (action.barFeature && barFeatures.includes(action.barFeature))) &&
           (!action.barOnly || barOnly) &&
           (!barOnly || !isBarOnlyBlockedPath(action.route, barFeatures)) &&
           canAccessCapability(access, action.capability),
-      ),
-    [access, barFeatures, barOnly],
+      );
+    },
+    [access, barFeatures, barOnly, isLocalBarAuthority],
   );
   const commands = useMemo(
     () =>
@@ -639,7 +661,7 @@ export default function HposLayout() {
                 : null,
         })),
         ...searchActions,
-        canAccessCapability(access, 'reports.view') && {
+        !isLocalBarAuthority && canAccessCapability(access, 'reports.view') && {
           route: barOnly ? '/hpos/reports' : '/restaurant/finance-close?tab=sales',
           label: barOnly
             ? 'Bar sales & control reports'
@@ -647,13 +669,13 @@ export default function HposLayout() {
           group: 'Money',
           keywords: 'export excel pdf performance',
         },
-        canAccessCapability(access, 'expenses.view') && {
+        !isLocalBarAuthority && canAccessCapability(access, 'expenses.view') && {
           route: barOnly ? '/hpos/expenses' : '/restaurant/finance-close?tab=expenses',
           label: 'Record or review expenses',
           group: 'Money',
           keywords: 'spend cost export',
         },
-        canAccessCapability(access, 'data.import') && {
+        !isLocalBarAuthority && canAccessCapability(access, 'data.import') && {
           route: '/data-management',
           label: 'Data, imports & backups',
           group: 'Business',
@@ -665,7 +687,7 @@ export default function HposLayout() {
           group: 'Business',
         },
       ].filter(Boolean),
-    [access, barOnly, dockItems, liveCounts, role, searchActions],
+    [access, barOnly, dockItems, isLocalBarAuthority, liveCounts, role, searchActions],
   );
 
   return (
@@ -677,6 +699,7 @@ export default function HposLayout() {
         settings={settings}
         user={user}
         syncStatus={syncStatus}
+        localAuthority={isLocalBarAuthority}
         trialStatus={access?.entitlement}
         barOnly={barOnly}
         isPosRoute={isPosRoute}
@@ -740,7 +763,7 @@ export default function HposLayout() {
               type="button"
               className={`hpos-manage-trigger ${currentPath === '/hpos/manage' ? 'is-active' : ''}`}
               onClick={() => requestManageAccess('/hpos/manage')}
-              title="Manage (manager PIN required)"
+              title={isLocalBarAuthority ? 'Manage local Bar operations' : 'Manage (manager PIN required)'}
               aria-haspopup="dialog"
             >
               <span className="hpos-rail-icon">
@@ -792,7 +815,7 @@ export default function HposLayout() {
               <BarAddonBadge addonName={currentAddon.displayName} featureKey={currentAddonFeature} />
             </div>
           )}
-          {isRoot ? <Navigate to="/hpos/pos" replace /> : (isGatedManageRoute && !isManageUnlocked ? (
+          {isRoot ? <Navigate to="/hpos/pos" replace /> : (isGatedManageRoute && !isLocalBarAuthority && !isManageUnlocked ? (
             <section className="hpos-manage-locked" aria-label="Manage locked" style={{ display: 'grid', placeItems: 'center', gap: '10px', maxWidth: '520px', margin: '48px auto', padding: '32px', textAlign: 'center', border: '1px solid rgba(55,70,57,.14)', borderRadius: '22px', background: '#fffdf8' }}>
               <span style={{ display: 'grid', placeItems: 'center', width: '52px', height: '52px', borderRadius: '16px', background: 'rgba(57,112,93,.12)', color: '#39705d' }}><ShieldCheck size={28} /></span>
               <p className="hpos-eyebrow">Manager access</p>
@@ -800,7 +823,14 @@ export default function HposLayout() {
               <p style={{ margin: 0, color: '#756a70', fontSize: '12px', lineHeight: 1.55 }}>Stock, Cash &amp; close, Sales and the Manage workspace need a fresh manager PIN. Works offline — your PIN is checked by the server when online and by this device&apos;s trusted check when offline, and never stored.</p>
               <button type="button" onClick={() => requestManageAccess(currentPath + (location.search || ''))} style={{ minHeight: '44px', padding: '0 22px', border: 0, borderRadius: '11px', background: '#39705d', color: '#fff', fontSize: '13px', fontWeight: 800, cursor: 'pointer' }}>Unlock with manager PIN</button>
             </section>
-          ) : <Outlet />)}
+          ) : (isGatedManageRoute && isLocalBarAuthority && !isManageUnlocked ? (
+            <section className="hpos-manage-locked" aria-label="Manage locked" style={{ display: 'grid', placeItems: 'center', gap: '10px', maxWidth: '520px', margin: '48px auto', padding: '32px', textAlign: 'center', border: '1px solid rgba(55,70,57,.14)', borderRadius: '22px', background: '#fffdf8' }}>
+              <span className="hpos-eyebrow">Manager access</span>
+              <h2 style={{ margin: 0, color: '#2f2830' }}>Enter your manager PIN to continue</h2>
+              <p style={{ margin: 0, color: '#756a70', fontSize: '12px', lineHeight: 1.55 }}>The local Bar service verifies your PIN and permissions. Manage unlocks on this device for a limited time; privileged changes still require server approval.</p>
+              <button type="button" onClick={() => requestManageAccess(currentPath + (location.search || ''))} style={{ minHeight: '44px', padding: '0 22px', border: 0, borderRadius: '11px', background: '#39705d', color: '#fff', fontSize: '13px', fontWeight: 800, cursor: 'pointer' }}>Unlock with manager PIN</button>
+            </section>
+          ) : <Outlet />))}
         </main>
       </div>
       <HposCommandPalette
@@ -872,7 +902,7 @@ export default function HposLayout() {
                   inputMode="numeric"
                   autoComplete="off"
                   value={managePin}
-                  onChange={(event) => setManagePin(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  onChange={(event) => setManagePin(event.target.value.replace(/\D/g, '').slice(0, 12))}
                   disabled={managePinBusy}
                   placeholder="Enter PIN"
                   style={{ minHeight: '44px', padding: '0 14px', border: '1px solid #cfc2c8', borderRadius: '11px', fontSize: '16px', letterSpacing: '.2em' }}
@@ -889,7 +919,11 @@ export default function HposLayout() {
               </div>
               <small style={{ color: '#968a90', fontSize: '11px', lineHeight: 1.5 }}>Only managers and admins can unlock. Supervisors and cashiers cannot open Manage, even with a correct PIN.</small>
             </form>
-            {!helpOpen ? (
+            {!isLocalBarAuthority && <button type="button" disabled={managePinBusy} onClick={() => { closeManagePin(); navigate('/hpos/my-shift#my-staff-pin'); }} style={{ marginTop: 14, minHeight: 44, padding: '0 12px', border: '1px solid #cfc2c8', borderRadius: 11, background: '#fff', color: '#39705d', fontWeight: 800 }}>
+              No PIN yet? Set up My Staff PIN
+            </button>}
+            {!isLocalBarAuthority && <p style={{ margin: '6px 0', color: '#756a70', fontSize: 12 }}>Your sign-in password is separate from your PIN. Create your own PIN while signed in, then return to unlock Manage.</p>}
+            {!isLocalBarAuthority && (!helpOpen ? (
               <button
                 type="button"
                 onClick={() => { setHelpOpen(true); setHelpError(''); }}
@@ -905,7 +939,7 @@ export default function HposLayout() {
                   This sends a help request to support with your name — it appears in Command Central, and the reply comes back here via Check for reply.
                   Never type your PIN anywhere on this screen.
                 </p>
-                {syncStatus?.isOnline === false && (
+                {!isLocalBarAuthority && syncStatus?.isOnline === false && (
                   <p role="status" style={{ margin: 0, padding: '9px 11px', border: '1px solid rgba(245, 158, 11, .35)', borderRadius: '10px', background: 'rgba(245, 158, 11, .10)', color: '#92600a', fontSize: '12px' }}>
                     You appear offline. Help requests need a connection — reconnect first.
                   </p>
@@ -957,7 +991,7 @@ export default function HposLayout() {
                   Back to entering PIN
                 </button>
               </div>
-            )}
+            ))}
           </section>
         </div>
       )}

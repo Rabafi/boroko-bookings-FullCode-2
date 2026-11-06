@@ -4,11 +4,15 @@ import { useAuth } from '../contexts/AuthContext'
 import { FRONT_DESK_ONLY_MESSAGE, getBookingPayments, listInvoices } from '../lib/api'
 import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
 
+/** @typedef {{id?: string | null, amount?: number | string | null, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null, notes?: string | null}} InvoicePaymentExpectedView */
+/** @typedef {{booking_id: string, customer_name?: string | null, invoice_number?: string | null, issued_at?: string | null, amount_paid?: number | string | null, balance_due?: number | string | null, payment_status?: string | null}} InvoiceExpectedView */
+
+/** @param {{lodgeId: string, invoice: InvoiceExpectedView, onClose: () => void}} props */
 function LedgerSheet({ lodgeId, invoice, onClose }) {
-  const [payments, setPayments] = useState([])
+  const [payments, setPayments] = useState(/** @type {InvoicePaymentExpectedView[]} */ ([]))
 
   useEffect(() => {
-    getBookingPayments(lodgeId, invoice.booking_id).then(setPayments).catch(() => setPayments([]))
+    getBookingPayments(lodgeId, invoice.booking_id).then((rows) => setPayments(/** @type {InvoicePaymentExpectedView[]} */ (rows))).catch(() => setPayments([]))
   }, [invoice.booking_id, lodgeId])
 
   return (
@@ -44,15 +48,17 @@ function LedgerSheet({ lodgeId, invoice, onClose }) {
 }
 
 export default function Invoices() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const [loading, setLoading] = useState(true)
-  const [invoices, setInvoices] = useState([])
-  const [ledger, setLedger] = useState(null)
+  const [invoices, setInvoices] = useState(/** @type {InvoiceExpectedView[]} */ ([]))
+  const [ledger, setLedger] = useState(/** @type {InvoiceExpectedView | null} */ (null))
   const [search, setSearch] = useState('')
 
   const load = async () => {
     setLoading(true)
-    const data = await listInvoices(user.lodge_id, { forceFresh: true }).catch(() => [])
+    // The helper may return persisted query-cache JSON; its rows are not runtime validated.
+    const data = /** @type {InvoiceExpectedView[]} */ (await listInvoices(user.lodge_id, { forceFresh: true }).catch(() => []))
     setInvoices(data)
     setLoading(false)
   }

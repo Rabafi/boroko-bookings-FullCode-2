@@ -27,11 +27,12 @@ const api = {
     logout:         ()                => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'auth:logout'>>} */ (invoke('auth:logout'))
   },
   profiles: {
-    list:       ()              => invoke('profiles:list'),
-    getActive:  ()              => invoke('profiles:getActive'),
-    select:     (lodgeId)       => invoke('profiles:select', lodgeId),
-    createDraft: ()             => invoke('profiles:createDraft'),
-    removeDraft: (lodgeId)      => invoke('profiles:removeDraft', lodgeId)
+    // These expected views follow the concrete main handlers; IPC payloads are not runtime-validated.
+    list:       ()              => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileListReadView[]>} */ (invoke('profiles:list')),
+    getActive:  ()              => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileReadView|null>} */ (invoke('profiles:getActive')),
+    select:     (lodgeId)       => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileSelectResult>} */ (invoke('profiles:select', lodgeId)),
+    createDraft: ()             => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileCreateDraftResult>} */ (invoke('profiles:createDraft')),
+    removeDraft: (lodgeId)      => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileRemoveDraftResult>} */ (invoke('profiles:removeDraft', lodgeId))
   },
   setup: {
     initializeCompany: (payload)      => invoke('setup:initializeCompany', payload)
@@ -41,6 +42,8 @@ const api = {
   barLocal: {
     rendererReady: () => invoke('barLocal:rendererReady'),
     getStatus: () => invoke('barLocal:getStatus'),
+    getChooserEntry: () => invoke('barLocal:getChooserEntry'),
+    linkChooserDraft: (request) => invoke('barLocal:linkChooserDraft', request),
     serverSetupPreflight: () => invoke('barLocal:serverSetupPreflight'),
     serverSetupStatus: () => invoke('barLocal:serverSetupStatus'),
     trainingLaunch: () => invoke('barLocal:trainingLaunch'),
@@ -50,12 +53,14 @@ const api = {
     serverSetupUpdateOwnerEmail: (request) => invoke('barLocal:serverSetupUpdateOwnerEmail', request),
     serverSetupResume: (request) => invoke('barLocal:serverSetupResume', request),
     serverSetupCancel: () => invoke('barLocal:serverSetupCancel'),
+    selectLocalBarWorkspace: () => invoke('barLocal:selectLocalBarWorkspace'),
     selectCloudWorkspace: () => invoke('barLocal:selectCloudWorkspace'),
     openLocalBarWorkspace: (request) => invoke('barLocal:openLocalBarWorkspace', request),
     setupOwner: (request) => invoke('barLocal:setupOwner', request),
     pairDevice: (request) => invoke('barLocal:pairDevice', request),
     resumeProvisioning: (request) => invoke('barLocal:resumeProvisioning', request),
     login: (request) => invoke('barLocal:login', request),
+    verifyManagerPin: (request) => invoke('barLocal:verifyManagerPin', request),
     consumePostSetupNotice: () => invoke('barLocal:consumePostSetupNotice'),
     recoverOwnerPassword: (request) => invoke('barLocal:recoverOwnerPassword', request),
     logout: () => invoke('barLocal:logout'),
@@ -63,6 +68,9 @@ const api = {
     query: (name, filters) => invoke('barLocal:query', name, filters),
     requestApprovalForCommand: (request) => invoke('barLocal:requestApprovalForCommand', request),
     command: (request) => invoke('barLocal:command', request),
+    saveHposBarProduct: (request) => invoke('barLocal:nativeHposProductSave', request),
+    retryHposBarProduct: (operationId) => invoke('barLocal:nativeHposProductRetry', operationId),
+    readHposMenu: (kind) => invoke('barLocal:nativeHposMenuRead', kind),
     retryOperation: (operationId) => invoke('barLocal:retryOperation', operationId),
     getOpenIntents: () => invoke('barLocal:getOpenIntents'),
     getOperation: (operationId) => invoke('barLocal:getOperation', operationId),
@@ -220,7 +228,8 @@ const api = {
     refundGroup: (groupId, payload) => invoke('bookings:refundGroup', groupId, payload),
     refund: (bookingId, payload) => invoke('bookings:refund', bookingId, payload),
     createEvent: (data) => invoke('bookings:createEvent', data),
-    getPendingOnline: () => invoke('bookings:getPendingOnline'),
+    // Main maps its existing query/cache view; this assertion does not validate IPC data.
+    getPendingOnline: () => /** @type {Promise<import('../shared/desktopIpcContracts.js').PendingOnlineBookingReadView[]>} */ (invoke('bookings:getPendingOnline')),
     reschedule: (bookingId, data) => invoke('bookings:reschedule', bookingId, data)
   },
   customerCredit: {
@@ -560,7 +569,8 @@ const api = {
     attachCashupProof: (data) => invoke('pos:attachCashupProof', data),
     getCashupProofAttachments: (submissionId) => invoke('pos:getCashupProofAttachments', submissionId),
     createCashupProofSignedUrl: (submissionId, attachmentId) => invoke('pos:createCashupProofSignedUrl', submissionId, attachmentId),
-    getCurrentShift: (outletId, cashierId) => invoke('pos:getCurrentShift', outletId, cashierId),
+    // Main returns an expected query/cache row or null; the IPC value is not validated.
+    getCurrentShift: (/** @type {string|null} */ outletId, /** @type {string|null} */ cashierId) => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopPosCurrentShiftReadView|null>} */ (invoke('pos:getCurrentShift', outletId, cashierId)),
     getStaffOpenShift: (staffId) => invoke('pos:getStaffOpenShift', staffId),
     getStaffCashupSubmission: (shiftId) => invoke('pos:getStaffCashupSubmission', shiftId),
     activateSharedTillOperator: (data) => invoke('pos:activateSharedTillOperator', data),

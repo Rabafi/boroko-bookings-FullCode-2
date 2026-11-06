@@ -6,9 +6,10 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 import pg from 'pg'
-import { createHarness } from './harness.mjs'
+import { createHarness, sha256Text } from './harness.mjs'
 import { connectionConfig, loadTarget, assertClusterIdentity } from '../scripts/lib/db-target.mjs'
 import { startOwnerReceiver } from '../dist/ownerReceiver.js'
+import { canonicalJson } from '../dist/export.js'
 import { sign } from '../dist/ownerCrypto.js'
 
 const { Client, Pool } = pg
@@ -16,6 +17,7 @@ const SECRET = 'bar-owner-receiver-secret-0123456789abcdef0123456789'
 const PWA_ORIGIN = 'http://127.0.0.1:4173'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const sql = (name) => readFileSync(path.join(here, '..', 'db', 'cloud-receiver', name), 'utf8')
+const migrationSql = (name) => readFileSync(path.join(here, '..', 'db', 'migrations', name), 'utf8')
 const availablePort = () => new Promise((resolve, reject) => {
   const server = net.createServer()
   server.once('error', reject)
@@ -76,7 +78,7 @@ test('committed local Bar sale reaches the isolated owner receiver and existing-
     const enrollmentResponse = await ownerFetch('/v1/owner/enrollment', { token: session, body: {} })
     assert.equal(enrollmentResponse.status, 201)
     const enrollment = await enrollmentResponse.json()
-    const keyId = randomUUID()
+    const keyId = 'owner-key:test_01'
     const claim = await ownerFetch('/v1/links/claim', { body: {
       enrollment_code: enrollment.enrollment_code,
       key_id: keyId,
@@ -97,6 +99,40 @@ test('committed local Bar sale reaches the isolated owner receiver and existing-
     const statusBody = await linkStatus.json()
     assert.equal(statusBody.active, true)
     assert.equal(statusBody.authority_id, h.authorityId)
+
+    const secondaryOutletId = randomUUID()
+    await h.migrator.query('INSERT INTO bar_local.outlets(id,business_id,name,code) VALUES($1,$2,$3,$4)', [
+      secondaryOutletId, h.businessId, 'Synthetic Second Outlet', `S-${secondaryOutletId.slice(0, 8)}`
+    ])
+    const secondarySequence = (await h.migrator.query('SELECT commit_sequence FROM bar_local.allocate_sequence()')).rows[0].commit_sequence
+    const secondaryOperationId = randomUUID()
+    const secondaryEvent = (await h.migrator.query(`
+      INSERT INTO bar_local.outbox(commit_sequence,event_index,business_id,outlet_id,event_type,operation_id,authority_epoch,payload,payload_hash)
+      VALUES($1,0,$2,$3,'sale.committed',$4,1,'{}'::jsonb,$5) RETURNING event_id
+    `, [secondarySequence, h.businessId, secondaryOutletId, secondaryOperationId, sha256Text('{}')])).rows[0]
+    const oldBatchId = randomUUID()
+    const oldManifest = {
+      schema: 'bar-local-export-bundle', schema_version: 1, batch_id: oldBatchId,
+      authority_id: h.authorityId, authority_epoch: 1, business_id: h.businessId, outlet_id: secondaryOutletId,
+      from_sequence: Number(secondarySequence), to_sequence: Number(secondarySequence), checkpoint: Number(secondarySequence),
+      event_count: 1, created_at: '2026-11-03T00:00:00.000Z',
+      events: [{ event_id: secondaryEvent.event_id, commit_sequence: Number(secondarySequence), event_index: 0,
+        event_type: 'sale.committed', operation_id: secondaryOperationId, authority_epoch: 1,
+        payload: {}, payload_hash: sha256Text('{}'), business_date: '2026-11-03', created_at: '2026-11-03T00:00:00.000Z' }]
+    }
+    const oldManifestHash = sha256Text(canonicalJson(oldManifest))
+    await h.migrator.query(`
+      INSERT INTO bar_local.export_batches
+        (batch_id,from_sequence,to_sequence,event_count,manifest_hash,signature,key_id,file_name,status,checkpoint,
+         payload_hash,signature_key_id,signature_status,transport_status,manifest,business_id,outlet_id,authority_id,authority_epoch)
+      VALUES($1,$2,$2,1,$3,'old-prepared-signature','old-outlet-key','old-outlet-batch.json','ready',$2,
+        $3,'old-outlet-key','signed','prepared',$4::jsonb,$5,$6,$7,1)
+    `, [oldBatchId, secondarySequence, oldManifestHash, JSON.stringify(oldManifest), h.businessId, secondaryOutletId, h.authorityId])
+    await h.migrator.query('UPDATE bar_local.outbox SET export_batch_id=$1 WHERE event_id=$2', [oldBatchId, secondaryEvent.event_id])
+    await h.migrator.query(`
+      INSERT INTO bar_local.export_batch_items(batch_id,commit_sequence,event_index,event_id,payload_hash)
+      VALUES($1,$2,0,$3,$4)
+    `, [oldBatchId, secondarySequence, secondaryEvent.event_id, sha256Text('{}')])
 
     const shiftId = await h.openShift('100.00')
     const product = await h.call('cmd_catalogue_upsert', h.envelope('catalogue.upsert', {
@@ -129,6 +165,16 @@ test('committed local Bar sale reaches the isolated owner receiver and existing-
       })
     ])
     assert.equal(cloudConfig.rows[0].result.enabled, true)
+    const legacyNextBatch = migrationSql('0064_cloud_sync.sql').match(/CREATE OR REPLACE FUNCTION bar_local\.cloud_sync_next_batch\(\)[\s\S]*?\$\$;/)?.[0]
+    assert.ok(legacyNextBatch, 'the 0064 pre-outlet retry function must be available for upgrade coverage')
+    await h.migrator.query(legacyNextBatch)
+    await h.migrator.query(migrationSql('0079_cloud_sync_event_business_date.sql'))
+    await h.migrator.query(migrationSql('0080_cloud_sync_owner_outlet_scope.sql'))
+    const beforeRetryScope = (await h.runtime.query('SELECT bar_local.cloud_sync_next_batch() AS result')).rows[0].result
+    assert.equal(beforeRetryScope.batch_id, oldBatchId, 'the pre-0081 retry selector must reproduce the old-outlet blockage')
+    await h.migrator.query(migrationSql('0081_cloud_sync_retry_outlet_scope.sql'))
+    const afterRetryScope = (await h.runtime.query('SELECT bar_local.cloud_sync_next_batch() AS result')).rows[0].result
+    assert.equal(afterRetryScope.status, 'no_pending_batch', 'the upgrade must skip and preserve an older batch from another outlet')
 
     const today = (await h.migrator.query('SELECT business_date::text FROM bar_local.sales WHERE operation_id=$1', [committed.result?.operation_id ?? committed.receipt?.operation_id])).rows[0]?.business_date
       ?? (await h.migrator.query('SELECT business_date::text FROM bar_local.sales WHERE id=$1', [committed.result.sale_id])).rows[0].business_date
@@ -151,7 +197,28 @@ test('committed local Bar sale reaches the isolated owner receiver and existing-
     t.after(async () => { await cloudSync.stop(); await closePool(localPool) })
     const upload = await cloudSync.runNow({ reason: 'isolated_owner_projection_test' })
     assert.equal(upload.status, 'ok', JSON.stringify(upload))
-    assert.equal(upload.pending_events, 0)
+    const otherOutletPending = await h.migrator.query('SELECT export_batch_id FROM bar_local.outbox WHERE operation_id=$1', [secondaryOperationId])
+    assert.equal(otherOutletPending.rows.length, 1)
+    assert.equal(otherOutletPending.rows[0].export_batch_id, oldBatchId, 'the old other-outlet batch must retain its outbox ownership')
+    const oldBatch = (await h.migrator.query('SELECT status,transport_status,acknowledged_at FROM bar_local.export_batches WHERE batch_id=$1', [oldBatchId])).rows[0]
+    assert.deepEqual(oldBatch, { status: 'ready', transport_status: 'prepared', acknowledged_at: null }, 'the excluded batch must remain untouched')
+
+    const cashupId = cashupCommit.result.cashup_id
+    const reviewedBy = randomUUID()
+    const syntheticEvents = [
+      { type: 'cashup.reviewed', payload: { cashup_id: cashupId, status: 'approved', reviewed_by: reviewedBy } },
+      { type: 'stock.lot.wasted', payload: { product_id: product.result.product_id, lot_id: randomUUID(), delta: '-1', remaining_quantity: '3', reason: 'synthetic projection check' } },
+      { type: 'stock.lot.released', payload: { product_id: product.result.product_id, lot_id: randomUUID(), remaining_quantity: '3', status: 'released' } }
+    ]
+    for (const [eventIndex, event] of syntheticEvents.entries()) {
+      await receiverPool.query(`
+        INSERT INTO cloud_ingest.events
+          (authority_id,event_id,batch_id,commit_sequence,event_index,event_type,operation_id,authority_epoch,business_id,outlet_id,business_date,payload,payload_hash)
+        SELECT $1,$2,$3,COALESCE(max(commit_sequence),0)+1,$4,$5,$6,1,$7,$8,$9,$10::jsonb,repeat('a',64)
+        FROM cloud_ingest.events WHERE authority_id=$1
+      `, [h.authorityId, randomUUID(), randomUUID(), eventIndex, event.type, randomUUID(), h.businessId, h.outletId, today,
+        JSON.stringify(event.payload)])
+    }
 
     const salesResponse = await ownerFetch(`/v1/owner/bars/${keyId}/sales?from=${today}&to=${today}`, { token: session })
     assert.equal(salesResponse.status, 200)
@@ -167,15 +234,22 @@ test('committed local Bar sale reaches the isolated owner receiver and existing-
     assert.ok(sales.last_ingested_at)
 
     const operationsResponse = await ownerFetch(`/v1/owner/bars/${keyId}/operations?from=${today}&to=${today}`, { token: session })
-    assert.equal(operationsResponse.status, 200)
+    assert.equal(operationsResponse.status, 200, await operationsResponse.clone().text())
     const operations = await operationsResponse.json()
     assert.equal(operations.complete, true)
     assert.equal(operations.summary.cashup_count, 1)
     assert.equal(Number(operations.summary.submitted_variance_total), 0)
-    assert.equal(operations.cashups.length, 1)
-    assert.equal(operations.cashups[0].status, 'submitted')
+    assert.equal(operations.cashups.length, 2)
+    const reviewedCashup = operations.cashups.find((row) => row.event_type === 'cashup.reviewed')
+    assert.equal(reviewedCashup.status, 'approved')
+    assert.equal(reviewedCashup.reviewed_by, reviewedBy)
+    assert.equal(reviewedCashup.counted_cash, operations.cashups.find((row) => row.event_type === 'cashup.submitted').counted_cash)
     assert.ok(operations.summary.stock_movement_count >= 1)
     assert.ok(operations.stock_movements.some((row) => Number(row.delta) === 5))
+    const wasteMovement = operations.stock_movements.find((row) => row.event_type === 'stock.lot.wasted')
+    assert.equal(wasteMovement.quantity, null)
+    assert.equal(wasteMovement.remaining_quantity, '3')
+    assert.equal(operations.stock_lot_events.length, 1)
 
     const preflight = await fetch(`${receiverUrl}/v1/owner/bars`, {
       method: 'OPTIONS', headers: { Origin: PWA_ORIGIN, 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization' }

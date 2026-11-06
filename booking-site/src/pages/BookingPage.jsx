@@ -44,6 +44,14 @@ const BOOKING_IDEMPOTENCY_KEY = 'booking-idempotency-key'
 const BOOKING_REJECTED_INTENT_KEY = 'booking-rejected-intent'
 
 /** @typedef {{guest_first_name: string, guest_last_name: string, guest_email: string, guest_phone: string, adults: number|string, children: number|string, tents: number|string, vehicles: number|string, notes: string, [field: string]: string|number}} BookingFormExpectedData */
+/** These are consumer views of state produced by LodgePage and persisted by useSessionState. Router/session JSON remains unvalidated. */
+/** @typedef {{id: string, slug?: string, lodge_name: string, currency: string, phone: string|null, email: string|null, whatsapp_number: string, website: string|null, logo: string, hero_image: string, booking_payment_terms: string, booking_cancellation_policy: string, booking_house_rules: string}} BookingLodgeExpectedView */
+/** @typedef {{id: string, room_number: string|null, room_type: string|null, total_price: number, rate_per_night: number, accommodation_kind: string, capacity_adults: number|null, capacity_children: number, max_tents: number|null, max_vehicles: number|null, rate_mode: string, rate_per_person: number, rate_per_tent: number, rate_per_vehicle: number, max_occupancy: number|null, photo?: string|null, photos?: string[], photo_count?: number, amenities?: string[], description?: string|null}} BookingRoomExpectedView */
+/** @typedef {{lodge: BookingLodgeExpectedView, room: BookingRoomExpectedView, rooms?: BookingRoomExpectedView[], bookingType?: string, checkIn?: string, checkOut?: string, nights?: number}} BookingStateExpectedView */
+/** @typedef {{idempotency_key: string, booking_type: string, room_id: string, check_in: string, check_out: string, guest_first_name: string, guest_last_name: string, guest_email: string, guest_phone: string, adults: number, children: number, tents: number, vehicles: number, notes: string, rooms?: {room_id: string, adults: number, children: number, tents: number, vehicles: number}[]}} PublicBookingRequestExpectedView */
+/** @typedef {{success: true, booking_id: string, total_amount: number, guest_email: string, confirmation_token?: string|null}|{success: false, error?: string|null, code?: string|null}} PublicBookingCreateResponseExpectedView */
+/** @typedef {{message: unknown, status: number}} BookingRpcErrorExpectedView */
+/** @typedef {{success: boolean, photos?: string[]}} PublicRoomMediaResponseExpectedView */
 
 function createBookingIdempotencyKey() {
   const randomUuid = globalThis.crypto?.randomUUID
@@ -79,7 +87,7 @@ function validatePhone(phone) {
 /**
  * Build booking state to persist so the page survives a refresh.
  */
-/** @param {{lodge: Record<string, unknown>, room: Record<string, unknown>, rooms: Record<string, unknown>[], bookingType: string, checkIn: string, checkOut: string, nights: number}} state */
+/** @param {{lodge: BookingLodgeExpectedView, room: BookingRoomExpectedView, rooms: BookingRoomExpectedView[], bookingType: string, checkIn: string, checkOut: string, nights: number}} state */
 function buildBookingState({ lodge, room, rooms, bookingType, checkIn, checkOut, nights }) {
   return {
     lodge: {
@@ -168,12 +176,15 @@ export default function BookingPage() {
 
   // ── Reconstruct state from multiple sources ───────────────────────────────
   const rawState = useMemo(() => {
+    // These assertions describe the established LodgePage router-state producer and
+    // this page's own persisted view; neither source performs shape validation.
+    const routerState = /** @type {BookingStateExpectedView|undefined|null} */ (state)
     // 1. Prefer React Router state
-    if (state?.lodge && (state?.room || Array.isArray(state?.rooms))) {
-      return state
+    if (routerState?.lodge && (routerState?.room || Array.isArray(routerState?.rooms))) {
+      return routerState
     }
     // 2. Fallback to sessionStorage
-    const cached = readSessionState(BOOKING_STATE_KEY)
+    const cached = /** @type {BookingStateExpectedView|null} */ (readSessionState(BOOKING_STATE_KEY))
     if (cached?.lodge && (cached?.room || Array.isArray(cached?.rooms))) {
       return cached
     }
@@ -184,13 +195,13 @@ export default function BookingPage() {
   // Persist incoming state to sessionStorage so it survives refreshes
   useSessionState(BOOKING_STATE_KEY, rawState)
 
-  const [lodge, setLodge] = useState(rawState?.lodge || null)
-  const [room, setRoom] = useState(rawState?.room || null)
-  const [rooms, setRooms] = useState(Array.isArray(rawState?.rooms) ? rawState.rooms : [])
-  const [bookingType, setBookingType] = useState(rawState?.bookingType || null)
-  const [checkIn, setCheckIn] = useState(rawState?.checkIn || '')
-  const [checkOut, setCheckOut] = useState(rawState?.checkOut || '')
-  const [nights, setNights] = useState(rawState?.nights || 1)
+  const [lodge, setLodge] = useState(/** @type {BookingLodgeExpectedView|null} */ (rawState?.lodge || null))
+  const [room, setRoom] = useState(/** @type {BookingRoomExpectedView|null} */ (rawState?.room || null))
+  const [rooms, setRooms] = useState(/** @type {BookingRoomExpectedView[]} */ (Array.isArray(rawState?.rooms) ? rawState.rooms : []))
+  const [bookingType, setBookingType] = useState(/** @type {string|null} */ (rawState?.bookingType || null))
+  const [checkIn, setCheckIn] = useState(/** @type {string} */ (rawState?.checkIn || ''))
+  const [checkOut, setCheckOut] = useState(/** @type {string} */ (rawState?.checkOut || ''))
+  const [nights, setNights] = useState(/** @type {number} */ (rawState?.nights || 1))
 
   // If we have a room ID in URL but no state, we can't fully reconstruct.
   // Show a graceful fallback with a link back to search.
@@ -244,14 +255,14 @@ export default function BookingPage() {
   // Keep one request key for this form intent.  A refresh or ambiguous
   // network retry must replay the same key; a successful submission clears it
   // so a later booking is a new intent.
-  const [idempotencyKey, setIdempotencyKey] = useState(() => readSessionState(BOOKING_IDEMPOTENCY_KEY) || createBookingIdempotencyKey())
+  const [idempotencyKey, setIdempotencyKey] = useState(() => /** @type {string} */ (readSessionState(BOOKING_IDEMPOTENCY_KEY) || createBookingIdempotencyKey()))
   useSessionState(BOOKING_IDEMPOTENCY_KEY, idempotencyKey)
   const bookingIntentFingerprint = JSON.stringify({
     slug, bookingType: effectiveBookingType, checkIn, checkOut,
     rooms: selectedRooms.map((entry) => ({ id: entry?.id, max_occupancy: entry?.max_occupancy, accommodation_kind: entry?.accommodation_kind })),
     form
   })
-  const [rejectedIntentFingerprint, setRejectedIntentFingerprint] = useState(() => readSessionState(BOOKING_REJECTED_INTENT_KEY) || null)
+  const [rejectedIntentFingerprint, setRejectedIntentFingerprint] = useState(() => /** @type {string|null} */ (readSessionState(BOOKING_REJECTED_INTENT_KEY) || null))
   useSessionState(BOOKING_REJECTED_INTENT_KEY, rejectedIntentFingerprint)
 
   useEffect(() => {
@@ -296,7 +307,8 @@ export default function BookingPage() {
     if (!hasState || !room?.id) return
 
     const mediaCacheKey = `room-media:${slug}:${room.id}`
-    const cachedMedia = readSessionState(mediaCacheKey)
+    // This expected cache view is authored below from the RPC result; parsing the session value is not validation.
+    const cachedMedia = /** @type {{photos?: string[]}|null} */ (readSessionState(mediaCacheKey))
     const cachedPhotos = Array.isArray(cachedMedia?.photos) ? cachedMedia.photos.filter(Boolean) : []
 
     if (cachedPhotos.length > 0) {
@@ -314,11 +326,11 @@ export default function BookingPage() {
     let active = true
 
     async function fetchRoomMedia() {
-      const { data, error: mediaError } = await rpc(
+      const { data, error: mediaError } = await /** @type {Promise<{data: PublicRoomMediaResponseExpectedView|null, error: BookingRpcErrorExpectedView|null}>} */ (rpc(
         'get_public_room_media',
         { p_slug: slug, p_room_id: room.id },
         { signal: controller.signal }
-      )
+      ))
 
       if (!active) return
       if (mediaError && isMissingRpcError(mediaError)) return
@@ -364,7 +376,7 @@ export default function BookingPage() {
   function validateForm() {
     /** @type {Record<string, string>} */
     const errors = {}
-    const fields = ['guest_first_name', 'guest_last_name', 'guest_email', 'guest_phone']
+    const fields = /** @type {Array<'guest_first_name'|'guest_last_name'|'guest_email'|'guest_phone'>} */ (['guest_first_name', 'guest_last_name', 'guest_email', 'guest_phone'])
     for (const name of fields) {
       const err = validateField(name, form[name])
       if (err) errors[name] = err
@@ -425,7 +437,7 @@ export default function BookingPage() {
     setLastSubmitTime(now)
     setSubmitting(true)
 
-    const bookingPayload = {
+    const bookingPayload = /** @type {PublicBookingRequestExpectedView} */ ({
       idempotency_key: idempotencyKey,
       booking_type: effectiveBookingType,
       room_id: selectedRooms[0]?.id || room.id,
@@ -440,14 +452,14 @@ export default function BookingPage() {
       tents: publicDraft.totals.tents,
       vehicles: publicDraft.totals.vehicles,
       notes: form.notes.trim()
-    }
+    })
     // The full-lodge RPC creates one exclusive-use booking from the lodge's
     // representative inventory row. Its contract accepts aggregate counts
     // and whole-property pricing; a per-room array would fail the one-row
     // receipt binding (and imply independent bookings that were not created).
     if (!isFullLodge) bookingPayload.rooms = publicDraft.lines
 
-    const { data, error: rpcError } = await rpc('create_online_booking', { p_slug: slug, payload: bookingPayload })
+    const { data, error: rpcError } = /** @type {{data: PublicBookingCreateResponseExpectedView|null, error: BookingRpcErrorExpectedView|null}} */ (await rpc('create_online_booking', { p_slug: slug, payload: bookingPayload }))
 
     if (rpcError || !data?.success) {
       setSubmitting(false)

@@ -19,7 +19,8 @@ function getBarTradingBackupHealthForHealth() {
     const targetDir = readBarTradingBackupAutomationTargetForHealth() || readBarTradingBackupTarget({ configDir });
     return getBarTradingBackupHealth({ targetDir });
   } catch (error) {
-    return { ok: false, state: 'unavailable', warnings: [error?.message || 'Bar trading recovery status is unavailable.'], limitations: [] };
+    const errorFields = /** @type {{message?: unknown}|null|undefined} */ (error);
+    return { ok: false, state: 'unavailable', warnings: [errorFields?.message || 'Bar trading recovery status is unavailable.'], limitations: [] };
   }
 }
 

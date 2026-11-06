@@ -1,17 +1,26 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Wifi, WifiOff, AlertTriangle, CheckCircle, Clock, ChevronDown, ChevronUp, Package, Download, Power } from 'lucide-react';
 
+/** These are expected views of existing IPC results, not runtime validation of
+ * queue/cache data. Main derives these fields from the existing producers. */
+/** @typedef {{isOnline: boolean, syncInProgress: boolean, pendingCount: number, failedCount: number, syncedCount: number, totalItems: number}} LegacySyncStatusExpectedView */
+/** @typedef {{id: string, entityType: string, functionName: string, status: string, createdAt: string, updatedAt: string, attempts: number, lastError: string|null, dependsOn: string|null, isFinancial: boolean, dependencyState: string|null, displayName: string, manualReviewAction: string, canRetry: boolean}} LegacySyncQueueExpectedView */
+/** @typedef {{error: string|null, remote_count: number|null, bar_outlet_count: number|null, cached_count: number, outlet_filter: string[], bar_outlet_names: string[], unlinked_bar_inventory_count: number|null}} LegacyInventoryDiagnosticsExpectedView */
+/** @typedef {{phase: string, currentVersion: string, version: string|null, releaseName: string, releaseDate: string, releaseNotes: string, progress: {percent: number, transferred: number, total: number, bytesPerSecond: number}|null, error: string, safety?: {blockers?: string[]}}} LegacyUpdateStateExpectedView */
+/** @typedef {{running: boolean, peerCount: number, lastError: string, lastMergeAt: string|null, httpPort: number|null, rememberedPeerCount: number, localInterfaces: {name: string, address: string}[], warnings: string[]}} LegacyMeshStatusExpectedView */
+
+/** @param {{user?: unknown, isOnline: boolean, setIsOnline: (online: boolean) => void, barOnly?: boolean}} props */
 export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
-  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncStatus, setSyncStatus] = /** @type {[LegacySyncStatusExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacySyncStatusExpectedView|null>>]} */ (useState(null));
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [queueDetail, setQueueDetail] = useState([]);
+  const [queueDetail, setQueueDetail] = /** @type {[LegacySyncQueueExpectedView[], import('react').Dispatch<import('react').SetStateAction<LegacySyncQueueExpectedView[]>>]} */ (useState([]));
   const [showDetail, setShowDetail] = useState(false);
-  const [inventoryDiag, setInventoryDiag] = useState(null);
+  const [inventoryDiag, setInventoryDiag] = /** @type {[LegacyInventoryDiagnosticsExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyInventoryDiagnosticsExpectedView|null>>]} */ (useState(null));
   const [showInventoryDiag, setShowInventoryDiag] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateInfo, setUpdateInfo] = /** @type {[LegacyUpdateStateExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyUpdateStateExpectedView|null>>]} */ (useState(null));
   const [updateBusy, setUpdateBusy] = useState('');
-  const [meshStatus, setMeshStatus] = useState(null);
+  const [meshStatus, setMeshStatus] = /** @type {[LegacyMeshStatusExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyMeshStatusExpectedView|null>>]} */ (useState(null));
   const [manualMeshIp, setManualMeshIp] = useState('');
   const [meshBusy, setMeshBusy] = useState(false);
 
@@ -44,6 +53,7 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   useEffect(() => {
     const updates = window.api.pos.updates;
     if (!updates) return undefined;
+    /** @param {LegacyUpdateStateExpectedView} info */
     const applyInfo = (info) => setUpdateInfo((prev) => ({ ...(prev || {}), ...(info || {}) }));
     const cleanups = [
       updates.onAvailable(applyInfo),

@@ -29,6 +29,56 @@ const RATE_MODES = Object.entries(RATE_MODE_LABELS)
 
 const MAX_PHOTOS = 5
 
+/**
+ * Expected row view for the rooms:getAll read. The main rooms domain selects
+ * these columns from `rooms`; its IPC facade currently exposes the result as
+ * unknown, so the call sites below use one documented expected-data assertion.
+ * This is not runtime validation of IPC or cached room data.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   room_number: string,
+ *   room_type: string,
+ *   room_type_id?: string | null,
+ *   floor_section_id?: string | null,
+ *   rate_per_night: number | string,
+ *   max_occupancy: number,
+ *   status: string,
+ *   amenities?: string[] | null,
+ *   description?: string | null,
+ *   photo?: string | null,
+ *   photos?: string[] | null,
+ *   accommodation_kind?: string | null,
+ *   capacity_adults?: number | null,
+ *   capacity_children?: number | null,
+ *   max_tents?: number | null,
+ *   max_vehicles?: number | null,
+ *   is_powered?: boolean | null,
+ *   site_surface?: string | null,
+ *   shared_facilities?: boolean | null,
+ *   rate_mode?: string | null,
+ *   rate_per_person?: number | null,
+ *   rate_per_tent?: number | null,
+ *   rate_per_vehicle?: number | null
+ * }} RoomReadExpectedData
+ */
+
+/** @typedef {{room_number: string, room_type: string, room_type_id: string | null, floor_section_id: string | null, rate_per_night: number | string, max_occupancy: number | string, status: string, maintenance_issue: string, maintenance_description: string, maintenance_priority: string, description: string, photos: string[], amenities: string[], accommodation_kind: string, capacity_adults: number | string, capacity_children: number | string, max_tents: number | string, max_vehicles: number | string, is_powered: boolean, site_surface: string, shared_facilities: boolean, rate_mode: string, rate_per_person: number | string, rate_per_tent: number | string, rate_per_vehicle: number | string}} RoomFormExpectedView */
+/** @typedef {{id: string, name: string, code?: string | null, active?: boolean}} RoomTypeExpectedView */
+/** @typedef {{id: string, name: string, code?: string | null, active?: boolean}} FloorSectionExpectedView */
+/** @typedef {{roomId?: string, sourceNodeId?: string, [key: string]: unknown}} RoomMeshLockExpectedView */
+/** @typedef {{activeLocks: RoomMeshLockExpectedView[], peerCount: number, nodeId?: string}} RoomMeshStatusExpectedView */
+/** @typedef {{monthlyBookings?: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}} RoomUsageExpectedView */
+/** Known getUsageLimitSnapshot fields consumed here; extra IPC properties remain unvalidated. */
+/** @typedef {{plan: string, limits: import('../../../shared/subscriptionPlans.js').UsageLimits, usage: RoomUsageExpectedView, source: string, statuses: {rooms?: ReturnType<typeof canCreateRoom>, users?: unknown, bookings?: unknown, bookingTargetMonth?: unknown, bookingCreationMonth?: unknown}, bookingAllowance: unknown, recommendation: unknown, monthlyResetCopy: string, stale: boolean, warning: unknown, lodge_id?: unknown, lodge_name?: unknown, [field: string]: unknown}} RoomUsageSnapshotExpectedView */
+/** @typedef {{error: string}} RoomUsageSnapshotFailureExpectedView */
+/** @typedef {{shouldPrompt: boolean, plan: string, reason: string, metric: string | null, stateKey: string, recommendation?: string}} RoomUpgradePromptExpectedView */
+/** @typedef {{room_id: string, start_date: string, end_date: string, rate_per_night: string, name: string, apply_scope: string, pricing_mode: string, percentage_off: string}} RoomRateFormExpectedView */
+/** @typedef {{id: string, room_id: string, start_date: string, end_date: string, rate_per_night: number | string, name?: string | null, local_only?: boolean}} RoomRateOverrideExpectedView */
+/** @typedef {{rate?: number | string | null, name?: string | null}} RoomApplicableRateExpectedView */
+/** @typedef {{success: true, id?: string} | {success: false, error?: string}} RoomMutationExpectedView */
+/** @typedef {{success: true, local_only?: boolean} | {success: false, error?: string}} RoomRateMutationExpectedView */
+/** @typedef {{title: string, message: string, confirmLabel: string, onConfirm: () => void | Promise<void>}} RoomConfirmDialogExpectedView */
+
 const emptyForm = {
   room_number: '',
   room_type: 'Double',
@@ -71,6 +121,7 @@ export default function Rooms() {
     if (tabParam) setActiveTab(tabParam)
   }, [searchParams])
 
+  /** @param {string} key */
   const handleTabChange = (key) => {
     setActiveTab(key)
     setSearchParams({ tab: key }, { replace: true })
@@ -141,7 +192,7 @@ function RoomsTab() {
   const navigate = useNavigate()
   const access = useAccess()
   const { settings } = useSettings()
-  const [rooms, setRooms] = useState([])
+  const [rooms, setRooms] = useState(/** @type {RoomReadExpectedData[]} */ ([]))
   const tabPropertyType = normalizePropertyType(settings?.property_type || settings?.business_type || 'lodge')
   // Mix-aware wording from the loaded inventory: sites-only, rooms-only or
   // mixed. Per-row names still come from accommodation.js kind labels.
@@ -161,30 +212,32 @@ function RoomsTab() {
   const tabInventoryLabel = tabPresentation?.inventoryLabel || 'Rooms'
   const tabBoardLabel = tabPresentation?.navHints?.boardLabel || 'Room Board'
   const tabFirstUnit = tabPresentation?.dashboardHints || { firstUnitTitle: 'Add your first room', firstUnitCopy: 'Create the room list before bookings, housekeeping, and availability can work properly.', firstUnitAction: 'Add rooms' }
-  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [usageSnapshot, setUsageSnapshot] = useState(/** @type {RoomUsageSnapshotExpectedView | null} */ (null))
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState(emptyForm)
+  const [editing, setEditing] = useState(/** @type {string | null} */ (null))
+  const [form, setForm] = useState(/** @type {RoomFormExpectedView} */ (emptyForm))
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
-  const [confirmDialog, setConfirmDialog] = useState(null)
-  const [selectedRoom, setSelectedRoom] = useState(null)
-  const [density, setDensity] = useState('comfortable')
+  const [confirmDialog, setConfirmDialog] = useState(/** @type {RoomConfirmDialogExpectedView | null} */ (null))
+  const [selectedRoom, setSelectedRoom] = useState(/** @type {RoomReadExpectedData | null} */ (null))
+  const [density, setDensity] = useState(/** @type {'compact' | 'comfortable'} */ ('comfortable'))
   const [activeView, setActiveView] = useState('all')
-  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
-  const [dbRoomTypes, setDbRoomTypes] = useState([])
-  const [floorSections, setFloorSections] = useState([])
-  const [activeRateByRoom, setActiveRateByRoom] = useState({})
+  const [meshStatus, setMeshStatus] = useState(/** @type {RoomMeshStatusExpectedView} */ ({ activeLocks: [], peerCount: 0 }))
+  const [dbRoomTypes, setDbRoomTypes] = useState(/** @type {RoomTypeExpectedView[]} */ ([]))
+  const [floorSections, setFloorSections] = useState(/** @type {FloorSectionExpectedView[]} */ ([]))
+  const [activeRateByRoom, setActiveRateByRoom] = useState(/** @type {Record<string, {rate_per_night: number, name: string} | null>} */ ({}))
   const photoInputRef = useRef(null)
 
+  /** @param {FileList | File[]} files */
   const processRoomPhotos = (files) => {
     const fileArr = Array.from(files)
     let rejected = 0
     fileArr.forEach((file) => {
       if (!file.type.startsWith('image/')) return
       const reader = new FileReader()
+      /** @param {ProgressEvent<FileReader>} e */
       reader.onload = (e) => {
         const img = new window.Image()
         img.onload = () => {
@@ -210,7 +263,7 @@ function RoomsTab() {
             return { ...f, photos: [...existing, dataUrl] }
           })
         }
-        img.src = e.target.result
+        img.src = /** @type {string} */ (/** @type {unknown} */ (/** @type {FileReader} */ (/** @type {unknown} */ (e.target)).result))
       }
       reader.readAsDataURL(file)
     })
@@ -225,15 +278,17 @@ function RoomsTab() {
     let cancelled = false
     const loadMeshStatus = async () => {
       const status = await window.api?.sync?.getStatus?.().catch(() => null)
-      if (!cancelled) setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+      if (!cancelled) setMeshStatus(/** @type {RoomMeshStatusExpectedView | undefined} */ (/** @type {{mesh?: unknown} | null | undefined} */ (/** @type {unknown} */ (status))?.mesh) || { activeLocks: [], peerCount: 0 })
     }
     loadMeshStatus()
     const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
-      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+      setMeshStatus(/** @type {RoomMeshStatusExpectedView | undefined} */ (/** @type {{mesh?: unknown} | null | undefined} */ (/** @type {unknown} */ (status))?.mesh) || { activeLocks: [], peerCount: 0 })
     })
+    // Preserve the preload disposer and its actual ipcRenderer.off return at runtime.
+    const dispose = /** @type {(() => void) | undefined} */ (/** @type {unknown} */ (unsubscribe))
     return () => {
       cancelled = true
-      unsubscribe?.()
+      dispose?.()
     }
   }, [])
 
@@ -252,7 +307,10 @@ function RoomsTab() {
       window.api.roomTypes?.getAll?.().catch(() => null),
       window.api.floorSections?.getAll?.().catch(() => null)
     ])
-    setRooms(data)
+    // `rooms:getAll` returns the selected room projection from
+    // src/main/domains/rooms.js. The IPC payload is not runtime-validated here.
+    const roomRows = /** @type {RoomReadExpectedData[]} */ (data)
+    setRooms(roomRows)
     // Notify the shell so sidebar/header wording follows the same loaded
     // inventory mix (Layout listens for `boroko:rooms-changed`).
     try {
@@ -260,16 +318,18 @@ function RoomsTab() {
     } catch {
       // Best-effort only: shell keeps its last mix snapshot.
     }
-    setDbRoomTypes(Array.isArray(roomTypes) ? roomTypes.filter((rt) => rt.active !== false) : [])
-    setFloorSections(Array.isArray(sections) ? sections.filter((section) => section.active !== false) : [])
+    const roomTypeRows = /** @type {RoomTypeExpectedView[]} */ (/** @type {unknown} */ (roomTypes || []))
+    const sectionRows = /** @type {FloorSectionExpectedView[]} */ (/** @type {unknown} */ (sections || []))
+    setDbRoomTypes(Array.isArray(roomTypeRows) ? roomTypeRows.filter((rt) => rt.active !== false) : [])
+    setFloorSections(Array.isArray(sectionRows) ? sectionRows.filter((section) => section.active !== false) : [])
     const today = new Date()
     const start = formatLocalDate(today)
     const endDate = new Date(today)
     endDate.setDate(endDate.getDate() + 1)
     const end = formatLocalDate(endDate)
-    const entries = await Promise.all((data || []).map(async (room) => {
+    const entries = await Promise.all((roomRows || []).map(async (room) => {
       try {
-        const result = await window.api.rateOverrides.getApplicable(room.id, start, end)
+        const result = /** @type {RoomApplicableRateExpectedView | null} */ (/** @type {unknown} */ (await window.api.rateOverrides.getApplicable(room.id, start, end)))
         if (result && Number.isFinite(Number(result.rate))) {
           return [room.id, { rate_per_night: Number(result.rate), name: result.name || '' }]
         }
@@ -280,8 +340,12 @@ function RoomsTab() {
     }))
     setActiveRateByRoom(Object.fromEntries(entries))
     setListLoading(false)
-    window.api.usage.getSnapshot?.().then((snapshot) => {
-      if (!snapshot?.error) setUsageSnapshot(snapshot)
+    /** @type {Promise<RoomUsageSnapshotExpectedView | RoomUsageSnapshotFailureExpectedView>} */ (/** @type {unknown} */ (window.api.usage.getSnapshot?.())).then((snapshot) => {
+      // Keep the original optional-property condition: this view adds no runtime validation,
+      // including for null or primitive transport values.
+      const snapshotErrorView = /** @type {{error?: unknown} | null | undefined} */ (/** @type {unknown} */ (snapshot))
+      const expectedSnapshot = /** @type {RoomUsageSnapshotExpectedView} */ (/** @type {unknown} */ (snapshot))
+      if (!snapshotErrorView?.error) setUsageSnapshot(expectedSnapshot)
     }).catch(() => {})
   }
 
@@ -296,6 +360,7 @@ function RoomsTab() {
     setShowModal(true)
   }
 
+  /** @param {RoomReadExpectedData} room */
   const openEdit = (room) => {
     setEditing(room.id)
     const photos = Array.isArray(room.photos) && room.photos.length > 0
@@ -332,25 +397,26 @@ function RoomsTab() {
     setShowModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleSave = async (e) => {
     e.preventDefault()
     setLoading(true)
     setError('')
     const data = {
       ...form,
-      rate_per_night: parseFloat(form.rate_per_night) || 0,
-      max_occupancy: parseInt(form.max_occupancy || form.capacity_adults || 2, 10),
-      capacity_adults: parseInt(form.capacity_adults || form.max_occupancy || 2, 10),
-      capacity_children: parseInt(form.capacity_children || 0, 10),
+      rate_per_night: parseFloat(/** @type {string} */ (form.rate_per_night)) || 0,
+      max_occupancy: parseInt(/** @type {string} */ (form.max_occupancy || form.capacity_adults || 2), 10),
+      capacity_adults: parseInt(/** @type {string} */ (form.capacity_adults || form.max_occupancy || 2), 10),
+      capacity_children: parseInt(/** @type {string} */ (form.capacity_children || 0), 10),
       // Priced family (campsite + tent) persists independent tent/vehicle
       // caps; room/unit kinds persist null, matching the server contract.
-      max_tents: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(form.max_tents || 1, 10) : null,
-      max_vehicles: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(form.max_vehicles || 1, 10) : null,
+      max_tents: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(/** @type {string} */ (form.max_tents || 1), 10) : null,
+      max_vehicles: isCampsitePriced({ accommodation_kind: form.accommodation_kind }) ? parseInt(/** @type {string} */ (form.max_vehicles || 1), 10) : null,
       is_powered: form.is_powered === true,
       shared_facilities: form.shared_facilities === true,
-      rate_per_person: parseFloat(form.rate_per_person) || 0,
-      rate_per_tent: parseFloat(form.rate_per_tent) || 0,
-      rate_per_vehicle: parseFloat(form.rate_per_vehicle) || 0,
+      rate_per_person: parseFloat(/** @type {string} */ (form.rate_per_person)) || 0,
+      rate_per_tent: parseFloat(/** @type {string} */ (form.rate_per_tent)) || 0,
+      rate_per_vehicle: parseFloat(/** @type {string} */ (form.rate_per_vehicle)) || 0,
       amenities: Array.isArray(form.amenities) ? form.amenities.filter(Boolean) : [],
       room_type_id: form.room_type_id || null,
       floor_section_id: form.floor_section_id || null
@@ -364,7 +430,7 @@ function RoomsTab() {
     }
     let res
     if (editing) {
-      res = await window.api.rooms.update(editing, data)
+      res = /** @type {RoomMutationExpectedView} */ (/** @type {unknown} */ (await window.api.rooms.update(editing, data)))
     } else {
       const roomLimitStatus = canCreateRoom({ plan: access?.entitlement?.plan || 'Starter', used: rooms.length, limits: usageSnapshot?.limits || getEffectiveUsageLimits(access?.entitlement || {}) })
       if (roomLimitStatus.isBlocked) {
@@ -374,7 +440,7 @@ function RoomsTab() {
         setError(`Room limit reached: ${plan} allows up to ${usageLimits.rooms} rooms. Upgrade to ${nextPlan} for ${nextPlan === 'Standard' ? '20' : 'unlimited'} rooms.`)
         return
       }
-      res = await window.api.rooms.create(data)
+      res = /** @type {RoomMutationExpectedView} */ (/** @type {unknown} */ (await window.api.rooms.create(data)))
     }
     setLoading(false)
     if (res.success === false) {
@@ -386,6 +452,7 @@ function RoomsTab() {
     }
   }
 
+  /** @param {RoomReadExpectedData} room */
   const handleDelete = async (room) => {
     const unitName = getPresentationUnitName(room) || unitSingular
     setConfirmDialog({
@@ -405,7 +472,7 @@ function RoomsTab() {
   const roomStatusCounts = useMemo(() => rooms.reduce((counts, room) => {
     counts[room.status] = (counts[room.status] || 0) + 1
     return counts
-  }, { available: 0, occupied: 0, maintenance: 0 }), [rooms])
+  }, /** @type {Record<string, number>} */ ({ available: 0, occupied: 0, maintenance: 0 })), [rooms])
 
   const available = roomStatusCounts.available || 0
   const occupied = roomStatusCounts.occupied || 0
@@ -465,8 +532,8 @@ function RoomsTab() {
                 visible={showRoomEarlyPrompt}
                 message="You're approaching your plan limits. Consider upgrading to avoid interruptions."
                 sessionKey="boroko:upgrade-nudge:rooms"
-                lodgeId={usageSnapshot?.lodge_id || settings?.lodge_id || ''}
-                lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
+                lodgeId={/** @type {string | null | undefined} */ (/** @type {unknown} */ (usageSnapshot?.lodge_id)) || settings?.lodge_id || ''}
+                lodgeName={/** @type {string | null | undefined} */ (/** @type {unknown} */ (usageSnapshot?.lodge_name)) || settings?.lodge_name || settings?.company_name || ''}
                 plan={currentPlan}
                 usage={usageSnapshot?.usage || { monthlyBookings: 0, rooms: rooms.length, users: 0 }}
                 recommendation={roomEarlyPrompt}
@@ -925,7 +992,7 @@ function RoomsTab() {
                       accept="image/*"
                       multiple
                       className="hidden"
-                      onChange={(e) => processRoomPhotos(e.target.files)}
+                onChange={(e) => processRoomPhotos(/** @type {FileList} */ (/** @type {unknown} */ (e.target.files)))}
                     />
                   </label>
                 )}
@@ -964,8 +1031,8 @@ function RoomsTab() {
         message={roomLimitMessage || `Upgrade to add more rooms for ${vocab.thisNoun}.`}
         usage={usageSnapshot?.usage}
         recommendation={usageSnapshot?.recommendation}
-        lodgeName={usageSnapshot?.lodge_name || settings?.lodge_name || settings?.company_name || ''}
-        lodgeId={usageSnapshot?.lodge_id || settings?.lodge_id || ''}
+        lodgeName={/** @type {string | null | undefined} */ (/** @type {unknown} */ (usageSnapshot?.lodge_name)) || settings?.lodge_name || settings?.company_name || ''}
+        lodgeId={/** @type {string | null | undefined} */ (/** @type {unknown} */ (usageSnapshot?.lodge_id)) || settings?.lodge_id || ''}
       />
       <ContextDrawer
         open={!!selectedRoom}
@@ -986,7 +1053,7 @@ function RoomsTab() {
                 P {Number((activeRateByRoom[selectedRoom.id]?.rate_per_night ?? selectedRoom.rate_per_night) || 0).toFixed(2)}
               </p>
               {activeRateByRoom[selectedRoom.id]?.name && (
-                <p className="mt-1 text-xs font-semibold text-emerald-700">{activeRateByRoom[selectedRoom.id].name}</p>
+                <p className="mt-1 text-xs font-semibold text-emerald-700">{activeRateByRoom[selectedRoom.id]?.name}</p>
               )}
             </div>
             {meshLocksByRoom.has(String(selectedRoom.id)) && (
@@ -1033,16 +1100,16 @@ function RoomsTab() {
 
 function AvailabilityRulesTab() {
   const { settings } = useSettings()
-  const [rooms, setRooms] = useState([])
-  const [rateOverrides, setRateOverrides] = useState([])
+  const [rooms, setRooms] = useState(/** @type {RoomReadExpectedData[]} */ ([]))
+  const [rateOverrides, setRateOverrides] = useState(/** @type {RoomRateOverrideExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const [rateForm, setRateForm] = useState(null)
-  const [editingRate, setEditingRate] = useState(null)
+  const [rateForm, setRateForm] = useState(/** @type {RoomRateFormExpectedView | null} */ (null))
+  const [editingRate, setEditingRate] = useState(/** @type {RoomRateOverrideExpectedView | null} */ (null))
   const [rateSaving, setRateSaving] = useState(false)
   const [rateError, setRateError] = useState('')
-  const [confirmDialog, setConfirmDialog] = useState(null)
+  const [confirmDialog, setConfirmDialog] = useState(/** @type {RoomConfirmDialogExpectedView | null} */ (null))
 
   const load = async () => {
     setLoading(true)
@@ -1051,10 +1118,12 @@ function AvailabilityRulesTab() {
         window.api.rooms.getAll(),
         window.api.rateOverrides.getAll().catch(() => [])
       ])
-      setRooms(Array.isArray(roomData) ? roomData : [])
-      setRateOverrides(Array.isArray(overrides) ? overrides : [])
+      // Same rooms:getAll producer and expected-data boundary as RoomsTab.
+      setRooms(Array.isArray(roomData) ? /** @type {RoomReadExpectedData[]} */ (roomData) : [])
+      const overrideRows = /** @type {RoomRateOverrideExpectedView[]} */ (/** @type {unknown} */ (overrides || []))
+      setRateOverrides(Array.isArray(overrideRows) ? overrideRows : [])
     } catch (err) {
-      setError(err?.message || 'Failed to load availability rules')
+      setError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err)))?.message || 'Failed to load availability rules')
     } finally {
       setLoading(false)
     }
@@ -1083,6 +1152,7 @@ function AvailabilityRulesTab() {
     })
   }
 
+  /** @param {RoomRateOverrideExpectedView} rateOverride */
   const openRateEdit = (rateOverride) => {
     setEditingRate(rateOverride)
     setRateError('')
@@ -1099,12 +1169,14 @@ function AvailabilityRulesTab() {
   }
 
   const handleRateSave = async () => {
+    // The rendered save control exists only while the rate form is open.
+    const currentRateForm = /** @type {RoomRateFormExpectedView} */ (rateForm)
     setRateSaving(true)
     setRateError('')
     try {
-      const applyScope = rateForm.apply_scope || 'single'
-      const pricingMode = rateForm.pricing_mode || 'fixed'
-      const selectedRoom = rooms.find((room) => room.id === String(rateForm.room_id || '').trim())
+      const applyScope = currentRateForm.apply_scope || 'single'
+      const pricingMode = currentRateForm.pricing_mode || 'fixed'
+      const selectedRoom = rooms.find((room) => room.id === String(currentRateForm.room_id || '').trim())
       const targetRooms = editingRate || applyScope === 'single'
         ? (selectedRoom ? [selectedRoom] : [])
         : rooms
@@ -1113,8 +1185,8 @@ function AvailabilityRulesTab() {
         throw new Error('Choose at least one room for this special.')
       }
 
-      const fixedRate = parseFloat(rateForm.rate_per_night)
-      const percentageOff = parseFloat(rateForm.percentage_off)
+      const fixedRate = parseFloat(currentRateForm.rate_per_night)
+      const percentageOff = parseFloat(currentRateForm.percentage_off)
       if (pricingMode === 'fixed' && !Number.isFinite(fixedRate)) {
         throw new Error('Enter a valid special rate.')
       }
@@ -1122,22 +1194,23 @@ function AvailabilityRulesTab() {
         throw new Error('Enter a percentage discount between 0 and 100.')
       }
 
+      /** @param {RoomReadExpectedData} room */
       const buildPayloadForRoom = (room) => {
         const computedRate = pricingMode === 'percent'
           ? Number((Number(room.rate_per_night || 0) * (1 - (percentageOff / 100))).toFixed(2))
           : fixedRate
         return {
           room_id: String(room.id || '').trim(),
-          start_date: rateForm.start_date,
-          end_date: rateForm.end_date,
-          name: rateForm.name,
+          start_date: currentRateForm.start_date,
+          end_date: currentRateForm.end_date,
+          name: currentRateForm.name,
           rate_per_night: computedRate
         }
       }
 
       const results = editingRate
-        ? [await window.api.rateOverrides.update(editingRate.id, buildPayloadForRoom(targetRooms[0]))]
-        : await Promise.all(targetRooms.map((room) => window.api.rateOverrides.create(buildPayloadForRoom(room))))
+        ? [/** @type {RoomRateMutationExpectedView} */ (/** @type {unknown} */ (await window.api.rateOverrides.update(editingRate.id, buildPayloadForRoom(targetRooms[0]))))]
+        : await Promise.all(targetRooms.map((room) => /** @type {Promise<RoomRateMutationExpectedView>} */ (/** @type {unknown} */ (window.api.rateOverrides.create(buildPayloadForRoom(room))))))
 
       const failed = results.find((result) => !result?.success)
       if (failed) {
@@ -1152,12 +1225,13 @@ function AvailabilityRulesTab() {
         setSuccess('One or more rate overrides were saved locally because the server save is currently unavailable.')
       }
     } catch (error) {
-      setRateError(error?.message || 'Could not save rate override.')
+      setRateError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (error)))?.message || 'Could not save rate override.')
     } finally {
       setRateSaving(false)
     }
   }
 
+  /** @param {string} id */
   const handleRateDelete = async (id) => {
     setConfirmDialog({
       title: 'Delete rate override?',
@@ -1326,6 +1400,7 @@ function AvailabilityRulesTab() {
   )
 }
 
+/** @param {{room: RoomReadExpectedData, activeRate: {rate_per_night: number | string, name: string} | null, meshLocks?: unknown[], compact?: boolean, onSelect: () => void, onEdit: (room: RoomReadExpectedData) => void, onDelete: (room: RoomReadExpectedData) => void}} props */
 function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect, onEdit, onDelete }) {
   const coverPhoto = (Array.isArray(room.photos) && room.photos[0]) || room.photo || null
   const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
@@ -1435,6 +1510,7 @@ function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect,
   )
 }
 
+/** @param {{label: string, required?: boolean, helper?: string, children: import('react').ReactNode}} props */
 function Field({ label, required, helper, children }) {
   return (
     <div>
@@ -1447,6 +1523,7 @@ function Field({ label, required, helper, children }) {
   )
 }
 
+/** @param {{label: string, value: string | number, tone: string}} props */
 function SummaryPill({ label, value, tone }) {
   const styles = {
     emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700',

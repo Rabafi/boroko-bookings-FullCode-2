@@ -14,6 +14,16 @@ import EmptyState from '../components/EmptyState'
 import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
 
+/** @typedef {'all'|'overdue'|'maintenance'|'balances'|'stock'|'demand'} AlertFilterId */
+/** @typedef {{id: string, status: string, check_out: string, total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null, payment_status?: string|null, guest_name?: string|null, check_in?: string|null}} AlertBookingExpectedView */
+/** @typedef {Record<string, unknown> & {id: string, status: string, title: string, issue?: string|null, created_at: string, priority: string}} AlertMaintenanceExpectedView */
+/** @typedef {{id: string, name: string, current_stock?: number|string|null, quantity?: number|string|null, reorder_level?: number|string|null}} AlertInventoryExpectedView */
+/** @typedef {{id: string, room_id: string|null, attempted_at: string, guest_name?: string|null}} BlockedBookingExpectedView */
+/** @typedef {{overdue: AlertBookingExpectedView[], unpaid: AlertBookingExpectedView[], maintenance: AlertMaintenanceExpectedView[], lowStock: AlertInventoryExpectedView[], blockedDemand: BlockedBookingExpectedView[]}} AlertsDataExpectedView */
+/** @typedef {{id: string, section: AlertFilterId, icon: import('lucide-react').LucideIcon, iconColor: string, title: string, sub: string, badge?: string|null, badgeColor: string, sort: number, followUp: () => Promise<boolean>}} AlertCardExpectedView */
+/** @typedef {{message?: string}|null|undefined} AlertCaughtErrorExpectedView */
+
+/** @type {[AlertFilterId, string][]} */
 const FILTERS = [
   ['all', 'All'],
   ['overdue', 'Checkout'],
@@ -23,14 +33,17 @@ const FILTERS = [
   ['demand', 'Demand']
 ]
 
+/** @param {string|null} value @returns {AlertFilterId} */
 function normalizeFilter(value) {
-  return FILTERS.some(([id]) => id === value) ? value : 'all'
+  return FILTERS.find(([id]) => id === value)?.[0] || 'all'
 }
 
+/** @param {AlertBookingExpectedView} booking */
 function balanceForBooking(booking) {
   return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
 }
 
+/** @param {{icon: import('lucide-react').LucideIcon, iconColor: string, title: string, sub?: string, badge?: string|null, badgeColor?: string, onFollowUp?: () => Promise<boolean>|undefined, followUpLabel?: string, disabled?: boolean}} props */
 function AlertRow({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-orange-500', onFollowUp, followUpLabel = 'Ask front desk', disabled }) {
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
@@ -73,16 +86,22 @@ function AlertRow({ icon: Icon, iconColor, title, sub, badge, badgeColor = 'bg-o
   )
 }
 
+/** @param {{onCountChange?: (count: number) => void}} props */
 export default function Alerts({ onCountChange }) {
   const { user } = useAuth()
+  // AppShell renders this page only after its authenticated-user guard.
+  // Keep useAuth nullable globally; this is the page's route-scoped expected view.
+  const manager = /** @type {NonNullable<typeof user>} */ (user)
   const { isEnabled } = useFeatures()
   const { showToast } = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [data, setData] = useState({ overdue: [], unpaid: [], maintenance: [], lowStock: [], blockedDemand: [] })
+  const [data, setData] = useState(/** @type {AlertsDataExpectedView} */ ({ overdue: [], unpaid: [], maintenance: [], lowStock: [], blockedDemand: [] }))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [notificationSettings, setNotificationSettings] = useState(() => getNotificationSettings())
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
+  const [storedNotificationSettings, setNotificationSettings] = useState(() => getNotificationSettings())
+  // Browser-persisted/event settings remain unvalidated; this view only types the fields read by this page.
+  const notificationSettings = /** @type {{urgentAlerts?: boolean, balances?: boolean, maintenance?: boolean}} */ (storedNotificationSettings)
   const today = new Date().toISOString().slice(0, 10)
   const previousCountRef = useRef(0)
   const activeFilter = normalizeFilter(searchParams.get('filter'))
@@ -90,29 +109,41 @@ export default function Alerts({ onCountChange }) {
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError('')
-    const lid = user.lodge_id
+    const lid = manager.lodge_id
 
     try {
-      const [bookings, maintenanceRows, stockRows, blockedRes] = await Promise.all([
+      const [bookingResult, maintenanceResult, stockResult, blockedRes] = await Promise.all([
         listBookings(lid).catch(() => []),
         listMaintenanceTickets(lid).catch(() => []),
         isEnabled('inventory') ? listInventory(lid).catch(() => []) : Promise.resolve([]),
-        supabase
-          .from('rejected_online_bookings')
-          .select('id, room_id, rejection_reason, check_in, check_out, attempted_at, guest_name')
-          .eq('lodge_id', lid)
-          .eq('rejection_reason', 'maintenance')
-          .gte('attempted_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
-          .order('attempted_at', { ascending: false })
-          .then((res) => res)
-          .catch(() => ({ data: [] }))
+        // The SDK types this as PromiseLike, but the pre-existing chain calls .catch
+        // on the actual Promise returned by .then; this assertion preserves that chain verbatim.
+        (/** @type {Promise<{data: BlockedBookingExpectedView[]|null}>} */ (
+          supabase
+            .from('rejected_online_bookings')
+            .select('id, room_id, rejection_reason, check_in, check_out, attempted_at, guest_name')
+            .eq('lodge_id', lid)
+            .eq('rejection_reason', 'maintenance')
+            .gte('attempted_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+            .order('attempted_at', { ascending: false })
+            .then((res) => res)
+        )).catch(() => ({ data: [] }))
       ])
 
+      // Producer calls return expected row sets, but cached/RPC values are not validated here.
+      const bookings = /** @type {AlertBookingExpectedView[]} */ (bookingResult)
+      const maintenanceRows = /** @type {AlertMaintenanceExpectedView[]} */ (maintenanceResult)
+      const stockRows = /** @type {AlertInventoryExpectedView[]} */ (stockResult)
+      // These expected views follow the API SELECT fields; cache/RPC data is not runtime-validated here.
       const d = {
         overdue: (bookings || []).filter((booking) => booking.status === 'checked_in' && booking.check_out < today),
-        unpaid: (bookings || []).filter((booking) => ['unpaid', 'partial'].includes(booking.payment_status) && booking.status !== 'cancelled'),
-        maintenance: (maintenanceRows || []).filter((item) => item.status === 'open').map(normalizeMaintenanceTicket),
-        lowStock: (stockRows || []).filter(item => {
+        unpaid: (bookings || []).filter((booking) => ['unpaid', 'partial'].includes(/** @type {string} */ (booking.payment_status)) && booking.status !== 'cancelled'),
+        maintenance: (maintenanceRows || []).filter((item) => item.status === 'open').map((item) => {
+          // The API SELECT supplies these fields; normalizeMaintenanceTicket spreads them unchanged.
+          const normalized = /** @type {Record<string, unknown>} */ (normalizeMaintenanceTicket(item))
+          return /** @type {AlertMaintenanceExpectedView} */ (normalized)
+        }),
+        lowStock: (stockRows || []).filter((item) => {
         const stock = Number(item.current_stock ?? item.quantity ?? 0)
         const reorder = Number(item.reorder_level ?? 0)
         return reorder > 0 && stock <= reorder
@@ -123,17 +154,17 @@ export default function Alerts({ onCountChange }) {
       const totalCount = d.overdue.length + d.unpaid.length + d.maintenance.length + d.lowStock.length + d.blockedDemand.length
       onCountChange?.(totalCount)
       const cacheTimes = [
-        readCacheEntry(lid, 'bookings', null)?.updatedAt,
-        readCacheEntry(lid, 'maintenance', null)?.updatedAt,
-        readCacheEntry(lid, 'inventory', null)?.updatedAt
+        /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(lid, 'bookings', null))?.updatedAt,
+        /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(lid, 'maintenance', null))?.updatedAt,
+        /** @type {{updatedAt?: string|null}|null|undefined} */ (readCacheEntry(lid, 'inventory', null))?.updatedAt
       ].filter(Boolean).sort()
       setLastUpdated(cacheTimes.at(-1) || new Date().toISOString())
     } catch (error) {
-      setLoadError(error?.message || 'Alerts could not load.')
+      setLoadError(/** @type {AlertCaughtErrorExpectedView} */ (error)?.message || 'Alerts could not load.')
     } finally {
       setLoading(false)
     }
-  }, [user.lodge_id, today, isEnabled, onCountChange])
+  }, [manager.lodge_id, today, isEnabled, onCountChange])
 
   useEffect(() => { load() }, [load])
 
@@ -145,7 +176,7 @@ export default function Alerts({ onCountChange }) {
       const body = data.overdue.length > 0
         ? `${data.overdue.length} overdue checkout${data.overdue.length === 1 ? '' : 's'} need attention`
         : `${urgentCount} urgent issue${urgentCount === 1 ? '' : 's'} need attention`
-      upsertPwaNotification(user.lodge_id, {
+      upsertPwaNotification(manager.lodge_id, {
         sourceKey: 'urgent-alerts',
         title: 'Urgent lodge attention needed',
         message: body,
@@ -154,14 +185,14 @@ export default function Alerts({ onCountChange }) {
         href: '/alerts'
       })
     } else {
-      removePwaNotification(user.lodge_id, 'urgent-alerts')
+      removePwaNotification(manager.lodge_id, 'urgent-alerts')
     }
     previousCountRef.current = urgentCount
-  }, [data, notificationSettings.urgentAlerts, user.lodge_id])
+  }, [data, notificationSettings.urgentAlerts, manager.lodge_id])
 
   useEffect(() => {
     if (notificationSettings.balances !== false && data.unpaid.length > 0) {
-      upsertPwaNotification(user.lodge_id, {
+      upsertPwaNotification(manager.lodge_id, {
         sourceKey: 'balances',
         title: 'Outstanding balances need follow-up',
         message: `${data.unpaid.length} booking${data.unpaid.length === 1 ? '' : 's'} still have unpaid or partial balances.`,
@@ -170,10 +201,10 @@ export default function Alerts({ onCountChange }) {
         href: '/alerts'
       })
     } else {
-      removePwaNotification(user.lodge_id, 'balances')
+      removePwaNotification(manager.lodge_id, 'balances')
     }
     if (notificationSettings.maintenance !== false && data.maintenance.length > 0) {
-      upsertPwaNotification(user.lodge_id, {
+      upsertPwaNotification(manager.lodge_id, {
         sourceKey: 'maintenance',
         title: 'Maintenance board has open work',
         message: `${data.maintenance.length} maintenance ticket${data.maintenance.length === 1 ? '' : 's'} are still open.`,
@@ -182,9 +213,9 @@ export default function Alerts({ onCountChange }) {
         href: '/alerts'
       })
     } else {
-      removePwaNotification(user.lodge_id, 'maintenance')
+      removePwaNotification(manager.lodge_id, 'maintenance')
     }
-  }, [data.maintenance, data.unpaid.length, notificationSettings.balances, notificationSettings.maintenance, user.lodge_id])
+  }, [data.maintenance, data.unpaid.length, notificationSettings.balances, notificationSettings.maintenance, manager.lodge_id])
 
   const allClear = !loading && data.overdue.length === 0 && data.maintenance.length === 0 && data.unpaid.length === 0 && data.lowStock.length === 0 && data.blockedDemand.length === 0
 
@@ -197,8 +228,10 @@ export default function Alerts({ onCountChange }) {
     demand: data.blockedDemand.length
   }), [data])
 
+  /** @param {AlertFilterId} section */
   const showSection = (section) => activeFilter === 'all' || activeFilter === section
 
+  /** @param {AlertFilterId} id */
   function changeFilter(id) {
     const next = new URLSearchParams(searchParams)
     if (id === 'all') next.delete('filter')
@@ -206,10 +239,11 @@ export default function Alerts({ onCountChange }) {
     setSearchParams(next, { replace: true })
   }
 
+  /** @type {(options: {kind: string, title: string, description: string, priority?: string, referenceId: string}) => Promise<boolean>} */
   const requestFollowUp = useCallback(async ({ kind, title, description, priority = 'Normal', referenceId }) => {
     try {
       const result = await sendFrontDeskRequest({
-        user,
+        user: manager,
         title,
         description,
         priority,
@@ -226,14 +260,14 @@ export default function Alerts({ onCountChange }) {
     } catch (error) {
       showToast({
         title: 'Request was not sent',
-        message: error?.message || 'Please try again.',
+        message: /** @type {AlertCaughtErrorExpectedView} */ (error)?.message || 'Please try again.',
         tone: 'error'
       })
       return false
     }
-  }, [showToast, user])
+  }, [showToast, manager])
 
-  const blockedByRoom = data.blockedDemand.reduce((acc, attempt) => {
+  const blockedByRoom = data.blockedDemand.reduce(/** @param {Record<string, BlockedBookingExpectedView[]>} acc @param {BlockedBookingExpectedView} attempt */ (acc, attempt) => {
     const key = attempt.room_id || 'unknown'
     if (!acc[key]) acc[key] = []
     acc[key].push(attempt)
@@ -241,6 +275,7 @@ export default function Alerts({ onCountChange }) {
   }, {})
 
   const allAlerts = useMemo(() => {
+    /** @type {AlertCardExpectedView[]} */
     const alerts = []
     data.overdue.forEach((b) => {
       alerts.push({

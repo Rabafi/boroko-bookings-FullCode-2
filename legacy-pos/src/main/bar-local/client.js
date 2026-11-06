@@ -18,11 +18,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 export const ALLOWED_COMMANDS = Object.freeze(new Set([
   'sale.commit', 'sale.return', 'sale.void', 'sale.correct_after_close', 'tab.open', 'tab.add', 'tab.settle',
   'tab.transfer', 'tab.split', 'tab.merge', 'shift.open', 'shift.close',
-  'drawer.movement', 'cashup.submit', 'cashup.review', 'cashup.reopen',
+  'drawer.movement', 'cashup.submit', 'cashup.handover', 'cashup.review', 'cashup.reopen',
   'stock.receive', 'stock.adjust', 'stock.stocktake', 'stock.waste', 'stock.lot.waste', 'stock.lot.release', 'stock.transfer',
   'supplier.upsert', 'purchase_order.create', 'purchase_order.cancel',
   'purchase_order.receive', 'customer.create', 'customer.credit.payment',
-  'voucher.issue', 'catalogue.upsert', 'catalogue.availability.set',
+  'voucher.issue', 'catalogue.upsert', 'catalogue.bar_product.save', 'catalogue.stock_item.save', 'stock.batch.record', 'catalogue.availability.set',
   'expense.create', 'expense.void', 'accounting.account.upsert',
   'control.checklist.start', 'control.checklist.item.set', 'control.incident.log',
   'control.incident.resolve', 'workforce.shift.schedule', 'workforce.shift.cancel',
@@ -43,16 +43,16 @@ export const ALLOWED_COMMANDS = Object.freeze(new Set([
 ]));
 
 export const ALLOWED_QUERIES = Object.freeze(new Set([
-  'accounting.records',
+  'accounting.records', 'accounting.journal_entries',
   'drawer.open_shifts',
   'workforce.tip_payouts',
   'bootstrap', 'menu.list', 'menu.availability', 'menu.modifiers', 'menu.promotions', 'expenses.list', 'expense.get',
-  'accounting.accounts.list', 'tabs.list', 'tab.get', 'sales.list',
+  'accounting.accounts.list', 'tabs.list', 'tab.get', 'sales.list', 'sales.mine',
   'reports.sales_summary', 'reports.stock', 'reports.cashup', 'reports.post_close_corrections',
   'control.templates.list', 'control.checklists.list', 'control.checklist.get',
   'control.incidents.list', 'workforce.roster', 'workforce.attendance.list',
-  'workforce.attendance.current', 'sale.get', 'shift.current', 'cashup.summary',
-  'stock.list', 'stock.lot_expiry', 'stock.lot_balances', 'suppliers.list', 'purchase_orders.list', 'purchase_order.get',
+  'workforce.attendance.current', 'sale.get', 'shift.current', 'cashup.summary', 'cashup.pending', 'cashup.mine',
+  'stock.list', 'stock.history', 'stock.aging', 'stock.lot_expiry', 'stock.lot_balances', 'suppliers.list', 'purchase_orders.list', 'purchase_order.get',
   'customers.list', 'vouchers.list', 'staff.list', 'audit.search', 'outbox.status', 'outbox.bundle.get', 'loyalty.programs.list', 'loyalty.account.get',
   'accounting.trial_balance', 'support.reports.list'
 ]));

@@ -87,15 +87,19 @@ test('reopened tab saves preserve the loaded version before the RPC response', (
 
 test('rejected tab saves restore the pre-save cache instead of losing the open check', () => {
   const domain = read('src/main/domains/pos.js')
-  assert.match(domain, /const localRowsBeforeSave = readPosTabs\(\)/)
-  assert.match(domain, /const previousLocalTab = hasExistingId[\s\S]*localRowsBeforeSave\.find/ )
-  assert.match(domain, /const restoreLocalTabAfterRejectedSave = \(\) => \{/ )
-  assert.match(domain, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: rpcData\?\.error/ )
-  assert.match(domain, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: error\?\.message/ )
+  const start = domain.indexOf('export async function savePosTab(')
+  const end = domain.indexOf('export async function updatePosTabStatus(', start)
+  assert.ok(start >= 0 && end > start, 'Tab save function must remain independently reviewable')
+  const saveTab = domain.slice(start, end)
+  assert.match(saveTab, /const localRowsBeforeSave = readPosTabs\(\)/)
+  assert.match(saveTab, /const previousLocalTab = hasExistingId[\s\S]*localRowsBeforeSave\.find/ )
+  assert.match(saveTab, /const restoreLocalTabAfterRejectedSave = \(\) => \{/ )
+  assert.match(saveTab, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: rpcData\?\.error/ )
+  assert.match(saveTab, /restoreLocalTabAfterRejectedSave\(\);[\s\S]*return \{ success: false, error: \([\s\S]{0,180}?\(error\)\)\?\.message/ )
   // A genuinely new optimistic tab has no previous row and is removed by the
   // same helper; only an existing row is restored.
-  assert.match(domain, /const currentRows = readPosTabs\(\)\.filter\(\(entry\) => entry\.id !== id\)/)
-  assert.match(domain, /if \(previousLocalTab\) \{/ )
+  assert.match(saveTab, /const currentRows = readPosTabs\(\)\.filter\(\(entry\) => entry\.id !== id\)/)
+  assert.match(saveTab, /if \(previousLocalTab\) \{/ )
 })
 
 test('desktop and Legacy POS enforce the same Base tender boundary before queueing', () => {

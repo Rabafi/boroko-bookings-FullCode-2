@@ -1,168 +1,47 @@
-# Property adaptation — deployment manifest (awaiting deployment)
+# LodgingOS property adaptation — deployment status
 
-Date: 2026-10-15 (Africa/Gaborone). Status: **code complete, NOT deployed**.
-No production migration applied, no customer reclassified, no installer
-published in this pass. This note replaces the earlier deployment note that
-recommended an unqualified single `db:push` and misdescribed the
-quotation-carry patch as reapply-idempotent.
+Date: 2026-10-22 (Africa/Gaborone). Status: implementation corrections are in the working tree; deployment and live disposable acceptance are NOT verified.
 
-## 1. Production baseline (read-only evidence, 2026-10-15)
+No production migrations, customer reclassification, installer publication, or release deployment were performed. The approved disposable project could not be revalidated in this environment: no LUNA_REMEDIATION_TEST_DB_URL is configured, and the read-only Supabase Management API request failed at the network connection layer. The disposable marker was therefore not checked and no database mutation was attempted.
 
-A SELECT-only probe (read-only transaction, rolled back, zero writes) against
-the linked project `oicgpknsmtvcsjacymum` returned:
+## Current feature migration sequence
 
-- latest applied migration: `20261005090000`
-  (then `20261005080000`, `20261005070000`);
-- present: `accommodation_booking_expected_total`, `create_campsite_booking`,
-  `create_multi_room_booking`, `convert_quotation_to_booking_pre_intent_v1`
-  (pre-fix form), tables `booking_accommodation_details`,
-  `booking_create_intents`, `booking_group_create_intents`;
-- absent: `preview_property_type_change`, `commit_property_type_change`,
-  `get_property_type_transition_status`, table `property_type_transitions`.
+The adaptation depends on the previously established booking, campsite pricing, public booking envelope, and invoice-group schema. The feature migration sequence is:
 
-Conclusion: the whole property-adaptation chain below is awaiting
-deployment. (The Management-API SQL path timed out twice with 544; the
-direct read-only probe above is the deployment evidence.)
+| Order | Migration | Purpose |
+|---|---|---|
+| 1 | 20261014010000_property_type_transitions.sql | Property transition ledger and preview/commit/status contracts |
+| 2 | 20261014020000_property_type_transition_lodge_scope_deny.sql | Explicit lodge-scope denial in transition RPCs |
+| 3 | 20261014030000_campsite_quotation_conversion_carry.sql | Carry tent occupancy through quotation conversion |
+| 4 | 20261014040000_property_transition_receipt_first.sql | Receipt-first transition replay and guarded transition contracts |
+| 5 | 20261014050000_settings_classification_guard.sql | Server-side settings classification guard |
+| 6 | 20261014060000_campsite_priced_tent_kind.sql | Campsite-priced tent-kind parity across booking and quotation gates |
+| 7 | 20261014080000_public_priced_tent_parity.sql | Public priced-tent parity and public room/rate validation |
+| 8 | 20261018010000_public_booking_single_receipt_null_safe.sql | NULL-safe single-request receipt validation |
+| 9 | 20261022090000_lodgingos_public_booking_server_group_and_child_tokens.sql | Unique child confirmation tokens and envelope-bound private invoice-group creation |
 
-## 2. Exact pending chain for this feature (apply in order)
+The latest migration is a forward correction. It is not recorded as applied in the available evidence. The 20261021090000_bar_addon_dependencies_and_prices.sql migration is unrelated Bar work and must not be included in a LodgingOS deployment.
 
-| # | Migration | Contents | Depends on |
-|---|---|---|---|
-| 1 | `supabase/migrations/20261014010000_property_type_transitions.sql` | Transition ledger table + preview/commit/status RPCs + grants | Baseline through `20261005090000` (uses `settings`, `users`, `app_sessions`, app-session helpers) |
-| 2 | `supabase/migrations/20261014020000_property_type_transition_lodge_scope_deny.sql` | Explicit lodge-scope deny on all three RPCs (redefines them) | #1 (redefines #1 bodies) |
-| 3 | `supabase/migrations/20261014030000_campsite_quotation_conversion_carry.sql` | Part A: one-time zero-fill patch of `create_multi_room_booking`; Part B: full replacement of `convert_quotation_to_booking_pre_intent_v1` | Booking-intent migrations through `20261005090000` (`create_multi_room_booking` must exist in its pre-patch form) |
-| 4 | `supabase/migrations/20261014040000_property_transition_receipt_first.sql` (NEW) | R1 receipt-first replay + full-precision fingerprint v2 (v1 dual-accept) + R2 source-family helper/checks + version-bound expectations; redefines preview + commit | #1 + #2 (redefines their bodies) |
-| 5 | `supabase/migrations/20261014050000_settings_classification_guard.sql` (NEW) | R3 `BEFORE UPDATE OF property_type, business_type` guard trigger + owner-only guard function | #4 (references the `app.property_transition_writer` flag the commit sets; applies independently but must land with/after #4) |
-| 6 | `supabase/migrations/20261014060000_campsite_priced_tent_kind.sql` (NEW) | R7 `_is_campsite_priced_kind` helper + eight asserted gate patches (expected-total, create/update/reschedule, multi-room x2, room-expected-total, quotation conversion, stay-total helper) | #3 (patch target `convert_quotation_to_booking_pre_intent_v1` must exist in its #3 form) + campsite pricing baseline (`20260711200000`, `20260904090000`) |
+The first eight entries were explicitly applied to the approved disposable schema during the supervised October 18 work, but those applications did not register migration-history rows. That is historical evidence only; the target and marker must be rechecked before any future mutation. Never infer schema state from migration history alone.
 
-At apply time the six touch no existing bookings, ledgers, rates, stock or
-settings rows (DDL + function replacement + asserted string patches only).
-#3 Part A, #6 patches, and the #4/#5 redefinitions write no data rows.
+## One-time patch cautions
 
-## 3. Deriving the pending list (dry run first)
+Several feature migrations use asserted function-body patches and are intentionally not safe to replay manually after successful application. In particular, the zero-fill patch in 20261014030000 and the asserted gate patches in 20261014060000 fail closed when their expected old fragments are absent. The 20261022090000 correction also asserts exact patch anchors in create_online_booking_legacy. Inspect the live function definitions and migration history before applying anything. Do not replay migrations 01/02 or historical patches through the acceptance runner; the runner must inspect the current schema only.
 
-The repository's Supabase CLI (`node_modules/supabase`, v2.119.0 at the
-time of writing) supports a dry-run flag — verified via
-`npx supabase db push --help`:
+Before a future migration, verify the actual schema and exact migration status on the approved disposable project, confirm the marker row, and apply only the approved feature chain in dependency order. Do not use an unqualified db push while unrelated migrations are pending. Re-run the disposable acceptance after the forward correction is applied, then verify the linked production schema read-only. Production deployment requires a separate approved release decision and explicit migration plan.
 
-```sh
-npx supabase db push --dry-run
-```
+## Verification status as of this handover
 
-Expected dry-run result for THIS feature: exactly the six migrations in
-§2, in order, and nothing else. If the dry run lists anything else, stop:
-those are unrelated backlog and must be dispositioned separately (see §4).
+Fresh local verification is recorded in LOCAL-VERIFICATION-2026-10-22.md. The follow-up correction addresses all five findings in INDEPENDENT-REVIEW-2026-10-22.md: child idempotency keys, guest email field, custom-session staff RPC transport, transition runner contracts, and request isolation/populated-group preservation in public acceptance. Further reviews prompted fixes for approved project/endpoint pinning, safe pg client construction without raw URL query overrides, Supabase TLS certificate verification, transition-runner helper import, strict quotation SQL gating, and savepoint rollback around the expected quotation mismatch error. The final independent source review found no remaining source-level issue in these fixes. SQL acceptance itself remains unexecuted. `npm run test:property-transition-db`, `npm run test:public-booking-db`, and `npm run test:campsite-quotation-db` block with exit 2 because the required remediation database URL and identity configuration are absent. These guards never apply migrations; their local negative probes do not establish database acceptance.
 
-## 4. Unrelated backlog must NOT ride along
+Historical evidence is under evidence/supervised-2026-10-18/. Those results must not be presented as current acceptance. In particular, the October 18 public-booking acceptance failed on duplicate child confirmation tokens and staff-only invoice-group authorization. The new forward migration addresses those failure points in code, but the live behavior remains unverified until it is applied to a revalidated disposable target and the full SQL acceptance passes. The final source re-review is complete; disposable runtime acceptance and production read-only schema verification remain open.
 
-The working tree contains other unapplied candidates that are NOT part of
-this feature — notably
-`supabase/migrations/20261015010000_pos_historical_sale_replay_v1.sql`
-(POS historical-sale replay, unrelated product path) and any other
-migrations outside the §2 chain. An unqualified `supabase db push` applies
-EVERYTHING pending on top of the remote history, which would deploy
-unrelated financial/Bar/POS contracts as an unreviewed side effect.
+## Bar manual impact
 
-Rule: deploy exactly the §2 chain. If `db push` cannot be scoped to the
-chain (its granularity is the whole pending set), apply the six files in
-§2 order through the approved explicit-SQL path against the target and
-record them in the migration history the same way `db push` would; do NOT
-blanket-push while unrelated backlog is pending. Either way, re-run the
-§3 dry run afterwards to confirm the feature entries cleared and nothing
-unexpected moved.
+No manual update required. This change is confined to LodgingOS public-booking database contracts, idempotency, confirmation tokens, and an internal server-only invoice-group helper. It changes no Bar setup, navigation, controls, permissions, daily workflow, financial or stock behavior, recovery guidance, equipment support, or available Bar features. No customer manual was edited.
 
-## 5. One-time-patch disclosure (corrected)
+## Walkthrough and release boundary
 
-The earlier note called all three prior migrations "reapply-idempotent".
-That was inaccurate for exactly one construct:
+Mounted React tests cover the production booking components; they are not an Electron walkthrough. No renderer or Electron workflow was changed by this database-focused correction. Any desktop verification should be reported separately from mounted tests and harness screenshots.
 
-- `20261014030000` **Part A** (zero-fill replacement in
-  `create_multi_room_booking`) asserts it found exactly one match site. On
-  reapply it finds zero and RAISES — by design, fail closed instead of
-  double-patching. The same holds for the eight gate patches in
-  `20261014060000`. This is intentional one-time-patch behavior, not a bug.
-- Everything else (`CREATE OR REPLACE` functions, `DROP TRIGGER IF EXISTS`
-  + `CREATE TRIGGER`, re-issued grants/comments, `CREATE TABLE IF NOT
-  EXISTS`) is safe to re-apply: normal forward migrations apply once via
-  the history table, and re-running their DDL statements is harmless.
-
-Operational consequence: a failed deploy that died INSIDE Part A or a #6
-patch block rolls back its transaction; a deploy that COMPLETED them must
-not be "re-applied from scratch" by hand-editing history — use §6 recovery
-instead.
-
-## 6. Rollback / recovery (no destructive ledger drops)
-
-- #1/#2 (not yet deployed): rollback means "do not apply". After
-  deployment, restoring the pre-#4 RPCs means re-applying the checked-in
-  #2 definitions; the `property_type_transitions` table must NEVER be
-  dropped while it holds rows — gate on
-  `select count(*) from public.property_type_transitions` first and keep
-  the ledger even if the RPCs are reverted.
-- #3: pure function replacement. Recovery = re-apply the prior checked-in
-  definitions (inner convert from `20260618180000`, multi-room from
-  `20261005090000`). Effect: single-line campsite conversions silently drop
-  occupancy again (the original gap) — a known, bounded regression, not
-  data loss.
-- #4: function redefinition only. Recovery = re-apply the checked-in #2
-  definitions (restores stale-first ordering — reopens R1 until a fixed
-  forward migration lands). The `_property_transition_family` helper can
-  stay (nothing references it after rollback) or be dropped; either is safe.
-- #5: trigger only. Recovery = `DROP TRIGGER
-  settings_property_transition_guard ON public.settings` (plus optionally
-  dropping the guard function). Safe at any time; ordinary saves return to
-  domain-guard-only behavior.
-- #6: asserted patches only. Recovery = targeted re-patch of each gate
-  back to `= 'campsite'` / `<> 'campsite'` form (mirror the #6 blocks with
-  swapped old/new fragments); the helper can stay or be dropped after the
-  gates no longer reference it. No data UPDATEs are involved, so no
-  backfill exists to undo; history is never repriced by #6 in either
-  direction.
-- In all cases: never drop `property_type_transitions`,
-  `booking_accommodation_details`, or financial ledger tables as "rollback".
-  There is no data migration to backfill.
-
-## 7. Smoke checks (post-deploy: disposable first, then linked read-only)
-
-1. `node --test tests/property-type-transition-sql.test.mjs`
-   (needs `LUNA_REMEDIATION_*` disposable credentials; genuine skip
-   without them)
-2. `node --test tests/property-transition-receipt-sql.test.mjs`
-   (same gate; R1/R2/R3 live matrix + always-on static marker guards)
-3. `node scripts/verify-property-transitions-disposable.mjs`
-   (same gate; Phase A base contract + Phase B forward corrections)
-4. Routine-presence queries (read-only; run against disposable after
-   apply, then against linked to confirm deployment):
-   ```sql
-   select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public'
-      and proname in ('preview_property_type_change',
-                      'commit_property_type_change',
-                      'get_property_type_transition_status',
-                      '_property_transition_family',
-                      '_property_transition_guard_classification',
-                      '_is_campsite_priced_kind');
-   select tgname from pg_trigger
-    where tgname in ('settings_property_transition_guard',
-                     'settings_provision_bar_mode_default_outlet',
-                     'settings_bar_offline_trading_window',
-                     'settings_trial_anchor_guard');
-   select to_regclass('public.property_type_transitions');
-   ```
-   Expect all six functions, all four triggers, and the ledger table.
-5. Re-run the §1 routine/table probe and confirm the seven routines +
-   ledger table are present and the latest migration is `20261014060000`
-   (for this feature's chain).
-6. Desktop smoke (no customer reclassification): open Settings → Property
-   type on an isolated fixture profile, preview a transition, confirm
-   blockers render; convert a single-line campsite quotation on fixtures
-   and confirm tents/vehicles + details row.
-
-## 8. Release coordination
-
-Desktop (Settings lifecycle, Bookings/Quotations carry), Manager PWA (no
-change), booking-site (no change), Legacy POS (no change) and Supabase
-migrations move independently per docs/ARCHITECTURE.md. The feature is
-operational only when the desktop build containing this pass AND all six
-§2 migrations are deployed. Migration application and releases require
-explicit existing user authorization; this note does not authorize them.
+This repository state is not release-ready until the new migration is applied only after disposable marker verification, the required public-booking and quotation SQL acceptance suites pass on that disposable target, the linked production schema is checked read-only, and the release runbook gates are satisfied. No production deployment or installer publication is claimed.

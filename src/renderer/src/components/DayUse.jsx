@@ -65,6 +65,17 @@ const STATUS_LABELS = {
   cancelled: 'Cancelled'
 }
 
+/** Current pool_day_use list fields plus fields read by legacy/cache-backed UI paths. IPC/cache rows are not runtime-validated. The online list projection omits guest, phone, template, activity, duration, payment, extras and sync fields, so those remain absent on that path; this view does not imply they were fetched or validated. */
+/** @typedef {{id: string, date: string, status: string, adults?: number|string, children?: number|string, fee_per_adult?: number|string, fee_per_child?: number|string, flat_fee?: number|string, hourly_rate?: number|string, package_fee?: number|string, total?: number|string, deposit_amount?: number|string, balance_due?: number|string, start_time?: string|null, end_time?: string|null, duration_hours?: number|string, pricing_mode?: string|null, resource_key?: string|null, resource_name?: string|null, notes?: string|null, service_notes?: string|null, guest_name?: string|null, phone?: string|null, template_name?: string|null, activity_type?: string|null, includes_braai?: boolean, payment_method?: string|null, invoice_number?: string|null, extras?: DayUseExtraExpectedView[], _pending_sync?: boolean, _sync_state?: string|null, _sync_error?: string|null, created_at?: string|null, updated_at?: string|null}} DayUseEntryExpectedView */
+/** @typedef {{id?: string, inventory_item_id?: string|null, name: string, quantity: number|string, unit_price: number|string, unit?: string|null, subtotal?: number|string}} DayUseExtraExpectedView */
+/** Inventory item fields consumed when linking extras; inventory remains read-only to this form. */
+/** @typedef {{id: string, name: string, unit?: string|null, current_stock?: number|string, selling_price?: number|string|null}} DayUseInventoryItemExpectedView */
+/** Editable strings mirror the existing form's controlled-input representation. */
+/** @typedef {{key: string, name: string, description: string, activity_type: string, includes_pool: boolean, includes_facility_access: boolean, includes_braai: boolean, pricing_mode: string, fee_per_adult: string, fee_per_child: string, flat_fee: string, hourly_rate: string, package_name: string, package_fee: string, default_duration_hours: string, bundled_extras: DayUseExtraExpectedView[]}} DayUseTemplateDraftExpectedView */
+/** Shared normalizer output used by getConfig/saveConfig, with numeric pricing retained. */
+/** @typedef {{key: string, name: string, description: string, activity_type: string, includes_pool: boolean, includes_facility_access: boolean, includes_braai: boolean, pricing_mode: string, fee_per_adult: number, fee_per_child: number, flat_fee: number, hourly_rate: number, package_name: string, package_fee: number, default_duration_hours: number, bundled_extras: DayUseExtraExpectedView[]}} DayUseTemplateConfigExpectedView */
+/** @typedef {{templates: DayUseTemplateConfigExpectedView[], resources: {key: string, name: string, type: string, notes: string}[]}} DayUseConfigExpectedView */
+
 const today = () => localToday()
 
 const createExtraDraft = (seed = {}) => ({
@@ -173,8 +184,8 @@ export default function DayUse() {
   const currency = settings?.currency || 'P'
 
   // Main forwards database rows without validating either the response container or row fields.
-  const [entries, setEntries] = useState(/** @type {unknown} */ ([]))
-  const [inventoryItems, setInventoryItems] = useState(/** @type {unknown} */ ([]))
+  const [entries, setEntries] = useState(/** @type {DayUseEntryExpectedView[]} */ (/** @type {unknown} */ ([])))
+  const [inventoryItems, setInventoryItems] = useState(/** @type {DayUseInventoryItemExpectedView[]} */ (/** @type {unknown} */ ([])))
   const [loading, setLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState(today())
   const [showForm, setShowForm] = useState(false)
@@ -184,24 +195,24 @@ export default function DayUse() {
   const [activityFilter, setActivityFilter] = useState('all')
   const [resourceFilter, setResourceFilter] = useState('all')
   const [balanceFilter, setBalanceFilter] = useState('all')
-  const [dayUseConfig, setDayUseConfig] = useState({ templates: [], resources: [] })
+  const [dayUseConfig, setDayUseConfig] = useState(/** @type {DayUseConfigExpectedView} */ ({ templates: [], resources: [] }))
   const templates = useMemo(() => resolveDayUseTemplates({ day_use_templates: dayUseConfig.templates }), [dayUseConfig.templates])
   const resources = useMemo(() => resolveDayUseResources({ day_use_resources: dayUseConfig.resources }), [dayUseConfig.resources])
   const defaultTemplate = templates[0] || normalizeDayUseTemplate({})
   const [form, setForm] = useState(buildFormFromTemplate(settings, defaultTemplate))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [deleting, setDeleting] = useState(null)
-  const [statusUpdating, setStatusUpdating] = useState(null)
-  const [settleModal, setSettleModal] = useState(null)
+  const [deleting, setDeleting] = useState(/** @type {string|null} */ (null))
+  const [statusUpdating, setStatusUpdating] = useState(/** @type {string|null} */ (null))
+  const [settleModal, setSettleModal] = useState(/** @type {DayUseEntryExpectedView|null} */ (null))
   const [settleMethod, setSettleMethod] = useState('Cash')
   const [settleMarkCompleted, setSettleMarkCompleted] = useState(true)
   const [settling, setSettling] = useState(false)
-  const [slipEntry, setSlipEntry] = useState(null)
+  const [slipEntry, setSlipEntry] = useState(/** @type {DayUseEntryExpectedView|null} */ (null))
   const [slipSaving, setSlipSaving] = useState(false)
   const [configTemplates, setConfigTemplates] = useState(templates)
   const [configResources, setConfigResources] = useState(resources)
-  const [templateDraft, setTemplateDraft] = useState(emptyTemplateDraft())
+  const [templateDraft, setTemplateDraft] = useState(/** @type {DayUseTemplateDraftExpectedView} */ (emptyTemplateDraft()))
   const [resourceDraft, setResourceDraft] = useState(emptyResourceDraft())
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState('')
@@ -220,10 +231,10 @@ export default function DayUse() {
     window.api.dayuse.getConfig()
       .then((config) => {
         if (!active || !config) return
-        setDayUseConfig({
+        setDayUseConfig(/** @type {DayUseConfigExpectedView} */ (/** @type {unknown} */ ({
           templates: config.templates || config.day_use_templates || [],
           resources: config.resources || config.day_use_resources || []
-        })
+        })))
       })
       .catch(() => {})
     return () => { active = false }
@@ -246,7 +257,7 @@ export default function DayUse() {
     if (!silent) setLoading(true)
     try {
       const data = await window.api.dayuse.getAll(selectedDate, selectedDate).catch(() => [])
-      setEntries(data || [])
+      setEntries(/** @type {DayUseEntryExpectedView[]} */ (/** @type {unknown} */ (data || [])))
     } finally {
       setLoading(false)
     }
@@ -452,10 +463,10 @@ export default function DayUse() {
         resources: nextResources.map((resource) => normalizeDayUseResource(resource))
       }
       const saved = await window.api.dayuse.saveConfig(payload)
-      setDayUseConfig({
+      setDayUseConfig(/** @type {DayUseConfigExpectedView} */ (/** @type {unknown} */ ({
         templates: saved.templates || [],
         resources: saved.resources || []
-      })
+      })))
       setConfigSuccess('Day Use setup saved.')
       setTemplateDraft(emptyTemplateDraft())
       setResourceDraft(emptyResourceDraft())

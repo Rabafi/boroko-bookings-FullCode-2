@@ -5,6 +5,11 @@ import { readCache, writeCache, dedupePromise } from './infrastructure.js'
 
 const CACHE_KEY = 'payment-provider-configs'
 
+// Main startup and backend-session setup install this client before domain
+// RPC use. Keep the state field optional for reset/boot phases; this erased
+// type view adds no guard and preserves the current failure if called before
+// client initialization.
+
 /** @param {string | null | undefined} lodgeIdArg @param {string | null} [provider] @returns {Promise<{data: unknown, error: Error | null}>} */
 export async function getPaymentProviderConfig(lodgeIdArg, provider = null) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
@@ -12,7 +17,7 @@ export async function getPaymentProviderConfig(lodgeIdArg, provider = null) {
     return { data: null, error: new Error('No lodge selected') }
   }
   try {
-    const { data, error } = await state.supabase.rpc('get_payment_provider_config', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_payment_provider_config', {
       p_lodge_id: currentLodgeId,
       p_provider: provider
     })
@@ -34,7 +39,7 @@ export async function savePaymentProviderConfig(payload, lodgeIdArg) {
   if (!currentLodgeId) {
     throw new Error('No lodge selected')
   }
-  const { data, error } = await state.supabase.rpc('save_payment_provider_config', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('save_payment_provider_config', {
     p_lodge_id: currentLodgeId,
     p_payload: payload
   })
@@ -47,7 +52,7 @@ export async function savePaymentProviderConfig(payload, lodgeIdArg) {
 export async function getProviderSecrets(lodgeIdArg, provider) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('get_payment_provider_secrets', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_payment_provider_secrets', {
     p_lodge_id: currentLodgeId,
     p_provider: provider
   })
@@ -57,7 +62,7 @@ export async function getProviderSecrets(lodgeIdArg, provider) {
 
 /** @param {string} provider @param {unknown} signature @param {unknown} payloadRaw @returns {Promise<unknown>} */
 export async function verifyWebhookSignature(provider, signature, payloadRaw) {
-  const { data, error } = await state.supabase.rpc('verify_webhook_signature', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('verify_webhook_signature', {
     p_provider: provider,
     p_signature: signature,
     p_payload_raw: payloadRaw
@@ -76,7 +81,7 @@ export async function recordWebhookPayment(payload, signature, lodgeIdArg) {
     err.onlineOnly = true
     throw err
   }
-  const { data, error } = await state.supabase.rpc('record_webhook_payment', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('record_webhook_payment', {
     p_lodge_id: currentLodgeId,
     p_payload: payload,
     p_signature: signature
@@ -87,7 +92,7 @@ export async function recordWebhookPayment(payload, signature, lodgeIdArg) {
 
 /** @param {string} slug @param {unknown} payload @returns {Promise<unknown>} */
 export async function createBookingIntent(slug, payload) {
-  const { data, error } = await state.supabase.rpc('create_booking_intent', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_booking_intent', {
     p_slug: slug,
     p_payload: payload
   })
@@ -97,7 +102,7 @@ export async function createBookingIntent(slug, payload) {
 
 /** @param {string} bookingIntentId @param {string} provider @param {number} amount @returns {Promise<unknown>} */
 export async function createPaymentIntent(bookingIntentId, provider, amount) {
-  const { data, error } = await state.supabase.rpc('create_payment_intent', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_payment_intent', {
     p_booking_intent_id: bookingIntentId,
     p_provider: provider,
     p_amount: amount
@@ -114,7 +119,7 @@ export async function confirmPaymentFromWebhook(providerPaymentId, provider, web
     err.onlineOnly = true
     throw err
   }
-  const { data, error } = await state.supabase.rpc('confirm_payment_from_webhook', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('confirm_payment_from_webhook', {
     p_provider_payment_id: providerPaymentId,
     p_provider: provider,
     p_payload: webhookPayload
@@ -124,7 +129,7 @@ export async function confirmPaymentFromWebhook(providerPaymentId, provider, web
 }
 
 export async function expireStaleBookingIntents() {
-  const { data, error } = await state.supabase.rpc('expire_stale_booking_intents', {})
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('expire_stale_booking_intents', {})
   if (error) throw error
   return data
 }
@@ -133,7 +138,7 @@ async function _getPaymentDashboard(lodgeIdArg = null) {
   const currentLodgeId = lodgeIdArg || state.lodgeId
   if (!currentLodgeId) return null
   try {
-    const { data, error } = await state.supabase.rpc('get_payment_dashboard', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_payment_dashboard', {
       p_lodge_id: currentLodgeId
     })
     if (error) throw error
@@ -161,7 +166,7 @@ export function getPaymentDashboard(lodgeIdArg = null) {
 export async function recoverAbandonedPaymentSession(sessionToken) {
   if (!state.lodgeId) throw new Error('No lodge selected')
   if (!sessionToken) throw new Error('Session token is required')
-  const { data, error } = await state.supabase.rpc('recover_abandoned_session', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('recover_abandoned_session', {
     p_lodge_id: state.lodgeId,
     p_session_token: sessionToken
   })
@@ -190,7 +195,7 @@ export async function recoverAbandonedPaymentSession(sessionToken) {
 /** @param {string | null} [statusFilter] @returns {Promise<unknown>} */
 export async function listAbandonedPaymentSessions(statusFilter = null) {
   if (!state.lodgeId) throw new Error('No lodge selected')
-  const { data, error } = await state.supabase.rpc('get_abandoned_sessions', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_abandoned_sessions', {
     p_lodge_id: state.lodgeId,
     p_status_filter: statusFilter || null
   })

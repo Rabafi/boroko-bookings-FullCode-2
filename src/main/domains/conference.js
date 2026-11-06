@@ -14,7 +14,11 @@ import {
 // The conference API intentionally consumes caller payloads without adding a
 // runtime schema check. These local views document the fields read while
 // preserving existing property-read errors for malformed inputs.
-/** @typedef {Record<string, unknown>} ConferenceInputView */
+/** @typedef {Record<string, unknown> & {booking_date: string}} ConferenceInputView */
+/** Cache rows come from the existing conference query and offline writers; JSON remains unvalidated.
+ * @typedef {Record<string, unknown> & {id?: unknown, booking_date?: string|null, start_time?: string|null, client_name?: unknown, _pending_sync?: unknown}}
+ * ConferenceBookingCacheReadView
+ */
 
 // ─── CONFERENCE BOOKINGS ───────────────────────────────────────────────────────
 
@@ -30,7 +34,7 @@ function withReadMetadata(rows, source, complete) {
 
 /** @param {string | undefined} start @param {string | undefined} end */
 export async function getConferenceBookings(start, end) {
-  const cached = readCache('conference-bookings');
+  const cached = /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings'));
   if (!state.isOnline) {
     return withReadMetadata(cached.
       filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end)).
@@ -54,7 +58,7 @@ export async function getConferenceBookings(start, end) {
 /** @param {unknown} id */
 export async function getConferenceBookingById(id) {
   if (!id) return null;
-  if (!state.isOnline) return readCache('conference-bookings').find((row) => row.id === id) || null;
+  if (!state.isOnline) return /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings')).find((row) => row.id === id) || null;
   const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).
   from('conference_bookings').
   select('*').
@@ -107,7 +111,7 @@ export async function createConferenceBooking(data) {
     if (!result?.success) throw new Error(result?.error || 'Could not create conference booking');
     const serverPaymentStatus = result?.payment_status || paymentStatus;
     const cachedRow = { ...payload, payment_status: serverPaymentStatus };
-    writeCache('conference-bookings', [cachedRow, ...readCache('conference-bookings').filter((row) => row.id !== id)], { source: 'local' });
+    writeCache('conference-bookings', [cachedRow, .../** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings')).filter((row) => row.id !== id)], { source: 'local' });
     logActivity('conference_booking_created', `Conference booking · ${data.client_name}${data.company ? ' · ' + data.company : ''} · ${data.booking_date} · ${data.room_name || 'Conference Room'}`);
     return { id: result.id || id };
   }
@@ -118,7 +122,7 @@ export async function createConferenceBooking(data) {
     _sync_state: 'pending',
     _sync_error: null
   };
-  writeCache('conference-bookings', [offlineRow, ...readCache('conference-bookings').filter((row) => row.id !== id)], { source: 'local' });
+  writeCache('conference-bookings', [offlineRow, .../** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings')).filter((row) => row.id !== id)], { source: 'local' });
   queueOperation('rpc', 'create_conference_booking', { payload }, null, {
     _queue_id: `conference-${id}`
   });
@@ -130,7 +134,7 @@ export async function createConferenceBooking(data) {
 export async function updateConferenceBooking(id, data) {
   if (!id) throw new Error('Conference booking ID is required');
   if (!state.isOnline) {
-    const cached = readCache('conference-bookings');
+    const cached = /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings'));
     const existing = cached.find((row) => row.id === id);
     const dependsOn = existing?._pending_sync ? `conference-${id}` : null;
     const merged = { ...existing, ...data };
@@ -159,7 +163,7 @@ export async function updateConferenceBooking(id, data) {
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not update conference booking');
   const serverPaymentStatus = result?.payment_status;
-  const cached = readCache('conference-bookings');
+  const cached = /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings'));
   const existing = cached.find((row) => row.id === id);
   const updated = { ...(existing || {}), ...data };
   if (serverPaymentStatus) {
@@ -202,12 +206,12 @@ export async function updateConferenceBookingPayment(id, paymentAmount, paymentM
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not record conference booking payment');
     await refreshCache('conference-bookings');
-    const name = (readCache('conference-bookings') || []).find((row) => row.id === id)?.client_name || 'Guest';
+    const name = (/** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings')) || []).find((row) => row.id === id)?.client_name || 'Guest';
     logActivity('conference_payment', `Conference payment ${numericAmount.toFixed(2)} · ${name} · ${paymentMethod}`);
     return result;
   }
 
-  const cached = readCache('conference-bookings');
+  const cached = /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings'));
   const idx = cached.findIndex((row) => row.id === id);
   if (idx < 0) throw new Error('Conference booking not found in offline cache');
   const row = cached[idx];
@@ -244,7 +248,7 @@ export async function updateConferenceBookingPayment(id, paymentAmount, paymentM
 export async function deleteConferenceBooking(id) {
   if (!id) throw new Error('Conference booking ID is required');
   if (!state.isOnline) {
-    const cached = readCache('conference-bookings');
+    const cached = /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings'));
     const existing = cached.find((row) => row.id === id);
     const dependsOn = existing?._pending_sync ? `conference-${id}` : null;
     writeCache('conference-bookings', cached.filter((row) => row.id !== id), { source: 'local' });
@@ -260,6 +264,6 @@ export async function deleteConferenceBooking(id) {
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete conference booking');
-  writeCache('conference-bookings', readCache('conference-bookings').filter((row) => row.id !== id), { source: 'local' });
+  writeCache('conference-bookings', /** @type {ConferenceBookingCacheReadView[]} */ (readCache('conference-bookings')).filter((row) => row.id !== id), { source: 'local' });
   return { success: true };
 }

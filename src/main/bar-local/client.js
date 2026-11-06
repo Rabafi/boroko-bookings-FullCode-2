@@ -27,10 +27,10 @@ import { checkCartAgainstSnapshot, loadCatalogueSnapshot } from './catalogue.js'
 export const ALLOWED_COMMANDS = Object.freeze(new Set([
   'sale.commit', 'sale.return', 'sale.void', 'sale.correct_after_close', 'tab.open', 'tab.add', 'tab.settle', 'tab.transfer',
   'tab.split', 'tab.merge', 'shift.open', 'shift.close', 'drawer.movement', 'cashup.submit',
-  'cashup.review', 'cashup.reopen', 'stock.receive', 'stock.adjust', 'stock.stocktake', 'stock.waste', 'stock.lot.waste', 'stock.lot.release',
+  'cashup.handover', 'cashup.review', 'cashup.reopen', 'stock.receive', 'stock.adjust', 'stock.stocktake', 'stock.waste', 'stock.lot.waste', 'stock.lot.release',
   'stock.transfer', 'supplier.upsert', 'purchase_order.create', 'purchase_order.cancel',
   'purchase_order.receive', 'customer.create', 'customer.credit.payment', 'voucher.issue',
-  'catalogue.upsert', 'catalogue.availability.set', 'expense.create', 'expense.void',
+  'catalogue.upsert', 'catalogue.bar_product.save', 'catalogue.stock_item.save', 'stock.batch.record', 'catalogue.availability.set', 'expense.create', 'expense.void',
   'accounting.account.upsert', 'control.checklist.start', 'control.checklist.item.set',
   'control.incident.log', 'control.incident.resolve', 'workforce.shift.schedule',
   'workforce.shift.cancel', 'workforce.clock.in', 'workforce.clock.out', 'staff.create',
@@ -48,14 +48,14 @@ export const ALLOWED_COMMANDS = Object.freeze(new Set([
 ]))
 
 export const ALLOWED_QUERIES = Object.freeze(new Set([
-  'accounting.records',
+  'accounting.records', 'accounting.journal_entries',
   'drawer.open_shifts',
   'workforce.tip_payouts',
   'bootstrap', 'menu.list', 'menu.availability', 'menu.promotions', 'menu.modifiers', 'expenses.list', 'expense.get',
-  'accounting.accounts.list', 'tabs.list', 'tab.get', 'sales.list', 'reports.sales_summary',
+  'accounting.accounts.list', 'tabs.list', 'tab.get', 'sales.list', 'sales.mine', 'reports.sales_summary',
   'control.templates.list', 'control.checklists.list', 'control.checklist.get',
   'control.incidents.list', 'workforce.roster', 'workforce.attendance.list',
-  'workforce.attendance.current', 'sale.get', 'shift.current', 'cashup.summary', 'stock.list', 'stock.lot_expiry', 'stock.lot_balances',
+  'workforce.attendance.current', 'sale.get', 'shift.current', 'cashup.summary', 'cashup.pending', 'cashup.mine', 'stock.list', 'stock.history', 'stock.aging', 'stock.lot_expiry', 'stock.lot_balances',
   'suppliers.list', 'purchase_orders.list', 'purchase_order.get', 'customers.list', 'vouchers.list',
   'staff.list', 'audit.search', 'outbox.status', 'outbox.bundle.get', 'loyalty.programs.list', 'loyalty.account.get', 'accounting.trial_balance',
   'reports.stock', 'reports.cashup', 'reports.post_close_corrections', 'support.reports.list'
@@ -117,6 +117,10 @@ const HASH_RE = /^[0-9a-f]{64}$/
  * @typedef {import('./intents.js').CommandEnvelope} CommandEnvelope
  * @typedef {import('./intents.js').Payload} Payload
  * @typedef {import('./catalogue.js').CatalogueSnapshot} CatalogueSnapshot
+ * @typedef {{event_type: string, commit_sequence: number, event_index: number, operation_id?: unknown}} LocalEventExpectedData
+ * @typedef {{events: LocalEventExpectedData[], event_count: unknown, next_cursor: number, latest_commit_sequence: number, latest_event_sequence: number, complete: boolean, scope: {business_id: string, outlet_id: string, device_id: string}} & ({gap_detected: true, retention_floor_sequence: number}|{gap_detected: false, retention_floor_sequence: unknown})} LocalEventFeedExpectedData
+ * @typedef {{email: string, password: string, outlet_id?: string}|{staff_id: string, pin: string, outlet_id?: string}} LocalLoginRequestBody
+ * @typedef {{snapshot: CatalogueSnapshot, reused: boolean, resync_required: boolean, retention_floor_sequence: number|null, event_cursor: number, catalogue_invalidated: boolean}} CatalogueRefreshResult
  */
 
 /**
@@ -252,7 +256,9 @@ export function createHttpTransport(options) {
     ? new https.Agent({
         keepAlive: true,
         rejectUnauthorized: false,
-        checkServerIdentity: (_hostname, certificate) => verifyCertificateFingerprint(certificate, fingerprint)
+        // HTTPS without a fingerprint has already failed above. Preserve the
+        // original verifier call and pinning behaviour inside this branch.
+        checkServerIdentity: (_hostname, certificate) => verifyCertificateFingerprint(certificate, /** @type {string} */ (fingerprint))
       })
     : new http.Agent({ keepAlive: true })
 
@@ -328,6 +334,7 @@ export function createHttpTransport(options) {
     if (requestOptions.deviceId) headers['x-bar-device-id'] = requestOptions.deviceId
     if (requestOptions.deviceToken) headers['x-bar-device-token'] = requestOptions.deviceToken
     if (requestOptions.correlationId) headers['x-correlation-id'] = requestOptions.correlationId
+    /** @type {string|undefined} */
     let serializedBody
     if (requestOptions.body !== undefined) {
       try {
@@ -336,7 +343,9 @@ export function createHttpTransport(options) {
         throw new BarLocalAdapterError('VALIDATION_FAILED', 'The request body is not JSON serializable.', { cause: error })
       }
       headers['content-type'] = 'application/json'
-      headers['content-length'] = String(Buffer.byteLength(serializedBody))
+      // JSON.stringify can return undefined for non-JSON root values; the
+      // existing Buffer.byteLength failure in that case remains observable.
+      headers['content-length'] = String(Buffer.byteLength(/** @type {string} */ (serializedBody)))
     }
 
     return new Promise((resolve, reject) => {
@@ -573,7 +582,7 @@ export class BarLocalClient {
      *   commit_sequence?: number
      * }|null} */
     this.catalogueGap = null
-    /** @type {Promise<Record<string, unknown>>|null} */
+    /** @type {Promise<CatalogueRefreshResult>|null} */
     this.catalogueRefreshInFlight = null
   }
 
@@ -769,6 +778,7 @@ export class BarLocalClient {
    */
   async login(request) {
     const credential = await this.#credential()
+    /** @type {LocalLoginRequestBody} */
     let body
     if (request.email !== undefined || request.password !== undefined) {
       if (request.staff_id !== undefined || request.staffId !== undefined || request.pin !== undefined) {
@@ -821,6 +831,7 @@ export class BarLocalClient {
     return session
   }
 
+  /** @param {Record<string, unknown>} request */
   async recoverOwnerPassword(request) {
     if (!isLoopbackHostname(this.transport.endpoint.hostname)) {
       throw new BarLocalAdapterError('OWNER_RECOVERY_LOCAL_ONLY', 'Owner password recovery must be started on the main Bar computer.')
@@ -937,6 +948,32 @@ export class BarLocalClient {
     return body
   }
 
+  /** Verify the signed-in staff member's manager PIN without creating a
+   * transferable command approval or changing the active session. */
+  async verifyManagerPin(request) {
+    const payload = requirePayload(request, 'manager PIN verification request')
+    const staffId = requireUuid(payload.staff_id, 'staff_id')
+    const pin = requireString(payload.pin, 'pin', { min: 4, max: 12 })
+    if (!/^\d+$/.test(pin)) throw new BarLocalAdapterError('VALIDATION_FAILED', 'pin must be numeric.')
+    const { session, credential } = await this.#requireAuth()
+    if (session.staff.staff_id !== staffId && session.staff.id !== staffId) {
+      throw new BarLocalAdapterError('CAPABILITY_DENIED', 'Manage access must be verified for the signed-in staff member.')
+    }
+    const response = await this.transport.post('/v1/manager-pin/verify', { staff_id: staffId, pin }, {
+      token: session.token, deviceId: credential.device_id, correlationId: this.#newCorrelationId()
+    })
+    if (response.status === 404 || response.status === 405) {
+      throw new BarLocalAdapterError('LOCAL_SERVICE_UPDATE_REQUIRED', 'The saved local Bar service does not support Manage PIN verification yet. Update or repair the existing service while preserving this Bar, then retry. Your PIN has not been verified.')
+    }
+    const body = this.#expectObject(response.body, 'manager PIN verification response')
+    const error = normalizeErrorEnvelope(body, { status: response.status })
+    if (error) throw error
+    if (body.verified !== true || body.staff_id !== staffId) {
+      throw new BarLocalAdapterError('INTERNAL_ERROR', 'The local Bar service did not verify this manager PIN.')
+    }
+    return { success: true, verified: true }
+  }
+
   /**
    * Request an approval for a fixed command using trusted authority scope.
    * The renderer supplies only command data and a PIN; it cannot choose the
@@ -948,7 +985,7 @@ export class BarLocalClient {
     const payload = requirePayload(request.payload, 'payload')
     const route = this.#localRoute(`approval:${command}`, true)
     const { credential } = await this.#requireAuth()
-    const capability = APPROVAL_CAPABILITY_BY_COMMAND[command]
+    const capability = /** @type {Readonly<Record<string, string>>} */ (APPROVAL_CAPABILITY_BY_COMMAND)[command]
     if (!capability) throw new BarLocalAdapterError('VALIDATION_FAILED', 'This local workflow has no registered approval capability.')
     const operation = assertCommandEnvelope({
       contract_version: 1,
@@ -1020,7 +1057,7 @@ export class BarLocalClient {
       if (terminal) return terminal
     } else {
       const unresolved = record.list().find((intent) => intent.operation_id !== operationId
-        && ![INTENT_STATES.COMMITTED_LOCAL, INTENT_STATES.TERMINAL_REFUSAL, INTENT_STATES.CANCELLED].includes(intent.state))
+        && !/** @type {string[]} */ ([INTENT_STATES.COMMITTED_LOCAL, INTENT_STATES.TERMINAL_REFUSAL, INTENT_STATES.CANCELLED]).includes(intent.state))
       if (unresolved) {
         throw new BarLocalAdapterError('UNRESOLVED_OPERATION', 'Resolve the earlier local operation with its original ID before starting another operation.', {
           operationId: unresolved.operation_id, retrySameOperation: true
@@ -1473,21 +1510,27 @@ export class BarLocalClient {
   async adminRecoveryStatus() {
     return this.#adminRequest('GET', '/v1/admin/recovery')
   }
+  /** @param {Record<string, unknown>} request */
   async adminCopyRecoverySet(request) {
     return this.#adminRequest('POST', '/v1/admin/recovery/copy', request)
   }
+  /** @param {Record<string, unknown>} request */
   async adminSetRecoveryDestination(request) {
     return this.#adminRequest('POST', '/v1/admin/recovery/destination', request)
   }
+  /** @param {string} id */
   async adminRecoveryJob(id) {
     return this.#adminRequest('GET', `/v1/admin/recovery/job?id=${encodeURIComponent(requireString(id, 'id', { max: 36 }))}`)
   }
+  /** @param {Record<string, unknown>} request */
   async adminCreateRecoveryBase(request) {
     return this.#adminRequest('POST', '/v1/admin/recovery/base', request)
   }
+  /** @param {Record<string, unknown>} request */
   async adminVerifyRecoveryPoint(request) {
     return this.#adminRequest('POST', '/v1/admin/recovery/drill', request)
   }
+  /** @param {Record<string, unknown>} request */
   async adminExportRecoveryKeys(request) {
     return this.#adminRequest('POST', '/v1/admin/recovery/keys', request)
   }
@@ -1633,7 +1676,7 @@ export class BarLocalClient {
     const body = this.#expectObject(response.body, 'query response')
     const error = normalizeErrorEnvelope(body, { status: response.status })
     if (error) throw error
-    const validated = this.#validateQueryResult(body, route, credential)
+    const validated = this.#validateQueryResult(body, route, credential, name)
     return validated
   }
 
@@ -1643,8 +1686,9 @@ export class BarLocalClient {
    * @param {DeviceCredential} credential
    * @returns {Record<string, unknown>}
    */
-  #validateQueryResult(body, route, credential) {
-    if (!Array.isArray(body.data) && (body.data === null || typeof body.data !== 'object')) {
+  #validateQueryResult(body, route, credential, queryName) {
+    if (!(queryName === 'shift.current' && body.data === null)
+      && !Array.isArray(body.data) && (body.data === null || typeof body.data !== 'object')) {
       throw new BarLocalAdapterError('INTERNAL_ERROR', 'The local Bar query returned an invalid data section.')
     }
     const pagination = requirePayload(body.pagination, 'query.pagination')
@@ -1675,7 +1719,7 @@ export class BarLocalClient {
 
   /**
    * @param {{ after?: number, limit?: number }} [options]
-   * @returns {Promise<Record<string, unknown>>}
+   * @returns {Promise<LocalEventFeedExpectedData>}
    */
   async events(options = {}) {
     // Menu discovery remains available during first-run setup. The database
@@ -1706,7 +1750,14 @@ export class BarLocalClient {
     }
     const nextCursor = requireInteger(body.next_cursor, 'events.next_cursor', { min: 0 })
     const latestCommit = requireInteger(body.latest_commit_sequence, 'events.latest_commit_sequence', { min: 0 })
-    const latestEvent = requireInteger(body.latest_event_sequence, 'events.latest_event_sequence', { min: 0 })
+    // Older installed local authorities may return PostgreSQL's NULL max()
+    // for an empty outbox. This is the one safe normalization: a non-empty
+    // page or non-zero count with a NULL latest event remains invalid.
+    const latestEventRaw = body.latest_event_sequence
+    const emptyOutboxNullWatermark = latestEventRaw === null
+      && body.events.length === 0
+      && body.event_count === 0
+    const latestEvent = requireInteger(emptyOutboxNullWatermark ? 0 : latestEventRaw, 'events.latest_event_sequence', { min: 0 })
     const gapDetected = body.gap_detected === true
     if (gapDetected) {
       const floor = body.retention_floor_sequence
@@ -1733,7 +1784,7 @@ export class BarLocalClient {
     if (!gapDetected && nextCursor < after) {
       throw new BarLocalAdapterError('INTERNAL_ERROR', 'The local Bar event feed cursor moved backwards.')
     }
-    return {
+    return /** @type {LocalEventFeedExpectedData} */ ({
       events: body.events,
       event_count: body.event_count,
       next_cursor: nextCursor,
@@ -1743,7 +1794,7 @@ export class BarLocalClient {
       gap_detected: gapDetected,
       complete: body.complete === true,
       scope
-    }
+    })
   }
 
   /**
@@ -1854,14 +1905,7 @@ export class BarLocalClient {
    *   query_name?: string,
    *   force?: boolean
    * }} [options]
-   * @returns {Promise<{
-   *   snapshot: CatalogueSnapshot,
-   *   reused: boolean,
-   *   resync_required: boolean,
-   *   retention_floor_sequence: number|null,
-   *   event_cursor: number,
-   *   catalogue_invalidated: boolean
-   * }>}
+   * @returns {Promise<CatalogueRefreshResult>}
    */
   async refreshCatalogueSnapshot(options = {}) {
     if (options === null || typeof options !== 'object' || Array.isArray(options)) {
@@ -1931,14 +1975,7 @@ export class BarLocalClient {
    *   previous_snapshot: CatalogueSnapshot|null,
    *   catalogue_version: number|null
    * }} options
-   * @returns {Promise<{
-   *   snapshot: CatalogueSnapshot,
-   *   reused: boolean,
-   *   resync_required: boolean,
-   *   retention_floor_sequence: number|null,
-   *   event_cursor: number,
-   *   catalogue_invalidated: boolean
-   * }>}
+   * @returns {Promise<CatalogueRefreshResult>}
    */
   async #refreshCatalogue(route, session, credential, options) {
     const snapshot = await loadCatalogueSnapshot(

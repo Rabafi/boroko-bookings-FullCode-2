@@ -21,6 +21,21 @@ import { useSettings } from '../app-context'
 import { isRestaurantOnly } from '../../../shared/propertyTypes'
 import { ErrorNotice } from './shared/ErrorNotice'
 
+/** @typedef {'bookings' | 'guests' | 'rooms' | 'inventory' | 'supplies' | 'expenses' | 'menu_items' | 'customers' | 'ingredients' | 'recipes' | 'suppliers' | 'staff'} ImportType */
+/** @typedef {{key: string, label: string, required: boolean, hint: string}} ImportField */
+/** @typedef {{key: ImportType, label: string, executable?: boolean}} ImportTypeOption */
+/** @typedef {Record<string, string>} ImportColumnMapping */
+/** @typedef {Record<string, unknown>} ImportRow */
+/** @typedef {{fileName: string, sheetName: string, columns: string[], rows: ImportRow[], totalRows?: number, truncated?: boolean, error?: string, detectedImportType?: string, detectedImportLabel?: string, detectedConfidence?: number, suggestedMapping?: ImportColumnMapping, usedMappingMemory?: boolean}} ParsedImportExpectedView */
+/** @typedef {{row: number, errors: string[], error?: string, suggestions?: {room_number?: string[]}}} ImportDryRunErrorExpectedView */
+/** @typedef {{total?: number, valid?: number, errors?: ImportDryRunErrorExpectedView[], overlaps?: number, duplicates?: number, would_create?: number, would_create_customers?: number, would_reuse_customers?: number, error?: string}} ImportDryRunExpectedView */
+/** @typedef {{label: string, tone: string, detail: string}} ImportRiskView */
+/** @typedef {{imported?: number, skipped?: number, errors?: {row: number, guest?: string, error: string}[], error?: string, batchId?: string | null, undone?: boolean}} ImportResultExpectedView */
+/** @typedef {{id: string, filename?: string, row_count?: number, error_count?: number, created_at?: string, entity_type?: string}} ImportBatchExpectedView */
+/** @typedef {{progress?: number, current?: number, total?: number, stage?: string, message?: string}} ImportProgressExpectedView */
+/** @typedef {Record<string, Record<string, string>>} ImportMappingMemoryExpectedView */
+/** @typedef {ImportRow & {_id: number, _skip: boolean, _duplicate: boolean}} PreviewImportRow */
+
 // ── Field definitions ────────────────────────────────────────────────────────
 const IMPORT_FIELD_SETS = {
   bookings: [
@@ -121,6 +136,7 @@ const IMPORT_FIELD_SETS = {
   ]
 }
 
+/** @param {ImportType | string} type @returns {ImportField[]} */
 const getFieldsForType = (type) => IMPORT_FIELD_SETS[type] || IMPORT_FIELD_SETS.bookings
 
 const STEPS = ['Upload File', 'Map Columns', 'Preview & Edit', 'Import']
@@ -167,14 +183,17 @@ const FIELD_ALIASES = {
   cost_price:     ['cost price', 'cost', 'food cost'],
 }
 
+/** @param {unknown} value */
 function normalizeHeaderText(value) {
   return String(value || '').toLowerCase().replace(/[_\-/#]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+/** @param {unknown} value */
 function compactHeaderText(value) {
   return normalizeHeaderText(value).replace(/[^a-z0-9]/g, '')
 }
 
+/** @param {unknown} value */
 function headerTokens(value) {
   return normalizeHeaderText(value).split(' ').filter(Boolean)
 }
@@ -183,12 +202,14 @@ function readMappingMemory() {
   try {
     const stored = window.localStorage?.getItem(IMPORT_MAPPING_MEMORY_KEY)
     const parsed = stored ? JSON.parse(stored) : {}
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    // Expected localStorage shape only; parsing JSON does not validate it.
+    return parsed && typeof parsed === 'object' ? /** @type {ImportMappingMemoryExpectedView} */ (/** @type {unknown} */ (parsed)) : {}
   } catch {
     return {}
   }
 }
 
+/** @param {unknown} val */
 function normaliseDate(val) {
   if (!val) return ''
   if (typeof val === 'number') {
@@ -214,6 +235,7 @@ function normaliseDate(val) {
   return s
 }
 
+/** @param {unknown} value */
 function normalizeImportStatus(value) {
   const raw = String(value || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_')
   if (!raw) return ''
@@ -233,6 +255,7 @@ function normalizeImportStatus(value) {
   return aliases[raw] || raw
 }
 
+/** @param {unknown} value */
 function normalizePaymentMethod(value) {
   const raw = String(value || '').trim()
   if (!raw) return ''
@@ -251,6 +274,7 @@ function normalizePaymentMethod(value) {
   return aliases[compact] || raw
 }
 
+/** @param {ImportRow} row @param {string} importType @returns {ImportRow} */
 function cleanupImportRow(row, importType) {
   const next = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value]))
   ;['check_in', 'check_out', 'date'].forEach((key) => {
@@ -261,6 +285,7 @@ function cleanupImportRow(row, importType) {
   return next
 }
 
+/** @param {ImportDryRunExpectedView | null | undefined} dryRunReport @param {number} activeCount @returns {ImportRiskView} */
 function buildImportRisk(dryRunReport, activeCount) {
   if (!dryRunReport) return { label: 'Not checked', tone: 'slate', detail: 'Run a dry check before importing.' }
   const total = Number(dryRunReport.total || activeCount || 0)
@@ -273,6 +298,7 @@ function buildImportRisk(dryRunReport, activeCount) {
   return { label: 'Looks good', tone: 'green', detail: `${total} row${total === 1 ? '' : 's'} passed the dry check.` }
 }
 
+/** @param {string} column @param {string} fieldKey */
 function scoreHeaderMatch(column, fieldKey) {
   const columnText = normalizeHeaderText(column)
   const columnCompact = compactHeaderText(column)
@@ -301,6 +327,7 @@ function scoreHeaderMatch(column, fieldKey) {
   return best
 }
 
+/** @param {string[]} columns @param {string} fieldKey */
 function smartGuess(columns, fieldKey) {
   const best = columns.reduce((winner, column) => {
     const score = scoreHeaderMatch(column, fieldKey)
@@ -309,8 +336,10 @@ function smartGuess(columns, fieldKey) {
   return best.score >= 45 ? best.column : ''
 }
 
+/** @param {string[]} columns @param {ImportField[]} fields @returns {ImportColumnMapping} */
 function buildSmartMapping(columns, fields) {
   const used = new Set()
+  /** @type {ImportColumnMapping} */
   const mapping = {}
   fields.forEach(({ key }) => {
     const guess = smartGuess(columns.filter((column) => !used.has(column)), key)
@@ -320,6 +349,7 @@ function buildSmartMapping(columns, fields) {
   return mapping
 }
 
+/** @param {ImportColumnMapping} mapping @param {ImportField[]} fields */
 function getMappingStats(mapping, fields) {
   const mapped = fields.filter((field) => mapping[field.key]).length
   const required = fields.filter((field) => field.required)
@@ -334,6 +364,7 @@ function getMappingStats(mapping, fields) {
   }
 }
 
+/** @param {string[]} columns @param {string} importType @param {ImportField[]} fields @param {ImportColumnMapping} [baseMapping] @returns {ImportColumnMapping} */
 function applyMappingMemory(columns, importType, fields, baseMapping = {}) {
   const remembered = readMappingMemory()[importType] || {}
   const columnByName = new Map(columns.map((column) => [normalizeHeaderText(column), column]))
@@ -352,6 +383,7 @@ function applyMappingMemory(columns, importType, fields, baseMapping = {}) {
   return next
 }
 
+/** @param {string[]} columns @param {string} importType @param {ImportField[]} fields @param {ImportColumnMapping} [mapping] */
 function mappingUsesMemory(columns, importType, fields, mapping = {}) {
   const remembered = readMappingMemory()[importType] || {}
   const available = new Set(columns.map(normalizeHeaderText))
@@ -361,6 +393,7 @@ function mappingUsesMemory(columns, importType, fields, mapping = {}) {
   })
 }
 
+/** @param {string} importType @param {ImportField[]} fields @param {ImportColumnMapping} [mapping] */
 function saveMappingMemory(importType, fields, mapping = {}) {
   try {
     const current = readMappingMemory()
@@ -374,6 +407,7 @@ function saveMappingMemory(importType, fields, mapping = {}) {
   }
 }
 
+/** @param {string[]} columns @param {ImportTypeOption[]} importTypes */
 function detectImportType(columns, importTypes) {
   const candidates = (Array.isArray(importTypes) && importTypes.length ? importTypes : [{ key: 'bookings', label: 'Bookings' }])
     .map((type) => {
@@ -387,8 +421,10 @@ function detectImportType(columns, importTypes) {
   return candidates[0] || { key: 'bookings', label: 'Bookings', mapping: {}, stats: { percent: 0 } }
 }
 
+/** @param {ImportRow[]} rawRows @param {ImportColumnMapping} mapping @param {ImportField[]} [fields] @param {string} [importType] @returns {ImportRow[]} */
 function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings, importType = 'bookings') {
   return rawRows.map((raw) => {
+    /** @type {ImportRow} */
     const row = {}
     fields.forEach(({ key }) => {
       const col = mapping[key]
@@ -401,6 +437,7 @@ function applyMapping(rawRows, mapping, fields = IMPORT_FIELD_SETS.bookings, imp
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+/** @param {{current: number}} props */
 function StepIndicator({ current }) {
   return (
     <div className="flex items-center gap-1 mb-8">
@@ -422,6 +459,7 @@ function StepIndicator({ current }) {
 }
 
 // Step 1 ─ Upload
+/** @param {{onParsed: (data: ParsedImportExpectedView) => void, importType: string, setImportType: (value: string) => void, importTypes: ImportTypeOption[], restaurantMode: boolean}} props */
 function UploadStep({ onParsed, importType, setImportType, importTypes, restaurantMode }) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
@@ -431,13 +469,14 @@ function UploadStep({ onParsed, importType, setImportType, importTypes, restaura
   const parseSelectedFile = async (filePath) => {
     setLoading(true); setErr('')
     try {
-      const result = await window.api.import.parseExcel(filePath)
+      // The main IPC handler returns null, an error view, or this parsed-workbook shape; it is not runtime-validated here.
+      const result = /** @type {ParsedImportExpectedView | null} */ (/** @type {unknown} */ (await window.api.import.parseExcel(filePath)))
       if (!result) { setLoading(false); return }
       if (result.error) { setErr(result.error); setLoading(false); return }
       if (result.rows.length === 0) { setErr('The Excel file has no data rows.'); setLoading(false); return }
       onParsed(result)
     } catch (e) {
-      setErr(e.message)
+      setErr(/** @type {{message: string}} */ (/** @type {unknown} */ (e)).message)
       setLoading(false)
     }
   }
@@ -470,7 +509,7 @@ function UploadStep({ onParsed, importType, setImportType, importTypes, restaura
       const res = await window.api.import.downloadTemplate(importType)
       if (res?.error) setErr(res.error)
     } catch (e) {
-      setErr(e.message)
+      setErr(/** @type {{message: string}} */ (/** @type {unknown} */ (e)).message)
     } finally {
       setTemplateSaving(false)
     }
@@ -586,6 +625,7 @@ function UploadStep({ onParsed, importType, setImportType, importTypes, restaura
 }
 
 // Step 2 ─ Map Columns
+/** @param {{parsed: ParsedImportExpectedView, onMapped: (mapping: ImportColumnMapping) => void, onBack: () => void, fields: ImportField[]}} props */
 function MappingStep({ parsed, onMapped, onBack, fields }) {
   const { columns, fileName, sheetName } = parsed
   const [mapping, setMapping] = useState(() => {
@@ -688,9 +728,10 @@ function MappingStep({ parsed, onMapped, onBack, fields }) {
 }
 
 // Step 3 ─ Preview & Edit (with duplicate detection)
+/** @param {{rows: ImportRow[], onBack: () => void, onImport: (rows: ImportRow[]) => void, dryRunReport: ImportDryRunExpectedView | null, onDryRun: (rows: ImportRow[]) => void, dryRunning: boolean, fields: ImportField[], importType: string}} props */
 function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunning, fields, importType }) {
-  const [data, setData] = useState(rows.map((r, i) => ({ ...r, _id: i, _skip: false, _duplicate: false })))
-  const [editCell, setEditCell] = useState(null)
+  const [data, setData] = useState(/** @type {PreviewImportRow[]} */ (rows.map((r, i) => ({ ...r, _id: i, _skip: false, _duplicate: false }))))
+  const [editCell, setEditCell] = useState(/** @type {{rowId: number, field: string} | null} */ (null))
   const [checking, setChecking] = useState(false)
   const [checked, setChecked] = useState(false)
   const [exportingErrors, setExportingErrors] = useState(false)
@@ -715,7 +756,8 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
       const rowsToCheck = data.filter((r) => !r._skip).map(({ guest_name, room_number, check_in, check_out }) => ({
         guest_name, room_number, check_in, check_out
       }))
-      const dupes = await window.api.import.checkDuplicates(rowsToCheck)
+      // Main's duplicate check returns an array of overlaps or an error envelope.
+      const dupes = /** @type {{room_number?: string, check_in?: string, check_out?: string}[] | {error?: string}} */ (/** @type {unknown} */ (await window.api.import.checkDuplicates(rowsToCheck)))
       if (Array.isArray(dupes) && dupes.length > 0) {
         const dupeSet = new Set(dupes.map((d) => `${d.room_number}|${d.check_in}|${d.check_out}`))
         setData((prev) => prev.map((r) => ({
@@ -733,11 +775,13 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
     }
   }
 
+  /** @param {number} rowId @param {string} field @param {string} value */
   const updateCell = (rowId, field, value) => {
     setData((prev) => prev.map((r) => r._id === rowId ? { ...r, [field]: value } : r))
     setChecked(false) // invalidate duplicate check on edit
   }
 
+  /** @param {number} rowId */
   const toggleSkip = (rowId) => {
     setData((prev) => prev.map((r) => r._id === rowId ? { ...r, _skip: !r._skip } : r))
   }
@@ -755,6 +799,7 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
     setChecked(false)
   }
 
+  /** @param {number} rowNumber @param {string} roomNumber */
   const applyRoomSuggestion = (rowNumber, roomNumber) => {
     const target = activeRows[rowNumber - 1]
     if (!target) return
@@ -1001,6 +1046,7 @@ function PreviewStep({ rows, onBack, onImport, dryRunReport, onDryRun, dryRunnin
 }
 
 // Step 4 ─ Importing / Results (with progress bar + undo)
+/** @param {{result: ImportResultExpectedView | null, progress: ImportProgressExpectedView | null, onReset: () => void, onUndo: (batchId: string) => void, undoing: boolean, importType: string}} props */
 function ResultStep({ result, progress, onReset, onUndo, undoing, importType }) {
   const entityLabel = importType === 'bookings' ? 'bookings' : 'records'
   if (!result) {
@@ -1112,31 +1158,34 @@ function ResultStep({ result, progress, onReset, onUndo, undoing, importType }) 
 
 // ── Import History ───────────────────────────────────────────────────────────
 function ImportHistory() {
-  const [batches, setBatches] = useState([])
+  const [batches, setBatches] = useState(/** @type {ImportBatchExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
-  const [undoing, setUndoing] = useState(null)
+  const [undoing, setUndoing] = useState(/** @type {string | null} */ (null))
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
   const restaurantMode = isRestaurantOnly(propertyType)
 
   useEffect(() => {
     window.api.import.getBatches().then((data) => {
-      setBatches(Array.isArray(data) ? data : [])
+      // Main returns persisted import-batch rows; this expected view does not validate cached JSON.
+      const rows = /** @type {ImportBatchExpectedView[]} */ (/** @type {unknown} */ (data))
+      setBatches(Array.isArray(rows) ? rows : [])
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
 
+  /** @param {string} batchId */
   const handleUndo = async (batchId) => {
     if (!confirm(restaurantMode
       ? 'This will permanently delete all imported records from this import. Continue?'
       : 'This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
     setUndoing(batchId)
     try {
-      const res = await window.api.import.undoBatch(batchId)
+      const res = /** @type {{error?: string}} */ (/** @type {unknown} */ (await window.api.import.undoBatch(batchId)))
       if (res?.error) { alert(res.error); return }
       setBatches((prev) => prev.filter((b) => b.id !== batchId))
     } catch (e) {
-      alert(e.message)
+      alert(/** @type {{message: string}} */ (/** @type {unknown} */ (e)).message)
     } finally {
       setUndoing(null)
     }
@@ -1182,17 +1231,17 @@ function ImportHistory() {
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function DataImport() {
   const [step, setStep] = useState(0)
-  const [parsed, setParsed] = useState(null)
-  const [mapping, setMapping] = useState(null)
-  const [previewRows, setPreviewRows] = useState(null)
+  const [parsed, setParsed] = useState(/** @type {ParsedImportExpectedView | null} */ (null))
+  const [mapping, setMapping] = useState(/** @type {ImportColumnMapping | null} */ (null))
+  const [previewRows, setPreviewRows] = useState(/** @type {ImportRow[] | null} */ (null))
   const [importing, setImporting] = useState(false)
-  const [result, setResult] = useState(null)
-  const [progress, setProgress] = useState(null)
+  const [result, setResult] = useState(/** @type {ImportResultExpectedView | null} */ (null))
+  const [progress, setProgress] = useState(/** @type {ImportProgressExpectedView | null} */ (null))
   const [undoing, setUndoing] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [importType, setImportType] = useState('bookings')
-  const [importTypes, setImportTypes] = useState([{ key: 'bookings', label: 'Bookings', executable: true }])
-  const [dryRunReport, setDryRunReport] = useState(null)
+  const [importTypes, setImportTypes] = useState(/** @type {ImportTypeOption[]} */ ([{ key: 'bookings', label: 'Bookings', executable: true }]))
+  const [dryRunReport, setDryRunReport] = useState(/** @type {ImportDryRunExpectedView | null} */ (null))
   const [dryRunning, setDryRunning] = useState(false)
   const { settings } = useSettings()
   const propertyType = settings?.property_type || settings?.business_type || 'lodge'
@@ -1205,14 +1254,15 @@ export default function DataImport() {
 
   // Listen for progress events from main process
   useEffect(() => {
-    const cleanup = window.api.import.onProgress((p) => setProgress(p))
+    const cleanup = window.api.import.onProgress((p) => setProgress(/** @type {ImportProgressExpectedView} */ (/** @type {unknown} */ (p))))
     return cleanup
   }, [])
 
   useEffect(() => {
     window.api.import.getTypes?.()
       .then((types) => {
-        const allTypes = Array.isArray(types) && types.length ? types : [{ key: 'bookings', label: 'Bookings', executable: true }]
+        const typeRows = /** @type {ImportTypeOption[]} */ (/** @type {unknown} */ (types))
+        const allTypes = Array.isArray(typeRows) && typeRows.length ? typeRows : [{ key: 'bookings', label: 'Bookings', executable: true }]
         const filtered = restaurantMode
           ? allTypes.filter((t) => RESTAURANT_TYPES.has(t.key) || COMMON_TYPES.has(t.key))
           : allTypes.filter((t) => LODGE_ONLY_TYPES.has(t.key) || COMMON_TYPES.has(t.key))
@@ -1224,6 +1274,7 @@ export default function DataImport() {
       .catch(() => {})
   }, [restaurantMode])
 
+  /** @param {ParsedImportExpectedView} data */
   const handleParsed = (data) => {
     const detected = detectImportType(data.columns || [], importTypes)
     const detectedFields = getFieldsForType(detected.key)
@@ -1244,6 +1295,7 @@ export default function DataImport() {
     setStep(1)
   }
 
+  /** @param {ImportColumnMapping} m */
   const handleMapped = (m) => {
     setMapping(m)
     saveMappingMemory(importType, fields, m)
@@ -1253,43 +1305,47 @@ export default function DataImport() {
     setStep(2)
   }
 
+  /** @param {ImportRow[]} rows */
   const handleDryRun = async (rows) => {
     setDryRunning(true)
     try {
-      const report = await window.api.import.dryRun(rows, importType)
+      const report = /** @type {ImportDryRunExpectedView} */ (/** @type {unknown} */ (await window.api.import.dryRun(rows, importType)))
       setDryRunReport(report)
     } catch (e) {
-      setDryRunReport({ error: e.message, errors: [{ row: 0, errors: [e.message] }] })
+      const message = /** @type {{message: string}} */ (/** @type {unknown} */ (e)).message
+      setDryRunReport({ error: message, errors: [{ row: 0, errors: [message] }] })
     } finally {
       setDryRunning(false)
     }
   }
 
+  /** @param {ImportRow[]} rows */
   const handleImport = async (rows) => {
     setStep(3)
     setImporting(true)
     setResult(null)
     setProgress(null)
     try {
-      const res = await window.api.import.execute(rows, parsed?.fileName, importType)
+      const res = /** @type {ImportResultExpectedView} */ (/** @type {unknown} */ (await window.api.import.execute(rows, /** @type {string} */ (parsed?.fileName), importType)))
       setResult(res)
     } catch (e) {
-      setResult({ error: e.message })
+      setResult({ error: /** @type {{message: string}} */ (/** @type {unknown} */ (e)).message })
     }
     setImporting(false)
   }
 
+  /** @param {string} batchId */
   const handleUndo = async (batchId) => {
     if (!confirm(restaurantMode
       ? 'This will permanently delete all imported records from this import. Continue?'
       : 'This will permanently delete all bookings and auto-created guests from this import. Continue?')) return
     setUndoing(true)
     try {
-      const res = await window.api.import.undoBatch(batchId)
+      const res = /** @type {{error?: string}} */ (/** @type {unknown} */ (await window.api.import.undoBatch(batchId)))
       if (res?.error) { alert(res.error); setUndoing(false); return }
       setResult((prev) => prev ? { ...prev, imported: 0, undone: true } : prev)
     } catch (e) {
-      alert(e.message)
+      alert(/** @type {{message: string}} */ (/** @type {unknown} */ (e)).message)
     } finally {
       setUndoing(false)
     }

@@ -3,6 +3,12 @@ import { ClipboardList, Plus, Loader2, CheckCircle2, Clock, XCircle, AlertCircle
 import { rpc } from '../lib/publicApi.js'
 import { useGuestPortal } from './GuestPortalSession.jsx'
 
+/** Expected rows from `get_guest_requests`; payload's view reflects the local submit producer and is not validated here. */
+/** @typedef {{description?: string|null, priority?: string|null}} GuestRequestPayloadView */
+/** @typedef {{id: string|null, request_type: string|null, status: string|null, payload: GuestRequestPayloadView|null, created_at: string|null}} GuestRequestViewData */
+/** @typedef {{success?: boolean, error?: string|null, requests?: GuestRequestViewData[]|null}} GuestRequestsResponse */
+/** @typedef {{success?: boolean, error?: string|null}} GuestRequestSubmitResponse */
+
 const REQUEST_TYPES = [
   { value: 'late_checkout', label: 'Late Check-out' },
   { value: 'early_checkin', label: 'Early Check-in' },
@@ -21,6 +27,7 @@ const PRIORITY_OPTIONS = [
   { value: 'high', label: 'High' }
 ]
 
+/** @type {Record<string, {icon: typeof Clock, color: string, bg: string, label: string}>} */
 const STATUS_CONFIG = {
   new: { icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', label: 'Pending' },
   acknowledged: { icon: AlertCircle, color: 'text-blue-600', bg: 'bg-blue-50', label: 'Acknowledged' },
@@ -30,16 +37,16 @@ const STATUS_CONFIG = {
 
 export default function GuestRequests() {
   const { token } = useGuestPortal()
-  const [requests, setRequests] = useState([])
+  const [requests, setRequests] = useState(/** @type {GuestRequestViewData[]} */ ([]))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
   const [showForm, setShowForm] = useState(false)
 
   const [requestType, setRequestType] = useState('')
   const [priority, setPriority] = useState('normal')
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [formError, setFormError] = useState(null)
+  const [formError, setFormError] = useState(/** @type {string|null} */ (null))
 
   useEffect(() => {
     loadRequests()
@@ -51,15 +58,18 @@ export default function GuestRequests() {
     try {
       const { data, error: rpcErr } = await rpc('get_guest_requests', { p_token: token })
       if (rpcErr) { setError(rpcErr.message); return }
-      if (!data || data.success === false) { setError(data?.error || 'Could not load requests.'); return }
-      setRequests(data.requests || [])
+      // SQL defines the row fields; JSON and the stored payload remain unvalidated.
+      const response = /** @type {GuestRequestsResponse|null} */ (data)
+      if (!response || response.success === false) { setError(response?.error || 'Could not load requests.'); return }
+      setRequests(response.requests || [])
     } catch (e) {
-      setError(e.message || 'Network error.')
+      setError((/** @type {Error} */ (e)).message || 'Network error.')
     } finally {
       setLoading(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function handleSubmit(e) {
     e.preventDefault()
     if (!requestType) {
@@ -80,7 +90,9 @@ export default function GuestRequests() {
         p_payload: payload
       })
       if (rpcErr) { setFormError(rpcErr.message); return }
-      if (!data || data.success === false) { setFormError(data?.error || 'Could not submit request.'); return }
+      // The SQL RPC returns success/error; its JSON remains unvalidated here.
+      const response = /** @type {GuestRequestSubmitResponse|null} */ (data)
+      if (!response || response.success === false) { setFormError(response?.error || 'Could not submit request.'); return }
 
       setRequestType('')
       setPriority('normal')
@@ -88,7 +100,7 @@ export default function GuestRequests() {
       setShowForm(false)
       await loadRequests()
     } catch (e) {
-      setFormError(e.message || 'Network error.')
+      setFormError((/** @type {Error} */ (e)).message || 'Network error.')
     } finally {
       setSubmitting(false)
     }
@@ -125,7 +137,7 @@ export default function GuestRequests() {
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">Request Type</label>
             <select
               value={requestType}
-              onChange={(e) => setRequestType(e.target.value)}
+              onChange={(/** @type {import('react').ChangeEvent<HTMLSelectElement>} */ e) => setRequestType(e.target.value)}
               className="guest-input"
               disabled={submitting}
             >
@@ -161,7 +173,7 @@ export default function GuestRequests() {
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.1em] text-[var(--muted)]">Description</label>
             <textarea
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(/** @type {import('react').ChangeEvent<HTMLTextAreaElement>} */ e) => setDescription(e.target.value)}
               placeholder="Tell us what you need…"
               rows={3}
               maxLength={2000}

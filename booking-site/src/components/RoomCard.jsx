@@ -4,6 +4,9 @@ import { Users, Moon, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useSwipe, useFocusTrap } from '../lib/hooks.js'
 import { describeRateMode, normalizeRateMode } from '../../../src/shared/accommodation.js'
 
+/** @typedef {{room_number: string|null, room_type: string|null, max_occupancy: number|null, capacity_adults: number|null, amenities: string[], description: string|null, photos: string[], photo: string|null, accommodation_kind: string, is_powered: boolean, rate_mode: string, rate_per_person: number, rate_per_tent: number, rate_per_vehicle: number, rate_per_night: number, total_price: number, max_tents: number|null, max_vehicles: number|null, site_surface: string|null, shared_facilities: boolean}} RoomCardUnitExpectedView */
+
+/** @param {RoomCardUnitExpectedView} room @returns {string[]} */
 function buildRoomHighlights(room) {
   const amenityTags = Array.isArray(room?.amenities)
     ? room.amenities.map((item) => String(item || '').trim()).filter(Boolean)
@@ -31,6 +34,7 @@ function buildRoomHighlights(room) {
  * If the image is served from Supabase Storage, append resize/format parameters.
  * Otherwise return the original URL unchanged.
  */
+/** @param {string} url @param {number} width @returns {string} */
 export function optimizeImageUrl(url, width) {
   if (!url || typeof url !== 'string') return url
   try {
@@ -47,6 +51,7 @@ export function optimizeImageUrl(url, width) {
   return url
 }
 
+/** @param {{photos: string[], startIdx: number, roomName: string|null, onClose: () => void}} props */
 export function Lightbox({ photos, startIdx, roomName, onClose }) {
   const [idx, setIdx] = useState(startIdx)
   const lightboxRef = useFocusTrap(true)
@@ -55,7 +60,7 @@ export function Lightbox({ photos, startIdx, roomName, onClose }) {
   const next = useCallback(() => setIdx((i) => (i + 1) % photos.length), [photos.length])
 
   useEffect(() => {
-    const onKey = (event) => {
+    const onKey = (/** @type {KeyboardEvent} */ event) => {
       if (event.key === 'Escape') onClose()
       if (event.key === 'ArrowLeft') prev()
       if (event.key === 'ArrowRight') next()
@@ -130,6 +135,7 @@ export function Lightbox({ photos, startIdx, roomName, onClose }) {
   )
 }
 
+/** @param {{photos: string[], roomName: string|null}} props */
 function PhotoCarousel({ photos, roomName }) {
   const [idx, setIdx] = useState(0)
   const [lightboxOpen, setLightboxOpen] = useState(false)
@@ -176,7 +182,7 @@ function PhotoCarousel({ photos, roomName }) {
           <>
             {/* Mobile: always visible arrows. Desktop: hidden until hover. */}
             <button
-              onClick={(event) => {
+              onClick={(/** @type {import('react').MouseEvent<HTMLButtonElement>} */ event) => {
                 event.stopPropagation()
                 goPrev()
               }}
@@ -187,7 +193,7 @@ function PhotoCarousel({ photos, roomName }) {
               <ChevronLeft size={18} />
             </button>
             <button
-              onClick={(event) => {
+              onClick={(/** @type {import('react').MouseEvent<HTMLButtonElement>} */ event) => {
                 event.stopPropagation()
                 goNext()
               }}
@@ -203,7 +209,7 @@ function PhotoCarousel({ photos, roomName }) {
               {photos.map((_, photoIndex) => (
                 <button
                   key={photoIndex}
-                  onClick={(event) => {
+                  onClick={(/** @type {import('react').MouseEvent<HTMLButtonElement>} */ event) => {
                     event.stopPropagation()
                     setIdx(photoIndex)
                   }}
@@ -231,6 +237,7 @@ function PhotoCarousel({ photos, roomName }) {
   )
 }
 
+/** @param {{room: RoomCardUnitExpectedView, currency: string, nights: number, onBook: (room: RoomCardUnitExpectedView) => void, variant?: 'room'|'campsite'}} props */
 export default function RoomCard({ room, currency, nights, onBook, variant }) {
   const photos = Array.isArray(room.photos) && room.photos.length > 0
     ? room.photos

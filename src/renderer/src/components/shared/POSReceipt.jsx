@@ -83,6 +83,7 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
       window.alert?.('This sale has no server-issued receipt number. Printing is blocked until the sale is refreshed or resolved.')
       return
     }
+    if (settings?.authority_mode === 'bar_local') { window.print(); return }
     let hardware = {}
     try {
       hardware = await window.api?.pos?.getHardwareSettings?.() || {}
@@ -130,6 +131,7 @@ export function POSReceipt({ order, onClose, autoPrint = false, onNewSale = null
       return
     }
     if (saving) return
+    if (settings?.authority_mode === 'bar_local') { window.print(); return }
     setSaving(true)
     try {
       const result = await window.api?.receipts?.savePDF?.({

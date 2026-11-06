@@ -67,6 +67,7 @@ export function findUnmetModifierGroups(line, groups) {
     const groupFields = /** @type {Record<string, unknown> | null | undefined} */ (group)
     const min = Number(groupFields?.min_selections || 0);
     if (!(min > 0)) continue;
+    if (Array.isArray(groupFields?.menu_item_ids) && !groupFields.menu_item_ids.includes(lineFields?.menu_item_id)) continue;
     if (!isModifierGroupApplicable(group, lineFields?.category)) continue;
     const count = selectionsInModifierGroup(selected, groupFields).length;
     if (count < min) {

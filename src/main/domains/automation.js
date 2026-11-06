@@ -4,9 +4,16 @@
  */
 import { state } from '../state.js'
 
-/** @param {string} name @param {Record<string, unknown>} [params] @returns {Promise<unknown>} */
+/**
+ * Supabase RPC builders are awaitable thenables rather than native Promises.
+ * The admin client is optional in application state; the type-only view keeps
+ * the existing direct-access failure when automation is called without it.
+ * @param {string} name
+ * @param {Record<string, unknown>} [params]
+ * @returns {PromiseLike<{data: unknown, error: unknown}>}
+ */
 function adminRpc(name, params = {}) {
-  return state.adminDb.rpc(name, params)
+  return /** @type {NonNullable<typeof state.adminDb>} */ (state.adminDb).rpc(name, params)
 }
 
 /** @returns {Promise<unknown>} */

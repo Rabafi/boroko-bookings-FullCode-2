@@ -5,6 +5,14 @@
 import type { AdminExportApi } from './admin-export.js';
 import type {
   DesktopIpcResult,
+  DesktopProfileCreateDraftResult,
+  DesktopProfileListReadView,
+  DesktopProfileReadView,
+  DesktopProfileRemoveDraftResult,
+  DesktopProfileSelectionDataReadView,
+  DesktopProfileSelectResult,
+  DesktopPosCurrentShiftReadView,
+  PendingOnlineBookingReadView,
   ShellOpenExternalResult,
   SyncClearFailedResult,
   SyncRetryResult,
@@ -15,6 +23,16 @@ export type {
   AdminNotificationsReadResult,
   AuthLoginResult,
   AuthLogoutResult,
+  BackupInfoReadResult,
+  BookingCollectionsSummary,
+  DesktopProfileCreateDraftResult,
+  DesktopProfileListReadView,
+  DesktopProfileReadView,
+  DesktopProfileRemoveDraftResult,
+  DesktopProfileSelectionDataReadView,
+  DesktopProfileSelectResult,
+  DesktopPosCurrentShiftReadView,
+  PendingOnlineBookingReadView,
   UnavailablePosRead,
   InventoryItemsReadStatus,
   ProductInfo,
@@ -107,6 +125,14 @@ export interface IpcMetadataRowsEnvelope {
 }
 
 export type IpcMetadataRows = unknown[] | IpcMetadataRowsEnvelope;
+
+export interface LocalHposReadResult {
+  rows?: Record<string, unknown>[];
+  groups?: unknown[];
+  recipes?: unknown[];
+  complete?: boolean;
+  snapshot?: string;
+}
 
 /** Inventory history metadata comes from the handler's object envelope; row payloads remain unvalidated. */
 export interface InventoryMovementsReadStatus {
@@ -308,11 +334,11 @@ export interface DesktopApi {
     logout(): Promise<DesktopIpcResult<'auth:logout'>>;
   };
   profiles: {
-    list(): Promise<unknown>;
-    getActive(): Promise<unknown>;
-    select(lodgeId: string): Promise<unknown>;
-    createDraft(): Promise<unknown>;
-    removeDraft(lodgeId: string): Promise<unknown>;
+    list(): Promise<DesktopIpcResult<'profiles:list'>>;
+    getActive(): Promise<DesktopIpcResult<'profiles:getActive'>>;
+    select(lodgeId: string): Promise<DesktopProfileSelectResult>;
+    createDraft(): Promise<DesktopProfileCreateDraftResult>;
+    removeDraft(lodgeId: string): Promise<DesktopProfileRemoveDraftResult>;
   };
   setup: {
     initializeCompany(payload: unknown): Promise<unknown>;
@@ -329,6 +355,7 @@ export interface DesktopApi {
     serverSetupUpdateOwnerEmail(request: { owner_email: string }): Promise<unknown>;
     serverSetupResume(request?: unknown): Promise<unknown>;
     serverSetupCancel(): Promise<unknown>;
+    selectLocalBarWorkspace(): Promise<unknown>;
     selectCloudWorkspace(): Promise<unknown>;
     openLocalBarWorkspace(request: unknown): Promise<unknown>;
     setupOwner(request: unknown): Promise<unknown>;
@@ -336,12 +363,16 @@ export interface DesktopApi {
     resumeProvisioning(request?: unknown): Promise<unknown>;
     recoverOwnerPassword(request: unknown): Promise<unknown>;
     login(request: unknown): Promise<unknown>;
+    verifyManagerPin(request: { staff_id: string; pin: string }): Promise<{ success?: boolean; verified?: boolean }>;
     consumePostSetupNotice(): Promise<{ consumed: boolean }>;
     logout(): Promise<unknown>;
     startPairing(request?: unknown): Promise<unknown>;
     query(name: string, filters?: unknown): Promise<unknown>;
     requestApprovalForCommand(request: unknown): Promise<unknown>;
     command(request: unknown): Promise<unknown>;
+    readHposMenu(kind: 'menu'|'stock'|'modifiers'|'outlets'): Promise<LocalHposReadResult>;
+    saveHposBarProduct(request: unknown): Promise<unknown>;
+    retryHposBarProduct(operationId: string): Promise<unknown>;
     retryOperation(operationId: string): Promise<unknown>;
     getOpenIntents(): Promise<unknown>;
     getOperation(operationId: string): Promise<unknown>;
@@ -453,7 +484,7 @@ export interface DesktopApi {
     getAll(start: unknown, end: unknown, outletId: string): Promise<unknown>;
     create(data: unknown): Promise<unknown>;
     update(id: string, data: unknown): Promise<unknown>;
-    delete(id: string, operationId: string): Promise<unknown>;
+    delete(id: string, operationId?: string): Promise<unknown>;
     submit(id: string, payload: unknown, operationId: string): Promise<unknown>;
     approve(id: string, payload: unknown, operationId: string): Promise<unknown>;
     post(id: string, payload: unknown, operationId: string): Promise<unknown>;
@@ -482,6 +513,7 @@ export interface DesktopApi {
   };
   bookings: {
     getAll(): Promise<unknown>;
+    getCollectionsSummary(): Promise<DesktopIpcResult<'bookings:getCollectionsSummary'>>;
     getCachedByDateRange(start: unknown, end: unknown): Promise<unknown>;
     getByDateRange(start: string, end: string): Promise<unknown>;
     create(data: unknown): Promise<unknown>;
@@ -494,7 +526,7 @@ export interface DesktopApi {
     refundGroup(groupId: string, payload: unknown): Promise<unknown>;
     refund(bookingId: string, payload: unknown): Promise<unknown>;
     createEvent(data: unknown): Promise<unknown>;
-    getPendingOnline(): Promise<unknown>;
+    getPendingOnline(): Promise<PendingOnlineBookingReadView[]>;
     reschedule(bookingId: string, data: unknown): Promise<unknown>;
   };
   customerCredit: {
@@ -587,7 +619,7 @@ export interface DesktopApi {
   requests: {
     getAll(limit: number): Promise<unknown>;
     update(id: string, updates: unknown): Promise<unknown>;
-    markRead(id: string, audience: unknown, messageId: string): Promise<unknown>;
+    markRead(id: string, audience: unknown, messageId: string | null): Promise<unknown>;
     addMessage(id: string, payload: unknown): Promise<unknown>;
   };
   notifications: {
@@ -621,7 +653,7 @@ export interface DesktopApi {
     clear(): Promise<unknown>;
   };
   backup: {
-    getInfo(): Promise<unknown>;
+    getInfo(): Promise<DesktopIpcResult<'backup:getInfo'>>;
     starterExport(options: unknown): Promise<unknown>;
     starterHistory(): Promise<unknown>;
     starterVerify(options: unknown): Promise<unknown>;
@@ -804,7 +836,7 @@ export interface DesktopApi {
     attachCashupProof(data: unknown): Promise<unknown>;
     getCashupProofAttachments(submissionId: string): Promise<unknown>;
     createCashupProofSignedUrl(submissionId: string, attachmentId: string): Promise<unknown>;
-    getCurrentShift(outletId: string, cashierId: string | null): Promise<unknown>;
+    getCurrentShift(outletId: string | null, cashierId: string | null): Promise<DesktopPosCurrentShiftReadView | null>;
     getStaffOpenShift(staffId: string): Promise<unknown>;
     getStaffCashupSubmission(shiftId: string): Promise<unknown>;
     activateSharedTillOperator(data: unknown): Promise<unknown>;
@@ -1351,7 +1383,7 @@ export interface DesktopApi {
   };
   subscriptionRequests: {
     submit(request: unknown): Promise<unknown>;
-    getAll(status: string, limit: number, offset: number): Promise<unknown>;
+    getAll(status: string | null, limit: number, offset: number): Promise<unknown>;
     getById(requestId: string): Promise<unknown>;
     updateStatus(requestId: string, status: string, reviewedBy: string, rejectionReason: string): Promise<unknown>;
     createDocument(requestId: string, type: string, documentInput: unknown): Promise<unknown>;

@@ -11,7 +11,9 @@ export const DEBUG_CACHE_FALLBACKS = process.env.BOROKO_DEBUG_CACHE_FALLBACKS ==
 
 /** @param {string} name @returns {string} */
 function getCachePath(name) {
-  return path.join(state.cacheDir, `${name}.json`);
+  // Profile setup assigns cacheDir before normal cache access; retaining this
+  // assertion preserves the existing path.join failure if called too early.
+  return path.join(/** @type {string} */ (state.cacheDir), `${name}.json`);
 }
 
 /** @param {string} name @returns {unknown} */
@@ -36,11 +38,12 @@ export function readCache(name) {
     return JSON.parse(data);
   } catch (e) {
     if (fs.existsSync(filePath)) {
-      console.warn(`[Cache] Parse failed for '${name}' — returning []. Error: ${e.message}`);
+      const errorFields = /** @type {{message?: unknown}} */ (e);
+      console.warn(`[Cache] Parse failed for '${name}' — returning []. Error: ${errorFields.message}`);
       appendHealthFault({
         type: 'cache_corrupt',
         scope: name,
-        message: `Cache file '${name}.json' could not be parsed and was reset to empty. Error: ${e.message}`,
+        message: `Cache file '${name}.json' could not be parsed and was reset to empty. Error: ${errorFields.message}`,
         at: new Date().toISOString()
       });
     }
@@ -61,9 +64,15 @@ export function writeCache(name, data, { source = 'local' } = {}) {
   }
   // Track freshness metadata for each named cache write
   try {
-    const freshnessPath = path.join(state.cacheDir, CACHE_FRESHNESS_FILE);
+    // As in getCachePath, the existing path.join failure is preserved if a
+    // cache write runs before profile setup assigns cacheDir.
+    const freshnessPath = path.join(/** @type {string} */ (state.cacheDir), CACHE_FRESHNESS_FILE);
+    // Expected-data view only: this module writes name-keyed metadata here.
+    // JSON.parse is not validation; malformed persisted values retain the
+    // existing write/catch behavior below.
+    /** @type {Record<string, unknown>} */
     let freshness = {};
-    try {freshness = JSON.parse(fs.readFileSync(freshnessPath, 'utf-8')) || {};} catch {/* start fresh */}
+    try {freshness = /** @type {Record<string, unknown>} */ (JSON.parse(fs.readFileSync(freshnessPath, 'utf-8')) || {});} catch {/* start fresh */}
     freshness[name] = {
       updatedAt: new Date().toISOString(),
       source,

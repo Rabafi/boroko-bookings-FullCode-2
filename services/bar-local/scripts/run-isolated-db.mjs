@@ -2,7 +2,7 @@
 // Deliberately not named test-*.mjs: Node's default discovery would execute
 // this orchestration script recursively as a test and create another cluster.
 import { randomBytes } from 'node:crypto'
-import { mkdir, stat, statfs, writeFile, appendFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, stat, statfs, readFile, writeFile, appendFile, realpath, rm } from 'node:fs/promises'
 import { openSync, closeSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
@@ -101,7 +101,43 @@ try {
   await writeFile(path.join(work, 'target.json'), JSON.stringify({ data, port, database, pgBin }, null, 2))
   await run('initdb', path.join(pgBin, 'initdb' + suffix), ['-D', data, '-U', 'postgres', '-A', 'trust', '--encoding=UTF8', '--no-locale'])
   await appendFile(path.join(data, 'postgresql.conf'), `\nlisten_addresses='127.0.0.1'\nport=${port}\nfsync=on\nfull_page_writes=on\nsynchronous_commit=on\n`)
-  await run('start', path.join(pgBin, 'pg_ctl' + suffix), ['-D', data, '-l', path.join(work, 'postgres.log'), '-w', 'start'], 60_000)
+  try {
+    await run('start', path.join(pgBin, 'pg_ctl' + suffix), ['-D', data, '-l', path.join(work, 'postgres.log'), '-w', 'start'], 60_000)
+  } catch (cause) {
+    // Some managed Windows tokens cannot be restricted again by pg_ctl. Start
+    // only this nonce-named test cluster directly, then prove its identity
+    // before bootstrap. All disk, loopback, target and shutdown guards remain.
+    const startLog = await readFile(path.join(work, 'start.log'), 'utf8')
+    if (process.platform !== 'win32' || !/could not create restricted token: error code 87/.test(startLog)) throw cause
+    await stat(path.join(pgBin, 'postgres' + suffix))
+    const log = path.join(work, 'start-direct.log')
+    const fd = openSync(log, 'wx')
+    let child
+    let startupError
+    try {
+      child = spawn(path.join(pgBin, 'postgres' + suffix), ['-D', data], { cwd: root, env, windowsHide: true, stdio: ['ignore', fd, fd] })
+      child.once('error', (error) => { startupError = error })
+    } finally { closeSync(fd) }
+    const begin = Date.now()
+    let verified = false
+    while (Date.now() - begin < 60_000) {
+      if (startupError || child.exitCode !== null) break
+      try { await assertIdentity(); verified = true; break } catch (error) {
+        if (/identity mismatch/i.test(error.message)) { startupError = error; break }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    if (!verified) {
+      // This reference belongs to the exact child spawned above; never find
+      // or stop another PostgreSQL process on this computer.
+      child.kill()
+      throw startupError ?? new Error(`Direct isolated PostgreSQL startup did not verify; see ${log}`)
+    }
+    started = true
+    results.push({ name: 'start-direct', code: 0, seconds: (Date.now() - begin) / 1000, log, reason: 'pg_ctl restricted-token error 87; direct child identity verified' })
+    await writeFile(path.join(work, 'results.json'), JSON.stringify(results, null, 2))
+    console.log(`start-direct: PASS (${log}; exact disposable identity verified)`)
+  }
   started = true
   await assertIdentity()
   await run('bootstrap', process.execPath, ['services/bar-local/scripts/bootstrap-local.mjs'])

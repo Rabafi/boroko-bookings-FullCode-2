@@ -3,15 +3,22 @@ import { CreditCard, Loader2, CheckCircle2, Clock, ExternalLink } from 'lucide-r
 import { rpc } from '../lib/publicApi.js'
 import { useGuestPortal } from './GuestPortalSession.jsx'
 
+/** Expected SQL view fields; RPC JSON remains unvalidated by this component. */
+/** @typedef {{balance: number|string|null, booking_reference: string|null}} GuestPaymentBookingView */
+/** @typedef {{id: string|null, status: string|null, description: string|null, created_at: string|null, amount: number|string|null, method: string|null}} GuestPaymentHistoryRow */
+/** @typedef {{success?: boolean, error?: string|null, booking?: GuestPaymentBookingView|null}} GuestPaymentBookingResponse */
+/** @typedef {{success?: boolean, error?: string|null, payments?: GuestPaymentHistoryRow[]|null}} GuestPaymentHistoryResponse */
+/** @typedef {{success?: boolean, error?: string|null, payment_url?: string|null}} GuestPaymentLinkResponse */
+
 export default function GuestPayment() {
   const { token } = useGuestPortal()
-  const [booking, setBooking] = useState(null)
+  const [booking, setBooking] = useState(/** @type {GuestPaymentBookingView|null} */ (null))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [paymentLink, setPaymentLink] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [paymentLink, setPaymentLink] = useState(/** @type {string|null} */ (null))
   const [requesting, setRequesting] = useState(false)
-  const [requestError, setRequestError] = useState(null)
-  const [paymentHistory, setPaymentHistory] = useState([])
+  const [requestError, setRequestError] = useState(/** @type {string|null} */ (null))
+  const [paymentHistory, setPaymentHistory] = useState(/** @type {GuestPaymentHistoryRow[]} */ ([]))
 
   useEffect(() => {
     let cancelled = false
@@ -26,14 +33,17 @@ export default function GuestPayment() {
         if (cancelled) return
 
         if (bookingRes.error) { setError(bookingRes.error.message); return }
-        if (bookingRes.data?.success === false) { setError(bookingRes.data?.error || 'Could not load booking.'); return }
-        setBooking(bookingRes.data?.booking || null)
+        // The SQL RPC defines these fields; neither response is runtime-validated here.
+        const bookingResponse = /** @type {GuestPaymentBookingResponse|null} */ (bookingRes.data)
+        if (bookingResponse?.success === false) { setError(bookingResponse?.error || 'Could not load booking.'); return }
+        setBooking(bookingResponse?.booking || null)
 
-        if (!historyRes.error && historyRes.data?.success !== false) {
-          setPaymentHistory(historyRes.data?.payments || [])
+        const historyResponse = /** @type {GuestPaymentHistoryResponse|null} */ (historyRes.data)
+        if (!historyRes.error && historyResponse?.success !== false) {
+          setPaymentHistory(historyResponse?.payments || [])
         }
       } catch (e) {
-        if (!cancelled) setError(e.message || 'Network error.')
+        if (!cancelled) setError((/** @type {Error} */ (e)).message || 'Network error.')
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -49,20 +59,22 @@ export default function GuestPayment() {
     try {
       const { data, error: rpcErr } = await rpc('request_payment_link', { p_token: token })
       if (rpcErr) { setRequestError(rpcErr.message); return }
-      if (!data || data.success === false) {
+      // SQL currently returns the unavailable response; this view is not validation.
+      const response = /** @type {GuestPaymentLinkResponse|null} */ (data)
+      if (!response || response.success === false) {
         setRequestError(
-          data?.error
+          response?.error
           || 'Online payment links are not enabled for this property yet. Please pay at the property or contact the front desk.'
         )
         return
       }
-      if (data.payment_url) {
-        setPaymentLink(data.payment_url)
+      if (response.payment_url) {
+        setPaymentLink(response.payment_url)
       } else {
         setRequestError('Online payment links are not available. Please pay at the property or contact the front desk.')
       }
     } catch (e) {
-      setRequestError(e.message || 'Network error.')
+      setRequestError((/** @type {Error} */ (e)).message || 'Network error.')
     } finally {
       setRequesting(false)
     }

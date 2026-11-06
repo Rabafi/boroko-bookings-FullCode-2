@@ -22,6 +22,19 @@ import {
 
 const POOL_DAY_USE_LIST_SELECT = 'id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at, deposit_amount, balance_due, fee_per_adult, fee_per_child, flat_fee, hourly_rate, package_fee, pricing_mode, created_by';
 
+/** Persisted cache/RPC row fields read by the day-use flows. These are expected-data views only; cache JSON and RPC results remain unvalidated. */
+/** @typedef {Record<string, unknown> & {id?: unknown, date?: unknown, resource_key?: unknown, resource_name?: unknown, start_time?: unknown, end_time?: unknown, status?: unknown, total?: number, adults?: number, children?: number, notes?: unknown, created_at?: unknown, updated_at?: unknown, deposit_amount?: unknown, balance_due?: unknown, payment_method?: unknown, extras?: unknown, _pending_sync?: unknown, _sync_state?: unknown, _sync_error?: unknown}} PoolDayUseExpectedData */
+/** @typedef {Record<string, unknown> & {id?: unknown, name?: unknown, unit?: unknown, current_stock?: unknown}} PoolInventoryExpectedData */
+/** @typedef {Record<string, unknown> & {date?: unknown}} PoolDayUsePayloadExpectedData */
+/** @typedef {Record<string, unknown> & {success?: unknown, error?: unknown, id?: unknown, status?: unknown, deposit_amount?: unknown, balance_due?: unknown, payment_method?: unknown, updated_at?: unknown}} PoolDayUseMutationResultExpectedData */
+/** Expected day-use extras read from caller payloads/queue/cache; values are not validated here.
+ * @typedef {Record<string, unknown> & {inventory_item_id?: unknown, quantity?: unknown, unit_price?: unknown, name?: unknown, unit?: unknown}} PoolDayUseExtraExpectedData
+ */
+/** Queue row fields read by the local draft patch; persisted queue JSON stays unvalidated.
+ * @typedef {Record<string, unknown> & {type?: unknown, table?: unknown, id?: unknown, data?: (Record<string, unknown> & {payload?: Record<string, unknown>})|null}} PoolDayUseQueueExpectedData
+ */
+
+/** @template T @param {T[]} rows @param {string} source @param {boolean} complete @returns {T[] & {_source: string, _complete: boolean}} */
 function withReadMetadata(rows, source, complete) {
   const result = Array.isArray(rows) ? rows : []
   Object.defineProperties(result, {
@@ -31,16 +44,17 @@ function withReadMetadata(rows, source, complete) {
   return result
 }
 
+/** @param {unknown[]} [extras] @param {number} [direction] */
 function adjustLocalInventoryExtras(extras = [], direction = -1) {
   const usage = new Map();
-  for (const entry of extras || []) {
+  for (const entry of /** @type {PoolDayUseExtraExpectedData[]} */ (extras || [])) {
     if (!entry?.inventory_item_id) continue;
     const quantity = Math.max(0, Number(entry.quantity || 0));
     if (!quantity) continue;
     usage.set(entry.inventory_item_id, (usage.get(entry.inventory_item_id) || 0) + quantity);
   }
   if (usage.size === 0) return;
-  writeCache('inventory-items', readCache('inventory-items').map((item) => {
+  writeCache('inventory-items', /** @type {PoolInventoryExpectedData[]} */ (readCache('inventory-items')).map((item) => {
     const quantity = usage.get(item?.id) || 0;
     if (!quantity) return item;
     return {
@@ -50,19 +64,21 @@ function adjustLocalInventoryExtras(extras = [], direction = -1) {
   }), { source: 'local' });
 }
 
+/** @param {unknown} date @returns {Promise<PoolDayUseExpectedData[]>} */
 async function getComparableDayUseEntriesForDate(date) {
   if (!date) return []
-  if (!state.isOnline) return readCache('pool-day-use').filter((row) => row?.date === date)
-  const { data, error } = await state.supabase
+  if (!state.isOnline) return /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).filter((row) => row?.date === date)
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
     .from('pool_day_use')
     .select('id, date, resource_key, resource_name, start_time, end_time, status, total, adults, children, notes, created_at, updated_at')
     .eq('lodge_id', state.lodgeId)
     .eq('date', date)
     .limit(200);
   if (error) throw new Error(error.message);
-  return data || [];
+  return /** @type {PoolDayUseExpectedData[]} */ (data || []);
 }
 
+/** @param {PoolDayUsePayloadExpectedData} [payload] @param {unknown} [excludeId] */
 async function assertResourceAvailability(payload = {}, excludeId = null) {
   const resourceIdentity = String(payload?.resource_key || payload?.resource_name || '').trim();
   if (!resourceIdentity) return;
@@ -73,10 +89,12 @@ async function assertResourceAvailability(payload = {}, excludeId = null) {
   throw new Error(`"${conflict.resource_name || resourceIdentity}" is already assigned for ${payload.date} (${start}). Choose another time or resource.`);
 }
 
+/** @param {unknown} id @param {Record<string, unknown>} [update] */
 function patchLocalQueuedDayUseEntry(id, update = {}) {
+  /** @param {ReturnType<typeof readSyncQueue>} [queue] */
   const patchQueue = (queue = []) => {
     let updated = false;
-    let nextQueue = (Array.isArray(queue) ? queue : []).map((item) => {
+    let nextQueue = /** @type {PoolDayUseQueueExpectedData[]} */ (Array.isArray(queue) ? queue : []).map((item) => {
       if (item?.type === 'update' && item?.table === 'pool_day_use' && item?.id === id) {
         updated = true;
         return {
@@ -119,9 +137,10 @@ function patchLocalQueuedDayUseEntry(id, update = {}) {
   return queuedResult.updated || failedResult.updated;
 }
 
+/** @param {unknown} id @param {Record<string, unknown>} [update] */
 async function updatePoolDayUseEntryFields(id, update = {}) {
   if (!id) throw new Error('Day-use entry ID is required');
-  const cachedEntries = readCache('pool-day-use');
+  const cachedEntries = /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use'));
   const existing = cachedEntries.find((row) => row.id === id);
   if (!existing) throw new Error('Day-use entry could not be found.');
   const nextEntry = { ...existing, ...update };
@@ -139,19 +158,19 @@ async function updatePoolDayUseEntryFields(id, update = {}) {
 
   if (state.isOnline) {
     if (Object.prototype.hasOwnProperty.call(update, 'resource_name') || Object.prototype.hasOwnProperty.call(update, 'resource_key') || Object.prototype.hasOwnProperty.call(update, 'start_time') || Object.prototype.hasOwnProperty.call(update, 'duration_hours') || Object.prototype.hasOwnProperty.call(update, 'date')) {
-      await assertResourceAvailability(nextEntry, id);
+    await assertResourceAvailability(/** @type {PoolDayUsePayloadExpectedData} */ (nextEntry), id);
     }
-    const { data, error } = await state.supabase.rpc('update_pool_day_use', { payload: operationPayload });
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_pool_day_use', { payload: operationPayload });
     if (error) throw new Error(error.message);
-    if (!data?.success) throw new Error(data?.error || 'Could not update day-use entry');
+    if (!/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (data)?.success) throw new Error(/** @type {string} */ (/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (data)?.error || 'Could not update day-use entry'));
     const confirmed = {
       ...existing,
       ...update,
-      status: data.status || update.status || existing.status,
-      deposit_amount: data.deposit_amount ?? update.deposit_amount ?? existing.deposit_amount,
-      balance_due: data.balance_due ?? update.balance_due ?? existing.balance_due,
-      payment_method: data.payment_method || update.payment_method || existing.payment_method,
-      updated_at: data.updated_at || existing.updated_at
+      status: (/** @type {PoolDayUseMutationResultExpectedData} */ (data)).status || update.status || existing.status,
+      deposit_amount: (/** @type {PoolDayUseMutationResultExpectedData} */ (data)).deposit_amount ?? update.deposit_amount ?? existing.deposit_amount,
+      balance_due: (/** @type {PoolDayUseMutationResultExpectedData} */ (data)).balance_due ?? update.balance_due ?? existing.balance_due,
+      payment_method: (/** @type {PoolDayUseMutationResultExpectedData} */ (data)).payment_method || update.payment_method || existing.payment_method,
+      updated_at: (/** @type {PoolDayUseMutationResultExpectedData} */ (data)).updated_at || existing.updated_at
     };
     writeCache('pool-day-use', cachedEntries.map((row) => row.id === id ? confirmed : row), { source: 'local' });
     return { success: true, offline: false, entry: confirmed };
@@ -176,8 +195,9 @@ async function updatePoolDayUseEntryFields(id, update = {}) {
 
 // ─── POOL / DAY USE ────────────────────────────────────────────────────────────
 
+/** @param {string|null|undefined} [start] @param {string|null|undefined} [end] */
 export async function getPoolDayUse(start, end) {
-  const cached = readCache('pool-day-use');
+  const cached = /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use'));
   if (!state.isOnline) {
     return withReadMetadata(cached.
       filter((row) => (!start || String(row.date || '') >= start) && (!end || String(row.date || '') <= end)).
@@ -185,12 +205,12 @@ export async function getPoolDayUse(start, end) {
   }
   const rows = [];
   for (let from = 0; from < 100000; from += 500) {
-    let q = state.supabase.from('pool_day_use').select(POOL_DAY_USE_LIST_SELECT).eq('lodge_id', state.lodgeId);
+    let q = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pool_day_use').select(POOL_DAY_USE_LIST_SELECT).eq('lodge_id', state.lodgeId);
     if (start) q = q.gte('date', start);
     if (end) q = q.lte('date', end);
     const { data, error } = await q.order('date', { ascending: false }).order('created_at', { ascending: false }).range(from, from + 499);
     if (error) throw new Error(error.message);
-    const page = data || [];
+    const page = /** @type {PoolDayUseExpectedData[]} */ (data || []);
     rows.push(...page);
     if (page.length < 500) break;
   }
@@ -198,19 +218,21 @@ export async function getPoolDayUse(start, end) {
   return withReadMetadata(rows, 'server', rows.length < 100000);
 }
 
+/** @param {unknown} id @returns {Promise<PoolDayUseExpectedData|null>} */
 export async function getPoolDayUseById(id) {
   if (!id) return null;
-  if (!state.isOnline) return readCache('pool-day-use').find((row) => row.id === id) || null;
-  const { data, error } = await state.supabase.
+  if (!state.isOnline) return /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).find((row) => row.id === id) || null;
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('pool_day_use').
   select('*').
   eq('lodge_id', state.lodgeId).
   eq('id', id).
   single();
   if (error) throw new Error(error.message);
-  return data || null;
+  return /** @type {PoolDayUseExpectedData|null} */ (data || null);
 }
 
+/** @param {Record<string, unknown> & {date: string}} data */
 export async function addPoolDayUse(data) {
   await checkExclusiveEventConflict(data.date, data.date + 'T23:59:59');
   if (
@@ -233,8 +255,8 @@ export async function addPoolDayUse(data) {
   ) {
     throw new Error(`Day-use pricing values cannot exceed P${MAX_FINANCIAL_AMOUNT.toLocaleString('en-BW')}`);
   }
-  const inventoryById = new Map(readCache('inventory-items').map((item) => [item.id, item]));
-  const extras = (Array.isArray(data.extras) ? data.extras : []).map((entry) => {
+  const inventoryById = new Map(/** @type {PoolInventoryExpectedData[]} */ (readCache('inventory-items')).map((item) => [item.id, item]));
+  const extras = (Array.isArray(data.extras) ? /** @type {PoolDayUseExtraExpectedData[]} */ (data.extras) : []).map((entry) => {
     const quantity = Math.max(0, Number(entry?.quantity || 0));
     const unitPrice = Math.max(0, Number(entry?.unit_price || 0));
     const inventoryItemId = entry?.inventory_item_id || null;
@@ -268,12 +290,12 @@ export async function addPoolDayUse(data) {
   const total = baseTotal + extrasTotal;
   const depositAmount = Math.min(Math.max(0, Number(data.deposit_amount || 0)), total);
   const balanceDue = Math.max(0, total - depositAmount);
-  await assertResourceAvailability({
+  await assertResourceAvailability(/** @type {PoolDayUsePayloadExpectedData} */ ({
     ...data,
     resource_key: resourceKey,
     resource_name: resourceName,
     duration_hours: durationHours
-  });
+  }));
   const id = randomUUID();
   const payload = {
     id,
@@ -314,13 +336,13 @@ export async function addPoolDayUse(data) {
     notes: data.notes || null
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('add_pool_day_use', { payload });
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('add_pool_day_use', { payload });
     if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not add pool day-use entry');
+    if (!/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (result)?.success) throw new Error(/** @type {string} */ (/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (result)?.error || 'Could not add pool day-use entry'));
     if (extras.length > 0) adjustLocalInventoryExtras(extras, -1);
     writeCache('pool-day-use', [payload, ...readCache('pool-day-use').filter((row) => row.id !== id)], { source: 'local' });
     logActivity('pool_day_use_added', `Day use · ${data.guest_name || 'Walk-in'} · ${data.date} · P${total}`);
-    return { id: result.id || id };
+    return { id: (/** @type {PoolDayUseMutationResultExpectedData} */ (result)).id || id };
   }
   const offlineRow = {
     ...payload,
@@ -329,7 +351,7 @@ export async function addPoolDayUse(data) {
     _sync_error: null,
     created_at: new Date().toISOString()
   };
-  writeCache('pool-day-use', [offlineRow, ...readCache('pool-day-use').filter((row) => row.id !== id)], { source: 'local' });
+  writeCache('pool-day-use', [offlineRow, .../** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).filter((row) => row.id !== id)], { source: 'local' });
   if (extras.length > 0) {
     applyOfflineDayUseInventoryReservation(extras);
   }
@@ -340,15 +362,17 @@ export async function addPoolDayUse(data) {
   return { id };
 }
 
+/** @param {unknown} id @param {unknown} status */
 export async function updatePoolDayUseStatus(id, status) {
   const normalizedStatus = normalizeDayUseStatus(status);
   const result = await updatePoolDayUseEntryFields(id, { status: normalizedStatus });
   return { success: true, status: normalizedStatus, offline: result.offline === true };
 }
 
+/** @param {unknown} id @param {string} [method] @param {boolean} [markCompleted] */
 export async function settlePoolDayUseBalance(id, method = 'Cash', markCompleted = true) {
   if (!id) throw new Error('Day-use entry ID is required');
-  const existing = readCache('pool-day-use').find((row) => row.id === id);
+  const existing = /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).find((row) => row.id === id);
   if (!existing) throw new Error('Day-use entry could not be found.');
   const total = Number(existing.total || 0);
   const update = {
@@ -371,10 +395,11 @@ export async function settlePoolDayUseBalance(id, method = 'Cash', markCompleted
   };
 }
 
+/** @param {unknown} id */
 export async function deletePoolDayUse(id) {
   if (!id) throw new Error('Pool day-use ID is required');
   if (!state.isOnline) {
-    const cached = readCache('pool-day-use');
+    const cached = /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use'));
     const existing = cached.find((row) => row.id === id);
     const dependsOn = existing?._pending_sync ? `dayuse-${id}` : null;
     if (Array.isArray(existing?.extras) && existing.extras.length > 0) {
@@ -391,21 +416,22 @@ export async function deletePoolDayUse(id) {
     return { success: true };
   }
   const existing = await getPoolDayUseById(id);
-  const { data: result, error } = await state.supabase.rpc('delete_pool_day_use', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_pool_day_use', {
     p_id: id,
     p_lodge_id: state.lodgeId
   });
   if (error) throw new Error(error.message);
-  if (!result?.success) throw new Error(result?.error || 'Could not delete pool day-use entry');
+  if (!/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (result)?.success) throw new Error(/** @type {string} */ (/** @type {PoolDayUseMutationResultExpectedData|null|undefined} */ (result)?.error || 'Could not delete pool day-use entry'));
   if (Array.isArray(existing?.extras) && existing.extras.length > 0) adjustLocalInventoryExtras(existing.extras, 1);
-  writeCache('pool-day-use', readCache('pool-day-use').filter((row) => row.id !== id), { source: 'local' });
+  writeCache('pool-day-use', /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).filter((row) => row.id !== id), { source: 'local' });
   return { success: true };
 }
 
+/** @param {string} date */
 export async function getPoolDayUseSummary(date) {
   const entries = state.isOnline ?
-  (await state.supabase.from('pool_day_use').select('*').eq('lodge_id', state.lodgeId).eq('date', date)).data || [] :
-  readCache('pool-day-use').filter((row) => row.date === date);
+  /** @type {PoolDayUseExpectedData[]} */ ((await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pool_day_use').select('*').eq('lodge_id', state.lodgeId).eq('date', date)).data || []) :
+  /** @type {PoolDayUseExpectedData[]} */ (readCache('pool-day-use')).filter((row) => row.date === date);
   return {
     total: entries.reduce((s, e) => s + (e.total || 0), 0),
     adults: entries.reduce((s, e) => s + (e.adults || 0), 0),

@@ -35,6 +35,7 @@ const { meshState, getMeshHealthSnapshot } = await importDomain('mesh/meshState.
 const LODGE = '11111111-1111-4111-8111-111111111111';
 const ROOM_A = '22222222-2222-4222-8222-222222222222';
 const ROOM_B = '33333333-3333-4333-8333-333333333333';
+const ROOM_C = '77777777-7777-4777-8777-777777777777';
 const CUSTOMER = '66666666-6666-4666-8666-666666666666';
 const ACTOR = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const BOOKING_A = '44444444-4444-4444-8444-444444444444';
@@ -223,30 +224,38 @@ test('HMAC request signing binds method, path, query and body; replay and >30s c
     assert.equal(replayed.isValid, false);
     assert.equal(replayed.error, 'Nonce already utilized');
 
-    const tamperedQuery = security.validateIncomingRequest('GET', '/mesh/queue/items?ids=booking-1,booking-3', { ...headers, 'x-boroko-mesh-nonce': crypto.randomUUID() }, '', SECRET);
+    const tamperedQueryNonce = crypto.randomUUID();
+    const tamperedQuerySignature = security.generateMeshSignature('GET', pathAndQuery, timestamp, tamperedQueryNonce, '', SECRET);
+    const tamperedQuery = security.validateIncomingRequest('GET', '/mesh/queue/items?ids=booking-1,booking-3', { ...headers, 'x-boroko-mesh-nonce': tamperedQueryNonce, 'x-boroko-mesh-signature': tamperedQuerySignature }, '', SECRET);
     assert.equal(tamperedQuery.isValid, false);
 
-    const tamperedBodySignature = security.generateMeshSignature('POST', '/mesh/locks', timestamp, crypto.randomUUID(), '{"roomId":"a"}', SECRET);
-    const tamperedBody = security.validateIncomingRequest('POST', '/mesh/locks', { ...headers, 'x-boroko-mesh-timestamp': timestamp, 'x-boroko-mesh-nonce': crypto.randomUUID(), 'x-boroko-mesh-signature': tamperedBodySignature }, '{"roomId":"b"}', SECRET);
+    const tamperedBodyNonce = crypto.randomUUID();
+    const tamperedBodySignature = security.generateMeshSignature('POST', '/mesh/locks', timestamp, tamperedBodyNonce, '{"roomId":"a"}', SECRET);
+    const tamperedBody = security.validateIncomingRequest('POST', '/mesh/locks', { ...headers, 'x-boroko-mesh-timestamp': timestamp, 'x-boroko-mesh-nonce': tamperedBodyNonce, 'x-boroko-mesh-signature': tamperedBodySignature }, '{"roomId":"b"}', SECRET);
     assert.equal(tamperedBody.isValid, false);
 
-    const wrongSecret = security.generateMeshSignature('GET', '/mesh/hello', timestamp, crypto.randomUUID(), '', 'another-secret');
-    const rejectedSecret = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-nonce': crypto.randomUUID(), 'x-boroko-mesh-signature': wrongSecret }, '', SECRET);
+    const wrongSecretNonce = crypto.randomUUID();
+    const wrongSecret = security.generateMeshSignature('GET', '/mesh/hello', timestamp, wrongSecretNonce, '', 'another-secret');
+    const rejectedSecret = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-nonce': wrongSecretNonce, 'x-boroko-mesh-signature': wrongSecret }, '', SECRET);
     assert.equal(rejectedSecret.isValid, false);
 
-    const foreignLodge = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-lodge-id': '99999999-9999-4999-8999-999999999999', 'x-boroko-mesh-nonce': crypto.randomUUID() }, '', SECRET);
+    const foreignNonce = crypto.randomUUID();
+    const foreignSignature = security.generateMeshSignature('GET', '/mesh/hello', timestamp, foreignNonce, '', SECRET);
+    const foreignLodge = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-lodge-id': '99999999-9999-4999-8999-999999999999', 'x-boroko-mesh-nonce': foreignNonce, 'x-boroko-mesh-signature': foreignSignature }, '', SECRET);
     assert.equal(foreignLodge.isValid, false);
     assert.equal(foreignLodge.error, 'Lodge ID mismatch');
 
+    const skewedPastNonce = crypto.randomUUID();
     const skewedPast = new Date(Date.now() - 45000).toISOString();
-    const skewedPastSignature = security.generateMeshSignature('GET', '/mesh/hello', skewedPast, crypto.randomUUID(), '', SECRET);
-    const skewedPastValidation = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-timestamp': skewedPast, 'x-boroko-mesh-nonce': crypto.randomUUID(), 'x-boroko-mesh-signature': skewedPastSignature }, '', SECRET);
+    const skewedPastSignature = security.generateMeshSignature('GET', '/mesh/hello', skewedPast, skewedPastNonce, '', SECRET);
+    const skewedPastValidation = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-timestamp': skewedPast, 'x-boroko-mesh-nonce': skewedPastNonce, 'x-boroko-mesh-signature': skewedPastSignature }, '', SECRET);
     assert.equal(skewedPastValidation.isValid, false);
     assert.match(skewedPastValidation.error, /Timestamp drift exceeds tolerance/);
 
+    const withinNonce = crypto.randomUUID();
     const withinTolerance = new Date(Date.now() - 20000).toISOString();
-    const withinSignature = security.generateMeshSignature('GET', '/mesh/hello', withinTolerance, crypto.randomUUID(), '', SECRET);
-    const withinValidation = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-timestamp': withinTolerance, 'x-boroko-mesh-nonce': crypto.randomUUID(), 'x-boroko-mesh-signature': withinSignature }, '', SECRET);
+    const withinSignature = security.generateMeshSignature('GET', '/mesh/hello', withinTolerance, withinNonce, '', SECRET);
+    const withinValidation = security.validateIncomingRequest('GET', '/mesh/hello', { ...headers, 'x-boroko-mesh-timestamp': withinTolerance, 'x-boroko-mesh-nonce': withinNonce, 'x-boroko-mesh-signature': withinSignature }, '', SECRET);
     assert.equal(withinValidation.isValid, true, 'a 20s skew stays inside the accepted 30s window');
   } finally {
     meshState.lodgeId = previousLodge;
@@ -341,6 +350,29 @@ test('invalid peer operations are quarantined with their reason and never merged
   assert.match(quarantine[0].reason, /not allowlisted/);
   assert.equal(meshState.lastQueueRepair.missingCount, 1);
   assert.equal(meshState.lastQueueRepair.importedCount, 0);
+});
+
+test('a signed peer cannot import origin-only operations or machine-bound secrets', async (t) => {
+  const cacheDir = withIsolatedStore(t);
+  const originOnly = {
+    _queue_id: 'peer-origin-only', type: 'rpc', table: 'approve_pos_void_with_pin',
+    data: { payload: { lodge_id: LODGE, order_id: 'order-1', override_log_id: 'log-1' } },
+    timestamp: new Date().toISOString()
+  };
+  const protectedItem = bookingItem();
+  protectedItem._queue_id = 'peer-machine-bound';
+  protectedItem.data.secret = { _secure_queue_secret: true, data: 'device-bound' };
+  const peer = await startSignedPeer(t, { items: [originOnly, protectedItem] });
+  registerPeer(peer.nodeId, peer.port);
+
+  await merge.syncMeshQueues();
+
+  assert.equal(sync.readSyncQueue().length, 0);
+  const quarantine = JSON.parse(fs.readFileSync(path.join(cacheDir, 'sync-mesh-quarantine.json'), 'utf8'));
+  assert.deepEqual(new Set(quarantine.map((entry) => entry.item._queue_id)), new Set(['peer-origin-only', 'peer-machine-bound']));
+  assert.ok(quarantine.every((entry) => /restricted to its originating device/.test(entry.reason)));
+  assert.ok(quarantine.every((entry) => !('data' in entry.item)), 'device-bound payloads are not persisted in quarantine');
+  assert.equal(merge.isMeshShareableQueueItem({ ...originOnly, table: ' approve_pos_void_with_pin ' }), false);
 });
 
 test('advisory locks: local locks broadcast and release, remote locks dedupe, tab locks block the second till, expired locks prune', async (t) => {
@@ -469,7 +501,7 @@ test('delayed and out-of-order batch delivery merges deterministically without d
   const items = [
     bookingItem({ queueId: 'booking-out-of-order-1', bookingId: BOOKING_A, key: 'key-ooo-0000000000001', timestamp: '2026-11-01T08:00:00.000Z' }),
     bookingItem({ queueId: 'booking-out-of-order-2', bookingId: '99999999-0000-4000-8000-000000000002', roomId: ROOM_B, key: 'key-ooo-0000000000002', timestamp: '2026-11-01T08:01:00.000Z' }),
-    bookingItem({ queueId: 'booking-out-of-order-3', bookingId: '99999999-0000-4000-8000-000000000003', key: 'key-ooo-0000000000003', timestamp: '2026-11-01T07:59:00.000Z' })
+    bookingItem({ queueId: 'booking-out-of-order-3', bookingId: '99999999-0000-4000-8000-000000000003', roomId: ROOM_C, key: 'key-ooo-0000000000003', timestamp: '2026-11-01T07:59:00.000Z' })
   ];
   const peer = await startSignedPeer(t, { items, reverseItems: true });
   registerPeer(peer.nodeId, peer.port);

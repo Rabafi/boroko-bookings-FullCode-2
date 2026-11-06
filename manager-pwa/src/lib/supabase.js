@@ -1,5 +1,6 @@
 // @ts-check
 import { createClient } from '@supabase/supabase-js'
+import { MANAGER_RESET_PASSWORD_URL } from '../../../src/shared/publicEndpoints.js'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -52,7 +53,8 @@ export async function signOutSupabaseAuth() {
 
 /** @param {string} email */
 export async function sendPasswordResetEmail(email) {
-  const redirectTo = import.meta.env.VITE_AUTH_REDIRECT_URL || `${window.location.origin}/reset-password`
+  const configuredRedirectUrl = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim()
+  const redirectTo = configuredRedirectUrl || (import.meta.env.PROD ? MANAGER_RESET_PASSWORD_URL : `${window.location.origin}/reset-password`)
   const { data, error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
   if (error) throw error
   return data

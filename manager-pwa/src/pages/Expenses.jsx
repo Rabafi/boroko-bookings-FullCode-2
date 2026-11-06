@@ -5,11 +5,15 @@ import { listExpenses, listMaintenanceTickets } from '../lib/api'
 import { businessDate, money, shortDate } from '../lib/format'
 import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 
+/** @typedef {{id: string, description?: string | null, category?: string | null, amount?: number | string | null, date?: string | null, status?: string | null, notes?: string | null}} ExpenseExpectedView */
+/** @typedef {{id: string, reported_date?: string | null, created_at?: string | null, date?: string | null, title?: string | null, issue?: string | null, description?: string | null, room_number?: string | null, room_type?: string | null, status?: string | null, total_cost?: number | string | null}} MaintenanceExpenseExpectedView */
+
 export default function Expenses() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const barOnly = isRestaurantProductFamily(user?.product_family) && isBarHospitalityMode(user?.hospitality_mode)
-  const [expenses, setExpenses] = useState([])
-  const [maintenance, setMaintenance] = useState([])
+  const [expenses, setExpenses] = useState(/** @type {ExpenseExpectedView[]} */ ([]))
+  const [maintenance, setMaintenance] = useState(/** @type {MaintenanceExpenseExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [expenseSourceComplete, setExpenseSourceComplete] = useState(true)
@@ -24,15 +28,18 @@ export default function Expenses() {
       listExpenses(user.lodge_id, monthStart, today).catch((error) => ({ error })),
       barOnly ? Promise.resolve([]) : listMaintenanceTickets(user.lodge_id).catch(() => [])
     ])
-    if (expenseData?.error) {
+    // The successful response is an array with non-enumerable completeness metadata;
+    // failures are represented by the existing catch object. No row validation is added.
+    const expenseResult = /** @type {({error?: {message?: string}, _complete?: boolean} & unknown[]) | {error?: {message?: string}, _complete?: boolean}} */ (expenseData)
+    if (expenseResult?.error) {
       setExpenses([])
       setExpenseSourceComplete(false)
-      setLoadError(expenseData.error?.message || 'Expenses could not be loaded from the server.')
+      setLoadError(expenseResult.error?.message || 'Expenses could not be loaded from the server.')
     } else {
-      setExpenses(expenseData)
-      setExpenseSourceComplete(expenseData?._complete === true)
+      setExpenses(/** @type {ExpenseExpectedView[]} */ (expenseResult))
+      setExpenseSourceComplete(expenseResult?._complete === true)
     }
-    setMaintenance(maintenanceData)
+    setMaintenance(/** @type {MaintenanceExpenseExpectedView[]} */ (maintenanceData))
     setLoading(false)
   }, [barOnly, monthStart, today, user.lodge_id])
 

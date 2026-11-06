@@ -28,6 +28,12 @@ test('query results expose required snapshot metadata', () => {
   assert.equal(validateQueryResult({ ...valid, data: [] }).complete, true)
 })
 
+test('only the no-open-shift query may return a null singular record', () => {
+  assert.equal(validateQueryResult({ ...valid, data: null }, { allowNullData: true }).data, null)
+  assert.throws(() => validateQueryResult({ ...valid, data: null }), /data must be an object/)
+  assert.throws(() => validateQueryResult({ ...valid, data: null }, { allowNullData: false }), /data must be an object/)
+})
+
 test('query results reject malformed snapshot metadata', () => {
   assert.throws(
     () => validateQueryResult({ ...valid, pagination: { next_cursor: null, has_more: true } }),
@@ -100,6 +106,18 @@ test('event feeds expose ordered, complete replay metadata', () => {
     () => validateEventFeed({ ...eventFeed, events: [...eventFeed.events].reverse(), next_cursor: 4 }),
     /must be ordered/
   )
+})
+
+test('an empty event outbox has a zero event watermark and an unchanged cursor', () => {
+  const empty = {
+    events: [], event_count: 0, next_cursor: 0, latest_commit_sequence: 7,
+    latest_event_sequence: 0, retention_floor_sequence: null, gap_detected: false,
+    complete: true, scope: eventFeed.scope
+  }
+  assert.equal(validateEventFeed(empty).latest_event_sequence, 0)
+  assert.equal(validateEventFeed(empty).next_cursor, 0)
+  assert.equal(validateEventFeed({ ...empty, latest_event_sequence: null }).latest_event_sequence, 0)
+  assert.throws(() => validateEventFeed({ ...empty, events: [eventFeed.events[0]], event_count: 1, latest_event_sequence: null }), /latest_event_sequence/)
 })
 
 const operationStatus = {

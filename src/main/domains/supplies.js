@@ -8,21 +8,42 @@ import {
   dedupePromise
 } from './infrastructure.js'
 
+// Infrastructure installs `state.supabase` before online supplies handlers
+// are reachable. Direct casts below preserve the same dereference and its
+// existing failure if absent; no new guard or fallback is introduced.
+
 /** @typedef {import('../../shared/desktopIpcContracts.js').ReadMetadataRows} ReadMetadataRows */
 /**
  * These expected views describe the concrete supplies tables and the existing cache projections below; JSON cache values are not validated here.
  * @typedef {{id: string, name: string, category: string, unit: string, lodge_id?: string | null, current_stock?: number | string | null, reorder_level?: number | string | null, latest_unit_cost?: number | string | null, is_active?: boolean, _deleted_offline?: boolean, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null, created_at?: string | null, updated_at?: string | null}} SupplyItemExpectedData
+ * @typedef {{id?: string, name: string, category?: string | null, unit?: string | null, current_stock?: number | string | null, reorder_level?: number | string | null}} SupplyItemMutationInput
+ * @typedef {{id?: string, item_id: string, date?: string | null, quantity_purchased: number | string, total_cost: number | string, notes?: string | null}} SupplyPurchaseInput
+ * @typedef {{id: string, item_id: string, date?: string | null, quantity_purchased: number | string, total_cost: number | string, unit_cost?: number | string, lodge_id?: string | null, notes?: string | null, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null, created_at?: string | null}} SupplyPurchaseExpectedData
+ * @typedef {Record<string, unknown> & {id?: string, supply_item_id: string, room_id: string | null, week_start: string | null, units_used?: number | string, entry_date?: string, date?: string, source?: string}} RoomSupplyAllocationCacheExpectedData
+ * @typedef {{id?: string, operation_id?: string, item_id: string, room_id: string, quantity: number | string, reorder_level?: number | string | null, notes?: string | null}} RoomSupplyMovementInput
+ * @typedef {{id?: string, supply_item_id: string, room_id: string, units_used: number | string, unit_cost: number | string}} RoomSupplyAllocationInput
+ * @typedef {{id?: string, title?: string | null, notes?: string | null}} SupplyStocktakeInput
  * @typedef {{id: string, room_number?: string | null, room_type?: string | null}} SupplyRoomExpectedData
  * @typedef {Pick<SupplyItemExpectedData, 'name' | 'unit' | 'category' | 'latest_unit_cost'> | Record<string, undefined>} SupplyItemLookupView
  * @typedef {Pick<SupplyRoomExpectedData, 'room_number' | 'room_type'> | Record<string, undefined>} SupplyRoomLookupView
  * @typedef {{id?: string, item_id: string, room_id?: string | null, movement_type: string, quantity: number | string, unit_cost?: number | string | null, total_cost?: number | string | null, notes?: string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, created_at?: string, _pending_sync?: boolean, _sync_state?: string}} SupplyMovementInput
- * @typedef {{id: string, item_id: string, room_id: string | null, movement_type: string, quantity: number, unit_cost: number, total_cost: number, notes: string | null, room_number: string | null, room_type: string | null, supply_name: string, supply_unit: string, supply_category: string, created_at: string, _pending_sync: boolean, _sync_state: string}} SupplyMovementExpectedData
+ * @typedef {{id: string, item_id: string | undefined, supply_item_id?: string | undefined, room_id: string | null, movement_type: string | undefined, quantity: number, unit_cost: number, total_cost: number, notes: string | null, room_number: string | null, room_type: string | null, supply_name: string, supply_unit: string, supply_category: string, created_at: string, _pending_sync: boolean, _sync_state: string}} SupplyMovementExpectedData
  * @typedef {{id: string, room_id: string, supply_item_id: string, item_id?: string, quantity_on_hand: number | string, reorder_level?: number | string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, updated_at?: string, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null}} RoomSupplyStockExpectedData
  * @typedef {{id: string, status: string, _pending_sync?: boolean, _sync_state?: string, [key: string]: unknown}} SupplyStocktakeHeaderExpectedData
  * @typedef {{id: string, stocktake_id: string, item_id?: string, room_stock_id?: string, room_id?: string, supply_item_id?: string, expected_qty?: number | string, counted_qty?: number | string | null, variance_qty?: number | string | null, notes?: string | null, line_key?: string, [key: string]: unknown}} SupplyStocktakeLineExpectedData
+ * Stocktake post consumers use rows produced from these NOT NULL schema columns; nullable count/notes preserve their stored variants. Cache/query content is expected data and is not validated here.
+ * @typedef {Record<string, unknown> & {stocktake_id: string, item_id: string, expected_qty: number | string, counted_qty: number | string | null, notes: string | null}} SupplyStocktakePostLineExpectedData
+ * The `item_id` alias is present in the local line builder; persisted room stocktake rows require `supply_item_id` and may omit that legacy alias.
+ * @typedef {Record<string, unknown> & {stocktake_id: string, room_stock_id: string, room_id: string, supply_item_id: string, item_id?: string, expected_qty: number | string, counted_qty: number | string | null, notes: string | null}} RoomSupplyStocktakePostLineExpectedData
  * Payload leaves remain unvalidated; the handlers retain their existing projection/defaulting expressions.
  * @typedef {{item_id: unknown, counted_qty: unknown, notes: unknown}} SupplyStocktakeCountExpectedData
  * @typedef {{room_stock_id: unknown, counted_qty: unknown, notes: unknown}} RoomSupplyStocktakeCountExpectedData
+ * The selected joined fields below follow the room_supply_movements and room_supply_allocations schema and explicit PostgREST projections. Rows are expected data, not runtime-validated query results; the open record keeps unselected `*` columns intact for the allocation spread.
+ * @typedef {{room_number: string} | null} RoomSupplyQueryRoomProjection
+ * @typedef {{name: string, unit: string, category: string} | null} RoomSupplyQueryItemProjection
+ * @typedef {{id: string, lodge_id: string, supply_item_id: string, room_id: string | null, unit_cost: number | string, total_cost: number | string, created_at: string | null, rooms: RoomSupplyQueryRoomProjection, supply_items: RoomSupplyQueryItemProjection}} RoomSupplyQuerySharedExpectedRow
+ * @typedef {Record<string, unknown> & RoomSupplyQuerySharedExpectedRow & {movement_type: string, quantity: number | string, notes: string | null, created_at: string}} RoomSupplyMovementQueryExpectedRow
+ * @typedef {Record<string, unknown> & RoomSupplyQuerySharedExpectedRow & {room_id: string, week_start: string, units_used: number | string, created_at: string | null}} RoomSupplyAllocationQueryExpectedRow
  */
 
 // ─── ROOM SUPPLIES ────────────────────────────────────────────────────────────
@@ -89,7 +110,7 @@ function patchSupplyItemStock(itemId, patcher) {
   return next
 }
 
-/** @param {{itemId: string, roomId: string, delta: number, reorderLevel?: number | string | null}} input */
+/** @param {{itemId: string, roomId: string, delta: number, reorderLevel?: number | string | null | undefined}} input */
 function patchRoomSupplyStock({ itemId, roomId, delta, reorderLevel = 0 }) {
   const rows = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock'))
   const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === itemId) || /** @type {SupplyItemLookupView} */ ({})
@@ -205,7 +226,7 @@ async function _getSupplyItems(options = {}) {
       /** @type {SupplyItemExpectedData[]} */
       const rows = [];
     for (let from = 0; from < maxRows; from += pageSize) {
-      const { data, error } = await state.supabase.
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('supply_items').
       select('id, name, category, unit, current_stock, reorder_level, latest_unit_cost, lodge_id, created_at, updated_at, is_active').
       eq('lodge_id', state.lodgeId).
@@ -227,22 +248,24 @@ async function _getSupplyItems(options = {}) {
   } catch (error) {
     const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
     if (cached.length > 0) {
-      console.warn('getSupplyItems falling back to cache:', error?.message || error);
+      console.warn('getSupplyItems falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
     }
-    throw new Error(error?.message || 'Failed to load supply items');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load supply items');
   }
 }
 
+/** @param {{export_all?: boolean, exportAll?: boolean}} [options] */
 export function getSupplyItems(options = {}) {
   const exportAll = options?.export_all === true || options?.exportAll === true;
   return dedupePromise(`getSupplyItems:${exportAll ? 'export' : 'screen'}`, () => _getSupplyItems(options));
 }
 
+/** @param {string} id */
 export async function getSupplyItemById(id) {
   if (!id) return null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('supply_items').
     select('*').
     eq('id', id).
@@ -255,6 +278,7 @@ export async function getSupplyItemById(id) {
   }
 }
 
+/** @param {SupplyItemMutationInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function createSupplyItem(data) {
   const id = data.id || randomUUID()
   const item = {
@@ -268,7 +292,7 @@ export async function createSupplyItem(data) {
     latest_unit_cost: 0
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_supply_item', { payload: item });
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_supply_item', { payload: item });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create supply item');
     const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
@@ -303,6 +327,7 @@ export async function createSupplyItem(data) {
   return { success: true, id, offline: true, queued: true };
 }
 
+/** @param {string} id @param {SupplyItemMutationInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function updateSupplyItem(id, data) {
   const update = {
     name: data.name,
@@ -311,7 +336,7 @@ export async function updateSupplyItem(id, data) {
     reorder_level: Number(data.reorder_level || 0)
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_supply_item', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_supply_item', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       payload: update
@@ -344,6 +369,7 @@ export async function updateSupplyItem(id, data) {
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {string} id */
 export async function deleteSupplyItem(id) {
   if (!state.isOnline) {
     const cached = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'))
@@ -366,19 +392,20 @@ export async function deleteSupplyItem(id) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('delete_supply_item', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_supply_item', {
     p_id: id,
     p_lodge_id: state.lodgeId
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete supply item');
   writeCache('supply-items', /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).filter((row) => row.id !== id));
-  writeCache('supply-purchases', readCache('supply-purchases').filter((row) => row.item_id !== id));
+  writeCache('supply-purchases', /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases')).filter((row) => row.item_id !== id));
   writeCache('room-supply-stock', /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).filter((row) => row.supply_item_id !== id));
-  writeCache('room-supply-movements', readCache('room-supply-movements').filter((row) => row.supply_item_id !== id));
+  writeCache('room-supply-movements', /** @type {SupplyMovementExpectedData[]} */ (readCache('room-supply-movements')).filter((row) => row.supply_item_id !== id));
   return { success: true };
 }
 
+/** @param {SupplyPurchaseInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function addSupplyPurchase(data) {
   const qty = Number(data.quantity_purchased);
   const cost = Number(data.total_cost);
@@ -405,7 +432,7 @@ export async function addSupplyPurchase(data) {
     if (!updatedItem) return { success: false, error: 'Supply item not found in offline cache' }
     writeCache('supply-purchases', [
       { ...purchase, _pending_sync: true, _sync_state: 'pending', _sync_error: null, created_at: new Date().toISOString() },
-      ...readCache('supply-purchases').filter((row) => row?.id !== id)
+      .../** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases')).filter((row) => row?.id !== id)
     ])
     upsertSupplyMovement({
       id,
@@ -424,7 +451,7 @@ export async function addSupplyPurchase(data) {
     })
     return { success: true, id, unit_cost: unitCost, new_stock: updatedItem.current_stock, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('add_supply_purchase', { payload: purchase });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('add_supply_purchase', { payload: purchase });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not record supply purchase');
   const supplyItems = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items'));
@@ -436,7 +463,7 @@ export async function addSupplyPurchase(data) {
   } :
   row
   ));
-  const cachedPurchases = readCache('supply-purchases');
+  const cachedPurchases = /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases'));
   writeCache('supply-purchases', [
   { ...purchase, id: result?.id || `local-${Date.now()}` },
   ...cachedPurchases]
@@ -444,31 +471,32 @@ export async function addSupplyPurchase(data) {
   return { success: true, unit_cost: unitCost, new_stock: result?.new_stock };
 }
 
+/** @param {string} itemId */
 export async function getSupplyPurchases(itemId) {
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('supply_purchases').
     select('*').
     eq('lodge_id', state.lodgeId).
     eq('item_id', itemId).
     order('date', { ascending: false });
     if (error) throw error;
-    const cached = readCache('supply-purchases').filter((row) => row.item_id !== itemId);
+    const cached = /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases')).filter((row) => row.item_id !== itemId);
     writeCache('supply-purchases', [...(data || []), ...cached]);
     return data || [];
   } catch (error) {
-    const cached = readCache('supply-purchases').filter((row) => row.item_id === itemId);
+    const cached = /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases')).filter((row) => row.item_id === itemId);
     if (cached.length > 0) {
-      console.warn('getSupplyPurchases falling back to cache:', error?.message || error);
+      console.warn('getSupplyPurchases falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
     }
     if (!state.isOnline) return [];
-    throw new Error(error?.message || 'Failed to load supply purchases');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load supply purchases');
   }
 }
 
 export async function getAllSupplyPurchases() {
-  const cached = readCache('supply-purchases');
+  const cached = /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases'));
   if (!state.isOnline) {
     return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'offline-cache', false);
   }
@@ -476,7 +504,7 @@ export async function getAllSupplyPurchases() {
   try {
     const liveRows = [];
     for (let from = 0; from < 100000; from += 500) {
-      const { data, error } = await state.supabase.
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('supply_purchases').
       select('*').
       eq('lodge_id', state.lodgeId).
@@ -495,13 +523,14 @@ export async function getAllSupplyPurchases() {
     return withReadMetadata(liveRows, 'server', true);
   } catch (error) {
     if (cached.length > 0) {
-      console.warn('getAllSupplyPurchases falling back to cache:', error?.message || error);
+      console.warn('getAllSupplyPurchases falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
     }
-    throw new Error(error?.message || 'Failed to load supply purchases');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load supply purchases');
   }
 }
 
+/** @param {string} weekStart @param {RoomSupplyAllocationInput[]} allocations Expected IPC allocation rows; values are projected/coerced below. */
 export async function saveRoomSupplyAllocations(weekStart, allocations) {
   const rows = allocations.
   filter((a) => Number(a.units_used) > 0).
@@ -516,10 +545,10 @@ export async function saveRoomSupplyAllocations(weekStart, allocations) {
     total_cost: Number(a.units_used) * Number(a.unit_cost)
   }));
   if (!state.isOnline) {
-    const existing = readCache('room-supply-allocations').filter((row) => row.week_start !== weekStart)
+    const existing = /** @type {RoomSupplyAllocationCacheExpectedData[]} */ (readCache('room-supply-allocations')).filter((row) => row.week_start !== weekStart)
     const cachedRows = rows.map((row) => {
-      const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((entry) => entry?.id === row.supply_item_id) || {}
-      const room = readCache('rooms').find((entry) => entry?.id === row.room_id) || {}
+      const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((entry) => entry?.id === row.supply_item_id) || /** @type {SupplyItemLookupView} */ ({})
+      const room = /** @type {SupplyRoomExpectedData[]} */ (readCache('rooms')).find((entry) => entry?.id === row.room_id) || /** @type {SupplyRoomLookupView} */ ({})
       return {
         ...row,
         source: 'allocation',
@@ -544,7 +573,7 @@ export async function saveRoomSupplyAllocations(weekStart, allocations) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('save_room_supply_allocations', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('save_room_supply_allocations', {
     p_lodge_id: state.lodgeId,
     p_week_start: weekStart,
     p_allocations: rows
@@ -554,15 +583,16 @@ export async function saveRoomSupplyAllocations(weekStart, allocations) {
   return { success: true };
 }
 
+/** @param {string | null | undefined} startDate Expected date-string IPC/report input; this boundary does not validate it. @param {string | null | undefined} endDate Expected date-string IPC/report input; this boundary does not validate it. */
 export async function getRoomSupplyAllocations(startDate, endDate) {
-  const cachedAllocations = readCache('room-supply-allocations').filter((row) => {
+  const cachedAllocations = /** @type {RoomSupplyAllocationCacheExpectedData[]} */ (readCache('room-supply-allocations')).filter((row) => {
     const entryDate = String(row.entry_date || row.week_start || '');
     return (!startDate || entryDate >= startDate) && (!endDate || entryDate <= endDate);
   });
   if (!state.isOnline) return cachedAllocations;
 
   try {
-    let movementQuery = state.supabase.
+    let movementQuery = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_supply_movements').
     select('*, supply_items(name, unit, category), rooms(room_number)').
     eq('lodge_id', state.lodgeId).
@@ -572,7 +602,7 @@ export async function getRoomSupplyAllocations(startDate, endDate) {
     const { data: movementData, error: movementError } = await movementQuery.order('created_at', { ascending: false });
     if (movementError) throw movementError;
 
-    const movementRows = (movementData || []).map((row) => ({
+    const movementRows = (/** @type {RoomSupplyMovementQueryExpectedRow[] | null | undefined} */ (movementData) || []).map((row) => ({
       id: row.id,
       source: 'movement',
       entry_date: String(row.created_at || '').split('T')[0],
@@ -595,7 +625,7 @@ export async function getRoomSupplyAllocations(startDate, endDate) {
       return movementRows;
     }
 
-    let allocationQuery = state.supabase.
+    let allocationQuery = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_supply_allocations').
     select('*, supply_items(name, unit, category), rooms(room_number)').
     eq('lodge_id', state.lodgeId);
@@ -603,7 +633,7 @@ export async function getRoomSupplyAllocations(startDate, endDate) {
     if (endDate) allocationQuery = allocationQuery.lte('week_start', endDate);
     const { data: allocationData, error: allocationError } = await allocationQuery.order('week_start', { ascending: false });
     if (allocationError) throw allocationError;
-    const rows = (allocationData || []).map((a) => ({
+    const rows = (/** @type {RoomSupplyAllocationQueryExpectedRow[] | null | undefined} */ (allocationData) || []).map((a) => ({
       ...a,
       source: 'allocation',
       entry_date: a.week_start,
@@ -616,16 +646,17 @@ export async function getRoomSupplyAllocations(startDate, endDate) {
     return rows;
   } catch (error) {
     if (cachedAllocations.length > 0) {
-      console.warn('getRoomSupplyAllocations falling back to cache:', error?.message || error);
+      console.warn('getRoomSupplyAllocations falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return cachedAllocations;
     }
-    throw new Error(error?.message || 'Failed to load room supply cost data');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load room supply cost data');
   }
 }
 
+/** @param {string} weekStart */
 export async function getSupplyAllocationsForWeek(weekStart) {
-  if (!state.isOnline) return readCache('room-supply-allocations').filter((row) => row.week_start === weekStart);
-  const { data } = await state.supabase.
+  if (!state.isOnline) return /** @type {RoomSupplyAllocationCacheExpectedData[]} */ (readCache('room-supply-allocations')).filter((row) => row.week_start === weekStart);
+  const { data } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('room_supply_allocations').
   select('id, room_id, item_id, quantity, week_start, lodge_id, created_at, updated_at').
   eq('lodge_id', state.lodgeId).
@@ -634,6 +665,7 @@ export async function getSupplyAllocationsForWeek(weekStart) {
   return data || [];
 }
 
+/** @param {string} itemId @param {number | string} delta @param {string | null | undefined} [notes] */
 export async function adjustSupplyStock(itemId, delta, notes) {
   const adjustmentId = randomUUID()
   if (!state.isOnline) {
@@ -668,7 +700,7 @@ export async function adjustSupplyStock(itemId, delta, notes) {
     })
     return { success: true, new_stock: updated.current_stock, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('adjust_supply_stock', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('adjust_supply_stock', {
     p_item_id: itemId,
     p_lodge_id: state.lodgeId,
     p_delta: Number(delta),
@@ -687,7 +719,7 @@ export async function adjustSupplyStock(itemId, delta, notes) {
 
 export async function getRoomSupplyStock() {
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_supply_room_stock').
     select('*, rooms(room_number, room_type), supply_items(name, unit, category)').
     eq('lodge_id', state.lodgeId).
@@ -706,14 +738,15 @@ export async function getRoomSupplyStock() {
   } catch (error) {
     const cached = /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock'));
     if (cached.length > 0) {
-      console.warn('getRoomSupplyStock falling back to cache:', error?.message || error);
+      console.warn('getRoomSupplyStock falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return cached;
     }
     if (!state.isOnline) return [];
-    throw new Error(error?.message || 'Failed to load room supply stock');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load room supply stock');
   }
 }
 
+/** @param {RoomSupplyMovementInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function loadSupplyToRoom(data) {
   const operationId = data.operation_id || randomUUID()
   const payload = {
@@ -731,10 +764,13 @@ export async function loadSupplyToRoom(data) {
     const qty = Number(data.quantity)
     if (qty <= 0) return { success: false, error: 'Quantity must be greater than zero' }
     if (Number(item.current_stock || 0) < qty) return { success: false, error: 'Not enough store stock available for this load' }
-    const updatedStore = patchSupplyItemStock(data.item_id, (row) => ({
+    // The identical item lookup immediately above proves the synchronous
+    // stock patch sees the same cache row; the assertion preserves the
+    // original dereference if the helper's nullable fallback ever occurs.
+    const updatedStore = /** @type {SupplyItemExpectedData} */ (patchSupplyItemStock(data.item_id, (row) => ({
       ...row,
       current_stock: Number(row.current_stock || 0) - qty
-    }))
+    })))
     const updatedRoom = patchRoomSupplyStock({ itemId: data.item_id, roomId: data.room_id, delta: qty, reorderLevel: data.reorder_level })
     const movementId = operationId
     upsertSupplyMovement({
@@ -753,7 +789,7 @@ export async function loadSupplyToRoom(data) {
     })
     return { success: true, new_store_stock: updatedStore.current_stock, new_room_stock: updatedRoom.quantity_on_hand, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('load_supply_to_room', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('load_supply_to_room', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not load supply to room');
   return {
@@ -763,6 +799,7 @@ export async function loadSupplyToRoom(data) {
   };
 }
 
+/** @param {RoomSupplyMovementInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function useSupplyInRoom(data) {
   const operationId = data.operation_id || randomUUID()
   const payload = {
@@ -797,7 +834,7 @@ export async function useSupplyInRoom(data) {
     })
     return { success: true, new_room_stock: updatedRoom.quantity_on_hand, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('use_room_supply_stock', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('use_room_supply_stock', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not record supply usage');
   return {
@@ -806,6 +843,7 @@ export async function useSupplyInRoom(data) {
   };
 }
 
+/** @param {RoomSupplyMovementInput} data Expected supplies IPC payload; the handler does not validate it. */
 export async function returnSupplyFromRoom(data) {
   const operationId = data.operation_id || randomUUID()
   const payload = {
@@ -844,7 +882,7 @@ export async function returnSupplyFromRoom(data) {
     })
     return { success: true, new_room_stock: updatedRoom.quantity_on_hand, new_store_stock: updatedStore?.current_stock, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('return_room_supply_to_store', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('return_room_supply_to_store', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not return unused supply');
   return {
@@ -854,9 +892,10 @@ export async function returnSupplyFromRoom(data) {
   };
 }
 
+/** @param {number | string} [limit] */
 export async function getSupplyMovements(limit = 40) {
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_supply_movements').
     select('*, rooms(room_number, room_type), supply_items(name, unit, category)').
     eq('lodge_id', state.lodgeId).
@@ -874,19 +913,20 @@ export async function getSupplyMovements(limit = 40) {
     writeCache('room-supply-movements', rows);
     return rows;
   } catch (error) {
-    const cached = readCache('room-supply-movements');
+    const cached = /** @type {SupplyMovementExpectedData[]} */ (readCache('room-supply-movements'));
     if (cached.length > 0) {
-      console.warn('getSupplyMovements falling back to cache:', error?.message || error);
+      console.warn('getSupplyMovements falling back to cache:', /** @type {{message?: string}|null|undefined} */ (error)?.message || error);
       return cached.slice(0, Number(limit || 40));
     }
     if (!state.isOnline) return [];
-    throw new Error(error?.message || 'Failed to load supply movements');
+    throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load supply movements');
   }
 }
 
+/** @param {number | string} [limit] */
 export async function getSupplyStocktakes(limit = 12) {
   if (!state.isOnline) return readSupplyStocktakeHeaders('supply-stocktakes').slice(0, Number(limit || 12));
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('supply_stocktakes').
   select('*').
   eq('lodge_id', state.lodgeId).
@@ -897,9 +937,10 @@ export async function getSupplyStocktakes(limit = 12) {
   return data || [];
 }
 
+/** @param {number | string} [limit] */
 export async function getRoomSupplyStocktakes(limit = 12) {
   if (!state.isOnline) return readSupplyStocktakeHeaders('room-supply-stocktakes').slice(0, Number(limit || 12));
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('room_supply_stocktakes').
   select('*').
   eq('lodge_id', state.lodgeId).
@@ -910,6 +951,7 @@ export async function getRoomSupplyStocktakes(limit = 12) {
   return data || [];
 }
 
+/** @param {SupplyStocktakeInput} [data] Expected supplies IPC payload; the handler does not validate it. */
 export async function createSupplyStocktakeSession(data = {}) {
   const id = data.id || randomUUID()
   const payload = {
@@ -923,19 +965,20 @@ export async function createSupplyStocktakeSession(data = {}) {
     const now = new Date().toISOString()
     const header = { ...payload, id, status: 'draft', created_at: now, updated_at: now, _pending_sync: true, _sync_state: 'pending', _sync_error: null }
     const lines = buildStoreSupplyStocktakeLines(id)
-    writeCache('supply-stocktakes', [header, ...readCache('supply-stocktakes').filter((row) => row?.id !== id)])
-    writeCache('supply-stocktake-lines', [...lines, ...readCache('supply-stocktake-lines').filter((row) => row?.stocktake_id !== id)])
+    writeCache('supply-stocktakes', [header, .../** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('supply-stocktakes')).filter((row) => row?.id !== id)])
+    writeCache('supply-stocktake-lines', [...lines, .../** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('supply-stocktake-lines')).filter((row) => row?.stocktake_id !== id)])
     queueOperation('rpc', 'create_supply_stocktake_session', { payload }, null, {
       _queue_id: `supply-stocktake-${id}`
     })
     return { success: true, id, stocktake_id: id, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('create_supply_stocktake_session', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_supply_stocktake_session', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not start supply stock take');
   return result;
 }
 
+/** @param {SupplyStocktakeInput} [data] Expected supplies IPC payload; the handler does not validate it. */
 export async function createRoomSupplyStocktakeSession(data = {}) {
   const id = data.id || randomUUID()
   const payload = {
@@ -949,38 +992,39 @@ export async function createRoomSupplyStocktakeSession(data = {}) {
     const now = new Date().toISOString()
     const header = { ...payload, id, status: 'draft', created_at: now, updated_at: now, _pending_sync: true, _sync_state: 'pending', _sync_error: null }
     const lines = buildRoomSupplyStocktakeLines(id)
-    writeCache('room-supply-stocktakes', [header, ...readCache('room-supply-stocktakes').filter((row) => row?.id !== id)])
-    writeCache('room-supply-stocktake-lines', [...lines, ...readCache('room-supply-stocktake-lines').filter((row) => row?.stocktake_id !== id)])
+    writeCache('room-supply-stocktakes', [header, .../** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes')).filter((row) => row?.id !== id)])
+    writeCache('room-supply-stocktake-lines', [...lines, .../** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('room-supply-stocktake-lines')).filter((row) => row?.stocktake_id !== id)])
     queueOperation('rpc', 'create_room_supply_stocktake_session', { payload }, null, {
       _queue_id: `room-supply-stocktake-${id}`
     })
     return { success: true, id, stocktake_id: id, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('create_room_supply_stocktake_session', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_room_supply_stocktake_session', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not start room stock take');
   return result;
 }
 
+/** @param {string} stocktakeId */
 export async function getSupplyStocktakeSession(stocktakeId) {
   if (!state.isOnline) {
-    const header = readCache('supply-stocktakes').find((row) => row?.id === stocktakeId)
+    const header = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('supply-stocktakes')).find((row) => row?.id === stocktakeId)
     if (!header) return null
     return {
       ...header,
-      lines: readCache('supply-stocktake-lines')
+      lines: /** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('supply-stocktake-lines'))
         .filter((line) => line?.stocktake_id === stocktakeId)
         .sort((a, b) => String(a.item_name || '').localeCompare(String(b.item_name || '')))
     }
   }
   const [{ data: header, error: headerError }, { data: lines, error: linesError }] = await Promise.all([
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('supply_stocktakes').
   select('*').
   eq('lodge_id', state.lodgeId).
   eq('id', stocktakeId).
   maybeSingle(),
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('supply_stocktake_lines').
   select('*, supply_items(name, category, unit)').
   eq('lodge_id', state.lodgeId).
@@ -1002,11 +1046,12 @@ export async function getSupplyStocktakeSession(stocktakeId) {
   };
 }
 
+/** @param {string} stocktakeId */
 export async function getSupplyStocktakeById(stocktakeId) {
   if (!stocktakeId) return null;
-  if (!state.isOnline) return readCache('supply-stocktakes').find((row) => row?.id === stocktakeId) || null;
+  if (!state.isOnline) return /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('supply-stocktakes')).find((row) => row?.id === stocktakeId) || null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('supply_stocktakes').
     select('*').
     eq('id', stocktakeId).
@@ -1019,25 +1064,26 @@ export async function getSupplyStocktakeById(stocktakeId) {
   }
 }
 
+/** @param {string} stocktakeId */
 export async function getRoomSupplyStocktakeSession(stocktakeId) {
   if (!state.isOnline) {
-    const header = readCache('room-supply-stocktakes').find((row) => row?.id === stocktakeId)
+    const header = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes')).find((row) => row?.id === stocktakeId)
     if (!header) return null
     return {
       ...header,
-      lines: readCache('room-supply-stocktake-lines')
+      lines: /** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('room-supply-stocktake-lines'))
         .filter((line) => line?.stocktake_id === stocktakeId)
         .sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || '')) || String(a.item_name || '').localeCompare(String(b.item_name || '')))
     }
   }
   const [{ data: header, error: headerError }, { data: lines, error: linesError }] = await Promise.all([
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('room_supply_stocktakes').
   select('*').
   eq('lodge_id', state.lodgeId).
   eq('id', stocktakeId).
   maybeSingle(),
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('room_supply_stocktake_lines').
   select('*, rooms(room_number, room_type), supply_items(name, category, unit)').
   eq('lodge_id', state.lodgeId).
@@ -1061,11 +1107,12 @@ export async function getRoomSupplyStocktakeSession(stocktakeId) {
   };
 }
 
+/** @param {string} stocktakeId */
 export async function getRoomSupplyStocktakeById(stocktakeId) {
   if (!stocktakeId) return null;
-  if (!state.isOnline) return readCache('room-supply-stocktakes').find((row) => row?.id === stocktakeId) || null;
+  if (!state.isOnline) return /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes')).find((row) => row?.id === stocktakeId) || null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('room_supply_stocktakes').
     select('*').
     eq('id', stocktakeId).
@@ -1154,12 +1201,13 @@ export async function saveRoomSupplyStocktakeCounts(stocktakeId, lines) {
   return result;
 }
 
+/** @param {string} stocktakeId @param {string | null | undefined} [notes] Expected current RoomSupplies form input; IPC does not validate it. */
 export async function postSupplyStocktakeSession(stocktakeId, notes) {
   if (!state.isOnline) {
-    const headers = readCache('supply-stocktakes')
+    const headers = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('supply-stocktakes'))
     const header = headers.find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Supply stocktake not found in offline cache' }
-    const lines = readCache('supply-stocktake-lines').filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
+    const lines = /** @type {SupplyStocktakePostLineExpectedData[]} */ (readCache('supply-stocktake-lines')).filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
     const counts = new Map(lines.map((line) => [line.item_id, line]))
     writeCache('supply-items', /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).map((item) => {
       const line = counts.get(item.id)
@@ -1188,7 +1236,7 @@ export async function postSupplyStocktakeSession(stocktakeId, notes) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('post_supply_stocktake_session', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('post_supply_stocktake_session', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_notes: notes || null
@@ -1199,12 +1247,13 @@ export async function postSupplyStocktakeSession(stocktakeId, notes) {
   return result;
 }
 
+/** @param {string} stocktakeId @param {string | null | undefined} [notes] Expected current RoomSupplies form input; IPC does not validate it. */
 export async function postRoomSupplyStocktakeSession(stocktakeId, notes) {
   if (!state.isOnline) {
-    const headers = readCache('room-supply-stocktakes')
+    const headers = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes'))
     const header = headers.find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Room supply stocktake not found in offline cache' }
-    const lines = readCache('room-supply-stocktake-lines').filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
+    const lines = /** @type {RoomSupplyStocktakePostLineExpectedData[]} */ (readCache('room-supply-stocktake-lines')).filter((line) => line?.stocktake_id === stocktakeId && line.counted_qty !== null && line.counted_qty !== undefined)
     const counts = new Map(lines.map((line) => [line.room_stock_id, line]))
     writeCache('room-supply-stock', /** @type {RoomSupplyStockExpectedData[]} */ (readCache('room-supply-stock')).map((stock) => {
       const key = stock.id || `${stock.room_id}:${stock.supply_item_id}`
@@ -1235,7 +1284,7 @@ export async function postRoomSupplyStocktakeSession(stocktakeId, notes) {
     })
     return { success: true, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('post_room_supply_stocktake_session', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('post_room_supply_stocktake_session', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_notes: notes || null
@@ -1247,12 +1296,14 @@ export async function postRoomSupplyStocktakeSession(stocktakeId, notes) {
   return result;
 }
 
+// Expected IPC field view; payload leaves are not runtime-validated here.
+/** @param {unknown} stocktakeId @param {{line_id?: unknown, room_id?: unknown, item_id?: unknown, counted_qty?: unknown, notes?: unknown}} [data] */
 export async function addRoomSupplyStocktakeLine(stocktakeId, data = {}) {
   if (!state.isOnline) {
-    const header = readCache('room-supply-stocktakes').find((row) => row?.id === stocktakeId)
+    const header = /** @type {SupplyStocktakeHeaderExpectedData[]} */ (readCache('room-supply-stocktakes')).find((row) => row?.id === stocktakeId)
     if (!header) return { success: false, error: 'Room supply stocktake not found in offline cache' }
-    const room = readCache('rooms').find((row) => row?.id === data.room_id) || {}
-    const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === data.item_id) || {}
+    const room = /** @type {SupplyRoomExpectedData[]} */ (readCache('rooms')).find((row) => row?.id === data.room_id) || /** @type {SupplyRoomLookupView} */ ({})
+    const item = /** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).find((row) => row?.id === data.item_id) || /** @type {SupplyItemLookupView} */ ({})
     const lineId = randomUUID()
     const line = {
       id: lineId,
@@ -1276,7 +1327,7 @@ export async function addRoomSupplyStocktakeLine(stocktakeId, data = {}) {
       _pending_sync: true,
       _sync_state: 'pending'
     }
-    writeCache('room-supply-stocktake-lines', [line, ...readCache('room-supply-stocktake-lines')])
+    writeCache('room-supply-stocktake-lines', [line, .../** @type {SupplyStocktakeLineExpectedData[]} */ (readCache('room-supply-stocktake-lines'))])
     queueOperation('rpc', 'create_room_supply_stocktake_line', {
       p_line_id: lineId,
       p_stocktake_id: stocktakeId,
@@ -1291,7 +1342,7 @@ export async function addRoomSupplyStocktakeLine(stocktakeId, data = {}) {
     })
     return { success: true, id: lineId, offline: true, queued: true }
   }
-  const { data: result, error } = await state.supabase.rpc('create_room_supply_stocktake_line', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_room_supply_stocktake_line', {
     p_line_id: data.line_id || null,
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
@@ -1305,10 +1356,11 @@ export async function addRoomSupplyStocktakeLine(stocktakeId, data = {}) {
   return result;
 }
 
+/** @param {string} startDate @param {string} endDate Expected date-string IPC/report inputs; this boundary does not validate them. */
 export async function getSupplySpend(startDate, endDate) {
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_supply_spend_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_supply_spend_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate
@@ -1334,7 +1386,7 @@ export async function getSupplySpend(startDate, endDate) {
   }
 
   const supplyMap = new Map(/** @type {SupplyItemExpectedData[]} */ (readCache('supply-items')).map((item) => [item.id, item]));
-  const cachedPurchases = readCache('supply-purchases').
+  const cachedPurchases = /** @type {SupplyPurchaseExpectedData[]} */ (readCache('supply-purchases')).
   filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate)).
   map((row) => ({
     ...row,
@@ -1345,7 +1397,7 @@ export async function getSupplySpend(startDate, endDate) {
   sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   let purchases = [];
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('supply_purchases').
     select('*, supply_items(name)').
     eq('lodge_id', state.lodgeId).
@@ -1359,7 +1411,7 @@ export async function getSupplySpend(startDate, endDate) {
   } catch (error) {
     purchases = cachedPurchases;
     if (!purchases.length && state.isOnline) {
-      throw new Error(error?.message || 'Failed to load supply spend report');
+      throw new Error(/** @type {{message?: string}|null|undefined} */ (error)?.message || 'Failed to load supply spend report');
     }
   }
   const total = purchases.reduce((s, p) => s + Number(p.total_cost || 0), 0);

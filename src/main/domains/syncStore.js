@@ -3,6 +3,18 @@ import fs from 'fs';
 import path from 'path';
 import { state } from '../state.js';
 
+/** Existing queue rows are read by property without validation; every leaf remains untrusted. */
+/** @typedef {{intentId?: unknown, data?: {p_idempotency_key?: unknown, p_lodge_id?: unknown, payload?: Record<string, unknown>} | null, _queue_id?: unknown, lodge_id?: unknown, table?: unknown, type?: unknown, id?: unknown, timestamp?: unknown, _depends_on?: unknown, _mesh_source_node_id?: unknown, _mesh_imported?: unknown, _state?: unknown, retryCount?: unknown, lastError?: unknown, includeSnapshot?: unknown, event?: unknown, operation?: unknown, at?: unknown}} QueueRowExpectedDataView */
+/** Existing health-fault fields are read as expected data; this view does not validate persisted JSON. */
+/** @typedef {{type?: unknown, scope?: unknown, severity?: unknown, message?: unknown, context?: unknown, at?: unknown, fingerprint?: unknown}} HealthFaultExpectedDataView */
+/** Persisted fault rows written after the existing ISO-string guard; JSON.parse still does not validate. */
+/** @typedef {HealthFaultExpectedDataView & {at?: string}} PersistedHealthFaultExpectedDataView */
+/** Read view for existing Error-like catches; properties remain unknown and are not validated. */
+/** @typedef {{message?: unknown}} ErrorMessageReadView */
+/** Read view for the current file-backed offline-mode record, not validation of parsed JSON. */
+/** @typedef {{enabled?: unknown, reason?: unknown, startedAt?: unknown, endedAt?: unknown, acknowledgedRisksAt?: unknown, lastBackupAt?: unknown, lastBackupPath?: unknown, updatedAt?: unknown, updatedBy?: unknown}} OfflineModeRecordExpectedDataView */
+/** @typedef {{queue?: unknown, items?: unknown, pending?: unknown}} QueueEnvelopeExpectedDataView */
+
 const SYNC_META_FILE = 'sync-meta.json';
 const HEALTH_FAULTS_FILE = 'health-faults.json';
 const OFFLINE_OPERATION_LOG_FILE = 'offline-operation-log.jsonl';
@@ -21,6 +33,7 @@ const HEALTH_FAULT_MAX_ARRAY_ITEMS = 20;
 const HEALTH_FAULT_MAX_DEPTH = 4;
 const HEALTH_FAULT_SENSITIVE_KEY_PATTERN = /(password|passphrase|token|secret|authorization|api[-_]?key|private[-_]?key|credential|cookie|nonce|pin|hash)/i;
 
+/** @param {string} [label] @returns {string} */
 function requireCacheDir(label = 'local sync store') {
   if (!state.cacheDir) {
     throw new Error(`${label} failed: cache directory is not initialized`);
@@ -28,16 +41,21 @@ function requireCacheDir(label = 'local sync store') {
   return state.cacheDir;
 }
 
+/** @param {unknown} value @returns {string | undefined} */
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (!value || typeof value !== 'object') return JSON.stringify(value);
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  const record = /** @type {Record<string, unknown>} */ (value);
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
 }
 
+/** @param {Record<string, unknown>} value */
 function hashObject(value) {
-  return createHash('sha256').update(stableStringify(value)).digest('hex');
+  // Current callers pass object literals, whose top-level stable serialization is a string.
+  return createHash('sha256').update(/** @type {string} */ (stableStringify(value))).digest('hex');
 }
 
+/** @param {unknown} value @param {number} [maxLength] @returns {string} */
 function redactHealthFaultText(value, maxLength = HEALTH_FAULT_MAX_STRING_LENGTH) {
   const text = String(value ?? '');
   const redacted = text
@@ -46,26 +64,29 @@ function redactHealthFaultText(value, maxLength = HEALTH_FAULT_MAX_STRING_LENGTH
   return redacted.length > maxLength ? `${redacted.slice(0, maxLength)}…` : redacted;
 }
 
+/** @param {unknown} value @param {number} [depth] @returns {unknown} */
 function sanitizeHealthFaultValue(value, depth = 0) {
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'string') return redactHealthFaultText(value);
   if (depth >= HEALTH_FAULT_MAX_DEPTH) return '[TRUNCATED]';
   if (Array.isArray(value)) {
     return value.slice(0, HEALTH_FAULT_MAX_ARRAY_ITEMS)
-      .map((entry) => sanitizeHealthFaultValue(entry, depth + 1));
+      .map((/** @type {unknown} */ entry) => sanitizeHealthFaultValue(entry, depth + 1));
   }
   if (typeof value === 'object') {
-    const output = {};
-    for (const key of Object.keys(value).sort().slice(0, HEALTH_FAULT_MAX_KEYS)) {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    const output = /** @type {Record<string, unknown>} */ ({});
+    for (const key of Object.keys(record).sort().slice(0, HEALTH_FAULT_MAX_KEYS)) {
       output[key] = HEALTH_FAULT_SENSITIVE_KEY_PATTERN.test(key)
         ? '[REDACTED]'
-        : sanitizeHealthFaultValue(value[key], depth + 1);
+        : sanitizeHealthFaultValue(record[key], depth + 1);
     }
     return output;
   }
   return redactHealthFaultText(value);
 }
 
+/** @param {HealthFaultExpectedDataView} entry */
 function buildHealthFaultFingerprint(entry) {
   return hashObject({
     type: redactHealthFaultText(entry.type, 160),
@@ -76,6 +97,7 @@ function buildHealthFaultFingerprint(entry) {
   });
 }
 
+/** @param {QueueRowExpectedDataView} [item] */
 function getQueueIntentId(item = {}) {
   return String(
     item.intentId ||
@@ -89,21 +111,24 @@ function getQueueIntentId(item = {}) {
   ).trim();
 }
 
+/** @param {unknown} value @returns {unknown} */
 function redactSecureQueueSecrets(value) {
   if (Array.isArray(value)) return value.map(redactSecureQueueSecrets);
   if (!value || typeof value !== 'object') return value;
-  if (value._secure_queue_secret === true) {
+  const record = /** @type {Record<string, unknown>} */ (value);
+  if (record._secure_queue_secret === true) {
     return {
       _secure_queue_secret: true,
-      encrypted: value.encrypted === true,
+      encrypted: record.encrypted === true,
       redacted: true
     };
   }
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, redactSecureQueueSecrets(entry)])
+    Object.entries(record).map(([key, entry]) => [key, redactSecureQueueSecrets(entry)])
   );
 }
 
+/** @param {string} filePath @param {unknown} entry */
 function appendJsonLineDurable(filePath, entry) {
   const line = `${JSON.stringify(entry)}\n`;
   const fd = fs.openSync(filePath, 'a');
@@ -115,6 +140,7 @@ function appendJsonLineDurable(filePath, entry) {
   }
 }
 
+/** @param {string} filePath @param {unknown} [reason] */
 function quarantineBadJsonFile(filePath, reason = 'corrupt JSON') {
   if (!filePath || !fs.existsSync(filePath)) return null;
   const quarantinePath = `${filePath}.corrupt.${Date.now()}.bak`;
@@ -128,6 +154,7 @@ function quarantineBadJsonFile(filePath, reason = 'corrupt JSON') {
   }
 }
 
+/** @param {string} tmpPath @param {string} filePath @param {string} [label] */
 function replaceFileSync(tmpPath, filePath, label = 'file') {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -151,9 +178,10 @@ function replaceFileSync(tmpPath, filePath, label = 'file') {
       }
     }
   }
-  throw new Error(`${label} replace failed: ${lastError?.message || 'unknown error'}`);
+  throw new Error(`${label} replace failed: ${(/** @type {ErrorMessageReadView | null | undefined} */ (lastError))?.message || 'unknown error'}`);
 }
 
+/** @param {string} filePath @param {unknown} value @param {string} label */
 function writeJsonFileDurable(filePath, value, label) {
   const tmpPath = filePath + '.tmp';
   const serialized = JSON.stringify(value, null, 2);
@@ -167,15 +195,17 @@ function writeJsonFileDurable(filePath, value, label) {
   replaceFileSync(tmpPath, filePath, label);
 }
 
+/** @param {unknown} parsed @param {string} [scope] @returns {QueueRowExpectedDataView[]} */
 function normalizeQueueRows(parsed, scope = 'sync-queue') {
+  const envelope = /** @type {QueueEnvelopeExpectedDataView | null | undefined} */ (parsed);
   const rows = Array.isArray(parsed) ?
   parsed :
-  Array.isArray(parsed?.queue) ?
-  parsed.queue :
-  Array.isArray(parsed?.items) ?
-  parsed.items :
-  Array.isArray(parsed?.pending) ?
-  parsed.pending :
+  Array.isArray(envelope?.queue) ?
+  envelope.queue :
+  Array.isArray(envelope?.items) ?
+  envelope.items :
+  Array.isArray(envelope?.pending) ?
+  envelope.pending :
   null;
 
   if (!rows) {
@@ -188,7 +218,7 @@ function normalizeQueueRows(parsed, scope = 'sync-queue') {
     return [];
   }
 
-  const validRows = rows.filter((item) => item && typeof item === 'object');
+  const validRows = /** @type {QueueRowExpectedDataView[]} */ (rows.filter((/** @type {unknown} */ item) => item && typeof item === 'object'));
   if (validRows.length !== rows.length) {
     appendHealthFault({
       type: 'queue_corrupt',
@@ -240,10 +270,11 @@ export function pruneOperationJournalIfNeeded() {
   return { trimmed: lines.length - kept.length, sizeBytes };
 }
 
+/** @param {unknown} event @param {unknown} [item] @param {{lodge_id?: unknown, source_node_id?: unknown, imported_from_mesh?: unknown, financial?: unknown, state?: unknown, message?: unknown, includeSnapshot?: unknown, group_server_confirmed?: unknown, quotation_id?: unknown}} [extra] The last two fields are accepted for the existing recovery caller but are not currently serialized by this journal producer. */
 export function appendOperationJournalEntry(event, item = {}, extra = {}) {
   if (!state.cacheDir) return null;
   const now = new Date().toISOString();
-  const queueItem = item && typeof item === 'object' ? item : {};
+  const queueItem = /** @type {QueueRowExpectedDataView} */ (item && typeof item === 'object' ? item : {});
   const entry = {
     schemaVersion: 1,
     event: String(event || 'unknown'),
@@ -277,31 +308,34 @@ export function appendOperationJournalEntry(event, item = {}, extra = {}) {
     }
     return entry;
   } catch (error) {
+    const caught = /** @type {ErrorMessageReadView} */ (error);
     appendHealthFault({
       type: 'operation_journal_write_failed',
       scope: 'offline-operation-log',
       severity: 'error',
-      message: `Local operation journal could not be written. Error: ${error.message}`,
+      message: `Local operation journal could not be written. Error: ${caught.message}`,
       at: now
     });
     return null;
   }
 }
 
+/** @param {{limit?: unknown}} [options] @returns {unknown[]} */
 export function readOperationJournal({ limit = 500 } = {}) {
   if (!state.cacheDir) return [];
   const filePath = path.join(state.cacheDir, OFFLINE_OPERATION_LOG_FILE);
   try {
     const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/).filter(Boolean);
     const selected = Number.isFinite(Number(limit)) && Number(limit) > 0 ? lines.slice(-Number(limit)) : lines;
-    return selected.map((line) => JSON.parse(line)).filter((entry) => entry && typeof entry === 'object');
+    return selected.map((line) => JSON.parse(line)).filter((/** @type {unknown} */ entry) => entry && typeof entry === 'object');
   } catch (error) {
+    const caught = /** @type {ErrorMessageReadView} */ (error);
     if (fs.existsSync(filePath)) {
       appendHealthFault({
         type: 'operation_journal_read_failed',
         scope: 'offline-operation-log',
         severity: 'warn',
-        message: `Local operation journal could not be read. Error: ${error.message}`,
+        message: `Local operation journal could not be read. Error: ${caught.message}`,
         at: new Date().toISOString()
       });
     }
@@ -309,17 +343,21 @@ export function readOperationJournal({ limit = 500 } = {}) {
   }
 }
 
+/** @param {unknown[]} entries */
 function summarizeJournalEntries(entries = []) {
-  const byEvent = {};
-  const byOperation = {};
+  const byEvent = /** @type {Record<string, number>} */ ({});
+  const byOperation = /** @type {Record<string, number>} */ ({});
   let oldestAt = null;
   let newestAt = null;
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    const entry = /** @type {QueueRowExpectedDataView} */ (rawEntry);
     if (!entry || typeof entry !== 'object') continue;
-    byEvent[entry.event] = (byEvent[entry.event] || 0) + 1;
-    if (entry.operation) byOperation[entry.operation] = (byOperation[entry.operation] || 0) + 1;
-    if (entry.at && (!oldestAt || Date.parse(entry.at) < Date.parse(oldestAt))) oldestAt = entry.at;
-    if (entry.at && (!newestAt || Date.parse(entry.at) > Date.parse(newestAt))) newestAt = entry.at;
+    // JavaScript property-key coercion remains in effect; these assertions only satisfy the string index signature.
+    byEvent[/** @type {string} */ (entry.event)] = (byEvent[/** @type {string} */ (entry.event)] || 0) + 1;
+    if (entry.operation) byOperation[/** @type {string} */ (entry.operation)] = (byOperation[/** @type {string} */ (entry.operation)] || 0) + 1;
+    // Existing Date.parse performs JavaScript argument coercion; the view does not claim stored timestamps are strings.
+    if (entry.at && (!oldestAt || Date.parse(/** @type {string} */ (entry.at)) < Date.parse(oldestAt))) oldestAt = /** @type {string} */ (entry.at);
+    if (entry.at && (!newestAt || Date.parse(/** @type {string} */ (entry.at)) > Date.parse(newestAt))) newestAt = /** @type {string} */ (entry.at);
   }
   return { byEvent, byOperation, oldestAt, newestAt };
 }
@@ -365,6 +403,7 @@ export function getOperationJournalSummary({ limit = OPERATION_JOURNAL_SUMMARY_L
   const total = lines.length;
   const useLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : 0;
   const selected = useLimit > 0 ? lines.slice(-useLimit) : lines;
+  /** @type {unknown[]} */
   const entries = [];
   for (const line of selected) {
     try {
@@ -388,6 +427,7 @@ export function getOperationJournalSummary({ limit = OPERATION_JOURNAL_SUMMARY_L
   };
 }
 
+/** @param {unknown[]} entries */
 export function summarizeFullJournalEntries(entries = []) {
   const summary = summarizeJournalEntries(entries);
   return {
@@ -417,7 +457,7 @@ export function readOfflineModeState() {
     };
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(state.cacheDir, OFFLINE_MODE_FILE), 'utf-8'));
+    const parsed = /** @type {OfflineModeRecordExpectedDataView | null | undefined} */ (JSON.parse(fs.readFileSync(path.join(state.cacheDir, OFFLINE_MODE_FILE), 'utf-8')));
     return {
       enabled: parsed?.enabled === true,
       reason: String(parsed?.reason || ''),
@@ -442,6 +482,7 @@ export function readOfflineModeState() {
   }
 }
 
+/** @param {{enabled?: unknown, reason?: unknown, startedAt?: unknown, endedAt?: unknown, acknowledgedRisksAt?: unknown, lastBackupAt?: unknown, lastBackupPath?: unknown, updatedBy?: unknown}} [updates] */
 export function writeOfflineModeState(updates = {}) {
   const cacheDir = requireCacheDir('Offline mode state write');
   const current = readOfflineModeState();
@@ -462,6 +503,7 @@ export function writeOfflineModeState(updates = {}) {
   return next;
 }
 
+/** @param {string} pathname */
 export function noteOfflineOperationsBackup(pathname) {
   const current = readOfflineModeState();
   return writeOfflineModeState({
@@ -470,6 +512,7 @@ export function noteOfflineOperationsBackup(pathname) {
   });
 }
 
+/** @param {Record<string, unknown>} [extra] */
 export function buildLocalOperationsBundle(extra = {}) {
   const queue = readSyncQueue();
   const failed = readFailedSyncQueue();
@@ -498,6 +541,7 @@ export function buildLocalOperationsBundle(extra = {}) {
   };
 }
 
+/** @param {string} filePath @param {Record<string, unknown>} [extra] */
 export function writeLocalOperationsBundle(filePath, extra = {}) {
   if (!filePath) throw new Error('No export path was selected.');
   const bundle = buildLocalOperationsBundle(extra);
@@ -513,6 +557,7 @@ export function writeLocalOperationsBundle(filePath, extra = {}) {
   };
 }
 
+/** @returns {QueueRowExpectedDataView[]} */
 export function readSyncQueue() {
   if (!state.cacheDir) return [];
   const filePath = path.join(state.cacheDir, 'sync-queue.json');
@@ -525,10 +570,11 @@ export function readSyncQueue() {
     try {
       tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
     } catch (error) {
+      const caught = /** @type {ErrorMessageReadView} */ (error);
       appendHealthFault({
         type: 'queue_corrupt',
         scope: 'sync-queue',
-        message: `sync-queue.json.tmp could not be parsed and was discarded. Error: ${error.message}`,
+        message: `sync-queue.json.tmp could not be parsed and was discarded. Error: ${caught.message}`,
         at: new Date().toISOString()
       });
       try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
@@ -539,11 +585,12 @@ export function readSyncQueue() {
       console.warn('[Sync Queue] Crash-recovery: promoted sync-queue.tmp to main file');
       return normalizeQueueRows(tmpData, 'sync-queue');
       } catch (error) {
+        const caught = /** @type {ErrorMessageReadView} */ (error);
         appendHealthFault({
           type: 'queue_write_failed',
           scope: 'sync-queue',
           severity: 'error',
-          message: `sync-queue.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${error.message}`,
+          message: `sync-queue.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${caught.message}`,
           at: new Date().toISOString()
         });
         return normalizeQueueRows(tmpData, 'sync-queue');
@@ -554,13 +601,14 @@ export function readSyncQueue() {
     const data = fs.readFileSync(filePath, 'utf-8');
     return normalizeQueueRows(JSON.parse(data), 'sync-queue');
   } catch (e) {
+    const caught = /** @type {ErrorMessageReadView} */ (e);
     if (fs.existsSync(filePath)) {
-      console.warn('[Sync Queue] Parse failed — returning []. Error:', e.message);
-      const quarantinePath = quarantineBadJsonFile(filePath, e.message);
+      console.warn('[Sync Queue] Parse failed — returning []. Error:', caught.message);
+      const quarantinePath = quarantineBadJsonFile(filePath, caught.message);
       appendHealthFault({
         type: 'queue_corrupt',
         scope: 'sync-queue',
-        message: `sync-queue.json could not be parsed and was quarantined. Queued operations need manual recovery from ${quarantinePath || 'the corrupt queue backup'}. Error: ${e.message}`,
+        message: `sync-queue.json could not be parsed and was quarantined. Queued operations need manual recovery from ${quarantinePath || 'the corrupt queue backup'}. Error: ${caught.message}`,
         at: new Date().toISOString()
       });
       writeSyncQueue([]);
@@ -569,6 +617,7 @@ export function readSyncQueue() {
   }
 }
 
+/** @param {unknown} queue */
 export function writeSyncQueue(queue) {
   if (!state.cacheDir) {
     throw new Error('Sync queue write failed: cache directory is not initialized');
@@ -578,10 +627,11 @@ export function writeSyncQueue(queue) {
     writeJsonFileDurable(filePath, Array.isArray(queue) ? queue : [], 'sync queue');
   } catch (e) {
     console.error('Sync queue write failed:', e);
-    throw new Error(`Sync queue write failed: ${e.message}`, { cause: e });
+    throw new Error(`Sync queue write failed: ${(/** @type {ErrorMessageReadView} */ (e)).message}`, { cause: e });
   }
 }
 
+/** @returns {QueueRowExpectedDataView[]} */
 export function readFailedSyncQueue() {
   if (!state.cacheDir) return [];
   const filePath = path.join(state.cacheDir, 'sync-failed.json');
@@ -591,10 +641,11 @@ export function readFailedSyncQueue() {
     try {
       tmpData = JSON.parse(fs.readFileSync(tmpPath, 'utf-8'));
     } catch (error) {
+      const caught = /** @type {ErrorMessageReadView} */ (error);
       appendHealthFault({
         type: 'queue_corrupt',
         scope: 'sync-failed',
-        message: `sync-failed.json.tmp could not be parsed and was discarded. Error: ${error.message}`,
+        message: `sync-failed.json.tmp could not be parsed and was discarded. Error: ${caught.message}`,
         at: new Date().toISOString()
       });
       try {fs.unlinkSync(tmpPath);} catch {/* ignore */}
@@ -605,11 +656,12 @@ export function readFailedSyncQueue() {
       console.warn('[Sync Queue] Crash-recovery: promoted sync-failed.tmp to main file');
       return normalizeQueueRows(tmpData, 'sync-failed');
       } catch (error) {
+        const caught = /** @type {ErrorMessageReadView} */ (error);
         appendHealthFault({
           type: 'queue_write_failed',
           scope: 'sync-failed',
           severity: 'error',
-          message: `sync-failed.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${error.message}`,
+          message: `sync-failed.json.tmp is valid but could not be promoted. The recovery copy was kept. Error: ${caught.message}`,
           at: new Date().toISOString()
         });
         return normalizeQueueRows(tmpData, 'sync-failed');
@@ -620,12 +672,13 @@ export function readFailedSyncQueue() {
   try {
     return normalizeQueueRows(JSON.parse(fs.readFileSync(filePath, 'utf-8')), 'sync-failed');
   } catch (e) {
+    const caught = /** @type {ErrorMessageReadView} */ (e);
     if (fs.existsSync(filePath)) {
-      const quarantinePath = quarantineBadJsonFile(filePath, e.message);
+      const quarantinePath = quarantineBadJsonFile(filePath, caught.message);
       appendHealthFault({
         type: 'queue_corrupt',
         scope: 'sync-failed',
-        message: `sync-failed.json could not be parsed and was quarantined. Dead-lettered operations need manual recovery from ${quarantinePath || 'the corrupt failed-queue backup'}. Error: ${e.message}`,
+        message: `sync-failed.json could not be parsed and was quarantined. Dead-lettered operations need manual recovery from ${quarantinePath || 'the corrupt failed-queue backup'}. Error: ${caught.message}`,
         at: new Date().toISOString()
       });
       writeFailedSyncQueue([]);
@@ -634,6 +687,7 @@ export function readFailedSyncQueue() {
   }
 }
 
+/** @param {unknown} items */
 export function writeFailedSyncQueue(items) {
   if (!state.cacheDir) {
     throw new Error('Failed sync queue write failed: cache directory is not initialized');
@@ -643,7 +697,7 @@ export function writeFailedSyncQueue(items) {
     writeJsonFileDurable(filePath, Array.isArray(items) ? items : [], 'sync failed queue');
   } catch (e) {
     console.error('[Sync] Failed-queue write failed:', e);
-    throw new Error(`Failed sync queue write failed: ${e.message}`, { cause: e });
+    throw new Error(`Failed sync queue write failed: ${(/** @type {ErrorMessageReadView} */ (e)).message}`, { cause: e });
   }
 }
 
@@ -657,6 +711,7 @@ export function readSyncMeta() {
   }
 }
 
+/** @param {Record<string, unknown>} [updates] */
 export function writeSyncMeta(updates = {}) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, SYNC_META_FILE);
@@ -669,12 +724,14 @@ export function writeSyncMeta(updates = {}) {
   }
 }
 
+/** @param {HealthFaultExpectedDataView} [fault] */
 export function appendHealthFault(fault = {}) {
   if (!state.cacheDir) return;
   const filePath = path.join(state.cacheDir, HEALTH_FAULTS_FILE);
   try {
+    /** @type {PersistedHealthFaultExpectedDataView[]} */
     let existing = [];
-    try {existing = JSON.parse(fs.readFileSync(filePath, 'utf-8'));} catch {/* start fresh */}
+    try {existing = /** @type {PersistedHealthFaultExpectedDataView[]} */ (JSON.parse(fs.readFileSync(filePath, 'utf-8')));} catch {/* start fresh */}
     if (!Array.isArray(existing)) existing = [];
     const safeType = redactHealthFaultText(fault.type || 'unknown', 160);
     const safeScope = redactHealthFaultText(fault.scope || 'unknown', 160);
@@ -706,10 +763,11 @@ export function appendHealthFault(fault = {}) {
     // Deduplicate only exact fingerprints within ten minutes. A changed
     // message/context for the same type and scope is a distinct incident.
     const now = Date.now();
-    const isDuplicate = existing.some((e) => {
+    const isDuplicate = existing.some((/** @type {PersistedHealthFaultExpectedDataView | null} */ e) => {
+      // Stored health faults are written with ISO strings; this read view does not validate persisted JSON.
       const at = Date.parse(e?.at || '');
       if (!Number.isFinite(at) || now - at < 0 || now - at >= HEALTH_FAULT_DEDUPE_WINDOW_MS) return false;
-      const fingerprint = e?.fingerprint || buildHealthFaultFingerprint(e);
+      const fingerprint = e?.fingerprint || buildHealthFaultFingerprint(/** @type {HealthFaultExpectedDataView} */ (e));
       return fingerprint === entry.fingerprint;
     });
     if (isDuplicate) return;
@@ -721,13 +779,16 @@ export function appendHealthFault(fault = {}) {
   }
 }
 
+/** @param {unknown} fault */
 function isBenignBookingDriftFault(fault = {}) {
-  if (fault?.type !== 'booking_drift') return false;
-  const drifts = Array.isArray(fault?.context?.drifts) ?
-  fault.context.drifts :
-  String(fault?.message || '').split(';').map((entry) => entry.trim()).filter(Boolean);
+  const record = /** @type {HealthFaultExpectedDataView} */ (fault);
+  if (record?.type !== 'booking_drift') return false;
+  const context = /** @type {{drifts?: unknown}} */ (record?.context);
+  const drifts = Array.isArray(context?.drifts) ?
+  context.drifts :
+  String(record?.message || '').split(';').map((entry) => entry.trim()).filter(Boolean);
   if (drifts.length === 0) return false;
-  return drifts.every((entry) =>
+  return drifts.every((/** @type {unknown} */ entry) =>
   /^(customer_id|room_id): local (undefined|null|) ?→ server [0-9a-f-]+$/i.test(String(entry || '').trim())
   );
 }
@@ -738,7 +799,7 @@ export function readHealthFaults() {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     if (!Array.isArray(parsed)) return [];
-    const next = parsed.filter((fault) => !isBenignBookingDriftFault(fault));
+    const next = parsed.filter((/** @type {unknown} */ fault) => !isBenignBookingDriftFault(fault));
     if (next.length !== parsed.length) {
       try {
         fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf-8');

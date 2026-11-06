@@ -111,8 +111,8 @@ test('multi-property PWA keeps every membership visible and switches with a fres
   assert.match(auth, /availableMemberships/)
   assert.match(auth, /const switchMembership = async \(membership\)/)
   assert.match(auth, /memberships = await listManagerPwaMemberships\(\)/)
-  assert.match(auth, /await logoutManagerSession\(previousToken\)/)
-  assert.match(auth, /await logoutManagerSession\(nextToken\)\.catch\(\(\) => \{\}\)/)
+  assert.match(auth, /await logoutManagerSession\(\/\*\* @type \{string\|null\} \*\/ \(previousToken\)\)/)
+  assert.match(auth, /await logoutManagerSession\(\/\*\* @type \{string\|null\} \*\/ \(nextToken\)\)\.catch\(\(\) => \{\}\)/)
   assert.match(auth, /return startSession\(result\.user, user, memberships\)/)
   assert.match(login, /disabled=\{Boolean\(selectLoadingId\) \|\| !selectable\}/)
   assert.match(login, /Manager mobile access off/)
@@ -203,7 +203,7 @@ test('Hotel has a server-authorized PWA check-in and check-out workflow', () => 
   assert.match(api, /complete_hotel_checkin/)
   assert.match(api, /complete_hotel_checkout/)
   assert.match(hotelStayWorkflow, /completeHotelWorkflowStep\(user\.lodge_id, stepId, direction\)/)
-  assert.match(hotelStayWorkflow, /completeHotelStayWorkflow\(user\.lodge_id, selected\.id, direction\)/)
+  assert.match(hotelStayWorkflow, /completeHotelStayWorkflow\(user\.lodge_id, \/\*\* @type \{HotelWorkflowBookingExpectedView\} \*\/ \(selected\)\.id, direction\)/)
 })
 
 test('Hotel night audit uses the authoritative live checks RPC without exposing close actions', () => {

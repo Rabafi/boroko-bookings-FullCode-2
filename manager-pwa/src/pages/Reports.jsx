@@ -9,31 +9,53 @@ import { shortDateTime } from '../lib/format'
 import { MONTHLY_USAGE_RESET_COPY, countMonthlyUsageBookings, getPlanRecommendation, getPlanUsageLimits, getUsageLimitStatus } from '@shared/subscriptionPlans'
 import { isRestaurantProductFamily } from '../lib/productShell'
 
+/**
+ * Expected UI projection of the Manager POS snapshot. The API combines an
+ * RPC result with cache/finality metadata; this view does not validate either.
+ * @typedef {{as_of: string | null, complete: boolean, unresolved_count: number | string | null, net_sales: number, sale_count: number, returns_total: number, open_count: number, by_payment: {method: string, amount: number}[]}} ManagerPosReportExpectedView
+ */
+/**
+ * Expected fields used from the Manager reports snapshot. The server RPC,
+ * legacy fallback and persisted cache are not runtime-validated by this view.
+ * @typedef {{todayRev: number, weekRev: number, monthRev: number, lastMonthRev: number, monthRefunds: number, lastMonthRefunds: number, monthRetainedRevenue: number, lastMonthRetainedRevenue: number, monthRetainedCount: number, lastMonthRetainedCount: number, monthOcc: number, lastMonthOcc: number, currentOcc: number, totalRooms: number, unpaidTotal: number, unpaidCount: number, monthExpenses: number, posRevenue: number, conferenceRevenue: number, poolRevenue: number, maintenanceCosts: number, source: 'server'|'fallback'|'legacy_estimate', financial_truth?: string}} ManagerReportsSnapshotExpectedView
+ */
+/** AuthenticatedApp mounts reports after AppShell has a session user; fields follow AuthProvider's buildSessionRecord. @typedef {{lodge_id: string, plan?: string|null, product_family?: string|null, hospitality_mode?: string|null}} ManagerReportsSessionUserExpectedView */
+/** @typedef {{user: ManagerReportsSessionUserExpectedView}} ManagerReportsAuthContextExpectedView */
+/** @typedef {{totalRooms: number, occupied: number, occupancyPercent: number, openMaintenanceCount: number, urgentMaintenanceCount: number, lowStockCount: number, unpaidCount: number, outstandingTotal: number, monthExpenses: number, maintenanceCosts: number, monthGrossCollected: number, monthRefunds: number, monthRevenue: number, monthNet: number, upcomingArrivals: unknown[], conferenceUpcoming: unknown[], quotationsOpenCount: number, dayUseRevenue: number, lowStock: unknown[], revenueTrend: {day: string, amount: number}[], occupancyTrend: {day: string, occupied: number, percent: number}[], topBalances: unknown[], source?: string, financial_truth?: string, entitlement?: {plan?: string|null}|null}} ManagerReportsDashboardExpectedView */
+/** @typedef {{isEnabled: (feature: string) => boolean}} ManagerReportsFeaturesContextExpectedView */
+/** @typedef {{message?: string}} ManagerReportsCaughtErrorExpectedView */
+/** @typedef {{created_at?: string|number, status?: unknown, is_exclusive_event?: unknown, check_in?: string|number}} ManagerReportsBookingUsageExpectedView */
+/** @typedef {{label: string, value: number, color: string}} ManagerReportsRevenueSegmentExpectedView */
+
+/** @param {{lodgeId: string}} props */
 function BarReports({ lodgeId }) {
-  const [snapshot, setSnapshot] = useState(null)
+  const [snapshot, setSnapshot] = useState(/** @type {ManagerPosReportExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string|null} */ (null))
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const result = await getManagerPosSnapshot(lodgeId, { forceFresh: true })
+      // Expected API result projection; RPC/cache content is not validated here.
+      const result = /** @type {ManagerPosReportExpectedView} */ (await getManagerPosSnapshot(lodgeId, { forceFresh: true }))
       setSnapshot(result)
       setUpdatedAt(result?.as_of || new Date().toISOString())
     } catch (loadError) {
       setSnapshot(null)
-      setError(loadError?.message || 'Bar sales report could not load from the server.')
+      setError((/** @type {ManagerReportsCaughtErrorExpectedView|null|undefined} */ (loadError))?.message || 'Bar sales report could not load from the server.')
     } finally {
       setLoading(false)
     }
   }, [lodgeId])
   useEffect(() => { load() }, [load])
   const complete = snapshot?.complete === true
+  /** @param {unknown} value */
   const fmt = (value) => `P ${Number(value || 0).toLocaleString('en-BW', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   return <div className="flex min-h-screen flex-col bg-gray-950 pb-24"><div className="bg-gray-900 px-4 pb-4 pt-12"><div className="flex items-start justify-between gap-3"><div><h1 className="text-lg font-bold text-white">Bar sales report</h1><p className="text-xs text-gray-400">Server-confirmed sales, returns and tender controls</p><p className="mt-1 text-[11px] text-gray-500">{updatedAt ? `As of ${new Date(updatedAt).toLocaleString('en-GB')}` : 'Not refreshed'}</p></div><button type="button" onClick={load} className="rounded-full bg-white/5 p-2 text-gray-300" aria-label="Refresh Bar sales report"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button></div></div><div className="space-y-3 px-4 py-4">{error && <div className="rounded-2xl border border-rose-900 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">{error}</div>}{snapshot && !complete && <div className="rounded-2xl border border-amber-900 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">This report is incomplete ({snapshot.unresolved_count || 0} unresolved source rows). Monetary totals and decisions are withheld.</div>}<section className="grid grid-cols-2 gap-3"><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Net sales</p><p className="mt-1 text-xl font-bold text-emerald-200">{complete ? fmt(snapshot.net_sales) : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Completed sales</p><p className="mt-1 text-xl font-bold text-white">{complete ? snapshot.sale_count : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Returns</p><p className="mt-1 text-xl font-bold text-rose-200">{complete ? fmt(snapshot.returns_total) : 'Unavailable'}</p></div><div className="rounded-2xl bg-gray-800 p-4"><p className="text-xs text-gray-400">Open tabs</p><p className="mt-1 text-xl font-bold text-amber-200">{complete ? snapshot.open_count : 'Unavailable'}</p></div></section><section className="rounded-2xl bg-gray-800 p-4"><h2 className="text-sm font-semibold text-white">Tender controls</h2>{complete && Array.isArray(snapshot.by_payment) && snapshot.by_payment.length ? <div className="mt-3 space-y-2">{snapshot.by_payment.map((row) => <div key={row.method} className="flex justify-between text-sm"><span className="capitalize text-gray-400">{String(row.method).replace(/_/g, ' ')}</span><span className="font-semibold text-white">{fmt(row.amount)}</span></div>)}</div> : <p className="mt-2 text-sm text-gray-500">{complete ? 'No posted tenders in this period.' : 'Unavailable until the report is complete.'}</p>}</section><p className="text-xs text-gray-500">Detailed transaction exports and corrections remain in the desktop Bar app. This mobile report never mixes lodging payments with POS sales.</p></div></div>
 }
 
+/** @param {{label: string, value: import('react').ReactNode, sub?: import('react').ReactNode, color?: string}} props */
 function StatRow({ label, value, sub, color = 'text-white' }) {
   return (
     <div className="flex items-center justify-between py-3 border-b border-gray-800 last:border-0">
@@ -46,6 +68,7 @@ function StatRow({ label, value, sub, color = 'text-white' }) {
   )
 }
 
+/** @param {{title: string, children: import('react').ReactNode}} props */
 function Section({ title, children }) {
   return (
     <div className="bg-gray-800 rounded-2xl p-4 mb-3">
@@ -55,6 +78,7 @@ function Section({ title, children }) {
   )
 }
 
+/** @param {{current: number, previous: number, label: string, formatValue: (value: number) => import('react').ReactNode, accent?: 'green'|'blue'|'red'|'amber'|'cyan'|'indigo'}} props */
 function ComparisonBar({ current, previous, label, formatValue, accent = 'green' }) {
   const max = Math.max(Math.abs(current || 0), Math.abs(previous || 0), 1)
   const currentPct = Math.min(((current || 0) / max) * 100, 100)
@@ -102,6 +126,7 @@ function ComparisonBar({ current, previous, label, formatValue, accent = 'green'
   )
 }
 
+/** @param {{segments: ManagerReportsRevenueSegmentExpectedView[], total: number}} props */
 function RevenueMixBar({ segments, total }) {
   if (!total || total <= 0) return null
   return (
@@ -134,17 +159,19 @@ function RevenueMixBar({ segments, total }) {
 }
 
 export default function Reports() {
-  const { user } = useAuth()
+  // The authenticated application shell has a session before rendering routes.
+  const { user } = /** @type {ManagerReportsAuthContextExpectedView} */ (useAuth())
   if (isRestaurantProductFamily(user?.product_family) && String(user?.hospitality_mode || '').toLowerCase() === 'bar_only') return <BarReports lodgeId={user?.lodge_id} />
   return <LodgingReports />
 }
 
 function LodgingReports() {
-  const { user } = useAuth()
-  const { isEnabled } = useFeatures()
-  const [data, setData] = useState(null)
+  // AuthProvider and FeaturesProvider wrap this page in the authenticated shell.
+  const { user } = /** @type {ManagerReportsAuthContextExpectedView} */ (useAuth())
+  const { isEnabled } = /** @type {ManagerReportsFeaturesContextExpectedView} */ (useFeatures())
+  const [data, setData] = useState(/** @type {ManagerReportsSnapshotExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
-  const [lastUpdated, setLastUpdated] = useState(null)
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
   const [loadError, setLoadError] = useState('')
   const [usage, setUsage] = useState({ monthlyBookings: 0, rooms: 0, users: 0, plan: 'Starter' })
   // Server product_family on the session is authoritative.
@@ -166,18 +193,20 @@ function LodgingReports() {
         listRooms(user.lodge_id).catch(() => []),
         listStaff(user.lodge_id).catch(() => [])
       ])
-      setData(snapshot)
-      const plan = dashboard?.entitlement?.plan || user?.plan || 'Starter'
+      // Expected API result projection; RPC/cache content is not validated here.
+      setData(/** @type {ManagerReportsSnapshotExpectedView|null} */ (snapshot))
+      const dashboardView = /** @type {ManagerReportsDashboardExpectedView|null} */ (dashboard)
+      const plan = dashboardView?.entitlement?.plan || user?.plan || 'Starter'
       setUsage({
-        monthlyBookings: countMonthlyUsageBookings(bookings || [], new Date()),
+        monthlyBookings: countMonthlyUsageBookings(/** @type {ManagerReportsBookingUsageExpectedView[]} */ (bookings || []), new Date()),
         rooms: Array.isArray(rooms) ? rooms.length : 0,
         users: Array.isArray(staff) ? staff.length : 0,
         plan
       })
-      setLastUpdated(readCacheEntry(user.lodge_id, 'reports_snapshot', null)?.updatedAt || null)
+      setLastUpdated((/** @type {{updatedAt?: string|null}|null} */ (readCacheEntry(user.lodge_id, 'reports_snapshot', null)))?.updatedAt || null)
     } catch (e) {
       console.error('Reports load error:', e)
-      setLoadError(e?.message || 'Reports could not load.')
+      setLoadError((/** @type {ManagerReportsCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Reports could not load.')
     } finally {
       setLoading(false)
     }
@@ -195,7 +224,9 @@ function LodgingReports() {
     )
   }
 
+  /** @param {unknown} n */
   const fmt = (n) => `P ${Number(n || 0).toLocaleString()}`
+  /** @param {number} n */
   const pct = (n) => `${n}%`
   const maintenanceTotal = Number(data?.maintenanceCosts || 0)
   const retainedThisMonth = Number(data?.monthRetainedRevenue || 0)

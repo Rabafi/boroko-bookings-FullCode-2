@@ -40,6 +40,33 @@ const STALE_TEMP_MS = 24 * 60 * 60 * 1000
 const PASS_MIN_LENGTH = 12
 const SCRYPT_PARAMS = { N: 32768, r: 8, p: 1 }
 
+/** @typedef {'json'|'json-map'|'jsonl'|'tmp-generation'} StoreKind */
+/** @typedef {{key: string, file: string, kind: StoreKind, role?: string, unresolvedBearing?: boolean, description?: string, maxBytes?: number}} StoreSpec */
+/** @typedef {{removed: number, fields: Record<string, number>}} ScrubCounters */
+/** @typedef {{file: string, kind: StoreKind, role: string|undefined, unresolved_bearing: boolean, description: string|undefined, bytes: number, source_bytes?: number, sha256: string, scrubbed_fields: number, read_attempts: number, content: string}} SnapshotStore */
+/** @typedef {{present: boolean, file?: string, classification?: unknown, reason?: unknown, bytes?: unknown, sha256?: unknown, unreadable?: boolean}} WithheldStoreRecord */
+/** @typedef {{count: number, digest: string, identities: string[], by_store: Record<string, {count: number, identities_sha256: string}>}} UnresolvedSummary */
+/** @typedef {{schema: string, lodge_id: string, captured_at: string, app_version: string, capture: {protocol: string, attempts: number, cache_dir_name: string, same_volume_copy_risk: null}, complete: boolean, warnings: string[], missing: string[], drift: string[], unresolved: UnresolvedSummary, withheld: Record<string, WithheldStoreRecord>, stores: Record<string, SnapshotStore>, renderer_state: {captured: boolean, expected: boolean, store: string|null}, recovery_limits: string[]}} BarTradingSnapshot */
+/** @typedef {{cacheDir?: string|undefined, lodgeId?: string, now?: string|Date, appVersion?: string|undefined, rendererState?: unknown, expectRendererState?: boolean}} SnapshotOptions */
+/** @typedef {{passphrase?: string|undefined, expectedLodgeId?: string|undefined}} VerifyOptions */
+/** @typedef {{passphrase?: string, allowIncomplete?: boolean}} WritePackageOptions */
+/** @typedef {{operationId?: string, targetRoot?: string, liveCacheDir?: string|null, passphrase?: string, expectedLodgeId?: string, replaceExisting?: boolean, cacheDir?: string}} StageRestoreOptions */
+/** @typedef {{authorized?: boolean, targetRoot?: string, liveCacheDir?: string, confirmLodgeId?: string, lodgeId?: string, cacheDir?: string}} ActivateRestoreOptions */
+/** @typedef {{now?: string|Date, hourly?: number, daily?: number, weekly?: number, diskBudgetBytes?: number}} RetentionOptions */
+/** @typedef {{fileName?: string, name?: string, path?: string, bytes?: number, createdAt: string, verified?: boolean, unresolvedIds?: string[]}} RetentionEntry */
+/** @typedef {{targetDir?: string, lodgeId?: string, now?: string|Date}} PackageListOptions */
+/** @typedef {{targetDir?: string, lodgeId?: string, cacheDir?: string, now?: string|Date}} HealthOptions */
+/** @typedef {{configDir?: string, targetDir?: string, cacheDir?: string, allowSameVolume?: boolean}} ConfigureOptions */
+/** @typedef {{configDir?: string}} ReadTargetOptions */
+/** @typedef {{operation_id?: string, package_sha256?: string, stores?: Record<string, string>}} RestoreProgress */
+/** @typedef {{lodge_id?: string, package_sha256?: string, [key: string]: unknown}} RestoreReport */
+/** @typedef {{file: unknown, kind: unknown, role?: unknown, content: string, bytes?: unknown, sha256?: string, unresolved_bearing?: unknown, [key: string]: unknown}} PackageStoreExpectedDataView */
+/** @typedef {{schema?: unknown, lodge_id: unknown, captured_at: unknown, complete: unknown, warnings: unknown, stores: Record<string, PackageStoreExpectedDataView>, withheld: unknown, recovery_limits: unknown, [key: string]: unknown}} VerifiedSnapshotExpectedData */
+/** @typedef {{key: string, file: unknown, kind: unknown, unresolvedBearing?: boolean, maxBytes?: number}} RecoveryStoreSpecExpectedView */
+/** @typedef {{present: false, tooLarge?: false, drift?: false, error?: string}|{present: true, tooLarge: true, drift?: false, error?: undefined, bytes: number}|{present: true, drift: true, tooLarge?: false, error: unknown}|{present: true, tooLarge?: false, drift?: false, error?: undefined, bytes: number, content: string, sha256: string, attempts: number}} StableReadOutcome */
+/** @typedef {{spec: StoreSpec, present: false, content?: undefined, tooLarge?: false, drift?: false, error?: string}|{spec: StoreSpec, present: true, content?: undefined, tooLarge: true, drift?: false, error?: undefined, bytes: number}|{spec: StoreSpec, present: true, content?: undefined, tooLarge?: false, drift: true, error?: unknown}|{spec: StoreSpec, present: true, content: string, tooLarge?: false, drift?: false, error?: undefined, bytes?: number}} StoreOutcome */
+/** @typedef {{success: true, format: string, encrypted: true, packageSha256: string, manifest: Record<string, unknown>, snapshot: VerifiedSnapshotExpectedData, complete: boolean, warnings: unknown[], unresolved: UnresolvedSummary, fileName?: string, bytes?: number, destination?: string}|{success: false, error: string, fileName?: string, bytes?: number, destination?: string}} VerificationResult */
+
 // Field names that must never appear in a package, even inside a store that is
 // otherwise included. Matching is exact and case-insensitive on the key name.
 const PROTECTED_FIELD_NAMES = new Set([
@@ -65,7 +92,7 @@ const RECOVERY_LIMITATIONS = Object.freeze([
 // kind: 'json' | 'json-map' (top-level object keyed by identity) | 'jsonl' |
 // 'tmp-generation' (interrupted generation, never auto-promoted on restore).
 
-export const BAR_TRADING_STORE_SPECS = Object.freeze([
+export const BAR_TRADING_STORE_SPECS = /** @type {readonly StoreSpec[]} */ (Object.freeze([
   { key: 'sync-queue', file: 'sync-queue.json', kind: 'json', role: 'unresolved', unresolvedBearing: true, description: 'Pending replay queue (accepted locally, not server-confirmed).' },
   { key: 'sync-queue-generation', file: 'sync-queue.json.tmp', kind: 'tmp-generation', role: 'unresolved', unresolvedBearing: true, description: 'Interrupted generation of the pending replay queue.' },
   { key: 'sync-failed', file: 'sync-failed.json', kind: 'json', role: 'unresolved', unresolvedBearing: true, description: 'Dead-lettered queue rows awaiting review or retry.' },
@@ -103,38 +130,47 @@ export const BAR_TRADING_STORE_SPECS = Object.freeze([
   { key: 'pos-checklists', file: 'pos-checklists.json', kind: 'json', role: 'reconstructible', description: 'POS checklists.' },
   { key: 'bar-checklist-templates', file: 'bar-checklist-templates.json', kind: 'json', role: 'reconstructible', description: 'Bar checklist templates.' },
   { key: 'pos-customer-display', file: 'pos-customer-display.json', kind: 'json', role: 'reconstructible', description: 'Customer display settings.' }
-])
+]))
 
 // Withheld stores: never packaged. A digest/count disclosure is recorded so
 // the archive discloses that they existed without leaking or restoring them.
-export const BAR_TRADING_WITHHELD_SPECS = Object.freeze([
+export const BAR_TRADING_WITHHELD_SPECS = /** @type {readonly {key: string, file: string, classification: string, reason: string}[]} */ (Object.freeze([
   { key: 'users', file: 'users.json', classification: 'secret-bearing', reason: 'Staff accounts include password hashes.' },
   { key: 'trial-status', file: 'trial_status.json', classification: 'authorization-lease', reason: 'Offline entitlement lease must not be restored or extended by an archive.' },
   { key: 'automation-credential', file: 'automation-credential.json', classification: 'machine-bound-secret', reason: 'OS-safeStorage credential is machine-bound and stays with its machine.' }
-])
+]))
 
 // ─── Shared primitives ───────────────────────────────────────────────────────
 
+/** @param {string|Buffer} value */
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
+/** @param {unknown} value @returns {string|undefined} */
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry) ?? 'null').join(',')}]`
-  const keys = Object.keys(value).sort()
-  const entries = []
+  if (Array.isArray(value)) {
+    const array = /** @type {unknown[]} */ (value)
+    return `[${array.map((entry) => stableStringify(entry) ?? 'null').join(',')}]`
+  }
+  const record = /** @type {Record<string, unknown>} */ (value)
+  const keys = Object.keys(record).sort()
+  const entries = /** @type {string[]} */ ([])
   for (const key of keys) {
-    const serialized = stableStringify(value[key])
+    const entry = record[key]
+    const serialized = stableStringify(entry)
     if (serialized !== undefined) entries.push(`${JSON.stringify(key)}:${serialized}`)
   }
   return `{${entries.join(',')}}`
 }
 
+/** @param {unknown} value */
 function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
+/** @param {string} filePath */
 function fsyncFile(filePath) {
   try {
     const handle = fs.openSync(filePath, 'r+')
@@ -142,6 +178,7 @@ function fsyncFile(filePath) {
   } catch {}
 }
 
+/** @param {string} dirPath */
 function fsyncDir(dirPath) {
   try {
     const handle = fs.openSync(dirPath, 'r')
@@ -149,10 +186,12 @@ function fsyncDir(dirPath) {
   } catch {}
 }
 
+/** @param {string} dirPath */
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true })
 }
 
+/** @param {string} root @param {...unknown} segments */
 function resolveContainedPath(root, ...segments) {
   const resolvedRoot = path.resolve(String(root))
   const candidate = path.resolve(resolvedRoot, ...segments.map((segment) => String(segment)))
@@ -163,6 +202,7 @@ function resolveContainedPath(root, ...segments) {
   return candidate
 }
 
+/** @param {string} filePath @param {string|Buffer} bytes */
 function writeBytesAtomic(filePath, bytes) {
   const target = path.resolve(String(filePath))
   const dir = path.dirname(target)
@@ -175,14 +215,19 @@ function writeBytesAtomic(filePath, bytes) {
     fsyncDir(dir)
   } catch (error) {
     try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath) } catch {}
-    throw new Error(`Bar trading recovery file could not be written. Choose another destination and try again. (${error?.code || 'write_error'})`)
+    // Expected-data view for the Node filesystem error code; the original code
+    // value and error path are preserved without normalization.
+    const fsError = /** @type {{code?: string}|null|undefined} */ (error)
+    throw new Error(`Bar trading recovery file could not be written. Choose another destination and try again. (${fsError?.code || 'write_error'})`)
   }
 }
 
+/** @param {string} filePath @param {unknown} value */
 function writeJsonAtomic(filePath, value) {
   writeBytesAtomic(filePath, Buffer.from(canonicalJson(value), 'utf8'))
 }
 
+/** @param {string} filePath @param {unknown} fallback @returns {unknown} */
 function readJsonFile(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) return fallback
@@ -190,6 +235,7 @@ function readJsonFile(filePath, fallback) {
   } catch { return fallback }
 }
 
+/** @param {unknown} passphrase */
 function requirePassphrase(passphrase) {
   const value = String(passphrase || '')
   if (value.length < PASS_MIN_LENGTH) throw new Error(`Use an encryption passphrase with at least ${PASS_MIN_LENGTH} characters.`)
@@ -197,22 +243,26 @@ function requirePassphrase(passphrase) {
   return value
 }
 
+/** @param {SnapshotOptions|StageRestoreOptions|ActivateRestoreOptions} [options] */
 function resolveCacheDir(options = {}) {
   const dir = String(options.cacheDir || state.cacheDir || '').trim()
   if (!dir) throw new Error('A profile cache directory is required for Bar trading recovery.')
   return path.resolve(dir)
 }
 
+/** @param {SnapshotOptions|ActivateRestoreOptions} [options] */
 function resolveLodgeId(options = {}) {
   const lodgeId = String(options.lodgeId || state.lodgeId || '').trim()
   if (!lodgeId) throw new Error('An active lodge profile is required for Bar trading recovery.')
   return lodgeId
 }
 
+/** @param {string} lodgeId */
 function safeLodgeSlug(lodgeId) {
   return String(lodgeId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24)
 }
 
+/** @param {unknown} operationId */
 function assertOperationId(operationId) {
   const value = String(operationId || '').trim().toLowerCase()
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
@@ -223,10 +273,11 @@ function assertOperationId(operationId) {
 
 // ─── Secret scrubbing ────────────────────────────────────────────────────────
 
+/** @param {unknown} value @param {ScrubCounters} [counters] @returns {unknown} */
 function scrubProtectedFields(value, counters = { removed: 0, fields: {} }) {
   if (Array.isArray(value)) return value.map((entry) => scrubProtectedFields(entry, counters))
   if (!value || typeof value !== 'object') return value
-  const out = {}
+  const out = /** @type {Record<string, unknown>} */ ({})
   for (const [key, entry] of Object.entries(value)) {
     if (PROTECTED_FIELD_NAMES.has(String(key).toLowerCase())) {
       counters.removed += 1
@@ -238,8 +289,9 @@ function scrubProtectedFields(value, counters = { removed: 0, fields: {} }) {
   return out
 }
 
+/** @param {StoreSpec} spec @param {string} content */
 function scrubStoreContent(spec, content) {
-  const counters = { removed: 0, fields: {} }
+  const counters = /** @type {ScrubCounters} */ ({ removed: 0, fields: {} })
   if (spec.kind === 'jsonl') {
     const lines = String(content).split('\n').filter((line) => line.trim().length > 0)
     const scrubbed = lines.map((line) => {
@@ -262,6 +314,7 @@ function scrubStoreContent(spec, content) {
 // Reads are non-blocking and never take a write lock, so an active till keeps
 // selling; the protocol is a defensible version check, not a transaction.
 
+/** @param {string} filePath @param {{maxBytes?: number}} spec @returns {StableReadOutcome} */
 function readStoreStable(filePath, spec) {
   if (!fs.existsSync(filePath)) return { present: false }
   let lastError = null
@@ -269,7 +322,9 @@ function readStoreStable(filePath, spec) {
     try {
       const before = fs.statSync(filePath)
       if (!before.isFile()) return { present: false, error: 'not_a_file' }
-      if (before.size > spec.maxBytes || before.size > MAX_STORE_BYTES) {
+      // Expected value view only: undefined keeps the existing JS comparison
+      // result, and this assertion does not add validation or coercion.
+      if (before.size > /** @type {number} */ (spec.maxBytes) || before.size > MAX_STORE_BYTES) {
         return { present: true, tooLarge: true, bytes: before.size }
       }
       const first = fs.readFileSync(filePath)
@@ -285,17 +340,23 @@ function readStoreStable(filePath, spec) {
       }
       lastError = `drift on attempt ${attempt}`
     } catch (error) {
-      lastError = error?.message || 'read failed'
+      const readError = /** @type {{message?: string}|null|undefined} */ (error)
+      lastError = readError?.message || 'read failed'
     }
   }
   return { present: true, drift: true, error: lastError }
 }
 
+/** @param {{kind: unknown}} spec @param {string} content */
 function parseIdentityRows(spec, content) {
   // Returns [{ identity, hash }] for reconciliation. Unknown shapes fall back
   // to line/index identities so drift is still detectable, never silently lost.
-  const rows = []
-  const hashOf = (value) => sha256(stableStringify(value))
+  const rows = /** @type {{identity: string, hash: string}[]} */ ([])
+  /** @param {unknown} value */
+  const hashOf = (value) => {
+    // Callers pass values produced by JSON.parse, which cannot be undefined.
+    return sha256(/** @type {string} */ (stableStringify(value)))
+  }
   if (spec.kind === 'jsonl') {
     const lines = String(content).split('\n').filter((line) => line.trim().length > 0)
     lines.forEach((line, index) => {
@@ -321,28 +382,33 @@ function parseIdentityRows(spec, content) {
   return rows
 }
 
+/** @param {unknown} row */
 function pickIdentity(row) {
   if (!row || typeof row !== 'object') return null
+  const record = /** @type {Record<string, unknown>} */ (row)
   for (const field of ['_queue_id', 'idempotency_key', 'operation_id', 'op_id', 'id', 'key', 'submit_intent_id', 'intent_id']) {
-    const value = row[field]
+    const value = record[field]
     if (value !== undefined && value !== null && String(value).length > 0) return String(value)
   }
   return null
 }
 
+/** @param {unknown} entry */
 function isUnresolvedSubmitAttempt(entry) {
   if (!entry || typeof entry !== 'object') return true
-  if (entry.manualRetryOnly === true) return true
-  const status = String(entry.status || '').toLowerCase()
+  const record = /** @type {Record<string, unknown>} */ (entry)
+  if (record.manualRetryOnly === true) return true
+  const status = String(record.status || '').toLowerCase()
   return !['confirmed', 'committed', 'completed', 'verified'].includes(status)
 }
 
+/** @param {Record<string, StoreOutcome>} storeOutcomes @returns {UnresolvedSummary} */
 function buildUnresolvedSummary(storeOutcomes) {
-  const byStore = {}
+  const byStore = /** @type {Record<string, {count: number, identities_sha256: string}>} */ ({})
   const identitySet = new Set()
   for (const [key, outcome] of Object.entries(storeOutcomes)) {
     if (!outcome?.spec?.unresolvedBearing || !outcome.present || outcome.content === undefined) continue
-    let identities = []
+    let identities = /** @type {string[]} */ ([])
     if (key === 'pos-submit-attempts') {
       try {
         const parsed = JSON.parse(outcome.content)
@@ -359,12 +425,14 @@ function buildUnresolvedSummary(storeOutcomes) {
       identities = parseIdentityRows(outcome.spec, outcome.content).map((row) => row.identity)
     }
     for (const identity of identities) identitySet.add(`${key}:${identity}`)
-    byStore[key] = { count: identities.length, identities_sha256: sha256(stableStringify([...identities].sort())) }
+    // Each identity is a string; stable serialization of this array is defined.
+    const serializedIdentities = /** @type {string} */ (stableStringify([...identities].sort()))
+    byStore[key] = { count: identities.length, identities_sha256: sha256(serializedIdentities) }
   }
   const allIdentities = [...identitySet].sort()
   return {
     count: allIdentities.length,
-    digest: sha256(stableStringify(allIdentities)),
+    digest: sha256(/** @type {string} */ (stableStringify(allIdentities))),
     identities: allIdentities,
     by_store: byStore
   }
@@ -372,12 +440,13 @@ function buildUnresolvedSummary(storeOutcomes) {
 
 // ─── Snapshot ────────────────────────────────────────────────────────────────
 
+/** @param {SnapshotOptions} [options] @returns {BarTradingSnapshot} */
 export function buildBarTradingSnapshot(options = {}) {
   const cacheDir = resolveCacheDir(options)
   const lodgeId = resolveLodgeId(options)
   const capturedAt = String(options.now || new Date().toISOString())
-  const storeOutcomes = {}
-  const stores = {}
+  const storeOutcomes = /** @type {Record<string, StoreOutcome>} */ ({})
+  const stores = /** @type {Record<string, SnapshotStore>} */ ({})
   const missing = []
   const drift = []
   const warnings = []
@@ -429,7 +498,9 @@ export function buildBarTradingSnapshot(options = {}) {
   // Withheld stores: digest disclosure only. Content is read, hashed, and
   // discarded so an operator can see the evidence existed without it being
   // packaged.
-  const withheld = {}
+  // Entries below are emitted directly by this producer in the snapshot's
+  // withheld-store schema.
+  const withheld = /** @type {Record<string, WithheldStoreRecord>} */ ({})
   for (const spec of BAR_TRADING_WITHHELD_SPECS) {
     const filePath = path.join(cacheDir, spec.file)
     if (!fs.existsSync(filePath)) { withheld[spec.key] = { present: false }; continue }
@@ -503,12 +574,13 @@ export function buildBarTradingSnapshot(options = {}) {
     },
     recovery_limits: [...RECOVERY_LIMITATIONS]
   }
-  if (rendererStore) snapshotCore.stores['renderer-durable-state'] = rendererStore
+  if (rendererStore) snapshotCore.stores['renderer-durable-state'] = /** @type {SnapshotStore} */ (rendererStore)
   return snapshotCore
 }
 
 // ─── Package create / verify ─────────────────────────────────────────────────
 
+/** @param {BarTradingSnapshot} snapshot */
 function packageInnerFiles(snapshot) {
   const manifest = {
     format: PACKAGE_SCHEMA,
@@ -538,6 +610,7 @@ function packageInnerFiles(snapshot) {
   return { manifest, files: { 'snapshot.json': snapshotJson, 'manifest.json': manifestJson, 'README.txt': readme }, checksums }
 }
 
+/** @param {BarTradingSnapshot} snapshot */
 function buildReadme(snapshot) {
   return [
     'TSA BONNO HOSPITALITYOS — BAR TRADING RECOVERY SNAPSHOT', '',
@@ -555,6 +628,7 @@ function buildReadme(snapshot) {
   ].join('\n')
 }
 
+/** @param {{manifest: Record<string, unknown>, checksums: Record<string, string>, files: Record<string, string>}} inner @param {{passphrase?: string}} [options] */
 function encodePackage(inner, options = {}) {
   const passphrase = requirePassphrase(options.passphrase)
   const salt = crypto.randomBytes(16)
@@ -583,6 +657,7 @@ function encodePackage(inner, options = {}) {
   }
 }
 
+/** @param {Buffer|string} buffer @param {unknown} passphrase */
 function decodePackage(buffer, passphrase) {
   let envelope
   try {
@@ -618,6 +693,7 @@ function decodePackage(buffer, passphrase) {
   return { envelope, inner }
 }
 
+/** @param {BarTradingSnapshot} snapshot @param {{passphrase?: string}} [options] */
 export function createBarTradingPackage(snapshot, options = {}) {
   if (!snapshot || snapshot.schema !== SNAPSHOT_SCHEMA) throw new Error('A Bar trading snapshot is required to create a package.')
   const parts = packageInnerFiles(snapshot)
@@ -635,6 +711,7 @@ export function createBarTradingPackage(snapshot, options = {}) {
   }
 }
 
+/** @param {Buffer|string} buffer @param {VerifyOptions} [options] @returns {VerificationResult} */
 export function validateBarTradingPackage(buffer, options = {}) {
   const packageBytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer || ''), 'utf8')
   if (packageBytes.length > MAX_PACKAGE_BYTES) throw new Error('The selected Bar trading recovery package is too large to verify safely.')
@@ -673,11 +750,13 @@ export function validateBarTradingPackage(buffer, options = {}) {
     if (hash !== store.sha256 || hash !== String(manifest.store_hashes[key]).toLowerCase()) {
       throw new Error(`Backup store hash does not match for ${key}.`)
     }
-    if (store.bytes > MAX_STORE_BYTES) throw new Error(`Backup store ${key} exceeds the per-store ceiling.`)
+    // Type view only: preserve JS relational coercion for the package-supplied
+    // value; this assertion does not validate it or change malformed-input behavior.
+    if ((/** @type {number} */ (store.bytes)) > MAX_STORE_BYTES) throw new Error(`Backup store ${key} exceeds the per-store ceiling.`)
   }
   // Recompute the unresolved-operation disclosure from the actual contents
   // using the same rules as snapshot creation.
-  const recomputeInputs = {}
+  const recomputeInputs = /** @type {Record<string, StoreOutcome>} */ ({})
   for (const key of storeKeys) {
     const spec = BAR_TRADING_STORE_SPECS.find((entry) => entry.key === key)
     if (!spec) continue
@@ -687,24 +766,32 @@ export function validateBarTradingPackage(buffer, options = {}) {
   if (manifest.unresolved && (Number(manifest.unresolved.count) !== recomputedUnresolved.count || String(manifest.unresolved.digest) !== recomputedUnresolved.digest)) {
     throw new Error('Backup unresolved-operation disclosure does not match the snapshot contents.')
   }
+  // Expected-data view only: the guards above verify schema identity, store
+  // membership, store content/hash/filename constraints, and unresolved
+  // disclosure. Store kind/role/unresolved_bearing/bytes and remaining snapshot
+  // metadata are not validated; the view preserves existing consumption and
+  // does not claim stronger package validation.
+  const verifiedSnapshot = /** @type {VerifiedSnapshotExpectedData} */ (snapshot)
   return {
     success: true,
     format: manifest.format,
     encrypted: true,
     packageSha256: sha256(packageBytes),
     manifest,
-    snapshot,
+    snapshot: verifiedSnapshot,
     complete: manifest.complete === true,
     warnings: Array.isArray(manifest.warnings) ? manifest.warnings : [],
     unresolved: recomputedUnresolved
   }
 }
 
+/** @param {string} lodgeId @param {Date|string|number} [now] */
 export function buildBarTradingPackageName(lodgeId, now = new Date()) {
   const stamp = new Date(now).toISOString().replace(/[:.]/g, '-').slice(0, 19)
   return `${PACKAGE_FILE_PREFIX}${safeLodgeSlug(lodgeId)}-${stamp}-${randomUUID().slice(0, 8)}${PACKAGE_EXTENSION}`
 }
 
+/** @param {string} dirPath */
 function cleanupStaleTemps(dirPath) {
   const deleted = []
   try {
@@ -724,6 +811,7 @@ function cleanupStaleTemps(dirPath) {
   return deleted
 }
 
+/** @param {string} filePath @param {BarTradingSnapshot} snapshot @param {WritePackageOptions} [options] */
 export function writeBarTradingPackageToPath(filePath, snapshot, options = {}) {
   const target = String(filePath || '').trim()
   if (!target || path.extname(target).toLowerCase() !== PACKAGE_EXTENSION) throw new Error(`Bar trading recovery exports must use the ${PACKAGE_EXTENSION} format.`)
@@ -769,6 +857,7 @@ export function writeBarTradingPackageToPath(filePath, snapshot, options = {}) {
   }
 }
 
+/** @param {string} filePath @param {VerifyOptions} [options] @returns {VerificationResult} */
 export function verifyBarTradingPackageAtPath(filePath, options = {}) {
   try {
     const target = String(filePath || '').trim()
@@ -780,14 +869,19 @@ export function verifyBarTradingPackageAtPath(filePath, options = {}) {
     const bytes = fs.readFileSync(target)
     return { ...validateBarTradingPackage(bytes, options), fileName: path.basename(target), bytes: bytes.length, destination: path.resolve(target) }
   } catch (error) {
-    return { success: false, error: error?.message || 'Bar trading recovery package verification failed.' }
+    // Expected-data view mirrors the established Node error message access.
+    const verifyError = /** @type {{message?: string}|null|undefined} */ (error)
+    return { success: false, error: verifyError?.message || 'Bar trading recovery package verification failed.' }
   }
 }
 
 // ─── Retention ───────────────────────────────────────────────────────────────
 
+/** @param {string} iso */
 function hourBucket(iso) { return String(iso).slice(0, 13) }
+/** @param {string} iso */
 function dayBucket(iso) { return String(iso).slice(0, 10) }
+/** @param {string} iso */
 function weekBucket(iso) {
   const time = new Date(iso).getTime()
   if (!Number.isFinite(time)) return 'unknown'
@@ -795,6 +889,7 @@ function weekBucket(iso) {
   return `w${Math.floor((day + 4) / 7)}`
 }
 
+/** @param {RetentionEntry[]} entries @param {RetentionOptions} [options] */
 export function planBarTradingRetention(entries, options = {}) {
   const now = options.now ? new Date(options.now).getTime() : Date.now()
   const hourlyLimit = Number(options.hourly || 24)
@@ -806,6 +901,7 @@ export function planBarTradingRetention(entries, options = {}) {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
   const keep = new Set()
   const suppressed = []
+  /** @param {number} limit @param {(iso: string) => string} bucketOf */
   const pickTier = (limit, bucketOf) => {
     const seen = new Set()
     for (const entry of sorted) {
@@ -877,6 +973,7 @@ export function planBarTradingRetention(entries, options = {}) {
   }
 }
 
+/** @param {string} targetDir @param {RetentionEntry[]} entries @param {RetentionOptions} [options] */
 export function applyBarTradingRetention(targetDir, entries, options = {}) {
   const root = path.resolve(String(targetDir || ''))
   const plan = planBarTradingRetention(entries, options)
@@ -896,13 +993,17 @@ export function applyBarTradingRetention(targetDir, entries, options = {}) {
 
 // ─── Status and health ───────────────────────────────────────────────────────
 
+/** @param {string} dirPath */
 function statusFilePath(dirPath) {
   return path.join(path.resolve(String(dirPath)), STATUS_FILE)
 }
 
+/** @param {string} dirPath @param {{lodge_id: string, written_at: string, [key: string]: unknown}} entry */
 function updateStatusFile(dirPath, entry) {
   const filePath = statusFilePath(dirPath)
-  const current = readJsonFile(filePath, { per_lodge: {} })
+  // The status writer's expected shape is a local compatibility view, not
+  // validation of a file that may have been edited externally.
+  const current = /** @type {{per_lodge?: Record<string, {written_at?: string, [key: string]: unknown}>, updated_at?: string, [key: string]: unknown}} */ (readJsonFile(filePath, { per_lodge: {} }))
   current.per_lodge = current.per_lodge && typeof current.per_lodge === 'object' ? current.per_lodge : {}
   const key = String(entry.lodge_id || 'unknown')
   const previous = current.per_lodge[key] || null
@@ -913,6 +1014,7 @@ function updateStatusFile(dirPath, entry) {
   writeJsonAtomic(filePath, current)
 }
 
+/** @param {string} dirPath */
 function probeTargetDirectory(dirPath) {
   const target = path.resolve(String(dirPath || ''))
   try {
@@ -921,11 +1023,15 @@ function probeTargetDirectory(dirPath) {
     fs.accessSync(target, fs.constants.R_OK | fs.constants.W_OK)
     return { state: 'ok' }
   } catch (error) {
-    if (error?.code === 'ENOENT') return { state: 'missing' }
-    return { state: 'unwritable', code: error?.code || 'unknown' }
+    // Expected-data view for the Node filesystem error code; no error mapping
+    // or retry behavior is introduced.
+    const fsError = /** @type {{code?: string}|null|undefined} */ (error)
+    if (fsError?.code === 'ENOENT') return { state: 'missing' }
+    return { state: 'unwritable', code: fsError?.code || 'unknown' }
   }
 }
 
+/** @param {string} targetDir @param {PackageListOptions} [options] */
 export function listBarTradingPackages(targetDir, options = {}) {
   const root = path.resolve(String(targetDir || ''))
   try {
@@ -943,6 +1049,7 @@ export function listBarTradingPackages(targetDir, options = {}) {
   } catch { return [] }
 }
 
+/** @param {HealthOptions} [options] */
 export function getBarTradingBackupHealth(options = {}) {
   const targetDir = String(options.targetDir || '').trim()
   const lodgeId = String(options.lodgeId || state.lodgeId || '').trim()
@@ -957,9 +1064,12 @@ export function getBarTradingBackupHealth(options = {}) {
     }
   }
   const probe = probeTargetDirectory(targetDir)
+  /** @type {{written_at?: string, file_name?: string, package_sha256?: string, complete?: boolean, unresolved_count?: number}|null} */
   let status = null
   if (probe.state === 'ok') {
-    const current = readJsonFile(statusFilePath(targetDir), { per_lodge: {} })
+    // Writer-produced status shape; the view intentionally does not validate
+    // or normalize existing persisted JSON.
+    const current = /** @type {{per_lodge?: Record<string, {written_at?: string, file_name?: string, package_sha256?: string, complete?: boolean, unresolved_count?: number}>}} */ (readJsonFile(statusFilePath(targetDir), { per_lodge: {} }))
     status = lodgeId ? (current.per_lodge?.[lodgeId] || null) : (Object.values(current.per_lodge || {})[0] || null)
   } else {
     warnings.push(probe.state === 'missing'
@@ -977,7 +1087,10 @@ export function getBarTradingBackupHealth(options = {}) {
   }
   if (sameRoot === true) warningSameRoot(warnings)
   if (!latestAt) warnings.push('No verified Bar trading recovery archive exists for this lodge yet.')
-  else if (ageDays > 7) warnings.push(`The last Bar trading recovery archive is ${Math.floor(ageDays)} day(s) old.`)
+  // latestAt being truthy is the existing runtime condition that assigns a
+  // number here; the expected-data view preserves the original comparison,
+  // including NaN behavior, without adding a guard.
+  else if (/** @type {number} */ (ageDays) > 7) warnings.push(`The last Bar trading recovery archive is ${Math.floor(/** @type {number} */ (ageDays))} day(s) old.`)
   if (status?.complete === false) warnings.push('The last Bar trading recovery archive was captured incomplete; review its warnings before relying on it.')
   return {
     ok: warnings.length === 0,
@@ -993,6 +1106,7 @@ export function getBarTradingBackupHealth(options = {}) {
   }
 }
 
+/** @param {string[]} warnings */
 function warningSameRoot(warnings) {
   warnings.push('The recovery target is on the same volume as the active profile. A same-disk copy alone is not disaster recovery; use an external, network, or removable target.')
 }
@@ -1001,6 +1115,7 @@ function warningSameRoot(warnings) {
 
 const CONFIG_FILE = 'bar-trading-backup-config.json'
 
+/** @param {ConfigureOptions} [options] */
 export function configureBarTradingBackupTarget(options = {}) {
   const configDir = String(options.configDir || state.cacheRootDir || state.cacheDir || '').trim()
   if (!configDir) throw new Error('A configuration directory is required to configure Bar trading recovery.')
@@ -1027,15 +1142,17 @@ export function configureBarTradingBackupTarget(options = {}) {
   return { success: true, target_dir: targetDir, same_volume_as_profile: sameVolume }
 }
 
+/** @param {ReadTargetOptions} [options] */
 export function readBarTradingBackupTarget(options = {}) {
   const configDir = String(options.configDir || state.cacheRootDir || state.cacheDir || '').trim()
   if (!configDir) return ''
-  const config = readJsonFile(path.join(path.resolve(configDir), CONFIG_FILE), null)
+  const config = /** @type {{target_dir?: unknown}|null} */ (readJsonFile(path.join(path.resolve(configDir), CONFIG_FILE), null))
   return typeof config?.target_dir === 'string' ? config.target_dir : ''
 }
 
 // ─── Staged restore ──────────────────────────────────────────────────────────
 
+/** @param {{kind: unknown}} spec @param {string} stagedContent @param {string|undefined|null} liveContent */
 function reconciliationForStore(spec, stagedContent, liveContent) {
   const stagedRows = parseIdentityRows(spec, stagedContent)
   const liveRows = liveContent === undefined || liveContent === null ? [] : parseIdentityRows(spec, liveContent)
@@ -1061,15 +1178,24 @@ function reconciliationForStore(spec, stagedContent, liveContent) {
   }
 }
 
+/** @param {string|null} liveCacheDir @param {{file: unknown, maxBytes?: number}} spec @returns {string|null|{unreadable: true}|undefined} */
 function readLiveStore(liveCacheDir, spec) {
   if (!liveCacheDir) return undefined
-  const filePath = path.join(liveCacheDir, spec.file)
+  // This expected-data view is intentionally not a runtime conversion: retain
+  // path.join's existing behavior for malformed package file values.
+  const filePath = path.join(liveCacheDir, /** @type {string} */ (spec.file))
   const outcome = readStoreStable(filePath, spec)
   if (!outcome.present) return null
   if (outcome.drift || outcome.error) return { unreadable: true }
-  return outcome.content
+  // A too-large stable-read result previously returned undefined content; this
+  // type view preserves that result without changing the branch behavior.
+  // The stable-read union intentionally omits content for a too-large store;
+  // this view preserves the old undefined return without adding a branch.
+  const readView = /** @type {{content?: string}} */ (outcome)
+  return readView.content
 }
 
+/** @param {string} packagePath @param {StageRestoreOptions} options */
 export function stageBarTradingRestore(packagePath, options = {}) {
   const operationId = assertOperationId(options.operationId)
   const targetRoot = path.resolve(String(options.targetRoot || '').trim() || path.join(resolveCacheDir(options), 'bar-trading-recovery'))
@@ -1080,8 +1206,11 @@ export function stageBarTradingRestore(packagePath, options = {}) {
   const stagingDir = resolveContainedPath(targetRoot, `${STAGING_DIR_PREFIX}${operationId}`)
   const progressPath = path.join(stagingDir, PROGRESS_FILE)
   const existingProgress = readJsonFile(progressPath, null)
+  // The progress file is emitted by this staging path; this expected-data view
+  // preserves its existing resume protocol and does not validate archive JSON.
+  const progressRecord = /** @type {RestoreProgress|null} */ (existingProgress)
   if (fs.existsSync(stagingDir)) {
-    if (existingProgress && existingProgress.package_sha256 === verification.packageSha256 && existingProgress.operation_id === operationId) {
+    if (progressRecord && progressRecord.package_sha256 === verification.packageSha256 && progressRecord.operation_id === operationId) {
       // Resume after interruption.
     } else if (options.replaceExisting === true) {
       const previousDir = `${stagingDir}.previous-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
@@ -1094,8 +1223,8 @@ export function stageBarTradingRestore(packagePath, options = {}) {
   ensureDir(stagingDir)
   const storesDir = resolveContainedPath(stagingDir, 'stores')
   ensureDir(storesDir)
-  const stagedStores = existingProgress?.stores && typeof existingProgress.stores === 'object' ? { ...existingProgress.stores } : {}
-  const reconciliation = {}
+  const stagedStores = progressRecord?.stores && typeof progressRecord.stores === 'object' ? { ...progressRecord.stores } : {}
+  const reconciliation = /** @type {Record<string, ReturnType<typeof reconciliationForStore>>} */ ({})
   const unreadableLive = []
   for (const [key, store] of Object.entries(snapshot.stores)) {
     const stagedFile = resolveContainedPath(storesDir, store.file)
@@ -1110,7 +1239,7 @@ export function stageBarTradingRestore(packagePath, options = {}) {
         stores: stagedStores
       })
     }
-    const spec = BAR_TRADING_STORE_SPECS.find((entry) => entry.key === key) || { key, kind: store.kind, file: store.file }
+    const spec = /** @type {RecoveryStoreSpecExpectedView} */ (BAR_TRADING_STORE_SPECS.find((entry) => entry.key === key) || { key, kind: store.kind, file: store.file })
     const liveContent = readLiveStore(liveCacheDir, spec)
     if (liveContent && typeof liveContent === 'object' && liveContent.unreadable) unreadableLive.push(key)
     if (spec.unresolvedBearing || store.unresolved_bearing) {
@@ -1157,13 +1286,16 @@ export function stageBarTradingRestore(packagePath, options = {}) {
   }
 }
 
+/** @param {string} operationId @param {ActivateRestoreOptions} options */
 export function activateStagedBarTradingRestore(operationId, options = {}) {
   const safeOperationId = assertOperationId(operationId)
   if (options.authorized !== true) throw new Error('Explicit authorization is required to activate a staged Bar trading restore.')
   const targetRoot = path.resolve(String(options.targetRoot || '').trim() || path.join(resolveCacheDir(options), 'bar-trading-recovery'))
   const stagingDir = resolveContainedPath(targetRoot, `${STAGING_DIR_PREFIX}${safeOperationId}`)
-  const progress = readJsonFile(path.join(stagingDir, PROGRESS_FILE), null)
-  const report = readJsonFile(path.join(stagingDir, REPORT_FILE), null)
+  // These files are emitted by stageBarTradingRestore. The view does not alter
+  // their on-disk bytes or replace the store hash checks below.
+  const progress = /** @type {RestoreProgress|null} */ (readJsonFile(path.join(stagingDir, PROGRESS_FILE), null))
+  const report = /** @type {RestoreReport|null} */ (readJsonFile(path.join(stagingDir, REPORT_FILE), null))
   if (!progress || !report) throw new Error('No staged Bar trading restore exists for this operation.')
   const lodgeId = resolveLodgeId(options)
   if (options.confirmLodgeId && String(options.confirmLodgeId) !== String(report.lodge_id)) {

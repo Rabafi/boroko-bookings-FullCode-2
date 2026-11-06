@@ -329,7 +329,7 @@ export function getBarAddonFeatureForPath(path) {
   return match?.[1] || null
 }
 
-/** @param {string} path @param {string[]} [enabledFeatures] */
+/** @param {string} path @param {Iterable<string>|null|undefined} [enabledFeatures] */
 export function isBarOnlyBlockedPath(path, enabledFeatures = []) {
   const normalized = normalizeAppPath(path)
   const requiredAddonFeature = getBarAddonFeatureForPath(normalized)

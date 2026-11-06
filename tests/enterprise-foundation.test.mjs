@@ -1895,7 +1895,11 @@ test('subscription request domain file exists with RPC calls', () => {
 
 test('marketing website enterprise page exists and uses public RPC', () => {
   const enterpriseHtml = readFileSync(resolve(__dirname, '../marketing-site/enterprise.html'), 'utf8')
-  assert.ok(enterpriseHtml.includes('submit_public_subscription_request'), 'enterprise page must call public subscription RPC')
+  const enterpriseQuoteScript = readFileSync(resolve(__dirname, '../marketing-site/quote.js'), 'utf8')
+  assert.ok(
+    enterpriseHtml.includes('submit_public_subscription_request') || enterpriseQuoteScript.includes('submit_public_subscription_request'),
+    'enterprise page must call public subscription RPC (page or its external quote script)'
+  )
   assert.ok(enterpriseHtml.includes('Enterprise'), 'enterprise page must reference Enterprise plan')
   assert.ok(enterpriseHtml.includes('addon-card'), 'enterprise page must render add-on cards')
   assert.ok(enterpriseHtml.includes('property-name'), 'enterprise page must have property name field')

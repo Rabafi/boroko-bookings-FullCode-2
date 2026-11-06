@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Banknote,
@@ -21,16 +22,23 @@ import EmptyState from '../components/EmptyState'
 
 const PAGE_SIZE = 30
 
+/** @typedef {{method: string, amount: number|string}} PosPaymentExpectedView */
+/** @typedef {{id: string|number, transaction_type: string, financial_complete: boolean, tender_detail_complete?: boolean, receipt_number?: string|null, total?: number|string|null, completed_at?: string|null, created_at: string, outlet_name?: string|null, cashier_name?: string|null, status: string, guest_name?: string|null, walk_in_name?: string|null, room_number?: string|number|null, table_name?: string|null, tab_name?: string|null, gross_total?: number|string|null, discount_total?: number|string|null, tax_total?: number|string|null, tip_total?: number|string|null, items?: {id: string|number, item_name?: string|null, quantity?: number|string|null, unit_price?: number|string|null, net_subtotal?: number|string|null, subtotal?: number|string|null, gross_subtotal?: number|string|null}[], payment_breakdown?: PosPaymentExpectedView[]}} PosTransactionExpectedView */
+/** @typedef {{complete: boolean, unresolved_count?: number|string|null, net_sales?: number|string|null, sale_count?: number|string|null, gross_sales?: number|string|null, average_sale?: number|string|null, returns_total?: number|string|null, return_count?: number|string|null, discount_total?: number|string|null, void_count?: number|string|null, outlets?: {id: string|number, name: string}[], by_payment?: {method: string, amount: number|string}[], by_outlet?: {outlet_id?: string|number|null, outlet_name?: string|null, net_sales?: number|string|null, sale_count?: number|string|null, return_count?: number|string|null}[], top_items?: {item_name: string, quantity?: number|string|null, net_sales?: number|string|null}[]}} PosSalesSnapshotExpectedView */
+
+/** @param {Date} [value] */
 function localDate(value = new Date()) {
   return businessDate(value)
 }
 
+/** @param {number} days */
 function dateBefore(days) {
   const date = new Date()
   date.setDate(date.getDate() - days)
   return localDate(date)
 }
 
+/** @param {{label: string, value: import('react').ReactNode, sub: string, icon: import('react').ComponentType<import('lucide-react').LucideProps>, tone?: string}} props */
 function Kpi({ label, value, sub, icon: Icon, tone = 'text-white' }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-gray-800 p-4">
@@ -46,6 +54,7 @@ function Kpi({ label, value, sub, icon: Icon, tone = 'text-white' }) {
   )
 }
 
+/** @param {PosTransactionExpectedView|null|undefined} transaction */
 function paymentLabel(transaction) {
   const rows = Array.isArray(transaction?.payment_breakdown) ? transaction.payment_breakdown : []
   if (transaction?.tender_detail_complete !== true) return 'Tender unavailable'
@@ -53,15 +62,18 @@ function paymentLabel(transaction) {
   return titleCase(rows[0]?.method || 'tender unavailable')
 }
 
+/** @param {PosTransactionExpectedView|null|undefined} transaction */
 function transactionLabel(transaction) {
   return transaction?.receipt_number
     || `TX-${String(transaction?.id || '').slice(0, 8).toUpperCase()}`
 }
 
+/** @param {unknown} value */
 function hasRecordedMoney(value) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
 }
 
+/** @param {{transaction: PosTransactionExpectedView|null, onClose: () => void, financialReady: boolean}} props */
 function TransactionDetail({ transaction, onClose, financialReady }) {
   if (!transaction) return null
   const transactionReady = financialReady && transaction.financial_complete === true
@@ -155,7 +167,9 @@ function TransactionDetail({ transaction, onClose, financialReady }) {
 }
 
 export default function PosSales() {
-  const { user } = useAuth()
+  const { user: routeUser } = useAuth()
+  /** AppShell's authenticated route guard establishes a non-null session here; the source view remains nullable and this assertion does not validate its contents. @type {NonNullable<typeof routeUser>} */
+  const user = /** @type {NonNullable<typeof routeUser>} */ (routeUser)
   const [startDate, setStartDate] = useState(dateBefore(6))
   const [endDate, setEndDate] = useState(localDate())
   const [outletId, setOutletId] = useState('')
@@ -163,14 +177,14 @@ export default function PosSales() {
   const [transactionType, setTransactionType] = useState('all')
   const [search, setSearch] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
-  const [snapshot, setSnapshot] = useState(null)
-  const [transactions, setTransactions] = useState([])
+  const [snapshot, setSnapshot] = useState(/** @type {PosSalesSnapshotExpectedView|null} */ (null))
+  const [transactions, setTransactions] = useState(/** @type {PosTransactionExpectedView[]} */ ([]))
   const [totalCount, setTotalCount] = useState(0)
-  const [selected, setSelected] = useState(null)
+  const [selected, setSelected] = useState(/** @type {PosTransactionExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string|null} */ (null))
 
   const filters = useMemo(() => ({
     startDate,
@@ -181,8 +195,10 @@ export default function PosSales() {
     search: appliedSearch
   }), [appliedSearch, endDate, outletId, startDate, status, transactionType])
   const snapshotReady = snapshot?.complete === true
+  /** @param {PosTransactionExpectedView} transaction */
   const rowReady = (transaction) => snapshotReady && transaction?.financial_complete === true
 
+  /** @param {{append?: boolean, silent?: boolean}} [options] */
   const load = useCallback(async ({ append = false, silent = false } = {}) => {
     if (append) setLoadingMore(true)
     else {
@@ -199,11 +215,13 @@ export default function PosSales() {
         getManagerPosTransactions(user.lodge_id, { ...filters, limit: PAGE_SIZE, offset })
       ])
       if (!append) setSnapshot(nextSnapshot)
-      setTransactions((current) => append ? [...current, ...history.transactions] : history.transactions)
+      // The RPC wrapper guarantees an array container; row fields are an expected view of its current SQL projection, not runtime-validated data.
+      const transactionRows = /** @type {PosTransactionExpectedView[]} */ (history.transactions)
+      setTransactions((current) => append ? [...current, ...transactionRows] : transactionRows)
       setTotalCount(history.total_count)
       setUpdatedAt(new Date().toISOString())
     } catch (nextError) {
-      setError(nextError?.message || 'POS sales could not load.')
+      setError((/** @type {{message?: string}|null|undefined} */ (nextError))?.message || 'POS sales could not load.')
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -221,6 +239,7 @@ export default function PosSales() {
     return () => window.clearInterval(interval)
   }, [load])
 
+  /** @param {'today'|'week'|'month'} preset */
   const applyPreset = (preset) => {
     const today = localDate()
     if (preset === 'today') setStartDate(today)
@@ -244,11 +263,11 @@ export default function PosSales() {
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-2">
-          {[
+          {/** @type {const} */ ([
             ['today', 'Today'],
             ['week', '7 days'],
             ['month', 'Month']
-          ].map(([value, label]) => (
+          ]).map(([value, label]) => (
             <button key={value} type="button" onClick={() => applyPreset(value)} className="rounded-xl bg-gray-800 px-2 py-2 text-xs font-semibold text-gray-200">
               {label}
             </button>
@@ -293,7 +312,7 @@ export default function PosSales() {
           <section className="rounded-2xl bg-gray-800 p-4">
             <p className="text-sm font-semibold text-white">Sales by outlet</p>
             <div className="mt-3 space-y-2">
-              {snapshot.by_outlet.map((row) => (
+              {(snapshot.by_outlet || []).map((row) => (
                 <div key={row.outlet_id || 'unassigned'} className="rounded-xl bg-gray-900 px-3 py-3">
                   <div className="flex justify-between gap-3"><span className="text-sm font-medium text-white">{row.outlet_name}</span><span className="text-sm font-semibold text-green-300">{money(row.net_sales)}</span></div>
                   <p className="mt-1 text-xs text-gray-500">{row.sale_count} sales · {row.return_count} returns</p>
@@ -307,7 +326,7 @@ export default function PosSales() {
           <section className="rounded-2xl bg-gray-800 p-4">
             <p className="text-sm font-semibold text-white">Top items</p>
             <div className="mt-3 space-y-2">
-              {snapshot.top_items.slice(0, 6).map((row) => (
+              {(snapshot.top_items || []).slice(0, 6).map((row) => (
                 <div key={row.item_name} className="flex items-center justify-between rounded-xl bg-gray-900 px-3 py-3">
                   <div><p className="text-sm text-white">{row.item_name}</p><p className="mt-1 text-xs text-gray-500">{Number(row.quantity || 0)} sold</p></div>
                   <span className="text-sm font-semibold text-white">{money(row.net_sales)}</span>

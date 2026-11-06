@@ -17,15 +17,20 @@ const STATUS_COLORS = {
 const PAYMENT_COLORS = {
   unpaid: 'bg-gray-700 text-gray-400', partial: 'bg-amber-900 text-amber-300', paid: 'bg-green-900 text-green-300'
 }
+/** @typedef {{id: string, booking_date: string, start_time: string | null, end_time: string | null, client_name: string | null, company: string | null, event_name: string | null, event_type: string | null, reservation_scope: string | null, status: string | null, payment_status: string | null, total_amount: number | string | null, amount_paid: number | string | null, deposit_paid: number | string | null, room_name: string | null}} ConferenceBookingExpectedView */
 
 export default function Conference() {
-  const { user } = useAuth()
-  const [bookings, setBookings] = useState([])
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const [bookings, setBookings] = useState(/** @type {ConferenceBookingExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
-    const data = await listConferenceBookings(user.lodge_id).catch(() => [])
+    // The page requests all dates by omitting start/end. Keep the original
+    // one-argument call; query/cache rows remain unvalidated expected data.
+    const allConferenceBookings = /** @type {(lodgeId: string) => Promise<unknown>} */ (listConferenceBookings)
+    const data = /** @type {ConferenceBookingExpectedView[]} */ (await allConferenceBookings(user.lodge_id).catch(() => []))
     setBookings(data)
     setLoading(false)
   }
@@ -60,21 +65,21 @@ export default function Conference() {
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {isEvent && (
                       <span className="inline-block rounded-full bg-purple-900 px-2 py-0.5 text-[10px] font-medium text-purple-300">
-                        {EVENT_TYPE_LABELS[b.event_type] || b.event_type || 'Event'}
+                        {EVENT_TYPE_LABELS[/** @type {keyof typeof EVENT_TYPE_LABELS} */ (b.event_type)] || b.event_type || 'Event'}
                       </span>
                     )}
                     {isEvent && (
                       <span className="inline-block rounded-full bg-teal-900 px-2 py-0.5 text-[10px] font-medium text-teal-300">
-                        {SCOPE_LABELS[b.reservation_scope] || b.reservation_scope || 'Venue'}
+                        {SCOPE_LABELS[/** @type {keyof typeof SCOPE_LABELS} */ (b.reservation_scope)] || b.reservation_scope || 'Venue'}
                       </span>
                     )}
                     {b.status && (
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_COLORS[b.status] || 'bg-gray-700 text-gray-400'}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_COLORS[/** @type {keyof typeof STATUS_COLORS} */ (b.status)] || 'bg-gray-700 text-gray-400'}`}>
                         {titleCase(b.status)}
                       </span>
                     )}
                     {b.payment_status && (
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${PAYMENT_COLORS[b.payment_status] || 'bg-gray-700 text-gray-400'}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${PAYMENT_COLORS[/** @type {keyof typeof PAYMENT_COLORS} */ (b.payment_status)] || 'bg-gray-700 text-gray-400'}`}>
                         {titleCase(b.payment_status)}
                       </span>
                     )}
@@ -92,7 +97,7 @@ export default function Conference() {
                 </div>
                 <div>
                   <p className="text-gray-500">Balance</p>
-                  <p className="font-semibold text-white">{money(Math.max(0, (b.total_amount || 0) - (b.amount_paid || b.deposit_paid || 0)))}</p>
+                  <p className="font-semibold text-white">{money(Math.max(0, /** @type {number} */ (b.total_amount || 0) - /** @type {number} */ (b.amount_paid || b.deposit_paid || 0)))}</p>
                 </div>
               </div>
               {b.room_name && <p className="text-[10px] text-gray-500 mt-2">Room: {b.room_name}</p>}

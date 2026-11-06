@@ -1,10 +1,17 @@
 /** Product-native primitives shared by Restaurant and Bar POS workspaces. */
 import { ErrorNotice } from '../shared/ErrorNotice'
 
+/** @param {{eyebrow: string, title: string, description: string, actions?: import('react').ReactNode, children?: import('react').ReactNode}} props */
 export function HposPageHero({ eyebrow, title, description, actions, children }) {
   return <header className="hpos-page-hero"><div><p className="hpos-eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p>{children}</div>{actions}</header>
 }
 
+/**
+ * @param {import('react').ButtonHTMLAttributes<HTMLButtonElement> & {
+ *   tone?: 'primary' | 'secondary',
+ *   icon?: import('react').ComponentType<{ size?: number }>
+ * }} props
+ */
 export function HposButton({ tone = 'secondary', icon: Icon, children, className = '', ...props }) {
   return <button type="button" className={`${tone === 'primary' ? 'hpos-primary-action' : 'hpos-secondary-action'} ${className}`.trim()} {...props}>{Icon && <Icon size={16}/>} {children}</button>
 }

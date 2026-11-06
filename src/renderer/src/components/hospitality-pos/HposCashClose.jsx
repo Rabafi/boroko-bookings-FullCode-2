@@ -1,5 +1,5 @@
 // @ts-check
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, RefreshCw, ShieldCheck, WalletCards, XCircle } from 'lucide-react'
 import { useAccess, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
@@ -7,18 +7,34 @@ import { HposButton, HposNotice, HposPageHero } from './HposUi'
 import HposCashupProofs from './HposCashupProofs'
 import HposDrawerClose from './HposDrawerClose'
 import { cashupApprovalAllowed, formatRecordedMoney, getCashupEvidence } from './hposCashupState'
+import { createLocalHposCashupApi } from './bar-local/hposCashupApi.js'
+import { loadCompleteBarList } from '../../../../shared/barLocalPagination.js'
 
+/** @typedef {{id: string, shift_id?: string, status?: string, cashier_name?: string|null, outlet_name?: string|null, submitted_at?: string|null, notes?: string|null, expected_cash_drawer?: unknown, counted_by_method?: {cash?: unknown}|null, cash_tips_retained?: unknown}} HposCashupReviewExpectedView */
+/** @typedef {{success?: boolean, error?: string, submissions?: HposCashupReviewExpectedView[], offline?: boolean, complete?: boolean}} HposCashupReviewListExpectedView */
+/** @typedef {{submission: HposCashupReviewExpectedView, decision: 'approve'|'reject', operationId: string}} HposCashupReviewDraft */
+/** @typedef {{operation_id: string, command?: string}} HposCashupRecoveryExpectedView */
+/** @typedef {{id: string|null, name?: string|null, cash_model?: string|null}} HposCashupOutletExpectedView */
+/** @typedef {{outletId: string, outletName: string, status: string}} HposCashupOlderDrawerExpectedView */
+
+/** @param {number|string|null|undefined} value @param {string} currency */
 const amount = (value, currency) => formatRecordedMoney(value, currency)
 
+/** @param {HposCashupReviewExpectedView} submission */
 const submissionVariance = (submission) => getCashupEvidence(submission).variance
 
 export default function HposCashClose() {
   const { settings } = useSettings()
   const access = useAccess()
   const canCloseCashup = canAccessCapability(access, 'pos.cashup')
+  const localAuthority = settings?.authority_mode === 'bar_local'
+  const localCashupApi = useMemo(() => localAuthority ? createLocalHposCashupApi(window.api?.barLocal, {
+    outletId: settings?.outlet_id,
+    outletName: settings?.outlet_name
+  }) : null, [localAuthority, settings?.outlet_id, settings?.outlet_name])
   const currency = settings?.currency || 'P'
-  const [pendingCashups, setPendingCashups] = useState([])
-  const [openTabsCount, setOpenTabsCount] = useState(null)
+  const [pendingCashups, setPendingCashups] = useState(/** @type {HposCashupReviewExpectedView[]} */ ([]))
+  const [openTabsCount, setOpenTabsCount] = useState(/** @type {number|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -28,19 +44,22 @@ export default function HposCashClose() {
   // review (queued, final at sync). Only an empty offline list stays
   // unavailable — an empty device proves nothing about the server queue.
   const [provisionalReview, setProvisionalReview] = useState(false)
-  const [reviewDraft, setReviewDraft] = useState(null)
+  const [reviewDraft, setReviewDraft] = useState(/** @type {HposCashupReviewDraft|null} */ (null))
+  const [reviewAttempted, setReviewAttempted] = useState(false)
+  const [savedReviewOperations, setSavedReviewOperations] = useState(/** @type {HposCashupRecoveryExpectedView[]} */ ([]))
   const [reviewNotes, setReviewNotes] = useState('')
   const [managerPin, setManagerPin] = useState('')
   const [summaryDate, setSummaryDate] = useState(() => new Date().toLocaleDateString('en-CA'))
   const [summaryBusy, setSummaryBusy] = useState(false)
   // Shared drawers close once per outlet; personal Till submissions above are
   // a separate flow and stay untouched.
-  const [drawerOutlets, setDrawerOutlets] = useState([])
+  const [drawerOutlets, setDrawerOutlets] = useState(/** @type {HposCashupOutletExpectedView[]} */ ([]))
   const [drawerOutletId, setDrawerOutletId] = useState('')
   // Outlet setup (outlet + cash counting) now lives in Settings → Outlets.
   // This page links there; the server still enforces admin-only + zero open
   // activity for switches.
 
+  /** @param {import('react').FocusEvent<HTMLInputElement>} event */
   const revealReviewActions = (event) => {
     const actionBar = event.currentTarget?.closest('article')?.querySelector('.hpos-cashup-review-actions')
     if (!actionBar) return
@@ -56,7 +75,11 @@ export default function HposCashClose() {
     setError('')
     setReviewUnavailable('')
     try {
-      const result = await window.api?.pos?.getPendingCashupSubmissions?.()
+      if (localAuthority) setSavedReviewOperations(await localCashupApi.listRecovery())
+      // The IPC handler returns the database facade result consumed below; this view records that assumption only.
+      const result = /** @type {HposCashupReviewListExpectedView|null|undefined} */ (localAuthority
+        ? { submissions: await localCashupApi.listPending(), complete: true, offline: false }
+        : await window.api?.pos?.getPendingCashupSubmissions?.())
       if (result?.success === false) throw new Error(result.error || 'Cash-up review could not be loaded.')
       if (!result || !Array.isArray(result.submissions)) throw new Error('Cash-up review returned an incomplete server response.')
       if (result.offline === true || result.complete === false) {
@@ -69,7 +92,9 @@ export default function HposCashClose() {
       // Unresolved-item link: open tabs must be settled before close.
       // Best-effort and never fatal to the cash-up review itself.
       try {
-        const tabRows = (await window.api?.pos?.getTabs?.({ status: 'active' })) || []
+        const tabRows = localAuthority
+          ? await loadCompleteBarList((name, filters) => window.api.barLocal.query(name, filters), 'tabs.list', { outlet_id: settings?.outlet_id, status: 'open' })
+          : (await window.api?.pos?.getTabs?.({ status: 'active' })) || []
         const open = (Array.isArray(tabRows) ? tabRows : []).filter(
           (row) => !['closed', 'paid', 'cancelled', 'voided'].includes(String(row.status || '').toLowerCase()),
         )
@@ -86,7 +111,7 @@ export default function HposCashClose() {
     } finally {
       setLoading(false)
     }
-  }, [canCloseCashup])
+  }, [canCloseCashup, localAuthority, localCashupApi, settings?.outlet_id])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -94,10 +119,23 @@ export default function HposCashClose() {
   // Drawer close, an all-pouches bar sees only personal reviews. A queue is
   // hidden only when no outlet uses its model AND nothing is still waiting in
   // it — an older cash-up from before a model switch always stays surfaced.
-  const [allOutlets, setAllOutlets] = useState([])
+  const [allOutlets, setAllOutlets] = useState(/** @type {HposCashupOutletExpectedView[]} */ ([]))
   const [outletsLoaded, setOutletsLoaded] = useState(false)
   useEffect(() => {
     let active = true
+    if (localAuthority) {
+      const localOutlet = settings?.outlet_id ? [{
+        id: settings.outlet_id,
+        name: settings.outlet_name || 'Bar outlet',
+        cash_model: settings.cash_model || 'personal'
+      }] : []
+      setAllOutlets(localOutlet)
+      const shared = localOutlet.filter((row) => row.cash_model === 'shared_drawer')
+      setDrawerOutlets(shared)
+      setDrawerOutletId(shared[0]?.id || '')
+      setOutletsLoaded(true)
+      return () => { active = false }
+    }
     window.api?.outlets?.getAll?.().then((rows) => {
       if (!active) return
       const all = Array.isArray(rows) ? rows : []
@@ -108,7 +146,7 @@ export default function HposCashClose() {
       setOutletsLoaded(true)
     }).catch(() => { if (active) { setAllOutlets([]); setDrawerOutlets([]); setDrawerOutletId('') } })
     return () => { active = false }
-  }, [])
+  }, [localAuthority, settings?.outlet_id, settings?.outlet_name, settings?.cash_model])
   const hasPersonalOutlets = allOutlets.some((row) => row?.cash_model !== 'shared_drawer')
   const hasSharedOutlets = drawerOutlets.length > 0
   // Money-reviews summary: personal awaiting comes from the pending list;
@@ -118,10 +156,15 @@ export default function HposCashClose() {
   const [drawerReviewCounts, setDrawerReviewCounts] = useState({ awaiting: 0, open: 0, loaded: false })
   // Older drawer counts from before a model switch: a non-shared outlet can
   // still hold an open or submitted period, and hiding it would bury money.
-  const [olderDrawers, setOlderDrawers] = useState([])
+  const [olderDrawers, setOlderDrawers] = useState(/** @type {HposCashupOlderDrawerExpectedView[]} */ ([]))
   useEffect(() => {
     let active = true
     if (!outletsLoaded) return () => { active = false }
+    if (localAuthority) {
+      setDrawerReviewCounts({ awaiting: 0, open: 0, loaded: true })
+      setOlderDrawers([])
+      return () => { active = false }
+    }
     if (allOutlets.length === 0) {
       setDrawerReviewCounts({ awaiting: 0, open: 0, loaded: true })
       setOlderDrawers([])
@@ -151,7 +194,7 @@ export default function HposCashClose() {
       setOlderDrawers(older)
     })
     return () => { active = false }
-  }, [allOutlets, outletsLoaded])
+  }, [allOutlets, outletsLoaded, localAuthority])
   // Visibility: a queue shows when its model is in use, or when older items
   // from before a switch still wait. Loading and unknown outlets fail open to
   // today's layout so nothing flickers away before the truth arrives.
@@ -171,11 +214,39 @@ export default function HposCashClose() {
   }
 
   const beginReview = (submission, decision) => {
+    if (localAuthority && (savedReviewOperations.length > 0 || reviewAttempted)) {
+      setError('Recover the saved cash-up review with its original operation before starting another decision.')
+      return
+    }
     setError('')
     setNotice('')
     setReviewNotes('')
     setManagerPin('')
-    setReviewDraft({ submission, decision })
+    setReviewAttempted(false)
+    setReviewDraft({ submission, decision, operationId: crypto.randomUUID() })
+  }
+
+  const recoverReview = async (operationId) => {
+    if (busy) return
+    setBusy(true)
+    let failure = ''
+    try {
+      await localCashupApi.recover(operationId)
+      setReviewDraft(null)
+      setReviewAttempted(false)
+      setManagerPin('')
+      setNotice('The saved cash-up review is confirmed by the local authority.')
+    } catch (cause) {
+      failure = cause?.message || 'The saved cash-up review is still unresolved. Keep the original operation and retry after restoring the local service.'
+      if (cause?.outcome === 'refused') {
+        setReviewDraft(null)
+        setReviewAttempted(false)
+      }
+    } finally {
+      await refresh()
+      if (failure) setError(failure)
+      setBusy(false)
+    }
   }
 
   const review = async () => {
@@ -184,6 +255,10 @@ export default function HposCashClose() {
     if (!submission || !decision || busy) return
     if (!managerPin.trim()) {
       setError('Enter the reviewing manager PIN.')
+      return
+    }
+    if (localAuthority && !/^\d{4,12}$/.test(managerPin.trim())) {
+      setError('Enter the reviewing manager PIN using 4–12 digits.')
       return
     }
     if (decision === 'reject' && !reviewNotes.trim()) {
@@ -200,14 +275,25 @@ export default function HposCashClose() {
     }
     setBusy(true)
     setError('')
+    if (localAuthority) setReviewAttempted(true)
     try {
-      const result = await window.api?.pos?.reviewCashupSubmission?.({
-        submission_id: submission.id,
-        decision,
-        notes: reviewNotes.trim() || null,
-        manager_pin: managerPin.trim(),
-      })
-      if (!result?.success) throw new Error(result?.error || 'Cash-up review could not be saved.')
+      const result = localAuthority
+        ? await localCashupApi.review({
+          cashupId: submission.id,
+          decision: decision === 'approve' ? 'approved' : 'rejected',
+          reason: reviewNotes.trim(),
+          pin: managerPin.trim(),
+          operationId: reviewDraft.operationId
+        })
+        : await window.api?.pos?.reviewCashupSubmission?.({
+          submission_id: submission.id,
+          decision,
+          notes: reviewNotes.trim() || null,
+          manager_pin: managerPin.trim(),
+        })
+      if (localAuthority ? result?.outcome !== 'committed_local' : !result?.success) {
+        throw Object.assign(new Error(result?.error?.message || result?.error || 'Cash-up review could not be saved.'), { outcome: result?.outcome })
+      }
       if (result?.offline) {
         setNotice(decision === 'approve'
           ? 'Approval saved on this device and queued. The Till shift closure becomes final when sync confirms it against server totals.'
@@ -216,11 +302,17 @@ export default function HposCashClose() {
         setNotice(decision === 'approve' ? 'Cash-up approved and the Till shift is closed.' : 'Cash-up returned to the operator for correction.')
       }
       setReviewDraft(null)
+      setReviewAttempted(false)
       setReviewNotes('')
       setManagerPin('')
       await refresh()
     } catch (reviewError) {
       setError(reviewError?.message || 'Cash-up review could not be saved.')
+      if (localAuthority && reviewError?.outcome === 'refused') {
+        setReviewDraft((draft) => draft ? { ...draft, operationId: crypto.randomUUID() } : draft)
+        setReviewAttempted(false)
+      }
+      if (localAuthority && reviewError?.outcome === 'not_sent') setReviewAttempted(false)
     } finally {
       setBusy(false)
     }
@@ -228,6 +320,10 @@ export default function HposCashClose() {
 
   const dailyCloseSummary = async (print = false) => {
     if (summaryBusy) return
+    if (localAuthority) {
+      setError('The certified daily-close PDF is pending local report/export integration. No cloud export was requested.')
+      return
+    }
     setSummaryBusy(true); setError(''); setNotice('')
     try {
       const result = await window.api?.pos?.exportDailyCloseSummaryPdf?.({ date: summaryDate, print })
@@ -251,10 +347,18 @@ export default function HposCashClose() {
       eyebrow="Money control"
       title="Cash & close"
       description={allSharedVenue ? 'Review the shared drawer count against the server total.' : allPersonalVenue ? "Review each seller's cash-up against server-confirmed Till totals." : 'Review submitted physical cash counts against the server-confirmed Till totals. This page does not create a second drawer ledger.'}
-      actions={<div className="hpos-service-hero-actions"><span className="hpos-report-group" aria-label="Daily report"><label>Report date<input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} disabled={summaryBusy} /></label><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(false)} disabled={summaryBusy}>{summaryBusy ? 'Building…' : 'Save report PDF'}</HposButton><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(true)} disabled={summaryBusy}>Print report</HposButton></span><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}
+      actions={<div className="hpos-service-hero-actions">{localAuthority ? <HposNotice tone="warning">Certified PDF export is pending local report integration.</HposNotice> : <span className="hpos-report-group" aria-label="Daily report"><label>Report date<input type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} disabled={summaryBusy} /></label><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(false)} disabled={summaryBusy}>{summaryBusy ? 'Building…' : 'Save report PDF'}</HposButton><HposButton icon={WalletCards} onClick={() => dailyCloseSummary(true)} disabled={summaryBusy}>Print report</HposButton></span>}<HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</HposButton></div>}
     />
     {error && <HposNotice tone="error">{error}</HposNotice>}
     {notice && <HposNotice><CheckCircle2 size={17} />{notice}</HposNotice>}
+    {localAuthority && savedReviewOperations.length > 0 && <section className="hpos-cashup-review" aria-label="Saved cash-up reviews">
+      <h2>Recover the saved cash-up review</h2>
+      <p>This till saved a review whose outcome still needs confirmation. Retry its original operation before recording another decision.</p>
+      {savedReviewOperations.map((operation) => <div key={operation.operation_id} className="hpos-cashup-review-actions">
+        <span>{operation.operation_id}</span>
+        <HposButton onClick={() => recoverReview(operation.operation_id)} disabled={busy}>Retry saved review</HposButton>
+      </div>)}
+    </section>}
     {openTabsCount != null && openTabsCount > 0 && (
       <HposNotice tone="warning">
         {openTabsCount} open tab{openTabsCount === 1 ? ' is' : 's are'} still unsettled. Settle or resume
@@ -283,9 +387,10 @@ export default function HposCashClose() {
     )}
     {showPersonal && (<><div ref={personalSectionRef} id="money-reviews-personal" />
     {olderPersonal && !loading && !reviewUnavailable && <HposNotice>Older personal cash-ups from before this venue switched still need a decision below.</HposNotice>}
-    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : reviewUnavailable ? <section data-testid="cashup-review-unavailable" className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">Review unavailable</p><h2>Cash-up review is not verified</h2><p>{reviewUnavailable} No empty-queue conclusion is being shown. Refresh after the server connection is restored.</p><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh review</HposButton></section> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p>{drawerOutlets.length > 0 && <p className="hpos-cashup-review-note">Clock-outs without Till sales create no cash-up — nothing to review here. Shared drawer reviews live below in Drawer close.</p>}</section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{olderPersonal ? `${pendingCashups.length} older personal cash-up${pendingCashups.length === 1 ? '' : 's'} still needs a decision` : `${pendingCashups.length} cash-up${pendingCashups.length === 1 ? '' : 's'} awaiting a decision`}</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div>{provisionalReview && <HposNotice tone="warning">You are offline. These are this device's submitted cash-ups only — the server may hold more. Reviews here are saved on this device and queued, and become final when sync confirms them.</HposNotice>}<div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); const deciding = reviewDraft?.submission?.id === submission.id; return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header>{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div><HposCashupProofs submissionId={submission.id} canUpload={submission.status === 'submitted'} />{!deciding ? (<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy || !cashupApprovalAllowed(submission)}>Approve & close shift</HposButton>{!busy && !cashupApprovalAllowed(submission) && <span className="hpos-cashup-review-note">Approval needs expected and counted cash — return for correction.</span>}</footer>) : (<><label className="hpos-my-cashup-notes"><span>{reviewDraft.decision === 'reject' ? 'Correction note (required)' : 'Approval note (optional)'}</span><textarea rows="3" value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} disabled={busy} /></label><label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onFocus={revealReviewActions} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} /></label>{!reviewEvidence?.complete && !provisionalReview && <p className="hpos-cashup-review-note">Approval is blocked because expected and counted cash are unavailable. Return this cash-up for correction after the authoritative values are restored.</p>}{!reviewEvidence?.complete && provisionalReview && <p className="hpos-cashup-review-note">Server totals are unavailable offline. Approving accepts the counted cash of {amount(reviewDraft.submission.counted_by_method?.cash, currency)} without them — the decision is queued and becomes final at sync.</p>}<footer className="hpos-cashup-review-actions"><HposButton onClick={() => setReviewDraft(null)} disabled={busy}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy || (reviewDraft.decision === 'approve' && !reviewEvidence?.complete && !provisionalReview)}>{busy ? 'Saving…' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer></>)}</article> })}</div></section>}</>)}
+    {loading ? <div className="hpos-service-loading"><RefreshCw className="is-spinning" size={22} /><span>Loading submitted cash-ups…</span></div> : reviewUnavailable ? <section data-testid="cashup-review-unavailable" className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">Review unavailable</p><h2>Cash-up review is not verified</h2><p>{reviewUnavailable} No empty-queue conclusion is being shown. Refresh after the server connection is restored.</p><HposButton icon={RefreshCw} onClick={refresh} disabled={loading}>Refresh review</HposButton></section> : pendingCashups.length === 0 ? <section className="hpos-service-cash-open"><WalletCards size={28} /><p className="hpos-eyebrow">No pending handovers</p><h2>Cash-up review is clear</h2><p>No operator cash-ups are waiting for a manager decision. Completed reviews remain in the authoritative audit history.</p>{drawerOutlets.length > 0 && <p className="hpos-cashup-review-note">Clock-outs without Till sales create no cash-up — nothing to review here. Shared drawer reviews live below in Drawer close.</p>}</section> : <section className="hpos-cashup-review"><div><p className="hpos-eyebrow">Supervisor review</p><h2>{olderPersonal ? `${pendingCashups.length} older personal cash-up${pendingCashups.length === 1 ? '' : 's'} still needs a decision` : `${pendingCashups.length} cash-up${pendingCashups.length === 1 ? '' : 's'} awaiting a decision`}</h2><p>Expected cash and variance are calculated by the server from posted tenders, returns and the configured tip policy.</p></div>{provisionalReview && <HposNotice tone="warning">You are offline. These are this device's submitted cash-ups only — the server may hold more. Reviews here are saved on this device and queued, and become final when sync confirms them.</HposNotice>}<div className="hpos-cashup-review-list">{pendingCashups.map((submission) => { const variance = submissionVariance(submission); const deciding = reviewDraft?.submission?.id === submission.id; return <article key={submission.id}><header><div><strong>{submission.cashier_name || 'Till operator'}</strong><span>{submission.outlet_name || 'Service outlet'} · {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString('en-GB') : 'Submitted time unavailable'}</span></div><span className={variance !== null && Math.abs(variance) < 0.01 ? 'is-balanced' : 'is-variance'}>{variance === null ? 'Variance unavailable' : Math.abs(variance) < 0.01 ? 'Balanced' : `${variance > 0 ? 'Over' : 'Short'} ${amount(Math.abs(variance), currency)}`}</span></header>{submission.notes && <p className="hpos-cashup-review-note">Operator note: {submission.notes}</p>}<div className="hpos-cashup-review-values"><span>Expected cash<strong>{amount(submission.expected_cash_drawer, currency)}</strong></span><span>Counted cash<strong>{amount(submission.counted_by_method?.cash, currency)}</strong></span>{Number(submission.cash_tips_retained || 0) > 0 && <span>Cash tips retained<strong>{amount(submission.cash_tips_retained, currency)}</strong></span>}</div><HposCashupProofs submissionId={submission.id} canUpload={submission.status === 'submitted' && !localAuthority} localAuthority={localAuthority} />{!deciding ? (<footer><HposButton icon={XCircle} onClick={() => beginReview(submission, 'reject')} disabled={busy}>Return for correction</HposButton><HposButton tone="primary" icon={CheckCircle2} onClick={() => beginReview(submission, 'approve')} disabled={busy || !cashupApprovalAllowed(submission)}>Approve & close shift</HposButton>{!busy && !cashupApprovalAllowed(submission) && <span className="hpos-cashup-review-note">Approval needs expected and counted cash — return for correction.</span>}</footer>) : (<><label className="hpos-my-cashup-notes"><span>{reviewDraft.decision === 'reject' ? 'Correction note (required)' : 'Approval note (optional)'}</span><textarea rows="3" value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} disabled={busy || (localAuthority && reviewAttempted)} /></label><label className="hpos-cashup-review-pin"><span><ShieldCheck size={17} /> Manager PIN</span><input type="password" inputMode="numeric" value={managerPin} onFocus={revealReviewActions} onChange={(event) => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 12))} disabled={busy} /></label>{!reviewEvidence?.complete && !provisionalReview && <p className="hpos-cashup-review-note">Approval is blocked because expected and counted cash are unavailable. Return this cash-up for correction after the authoritative values are restored.</p>}{!reviewEvidence?.complete && provisionalReview && <p className="hpos-cashup-review-note">Server totals are unavailable offline. Approving accepts the counted cash of {amount(reviewDraft.submission.counted_by_method?.cash, currency)} without them — the decision is queued and becomes final at sync.</p>}<footer className="hpos-cashup-review-actions"><HposButton onClick={() => setReviewDraft(null)} disabled={busy || (localAuthority && reviewAttempted)}>Cancel</HposButton><HposButton tone="primary" icon={reviewDraft.decision === 'reject' ? XCircle : CheckCircle2} onClick={review} disabled={busy || (reviewDraft.decision === 'approve' && !reviewEvidence?.complete && !provisionalReview)}>{busy ? 'Saving…' : localAuthority && reviewAttempted ? 'Retry same review' : reviewDraft.decision === 'reject' ? 'Return for correction' : 'Approve & close shift'}</HposButton></footer></>)}</article> })}</div></section>}</>)}
     {showDrawer && (<><div ref={drawerSectionRef} id="money-reviews-drawer" />
-    {drawerOutlets.length > 0 && (
+    {localAuthority && <HposNotice tone="warning">Shared drawer close is pending local workflow integration. No cloud drawer action was attempted.</HposNotice>}
+    {!localAuthority && drawerOutlets.length > 0 && (
       <section className="hpos-cashup-review" aria-label="Shared drawer close">
         <div><p className="hpos-eyebrow">Shared drawer</p><h2>Drawer close</h2><p>One blind count per shared drawer. This is separate from personal Till cash-ups.</p></div>
         {drawerOutlets.length === 1 ? (
@@ -296,7 +401,7 @@ export default function HposCashClose() {
         {drawerOutletId && <HposDrawerClose outletId={drawerOutletId} />}
       </section>
     )}
-    {olderDrawers.map((row) => (
+      {!localAuthority && olderDrawers.map((row) => (
       <section key={row.outletId} className="hpos-cashup-review" aria-label="Older drawer review">
         <div><p className="hpos-eyebrow">Older drawer review</p><h2>{row.outletName}</h2><p>This outlet now counts separate pouches, but a drawer count from before the switch still needs a decision.</p></div>
         <HposDrawerClose outletId={row.outletId} />

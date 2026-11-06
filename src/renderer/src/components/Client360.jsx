@@ -3,16 +3,29 @@ import { useState, useEffect, useCallback } from 'react'
 import { Building2, CreditCard, LifeBuoy, Activity, Server, FileText, Clock, CheckCircle, AlertTriangle, AlertCircle, XCircle, RefreshCw, Mail, Phone, MapPin, Calendar, TrendingUp, Users, ArrowLeft, Banknote } from 'lucide-react'
 import { safeLoadAll, hasPartialFailures, getFailureSummary } from '../utils/safeLoad'
 
+/** Expected read views of existing producers. IPC/RPC values are not validated here. */
+/** @typedef {{id: string, invoice_number: string|null, issued_date: string|null, created_at: string|null, amount: number|string|null, currency: string|null, status: string|null}} Client360InvoiceExpectedView */
+/** @typedef {{id: string, title: string, status: string|null, priority: string|null, created_at: string|null, lodge_id: string|null}} Client360TicketExpectedView */
+/** @typedef {{id: string, action: string, actor_email: string|null, details: unknown, created_at: string|null}} Client360ActivityExpectedView */
+/** @typedef {{device_id: string, lodge_id: string, client_type: string|null, stale: boolean, failed_queue: number, pending_queue: number, reported_at: string|null}} Client360DeviceExpectedView */
+/** @typedef {{lodge_id: string, total_revenue: number|string, total_collected: number|string, total_outstanding: number|string, unpaid_count: number|string, paid_count: number|string, partial_count: number|string}} Client360FinancialLodgeExpectedView */
+/** @typedef {{ok: boolean, lodges: Client360FinancialLodgeExpectedView[], error?: string}} Client360FinancialSummaryExpectedView */
+/** @typedef {{lodge_id: string, lodge_name: string, company_name?: string|null, status?: string|null, email?: string|null, phone?: string|null, location?: string|null, trial_started_at?: string|null}} Client360CompanyExpectedView */
+/** @typedef {{lodge_id: string|null, is_active: boolean|null, subscription_plan: string, subscription_state: string|null, payment_status: string|null, expires_at: string|null, next_due_date: string|null, license_key?: string|null}} Client360LicenseExpectedView */
+
+/** @param {string|null|undefined} dt */
 function fmt(dt) {
   if (!dt) return '—'
   return new Date(dt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/** @param {number|string|null|undefined} n @param {string|null} [currency] */
 function fmtMoney(n, currency = 'BWP') {
   if (n == null) return '—'
   return `${currency || 'BWP'} ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {{title: string, icon: import('lucide-react').LucideIcon, children: import('react').ReactNode, error?: string|null, onRetry?: () => void}} props */
 function Section({ title, icon: Icon, children, error, onRetry }) {
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
@@ -33,10 +46,12 @@ function Section({ title, icon: Icon, children, error, onRetry }) {
   )
 }
 
+/** @param {{label: string, color: string}} props */
 function Badge({ label, color }) {
   return <span className={`inline-flex items-center text-[10px] font-semibold px-2 py-0.5 rounded-full ${color}`}>{label}</span>
 }
 
+/** @param {{label: string, value: import('react').ReactNode}} props */
 function Field({ label, value }) {
   return (
     <div>
@@ -46,12 +61,13 @@ function Field({ label, value }) {
   )
 }
 
+/** @param {{company: Client360CompanyExpectedView, licenses: Client360LicenseExpectedView[], onBack: () => void}} props */
 export default function Client360({ company, licenses, onBack }) {
-  const [invoices, setInvoices] = useState([])
-  const [tickets, setTickets] = useState([])
-  const [activityLogs, setActivityLogs] = useState([])
-  const [devices, setDevices] = useState([])
-  const [financialSummary, setFinancialSummary] = useState(null)
+  const [invoices, setInvoices] = useState(/** @type {Client360InvoiceExpectedView[]} */ ([]))
+  const [tickets, setTickets] = useState(/** @type {Client360TicketExpectedView[]} */ ([]))
+  const [activityLogs, setActivityLogs] = useState(/** @type {Client360ActivityExpectedView[]} */ ([]))
+  const [devices, setDevices] = useState(/** @type {Client360DeviceExpectedView[]} */ ([]))
+  const [financialSummary, setFinancialSummary] = useState(/** @type {Client360FinancialSummaryExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [loadWarnings, setLoadWarnings] = useState(null)
@@ -73,13 +89,14 @@ export default function Client360({ company, licenses, onBack }) {
         window.api.admin.getLodgeFinancialSummary?.() || Promise.reject(new Error('Financial summary API is unavailable. Restart or update the desktop app.'))
       )
       const [invData, ticketData, logData, deviceData, financialData] = data
-      setInvoices(Array.isArray(invData) ? invData : [])
-      setTickets(Array.isArray(ticketData) ? ticketData : [])
-      setActivityLogs(Array.isArray(logData) ? logData : [])
-      setDevices((Array.isArray(deviceData) ? deviceData : []).filter(d => d.lodge_id === lodgeId))
-      setFinancialSummary(financialData?.lodges?.find(row => String(row.lodge_id) === String(lodgeId)) || null)
-      if (financialData?.ok === false) {
-        errors[4] = financialData.error || 'Financial summary query failed'
+      // Array.isArray proves only container shape; row fields mirror the existing SQL/query producers.
+      setInvoices(Array.isArray(invData) ? /** @type {Client360InvoiceExpectedView[]} */ (invData) : [])
+      setTickets(Array.isArray(ticketData) ? /** @type {Client360TicketExpectedView[]} */ (ticketData) : [])
+      setActivityLogs(Array.isArray(logData) ? /** @type {Client360ActivityExpectedView[]} */ (logData) : [])
+      setDevices((Array.isArray(deviceData) ? /** @type {Client360DeviceExpectedView[]} */ (deviceData) : []).filter(d => d.lodge_id === lodgeId))
+      setFinancialSummary((/** @type {Client360FinancialSummaryExpectedView|null} */ (financialData))?.lodges?.find(row => String(row.lodge_id) === String(lodgeId)) || null)
+      if ((/** @type {Client360FinancialSummaryExpectedView|null} */ (financialData))?.ok === false) {
+        errors[4] = (/** @type {Client360FinancialSummaryExpectedView} */ (financialData)).error || 'Financial summary query failed'
       }
       if (hasPartialFailures(errors)) {
         setLoadWarnings(getFailureSummary(errors, ['Booking Invoices', 'Tickets', 'Activity Logs', 'Fleet Health', 'Financial Summary']))

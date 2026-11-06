@@ -9,6 +9,14 @@ import { useAuth, useSettings } from '../app-context'
 import { localToday } from '../utils/localDate'
 import { isCampsitePriced } from '../../../shared/accommodation.js'
 
+/** @typedef {{room_id: string, room_name?: string, adults?: number, children?: number, tents?: number, vehicles?: number, amount: number | string}} QuotationRoomLineExpectedView */
+/** @typedef {{id: string, quotation_number?: string, quotation_type?: string, customer_id?: string, customer_name?: string, customer_phone?: string, customer_email?: string, event_name?: string | null, event_daily_rate?: number | string | null, room_id?: string, room_name?: string, accommodation_lines?: QuotationRoomLineExpectedView[] | null, check_in?: string | null, check_out?: string | null, adults?: number, children?: number, subtotal?: number | string | null, tax_amount?: number | string | null, total_amount?: number | string | null, currency?: string, valid_until?: string | null, notes?: string | null, status?: string, converted_booking_id?: string | boolean | null, created_at?: string, updated_at?: string, parent_quotation_id?: string | null}} QuotationExpectedView */
+/** @typedef {{id: string, name?: string, phone?: string, email?: string}} QuotationCustomerExpectedView */
+/** @typedef {{id: string, room_number?: string, room_type?: string}} QuotationRoomExpectedView */
+/** @typedef {{quotation_type: string, customer_id: string, customer_name: string, customer_phone: string, event_name: string, event_daily_rate: number | string, room_id: string, room_name: string, accommodation_lines: QuotationRoomLineExpectedView[], check_in: string, check_out: string, adults: number, children: number, subtotal: number | string, tax_amount: number | string, total_amount: number | string, currency: string, valid_until: string, notes: string}} QuotationFormView */
+/** @typedef {{success?: boolean, error?: string, id?: string, quotation_number?: string, invoice_number?: string, booking_id?: string, pendingSync?: boolean, depositWarning?: string, message?: string}} QuotationMutationExpectedView */
+/** @typedef {{contains(target: Node | null): boolean}} QuotationMenuElementView */
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PAYMENT_METHODS = DESKTOP_PAYMENT_METHODS
@@ -39,6 +47,7 @@ const emptyForm = {
 
 // ─── WhatsApp Helpers ─────────────────────────────────────────────────────────
 
+/** @param {string | null | undefined} phone */
 function formatWaPhone(phone) {
   if (!phone) return ''
   let p = phone.replace(/\D/g, '')
@@ -47,13 +56,14 @@ function formatWaPhone(phone) {
   return p
 }
 
+/** @param {QuotationExpectedView} q @param {{lodge_name?: string, company_name?: string, currency?: string, phone?: string} | null | undefined} settings */
 function buildQuotationWhatsAppMessage(q, settings) {
   const lodge    = settings?.lodge_name || settings?.company_name || 'the property'
   const currency = q.currency || settings?.currency || 'BWP'
   const isEvent  = q.quotation_type === 'exclusive_event'
   const roomLines = quotationRoomLines(q)
   const nights   = q.check_in && q.check_out
-    ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
+    ? Math.max(0, Math.ceil((new Date(q.check_out).getTime() - new Date(q.check_in).getTime()) / 86400000))
     : null
   const lines = [
     `Dear ${q.customer_name},`,
@@ -86,10 +96,12 @@ function today() {
   return localToday()
 }
 
+/** @param {QuotationExpectedView} q */
 function isExpired(q) {
   return q.valid_until && q.valid_until < today() && !q?.converted_booking_id && q.status !== 'converted'
 }
 
+/** @param {QuotationExpectedView | null | undefined} q @returns {QuotationExpectedView | null | undefined} */
 function normalizeQuotationRow(q) {
   if (!q) return q
   const accommodationLines = Array.isArray(q.accommodation_lines) ? q.accommodation_lines : []
@@ -104,6 +116,7 @@ function normalizeQuotationRow(q) {
   }
 }
 
+/** @param {QuotationExpectedView} q */
 function canConvert(q) {
   if (q?.converted_booking_id) return false
   if (['converted', 'cancelled'].includes(q.status)) return false
@@ -113,16 +126,19 @@ function canConvert(q) {
 
 // Financial fields are locked once the quotation has been dispatched
 const LOCKED_STATUSES = ['sent', 'accepted', 'converted']
+/** @param {QuotationExpectedView | null | undefined} q */
 function isFinanciallyLocked(q) {
   return LOCKED_STATUSES.includes(q?.status)
 }
 
+/** @param {unknown} amount @param {unknown} currency */
 function fmt(amount, currency) {
   const safeCurrency = String(currency || 'BWP').trim()
   const currencyLabel = safeCurrency.length <= 8 && !/\d/.test(safeCurrency) ? safeCurrency : 'BWP'
   return `${currencyLabel} ${Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {string | null | undefined} checkIn @param {string | null | undefined} checkOut */
 function quotationNights(checkIn, checkOut) {
   if (!checkIn || !checkOut) return 0
   const start = new Date(checkIn).getTime()
@@ -131,10 +147,12 @@ function quotationNights(checkIn, checkOut) {
   return Math.ceil((end - start) / 86400000)
 }
 
+/** @param {QuotationExpectedView | null | undefined} q @returns {QuotationRoomLineExpectedView[]} */
 function quotationRoomLines(q) {
   return Array.isArray(q?.accommodation_lines) ? q.accommodation_lines.filter(line => line?.room_id) : []
 }
 
+/** @param {QuotationExpectedView} q */
 function quotationRoomLabel(q) {
   const lines = quotationRoomLines(q)
   if (lines.length > 1) return `${lines.length} rooms`
@@ -143,6 +161,7 @@ function quotationRoomLabel(q) {
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
+/** @param {{status: string, expired: boolean}} props */
 function QuotationStatusBadge({ status, expired }) {
   if (expired && status !== 'converted') {
     return (
@@ -169,10 +188,13 @@ function QuotationStatusBadge({ status, expired }) {
 
 // ─── Actions Dropdown ─────────────────────────────────────────────────────────
 
+/** @param {{q: QuotationExpectedView, isOpen: boolean, onToggle: () => void, onClose: () => void, onEdit: (q: QuotationExpectedView) => void, onStatusChange: (q: QuotationExpectedView, status: string) => void, onConvert: (q: QuotationExpectedView) => void, onPreview: (q: QuotationExpectedView) => void, onDuplicate: (q: QuotationExpectedView) => void, onCancel: (q: QuotationExpectedView) => void, expired: boolean}} props */
 function QuotationMenu({ q, isOpen, onToggle, onClose, onEdit, onStatusChange, onConvert, onPreview, onDuplicate, onCancel, expired }) {
+  /** @type {import('react').RefObject<QuotationMenuElementView | null>} */
   const ref = useRef(null)
   useEffect(() => {
     if (!isOpen) return
+    /** @param {MouseEvent} e */
     function handleClick(e) {
       if (ref.current && !ref.current.contains(e.target)) onClose()
     }
@@ -294,13 +316,14 @@ function QDivider() {
 
 // ─── Quotation Preview / PDF ──────────────────────────────────────────────────
 
+/** @param {{quotation: QuotationExpectedView, settings: {lodge_name?: string, company_name?: string, currency?: string, phone?: string} | null, onClose: () => void, onConvert: (q: QuotationExpectedView) => void, canConvertQ: boolean, onStatusSent: (q: QuotationExpectedView) => void, onAccept: (q: QuotationExpectedView) => void}} props */
 function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConvertQ, onStatusSent, onAccept }) {
   const [pdfError, setPdfError] = useState('')
   const currency = q.currency || settings?.currency || 'BWP'
   const isEvent  = q.quotation_type === 'exclusive_event'
   const roomLines = quotationRoomLines(q)
   const nights   = q.check_in && q.check_out
-    ? Math.max(0, Math.ceil((new Date(q.check_out) - new Date(q.check_in)) / 86400000))
+    ? Math.max(0, Math.ceil((new Date(q.check_out).getTime() - new Date(q.check_in).getTime()) / 86400000))
     : null
   const phone    = q.customer_phone || ''
   const waPhone  = formatWaPhone(phone)
@@ -309,7 +332,7 @@ function QuotationPreview({ quotation: q, settings, onClose, onConvert, canConve
   async function handleDownload() {
     setPdfError('')
     // savePDF now takes (id, number, name) — backend auto-marks 'sent'
-    const res = await window.api.quotations.savePDF(q.id, q.quotation_number, q.customer_name)
+    const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.savePDF(q.id, q.quotation_number, q.customer_name)))
     if (!res.success) { setPdfError(res.error || 'Failed to save PDF.'); return }
     if (onStatusSent) onStatusSent()
   }
@@ -540,32 +563,32 @@ export default function Quotations() {
   const currency     = settings?.currency || 'BWP'
 
   // Data
-  const [quotations, setQuotations] = useState([])
-  const [customers,  setCustomers]  = useState([])
-  const [rooms,      setRooms]      = useState([])
+  const [quotations, setQuotations] = useState(/** @type {QuotationExpectedView[]} */ ([]))
+  const [customers,  setCustomers]  = useState(/** @type {QuotationCustomerExpectedView[]} */ ([]))
+  const [rooms,      setRooms]      = useState(/** @type {QuotationRoomExpectedView[]} */ ([]))
 
   // UI state
   const [loading,      setLoading]      = useState(false)
   const [pageError,    setPageError]    = useState('')
   const [search,       setSearch]       = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
-  const [openMenuId,   setOpenMenuId]   = useState(null)
+  const [openMenuId,   setOpenMenuId]   = useState(/** @type {string | null} */ (null))
 
   // Create / Edit modal
   const [showModal,       setShowModal]       = useState(false)
-  const [editingId,       setEditingId]       = useState(null)
-  const [form,            setForm]            = useState(emptyForm)
+  const [editingId,       setEditingId]       = useState(/** @type {string | null} */ (null))
+  const [form,            setForm]            = useState(/** @type {QuotationFormView} */ (emptyForm))
   const [formError,       setFormError]       = useState('')
   const [saving,          setSaving]          = useState(false)
   const [financialLocked, setFinancialLocked] = useState(false)
   const [useNewCustomer,  setUseNewCustomer]  = useState(true)
-  const [newCustomer,     setNewCustomer]     = useState({ name: '', phone: '', email: '' })
+  const [newCustomer,     setNewCustomer]     = useState(/** @type {{name: string, phone: string, email: string}} */ ({ name: '', phone: '', email: '' }))
 
   // Preview / PDF
-  const [previewTarget, setPreviewTarget] = useState(null)
+  const [previewTarget, setPreviewTarget] = useState(/** @type {QuotationExpectedView | null} */ (null))
 
   // Convert modal
-  const [convertTarget,  setConvertTarget]  = useState(null)
+  const [convertTarget,  setConvertTarget]  = useState(/** @type {QuotationExpectedView | null} */ (null))
   const [convertDeposit, setConvertDeposit] = useState('')
   const [convertMethod,  setConvertMethod]  = useState('cash')
   const [converting,     setConverting]     = useState(false)
@@ -587,17 +610,23 @@ export default function Quotations() {
         window.api.rooms.getAll().catch(() => []),
         window.api.bookings.getAll().catch(() => [])
       ])
+      // These are expected renderer views of existing IPC/database rows; the IPC payloads are not runtime-validated here.
+      const quotationRows = /** @type {QuotationExpectedView[]} */ (/** @type {unknown} */ (q || []))
+      const customerRows = /** @type {QuotationCustomerExpectedView[]} */ (/** @type {unknown} */ (c || []))
+      const roomRows = /** @type {QuotationRoomExpectedView[]} */ (/** @type {unknown} */ (r || []))
+      const bookingRows = /** @type {{id: string, quotation_id?: string | null}[]} */ (/** @type {unknown} */ (bookings || []))
+
       const convertedQuotationMap = new Map(
-        (bookings || [])
+        bookingRows
           .filter((booking) => booking?.quotation_id)
           .map((booking) => [booking.quotation_id, booking.id])
       )
-      setQuotations((q || []).map((row) => normalizeQuotationRow({
+      setQuotations(quotationRows.map((row) => normalizeQuotationRow({
         ...row,
         converted_booking_id: row?.converted_booking_id || convertedQuotationMap.get(row?.id) || null
       })))
-      setCustomers(c || [])
-      setRooms(r || [])
+      setCustomers(customerRows)
+      setRooms(roomRows)
     } catch (e) {
       console.error('Failed to load quotations:', e)
       setPageError(e?.message || 'Could not load quotations right now. Please try again.')
@@ -619,6 +648,7 @@ export default function Quotations() {
     return matchSearch && matchStatus
   })
 
+  /** @param {QuotationExpectedView} nextQuotation */
   function upsertQuotation(nextQuotation) {
     setQuotations((prev) => [
       normalizeQuotationRow(nextQuotation),
@@ -639,6 +669,7 @@ export default function Quotations() {
     setShowModal(true)
   }
 
+  /** @param {QuotationExpectedView} q */
   function openEdit(q) {
     setPageError('')
     setEditingId(q.id)
@@ -679,6 +710,7 @@ export default function Quotations() {
     }))
   }
 
+  /** @param {number} index @param {Partial<QuotationRoomLineExpectedView>} patch */
   function updateRoomLine(index, patch) {
     setForm(f => {
       const lines = Array.isArray(f.accommodation_lines) ? [...f.accommodation_lines] : []
@@ -688,6 +720,7 @@ export default function Quotations() {
     })
   }
 
+  /** @param {number} index */
   function removeRoomLine(index) {
     setForm(f => {
       const lines = (Array.isArray(f.accommodation_lines) ? f.accommodation_lines : []).filter((_, i) => i !== index)
@@ -696,6 +729,7 @@ export default function Quotations() {
     })
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function handleSave(e) {
     e.preventDefault()
     setFormError('')
@@ -786,7 +820,7 @@ export default function Quotations() {
 
     if (editingId) {
       const existing = quotations.find(q => q.id === editingId)
-      const res = await window.api.quotations.update(editingId, { ...data, status: existing?.status || 'draft' })
+      const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.update(editingId, { ...data, status: existing?.status || 'draft' })))
       if (!res.success) { setFormError(res.error || 'Update failed.'); setSaving(false); return }
       upsertQuotation({
         ...(existing || {}),
@@ -796,7 +830,7 @@ export default function Quotations() {
         updated_at: new Date().toISOString()
       })
     } else {
-      const res = await window.api.quotations.create(data)
+      const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.create(data)))
       if (!res.success) { setFormError(res.error || 'Create failed.'); setSaving(false); return }
       const createdAt = new Date().toISOString()
       upsertQuotation({
@@ -816,12 +850,13 @@ export default function Quotations() {
 
   const [statusChanging, setStatusChanging] = useState(false)
 
+  /** @param {QuotationExpectedView} q @param {string} newStatus */
   async function handleStatusChange(q, newStatus) {
     if (statusChanging) return
     setStatusChanging(true)
     try {
       setPageError('')
-      const res = await window.api.quotations.update(q.id, { ...q, status: newStatus })
+      const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.update(q.id, { ...q, status: newStatus })))
       if (!res?.success) {
         setPageError(res?.error || 'Could not update quotation status right now.')
         return
@@ -839,10 +874,11 @@ export default function Quotations() {
 
   // ── Cancel ────────────────────────────────────────────────────────────────
 
+  /** @param {QuotationExpectedView} q */
   async function handleCancel(q) {
     try {
       setPageError('')
-      const res = await window.api.quotations.update(q.id, { ...q, status: 'cancelled' })
+      const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.update(q.id, { ...q, status: 'cancelled' })))
       if (!res?.success) {
         setPageError(res?.error || 'Could not cancel this quotation right now.')
         return
@@ -858,10 +894,11 @@ export default function Quotations() {
 
   // ── Duplicate ─────────────────────────────────────────────────────────────
 
+  /** @param {QuotationExpectedView} q */
   async function handleDuplicate(q) {
     try {
       setPageError('')
-      const res = await window.api.quotations.duplicate(q.id)
+      const res = /** @type {QuotationMutationExpectedView} */ (/** @type {unknown} */ (await window.api.quotations.duplicate(q.id)))
       if (res.success) {
         const createdAt = new Date().toISOString()
         const newQ = {
@@ -884,6 +921,7 @@ export default function Quotations() {
 
   // ── Convert to booking ────────────────────────────────────────────────────
 
+  /** @param {QuotationExpectedView} q */
   function openConvert(q) {
     setConvertTarget(q)
     setConvertDeposit('')
@@ -893,6 +931,7 @@ export default function Quotations() {
     setConvertWarning('')
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   async function handleConvert(e) {
     e.preventDefault()
     setConvertError('')

@@ -20,6 +20,24 @@ const REPORT_TYPES = [
   { key: 'folioExceptions', label: 'Folio Exceptions' }
 ]
 
+/** @typedef {'occupancy'|'pace'|'pickup'|'channelSource'|'debtorAging'|'ratePerformance'|'housekeepingProductivity'|'roomDowntime'|'groupPickup'|'cancellationNoShow'|'taxVat'|'depositLiability'|'folioExceptions'} AdvancedReportKey */
+/** @typedef {(startDate: string, endDate: string) => Promise<unknown>} AdvancedReportWithDatesFunction */
+/** @typedef {() => Promise<unknown>} AdvancedReportWithoutDatesFunction */
+/** @typedef {AdvancedReportWithDatesFunction|AdvancedReportWithoutDatesFunction} AdvancedReportFunction */
+/** @typedef {{data: unknown, error: unknown, source?: 'unavailable'|'server_rpc', authority?: 'none'|'ledger_derived'}} AdvancedReportResultExpectedView */
+/** @typedef {string|number|boolean|null|undefined} AdvancedReportScalarExpectedView */
+/** Expected scalar row view used by the existing report tables; report RPC results are not validated here.
+ * @typedef {Record<string, AdvancedReportScalarExpectedView>} AdvancedReportRowExpectedView
+ */
+/** @typedef {AdvancedReportRowExpectedView & {revenue?: number|null}} AdvancedReportPickupRowExpectedView */
+/** @typedef {{total_room_nights?: AdvancedReportScalarExpectedView, occupied_room_nights?: AdvancedReportScalarExpectedView, avg_occupancy?: AdvancedReportScalarExpectedView, adr?: AdvancedReportScalarExpectedView, revpar?: AdvancedReportScalarExpectedView, total_bookings?: AdvancedReportScalarExpectedView, cancellation_rate?: AdvancedReportScalarExpectedView, no_show_rate?: AdvancedReportScalarExpectedView}} AdvancedReportSummaryExpectedView */
+/** Expected report-specific row collections and summary fields consumed by this component; no IPC/RPC data validation is performed.
+ * @typedef {{daily?: AdvancedReportRowExpectedView[], rows?: AdvancedReportRowExpectedView[], summary?: AdvancedReportSummaryExpectedView|null, sources?: AdvancedReportPickupRowExpectedView[], channels?: AdvancedReportRowExpectedView[], accounts?: AdvancedReportRowExpectedView[], booking_tax?: AdvancedReportRowExpectedView[], pos_tax?: AdvancedReportRowExpectedView[], breakdown?: AdvancedReportRowExpectedView[], exceptions?: AdvancedReportRowExpectedView[], productivity?: AdvancedReportRowExpectedView[], rooms?: AdvancedReportRowExpectedView[], groups?: AdvancedReportRowExpectedView[], total_tax_collected?: AdvancedReportScalarExpectedView, total_deposits_collected?: AdvancedReportScalarExpectedView, total_deposits_applied?: AdvancedReportScalarExpectedView, outstanding_liability?: AdvancedReportScalarExpectedView}} AdvancedReportDataExpectedView
+ */
+/** @typedef {{key: string, label: string, accessor: (row: AdvancedReportRowExpectedView) => import('react').ReactNode}} AdvancedReportColumnExpectedView */
+/** @typedef {{message?: string|null}} AdvancedReportThrownMessageExpectedView */
+
+/** @param {unknown} amount @param {string} [currency] */
 function formatCurrency(amount, currency = 'P') {
   return `${currency}${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
@@ -34,8 +52,10 @@ function defaultStart() {
   return d.toISOString().split('T')[0]
 }
 
+/** @param {AdvancedReportKey} reportKey */
 function getReportFunction(reportKey) {
   const api = window.api.advancedReports
+  /** @type {Record<AdvancedReportKey, AdvancedReportFunction>} */
   const map = {
     occupancy: api.getOccupancy,
     pace: api.getPace,
@@ -54,6 +74,7 @@ function getReportFunction(reportKey) {
   return map[reportKey]
 }
 
+/** @param {{title: string, columns: AdvancedReportColumnExpectedView[], rows: AdvancedReportRowExpectedView[], loading: boolean, currency: string}} props */
 function ReportTable({ title, columns, rows, loading, currency }) {
   if (loading) return <div className="flex items-center justify-center py-10"><div className="h-7 w-7 animate-spin rounded-full border-2 border-[#174c3a] border-t-transparent" /></div>
   if (!rows || rows.length === 0) return <p className="text-sm text-slate-500 py-6 text-center">No data available.</p>
@@ -100,10 +121,10 @@ function ReportTable({ title, columns, rows, loading, currency }) {
 export default function AdvancedReports({ embedded = false }) {
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
-  const [reportType, setReportType] = useState('occupancy')
+  const [reportType, setReportType] = useState(/** @type {AdvancedReportKey} */ ('occupancy'))
   const [startDate, setStartDate] = useState(defaultStart)
   const [endDate, setEndDate] = useState(todayStr)
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(/** @type {AdvancedReportDataExpectedView|null} */ (null))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [authority, setAuthority] = useState('')
@@ -117,18 +138,28 @@ export default function AdvancedReports({ embedded = false }) {
       const fn = getReportFunction(reportType)
       if (!fn) { setError('Unknown report type'); return }
       const needsDates = !['debtorAging', 'depositLiability', 'folioExceptions'].includes(reportType)
-      const result = needsDates ? await fn(startDate, endDate) : await fn()
+      // These branches match the date-taking and zero-argument API wrappers in getReportFunction.
+      // This view matches callReportRpc's returned envelope; payload data and errors are not validated here.
+      const result = /** @type {AdvancedReportResultExpectedView} */ (
+        needsDates
+          ? await (/** @type {AdvancedReportWithDatesFunction} */ (fn))(startDate, endDate)
+          : await (/** @type {AdvancedReportWithoutDatesFunction} */ (fn))()
+      )
       if (result?.error) {
-        setError(result.error)
+        // SQL error fields and PostgrestError.message are expected strings; IPC catch envelopes also use a string fallback.
+        // Keep the existing assignment without coercion; this is not runtime validation.
+        setError(/** @type {string} */ (result.error))
         setAuthority(result.authority || 'none')
         return
       }
       const payload = result?.data != null ? result.data : result
       // Never invent KPI rows client-side when the server returned nothing
-      setData(payload ?? null)
+      // This is the local expected display view for the existing report RPC payload.
+      // It does not validate response or cached data at runtime.
+      setData(/** @type {AdvancedReportDataExpectedView|null} */ (payload ?? null))
       setAuthority(result?.authority || (payload ? 'ledger_derived' : 'none'))
     } catch (err) {
-      setError(err?.message || 'Report failed')
+      setError((/** @type {AdvancedReportThrownMessageExpectedView|null|undefined} */ (err))?.message || 'Report failed')
       setAuthority('none')
     } finally {
       setLoading(false)
@@ -385,7 +416,7 @@ export default function AdvancedReports({ embedded = false }) {
         <div className="flex items-end gap-3">
           <div className="flex-1">
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Report Type</label>
-            <select className="input" value={reportType} onChange={(e) => setReportType(e.target.value)}>
+            <select className="input" value={reportType} onChange={(e) => setReportType(/** @type {AdvancedReportKey} */ (e.target.value))}>
               {REPORT_TYPES.map((rt) => <option key={rt.key} value={rt.key}>{rt.label}</option>)}
             </select>
           </div>

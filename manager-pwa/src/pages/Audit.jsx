@@ -4,25 +4,32 @@ import { useAuth } from '../contexts/AuthContext'
 import { getNightAudit } from '../lib/api'
 import { money, paymentStatusClass, shortDate, titleCase } from '../lib/format'
 
+/** @typedef {{id: string, customer_name?: string | null, guest_name?: string | null, room_number?: string | null, check_in: string, check_out: string, payment_status?: string | null, status?: string | null, total_amount?: number | string | null, charges_total?: number | string | null}} NightAuditBookingView */
+/** @typedef {{gross_collected: number, refunds_issued: number, net_collected: number, expenses_total: number, pos_revenue: number, outstanding_total: number, check_ins: NightAuditBookingView[], check_outs: NightAuditBookingView[], new_bookings: NightAuditBookingView[], outstanding: NightAuditBookingView[]}} NightAuditExpectedView */
+
 export default function Audit() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [loading, setLoading] = useState(false)
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(/** @type {NightAuditExpectedView | null} */ (null))
   const [error, setError] = useState('')
 
   const runAudit = async () => {
     setLoading(true)
     setError('')
     try {
-      const result = await getNightAudit(user.lodge_id, date)
+      // This is the existing report shape expected by the page; the RPC result
+      // is not runtime-validated here.
+      const result = /** @type {NightAuditExpectedView | null} */ (await getNightAudit(user.lodge_id, date))
       setData(result)
     } catch (nextError) {
-      setError(nextError.message || 'Could not run the night audit.')
+      setError((/** @type {{message?: string} | null | undefined} */ (nextError))?.message || 'Could not run the night audit.')
     }
     setLoading(false)
   }
 
+  /** @type {[string, NightAuditBookingView[]][]} */
   const sections = [
     ['Check-ins', data?.check_ins || []],
     ['Check-outs', data?.check_outs || []],
@@ -93,7 +100,7 @@ export default function Audit() {
                         {row.room_number ? `Room ${row.room_number}` : 'Room pending'} • {shortDate(row.check_in)} → {shortDate(row.check_out)}
                       </p>
                     </div>
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${paymentStatusClass(row.payment_status)}`}>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${paymentStatusClass(row.payment_status || '')}`}>
                       {titleCase(row.payment_status || row.status)}
                     </span>
                   </div>

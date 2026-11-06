@@ -27,8 +27,30 @@ import {
   isProductCompatiblePropertyType
 } from '../../shared/productIdentity.js';
 
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_KEY;
+/** RPC rows remain untrusted; the view documents existing field reads only. */
+/** @typedef {{email?: unknown, lodge_id?: unknown}} AuthCacheEntryExpectedDataView */
+/** @typedef {{found?: unknown, authenticated?: unknown, id?: unknown, email?: unknown, role?: unknown, status?: unknown, lodge_id?: unknown, name?: unknown, password_hash?: unknown, last_sign_in_at?: unknown, last_desktop_sign_in_at?: unknown, last_pwa_sign_in_at?: unknown, last_activity_at?: unknown, invite_sent_at?: unknown, password_updated_at?: unknown, capability_overrides?: unknown, session_token?: unknown, session_expires_at?: unknown}} AuthContractRowExpectedDataView */
+/** Normalized only by the existing contract normalizer; unknown leaves are not validated. */
+/** @typedef {{found: boolean, authenticated: boolean, id: unknown, email: string, role: unknown, status: string, lodge_id: string | null, name: unknown, password_hash: unknown, last_sign_in_at: unknown, last_desktop_sign_in_at: unknown, last_pwa_sign_in_at: unknown, last_activity_at: unknown, invite_sent_at: unknown, password_updated_at: unknown, capability_overrides: unknown, session_token: unknown, session_expires_at: unknown}} NormalizedAuthContractRowExpectedDataView */
+/** @typedef {{ok: true, row: NormalizedAuthContractRowExpectedDataView} | {ok: false, reason: unknown}} AuthContractNormalizationResult */
+/** Leaves come from auth RPC/cache records; this is a read view, not validation. */
+/** @typedef {Record<string, unknown> & {id?: unknown, lodge_id?: unknown, name?: unknown, allowed_outlet_ids?: unknown}} AuthUserExpectedDataView */
+/** @typedef {{user: AuthUserExpectedDataView, source: string, session_token: unknown, session_expires_at: unknown, mode?: 'online', code?: never, error?: never, details?: never, memberships?: never}} AuthLoginOnlineSuccess */
+/** @typedef {{user: null, code: unknown, error: unknown, details?: unknown, memberships?: unknown, source?: never, session_token?: never, session_expires_at?: never}} AuthLoginFailure */
+/** @typedef {AuthLoginOnlineSuccess | AuthLoginFailure} AuthOnlineResult */
+/** @typedef {AuthOnlineResult | {user: AuthUserExpectedDataView, mode: 'offline_trusted_session', warning: string}} AuthLoginResult */
+/** Read view for native Error-like thrown values; no validation or normalization. */
+/** @typedef {{message?: unknown, code?: unknown, details?: unknown, hint?: unknown, stack?: unknown}} AuthCaughtErrorReadView */
+/** `list_desktop_product_memberships` returns lodge_id as a non-null SQL uuid, serialized as text; RPC JSON remains unvalidated. */
+/** @typedef {{lodge_id: string}} AuthMembershipExpectedDataView */
+/** Cached settings are read through the existing cache fallback and are not validated here. */
+/** @typedef {{property_type?: unknown, business_type?: unknown}} AuthSettingsExpectedDataView */
 
+// Bundler configuration is passed through unchanged; the Supabase client owns
+// its existing missing-key failure behavior.
+const SUPABASE_ANON_KEY = /** @type {string} */ (import.meta.env.VITE_SUPABASE_KEY);
+
+/** @param {string} label @param {Record<string, unknown>} [payload] */
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
   try {
@@ -38,50 +60,53 @@ function authTrace(label, payload = {}) {
   }
 }
 
+/** @param {string} clientLabel @param {unknown} [sessionToken] @param {string | null} [email] */
 export function getAuthClientState(clientLabel, sessionToken = null, email = null) {
   return {
     clientLabel,
     lodge_id: state.lodgeId,
     email,
     current_session_token_present: !!state.backendSession?.token,
-    current_session_token_length: state.backendSession?.token ? state.backendSession.token.length : null,
+    current_session_token_length: state.backendSession?.token ? /** @type {{length?: unknown}} */ (state.backendSession.token).length : null,
     explicit_session_token_present: !!sessionToken,
-    explicit_session_token_length: sessionToken ? sessionToken.length : null
+    explicit_session_token_length: sessionToken ? /** @type {{length?: unknown}} */ (sessionToken).length : null
   };
 }
 
+/** @param {unknown} row @returns {AuthContractNormalizationResult} */
 export function normalizeAuthContractRow(row) {
   if (!row || typeof row !== 'object') {
     return { ok: false, reason: 'authenticate_user returned no result.' };
   }
+  const expectedRow = /** @type {AuthContractRowExpectedDataView} */ (row);
   const normalized = {
-    found: typeof row.found === 'boolean' ? row.found : Boolean(row.id || row.email),
-    authenticated: typeof row.authenticated === 'boolean' ? row.authenticated : false,
-    id: row.id || null,
-    email: normalizeEmail(row.email),
-    role: row.role || null,
-    status: normalizeStaffStatus(row.status),
-    lodge_id: normalizeLodgeId(row.lodge_id),
-    name: row.name || '',
-    password_hash: row.password_hash || null,
-    last_sign_in_at: row.last_sign_in_at || null,
-    last_desktop_sign_in_at: row.last_desktop_sign_in_at || null,
-    last_pwa_sign_in_at: row.last_pwa_sign_in_at || null,
-    last_activity_at: row.last_activity_at || null,
-    invite_sent_at: row.invite_sent_at || null,
-    password_updated_at: row.password_updated_at || null,
+    found: typeof expectedRow.found === 'boolean' ? expectedRow.found : Boolean(expectedRow.id || expectedRow.email),
+    authenticated: typeof expectedRow.authenticated === 'boolean' ? expectedRow.authenticated : false,
+    id: expectedRow.id || null,
+    email: normalizeEmail(expectedRow.email),
+    role: expectedRow.role || null,
+    status: normalizeStaffStatus(expectedRow.status),
+    lodge_id: normalizeLodgeId(expectedRow.lodge_id),
+    name: expectedRow.name || '',
+    password_hash: expectedRow.password_hash || null,
+    last_sign_in_at: expectedRow.last_sign_in_at || null,
+    last_desktop_sign_in_at: expectedRow.last_desktop_sign_in_at || null,
+    last_pwa_sign_in_at: expectedRow.last_pwa_sign_in_at || null,
+    last_activity_at: expectedRow.last_activity_at || null,
+    invite_sent_at: expectedRow.invite_sent_at || null,
+    password_updated_at: expectedRow.password_updated_at || null,
     capability_overrides:
-      row.capability_overrides && typeof row.capability_overrides === 'object' && !Array.isArray(row.capability_overrides)
-        ? row.capability_overrides
+      expectedRow.capability_overrides && typeof expectedRow.capability_overrides === 'object' && !Array.isArray(expectedRow.capability_overrides)
+        ? expectedRow.capability_overrides
         : {},
-    session_token: row.session_token || null,
-    session_expires_at: row.session_expires_at || null
+    session_token: expectedRow.session_token || null,
+    session_expires_at: expectedRow.session_expires_at || null
   };
 
   const missingCoreFields =
   !normalized.lodge_id ||
-  !Object.prototype.hasOwnProperty.call(row, 'found') ||
-  !Object.prototype.hasOwnProperty.call(row, 'authenticated');
+  !Object.prototype.hasOwnProperty.call(expectedRow, 'found') ||
+  !Object.prototype.hasOwnProperty.call(expectedRow, 'authenticated');
 
   if (missingCoreFields) {
     return {
@@ -100,19 +125,22 @@ export function normalizeAuthContractRow(row) {
   return { ok: true, row: normalized };
 }
 
+/** @param {string} email */
 export function removeAuthEntry(email) {
   const emailLower = normalizeEmail(email);
-  const filtered = readAuthCache().filter((e) => !(e.email === emailLower && e.lodge_id === state.lodgeId));
+  const filtered = readAuthCache().filter((/** @type {AuthCacheEntryExpectedDataView} */ e) => !(e.email === emailLower && e.lodge_id === state.lodgeId));
   writeAuthCache(filtered);
 }
 
+/** @param {string} email @param {string} passwordHash */
 export function upsertAuthEntry(email, passwordHash) {
   const emailLower = normalizeEmail(email);
-  const entries = readAuthCache().filter((e) => !(e.email === emailLower && e.lodge_id === state.lodgeId));
+  const entries = readAuthCache().filter((/** @type {AuthCacheEntryExpectedDataView} */ e) => !(e.email === emailLower && e.lodge_id === state.lodgeId));
   entries.push({ email: emailLower, lodge_id: state.lodgeId, password_hash: passwordHash, deprecated: true });
   writeAuthCache(entries);
 }
 
+/** @param {AuthUserExpectedDataView} user @param {string} emailLower @param {string | null} [password] */
 async function cacheSuccessfulLogin(user, emailLower, password = null) {
   console.log('[AUTH] cache write start:', { email: emailLower, userId: user?.id, lodge_id: state.lodgeId });
   if (typeof password === 'string' && password) {
@@ -120,7 +148,7 @@ async function cacheSuccessfulLogin(user, emailLower, password = null) {
     upsertAuthEntry(emailLower, localHash);
   }
   upsertCachedUser(user);
-  const authEntries = readAuthCache().filter((entry) => entry.email === emailLower && entry.lodge_id === state.lodgeId);
+  const authEntries = readAuthCache().filter((/** @type {AuthCacheEntryExpectedDataView} */ entry) => entry.email === emailLower && entry.lodge_id === state.lodgeId);
   const cachedUser = getCachedUser(emailLower);
   console.log('[AUTH] cache write result:', {
     email: emailLower,
@@ -130,13 +158,16 @@ async function cacheSuccessfulLogin(user, emailLower, password = null) {
   });
 }
 
+/** @param {string} emailLower */
 export function getCachedUser(emailLower) {
   const normalizedEmail = normalizeEmail(emailLower);
-  return readCache('users').
+  // Persisted cache contents are unvalidated; keep the existing .map failure behavior.
+  return /** @type {AuthUserExpectedDataView[]} */ (readCache('users')).
   map(normalizeUserRecord).
-  find((u) => u?.email === normalizedEmail && (u.lodge_id ? u.lodge_id === state.lodgeId : true));
+  find((/** @type {AuthUserExpectedDataView | null | undefined} */ u) => u?.email === normalizedEmail && (u.lodge_id ? u.lodge_id === state.lodgeId : true));
 }
 
+/** @param {unknown} reason @param {{email?: unknown} & Record<string, unknown>} [details] */
 function logAuthFailure(reason, details = {}) {
   console.warn('[AUTH] login failed:', {
     reason,
@@ -147,6 +178,7 @@ function logAuthFailure(reason, details = {}) {
   });
 }
 
+/** @param {Record<string, unknown>} user @returns {AuthUserExpectedDataView} */
 export function toSafeUser(user) {
   const {
     password_hash: _ph,
@@ -157,10 +189,12 @@ export function toSafeUser(user) {
   return safeUser;
 }
 
+/** @param {{status?: unknown} | null | undefined} user */
 function isStaffAccountActive(user) {
   return normalizeStaffStatus(user?.status) === 'active';
 }
 
+/** @param {string} emailLower */
 export async function fetchAuthenticateUserContract(emailLower) {
   try {
     const authClient = buildSupabaseClient(SUPABASE_ANON_KEY);
@@ -188,6 +222,7 @@ export async function fetchAuthenticateUserContract(emailLower) {
     const rpcRow = Array.isArray(rpcResult.data) ? rpcResult.data[0] : rpcResult.data;
     return { rpcResult, rpcRow, contract: normalizeAuthContractRow(rpcRow) };
   } catch (error) {
+    const caught = /** @type {AuthCaughtErrorReadView} */ (error);
     authTrace('rpc call error', {
       functionName: 'authenticate_user',
       ...getAuthClientState('anon-health-probe', null, emailLower),
@@ -198,21 +233,22 @@ export async function fetchAuthenticateUserContract(emailLower) {
         p_session_type: 'desktop'
       },
       error: {
-        message: error.message || 'authenticate_user failed.',
-        code: error.code || null,
-        details: error.details || null,
-        hint: error.hint || null,
-        stack: error.stack || null
+        message: caught.message || 'authenticate_user failed.',
+        code: caught.code || null,
+        details: caught.details || null,
+        hint: caught.hint || null,
+        stack: caught.stack || null
       }
     });
     return {
-      rpcResult: { error: { message: error.message || 'authenticate_user failed.' } },
+      rpcResult: { error: { message: caught.message || 'authenticate_user failed.' } },
       rpcRow: null,
-      contract: { ok: false, reason: error.message || 'authenticate_user failed.' }
+      contract: { ok: false, reason: caught.message || 'authenticate_user failed.' }
     };
   }
 }
 
+/** @param {string | null} [targetLodgeId] */
 export async function getLodgeAuthContext(targetLodgeId = state.lodgeId) {
   const authClient = buildSupabaseClient(SUPABASE_ANON_KEY);
   const rpcArgs = {
@@ -238,8 +274,9 @@ export async function getLodgeAuthContext(targetLodgeId = state.lodgeId) {
   return row || null;
 }
 
+/** @param {string} lodgeId */
 async function assertAuthenticatedLodgeMatchesCurrentProduct(lodgeId) {
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('settings').
   select('property_type, business_type').
   eq('lodge_id', lodgeId).
@@ -256,9 +293,10 @@ async function assertAuthenticatedLodgeMatchesCurrentProduct(lodgeId) {
  * Offline / trusted-session path: reject sessions whose cached property type
  * belongs to a different product binary.
  */
+/** @param {AuthUserExpectedDataView | null | undefined} user */
 function assertOfflineSessionMatchesCurrentProduct(user) {
   if (!user || user.isMasterAdmin) return;
-  const settings = readCache('settings')?.[0] || null;
+  const settings = (/** @type {AuthSettingsExpectedDataView[] | null | undefined} */ (readCache('settings')))?.[0] || null;
   if (!settings) return;
   const propertyType = settings.property_type || settings.business_type;
   if (!propertyType) return;
@@ -267,9 +305,10 @@ function assertOfflineSessionMatchesCurrentProduct(user) {
   throw createProductMismatchError(productId, propertyType);
 }
 
+/** @param {string} emailLower */
 async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('users').
     select('id, email, role, lodge_id, created_at, name').
     eq('email', emailLower).
@@ -282,6 +321,7 @@ async function findRemoteUsersByEmailForCurrentLodge(emailLower) {
   }
 }
 
+/** @param {string} emailLower @param {string} password @param {string | null} [selectedLodgeId] @returns {Promise<AuthOnlineResult>} */
 async function authenticateOnline(emailLower, password, selectedLodgeId = null) {
   if (!state.lodgeId) {
     return authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId);
@@ -290,13 +330,16 @@ async function authenticateOnline(emailLower, password, selectedLodgeId = null) 
   const supabaseAuth = await authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId);
   if (
     supabaseAuth.user ||
-    !['supabase_auth_unavailable', 'supabase_auth_not_migrated'].includes(supabaseAuth.code)
+    !/** @type {unknown[]} */ (['supabase_auth_unavailable', 'supabase_auth_not_migrated']).includes(supabaseAuth.code)
   ) {
     return supabaseAuth;
   }
 
+  /** @type {{error: {message?: unknown} | null}} */
   let rpcResult;
+  /** @type {unknown} */
   let rpcRow;
+  /** @type {AuthContractNormalizationResult} */
   let contract;
   try {
     const timeoutPromise = new Promise((_, reject) =>
@@ -336,6 +379,7 @@ async function authenticateOnline(emailLower, password, selectedLodgeId = null) 
         const rpcRow = Array.isArray(rpcResult.data) ? rpcResult.data[0] : rpcResult.data;
         return { rpcResult, rpcRow, contract: normalizeAuthContractRow(rpcRow) };
       } catch (error) {
+        const caught = /** @type {AuthCaughtErrorReadView} */ (error);
         authTrace('rpc call error', {
           functionName: 'authenticate_user',
           ...getAuthClientState('anon-login', null, emailLower),
@@ -346,17 +390,17 @@ async function authenticateOnline(emailLower, password, selectedLodgeId = null) 
             p_session_type: 'desktop'
           },
           error: {
-            message: error.message || 'authenticate_user failed.',
-            code: error.code || null,
-            details: error.details || null,
-            hint: error.hint || null,
-            stack: error.stack || null
+            message: caught.message || 'authenticate_user failed.',
+            code: caught.code || null,
+            details: caught.details || null,
+            hint: caught.hint || null,
+            stack: caught.stack || null
           }
         });
         return {
-          rpcResult: { error: { message: error.message || 'authenticate_user failed.' } },
+          rpcResult: { error: { message: caught.message || 'authenticate_user failed.' } },
           rpcRow: null,
-          contract: { ok: false, reason: error.message || 'authenticate_user failed.' }
+          contract: { ok: false, reason: caught.message || 'authenticate_user failed.' }
         };
       }
     })(),
@@ -366,31 +410,36 @@ async function authenticateOnline(emailLower, password, selectedLodgeId = null) 
     rpcRow = authResult.rpcRow;
     contract = authResult.contract;
   } catch (e) {
-    return { user: null, code: 'server_unreachable', error: e.message };
+    return { user: null, code: 'server_unreachable', error: (/** @type {AuthCaughtErrorReadView} */ (e)).message };
   }
+
+  // The normalizer returns exactly one own-property branch; keep trace output
+  // equivalent to the former optional reads while respecting that union.
+  const contractReasonForTrace = contract.ok ? null : contract.reason || null;
+  const contractRowForTrace = contract.ok ? contract.row : null;
 
   console.log('[AUTH] online auth result:', {
     email: emailLower,
     lodge_id: state.lodgeId,
     rpc_error: rpcResult.error?.message || null,
     contract_ok: contract.ok,
-    contract_reason: contract.reason || null,
-    found: contract.row?.found ?? null,
-    user_id: contract.row?.id || null
+    contract_reason: contractReasonForTrace,
+    found: contractRowForTrace?.found ?? null,
+    user_id: contractRowForTrace?.id || null
   });
   authTrace('db.loginUser online auth result', {
     email: emailLower,
     lodge_id: state.lodgeId,
     rpc_error: rpcResult.error?.message || null,
     contract_ok: contract.ok,
-    contract_reason: contract.reason || null,
-    found: contract.row?.found ?? null,
-    authenticated: contract.row?.authenticated ?? null,
-    user_id: contract.row?.id || null
+    contract_reason: contractReasonForTrace,
+    found: contractRowForTrace?.found ?? null,
+    authenticated: contractRowForTrace?.authenticated ?? null,
+    user_id: contractRowForTrace?.id || null
   });
 
   if (rpcResult.error) {
-    const errorMessage = rpcResult.error.message || 'authenticate_user failed.';
+    const errorMessage = /** @type {string} */ (rpcResult.error.message) || 'authenticate_user failed.';
     console.error('[AUTH] online verification error:', {
       email: emailLower,
       lodge_id: state.lodgeId,
@@ -492,6 +541,7 @@ async function authenticateOnline(emailLower, password, selectedLodgeId = null) 
   };
 }
 
+/** @param {string} emailLower @param {string} password @returns {Promise<AuthOnlineResult>} */
 async function authenticateOnlineForDeviceBootstrap(emailLower, password) {
   if (!password) {
     return { user: null, code: 'wrong_password', error: 'Enter your password to sign in.' };
@@ -567,14 +617,16 @@ async function authenticateOnlineForDeviceBootstrap(emailLower, password) {
       session_expires_at: contract.row.session_expires_at
     };
   } catch (error) {
+    const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (error);
     return {
       user: null,
       code: 'server_unreachable',
-      error: error?.message || 'The server could not verify this sign-in.'
+      error: caught?.message || 'The server could not verify this sign-in.'
     };
   }
 }
 
+/** @param {string} emailLower @param {string} password @param {string | null} [selectedLodgeId] @returns {Promise<AuthOnlineResult>} */
 async function authenticateWithSupabaseAuth(emailLower, password, selectedLodgeId = null) {
   if (!password) {
     return { user: null, code: 'wrong_password', error: 'Enter your password to sign in.' };
@@ -625,7 +677,8 @@ async function authenticateWithSupabaseAuth(emailLower, password, selectedLodgeI
       };
     }
 
-    const memberships = Array.isArray(membershipRows) ? membershipRows : [];
+    // The array shape is guarded, but its RPC-supplied row contents are not validated.
+    const memberships = Array.isArray(membershipRows) ? /** @type {AuthMembershipExpectedDataView[]} */ (membershipRows) : [];
     // A cached profile is only a local convenience, not the user's company
     // selection. Restaurant and bar companies share this product, so silently
     // preferring the last one would make an email with both memberships open
@@ -652,7 +705,7 @@ async function authenticateWithSupabaseAuth(emailLower, password, selectedLodgeI
       return { user: null, code: 'account_not_found', error: `This account is not assigned to a ${product.name} company.` };
     }
 
-    const targetLodgeId = requestedLodgeId || normalizeLodgeId(memberships[0]?.lodge_id);
+    const targetLodgeId = requestedLodgeId || normalizeLodgeId(/** @type {string} */ (memberships[0]?.lodge_id));
     const { data, error } = await authClient.rpc('authenticate_user_from_supabase', {
       p_lodge_id: targetLodgeId,
       p_session_type: 'desktop'
@@ -718,14 +771,16 @@ async function authenticateWithSupabaseAuth(emailLower, password, selectedLodgeI
       session_expires_at: normalized.session_expires_at
     };
   } catch (error) {
+    const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (error);
     return {
       user: null,
       code: 'supabase_auth_unavailable',
-      error: error?.message || 'Supabase Auth could not be reached.'
+      error: caught?.message || 'Supabase Auth could not be reached.'
     };
   }
 }
 
+/** @param {string} emailLower @param {string} password */
 export async function createSupabaseAuthUserForStaff(emailLower, password) {
   if (!emailLower || !password) return null;
   const metadata = {
@@ -750,9 +805,10 @@ export async function createSupabaseAuthUserForStaff(emailLower, password) {
         return data?.user?.id || null;
       }
     } catch (error) {
+      const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (error);
       console.warn('[AUTH] Supabase Auth admin staff create failed:', {
         email: emailLower,
-        message: error?.message || 'unknown_error'
+        message: caught?.message || 'unknown_error'
       });
     }
   }
@@ -773,14 +829,16 @@ export async function createSupabaseAuthUserForStaff(emailLower, password) {
     }
     return data?.user?.id || null;
   } catch (error) {
+    const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (error);
     console.warn('[AUTH] Supabase Auth staff signup failed:', {
       email: emailLower,
-      message: error?.message || 'unknown_error'
+      message: caught?.message || 'unknown_error'
     });
     return null;
   }
 }
 
+/** @param {string} email @param {string} password @param {string | null} [selectedLodgeId] @returns {Promise<AuthLoginResult>} */
 export async function loginUser(email, password, selectedLodgeId = null) {
   authTrace('db.loginUser start', {
     email,
@@ -839,23 +897,24 @@ export async function loginUser(email, password, selectedLodgeId = null) {
           });
         }
       } catch (e) {
+        const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (e);
         clearBackendSession();
         console.error('[AUTH REAL ERROR]', {
-          message: e?.message,
-          code: e?.code,
-          details: e?.details,
-          hint: e?.hint,
-          stack: e?.stack
+          message: caught?.message,
+          code: caught?.code,
+          details: caught?.details,
+          hint: caught?.hint,
+          stack: caught?.stack
         });
 
         return {
           user: null,
-          code: e?.code || 'auth_failed_real',
-          error: e?.message || 'Unknown authentication error',
+          code: caught?.code || 'auth_failed_real',
+          error: caught?.message || 'Unknown authentication error',
           details: {
-            code: e?.code,
-            hint: e?.hint,
-            details: e?.details
+            code: caught?.code,
+            hint: caught?.hint,
+            details: caught?.details
           }
         };
       }
@@ -887,7 +946,7 @@ export async function loginUser(email, password, selectedLodgeId = null) {
         return result;
       }
       try {
-        const { data: outletAccess } = await state.supabase.rpc('get_user_outlet_access', {
+      const { data: outletAccess } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_user_outlet_access', {
           p_user_id: online.user.id,
           p_lodge_id: state.lodgeId
         });
@@ -911,21 +970,22 @@ export async function loginUser(email, password, selectedLodgeId = null) {
       // Refreshing every operational table can be expensive for larger lodges,
       // so do it in the background instead of delaying or timing out login.
       refreshAllCaches().catch((error) => {
-        console.warn('[AUTH] background cache refresh delayed:', error?.message || error);
+        console.warn('[AUTH] background cache refresh delayed:', (/** @type {AuthCaughtErrorReadView | null | undefined} */ (error))?.message || error);
       });
-      const result = {
+      const result = /** @type {AuthLoginOnlineSuccess} */ ({
         user: online.user,
         mode: 'online',
         source: online.source,
         session_token: online.session_token,
         session_expires_at: online.session_expires_at
-      };
+      });
       authTrace('db.loginUser final return', { ...result, session_token: result.session_token ? '[present]' : null });
       return result;
     }
 
     // These are definitive online answers — never hide them behind offline fallback.
-    const definitiveOnlineCodes = new Set([
+  /** @type {Set<unknown>} */
+  const definitiveOnlineCodes = new Set([
       'wrong_password',
       'account_not_found',
       'wrong_lodge',
@@ -958,14 +1018,16 @@ export async function loginUser(email, password, selectedLodgeId = null) {
       try {
         assertOfflineSessionMatchesCurrentProduct(savedSession.user);
       } catch (e) {
+        const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (e);
         const result = {
           user: null,
-          code: e?.code || 'product_profile_mismatch',
-          error: e?.message || 'This saved session belongs to a different Tsa Bonno product.'
+          code: caught?.code || 'product_profile_mismatch',
+          error: caught?.message || 'This saved session belongs to a different Tsa Bonno product.'
         };
         authTrace('db.loginUser final return', result);
         return result;
       }
+      /** @type {Extract<AuthLoginResult, {mode: 'offline_trusted_session'}>} */
       const result = {
         user: savedSession.user,
         mode: 'offline_trusted_session',
@@ -997,14 +1059,16 @@ export async function loginUser(email, password, selectedLodgeId = null) {
     try {
       assertOfflineSessionMatchesCurrentProduct(savedSession.user);
     } catch (e) {
+      const caught = /** @type {AuthCaughtErrorReadView | null | undefined} */ (e);
       const result = {
         user: null,
-        code: e?.code || 'product_profile_mismatch',
-        error: e?.message || 'This saved session belongs to a different Tsa Bonno product.'
+        code: caught?.code || 'product_profile_mismatch',
+        error: caught?.message || 'This saved session belongs to a different Tsa Bonno product.'
       };
       authTrace('db.loginUser final return', result);
       return result;
     }
+    /** @type {Extract<AuthLoginResult, {mode: 'offline_trusted_session'}>} */
     const result = {
       user: savedSession.user,
       mode: 'offline_trusted_session',

@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "runtime": "Electron 22",
+  "assertions": [
+    "neutral logo",
+    "online company chooser",
+    "selected company passed to login",
+    "offline chooser"
+  ],
+  "scope": "Actual Login component with mocked APIs; no live account or business writes"
+}

@@ -396,11 +396,12 @@ describe('Restaurant Station Routing', () => {
 
     it('pos.js online order uses server tickets from RPC result', () => {
       const js = read(POS_JS)
-      const idx = js.indexOf('Use server-created tickets from the RPC result')
-      assert.ok(idx > 0, 'has server tickets comment')
-      const nearby = js.slice(idx, idx + 500)
-      assert.ok(nearby.includes('result.tickets'), 'uses tickets from RPC result')
+      const idx = js.indexOf('const serverTickets =')
+      assert.ok(idx > 0, 'stores server tickets for the existing consumer')
+      const nearby = js.slice(idx, idx + 1200)
+      assert.ok(nearby.includes('Array.isArray(result.tickets)'), 'guards the legacy optional ticket array')
       assert.ok(nearby.includes('serverTickets.length > 0'), 'checks for server tickets')
+      assert.ok(nearby.includes(".from('pos_prep_tickets')"), 'falls back to the prep-ticket table when the RPC array is empty')
     })
   })
 })

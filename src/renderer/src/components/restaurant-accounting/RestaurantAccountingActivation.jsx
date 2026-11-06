@@ -1,4 +1,21 @@
 // @ts-check
+/** Expected successful data fields returned by get_restaurant_accounting_readiness; the RPC payload remains unvalidated. */
+/** @typedef {{active: boolean, status: string, ready: boolean, missing_requirements: string[], unposted_expenses: number, blocking_exceptions: number, unresolved_scalar_opening_balances: number, policy_version: string, configuration_version: string, effective_from: string|null, error?: undefined}} AccountingActivationReadinessSuccessExpectedView */
+/** Local load-failure state; this is not an RPC response shape. */
+/** @typedef {{error: string}} AccountingActivationReadinessErrorState */
+/** @typedef {AccountingActivationReadinessSuccessExpectedView|AccountingActivationReadinessErrorState} AccountingActivationReadinessExpectedView */
+/** Fields in get_restaurant_historical_cutover_batches rows; RPC data remains unvalidated. */
+/** @typedef {{id: string, cutover_date: string, status: string, prepared_by?: string|null, approved_by?: string|null, opening_payload_hash?: string|null, source_manifest_hash?: string|null}} AccountingCutoverBatchSummaryExpectedView */
+/** Persisted opening-balance detail displayed from the cutover batch RPC; not a validation schema. */
+/** @typedef {{account_id: string, equity_account_id: string, entry_date: string, amount: number|string}} AccountingCutoverBalanceExpectedView */
+/** Persisted posting reference displayed after server application; not a validation schema. */
+/** @typedef {{account_id: string, idempotency_key: string}} AccountingCutoverPostingExpectedView */
+/** Fields in get_restaurant_historical_cutover_batch's data object; RPC values remain unvalidated. */
+/** @typedef {AccountingCutoverBatchSummaryExpectedView & {opening_balances?: AccountingCutoverBalanceExpectedView[], opening_postings?: AccountingCutoverPostingExpectedView[]}} AccountingCutoverBatchDetailExpectedView */
+/** Account fields used to populate existing ledger selectors; getAccounts RPC values remain unvalidated. */
+/** @typedef {{id: string, code?: string|null, name?: string|null, account_type?: string|null, is_active?: boolean}} AccountingAccountExpectedView */
+/** @typedef {{accountId: string, equityAccountId: string, entryDate: string, amount: string}} OpeningBalanceDraftExpectedView */
+/** @typedef {NonNullable<ReturnType<typeof snapshotReviewedEvidence>>} AccountingReviewSnapshot */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useAccess, useAuth, useSettings } from '../../app-context'
@@ -31,8 +48,10 @@ import {
 // get_restaurant_accounting_activation_state().
 const POLICY_VERSION = 'bar-accounting-financial-truth-v1'
 
+/** @param {string} entryDate @returns {OpeningBalanceDraftExpectedView} */
 const emptyBalanceRow = (entryDate) => ({ accountId: '', equityAccountId: '', entryDate, amount: '' })
 
+/** @param {OpeningBalanceDraftExpectedView[]} rows @returns {string[]} */
 export function validateOpeningBalances(rows = []) {
   const errors = []
   const seen = new Set()
@@ -59,21 +78,21 @@ export default function RestaurantAccountingActivation() {
   const lodgeId = settings?.lodge_id || user?.lodge_id || null
   const userId = user?.id || null
   const canManage = canAccessCapability(access, 'accounting.manage')
-  const [readiness, setReadiness] = useState(null)
-  const [accounts, setAccounts] = useState([])
+  const [readiness, setReadiness] = useState(/** @type {AccountingActivationReadinessExpectedView|null} */ (null))
+  const [accounts, setAccounts] = useState(/** @type {AccountingAccountExpectedView[]} */ ([]))
   const [cutoverDate, setCutoverDate] = useState(() => today())
   const [balanceRows, setBalanceRows] = useState([emptyBalanceRow(today())])
-  const [batches, setBatches] = useState([])
+  const [batches, setBatches] = useState(/** @type {AccountingCutoverBatchSummaryExpectedView[]} */ ([]))
   const [batchesLoading, setBatchesLoading] = useState(false)
   const [selectedBatchId, setSelectedBatchId] = useState(() => searchParams.get('batch') || '')
-  const [batchDetail, setBatchDetail] = useState(null)
+  const [batchDetail, setBatchDetail] = useState(/** @type {AccountingCutoverBatchDetailExpectedView|null} */ (null))
   const [batchLoading, setBatchLoading] = useState(false)
   const [reviewNotes, setReviewNotes] = useState('')
   // Immutable reviewed-evidence snapshot (F1): captured only by the
   // reviewer's explicit confirmation from DISPLAYED detail. Notes alone
   // never imply review; approval revalidates this snapshot against a fresh
   // read and never auto-submits a changed hash.
-  const [reviewSnapshot, setReviewSnapshot] = useState(null)
+  const [reviewSnapshot, setReviewSnapshot] = useState(/** @type {AccountingReviewSnapshot|null} */ (null))
   const [effectiveFrom, setEffectiveFrom] = useState(() => today())
   const [configurationVersion, setConfigurationVersion] = useState('')
   const [cutoverBatchId, setCutoverBatchId] = useState('')
@@ -112,17 +131,18 @@ export default function RestaurantAccountingActivation() {
   // Synchronous per-batch single flight: React state updates are async, so
   // two rapid clicks could both pass a state guard. The ref closes that
   // race; the server replay covers the rest.
-  const applyFlightRef = useRef(null)
+  const applyFlightRef = useRef(/** @type {string|null} */ (null))
 
   const loadReadiness = useCallback(async () => {
     const seq = sessionSeqRef.current
     try {
       const result = await accountingInvoke('getReadiness')
       if (sessionSeqRef.current !== seq) return
-      setReadiness(unwrap(result, null))
+      // The producer returns a JSON RPC envelope; this expected view does not validate it.
+      setReadiness(/** @type {AccountingActivationReadinessExpectedView|null} */ (/** @type {unknown} */ (unwrap(result, null))))
     } catch (loadError) {
       if (sessionSeqRef.current !== seq) return
-      setReadiness({ error: loadError?.message || 'Readiness could not be loaded.' })
+      setReadiness({ error: (/** @type {{message?: string}|null|undefined} */ (loadError))?.message || 'Readiness could not be loaded.' })
     }
   }, [])
 
@@ -132,7 +152,8 @@ export default function RestaurantAccountingActivation() {
       const result = await accountingInvoke('getAccounts')
       if (sessionSeqRef.current !== seq) return
       const rows = unwrap(result, [])
-      setAccounts(Array.isArray(rows) ? rows : [])
+      // Array guard preserves existing behavior; RPC account fields remain unvalidated.
+      setAccounts(Array.isArray(rows) ? /** @type {AccountingAccountExpectedView[]} */ (rows) : [])
     } catch {
       if (sessionSeqRef.current !== seq) return
       setAccounts([])
@@ -146,7 +167,8 @@ export default function RestaurantAccountingActivation() {
       const result = await accountingInvoke('getCutoverBatches', 50)
       if (sessionSeqRef.current !== seq) return
       const rows = unwrap(result, [])
-      setBatches(Array.isArray(rows) ? rows : [])
+      // Array.isArray preserves the existing container guard; RPC row fields remain unvalidated.
+      setBatches(Array.isArray(rows) ? /** @type {AccountingCutoverBatchSummaryExpectedView[]} */ (rows) : [])
     } catch {
       if (sessionSeqRef.current !== seq) return
       setBatches([])
@@ -155,6 +177,7 @@ export default function RestaurantAccountingActivation() {
     }
   }, [])
 
+  /** @param {string} batchId @param {{silent?: boolean}} [options] */
   const loadBatchDetail = useCallback(async (batchId, { silent = false } = {}) => {
     const requestId = batchRequestRef.current + 1
     batchRequestRef.current = requestId
@@ -167,7 +190,8 @@ export default function RestaurantAccountingActivation() {
     if (!silent) setBatchLoading(true)
     try {
       const result = await accountingInvoke('getCutoverBatch', id)
-      const detail = unwrap(result, null)
+      // The SQL producer returns a {success,data} envelope; expected detail fields remain unvalidated.
+      const detail = /** @type {AccountingCutoverBatchDetailExpectedView|null} */ (/** @type {unknown} */ (unwrap(result, null)))
       // Ignore late responses for a previous selection, tenant, or user.
       if (batchRequestRef.current !== requestId || sessionSeqRef.current !== seq) return null
       setBatchDetail(detail && detail.id ? detail : null)
@@ -253,6 +277,7 @@ export default function RestaurantAccountingActivation() {
     setReviewSnapshot(null)
   }, [batchDetail?.id])
 
+  /** @param {string} batchId */
   const selectBatch = (batchId) => {
     const id = String(batchId || '').trim()
     selectionFromUrlRef.current = false
@@ -278,7 +303,8 @@ export default function RestaurantAccountingActivation() {
     }
   }
 
-  const readinessData = readiness && !readiness.error ? readiness : null
+  // The existing truthiness branch defines the rendered success path; this expected-data view does not validate the RPC payload.
+  const readinessData = readiness && !readiness.error ? /** @type {AccountingActivationReadinessSuccessExpectedView} */ (readiness) : null
   const missing = readinessData?.missing_requirements || []
   const isActive = readinessData?.active === true
   const isReady = readinessData?.ready === true
@@ -287,6 +313,7 @@ export default function RestaurantAccountingActivation() {
     ...((readinessData?.unposted_expenses || 0) > 0 ? [`${readinessData.unposted_expenses} unposted expenses`] : []),
     ...((readinessData?.blocking_exceptions || 0) > 0 ? [`${readinessData.blocking_exceptions} blocking reconciliation exceptions`] : [])
   ]
+  /** @param {string} key */
   const actionDisabled = (key) => busy !== '' && busy !== key
   const selfPrepared = Boolean(batchDetail?.prepared_by && userId && String(batchDetail.prepared_by) === String(userId))
   // Readiness prerequisites (asset/revenue/expense accounts, cash + category
@@ -678,8 +705,8 @@ export default function RestaurantAccountingActivation() {
           <AccountingNotice type="error">Readiness could not be verified: {readiness.error}</AccountingNotice>
         ) : (
           <div className="space-y-2 text-sm">
-            <p><strong>Status:</strong> {readinessData.status || 'draft'} · <strong>Active:</strong> {isActive ? 'yes' : 'no'} · <strong>Ready:</strong> {isReady ? 'yes' : 'no'}</p>
-            <p><strong>Policy:</strong> {readinessData.policy_version || POLICY_VERSION} · <strong>Configuration:</strong> {readinessData.configuration_version || 'unconfigured'}{readinessData.effective_from ? ` · Effective: ${readinessData.effective_from}` : ''}</p>
+            <p><strong>Status:</strong> {/** @type {AccountingActivationReadinessSuccessExpectedView} */ (readinessData).status || 'draft'} · <strong>Active:</strong> {isActive ? 'yes' : 'no'} · <strong>Ready:</strong> {isReady ? 'yes' : 'no'}</p>
+            <p><strong>Policy:</strong> {/** @type {AccountingActivationReadinessSuccessExpectedView} */ (readinessData).policy_version || POLICY_VERSION} · <strong>Configuration:</strong> {/** @type {AccountingActivationReadinessSuccessExpectedView} */ (readinessData).configuration_version || 'unconfigured'}{/** @type {AccountingActivationReadinessSuccessExpectedView} */ (readinessData).effective_from ? ` · Effective: ${/** @type {AccountingActivationReadinessSuccessExpectedView} */ (readinessData).effective_from}` : ''}</p>
             {isReady ? <p>All readiness checks pass.</p> : (
               <div>
                 <p>Blocking items — every one must clear before activation:</p>
@@ -694,7 +721,7 @@ export default function RestaurantAccountingActivation() {
         )}
       </AccountingPanel>
 
-      <AccountingPanel title="2 · Historical cutover (only when POS sales predate activation)" description="Prepare, then have a different authorised reviewer approve, then explicitly apply. Approved batches are immutable.">
+      <AccountingPanel title="2 · Historical cutover (only when POS sales predate activation)" description="Prepare, then have a different authorised reviewer approve, then explicitly apply. Approved batches are immutable." actions={null}>
         {!canManage && <AccountingNotice type="warning">Preparing, approving, or applying a cutover requires Restaurant Accounting management access.</AccountingNotice>}
         <div className="mb-4 space-y-2">
           <div className="flex flex-wrap items-end gap-2">

@@ -23,9 +23,26 @@ import { formatLocalDate, localToday } from '../utils/localDate'
 const SUPPLY_CATEGORIES = ['Bathroom', 'Linen', 'Kitchen', 'Other']
 const SUPPLY_UNITS = ['roll', 'piece', 'bar', 'sachet', 'packet', 'pack', 'box', 'sheet', 'pair', 'ml', 'L', 'kg']
 
+/**
+ * Expected supply rows are read from the concrete supplies handlers and their cache projections.
+ * The renderer does not validate IPC or persisted data; these views preserve the existing fields
+ * and null/numeric-string variants consumed by this screen.
+ * @typedef {{id: string, name: string, category: string, unit: string, current_stock?: number | string | null, reorder_level?: number | string | null, latest_unit_cost?: number | string | null, is_active?: boolean}} SupplyItemView
+ * @typedef {{id: string, room_number?: string | null, room_type?: string | null}} SupplyRoomView
+ * Persisted room stock has `last_moved_at`; optimistic cache rows may omit it until synced.
+ * @typedef {{id: string, supply_item_id: string, room_id: string, item_id?: string, quantity_on_hand: number | string, reorder_level?: number | string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, updated_at?: string | null, last_moved_at?: string | null}} RoomSupplyStockView
+ * @typedef {{id?: string, item_id?: string, supply_item_id?: string, room_id?: string | null, movement_type: string, quantity: number | string, unit_cost?: number | string | null, total_cost?: number | string | null, notes?: string | null, room_number?: string | null, room_type?: string | null, supply_name?: string, supply_unit?: string, supply_category?: string, created_at?: string | null}} SupplyMovementView
+ * @typedef {{room_id: string, room_number?: string, supply_name?: string, supply_unit?: string, supply_category?: string, units_used: number | string, total_cost: number | string, week_start?: string | null}} SupplyAllocationView
+ * Offline-created headers can lack `started_at`; database rows expose it. Posting adds nullable `posted_at`.
+ * @typedef {{id: string, status?: string, title?: string | null, notes?: string | null, created_at?: string | null, started_at?: string, posted_at?: string | null, lines?: SupplyStocktakeLineView[]}} SupplyStocktakeView
+ * @typedef {{id?: string, line_key?: string, item_id?: string, supply_item_id?: string, room_stock_id?: string, room_id?: string, room_number?: string | null, room_type?: string | null, item_name?: string | null, item_category?: string | null, item_unit?: string | null, expected_qty?: number | string | null, counted_qty?: number | string | null, variance_qty?: number | string | null, variance_cost?: number | string | null, unit_cost?: number | string | null, notes?: string | null}} SupplyStocktakeLineView
+ */
+
 const today = () => localToday()
 
+/** @param {number | string | null | undefined} v @param {number} [dp] */
 function fmt(v, dp = 2) { return Number(v || 0).toFixed(dp) }
+/** @param {number | string | null | undefined} v */
 function fmtQty(v) {
   const value = Number(v || 0)
   return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)
@@ -35,6 +52,7 @@ function monthStart() {
   d.setDate(1)
   return formatLocalDate(d)
 }
+/** @param {string | null | undefined} value */
 function shortDateTime(value) {
   if (!value) return '—'
   try {
@@ -43,12 +61,15 @@ function shortDateTime(value) {
     return String(value)
   }
 }
+/** @param {SupplyItemView[] | null | undefined} list @returns {SupplyItemView[]} */
 function sortItems(list) {
   return [...(list || [])].sort((a, b) => String(a.category || '').localeCompare(String(b.category || '')) || String(a.name || '').localeCompare(String(b.name || '')))
 }
+/** @param {SupplyRoomView[] | null | undefined} list @returns {SupplyRoomView[]} */
 function sortRooms(list) {
   return [...(list || [])].sort((a, b) => String(a.room_number || '').localeCompare(String(b.room_number || ''), undefined, { numeric: true, sensitivity: 'base' }))
 }
+/** @param {SupplyItemView | null | undefined} item */
 function getStoreStatus(item) {
   const stock = Number(item?.current_stock || 0)
   const reorder = Number(item?.reorder_level || 0)
@@ -56,6 +77,7 @@ function getStoreStatus(item) {
   if (reorder > 0 && stock <= reorder) return { label: 'Low', tone: 'border-amber-200 bg-amber-50 text-amber-700', warning: true }
   return { label: 'Healthy', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', warning: false }
 }
+/** @param {RoomSupplyStockView | null | undefined} row */
 function getRoomStatus(row) {
   const qty = Number(row?.quantity_on_hand || 0)
   const reorder = Number(row?.reorder_level || 0)
@@ -63,6 +85,7 @@ function getRoomStatus(row) {
   if (reorder > 0 && qty <= reorder) return { label: 'Low', tone: 'border-amber-200 bg-amber-50 text-amber-700', warning: true }
   return { label: 'Loaded', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700', warning: false }
 }
+/** @param {string | null | undefined} type */
 function movementLabel(type) {
   switch (type) {
     case 'purchase': return 'Purchase'
@@ -80,26 +103,26 @@ export default function RoomSupplies() {
 
   const [tab, setTab] = useState('stock')
   const [pageError, setPageError] = useState('')
-  const [supplyItems, setSupplyItems] = useState([])
-  const [rooms, setRooms] = useState([])
-  const [roomStockRows, setRoomStockRows] = useState([])
-  const [movements, setMovements] = useState([])
+  const [supplyItems, setSupplyItems] = useState(/** @type {SupplyItemView[]} */ ([]))
+  const [rooms, setRooms] = useState(/** @type {SupplyRoomView[]} */ ([]))
+  const [roomStockRows, setRoomStockRows] = useState(/** @type {RoomSupplyStockView[]} */ ([]))
+  const [movements, setMovements] = useState(/** @type {SupplyMovementView[]} */ ([]))
   const [loading, setLoading] = useState(false)
 
   const [itemModal, setItemModal] = useState(false)
-  const [editingItem, setEditingItem] = useState(null)
+  const [editingItem, setEditingItem] = useState(/** @type {SupplyItemView | null} */ (null))
   const [itemSaving, setItemSaving] = useState(false)
   const [itemError, setItemError] = useState('')
   const [itemForm, setItemForm] = useState({ name: '', category: 'Bathroom', unit: 'roll', reorder_level: '', current_stock: '' })
 
   const [purchaseModal, setPurchaseModal] = useState(false)
-  const [purchaseItem, setPurchaseItem] = useState(null)
+  const [purchaseItem, setPurchaseItem] = useState(/** @type {SupplyItemView | null} */ (null))
   const [purchaseSaving, setPurchaseSaving] = useState(false)
   const [purchaseError, setPurchaseError] = useState('')
   const [purchaseForm, setPurchaseForm] = useState({ date: today(), quantity_purchased: '', total_cost: '', notes: '', package_count: '', units_per_package: '' })
 
   const [adjustModal, setAdjustModal] = useState(false)
-  const [adjustItem, setAdjustItem] = useState(null)
+  const [adjustItem, setAdjustItem] = useState(/** @type {SupplyItemView | null} */ (null))
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState('')
   const [adjustDelta, setAdjustDelta] = useState('')
@@ -108,25 +131,25 @@ export default function RoomSupplies() {
 
   const [movementModal, setMovementModal] = useState(false)
   const [movementType, setMovementType] = useState('load')
-  const [movementTarget, setMovementTarget] = useState(null)
+  const [movementTarget, setMovementTarget] = useState(/** @type {{item?: SupplyItemView | null, row?: RoomSupplyStockView | null} | null} */ (null))
   const [movementSaving, setMovementSaving] = useState(false)
   const [movementError, setMovementError] = useState('')
   const [movementForm, setMovementForm] = useState({ item_id: '', room_id: '', quantity: '', reorder_level: '1', notes: '' })
 
   const [reportStart, setReportStart] = useState(monthStart())
   const [reportEnd, setReportEnd] = useState(today())
-  const [reportData, setReportData] = useState([])
+  const [reportData, setReportData] = useState(/** @type {SupplyAllocationView[]} */ ([]))
   const [reportLoading, setReportLoading] = useState(false)
   const [reportExporting, setReportExporting] = useState(false)
   const [reportPdfExporting, setReportPdfExporting] = useState(false)
   const [reportMessage, setReportMessage] = useState(null)
 
-  const [stocktakes, setStocktakes] = useState([])
+  const [stocktakes, setStocktakes] = useState(/** @type {SupplyStocktakeView[]} */ ([]))
   const [activeStocktakeId, setActiveStocktakeId] = useState('')
-  const [activeStocktake, setActiveStocktake] = useState(null)
-  const [roomStocktakes, setRoomStocktakes] = useState([])
+  const [activeStocktake, setActiveStocktake] = useState(/** @type {SupplyStocktakeView | null} */ (null))
+  const [roomStocktakes, setRoomStocktakes] = useState(/** @type {SupplyStocktakeView[]} */ ([]))
   const [activeRoomStocktakeId, setActiveRoomStocktakeId] = useState('')
-  const [activeRoomStocktake, setActiveRoomStocktake] = useState(null)
+  const [activeRoomStocktake, setActiveRoomStocktake] = useState(/** @type {SupplyStocktakeView | null} */ (null))
   const [stocktakeScope, setStocktakeScope] = useState('store')
   const [stocktakeTitle, setStocktakeTitle] = useState('')
   const [stocktakeNotes, setStocktakeNotes] = useState('')
@@ -146,6 +169,7 @@ export default function RoomSupplies() {
   }, [tab, activeStocktakeId, activeRoomStocktakeId, stocktakeScope])
 
   const roomStockByItem = useMemo(() => {
+    /** @type {Record<string, number>} */
     const map = {}
     for (const row of roomStockRows) map[row.supply_item_id] = (map[row.supply_item_id] || 0) + Number(row.quantity_on_hand || 0)
     return map
@@ -160,14 +184,15 @@ export default function RoomSupplies() {
     if (!acc[key]) acc[key] = { room_number: row.room_number, total: 0 }
     acc[key].total += Number(row.total_cost || 0)
     return acc
-  }, {})
+  }, /** @type {Record<string, {room_number?: string | null, total: number}>} */ ({}))
   const reportByItem = reportData.reduce((acc, row) => {
-    const key = row.supply_name
-    if (!acc[key]) acc[key] = { name: key, unit: row.supply_unit, total_units: 0, total_cost: 0 }
+    // Object keys stringify undefined implicitly; keep that key while preserving the row's display value.
+    const key = String(row.supply_name)
+    if (!acc[key]) acc[key] = { name: row.supply_name, unit: row.supply_unit, total_units: 0, total_cost: 0 }
     acc[key].total_units += Number(row.units_used || 0)
     acc[key].total_cost += Number(row.total_cost || 0)
     return acc
-  }, {})
+  }, /** @type {Record<string, {name: string | undefined, unit?: string, total_units: number, total_cost: number}>} */ ({}))
   const grandTotal = reportData.reduce((sum, row) => sum + Number(row.total_cost || 0), 0)
   const currentStocktake = stocktakeScope === 'store' ? activeStocktake : activeRoomStocktake
   const currentStocktakeId = stocktakeScope === 'store' ? activeStocktakeId : activeRoomStocktakeId
@@ -193,10 +218,10 @@ export default function RoomSupplies() {
         window.api.supplies.getRoomStock?.().catch(() => []),
         window.api.supplies.getMovements?.(24).catch(() => [])
       ])
-      setSupplyItems(sortItems(itemData || []))
-      setRooms(sortRooms(roomData || []))
-      setRoomStockRows(stockData || [])
-      setMovements(movementData || [])
+      setSupplyItems(sortItems(/** @type {SupplyItemView[] | null | undefined} */ (itemData || [])))
+      setRooms(sortRooms(/** @type {SupplyRoomView[] | null | undefined} */ (roomData || [])))
+      setRoomStockRows(/** @type {RoomSupplyStockView[]} */ (stockData || []))
+      setMovements(/** @type {SupplyMovementView[]} */ (movementData || []))
     } catch (err) {
       setPageError(err?.message || 'Could not load room supplies.')
     } finally {
@@ -208,7 +233,7 @@ export default function RoomSupplies() {
     setReportLoading(true)
     setReportMessage(null)
     const data = await window.api.supplies.getAllocations(reportStart, reportEnd).catch(() => [])
-    setReportData(data || [])
+    setReportData(/** @type {SupplyAllocationView[]} */ (data || []))
     setReportLoading(false)
   }
 
@@ -234,7 +259,7 @@ export default function RoomSupplies() {
       const rows = scope === 'store'
         ? await window.api.supplies.getStocktakes(16)
         : await window.api.supplies.getRoomStocktakes(16)
-      const safeRows = Array.isArray(rows) ? rows : []
+      const safeRows = Array.isArray(rows) ? /** @type {SupplyStocktakeView[]} */ (rows) : []
       if (scope === 'store') {
         setStocktakes(safeRows)
         if (!activeStocktakeId && safeRows?.[0]?.id) setActiveStocktakeId(safeRows[0].id)
@@ -255,8 +280,8 @@ export default function RoomSupplies() {
       const session = scope === 'store'
         ? await window.api.supplies.getStocktake(stocktakeId)
         : await window.api.supplies.getRoomStocktake(stocktakeId)
-      if (scope === 'store') setActiveStocktake(session || null)
-      else setActiveRoomStocktake(session || null)
+      if (scope === 'store') setActiveStocktake(/** @type {SupplyStocktakeView | null} */ (session || null))
+      else setActiveRoomStocktake(/** @type {SupplyStocktakeView | null} */ (session || null))
     } catch (err) {
       setStocktakeError(err?.message || `Could not load this ${scope === 'store' ? 'supply' : 'room'} stock take.`)
     } finally {
@@ -294,7 +319,9 @@ export default function RoomSupplies() {
     }
   }
 
+  /** @param {string | undefined} lineKey @param {'counted_qty' | 'notes'} field @param {string} value */
   function updateStocktakeLine(lineKey, field, value) {
+    /** @param {SupplyStocktakeView | null} current */
     const applyUpdate = (current) => {
       if (!current) return current
       const lines = (current.lines || []).map((line) => {
@@ -455,6 +482,7 @@ export default function RoomSupplies() {
     setItemModal(true)
   }
 
+  /** @param {SupplyItemView} item */
   function openEdit(item) {
     setEditingItem(item)
     setItemError('')
@@ -468,6 +496,7 @@ export default function RoomSupplies() {
     setItemModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   async function handleItemSubmit(event) {
     event.preventDefault()
     setItemSaving(true)
@@ -513,6 +542,7 @@ export default function RoomSupplies() {
     setPurchaseModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   async function handlePurchaseSubmit(event) {
     event.preventDefault()
     setPurchaseSaving(true)
@@ -557,6 +587,7 @@ export default function RoomSupplies() {
     setAdjustModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   async function handleAdjustSubmit(event) {
     event.preventDefault()
     setAdjustSaving(true)
@@ -576,6 +607,7 @@ export default function RoomSupplies() {
     }
   }
 
+  /** @param {{item?: SupplyItemView | null, row?: RoomSupplyStockView | null}} [target] */
   function openLoadModal({ item = null, row = null } = {}) {
     setMovementType('load')
     setMovementTarget({ item, row })
@@ -590,6 +622,7 @@ export default function RoomSupplies() {
     setMovementModal(true)
   }
 
+  /** @param {RoomSupplyStockView} row */
   function openUseModal(row) {
     setMovementType('use')
     setMovementTarget({ row })
@@ -598,6 +631,7 @@ export default function RoomSupplies() {
     setMovementModal(true)
   }
 
+  /** @param {RoomSupplyStockView} row */
   function openReturnModal(row) {
     setMovementType('return')
     setMovementTarget({ row })
@@ -606,6 +640,7 @@ export default function RoomSupplies() {
     setMovementModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   async function handleMovementSubmit(event) {
     event.preventDefault()
     setMovementSaving(true)
@@ -1063,7 +1098,7 @@ export default function RoomSupplies() {
                         <td className="px-5 py-3 text-slate-600">{item.unit}</td>
                         <td className={`px-5 py-3 text-right font-semibold ${status.warning ? 'text-red-600' : 'text-slate-800'}`}>{fmtQty(item.current_stock)} {item.unit}</td>
                         <td className="px-5 py-3 text-right text-slate-500">{Number(item.reorder_level || 0) > 0 ? `${fmtQty(item.reorder_level)} ${item.unit}` : '—'}</td>
-                        <td className="px-5 py-3 text-right">{item.latest_unit_cost > 0 ? <span className="font-semibold text-green-700">{currency} {fmt(item.latest_unit_cost, 4)}/{item.unit}</span> : <span className="text-xs text-slate-400">No purchase recorded</span>}</td>
+                        <td className="px-5 py-3 text-right">{Number(item.latest_unit_cost || 0) > 0 ? <span className="font-semibold text-green-700">{currency} {fmt(item.latest_unit_cost, 4)}/{item.unit}</span> : <span className="text-xs text-slate-400">No purchase recorded</span>}</td>
                         <td className="px-5 py-3"><div className="flex items-center justify-center gap-1"><button onClick={() => openPurchase(item)} className="rounded-lg px-2 py-1 text-xs text-green-600 transition-colors hover:bg-green-50">+ Purchase</button><button onClick={() => openAdjust(item)} className="rounded-lg px-2 py-1 text-xs text-slate-600 transition-colors hover:bg-slate-100">Adjust</button><button onClick={() => openLoadModal({ item })} className="rounded-lg px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-50">Load</button><button onClick={() => openEdit(item)} className="rounded-lg p-1.5 text-blue-500 transition-colors hover:bg-blue-50"><Pencil size={13} /></button><button onClick={() => deleteItem(item)} className="rounded-lg p-1.5 text-red-400 transition-colors hover:bg-red-50"><Trash2 size={13} /></button></div></td>
                       </tr>
                     )

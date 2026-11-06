@@ -18,6 +18,7 @@ import {
   PROPERTY_TYPE_LABELS
 } from '../../../shared/propertyTypes'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
+import { PUBLIC_BOOKING_ORIGIN, buildLodgeBookingUrl } from '../../../shared/publicEndpoints'
 import {
   getLodgingTypeOptions,
   getPropertyPresentation,
@@ -55,7 +56,6 @@ const IS_HOSPITALITY_POS_PRODUCT = BUILD_PRODUCT.id === 'hospitality-pos'
 const SystemHealthPanel = lazy(() => import('./SystemHealthPanel'))
 const SubscriptionAccessPanel = lazy(() => import('./SubscriptionAccessPanel'))
 
-const BOOKING_SITE_BASE = 'https://borokoonlinebookings.netlify.app'
 const PUBLIC_OFFER_DEFAULTS = {
   public_offer_rooms: true,
   public_offer_multi_room: true,
@@ -64,11 +64,63 @@ const PUBLIC_OFFER_DEFAULTS = {
   public_offer_events: false
 }
 const PUBLIC_OFFER_DEFAULT_TRUE = new Set(['public_offer_rooms', 'public_offer_multi_room'])
+/** @typedef {import('../app-context.jsx').SettingsRowView} SettingsRowView */
+/**
+ * Expected settings editor view produced by normalizeSettingsForForm. This
+ * extends the shared settings-row read view with the editor defaults and the
+ * form-only fields used here; it does not validate IPC or persisted values.
+ * @typedef {Omit<import('../app-context.jsx').SettingsRowView, 'operating_profile'> & Partial<typeof PUBLIC_OFFER_DEFAULTS> & {
+ *   operating_profile?: SettingsOperatingProfileExpectedView | null,
+ *   slug?: string | null,
+ *   logo?: string | null,
+ *   hero_image?: string | null,
+ *   booking_cancellation_policy?: string | null,
+ *   booking_check_in_from?: string | null,
+ *   booking_check_out_until?: string | null,
+ *   booking_description?: string | null,
+ *   booking_house_rules?: string | null,
+ *   booking_payment_terms?: string | null,
+ *   booking_tagline?: string | null,
+ *   whatsapp_number?: string | null,
+ *   enterprise_addons?: string[] | null
+ * }} SettingsFormView
+ */
+/** @typedef {{hospitality_mode?: unknown, campsite_profile?: {enabled?: unknown} | null, accommodation_mix?: {rooms_or_units?: unknown, whole_property_exclusive_use?: unknown} | null, till_operator_policy?: {mode?: unknown, inactivity_minutes?: unknown} | null}} SettingsOperatingProfileExpectedView */
+/** @typedef {keyof typeof EMAIL_PROVIDER_PRESETS} EmailProvider */
+/** @typedef {{provider: EmailProvider, host: string, port: number, user: string, pass: string, from: string, reply_to: string, to: string, allow_insecure_tls: boolean, auto_send_quotations: boolean, auto_send_booking_invoice: boolean, auto_send_booking_confirmation: boolean, auto_send_booking_cancellation: boolean}} SettingsEmailConfigExpectedView */
+/** @typedef {{expected_match?: unknown, wording?: {from_label?: string, to_label?: string, unit_label_from?: string, unit_label_to?: string, exclusive_use_from?: string, exclusive_use_to?: string}, accommodation_mix?: {rooms?: number, sites?: number}, blockers?: Array<{code?: string, message?: string, repair?: string} | string> | null, navigation?: {notes?: Array<{code?: string, message?: string} | string> | null}, changed?: unknown, previous_type?: string, target_type?: string, created_at?: string}} PropertyTransitionDataExpectedView */
+/** @typedef {{success?: unknown, error?: unknown, message?: unknown, code?: unknown, data?: PropertyTransitionDataExpectedView | null, replayed?: unknown, target_type?: string, previous_type?: string, created_at?: string}} PropertyTransitionResultExpectedView */
+/** @typedef {{advisory: true, targetType: string, expectedPropertyType: string, expectedUpdatedAt: unknown, diff: string[], at: string} | {advisory: false, targetType: string, expectedPropertyType: string, expectedUpdatedAt: unknown, data: PropertyTransitionDataExpectedView | null, at: string}} PropertyTransitionPreviewExpectedView */
+/** @typedef {{found: boolean, code?: string, message?: string, targetType?: string, previousType?: string, changed?: unknown, at?: string}} PropertyTransitionStatusReport */
+/** @typedef {{op?: {idempotencyKey?: string, targetType?: string} | null, terminal?: {at?: string, reason?: string} | null}} ArchivedTransitionEntryExpectedView */
+/** @typedef {{found?: boolean, stale?: boolean, result?: PropertyTransitionResultExpectedView | null}} ArchivedTransitionLookupExpectedView */
+/** @typedef {{tone: 'info'|'warning'|'success', message: string}} SettingsSaveNotice */
+/** @typedef {{ok: boolean, msg: string}} SettingsEmailStatus */
+/** @typedef {{type: 'success'|'error', text: string}} SettingsActivationMessage */
+/** @typedef {{id?: string, name?: string, cash_model?: string}} SettingsOutletExpectedView */
+/**
+ * Expected trial:getInvoices envelope from loadClientCommercialInvoices and
+ * the session-bound commercial ledger RPC. It is not runtime validation of
+ * the dynamic IPC/RPC result. Row fields stay unknown because Settings does
+ * not consume them.
+ * @typedef {{success: true, available: true, source: 'commercial_ledger', lodge_id: string, product_id: string, rows: unknown[], total: number} | {success: false, available: false, _available: false, source: 'unavailable', error: string, rows: [], total: 0}} SettingsCommercialInvoiceEnvelopeExpectedView
+ */
+/** @typedef {{status?: string, plan?: unknown, subscription_plan?: unknown, effective_features?: {online_booking?: unknown} | null}} SettingsLicenseStatusExpectedView */
+/** @typedef {{isDirty: boolean, confirmLeave: ((onProceed: () => void) => void) | null}} SettingsNavigationGuardView */
+/** @typedef {{success: false, error: string, draftChangedDuringSave?: undefined, retryablePending?: undefined, noop?: undefined} | {success: true, noop: true, draftChangedDuringSave?: undefined, retryablePending?: undefined} | {success: true, draftChangedDuringSave: boolean, retryablePending: boolean, data?: unknown, meta?: {persistence?: unknown, online?: unknown, pending?: unknown, skippedColumns?: unknown, warnings?: unknown}}} SettingsSaveOutcome */
+
+/** @param {unknown} error @returns {{message?: string, code?: unknown}} */
+function expectedThrownErrorView(error) {
+  // IPC/helper failures are expected to expose these fields; this does not validate thrown values.
+  return /** @type {{message?: string, code?: unknown}} */ (error)
+}
 // The main process has a 15-second end-to-end budget; keep a small IPC slack
 // so the renderer does not report failure just as the main process resolves.
 const SETTINGS_SAVE_TIMEOUT_MS = 20000
 /** @typedef {Pick<import('../types/desktop-api.js').DesktopUpdateStateReadView, 'version' | 'releaseName' | 'releaseDate' | 'releaseNotes'> & {progress?: import('../types/desktop-api.js').DesktopUpdateProgressReadView | null}} SettingsUpdateMetadataReadView */
 /** @typedef {SettingsUpdateMetadataReadView | {version?: undefined, releaseName?: undefined, releaseDate?: undefined, releaseNotes?: undefined, progress: import('../types/desktop-api.js').DesktopUpdateProgressReadView}} SettingsUpdateMetaReadView */
+/** @typedef {{tone: 'info'|'warning'|'success', message: string}} PropertyTransitionNotice */
+/** @typedef {{kind: string, message: string, retryable: boolean}} PropertyTransitionFailure */
 const EMAIL_PROVIDER_PRESETS = {
   gmail: {
     label: 'Gmail',
@@ -107,6 +159,7 @@ const EMAIL_PROVIDER_PRESETS = {
   }
 }
 
+/** @param {unknown} host @returns {EmailProvider} */
 function inferEmailProvider(host = '') {
   const normalized = String(host || '').trim().toLowerCase()
   if (normalized.includes('smtp.gmail.com')) return 'gmail'
@@ -116,6 +169,7 @@ function inferEmailProvider(host = '') {
   return 'custom'
 }
 
+/** @param {unknown} plan @returns {string} */
 function normalizePlanName(plan) {
   const raw = String(plan || '').trim().toLowerCase()
   if (raw === 'premium') return 'Pro'
@@ -123,26 +177,32 @@ function normalizePlanName(plan) {
   if (raw === 'pro') return 'Pro'
   if (raw === 'standard') return 'Standard'
   if (raw === 'starter') return 'Starter'
-  return plan || ''
+  return /** @type {string} */ (plan || '')
 }
 
+/** @template T @param {T} value @returns {T} */
 function cloneSettings(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value))
+  return value == null ? value : JSON.parse(/** @type {string} */ (JSON.stringify(value)))
 }
 
+/** @param {unknown} left @param {unknown} right @returns {boolean} */
 function settingsEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+/** @template T @param {Promise<T>} promise @param {number} [timeoutMs] @returns {Promise<T>} */
 function withSettingsSaveTimeout(promise, timeoutMs = SETTINGS_SAVE_TIMEOUT_MS) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
   let timer
-  const timeout = new Promise((_, reject) => {
+  // This timer promise only rejects, so racing it preserves the input's fulfillment type.
+  const timeout = /** @type {Promise<never>} */ (new Promise((_, reject) => {
     timer = setTimeout(() => {
-      const error = new Error('Saving settings timed out. Check the internet connection and try Save Settings again.')
+      // This locally created Error receives the existing timeout code before rejection.
+      const error = /** @type {Error & {code: 'settings_save_timeout'}} */ (new Error('Saving settings timed out. Check the internet connection and try Save Settings again.'))
       error.code = 'settings_save_timeout'
       reject(error)
     }, timeoutMs)
-  })
+  }))
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
@@ -154,10 +214,13 @@ function newTransitionUuid() {
   return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-a${hex().slice(1)}-${hex()}${hex()}${hex()}`.toLowerCase()
 }
 
+/** @param {unknown} res @returns {{ok: true, result: PropertyTransitionResultExpectedView} | {ok: false, error: Error}} */
 function readTransitionResult(res) {
-  if (res && typeof res === 'object' && res.success === true) return { ok: true, result: res }
-  const error = new Error(res?.error || res?.message || 'The property-type service rejected this request.')
-  error.code = res?.code || 'property_transition_rejected'
+  // This is the expected IPC result shape, not validation of arbitrary JSON.
+  const result = /** @type {PropertyTransitionResultExpectedView | null | undefined} */ (res)
+  if (result && typeof result === 'object' && result.success === true) return { ok: true, result }
+  const error = new Error(/** @type {string} */ (result?.error || result?.message || 'The property-type service rejected this request.'))
+  /** @type {Error & {code?: unknown}} */ (error).code = result?.code || 'property_transition_rejected'
   return { ok: false, error }
 }
 
@@ -172,6 +235,7 @@ function readTransitionResult(res) {
 // they retire into the append-only per-scope archive and stay recoverable by
 // key. Another scope's record is read-only here — counted, never opened,
 // submitted, modified or deleted.
+/** @param {unknown} lodgeId @param {unknown} userId @returns {string|null} */
 function scopeKeyForTransition(lodgeId, userId) {
   try {
     return buildStorageKey({ lodgeId, userId })
@@ -192,6 +256,7 @@ function readTransitionStorage() {
 // Fail-closed scoped load. Returns `{ op, storageError }`: a blocked store
 // surfaces an actionable TransitionStorageError instead of silently
 // orphaning the operation key.
+/** @param {unknown} storageKey @returns {{op: import('../../../shared/propertyTransitionOperation.js').CapturedPropertyTransitionOperation|null, storageError: TransitionStorageError|null}} */
 function loadScopedTransitionOp(storageKey) {
   const storage = readTransitionStorage()
   try {
@@ -211,6 +276,7 @@ function loadScopedTransitionOp(storageKey) {
 // Pending records filed under a different scope key (another lodge/user on
 // this device). Presence only: details are never read for display, and
 // nothing here is ever submitted, modified or deleted from this scope.
+/** @param {unknown} currentKey @returns {string[]} */
 function findForeignTransitionKeys(currentKey) {
   try {
     const storage = readTransitionStorage()
@@ -237,17 +303,20 @@ function findForeignTransitionKeys(currentKey) {
 // deleted). Read-only here: entries are listed for recovery by their ORIGINAL
 // keys and are never edited, resubmitted or deleted. Listing is scoped to the
 // current lodge/user — switching scope shows only that scope's history.
+/** @param {unknown} lodgeId @param {unknown} userId @returns {ArchivedTransitionEntryExpectedView[]} */
 function listScopedArchivedOps(lodgeId, userId) {
   try {
     const storage = readTransitionStorage()
     if (!storage || !lodgeId) return []
     const entries = listArchivedTransitionOps(storage, { lodgeId, userId })
-    return Array.isArray(entries) ? entries : []
+    // Stored archive JSON is parsed but not schema validated by the helper.
+    return Array.isArray(entries) ? /** @type {ArchivedTransitionEntryExpectedView[]} */ (entries) : []
   } catch {
     return []
   }
 }
 
+/** @param {unknown} targetType @returns {string} */
 function transitionTargetLabel(targetType) {
   try {
     return getLodgingTypeOptions().find((option) => option.value === targetType)?.label || String(targetType || '')
@@ -264,6 +333,9 @@ function transitionTargetLabel(targetType) {
  * scope, same-product, expected version, key binding) is server-side; this UI
  * only previews, confirms explicitly, and recovers.
  */
+/**
+ * @param {{globalSettings: SettingsRowView | SettingsFormView | null, access?: {refreshEntitlement?: (options?: {forceFresh?: boolean}) => Promise<unknown>} | null, canManage: boolean, onCommitted?: () => Promise<unknown> | unknown}} props
+ */
 export function PropertyTypeSection({ globalSettings, access, canManage, onCommitted }) {
   const { user } = useAuth() || {}
   const lodgeId = globalSettings?.lodge_id || null
@@ -273,7 +345,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   const currentSupported = toSupportedLodgingType(globalSettings?.property_type || globalSettings?.business_type || '')
   const settingsIdentity = `${globalSettings?.lodge_id || ''}::${currentType}::${globalSettings?.updated_at || ''}`
   const [target, setTarget] = useState('')
-  const [preview, setPreview] = useState(null)
+  const [preview, setPreview] = useState(/** @type {PropertyTransitionPreviewExpectedView|null} */ (null))
   const [previewBusy, setPreviewBusy] = useState(false)
   const [commitBusy, setCommitBusy] = useState(false)
   const [statusBusy, setStatusBusy] = useState(false)
@@ -288,19 +360,21 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // mirrors it for rendering.
   const [pendingOp, setPendingOp] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.op || null)
   const [operationKey, setOperationKey] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.op?.idempotencyKey || '')
-  const [foreignKeys, setForeignKeys] = useState(() => findForeignTransitionKeys(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null)))
-  const [archiveEntries, setArchiveEntries] = useState(() => listScopedArchivedOps(globalSettings?.lodge_id || null, user?.id || user?.email || null))
+  const [foreignKeys, setForeignKeys] = useState(/** @type {string[]} */ (() => findForeignTransitionKeys(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))))
+  // Archive JSON has been parsed by the existing storage helper; this view
+  // describes expected fields and does not validate persisted bytes.
+  const [archiveEntries, setArchiveEntries] = useState(/** @type {ArchivedTransitionEntryExpectedView[]} */ (() => listScopedArchivedOps(globalSettings?.lodge_id || null, user?.id || user?.email || null)))
   // Scoped archive/history recovery selection: which archived entry the
   // operator chose to check, its latest read-only lookup, and in-flight flag.
-  const [selectedArchivedKey, setSelectedArchivedKey] = useState(null)
-  const [archivedLookups, setArchivedLookups] = useState({})
+  const [selectedArchivedKey, setSelectedArchivedKey] = useState(/** @type {string|null} */ (null))
+  const [archivedLookups, setArchivedLookups] = useState(/** @type {Record<string, ArchivedTransitionLookupExpectedView>} */ ({}))
   const [archivedBusy, setArchivedBusy] = useState(false)
-  const [storageBlocked, setStorageBlocked] = useState(() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.storageError || null)
+  const [storageBlocked, setStorageBlocked] = useState(/** @type {TransitionStorageError|null} */ (() => loadScopedTransitionOp(scopeKeyForTransition(globalSettings?.lodge_id || null, user?.id || user?.email || null))?.storageError || null))
   const [discardArmed, setDiscardArmed] = useState(false)
-  const [refreshWarning, setRefreshWarning] = useState(null)
-  const [notice, setNotice] = useState(null)
-  const [failure, setFailure] = useState(null)
-  const [statusReport, setStatusReport] = useState(null)
+  const [refreshWarning, setRefreshWarning] = useState(/** @type {string|null} */ (null))
+  const [notice, setNotice] = useState(/** @type {PropertyTransitionNotice|null} */ (null))
+  const [failure, setFailure] = useState(/** @type {PropertyTransitionFailure|null} */ (null))
+  const [statusReport, setStatusReport] = useState(/** @type {PropertyTransitionStatusReport|null} */ (null))
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false))
   // Live scope mirror for fenced async callbacks: late results for a previous
   // scope or superseded key are ignored and can never clear a newer operation.
@@ -312,11 +386,11 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   const scopeEpochRef = useRef(0)
   const previousScopeKeyRef = useRef(scopeKey)
   const archivedLookupTicketRef = useRef(0)
-  const controllerRef = useRef(null)
+  const controllerRef = useRef(/** @type {ReturnType<typeof createTransitionController> | null} */ (null))
   // Records the latest outcome check per operation key ('NOT_FOUND …',
   // 'stored outcome not yet completed', 'authoritative outcome found') so the
   // archive-and-supersede reason can state what the operator ACTUALLY did.
-  const statusCheckRef = useRef({})
+  const statusCheckRef = useRef(/** @type {Record<string, string>} */ ({}))
   // Set when the server confirmed a mutation but the on-device archive write
   // failed: the outcome stays visible and the op stays checkable by key.
   const archiveFailedRef = useRef(false)
@@ -514,6 +588,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // reapplied after the server committed. Entitlement/access refresh failure
   // is reported truthfully too. The completed mutation is retained in every
   // path and is NEVER resubmitted to repair a refresh failure.
+  /** @param {{ok: boolean, reason?: string, detail?: unknown} | null | undefined} serverRefresh @returns {Promise<boolean>} */
   const settleRefreshPending = async (serverRefresh) => {
     if (!serverRefresh || serverRefresh.ok !== true) {
       const reason = serverRefresh ? (serverRefresh.reason || 'refresh-failed') : 'refresh-unavailable'
@@ -530,7 +605,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
     try {
       await access?.refreshEntitlement?.({ forceFresh: true })
     } catch (error) {
-      const reason = error?.message || String(error)
+      const reason = expectedThrownErrorView(error)?.message || String(error)
       setRefreshWarning(`Change saved on server, but access/entitlement refresh failed (${reason}) — use “Retry refresh only” below. No new submission will be made.`)
       return false
     }
@@ -566,11 +641,12 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // submit/check flows settle inline after their await; this handler only
   // reconciles completions that arrive outside those flows. late-retired and
   // refresh-pending are idempotent with the inline paths.
+  /** @param {string} name @param {unknown} detail */
   const handleControllerEvent = (name, detail) => {
     const controller = controllerRef.current
     if (!controller) return
     if (name === 'late-retired') {
-      const op = detail?.op || null
+    const op = /** @type {{op?: import('../../../shared/propertyTransitionOperation.js').CapturedPropertyTransitionOperation|null} | null} */ (detail)?.op || null
       syncFromController()
       clearTransitionForm()
       setFailure(null)
@@ -624,7 +700,9 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
         },
         refresh: () => {
           if (typeof window !== 'undefined' && typeof window.api?.settings?.refreshSettingsFromServer === 'function') {
-            return window.api.settings.refreshSettingsFromServer()
+            // The IPC producer returns {ok, reason?, detail?}; this expected view
+            // preserves the value and does not validate a dynamic IPC response.
+            return /** @type {Promise<{ok: boolean, reason?: string, detail?: unknown}>} */ (window.api.settings.refreshSettingsFromServer())
           }
           return Promise.resolve({ ok: false, reason: 'refresh-unavailable' })
         }
@@ -642,6 +720,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // request is in flight; an ambiguous timeout keeps the op
   // (awaiting-outcome) instead of minting a replacement key, and a late
   // completion retires exactly once via the controller event above.
+  /** @param {import('../../../shared/propertyTransitionOperation.js').CapturedPropertyTransitionOperation|null} op */
   const submitStoredOp = async (op) => {
     const controller = controllerRef.current
     if (!controller || !op) {
@@ -689,7 +768,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
         if (archived) {
           setNotice({ tone: 'warning', message: `Property type is now ${label}, but the on-device archive write failed — the outcome stays visible above and remains checkable by its key. No duplicate was submitted.` })
         }
-        await settleRefreshPending(res?.refresh)
+        await settleRefreshPending((/** @type {{refresh?: {ok: boolean, reason?: string, detail?: unknown}}|null|undefined} */ (res))?.refresh)
         return
       }
       // A non-retiring response keeps the op checkable; never invent success.
@@ -761,12 +840,13 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
     // BEFORE any RPC call. A blocked store throws TransitionStorageError here
     // with zero RPC calls — the change is NOT submitted. A later genuine
     // change mints its own fresh key because retire/archive clears the record.
+    /** @type {import('../../../shared/propertyTransitionOperation.js').CapturedPropertyTransitionOperation} */
     let op
     try {
-      op = controllerRef.current.beginNew({
+      op = /** @type {NonNullable<typeof controllerRef.current>} */ (controllerRef.current).beginNew({
         targetType: target,
-        expectedPropertyType: previewForTarget.expectedPropertyType,
-        expectedUpdatedAt: previewForTarget.expectedUpdatedAt,
+        expectedPropertyType: /** @type {PropertyTransitionPreviewExpectedView} */ (previewForTarget).expectedPropertyType,
+        expectedUpdatedAt: /** @type {PropertyTransitionPreviewExpectedView} */ (previewForTarget).expectedUpdatedAt,
         reason: reason.trim()
       })
     } catch (error) {
@@ -817,6 +897,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // the controller never submits on this path and never touches the current
   // stored op — and fenced here too: a scope switch or a different selection
   // mid-flight drops the result instead of showing it under the wrong entry.
+  /** @param {string} entryKey */
   const checkArchivedEntry = async (entryKey) => {
     const controller = controllerRef.current
     if (!controller || !entryKey || archivedBusy) return
@@ -836,7 +917,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
         setNotice({ tone: 'info', message: 'That archived lookup returned a mismatched receipt — nothing was displayed as its outcome and nothing was changed. The current operation above is untouched.' })
         return
       }
-      setArchivedLookups((prev) => ({ ...prev, [entryKey]: res }))
+      setArchivedLookups((prev) => ({ ...prev, [entryKey]: /** @type {ArchivedTransitionLookupExpectedView} */ (res) }))
       if (res && res.found === false) {
         setNotice({ tone: 'info', message: `No recorded server result yet for archived operation ${shortOperationKey(entryKey)} — an earlier request may still finish. The current operation above is untouched (nothing was resubmitted).` })
       }
@@ -855,7 +936,7 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
   // a refresh failure keeps the retired result visible with refresh-only
   // recovery and never resubmits.
   const checkOutcome = async () => {
-    const controller = controllerRef.current
+    const controller = /** @type {NonNullable<typeof controllerRef.current>} */ (controllerRef.current)
     const stored = controller?.getStored() || loadScopedTransitionOp(scopeKey)?.op || null
     if (!stored) {
       setFailure({ kind: 'unknown', message: 'No property-type operation has been started yet, so there is no outcome to check.', retryable: false })
@@ -1038,12 +1119,12 @@ export function PropertyTypeSection({ globalSettings, access, canManage, onCommi
           <p className="mt-1 text-[11px] text-gray-500">Archived operations stay recoverable under their original keys. Checking an archived operation never resubmits it and never touches the current operation above. Switching property or user shows only that scope&apos;s history.</p>
           <ul className="mt-2 space-y-2">
             {archiveEntries.map((entry) => {
-              const entryOp = entry && typeof entry === 'object' && entry.op && typeof entry.op === 'object' ? entry.op : {}
+              const entryOp = /** @type {{idempotencyKey?: string, targetType?: string}} */ (entry && typeof entry === 'object' && entry.op && typeof entry.op === 'object' ? entry.op : {})
               const entryKey = entryOp.idempotencyKey || ''
               const terminal = describeArchivedTerminal(entry)
               const lookup = archivedLookups[entryKey]
               const selected = selectedArchivedKey === entryKey && lookup
-              const lookupOutcome = lookup?.result?.data || lookup?.result || {}
+              const lookupOutcome = /** @type {PropertyTransitionResultExpectedView} */ (lookup?.result?.data || lookup?.result || {})
               const badgeTone = terminal.kind === 'completed'
                 ? 'bg-green-100 text-green-800'
                 : terminal.kind === 'unresolved'
@@ -1318,23 +1399,24 @@ export default function Settings() {
     const nextTab = searchParams.get('tab') || location.state?.activeTab
     if (nextTab && nextTab !== activeTab) setActiveTab(nextTab)
   }, [searchParams, location.state?.activeTab])
-  const [form, setForm] = useState(null)
+  const [form, setForm] = useState(/** @type {SettingsFormView | null} */ (null))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
-  const [saveNotice, setSaveNotice] = useState(null)
-  const [logoPreview, setLogoPreview] = useState(null)
-  const [heroPreview, setHeroPreview] = useState(null)
+  const [saveNotice, setSaveNotice] = useState(/** @type {SettingsSaveNotice|null} */ (null))
+  const [logoPreview, setLogoPreview] = useState(/** @type {string|null} */ (null))
+  const [heroPreview, setHeroPreview] = useState(/** @type {string|null} */ (null))
   const [bookingFaqText, setBookingFaqText] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef(null)
-  const heroInputRef = useRef(null)
-  const savedFormSnapshotRef = useRef(null)
-  const savedEmailSnapshotRef = useRef(null)
-  const formRef = useRef(null)
+  const fileInputRef = useRef(/** @type {HTMLInputElement|null} */ (null))
+  const heroInputRef = useRef(/** @type {HTMLInputElement|null} */ (null))
+  const savedFormSnapshotRef = useRef(/** @type {SettingsFormView | null} */ (null))
+  const savedEmailSnapshotRef = useRef(/** @type {SettingsEmailConfigExpectedView|null} */ (null))
+  const formRef = useRef(/** @type {SettingsFormView | null} */ (null))
   const [showUnsavedModal, setShowUnsavedModal] = useState(false)
   const [modalSaving, setModalSaving] = useState(false)
-  const pendingNavRef = useRef(null)
-  const navGuard = useContext(UnsavedChangesContext)
+  const pendingNavRef = useRef(/** @type {(() => void)|null} */ (null))
+  // App.jsx provides a ref with this shape; the context's default value is a placeholder object.
+  const navGuard = /** @type {import('react').MutableRefObject<SettingsNavigationGuardView>|null} */ (useContext(UnsavedChangesContext))
 
   // Theme mode
   const [themeMode, setThemeMode] = useState(() => getStoredThemeMode())
@@ -1350,7 +1432,7 @@ export default function Settings() {
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
   const [updateSnoozedUntil, setUpdateSnoozedUntil] = useState('')
   const updateListenersAdded = useRef(false)
-  const [emailConfig, setEmailConfig] = useState({
+  const [emailConfig, setEmailConfig] = useState(/** @type {SettingsEmailConfigExpectedView} */ ({
     provider: 'gmail',
     host: 'smtp.gmail.com',
     port: 587,
@@ -1364,12 +1446,13 @@ export default function Settings() {
     auto_send_booking_invoice: true,
     auto_send_booking_confirmation: true,
     auto_send_booking_cancellation: true
-  })
+  }))
   const [emailSaving, setEmailSaving] = useState(false)
   const [emailTesting, setEmailTesting] = useState(false)
-  const [emailStatus, setEmailStatus] = useState(null)
+  const [emailStatus, setEmailStatus] = useState(/** @type {SettingsEmailStatus|null} */ (null))
   const [emailTouched, setEmailTouched] = useState(false)
 
+  /** @param {number} [bytes] @returns {string} */
   const formatBytes = (bytes = 0) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -1396,6 +1479,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (!isDirty) return
+    /** @param {BeforeUnloadEvent} e */
     const handler = (e) => {
       e.preventDefault()
       e.returnValue = ''
@@ -1446,7 +1530,7 @@ export default function Settings() {
         }
         if (info.phase === 'downloading') {
           setUpdateStatus('available')
-          setUpdateMessage(info.progress?.bytesPerSecond > 0 ? `Downloading at ${formatBytes(info.progress.bytesPerSecond)}/s` : 'Downloading update…')
+          setUpdateMessage(info.progress?.bytesPerSecond > 0 ? `Downloading at ${formatBytes(/** @type {import('../types/desktop-api.js').DesktopUpdateProgressReadView} */ (info.progress).bytesPerSecond)}/s` : 'Downloading update…')
           setDownloadProgress(info.progress || null)
         } else if (info.phase === 'ready') {
           setUpdateReady(true)
@@ -1464,7 +1548,9 @@ export default function Settings() {
     if (activeTab !== 'general') return
     let active = true
     window.api.email.getConfig()
-      .then((config) => {
+      .then((result) => {
+        // Email IPC returns an unvalidated config value; retain its existing display defaults.
+        const config = /** @type {Partial<SettingsEmailConfigExpectedView>|null} */ (result)
         if (!active || !config) return
         const provider = inferEmailProvider(config.host)
         const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
@@ -1549,7 +1635,7 @@ export default function Settings() {
         setUpdateMessage('Running in development mode — update checks disabled.')
       } else if (!res.success) {
         setUpdateStatus('error')
-        setUpdateMessage(res.error || 'Could not reach update server.')
+        setUpdateMessage(/** @type {string} */ (res.error || 'Could not reach update server.'))
       } else if (res.updateAvailable) {
         setUpdateMeta({
           version: res.latestVersion,
@@ -1566,7 +1652,7 @@ export default function Settings() {
       }
     } catch (e) {
       setUpdateStatus('error')
-      setUpdateMessage(e.message || 'Update check failed.')
+      setUpdateMessage(expectedThrownErrorView(e).message || 'Update check failed.')
     }
   }
 
@@ -1579,12 +1665,12 @@ export default function Settings() {
       const res = await window.api.updates.download()
       if (!res?.success) {
         setUpdateStatus('error')
-        setUpdateMessage(res?.error || 'Could not start the update download.')
+        setUpdateMessage(/** @type {string} */ (res?.error || 'Could not start the update download.'))
         setDownloadProgress(null)
       }
     } catch (error) {
       setUpdateStatus('error')
-      setUpdateMessage(error?.message || 'Could not start the update download.')
+      setUpdateMessage(expectedThrownErrorView(error)?.message || 'Could not start the update download.')
       setDownloadProgress(null)
     }
   }
@@ -1607,33 +1693,37 @@ export default function Settings() {
     return () => media.removeEventListener?.('change', handleSystemTheme)
   }, [themeMode])
 
+  /** @param {Parameters<typeof saveThemeMode>[0]} mode */
   const setTheme = (mode) => {
     setThemeMode(mode)
     setDarkModeActive(saveThemeMode(mode))
   }
 
   // License & Billing
-  const [licenseStatus, setLicenseStatus] = useState(null)
+  const [licenseStatus, setLicenseStatus] = useState(/** @type {SettingsLicenseStatusExpectedView|null} */ (null))
   const [licenseKey, setLicenseKey] = useState('')
   const [activating, setActivating] = useState(false)
-  const [activateMsg, setActivateMsg] = useState(null) // { type: 'success'|'error', text }
+  const [activateMsg, setActivateMsg] = useState(/** @type {SettingsActivationMessage|null} */ (null))
   const [lodgeIdCopied, setLodgeIdCopied] = useState(false)
   const [slugCopied, setSlugCopied] = useState(false)
 
   // Auto-generate slug from lodge name (only when slug is blank)
+  /** @param {string|null|undefined} name @returns {string} */
   const toSlug = (name) =>
     (name || '').toLowerCase()
       .replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
       .replace(/-+/g, '-').replace(/^-+|-+$/g, '').substring(0, 50)
 
+  /** @param {unknown} items @returns {string} */
   const faqToText = (items) => {
     if (!Array.isArray(items) || items.length === 0) return ''
     return items
-      .map((item) => `${item?.question || ''} | ${item?.answer || ''}`.trim())
+      .map((/** @type {{question?: unknown, answer?: unknown}|null} */ item) => `${item?.question || ''} | ${item?.answer || ''}`.trim())
       .filter((line) => line !== '|' && line !== '')
       .join('\n')
   }
 
+  /** @param {unknown} value @returns {Array<{question: string, answer: string}>} */
   const textToFaq = (value) => {
     return String(value || '')
       .split('\n')
@@ -1655,15 +1745,18 @@ export default function Settings() {
   const [upgradeMsg, setUpgradeMsg] = useState('')
   const [upgradeSending, setUpgradeSending] = useState(false)
   const [upgradeSent, setUpgradeSent] = useState(false)
-  const [invoices, setInvoices] = useState([])
+  const [invoices, setInvoices] = useState(/** @type {SettingsCommercialInvoiceEnvelopeExpectedView | []} */ ([]))
   const [generalDataLoaded, setGeneralDataLoaded] = useState(false)
   const [licenseDataLoaded, setLicenseDataLoaded] = useState(false)
 
+  /** @param {string|null|undefined} lodgeId @param {{forceFresh?: boolean}} [options] @returns {Promise<SettingsLicenseStatusExpectedView|null>} */
   const refreshLicenseStatus = (lodgeId, { forceFresh = false } = {}) => {
     if (lodgeId && window.api?.trial) {
       return window.api.trial.getStatus(lodgeId, { forceFresh: forceFresh === true }).then((status) => {
-        setLicenseStatus(status)
-        return status
+        // Trial IPC returns an unvalidated dynamic value; this is its expected display view.
+        const statusView = /** @type {SettingsLicenseStatusExpectedView} */ (status)
+        setLicenseStatus(statusView)
+        return statusView
       }).catch(() => null)
     }
     return Promise.resolve(null)
@@ -1678,7 +1771,9 @@ export default function Settings() {
   useEffect(() => {
     if (activeTab !== 'license') return
     if (licenseStatus?.status === 'licensed' && globalSettings?.lodge_id && window.api?.trial?.getInvoices) {
-      window.api.trial.getInvoices(globalSettings.lodge_id).then(setInvoices).catch(() => {})
+      window.api.trial.getInvoices(globalSettings.lodge_id).then((result) =>
+        setInvoices(/** @type {SettingsCommercialInvoiceEnvelopeExpectedView} */ (result))
+      ).catch(() => {})
     }
   }, [activeTab, licenseStatus?.status, globalSettings?.lodge_id])
 
@@ -1692,7 +1787,7 @@ export default function Settings() {
     setActivating(true)
     try {
       const lodgeId = globalSettings?.lodge_id
-      const res = await window.api.trial.activateKey(lodgeId, licenseKey)
+      const res = /** @type {{success?: boolean, plan?: string, error?: string}} */ (await window.api.trial.activateKey(/** @type {string} */ (lodgeId), licenseKey))
       if (res?.success) {
         setActivateMsg({ type: 'success', text: `License activated! Plan: ${res.plan || 'Starter'}` })
         setLicenseKey('')
@@ -1703,7 +1798,7 @@ export default function Settings() {
         setActivateMsg({ type: 'error', text: res?.error || 'Activation failed.' })
       }
     } catch (e) {
-      setActivateMsg({ type: 'error', text: e.message || 'Activation failed.' })
+      setActivateMsg({ type: 'error', text: expectedThrownErrorView(e).message || 'Activation failed.' })
     }
     setActivating(false)
   }
@@ -1753,7 +1848,9 @@ export default function Settings() {
     }
 
     window.api.settings.get().then((sn) => {
-      const s = normalizeSettingsForForm(sn)
+      // Settings IPC returns a server/cache row without runtime schema validation.
+      const expectedSettings = /** @type {SettingsRowView|null} */ (sn)
+      const s = normalizeSettingsForForm(expectedSettings)
       if (formRef.current && savedFormSnapshotRef.current && !settingsEqual(formRef.current, savedFormSnapshotRef.current)) {
         return
       }
@@ -1765,6 +1862,7 @@ export default function Settings() {
     })
   }, [globalSettings])
 
+  /** @param {SettingsRowView|SettingsFormView|null} settings @returns {SettingsFormView|null} */
   const normalizeSettingsForForm = (settings) => {
     if (!settings) return settings
     const normalized = {
@@ -1777,6 +1875,7 @@ export default function Settings() {
     return normalized
   }
 
+  /** @param {SettingsFormView|SettingsRowView} settings */
   const applySavedSettings = (settings) => {
     const savedSettings = normalizeSettingsForForm(settings)
     setGlobalSettings(savedSettings)
@@ -1794,7 +1893,7 @@ export default function Settings() {
   const refreshAfterPropertyTransition = async () => {
     try {
       const fresh = await window.api.settings.get()
-      if (fresh) applySavedSettings(fresh)
+      if (fresh) applySavedSettings(/** @type {SettingsRowView} */ (fresh))
     } catch {
       // Keep the committed outcome visible; the operator can reload Settings.
     }
@@ -1824,6 +1923,7 @@ export default function Settings() {
     setSaveNotice(null)
   }
 
+  /** @param {string} field @param {unknown} value */
   const set = (field, value) => {
     setSaveNotice(null)
     setSaveError('')
@@ -1831,6 +1931,7 @@ export default function Settings() {
   }
 
   const tillOperatorPolicy = getTillOperatorPolicy(form || globalSettings || {})
+  /** @param {string} field @param {unknown} value */
   const setTillOperatorPolicy = (field, value) => {
     setSaveNotice(null)
     setSaveError('')
@@ -1853,6 +1954,7 @@ export default function Settings() {
 
   // ── Logo handling ──────────────────────────────────────────────────────────
 
+  /** @param {File|undefined} file @param {(base64: string) => void} onDone @param {{max?: number, minWidth?: number, minHeight?: number, label?: string}} [options] */
   const processImageFile = (file, onDone, { max = 400, minWidth = 1, minHeight = 1, label = 'Image' } = {}) => {
     if (!file || !file.type.startsWith('image/')) return
 
@@ -1868,16 +1970,18 @@ export default function Settings() {
         const ratio = Math.min(max / img.width, max / img.height, 1)
         canvas.width = img.width * ratio
         canvas.height = img.height * ratio
-        const ctx = canvas.getContext('2d')
+        // Keep the existing null failure behavior if the browser cannot create a 2D context.
+        const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'))
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
         const base64 = canvas.toDataURL('image/png')
         onDone(base64)
       }
-      img.src = e.target.result
+        img.src = /** @type {string} */ (e.target.result)
     }
     reader.readAsDataURL(file)
   }
 
+  /** @param {import('react').ChangeEvent<HTMLInputElement>} e */
   const handleFileChange = (e) => {
     processImageFile(e.target.files[0], (base64) => {
       setSaveNotice(null)
@@ -1887,6 +1991,7 @@ export default function Settings() {
     }, { max: 400, minWidth: 128, minHeight: 128, label: 'Logo' })
   }
 
+  /** @param {import('react').ChangeEvent<HTMLInputElement>} e */
   const handleHeroFileChange = (e) => {
     processImageFile(e.target.files[0], (base64) => {
       setSaveNotice(null)
@@ -1896,6 +2001,7 @@ export default function Settings() {
     }, { max: 1400, minWidth: 800, minHeight: 400, label: 'Hero image' })
   }
 
+  /** @param {import('react').DragEvent<HTMLDivElement>} e */
   const handleDrop = (e) => {
     e.preventDefault()
     setDragOver(false)
@@ -1923,14 +2029,18 @@ export default function Settings() {
     if (heroInputRef.current) heroInputRef.current.value = ''
   }
 
+  /** @param {SettingsFormView|null} draft @returns {string} */
   const validateSettingsForm = (draft) => {
     if (!draft?.lodge_name?.trim()) return `Enter your ${businessLabel.toLowerCase()} name before saving.`
     return ''
   }
 
+  /** @param {SettingsFormView} draft @returns {SettingsFormView} */
   const buildSettingsSavePayload = (draft) => {
     const propertyType = normalizePropertyType(draft?.property_type || draft?.business_type || 'lodge')
-    const existingProfile = draft?.operating_profile || globalSettings?.operating_profile || {}
+    // This local editor view matches the settings row supplied by the app context; it does not validate IPC/cache data.
+    const globalSettingsView = /** @type {SettingsFormView|null} */ (globalSettings)
+    const existingProfile = draft?.operating_profile || globalSettingsView?.operating_profile || {}
     return {
       ...draft,
       property_type: propertyType,
@@ -1938,7 +2048,7 @@ export default function Settings() {
       operating_profile: buildOperatingProfile(
         propertyType,
         draft?.subscription_plan || globalSettings?.subscription_plan || 'Starter',
-        draft?.enterprise_addons || globalSettings?.enterprise_addons || [],
+        draft?.enterprise_addons || globalSettingsView?.enterprise_addons || [],
         {
           hospitalityMode: existingProfile.hospitality_mode || draft?.hospitality_mode || null,
           campsitesEnabled: existingProfile?.campsite_profile?.enabled === true,
@@ -1953,14 +2063,18 @@ export default function Settings() {
     }
   }
 
+  /** @param {SettingsFormView} serverSettings @param {SettingsFormView} savedDraft @param {SettingsFormView|null} latestDraft @returns {SettingsFormView} */
   const preserveDraftChanges = (serverSettings, savedDraft, latestDraft) => {
     const merged = { ...serverSettings }
     Object.keys(latestDraft || {}).forEach((field) => {
-      if (!settingsEqual(latestDraft[field], savedDraft?.[field])) merged[field] = latestDraft[field]
+      // Object.keys is taken from the SettingsFormView object being merged.
+      const key = /** @type {keyof SettingsFormView} */ (field)
+      if (!settingsEqual(latestDraft?.[key], savedDraft?.[key])) merged[key] = latestDraft?.[key]
     })
     return merged
   }
 
+  /** @param {{meta?: {persistence?: unknown, online?: unknown, pending?: unknown, skippedColumns?: unknown, warnings?: unknown}}} res @param {boolean} draftChangedDuringSave @returns {SettingsSaveNotice} */
   const getSaveNotice = (res, draftChangedDuringSave) => {
     const meta = res?.meta || {}
     const skippedColumns = Array.isArray(meta.skippedColumns) ? meta.skippedColumns : []
@@ -1992,6 +2106,7 @@ export default function Settings() {
     return { tone: 'success', message: 'Settings saved to this lodge.' }
   }
 
+  /** @returns {Promise<SettingsSaveOutcome>} */
   const saveSettingsDraft = async () => {
     if (saving) return { success: false, error: 'A settings save is already in progress.' }
     if (!canManageGeneralSettings) {
@@ -2013,7 +2128,7 @@ export default function Settings() {
       return { success: true, noop: true }
     }
 
-    const draftAtSave = cloneSettings(form)
+    const draftAtSave = cloneSettings(/** @type {SettingsFormView} */ (form))
     const savePayload = buildSettingsSavePayload(draftAtSave)
     setSaving(true)
     setSaveNotice(null)
@@ -2023,15 +2138,17 @@ export default function Settings() {
         window.api.settings.save(savePayload),
         SETTINGS_SAVE_TIMEOUT_MS
       )
-      if (!res?.success) throw new Error(res?.error || 'Settings could not be saved right now.')
+      // The main handler forwards the caught error's message without runtime validation.
+      if (!res?.success) throw new Error(/** @type {string} */ (res?.error || 'Settings could not be saved right now.'))
 
       const latestDraft = formRef.current
       const draftChangedDuringSave = !settingsEqual(latestDraft, draftAtSave)
-      const serverSettings = normalizeSettingsForForm(res.data || savePayload)
+      // The main settings handler returns the saved settings row; this expected view is not runtime validation.
+      const serverSettings = normalizeSettingsForForm(/** @type {SettingsFormView} */ (res.data || savePayload))
       const meta = res?.meta || {}
       const skippedColumns = Array.isArray(meta.skippedColumns) ? meta.skippedColumns : []
       const retryablePending = meta.persistence === 'device_only' || meta.pending === true || skippedColumns.length > 0
-      const previousServerSettings = cloneSettings(savedFormSnapshotRef.current || globalSettings || {})
+      const previousServerSettings = /** @type {SettingsFormView} */ (cloneSettings(savedFormSnapshotRef.current || globalSettings || {}))
       if (retryablePending) {
         // Offline and partial-schema saves must remain retryable. Keep the
         // server snapshot authoritative and leave the draft dirty so Save
@@ -2070,7 +2187,8 @@ export default function Settings() {
       return { ...res, draftChangedDuringSave, retryablePending }
     } catch (err) {
       console.error(err)
-      const message = err?.message || 'Settings could not be saved right now.'
+      // IPC and timeout failures are expected to carry the existing Error message shape.
+      const message = (/** @type {{ message: string }} */ (err))?.message || 'Settings could not be saved right now.'
       setSaveError(message)
       return { success: false, error: message }
     } finally {
@@ -2078,16 +2196,19 @@ export default function Settings() {
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>|import('react').MouseEvent<HTMLButtonElement>} [e] */
   const handleSave = async (e) => {
     e?.preventDefault?.()
     return saveSettingsDraft()
   }
 
+  /** @template {keyof SettingsEmailConfigExpectedView} K @param {K} field @param {SettingsEmailConfigExpectedView[K]} value */
   const setEmailField = (field, value) => {
     setEmailTouched(true)
     setEmailConfig((current) => ({ ...current, [field]: value }))
   }
 
+  /** @param {EmailProvider} provider */
   const applyEmailProvider = (provider) => {
     const preset = EMAIL_PROVIDER_PRESETS[provider] || EMAIL_PROVIDER_PRESETS.custom
     setEmailTouched(true)
@@ -2109,10 +2230,10 @@ export default function Settings() {
         || (form?.lodge_name?.trim() && emailConfig.user?.trim()
           ? `"${form.lodge_name.trim()}" <${emailConfig.user.trim()}>`
           : '')
-      const result = await window.api.email.saveConfig({
+      const result = /** @type {{success?: boolean, error?: string, message?: string}} */ (await window.api.email.saveConfig({
         ...emailConfig,
         from: fromValue
-      })
+      }))
       if (result?.success) {
         setEmailStatus({ ok: true, msg: `Email setup saved. Automatic ${restaurantMode ? 'customer' : 'guest'} emails can now use these details.` })
         const nextConfig = { ...emailConfig, from: fromValue || emailConfig.from }
@@ -2123,7 +2244,7 @@ export default function Settings() {
         setEmailStatus({ ok: false, msg: result?.error || 'Could not save email setup right now.' })
       }
     } catch (error) {
-      setEmailStatus({ ok: false, msg: error?.message || 'Could not save email setup right now.' })
+      setEmailStatus({ ok: false, msg: expectedThrownErrorView(error)?.message || 'Could not save email setup right now.' })
     }
     setEmailSaving(false)
   }
@@ -2136,17 +2257,17 @@ export default function Settings() {
         || (form?.lodge_name?.trim() && emailConfig.user?.trim()
           ? `"${form.lodge_name.trim()}" <${emailConfig.user.trim()}>`
           : '')
-      const result = await window.api.email.test({
+      const result = /** @type {{success?: boolean, error?: string, message?: string}} */ (await window.api.email.test({
         ...emailConfig,
         from: fromValue
-      })
+      }))
       if (result?.success) {
         setEmailStatus({ ok: true, msg: `Test email sent to ${emailConfig.to || 'your test inbox'}.` })
       } else {
         setEmailStatus({ ok: false, msg: result?.error || 'Test email failed.' })
       }
     } catch (error) {
-      setEmailStatus({ ok: false, msg: error?.message || 'Test email failed.' })
+      setEmailStatus({ ok: false, msg: expectedThrownErrorView(error)?.message || 'Test email failed.' })
     }
     setEmailTesting(false)
   }
@@ -2157,7 +2278,7 @@ export default function Settings() {
   // and React throws "Rendered more hooks than during the previous render",
   // landing Settings on the recovery screen (crashed opening ?tab=outlets
   // from Cash & close). Do not move these back down.
-  const [outletSetupOutlets, setOutletSetupOutlets] = useState([])
+  const [outletSetupOutlets, setOutletSetupOutlets] = useState(/** @type {SettingsOutletExpectedView[]} */ ([]))
   const [outletSetupOutletId, setOutletSetupOutletId] = useState('')
   const [outletSetupChoice, setOutletSetupChoice] = useState('shared_drawer')
   const [outletSetupBusy, setOutletSetupBusy] = useState(false)
@@ -2166,7 +2287,8 @@ export default function Settings() {
   const loadOutletSetup = async () => {
     try {
       const rows = await window.api?.outlets?.getAll?.()
-      const all = Array.isArray(rows) ? rows : []
+      // The existing outlet IPC returns outlet records; this view does not validate the response.
+      const all = Array.isArray(rows) ? /** @type {SettingsOutletExpectedView[]} */ (rows) : []
       setOutletSetupOutlets(all)
       setOutletSetupOutletId((current) => (current && all.some((row) => row.id === current) ? current : all[0]?.id || ''))
     } catch {
@@ -2187,6 +2309,7 @@ export default function Settings() {
 
   // ── Helpers for License tab ────────────────────────────────────────────────
 
+  /** @param {string|number|Date|null|undefined} d @returns {string} */
   const fmtDate = (d) => {
     if (!d) return '—'
     const date = new Date(d)
@@ -2194,14 +2317,15 @@ export default function Settings() {
     return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
   }
 
+  /** @param {string|null|undefined} status */
   const paymentBadge = (status) => {
     if (!status) return null
-    const map = {
+    const map = /** @type {Record<string, {bg: string, label: string}>} */ ({
       active:    { bg: 'bg-green-100 text-green-700',  label: 'Active' },
       overdue:   { bg: 'bg-red-100 text-red-700',      label: 'Overdue' },
       free:      { bg: 'bg-gray-100 text-gray-600',    label: 'Free' },
       cancelled: { bg: 'bg-amber-100 text-amber-700',  label: 'Cancelled' },
-    }
+    })
     const s = map[status] || { bg: 'bg-gray-100 text-gray-600', label: status }
     return <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${s.bg}`}>{s.label}</span>
   }
@@ -2238,7 +2362,7 @@ export default function Settings() {
       setOutletSetupNotice(`${outlet.name || 'Outlet'} now counts ${wanted}. Open the drawer in Staff shift close before trading.`)
       await loadOutletSetup()
     } catch (switchError) {
-      setOutletSetupError(switchError?.message || 'The cash counting model could not be changed.')
+      setOutletSetupError(expectedThrownErrorView(switchError)?.message || 'The cash counting model could not be changed.')
       // Resync the dropdown to the authoritative model: a refused switch must
       // never leave the control displaying the unapplied choice as truth.
       await loadOutletSetup()
@@ -2706,7 +2830,7 @@ export default function Settings() {
                   </label>
                   <input
                     className="input"
-                    value={form.lodge_name}
+                    value={/** @type {string} */ (form.lodge_name)}
                     onChange={(e) => set('lodge_name', e.target.value)}
                     placeholder={
                       barOnlyMode ? 'e.g. Town Bar, Corner Pub'
@@ -2726,7 +2850,7 @@ export default function Settings() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Registered Company Name</label>
                   <input
                     className="input"
-                    value={form.company_name}
+                    value={/** @type {string} */ (form.company_name)}
                     onChange={(e) => set('company_name', e.target.value)}
                     placeholder={
                       barOnlyMode ? 'e.g. Town Bar (Pty) Ltd'
@@ -2745,7 +2869,7 @@ export default function Settings() {
                         ? 'Hotel'
                         : 'Tsa Bonno LodgingOS'}
                     <p className="mt-1 text-xs text-gray-500">
-                      {PROPERTY_TYPE_LABELS[normalizePropertyType(form.property_type || form.business_type || propertyType)]
+                      {/** @type {string|undefined} */ (PROPERTY_TYPE_LABELS[normalizePropertyType(form.property_type || form.business_type || propertyType)])
                         || (IS_HOSPITALITY_POS_PRODUCT ? 'Restaurant / POS' : IS_HOTEL_PRODUCT ? 'Hotel' : 'Lodge')}
                       {IS_HOSPITALITY_POS_PRODUCT ? (
                         <>
@@ -2766,7 +2890,7 @@ export default function Settings() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Currency Symbol</label>
-                    <select className="input" value={form.currency} onChange={(e) => set('currency', e.target.value)}>
+                    <select className="input" value={/** @type {string} */ (form.currency)} onChange={(e) => set('currency', e.target.value)}>
                       <option value="P">P — Botswana Pula</option>
                       <option value="R">R — South African Rand</option>
                       <option value="$">$ — US Dollar</option>
@@ -2831,16 +2955,16 @@ export default function Settings() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Physical Address</label>
-                  <input className="input" value={form.address} onChange={(e) => set('address', e.target.value)} placeholder="Street / Plot number" />
+                  <input className="input" value={/** @type {string} */ (form.address)} onChange={(e) => set('address', e.target.value)} placeholder="Street / Plot number" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">City / Town</label>
-                    <input className="input" value={form.city} onChange={(e) => set('city', e.target.value)} placeholder="e.g. Maun" />
+                    <input className="input" value={/** @type {string} */ (form.city)} onChange={(e) => set('city', e.target.value)} placeholder="e.g. Maun" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
-                    <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
+                    <input className="input" value={/** @type {string} */ (form.country)} onChange={(e) => set('country', e.target.value)} />
                   </div>
                 </div>
               </div>
@@ -2854,15 +2978,15 @@ export default function Settings() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Phone size={13} className="inline mr-1" /> Phone Number</label>
-                  <input className="input" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder="+267 000 0000" />
+                  <input className="input" value={/** @type {string} */ (form.phone)} onChange={(e) => set('phone', e.target.value)} placeholder="+267 000 0000" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Mail size={13} className="inline mr-1" /> Email Address</label>
-                   <input type="email" className="input" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={vocab.emailPlaceholder} />
+                   <input type="email" className="input" value={/** @type {string} */ (form.email)} onChange={(e) => set('email', e.target.value)} placeholder={vocab.emailPlaceholder} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1"><Globe size={13} className="inline mr-1" /> Website</label>
-                   <input className="input" value={form.website} onChange={(e) => set('website', e.target.value)} placeholder={vocab.websitePlaceholder} />
+                   <input className="input" value={/** @type {string} */ (form.website)} onChange={(e) => set('website', e.target.value)} placeholder={vocab.websitePlaceholder} />
                 </div>
               </div>
             </div>
@@ -2907,7 +3031,7 @@ export default function Settings() {
                     <select
                       className="input"
                       value={emailConfig.provider}
-                      onChange={(e) => applyEmailProvider(e.target.value)}
+                      onChange={(e) => applyEmailProvider(/** @type {EmailProvider} */ (e.target.value))}
                     >
                       {Object.entries(EMAIL_PROVIDER_PRESETS).map(([key, preset]) => (
                         <option key={key} value={key}>{preset.label}</option>
@@ -3073,7 +3197,7 @@ export default function Settings() {
                     </label>
                     <div className="flex gap-2">
                       <span className="flex items-center px-3 bg-gray-100 border border-r-0 border-gray-200 rounded-l-lg text-xs text-gray-400 whitespace-nowrap">
-                        {BOOKING_SITE_BASE.replace('https://', '')}/
+                        {PUBLIC_BOOKING_ORIGIN.replace('https://', '')}/
                       </span>
                       <input
                         type="text"
@@ -3101,12 +3225,12 @@ export default function Settings() {
                   {form?.slug && (
                     <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
                       <span className="text-xs text-gray-500 flex-1 truncate font-mono">
-                        {BOOKING_SITE_BASE.replace('https://', '')}/{form.slug}
+                        {buildLodgeBookingUrl(form.slug).replace('https://', '')}
                       </span>
                       <button
                         type="button"
                         onClick={() => {
-                          navigator.clipboard.writeText(`${BOOKING_SITE_BASE}/${form.slug}`)
+                          navigator.clipboard.writeText(buildLodgeBookingUrl(form.slug))
                           setSlugCopied(true)
                           setTimeout(() => setSlugCopied(false), 2000)
                         }}
@@ -3125,13 +3249,13 @@ export default function Settings() {
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                     <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">What guests can request online</p>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {[
+                      {(/** @type {Array<[keyof typeof PUBLIC_OFFER_DEFAULTS, string, string]>} */ ([
                         ['public_offer_rooms', 'Room stays', 'Guests can request one room.'],
                         ['public_offer_multi_room', 'Multiple rooms', 'Families and companies can request several rooms together.'],
                         ['public_offer_full_lodge', vocab.fullPropertyLabel, `Guests can request exclusive ${vocab.noun} use.`],
                         ['public_offer_day_use', 'Day use', 'Show configured pool, braai, and facility packages.'],
                         ['public_offer_events', 'Events & venues', 'Show venue and event request options.']
-                      ].map(([key, label, hint]) => (
+                      ])).map(([key, label, hint]) => (
                         <label key={key} className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
                           <input
                             type="checkbox"

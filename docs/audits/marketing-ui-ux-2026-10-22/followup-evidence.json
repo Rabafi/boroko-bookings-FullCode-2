@@ -1,0 +1,140 @@
+{
+  "heroes": [
+    {
+      "name": "lodge-app",
+      "data": {
+        "image": {
+          "naturalWidth": 1920,
+          "naturalHeight": 993,
+          "width": 473.25,
+          "height": 993
+        },
+        "cta": {
+          "top": 944.84375,
+          "bottom": 994.84375
+        },
+        "heroHeight": 1393
+      }
+    },
+    {
+      "name": "hotel",
+      "data": {
+        "image": {
+          "naturalWidth": 1920,
+          "naturalHeight": 993,
+          "width": 473.25,
+          "height": 993
+        },
+        "cta": {
+          "top": 960.234375,
+          "bottom": 1010.234375
+        },
+        "heroHeight": 1393
+      }
+    }
+  ],
+  "dialog": {
+    "role": null,
+    "ariaModal": null,
+    "focusInside": false
+  },
+  "barNav": [
+    {
+      "text": "Lodge",
+      "width": 44.125,
+      "height": 21
+    },
+    {
+      "text": "Hotel",
+      "width": 38.40625,
+      "height": 21
+    },
+    {
+      "text": "Restaurant POS",
+      "width": 108.96875,
+      "height": 21
+    },
+    {
+      "text": "Bar POS",
+      "width": 214.375,
+      "height": 42
+    },
+    {
+      "text": "Packages",
+      "width": 64.625,
+      "height": 21
+    },
+    {
+      "text": "Contact",
+      "width": 54.71875,
+      "height": 21
+    }
+  ],
+  "contrast": {
+    "foreground": "rgb(71, 97, 88)",
+    "background": "rgba(0, 0, 0, 0)"
+  },
+  "afterScroll": [
+    {
+      "name": "index",
+      "images": [
+        "./assets/photos/reception.jpg",
+        "./assets/photos/guest-room.jpg",
+        "./assets/photos/reports-screen.jpg",
+        "./assets/photos/bar-stock.jpg"
+      ],
+      "hiddenSections": [
+        {
+          "height": 0,
+          "text": "Everything a lodge needs, organised around how the property actually works."
+        },
+        {
+          "height": 0,
+          "text": "Designed for lodges that want something practical, modern, and sustainable."
+        },
+        {
+          "height": 0,
+          "text": "A practical path from first setup to fully running the property."
+        },
+        {
+          "height": 0,
+          "text": "How Tsa Bonno works in a day at your lodge."
+        },
+        {
+          "height": 0,
+          "text": "Structured to be useful on day one and worth upgrading as the lodge grows."
+        },
+        {
+          "height": 0,
+          "text": "A quick package comparison for sales conversations."
+        },
+        {
+          "height": 0,
+          "text": "Each part of the lodge gets a clearer place to work."
+        },
+        {
+          "height": 0,
+          "text": "Simple examples that help prospects quickly see themselves in Tsa Bonno."
+        },
+        {
+          "height": 0,
+          "text": "Built for local hospitality work, not generic admin."
+        },
+        {
+          "height": 0,
+          "text": "Go deeper into the product story."
+        }
+      ]
+    },
+    {
+      "name": "restaurant-pos",
+      "images": [],
+      "hiddenSections": []
+    },
+    {
+      "name": "packages",
+      "images": [],
+      "hiddenSections": []
+    }
+  ]
+}

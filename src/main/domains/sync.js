@@ -41,6 +41,10 @@ import {
 
 const HEALTH_FAULTS_FILE = 'health-faults.json';
 const CACHE_FRESHNESS_FILE = 'cache-freshness.json';
+/** @typedef {{_queue_id?: string, _depends_on?: unknown, _depends_on_all?: unknown, lastError?: string|null, table?: string, type?: string, data?: {p_booking_id?: string|null, payload?: {booking_id?: string|null, id?: string|null}, p_id?: string|null}, _local_booking_id?: string|null, lastAttemptedAt?: string|null, manualRetryOnly?: boolean, id?: string, retryCount?: number, _state?: string, [key: string]: unknown}} QueueItemExpectedView */
+/** @typedef {{id?: string, _pending_sync?: boolean, _sync_state?: string, [key: string]: unknown}} CacheRowExpectedView */
+/** @typedef {{enabled?: unknown, reason?: unknown}} OfflineModeExpectedView */
+/** @typedef {'none'|'blocked_dependencies'|'resolved'|'missing_parent'} SyncDependencyCategory */
 const QUEUED_DEPENDENCY_CACHE_MAP = [
   { prefix: 'booking-', cache: 'bookings' },
   { prefix: 'customer-', cache: 'customers' },
@@ -58,6 +62,7 @@ const QUEUED_DEPENDENCY_CACHE_MAP = [
   { prefix: 'inventory-item-', cache: 'inventory-items' }
 ];
 
+/** @param {string} dependencyId */
 function isQueuedDependencyResolved(dependencyId) {
   const normalizedDependencyId = String(dependencyId || '').trim();
   if (!normalizedDependencyId) return false;
@@ -68,7 +73,7 @@ function isQueuedDependencyResolved(dependencyId) {
   const entityId = normalizedDependencyId.slice(target.prefix.length).trim();
   if (!entityId) return false;
 
-  const cachedRow = readCache(target.cache).find((entry) => entry?.[target.idField || 'id'] === entityId);
+  const cachedRow = /** @type {CacheRowExpectedView[]} */ (readCache(target.cache)).find((/** @type {CacheRowExpectedView} */ entry) => entry?.[target.idField || 'id'] === entityId);
   if (!cachedRow) return false;
 
   return cachedRow._pending_sync !== true &&
@@ -80,6 +85,7 @@ export function getSyncStatus() {
   return buildSyncStatusSnapshot();
 }
 
+/** @param {string|null|undefined} id */
 export function clearHealthFault(id) {
   if (!state.cacheDir) return { success: true, remaining: 0 };
   const filePath = path.join(state.cacheDir, HEALTH_FAULTS_FILE);
@@ -92,10 +98,11 @@ export function clearHealthFault(id) {
     return { success: true, remaining: next.length };
   } catch (e) {
     try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    return { success: false, error: e.message };
+    return { success: false, error: (/** @type {{message?: string}} */ (e)).message };
   }
 }
 
+/** @returns {Record<string, {updatedAt?: string|null}>} */
 function readCacheFreshness() {
   if (!state.cacheDir) return {};
   try {
@@ -106,6 +113,7 @@ function readCacheFreshness() {
   }
 }
 
+/** @param {QueueItemExpectedView} [item] @param {Set<string|undefined>|QueueItemExpectedView[]|null} [pendingIds] @param {Set<string|undefined>|QueueItemExpectedView[]|null} [failedIds] @param {((dependencyId: string) => boolean)|null} [resolveDep] @returns {SyncDependencyCategory} */
 function classifySyncDependencyCategory(item = {}, pendingIds = null, failedIds = null, resolveDep = null) {
   const dependencyIds = [...new Set([
     item?._depends_on,
@@ -137,6 +145,7 @@ function classifySyncDependencyCategory(item = {}, pendingIds = null, failedIds 
   return 'resolved';
 }
 
+/** @param {SyncDependencyCategory} [category] */
 function getSyncDependencyLabel(category = 'none') {
   switch (category) {
     case 'missing_parent':
@@ -150,6 +159,7 @@ function getSyncDependencyLabel(category = 'none') {
   }
 }
 
+/** @param {QueueItemExpectedView} [item] @param {SyncDependencyCategory} [dependencyCategory] */
 function getSyncDisplayError(item = {}, dependencyCategory = 'none') {
   if (dependencyCategory === 'missing_parent') return 'Blocked: missing parent sync item';
   if (dependencyCategory === 'blocked_dependencies' && /Skipped: parent operation failed/i.test(String(item?.lastError || ''))) {
@@ -158,6 +168,7 @@ function getSyncDisplayError(item = {}, dependencyCategory = 'none') {
   return item?.lastError || '';
 }
 
+/** @param {QueueItemExpectedView[]} [pending] @param {QueueItemExpectedView[]} [failed] @param {((dependencyId: string) => boolean)|null} [resolveDep] */
 function buildSyncGroupedCounts(pending = [], failed = [], resolveDep = null) {
   const pendingSet = new Set((pending || []).map((entry) => entry?._queue_id).filter(Boolean));
   const failedSet = new Set((failed || []).map((entry) => entry?._queue_id).filter(Boolean));
@@ -178,8 +189,8 @@ function buildSyncGroupedCounts(pending = [], failed = [], resolveDep = null) {
 
 /** @returns {import('../../shared/desktopIpcContracts.js').SyncDetailsSnapshot} */
 export function getSyncDetails() {
-  const pending = readSyncQueue();
-  const failed = readFailedSyncQueue();
+  const pending = /** @type {QueueItemExpectedView[]} */ (readSyncQueue());
+  const failed = /** @type {QueueItemExpectedView[]} */ (readFailedSyncQueue());
   const faults = readHealthFaults();
   const syncMeta = readSyncMeta();
   const cacheFreshness = readCacheFreshness();
@@ -190,9 +201,10 @@ export function getSyncDetails() {
   // against a freshly parsed cache file would block the main thread for
   // minutes (see createDependencyCacheResolver).
   const depResolver = createDependencyCacheResolver().isResolved;
-  const pendingIdSet = new Set(pending.map((entry) => entry?._queue_id).filter(Boolean));
-  const failedIdSet = new Set(failed.map((entry) => entry?._queue_id).filter(Boolean));
+  const pendingIdSet = /** @type {Set<string>} */ (new Set(pending.map((entry) => entry?._queue_id).filter(Boolean)));
+  const failedIdSet = /** @type {Set<string>} */ (new Set(failed.map((entry) => entry?._queue_id).filter(Boolean)));
 
+  /** @param {QueueItemExpectedView} item */
   const enrichPending = (item) => {
     const dependencyCategory = classifySyncDependencyCategory(item, pendingIdSet, failedIdSet, depResolver);
     const dependencyIds = [...new Set([
@@ -216,6 +228,7 @@ export function getSyncDetails() {
     };
   };
 
+  /** @param {QueueItemExpectedView} item */
   const enrichFailed = (item) => {
     const attemptedAtMs = item.lastAttemptedAt ? Date.parse(item.lastAttemptedAt) : NaN;
     const ageMs = Number.isNaN(attemptedAtMs) ? null : now - attemptedAtMs;
@@ -223,7 +236,7 @@ export function getSyncDetails() {
     const nextAutoRetryAt = isAutoRetryable && !Number.isNaN(attemptedAtMs) ?
     new Date(attemptedAtMs + DEAD_LETTER_AUTO_RETRY_AFTER_MS).toISOString() :
     null;
-    const autoRetryEligible = isAutoRetryable && (Number.isNaN(attemptedAtMs) || ageMs >= DEAD_LETTER_AUTO_RETRY_AFTER_MS);
+    const autoRetryEligible = isAutoRetryable && (Number.isNaN(attemptedAtMs) || (ageMs !== null && ageMs >= DEAD_LETTER_AUTO_RETRY_AFTER_MS));
     const dependencyCategory = classifySyncDependencyCategory(item, pendingIdSet, failedIdSet, depResolver);
     return {
       ...item,
@@ -238,38 +251,43 @@ export function getSyncDetails() {
     };
   };
 
+  /** @param {QueueItemExpectedView} item */
+  /** @param {QueueItemExpectedView} item @returns {string|null} */
   const extractBookingId = (item) =>
   item?.data?.p_booking_id || item?.data?.payload?.booking_id || item?.data?.payload?.id || item?.data?.p_id || item?._local_booking_id || null;
 
-  const financialPendingBookingIds = [...new Set(pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(Boolean))];
-  const financialFailedBookingIds = [...new Set(failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(Boolean))];
+  /** @param {string|null|undefined} value @returns {value is string} */
+  const hasBookingId = (value) => Boolean(value)
+
+  const financialPendingBookingIds = [...new Set(pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(hasBookingId))];
+  const financialFailedBookingIds = [...new Set(failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).map(extractBookingId).filter(hasBookingId))];
   const financialPendingCount = pending.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
   const financialFailedCount = failed.filter((i) => FINANCIAL_SYNC_TABLES.has(i?.table)).length;
   const groupedCounts = buildSyncGroupedCounts(pending, failed, depResolver);
-  const bookings = readCache('bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const customers = readCache('customers').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const rooms = readCache('rooms').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const users = readCache('users').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const quotations = readCache('quotations').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const posOrders = readCache('pos-orders').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const conferenceBookings = readCache('conference-bookings').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const poolDayUse = readCache('pool-day-use').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
-  const inventoryItems = readCache('inventory-items').filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const bookings = /** @type {CacheRowExpectedView[]} */ (readCache('bookings')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const customers = /** @type {CacheRowExpectedView[]} */ (readCache('customers')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const rooms = /** @type {CacheRowExpectedView[]} */ (readCache('rooms')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const users = /** @type {CacheRowExpectedView[]} */ (readCache('users')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const quotations = /** @type {CacheRowExpectedView[]} */ (readCache('quotations')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const posOrders = /** @type {CacheRowExpectedView[]} */ (readCache('pos-orders')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const conferenceBookings = /** @type {CacheRowExpectedView[]} */ (readCache('conference-bookings')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const poolDayUse = /** @type {CacheRowExpectedView[]} */ (readCache('pool-day-use')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
+  const inventoryItems = /** @type {CacheRowExpectedView[]} */ (readCache('inventory-items')).filter((row) => row?._pending_sync || row?._sync_state === 'manual_review_required');
 
   const total = bookings.length + customers.length + rooms.length + users.length + quotations.length + posOrders.length + conferenceBookings.length + poolDayUse.length + inventoryItems.length;
 
   const unresolvedLocal = {
     total,
     length: total, // Preserve array compatibility for details.unresolvedLocal?.length in health.js
-    bookings: { count: bookings.length, ids: bookings.map(r => r.id) },
-    customers: { count: customers.length, ids: customers.map(r => r.id) },
-    rooms: { count: rooms.length, ids: rooms.map(r => r.id) },
-    users: { count: users.length, ids: users.map(r => r.id) },
-    quotations: { count: quotations.length, ids: quotations.map(r => r.id) },
-    posOrders: { count: posOrders.length, ids: posOrders.map(r => r.id) },
-    conferenceBookings: { count: conferenceBookings.length, ids: conferenceBookings.map(r => r.id) },
-    poolDayUse: { count: poolDayUse.length, ids: poolDayUse.map(r => r.id) },
-    inventoryItems: { count: inventoryItems.length, ids: inventoryItems.map(r => r.id) }
+    bookings: { count: bookings.length, ids: bookings.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    customers: { count: customers.length, ids: customers.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    rooms: { count: rooms.length, ids: rooms.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    users: { count: users.length, ids: users.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    quotations: { count: quotations.length, ids: quotations.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    posOrders: { count: posOrders.length, ids: posOrders.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    conferenceBookings: { count: conferenceBookings.length, ids: conferenceBookings.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    poolDayUse: { count: poolDayUse.length, ids: poolDayUse.map((/** @type {CacheRowExpectedView} */ r) => r.id) },
+    inventoryItems: { count: inventoryItems.length, ids: inventoryItems.map((/** @type {CacheRowExpectedView} */ r) => r.id) }
   };
 
   const enrichedCacheFreshness = Object.fromEntries(
@@ -315,24 +333,25 @@ export function getSyncDetails() {
   };
 }
 
+/** @param {string[]} [queueIds] @returns {Promise<import('../../shared/desktopIpcContracts.js').SyncRetryResult>} */
 export async function retrySyncItems(queueIds = []) {
-  const failed = readFailedSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const failed = /** @type {QueueItemExpectedView[]} */ (readFailedSyncQueue()).map((item) => ensureQueuedItem(item, item?.type || 'op'));
   const targetIds = new Set((queueIds || []).filter(Boolean));
   const shouldRetryAll = targetIds.size === 0;
-  const retryItems = failed.filter((item) => shouldRetryAll || targetIds.has(item._queue_id));
+  const retryItems = failed.filter((item) => shouldRetryAll || targetIds.has(/** @type {string} */ (item._queue_id)));
   if (retryItems.length === 0) return { success: true, retried: 0, remaining: failed.length };
 
   const keepFailed = failed.filter((item) => !retryItems.some((entry) => entry._queue_id === item._queue_id));
-  const queue = readSyncQueue().map((item) => ensureQueuedItem(item, item?.type || 'op'));
+  const queue = /** @type {QueueItemExpectedView[]} */ (readSyncQueue()).map((item) => ensureQueuedItem(item, item?.type || 'op'));
   const existingIds = new Set(queue.map((item) => item._queue_id));
   for (const item of retryItems) {
-    const cleanItem = normalizeQueuedSyncItemForReplay({
+    const cleanItem = /** @type {QueueItemExpectedView} */ (normalizeQueuedSyncItemForReplay({
       ...item,
       _state: 'pending',
       retryCount: Math.max(0, Number(item.retryCount || 1) - 1),
       lastError: '',
       lastAttemptedAt: null
-    });
+    }));
     if (isPosCreateOrderQueueItem(cleanItem)) {
       const orderId = getQueuedPosOrderId(cleanItem);
       if (orderId) {
@@ -381,13 +400,14 @@ export async function retrySyncItems(queueIds = []) {
   return { success: true, retried: retryItems.length, remaining: keepFailed.length };
 }
 
+/** @param {string[]} [queueIds] @returns {import('../../shared/desktopIpcContracts.js').SyncClearFailedResult} */
 export function clearSyncFailed(queueIds = []) {
-  const failed = readFailedSyncQueue();
+  const failed = /** @type {QueueItemExpectedView[]} */ (readFailedSyncQueue());
   const targetIds = new Set((queueIds || []).filter(Boolean));
   const shouldClearAll = targetIds.size === 0;
   const itemsToRemove = shouldClearAll ?
   failed :
-  failed.filter((item) => targetIds.has(item?._queue_id));
+  failed.filter((item) => targetIds.has(/** @type {string} */ (item?._queue_id)));
 
   const financialCleared = itemsToRemove.filter((item) => isFinancialSyncItem(item));
   let integrityAlertsRecorded = 0;
@@ -436,7 +456,7 @@ export async function runSyncNow() {
   if (!state.isOnline) return { success: false, error: 'Offline — cannot sync right now.' };
   if (!state.replayAuthReady) return { success: false, error: 'No authenticated session — please log in first.' };
   await requeueEligibleFailedSyncItems();
-  const result = await processSyncQueue();
+  const result = /** @type {{success?: boolean, [key: string]: unknown}} */ (await processSyncQueue());
   return result?.success === false ? result : { success: true };
 }
 
@@ -447,6 +467,7 @@ export function getOfflineModeState() {
   };
 }
 
+/** @param {{enabled?: boolean, reason?: string, acknowledged?: boolean, updatedBy?: string|null}} [options] */
 export function setOfflineModeState({ enabled, reason = '', acknowledged = false, updatedBy = null } = {}) {
   if (enabled === true && acknowledged !== true) {
     return {
@@ -454,12 +475,12 @@ export function setOfflineModeState({ enabled, reason = '', acknowledged = false
       error: 'A manager must acknowledge that local values are pending until cloud replay confirms them.'
     };
   }
-  const next = writeOfflineModeState({
+  const next = /** @type {OfflineModeExpectedView} */ (writeOfflineModeState({
     enabled: enabled === true,
     reason: String(reason || '').slice(0, 500),
     updatedBy: updatedBy || state.currentUser?.id || null,
     acknowledgedRisksAt: enabled === true ? new Date().toISOString() : undefined
-  });
+  }));
   appendOperationJournalEntry(enabled === true ? 'offline_mode_enabled' : 'offline_mode_disabled', {
     type: 'control',
     table: 'lodge_offline_mode',
@@ -475,10 +496,12 @@ export function setOfflineModeState({ enabled, reason = '', acknowledged = false
   return { success: true, offlineMode: next };
 }
 
+/** @param {Record<string, unknown>} [extra] */
 export function buildOfflineOperationsBundle(extra = {}) {
   return buildLocalOperationsBundle(extra);
 }
 
+/** @param {string} filePath @param {Record<string, unknown>} [extra] */
 export function exportOfflineOperationsBundle(filePath, extra = {}) {
   const result = writeLocalOperationsBundle(filePath, extra);
   broadcastSyncStatus();

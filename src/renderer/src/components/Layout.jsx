@@ -64,6 +64,18 @@ const ADDON_FEATURE_KEYS = [
   'group_operations'
 ]
 
+/** @typedef {{enterprise_addons?: unknown, effective_features?: Record<string, unknown>, plan?: string|null, status?: string|null, lodge_id?: string|null, commercial_package_key?: string|null}} EntitlementExpectedView */
+/** @typedef {Record<string, unknown> & {id: string, title?: string|null, description?: string|null, admin_notes?: string|null, created_at?: string|null, updated_at?: string|null, category?: string|null, front_desk_has_unread?: boolean, messages?: unknown}} SupportRequestExpectedView */
+/** Support normalization preserves unknown JSON IDs and does not validate their source. */
+/** @typedef {ReturnType<typeof normalizeSupportMessages>[number]} SupportMessageExpectedView */
+/** @typedef {{id: string, requestId: string|null, title: string, message: string, createdAt: string}} InboxAlertView */
+/** @typedef {{pending: number, failed: number, failedBookingIds?: unknown[], syncInProgress?: boolean, lastSuccessfulSyncAt?: string|number|null, cacheStale?: {active: boolean, names: unknown[]}, financialFailedCount?: number, isOnline?: boolean}} SyncStatusUiExpectedView */
+/** @typedef {{key: string, tone: string, icon: import('lucide-react').LucideIcon, label: string, detail: string, to: string, state?: {activeTab: string}}} AttentionItemView */
+/** @typedef {{latestAt: string|null, overdue: boolean, enabled: boolean}} BackupStatusView */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').BookingCollectionsSummary} CollectionSummaryView */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').BackupInfoReadResult} BackupInfoExpectedView */
+
+/** @param {EntitlementExpectedView} [entitlement] */
 function getEffectiveAddonsFromEntitlement(entitlement = {}) {
   const addons = new Set(Array.isArray(entitlement.enterprise_addons) ? entitlement.enterprise_addons : [])
   const features = entitlement.effective_features || {}
@@ -74,17 +86,20 @@ function getEffectiveAddonsFromEntitlement(entitlement = {}) {
   return [...addons]
 }
 
+/** @param {SupportRequestExpectedView} row */
 function latestSupportMessage(row) {
   const messages = normalizeSupportMessages(row)
   return messages[messages.length - 1] || null
 }
 
+/** @param {SupportRequestExpectedView} request @param {SupportMessageExpectedView|null} latest */
 function supportAlertId(request, latest) {
   return `${request?.id || 'request'}:${latest?.id || latest?.created_at || latest?.body || request?.updated_at || request?.created_at || 'latest'}`
 }
 
 const DESKTOP_INBOX_SEEN_LIMIT = 250
 
+/** @param {string} key @param {unknown} fallback @returns {unknown} */
 function readJsonStorage(key, fallback) {
   if (typeof window === 'undefined') return fallback
   try {
@@ -95,6 +110,7 @@ function readJsonStorage(key, fallback) {
   }
 }
 
+/** @param {string} key @param {unknown} value */
 function writeJsonStorage(key, value) {
   if (typeof window === 'undefined') return
   try {
@@ -104,27 +120,33 @@ function writeJsonStorage(key, value) {
   }
 }
 
+/** @param {unknown} lodgeId @param {unknown} userId */
 function desktopInboxSeenKey(lodgeId, userId) {
   return `boroko_desktop_seen_inbox:${String(lodgeId || 'global').toLowerCase()}:${String(userId || 'user').toLowerCase()}`
 }
 
+/** @param {unknown} lodgeId @param {unknown} userId */
 function desktopInboxScanKey(lodgeId, userId) {
   return `boroko_desktop_inbox_last_scan:${String(lodgeId || 'global').toLowerCase()}:${String(userId || 'user').toLowerCase()}`
 }
 
+/** @param {unknown} value @param {unknown} lastScanAt */
 function isAfterStoredScan(value, lastScanAt) {
   if (!value || !lastScanAt) return Boolean(value && !lastScanAt)
-  const time = new Date(value).getTime()
-  const scanTime = new Date(lastScanAt).getTime()
+  // Date coercion stays unchanged; these are expected persisted timestamps, not validated values.
+  const time = new Date(/** @type {string|number} */ (value)).getTime()
+  const scanTime = new Date(/** @type {string|number} */ (lastScanAt)).getTime()
   return Number.isFinite(time) && Number.isFinite(scanTime) && time > scanTime
 }
 
 // ── Support Ticket Modal ──────────────────────────────────────────────────────
+/** @param {{onClose: () => void, settings: import('../app-context.jsx').SettingsRowView|null}} props */
 function SupportModal({ onClose, settings }) {
   const [form, setForm] = useState({ title: '', description: '', category: 'General', priority: 'Normal' })
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(false)
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const submit = async (e) => {
     e.preventDefault(); setSaving(true)
     await window.api.admin.createSupportTicket({
@@ -372,18 +394,19 @@ export default function Layout() {
   const navGuard = useContext(UnsavedChangesContext)
   const [collapsed, setCollapsed] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
-  const [upgradeItem, setUpgradeItem] = useState(null) // { label, tier, capability } of locked item clicked
-  const [syncStatus, setSyncStatus] = useState({ pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
-  const [collectionSummary, setCollectionSummary] = useState({ count: 0, amount: 0 })
-  const [backupStatus, setBackupStatus] = useState({ latestAt: null, overdue: false, enabled: false })
+  const [upgradeItem, setUpgradeItem] = useState(/** @type {{label: string, tier: string, capability: string}|null} */ (null)) // locked item clicked
+  const [syncStatus, setSyncStatus] = useState(/** @type {SyncStatusUiExpectedView} */ ({ pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null }))
+  const [collectionSummary, setCollectionSummary] = useState(/** @type {CollectionSummaryView} */ ({ count: 0, amount: 0 }))
+  const [backupStatus, setBackupStatus] = useState(/** @type {BackupStatusView} */ ({ latestAt: null, overdue: false, enabled: false }))
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [inboxAlerts, setInboxAlerts] = useState([])
-  const onlineRequestIdsRef = useRef(new Set())
-  const supportRequestIdsRef = useRef(new Map())
+  const [inboxAlerts, setInboxAlerts] = useState(/** @type {InboxAlertView[]} */ ([]))
+  const onlineRequestIdsRef = useRef(/** @type {Set<string>} */ (new Set()))
+  const supportRequestIdsRef = useRef(/** @type {Map<string, SupportRequestExpectedView>} */ (new Map()))
   const onlineRequestsPrimedRef = useRef(false)
   const supportRequestsPrimedRef = useRef(false)
   const isBrowserPreview = typeof window === 'undefined' || !window.api?.settings
 
+  /** @param {SupportRequestExpectedView} request @param {SupportMessageExpectedView|null} latest @param {'new'|'reply'} [variant] */
   const pushInboxAlert = (request, latest, variant = 'new') => {
     const id = supportAlertId(request, latest)
     setInboxAlerts((current) => {
@@ -414,12 +437,13 @@ export default function Layout() {
     const checkSync = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        setSyncStatus(status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
+        // sync:getStatus has a minimal offline fallback; this consumer view does not validate it.
+        setSyncStatus(/** @type {SyncStatusUiExpectedView} */ (/** @type {unknown} */ (status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })))
       } catch { /* non-fatal — sync status is informational */ }
     }
     checkSync()
     const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
-      setSyncStatus(status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })
+      setSyncStatus(/** @type {SyncStatusUiExpectedView} */ (/** @type {unknown} */ (status || { pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null })))
     })
     const interval = setInterval(checkSync, 30_000)
     return () => {
@@ -519,11 +543,13 @@ export default function Layout() {
     const seenKey = desktopInboxSeenKey(lodgeId, userId)
     const scanKey = desktopInboxScanKey(lodgeId, userId)
 
+    /** @returns {unknown[]} */
     const getSeenVersions = () => {
       const value = readJsonStorage(seenKey, [])
-      return Array.isArray(value) ? value : []
+      return Array.isArray(value) ? /** @type {unknown[]} */ (value) : []
     }
 
+    /** @param {unknown[]} versions */
     const rememberSeenVersions = (versions) => {
       const current = getSeenVersions()
       const next = [...new Set([...versions.filter(Boolean), ...current])]
@@ -532,14 +558,18 @@ export default function Layout() {
       return next
     }
 
+    /** @param {string} version */
     const isSeenVersion = (version) => getSeenVersions().includes(version)
 
+    /** @param {SupportRequestExpectedView} request @param {SupportMessageExpectedView|null} latest */
     const acknowledgeRequest = (request, latest) => {
       const version = supportAlertId(request, latest)
       rememberSeenVersions([version])
-      window.api.requests.markRead?.(request.id, 'front_desk', latest?.id || null).catch(() => {})
+      // SQL-backed read receipts use UUID text IDs; normalized JSON/fallback IDs remain unvalidated expected data.
+      window.api.requests.markRead?.(request.id, 'front_desk', /** @type {string|null} */ (latest?.id || null)).catch(() => {})
     }
 
+    /** @param {SupportRequestExpectedView} request @param {SupportMessageExpectedView|null} latest @param {'new'|'reply'} variant */
     const announceRequest = (request, latest, variant) => {
       const note = latest?.body || request.description || request.admin_notes || 'A new request arrived from the manager mobile app.'
       pushInboxAlert(request, latest, variant)
@@ -558,7 +588,8 @@ export default function Layout() {
       try {
         const rows = await window.api.requests.getAll(12)
         if (cancelled) return
-        const nextRows = Array.isArray(rows) ? rows : []
+        // The existing array guard is retained; request fields remain unvalidated expected data.
+        const nextRows = Array.isArray(rows) ? /** @type {SupportRequestExpectedView[]} */ (/** @type {unknown} */ (rows)) : []
         if (!supportRequestsPrimedRef.current) {
           const initialUnread = nextRows.filter((row) => {
             if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
@@ -593,7 +624,7 @@ export default function Layout() {
           return
         }
 
-        const lastScanAt = readJsonStorage(scanKey, null)
+        const lastScanAt = /** @type {string|number|null} */ (readJsonStorage(scanKey, null))
         const newFrontDeskRequests = nextRows.filter((row) => {
           if (String(row.category || '').trim().toLowerCase() !== 'front desk request') return false
           const latest = latestSupportMessage(row)
@@ -679,6 +710,7 @@ export default function Layout() {
   const assistantEnabled = settings?.assistant_enabled === true
 
   useEffect(() => {
+    /** @param {KeyboardEvent} event */
     const handleQuickSearch = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -690,29 +722,30 @@ export default function Layout() {
     return () => window.removeEventListener('keydown', handleQuickSearch)
   }, [])
 
-  const subscriptionPlan = access?.entitlement?.plan || access?.subscription_plan || null
+  const subscriptionPlan = (/** @type {EntitlementExpectedView|null} */ (/** @type {unknown} */ (access?.entitlement)))?.plan || access?.subscription_plan || null
   // Trial entitlements are full-access previews across product shells. The
   // shared catalogue uses paid plan ordering, so map trial to the top package
   // only for navigation visibility; this never changes server authorization.
-  const effectiveUiPlan = access?.entitlement?.status === 'trial'
+  const effectiveUiPlan = (/** @type {EntitlementExpectedView|null} */ (/** @type {unknown} */ (access?.entitlement)))?.status === 'trial'
     ? (BUILD_PRODUCT.id === 'lodge-camp' ? 'Pro' : 'Enterprise')
     : subscriptionPlan
   const effectiveUiBizType = bizType
   const effectiveUiPropertyType = propertyType
-  const effectiveUiAddons = getEffectiveAddonsFromEntitlement(access?.entitlement || {})
+  // AccessContext intentionally leaves entitlement unvalidated; this view names only shell reads.
+  const effectiveUiAddons = getEffectiveAddonsFromEntitlement(/** @type {EntitlementExpectedView} */ (/** @type {unknown} */ (access?.entitlement || {})))
   const effectiveUiAccess = access
   // Actual-mix summary for shell wording: the sidebar/header must reflect the
   // SAME loaded inventory mix the inventory screens use, so a legacy lodge
   // profile containing campsites says Sites consistently in shell AND body.
   // Null keeps the resolver's operating-profile fallback (safe offline).
-  const [shellAccommodationMix, setShellAccommodationMix] = useState(null)
+  const [shellAccommodationMix, setShellAccommodationMix] = useState(/** @type {unknown[]|null} */ (null))
   useEffect(() => {
     let cancelled = false
     const loadMix = async () => {
       try {
         if (isBrowserPreview || typeof window?.api?.rooms?.getAll !== 'function') return
         const rows = await window.api.rooms.getAll()
-        if (!cancelled && Array.isArray(rows)) setShellAccommodationMix(rows)
+        if (!cancelled && Array.isArray(rows)) setShellAccommodationMix(/** @type {unknown[]} */ (rows))
       } catch {
         // Best-effort only: profile fallback wording stays in effect.
       }
@@ -765,6 +798,7 @@ export default function Layout() {
     })).filter((group) => group.items.length > 0)
   ), [access, navItems])
 
+  /** @param {{isActive: boolean}} state */
   const navLinkClass = ({ isActive }) =>
     `group flex items-center gap-2.5 rounded-xl border px-3 py-2 transition-all ${
       isActive
@@ -777,6 +811,7 @@ export default function Layout() {
     navigate('/login')
   }
 
+  /** @param {import('react').MouseEvent<HTMLAnchorElement>} e @param {string} to */
   const handleNavClick = (e, to) => {
     if (to !== location.pathname && navGuard.current?.isDirty) {
       e.preventDefault()
@@ -815,6 +850,7 @@ export default function Layout() {
   const isPosRoute = location.pathname === '/pos'
   const currency = settings?.currency || 'P'
 
+  /** @type {Record<string, string[]>} */
   const offlineTasksByRoute = {
     '/': [
       'Polling for new online guest enquiries',
@@ -956,7 +992,7 @@ export default function Layout() {
   const backupSubLabel = backupStatus.latestAt
     ? `Backup ${new Date(backupStatus.latestAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
     : 'No local backup yet'
-  const attentionItems = [
+  const attentionItems = /** @type {AttentionItemView[]} */ ([
     financialFailedCount > 0 && {
       key: 'critical-sync',
       tone: 'critical',
@@ -1018,8 +1054,9 @@ export default function Layout() {
       to: '/settings',
       state: { activeTab: 'system' }
     }
-  ].filter(Boolean)
+  ].filter(Boolean))
 
+  /** @param {string} to @param {import('react-router').NavigateOptions} [options] */
   const navigateWithGuard = (to, options = {}) => {
     if (navGuard.current?.isDirty) {
       navGuard.current.confirmLeave(() => navigate(to, options))
@@ -1300,8 +1337,8 @@ export default function Layout() {
             <span>
               {failedCount} operation{failedCount !== 1 ? 's' : ''} {financialFailedCount > 0 ? 'could not sync and need critical review' : 'stopped syncing and need attention'}.
               Open <strong>System Health</strong> to see the reason and resolve each item.
-              {syncStatus.failedBookingIds?.length > 0 && (
-                <> {syncStatus.failedBookingIds.length} affected booking{syncStatus.failedBookingIds.length !== 1 ? 's are' : ' is'} marked in the booking list.</>
+              {/* Type-only expected length; an absent array still yields undefined, so the comparison stays false. */ /** @type {number} */ (syncStatus.failedBookingIds?.length) > 0 && (
+                <> {/** @type {unknown[]} */ (syncStatus.failedBookingIds).length} affected booking{/** @type {unknown[]} */ (syncStatus.failedBookingIds).length !== 1 ? 's are' : ' is'} marked in the booking list.</>
               )}
             </span>
           </div>

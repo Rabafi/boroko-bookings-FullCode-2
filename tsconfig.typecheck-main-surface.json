@@ -20,7 +20,7 @@
     "types": ["node"],
     "exactOptionalPropertyTypes": true
   },
-  "files": [],
+  "files": ["src/main/importMeta.d.ts"],
   "include": ["src/main/**/*.js"],
   "exclude": ["src/main/assets/**"]
 }

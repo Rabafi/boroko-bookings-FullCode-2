@@ -9,15 +9,69 @@ import { localToday } from '../utils/localDate'
 import { ErrorNotice } from './shared/ErrorNotice'
 import { isArchivedOnlyStockItem } from '../../../shared/archivedStock'
 
+/**
+ * Fields rendered by the movement ledger. Main's getInventoryMovements
+ * decorates both live and cache-derived rows with item display fields; this
+ * expected view does not validate the transported or persisted row contents.
+ * @typedef {Record<string, unknown> & {
+ *   id: string,
+ *   item_id: string,
+ *   movement_type: string,
+ *   quantity: number | string,
+ *   total_cost: number | string,
+ *   item_name: string,
+ *   item_category: string,
+ *   item_unit: string,
+ *   created_at?: string | null,
+ *   reference_type?: string | null,
+ *   reference_id?: string | null,
+ *   source?: string | null,
+ *   _pending_sync?: boolean,
+ *   notes?: string | null
+ * }} InventoryMovementExpectedView
+ */
+
+/**
+ * The stocktake IPC reads live database rows or the offline cache. These
+ * expected views describe the fields this screen consumes; they do not
+ * validate cached or transported values. Offline headers omit started_at.
+ * @typedef {{
+ *   item_id: string, item_name: string, item_category: string, item_unit: string,
+ *   outlet_id: string | null, expected_qty: number | string | null,
+ *   counted_qty: number | string | null, variance_qty: number | string | null,
+ *   unit_cost?: number | string | null, variance_cost?: number | string | null,
+ *   notes: string | null
+ * }} InventoryStocktakeLineExpectedView
+ * @typedef {{
+ *   id: string, title: string | null, status: string, notes: string | null,
+ *   outlet_name?: string | null, started_at?: string | null, posted_at?: string | null
+ * }} InventoryStocktakeHeaderExpectedView
+ * @typedef {InventoryStocktakeHeaderExpectedView & {lines: InventoryStocktakeLineExpectedView[]}} InventoryStocktakeSessionExpectedView
+ */
+
+/** Inventory rows returned by the existing IPC/database producer; this view does not validate transported or cached values.
+ * @typedef {{id: string, name: string, category: string | null, unit: string, current_stock: number | string | null, reorder_level: number | string | null, selling_price?: number | string | null, latest_unit_cost: number | string | null, outlet_id?: string | null, outlets?: {name?: string | null} | null, is_active?: boolean | null, barcode?: string | null, _pending_sync?: boolean, _sync_state?: string, _sync_error?: string | null}} InventoryItemExpectedView
+ * @typedef {{id: string, name: string, inventory_item_id?: string | null, is_active?: boolean | null}} InventoryMenuItemExpectedView
+ * @typedef {{id: string, name: string, type?: string | null}} InventoryOutletExpectedView
+ * @typedef {{id: string, item_id: string, item_name?: string, item_unit?: string, date: string, quantity_purchased: number | string, total_cost: number | string, unit_cost?: number | string | null, notes?: string | null}} InventoryPurchaseExpectedView
+ * @typedef {{success: false, error?: string} | {success: true, new_stock?: number | string, offline?: boolean, queued?: boolean, local_only?: boolean}} InventoryMutationExpectedView
+ * @typedef {{success: false, error?: string} | {success: true, id?: string, offline?: boolean, queued?: boolean}} InventoryItemWriteExpectedView
+ * @typedef {{success: false, error?: string} | {success: true, id: string, stocktake_id?: string, offline?: boolean, queued?: boolean}} InventoryStocktakeCreateExpectedView
+ * @typedef {{name: string, category: string | null | undefined, unit: string, reorder_level: string, current_stock: string, selling_price: string, outlet_id: string}} InventoryItemFormView
+ * @typedef {{date: string, quantity_purchased: string, total_cost: string, notes: string, package_count: string, units_per_package: string}} InventoryPurchaseFormView
+ */
+
 const CATEGORIES = ['Bar', 'Kitchen', 'Other']
 const UNITS = ['bottle', 'can', 'piece', 'roll', 'packet', 'pack', 'box', 'crate', 'tray', 'carton', 'case', 'kg', 'g', 'L', 'ml']
 
 const today = () => localToday()
 
+/** @param {unknown} v @param {number} [dp] */
 function fmt(v, dp = 2) {
   return Number(v || 0).toFixed(dp)
 }
 
+/** @param {InventoryItemExpectedView[]} list */
 function sortItems(list) {
   return [...list].sort((a, b) => (
     String(a.category || '').localeCompare(String(b.category || '')) ||
@@ -25,8 +79,9 @@ function sortItems(list) {
   ))
 }
 
+/** @param {string} type */
 function movementLabel(type) {
-  const labels = {
+  const labels = /** @type {Record<string, string>} */ ({
     opening_stock: 'Opening Stock',
     purchase: 'Purchase',
     pos_sale: 'POS Sale',
@@ -35,7 +90,7 @@ function movementLabel(type) {
     adjustment_increase: 'Adjustment In',
     adjustment_decrease: 'Adjustment Out',
     stocktake: 'Stock Take'
-  }
+  })
   return labels[type] || String(type || 'Movement').replace(/_/g, ' ')
 }
 
@@ -52,10 +107,10 @@ export default function Inventory() {
 
   const [tab, setTab] = useState('stock') // stock | purchases | movements | stocktake
 
-  const [items, setItems] = useState([])
-  const [menuItems, setMenuItems] = useState([])
+  const [items, setItems] = useState(/** @type {InventoryItemExpectedView[]} */ ([]))
+  const [menuItems, setMenuItems] = useState(/** @type {InventoryMenuItemExpectedView[]} */ ([]))
   const [showArchived, setShowArchived] = useState(false)
-  const [outlets, setOutlets] = useState([])
+  const [outlets, setOutlets] = useState(/** @type {InventoryOutletExpectedView[]} */ ([]))
   const [catFilter, setCatFilter] = useState('all')
   const [stockFilter, setStockFilter] = useState('all')
   const [sortBy, setSortBy] = useState('name_asc')
@@ -64,8 +119,8 @@ export default function Inventory() {
 
   // Item form modal
   const [itemModal, setItemModal] = useState(false)
-  const [editingItem, setEditingItem] = useState(null)
-  const [itemForm, setItemForm] = useState({
+  const [editingItem, setEditingItem] = useState(/** @type {InventoryItemExpectedView | null} */ (null))
+  const [itemForm, setItemForm] = useState(/** @type {InventoryItemFormView} */ ({
     name: '',
     category: 'Bar',
     unit: 'bottle',
@@ -73,33 +128,33 @@ export default function Inventory() {
     current_stock: '',
     selling_price: '',
     outlet_id: ''
-  })
+  }))
   const [itemSaving, setItemSaving] = useState(false)
   const [itemError, setItemError] = useState('')
 
   // Purchase modal
   const [purchaseModal, setPurchaseModal] = useState(false)
-  const [purchaseItem, setPurchaseItem] = useState(null)
-  const [purchaseForm, setPurchaseForm] = useState({
+  const [purchaseItem, setPurchaseItem] = useState(/** @type {InventoryItemExpectedView | null} */ (null))
+  const [purchaseForm, setPurchaseForm] = useState(/** @type {InventoryPurchaseFormView} */ ({
     date: today(),
     quantity_purchased: '',
     total_cost: '',
     notes: '',
     package_count: '',
     units_per_package: ''
-  })
+  }))
   const [purchaseSaving, setPurchaseSaving] = useState(false)
   const [purchaseError, setPurchaseError] = useState('')
-  const [purchaseHistory, setPurchaseHistory] = useState([])
-  const [historyItemId, setHistoryItemId] = useState(null)
+  const [purchaseHistory, setPurchaseHistory] = useState(/** @type {InventoryPurchaseExpectedView[]} */ ([]))
+  const [historyItemId, setHistoryItemId] = useState(/** @type {string | null} */ (null))
 
-  const [movementHistory, setMovementHistory] = useState([])
+  const [movementHistory, setMovementHistory] = useState(/** @type {InventoryMovementExpectedView[]} */ ([]))
   const [movementItemId, setMovementItemId] = useState('')
   const [movementLoading, setMovementLoading] = useState(false)
 
   // Adjust stock modal
   const [adjustModal, setAdjustModal] = useState(false)
-  const [adjustItem, setAdjustItem] = useState(null)
+  const [adjustItem, setAdjustItem] = useState(/** @type {InventoryItemExpectedView | null} */ (null))
   const [adjustDelta, setAdjustDelta] = useState('')
   const [adjustNotes, setAdjustNotes] = useState('')
   const [adjustPin, setAdjustPin] = useState('')
@@ -116,9 +171,9 @@ export default function Inventory() {
   const [openingSaving, setOpeningSaving] = useState(false)
   const [openingError, setOpeningError] = useState('')
 
-  const [stocktakes, setStocktakes] = useState([])
+  const [stocktakes, setStocktakes] = useState(/** @type {InventoryStocktakeHeaderExpectedView[]} */ ([]))
   const [activeStocktakeId, setActiveStocktakeId] = useState('')
-  const [activeStocktake, setActiveStocktake] = useState(null)
+  const [activeStocktake, setActiveStocktake] = useState(/** @type {InventoryStocktakeSessionExpectedView | null} */ (null))
   const [stocktakeLoading, setStocktakeLoading] = useState(false)
   const [stocktakeError, setStocktakeError] = useState('')
   const [stocktakeTitle, setStocktakeTitle] = useState('')
@@ -136,10 +191,15 @@ export default function Inventory() {
       if (tab === 'movements') loadMovements(true)
       if (tab === 'stocktake' && activeStocktakeId) loadStocktakeSession(activeStocktakeId)
     })
-    return () => unsubscribe?.()
+    // Keep the exact preload disposer (and ipcRenderer.off return) at runtime.
+    const dispose = /** @type {(() => void) | undefined} */ (/** @type {unknown} */ (unsubscribe))
+    return () => dispose?.()
   }, [tab, historyItemId, activeStocktakeId])
   useEffect(() => {
-    window.api.outlets.getAll().then((data) => setOutlets(data || [])).catch(() => {})
+    window.api.outlets.getAll().then((data) => {
+      // Expected outlet rows from the outlets IPC producer; payload values are not runtime-validated.
+      setOutlets(/** @type {InventoryOutletExpectedView[]} */ (/** @type {unknown} */ (data || [])))
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -181,24 +241,26 @@ export default function Inventory() {
         window.api.inventory.getItems(),
         (window.api?.pos?.getMenuItems?.() ?? Promise.resolve([])).catch(() => []),
       ])
-      setItems(data || [])
+      // Expected rows from inventory:getItems and the existing POS menu list; no runtime validation is added.
+      setItems(/** @type {InventoryItemExpectedView[]} */ (/** @type {unknown} */ (data || [])))
       // Fail-soft: the menu list only drives the archived-only clutter filter.
-      setMenuItems(Array.isArray(menuData) ? menuData : [])
+      setMenuItems(Array.isArray(menuData) ? /** @type {InventoryMenuItemExpectedView[]} */ (/** @type {unknown} */ (menuData)) : [])
     } catch (err) {
-      setPageError(err?.message || 'Could not load inventory items right now.')
+      setPageError(/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err))?.message || 'Could not load inventory items right now.')
     } finally {
       setLoading(false)
     }
   }
 
+  /** @param {string} itemId */
   const loadPurchases = async (itemId) => {
     setPageError('')
     try {
-      const data = await window.api.inventory.getPurchases(itemId)
+      const data = /** @type {InventoryPurchaseExpectedView[]} */ (/** @type {unknown} */ (await window.api.inventory.getPurchases(itemId)))
       setPurchaseHistory(data || [])
     } catch (err) {
       setPurchaseHistory([])
-      setPageError(err?.message || 'Could not load purchase history right now.')
+      setPageError(/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err))?.message || 'Could not load purchase history right now.')
     }
   }
 
@@ -210,10 +272,11 @@ export default function Inventory() {
         item_id: movementItemId || null,
         limit: 250
       })
-      setMovementHistory(Array.isArray(rows) ? rows : [])
+      // Array.isArray establishes only the outer container; the row view is expected, not validated.
+      setMovementHistory(Array.isArray(rows) ? /** @type {InventoryMovementExpectedView[]} */ (rows) : [])
     } catch (err) {
       setMovementHistory([])
-      setPageError(err?.message || 'Could not load movement history right now.')
+      setPageError(/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err))?.message || 'Could not load movement history right now.')
     } finally {
       setMovementLoading(false)
     }
@@ -222,23 +285,23 @@ export default function Inventory() {
   const loadStocktakes = async () => {
     setStocktakeError('')
     try {
-      const rows = await window.api.inventory.getStocktakes(16)
+      const rows = /** @type {InventoryStocktakeHeaderExpectedView[] | null} */ (await window.api.inventory.getStocktakes(16))
       setStocktakes(Array.isArray(rows) ? rows : [])
       if (!activeStocktakeId && rows?.[0]?.id) setActiveStocktakeId(rows[0].id)
     } catch (err) {
-      setStocktakeError(err?.message || 'Could not load stock takes right now.')
+      setStocktakeError(/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err))?.message || 'Could not load stock takes right now.')
     }
   }
 
-  const loadStocktakeSession = async (stocktakeId) => {
+  const loadStocktakeSession = async (/** @type {string} */ stocktakeId) => {
     if (!stocktakeId) return
     setStocktakeLoading(true)
     setStocktakeError('')
     try {
-      const session = await window.api.inventory.getStocktake(stocktakeId)
+      const session = /** @type {InventoryStocktakeSessionExpectedView | null} */ (await window.api.inventory.getStocktake(stocktakeId))
       setActiveStocktake(session || null)
     } catch (err) {
-      setStocktakeError(err?.message || 'Could not load this stock take.')
+      setStocktakeError(/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err))?.message || 'Could not load this stock take.')
     } finally {
       setStocktakeLoading(false)
     }
@@ -248,11 +311,11 @@ export default function Inventory() {
     setStocktakeSaving(true)
     setStocktakeError('')
     try {
-      const result = await window.api.inventory.createStocktake({
+      const result = /** @type {InventoryStocktakeCreateExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.createStocktake({
         outlet_id: stocktakeOutletId || null,
         title: stocktakeTitle || null,
         notes: stocktakeNotes || null
-      })
+      })))
       if (!result?.success) {
         setStocktakeError(result?.error || 'Could not start stock take.')
         return
@@ -264,13 +327,13 @@ export default function Inventory() {
       setActiveStocktakeId(result.id)
       await loadStocktakeSession(result.id)
     } catch (err) {
-      setStocktakeError(err?.message || 'Could not start stock take.')
+      setStocktakeError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not start stock take.')
     } finally {
       setStocktakeSaving(false)
     }
   }
 
-  const updateStocktakeLine = (itemId, field, value) => {
+  const updateStocktakeLine = (/** @type {string} */ itemId, /** @type {'counted_qty' | 'notes'} */ field, /** @type {string} */ value) => {
     setActiveStocktake((current) => {
       if (!current) return current
       const lines = (current.lines || []).map((line) => {
@@ -300,7 +363,7 @@ export default function Inventory() {
         counted_qty: line.counted_qty === '' ? null : line.counted_qty,
         notes: line.notes || null
       }))
-      const result = await window.api.inventory.saveStocktakeCounts(activeStocktake.id, payload)
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.saveStocktakeCounts(activeStocktake.id, payload)))
       if (!result?.success) {
         setStocktakeError(result?.error || 'Could not save stock take.')
         return
@@ -308,7 +371,7 @@ export default function Inventory() {
       await loadStocktakeSession(activeStocktake.id)
       await loadStocktakes()
     } catch (err) {
-      setStocktakeError(err?.message || 'Could not save stock take.')
+      setStocktakeError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not save stock take.')
     } finally {
       setStocktakeSaving(false)
     }
@@ -320,22 +383,22 @@ export default function Inventory() {
     setStocktakePosting(true)
     setStocktakeError('')
     try {
-      const saveResult = await window.api.inventory.saveStocktakeCounts(
+      const saveResult = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.saveStocktakeCounts(
         activeStocktake.id,
         (activeStocktake.lines || []).map((line) => ({
           item_id: line.item_id,
           counted_qty: line.counted_qty === '' ? null : line.counted_qty,
           notes: line.notes || null
         }))
-      )
+      )))
       if (!saveResult?.success) throw new Error(saveResult?.error || 'Could not save stock take')
-      const result = await window.api.inventory.postStocktake(activeStocktake.id, activeStocktake.notes || null)
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.postStocktake(activeStocktake.id, activeStocktake.notes || null)))
       if (!result?.success) throw new Error(result?.error || 'Could not post stock take')
       await loadItems()
       await loadStocktakes()
       await loadStocktakeSession(activeStocktake.id)
     } catch (err) {
-      setStocktakeError(err?.message || 'Could not post stock take.')
+      setStocktakeError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not post stock take.')
     } finally {
       setStocktakePosting(false)
     }
@@ -358,6 +421,7 @@ export default function Inventory() {
     setItemModal(true)
   }
 
+  /** @param {InventoryItemExpectedView} item */
   const openEdit = (item) => {
     setEditingItem(item)
     setItemForm({
@@ -373,6 +437,7 @@ export default function Inventory() {
     setItemModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleItemSubmit = async (e) => {
     e.preventDefault()
     setItemSaving(true)
@@ -392,9 +457,9 @@ export default function Inventory() {
         outlet_id: itemForm.outlet_id,
         ...(editingItem ? {} : { current_stock: parseFloat(itemForm.current_stock) || 0 })
       }
-      const result = editingItem
+      const result = /** @type {InventoryItemWriteExpectedView} */ (/** @type {unknown} */ (editingItem
         ? await window.api.inventory.updateItem(editingItem.id, payload)
-        : await window.api.inventory.createItem(payload)
+        : await window.api.inventory.createItem(payload)))
 
       if (!result?.success) {
         setItemError(result?.error || 'Failed to save item. Please try again.')
@@ -413,7 +478,9 @@ export default function Inventory() {
               ? { name: selectedOutletRow?.name || null }
               : null
           }
-        : {
+        : /** @type {InventoryItemExpectedView} */ ({
+            // The inventory domain returns its generated ID on the successful create path;
+            // this expected view is not runtime validation of the IPC response.
             id: result?.id,
             ...payload,
             current_stock: Number(payload.current_stock || 0),
@@ -424,22 +491,23 @@ export default function Inventory() {
               : null,
             _pending_sync: result?.offline ? true : undefined,
             _sync_state: result?.offline ? 'pending' : undefined
-          }
+          })
       setItems((prev) => sortItems([savedItem, ...prev.filter((row) => row.id !== savedItem.id)]))
 
       setItemModal(false)
       loadItems(true)
     } catch (err) {
-      setItemError(err.message || 'Failed to save item. Please try again.')
+      setItemError((/** @type {{message?: string}} */ (/** @type {unknown} */ (err))).message || 'Failed to save item. Please try again.')
     } finally {
       setItemSaving(false)
     }
   }
 
+  /** @param {InventoryItemExpectedView} item */
   const deleteItem = async (item) => {
     if (!confirm(`Delete "${item.name}"?\n\nThis will also remove its recorded purchase history. Continue only if this stock item should no longer exist in the system.`)) return
     try {
-      const result = await window.api.inventory.deleteItem(item.id)
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.deleteItem(item.id)))
       if (!result?.success) {
         alert(result?.error || 'Failed to delete item.')
         return
@@ -448,12 +516,13 @@ export default function Inventory() {
       setPurchaseHistory((prev) => prev.filter((row) => row.item_id !== item.id))
       if (historyItemId === item.id) setHistoryItemId(null)
     } catch (err) {
-      alert(err.message || 'Failed to delete item.')
+      alert((/** @type {{message?: string}} */ (/** @type {unknown} */ (err))).message || 'Failed to delete item.')
     }
   }
 
   // ── Purchase ─────────────────────────────────────────────────────────────────
 
+  /** @param {InventoryItemExpectedView | null} item */
   const openPurchase = (item) => {
     setPurchaseItem(item)
     setPurchaseForm({
@@ -468,6 +537,7 @@ export default function Inventory() {
     setPurchaseModal(true)
   }
 
+  /** @param {InventoryPurchaseFormView} form */
   const getEffectivePurchaseQuantity = (form) => {
     const packages = parseFloat(form.package_count)
     const unitsPerPackage = parseFloat(form.units_per_package)
@@ -475,6 +545,7 @@ export default function Inventory() {
     return parseFloat(form.quantity_purchased)
   }
 
+  /** @param {InventoryPurchaseFormView} form @param {string} unit */
   const buildPurchaseNotes = (form, unit) => {
     const baseNotes = String(form.notes || '').trim()
     const packages = parseFloat(form.package_count)
@@ -484,6 +555,7 @@ export default function Inventory() {
     return baseNotes ? `${baseNotes} | ${packageNote}` : packageNote
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handlePurchaseSubmit = async (e) => {
     e.preventDefault()
     setPurchaseSaving(true)
@@ -499,13 +571,14 @@ export default function Inventory() {
         setPurchaseError('Enter the full supplier cost for this purchase.')
         return
       }
-      const result = await window.api.inventory.addPurchase({
-        item_id: purchaseItem.id,
+      const purchase = /** @type {InventoryItemExpectedView} */ (/** @type {unknown} */ (purchaseItem))
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.addPurchase({
+        item_id: purchase.id,
         ...purchaseForm,
         quantity_purchased: quantityPurchased,
         total_cost: totalCost,
-        notes: buildPurchaseNotes(purchaseForm, purchaseItem.unit)
-      })
+        notes: buildPurchaseNotes(purchaseForm, purchase.unit)
+      })))
 
       if (!result?.success) {
         setPurchaseError(result?.error || 'Failed to record purchase. Please try again.')
@@ -513,7 +586,7 @@ export default function Inventory() {
       }
 
       const unitCost = quantityPurchased > 0 ? totalCost / quantityPurchased : 0
-      setItems((prev) => prev.map((row) => row.id === purchaseItem.id
+      setItems((prev) => prev.map((row) => row.id === purchase.id
         ? {
             ...row,
             current_stock: Number(row.current_stock || 0) + quantityPurchased,
@@ -521,23 +594,23 @@ export default function Inventory() {
           }
         : row
       ))
-      if (!historyItemId || historyItemId === purchaseItem.id) {
+      if (!historyItemId || historyItemId === purchase.id) {
         setPurchaseHistory((prev) => [{
           id: `local-${Date.now()}`,
-          item_id: purchaseItem.id,
-          item_name: purchaseItem.name,
-          item_unit: purchaseItem.unit,
+          item_id: purchase.id,
+          item_name: purchase.name,
+          item_unit: purchase.unit,
           date: purchaseForm.date,
           quantity_purchased: quantityPurchased,
           total_cost: totalCost,
           unit_cost: unitCost,
-          notes: buildPurchaseNotes(purchaseForm, purchaseItem.unit)
+        notes: buildPurchaseNotes(purchaseForm, purchase.unit)
         }, ...prev])
       }
 
       setPurchaseModal(false)
     } catch (err) {
-      setPurchaseError(err.message || 'Failed to record purchase. Please try again.')
+      setPurchaseError((/** @type {{message?: string}} */ (/** @type {unknown} */ (err))).message || 'Failed to record purchase. Please try again.')
     } finally {
       setPurchaseSaving(false)
     }
@@ -552,6 +625,7 @@ export default function Inventory() {
 
   // ── Adjust stock ─────────────────────────────────────────────────────────────
 
+  /** @param {InventoryItemExpectedView} item */
   const openAdjust = (item) => {
     setAdjustItem(item)
     setAdjustDelta('')
@@ -562,6 +636,7 @@ export default function Inventory() {
     setAdjustModal(true)
   }
 
+  /** @param {InventoryItemExpectedView | null} [item] */
   const openOpeningStock = (item = null) => {
     setOpeningItemId(item?.id || '')
     setOpeningQty(item ? String(item.current_stock || 0) : '')
@@ -572,35 +647,38 @@ export default function Inventory() {
     setOpeningModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleAdjustSubmit = async (e) => {
     e.preventDefault()
     setAdjustSaving(true)
     setAdjustError('')
     try {
-      const result = await window.api.inventory.adjustStock(
-        adjustItem.id,
+      const item = /** @type {InventoryItemExpectedView} */ (/** @type {unknown} */ (adjustItem))
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.adjustStock(
+        item.id,
         parseFloat(adjustDelta),
         adjustNotes,
         adjustPin,
         adjustOperationId
-      )
+      )))
       if (!result?.success) {
         setAdjustError(result?.error || 'Failed to adjust stock. Please try again.')
         return
       }
-      setItems((prev) => prev.map((row) => row.id === adjustItem.id
+      setItems((prev) => prev.map((row) => row.id === item.id
         ? { ...row, current_stock: result?.new_stock ?? row.current_stock }
         : row
       ))
       if (tab === 'movements') loadMovements(true)
       setAdjustModal(false)
     } catch (err) {
-      setAdjustError(err.message || 'Failed to adjust stock. Please try again.')
+      setAdjustError((/** @type {{message?: string}} */ (/** @type {unknown} */ (err))).message || 'Failed to adjust stock. Please try again.')
     } finally {
       setAdjustSaving(false)
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleOpeningSubmit = async (e) => {
     e.preventDefault()
     const item = items.find((row) => row.id === openingItemId)
@@ -621,13 +699,13 @@ export default function Inventory() {
     setOpeningSaving(true)
     setOpeningError('')
     try {
-      const result = await window.api.inventory.adjustStock(
+      const result = /** @type {InventoryMutationExpectedView} */ (/** @type {unknown} */ (await window.api.inventory.adjustStock(
         item.id,
         delta,
         openingNotes || `Opening stock set to ${targetQty} ${item.unit}`,
         openingPin,
         openingOperationId
-      )
+      )))
       if (!result?.success) {
         setOpeningError(result?.error || 'Could not set opening stock.')
         return
@@ -639,7 +717,7 @@ export default function Inventory() {
       if (tab === 'movements') loadMovements(true)
       setOpeningModal(false)
     } catch (err) {
-      setOpeningError(err?.message || 'Could not set opening stock.')
+      setOpeningError((/** @type {{message?: string} | null | undefined} */ (/** @type {unknown} */ (err)))?.message || 'Could not set opening stock.')
     } finally {
       setOpeningSaving(false)
     }
@@ -674,7 +752,8 @@ export default function Inventory() {
           return String(a.name || '').localeCompare(String(b.name || ''))
         }
         case 'outlet_asc':
-          return String(outletMap[a.outlet_id]?.name || '').localeCompare(String(outletMap[b.outlet_id]?.name || '')) ||
+          // Retain JavaScript's existing property-key coercion for nullable outlet IDs.
+          return String(outletMap[/** @type {string} */ (a.outlet_id)]?.name || '').localeCompare(String(outletMap[/** @type {string} */ (b.outlet_id)]?.name || '')) ||
             String(a.name || '').localeCompare(String(b.name || ''))
         case 'name_asc':
         default:
@@ -682,7 +761,8 @@ export default function Inventory() {
       }
     })
   }, [catFilter, fnbOutlet, items, menuItems, outletMap, showArchived, sortBy, stockFilter])
-  const lowStockCount = items.filter((i) => i.current_stock <= i.reorder_level).length
+  // Type-only views retain the existing JavaScript relational coercion for nullable scalar fields.
+  const lowStockCount = items.filter((i) => /** @type {number | string} */ (i.current_stock) <= /** @type {number | string} */ (i.reorder_level)).length
   const fnbBackTo = fnbOutlet ? `/food-beverage/stock?outlet=${encodeURIComponent(fnbOutlet)}` : '/food-beverage/stock'
 
   return (
@@ -905,7 +985,7 @@ export default function Inventory() {
                               <p className="text-xs text-slate-400">{line.item_category} · {line.item_unit}</p>
                             </td>
                             <td className="px-4 py-3 text-slate-600">
-                              {outletMap[line.outlet_id]?.name || 'Others'}
+                              {outletMap[/** @type {string} */ (line.outlet_id)]?.name || 'Others'}
                             </td>
                             <td className="px-4 py-3 text-right font-semibold text-slate-700">{fmt(line.expected_qty, 1)} {line.item_unit}</td>
                             <td className="px-4 py-3 text-right">
@@ -1043,7 +1123,7 @@ export default function Inventory() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filtered.map((item) => {
-                    const isLow = item.current_stock <= item.reorder_level
+                    const isLow = /** @type {number | string} */ (item.current_stock) <= /** @type {number | string} */ (item.reorder_level)
                     const isPendingSync = item._pending_sync === true
                     const isSyncFailed = item._sync_state === 'failed' || item._sync_state === 'sync_failed' || item._sync_state === 'manual_review_required'
                     const actionsDisabled = isPendingSync
@@ -1084,7 +1164,7 @@ export default function Inventory() {
                         </td>
                         <td className="px-5 py-3">
                           <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                            {outletMap[item.outlet_id]?.name || 'Others'}
+                            {outletMap[/** @type {string} */ (item.outlet_id)]?.name || 'Others'}
                           </span>
                         </td>
                         <td className="px-5 py-3">
@@ -1100,7 +1180,7 @@ export default function Inventory() {
                           {fmt(item.reorder_level, 1)} {item.unit}
                         </td>
                         <td className="px-5 py-3 text-right text-slate-600">
-                          {item.latest_unit_cost > 0
+                          {Number(item.latest_unit_cost) > 0
                             ? `${currency} ${fmt(item.latest_unit_cost, 4)}`
                             : '—'}
                         </td>
@@ -1219,7 +1299,7 @@ export default function Inventory() {
               <select
                 className="input w-auto"
                 value={historyItemId || ''}
-                onChange={async (e) => {
+                onChange={async (/** @type {import('react').ChangeEvent<HTMLSelectElement>} */ e) => {
                   setHistoryItemId(e.target.value)
                   if (e.target.value) await loadPurchases(e.target.value)
                   else setPurchaseHistory([])
@@ -1239,9 +1319,9 @@ export default function Inventory() {
               {!historyItemId && (
                 <button
                   onClick={async () => {
-                    const all = []
+                    const all = /** @type {InventoryPurchaseExpectedView[]} */ ([])
                     for (const item of items) {
-                      const p = await window.api.inventory.getPurchases(item.id).catch(() => [])
+      const p = /** @type {InventoryPurchaseExpectedView[]} */ (/** @type {unknown} */ (await window.api.inventory.getPurchases(item.id).catch(() => [])))
                       all.push(...p.map((x) => ({ ...x, item_name: item.name, item_unit: item.unit })))
                     }
                     all.sort((a, b) => new Date(b.date) - new Date(a.date))

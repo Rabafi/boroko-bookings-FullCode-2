@@ -19,6 +19,7 @@ const TABS = [
 ]
 
 const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal', 'lost', 'won']
+/** @type {Record<string, string>} */
 const LEAD_COLORS = { new: 'bg-blue-50 text-blue-700', contacted: 'bg-amber-50 text-amber-700', qualified: 'bg-purple-50 text-purple-700', proposal: 'bg-indigo-50 text-indigo-700', lost: 'bg-red-50 text-red-700', won: 'bg-emerald-50 text-emerald-700' }
 const SUPPLIER_STATUSES = ['pending', 'confirmed', 'arrived', 'completed', 'cancelled']
 const MILESTONE_STATUSES = ['pending', 'paid', 'waived', 'overdue']
@@ -32,24 +33,46 @@ const RUN_SHEET_STATUSES = ['draft', 'final', 'executed']
  * @typedef {{id: string, event_booking_id: string, supplier_name: string, contact_person: string|null, contact_phone: string|null, service_description: string|null, quoted_amount: number|null, actual_amount: number|null, scheduled_arrival: string|null, status: string, notes: string|null}} SupplierCoordinationExpectedView
  * New supplier drafts omit persisted fields until the user supplies them; these optional form fields do not describe validated IPC data.
  * @typedef {{id?: string, event_booking_id: string, supplier_name: string, contact_person?: string|null, contact_phone?: string|null, service_description?: string|null, quoted_amount?: number|null, actual_amount?: number|null, scheduled_arrival?: string|null, status: string, notes?: string|null}} SupplierCoordinationForm
+ * The editor creates all four string fields. Fetched timeline JSONB remains unvalidated; this is only its expected-data view.
+ * @typedef {{time: string, task: string, assignee: string, notes: string}} RunSheetTimelineItem
+ * @typedef {{id: string, event_booking_id: string, title: string, event_date: string|null, setup_notes: string|null, timeline: RunSheetTimelineItem[]|null, catering_notes: string|null, audio_visual_notes: string|null, floor_plan_notes: string|null, special_instructions: string|null, status: string}} RunSheetExpectedView
+ * @typedef {RunSheetExpectedView|{id?: undefined}} RunSheetReadResult
+ * @typedef {Omit<RunSheetExpectedView, 'id'> & {id?: string}} RunSheetForm
+ * @typedef {{id: string, lodge_id: string, company_name: string|null, contact_name: string, contact_email: string|null, contact_phone: string|null, event_type: string|null, estimated_attendees: number|null, preferred_date: string|null, preferred_venue: string|null, budget_range_min: number|string|null, budget_range_max: number|string|null, source: string|null, status: string, assigned_to: string|null, notes: string|null, created_by: string|null, created_at: string, updated_at: string}} VenueLeadExpectedView
+ * @typedef {Pick<VenueLeadExpectedView, 'contact_name'|'status'> & Partial<Omit<VenueLeadExpectedView, 'contact_name'|'status'>>} VenueLeadDraft
+ * @typedef {{id: string, lodge_id: string, event_booking_id: string, milestone_name: string, due_date: string|null, amount: number|string, is_percentage: boolean|null, percentage_value: number|string|null, status: string, paid_date: string|null, payment_method: string|null, payment_reference: string|null, notes: string|null, created_at: string, updated_at: string}} VenueMilestoneExpectedView
+ * @typedef {Pick<VenueMilestoneExpectedView, 'event_booking_id'|'milestone_name'|'amount'> & Partial<Omit<VenueMilestoneExpectedView, 'event_booking_id'|'milestone_name'|'amount'>>} VenueMilestoneDraft
+ * @typedef {{id: string, resource_key: string, day_of_week: number, start_time: string|null, end_time: string|null, is_available: boolean|null, reason_if_unavailable: string|null}} VenueAvailabilityRuleExpectedView
+ * @typedef {{id: string, event_booking_id: string, title: string, event_date: string|null, setup_notes: string|null, timeline: RunSheetTimelineItem[]|null, catering_notes: string|null, audio_visual_notes: string|null, floor_plan_notes: string|null, special_instructions: string|null, status: string}} VenueRunSheetExpectedView
+ * @typedef {{id: string, status?: string, total_amount?: number|string|null, amount_paid?: number|string|null, deposit_paid?: number|string|null, balance_due?: number|string|null}} VenueSettlementEventExpectedView
+ * @typedef {{resource_key?: string, bookings?: {event_name?: string|null, client_name?: string|null, booking_date?: string|null, start_time?: string|null, end_time?: string|null, status?: string|null}[]}} VenueAvailabilityCalendarExpectedView
+ * @typedef {{success?: boolean, error?: string, revenue?: number|string, supplier_costs?: number|string, line_item_costs?: number|string, total_costs?: number|string, profit?: number|string, margin_percent?: number|string}} VenueProfitabilityExpectedView
+ * @typedef {{success?: boolean, error?: string, message?: string, final_total?: number|string, total_paid?: number|string, balance?: number|string, adjustment?: number|string}} VenueSettlementResultExpectedView
+ * @typedef {{venue?: string|null, month?: string, event_count?: number, revenue?: number|string, outstanding?: number|string, amount_paid?: number|string, status?: string, day_of_week?: number}} VenueProfitabilityReportRowExpectedView
+ * These local shapes describe fields this component expects from existing IPC reads. They do not validate the returned values.
  */
 
+/** @param {unknown} amount @param {string} [currency] */
 function money(amount, currency = 'P') {
   const symbol = currency || 'P'
   return `${symbol}${Number(amount || 0).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/** @param {string|null|undefined} status @param {Record<string, string>} colors @param {string} [label] */
 function statusPill(status, colors, label) {
-  const c = colors?.[status] || 'text-slate-600 bg-slate-50'
+  // Type-only view: JavaScript still coerces nullish keys as it did before.
+  const c = colors?.[/** @type {string} */ (status)] || 'text-slate-600 bg-slate-50'
   return <span className={`ht-status-pill ${c}`}>{label || status}</span>
 }
 
+/** @param {string|null|undefined} d */
 function dateLabel(d) {
   if (!d) return '—'
   if (typeof d === 'string' && d.length <= 10) return d
   try { return new Date(d).toISOString().slice(0, 10) } catch { return String(d).slice(0, 10) }
 }
 
+/** @param {string|null|undefined} t */
 function timeLabel(t) {
   if (!t) return '—'
   if (typeof t === 'string' && t.length <= 8) return t.slice(0, 5)
@@ -58,32 +81,32 @@ function timeLabel(t) {
 
 export default function VenueManagement() {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [warnings, setWarnings] = useState([])
+  const [error, setError] = useState(/** @type {string|null} */ (null))
+  const [warnings, setWarnings] = useState(/** @type {string[]} */ ([]))
   const [activeTab, setActiveTab] = useState('dashboard')
 
   const [events, setEvents] = useState(/** @type {VenueEventOptionExpectedView[]} */ ([]))
-  const [leads, setLeads] = useState([])
-  const [availabilityRules, setAvailabilityRules] = useState([])
-  const [availabilityCalendar, setAvailabilityCalendar] = useState(null)
-  const [runSheets, setRunSheets] = useState([])
+  const [leads, setLeads] = useState(/** @type {VenueLeadExpectedView[]} */ ([]))
+  const [availabilityRules, setAvailabilityRules] = useState(/** @type {VenueAvailabilityRuleExpectedView[]} */ ([]))
+  const [availabilityCalendar, setAvailabilityCalendar] = useState(/** @type {VenueAvailabilityCalendarExpectedView|null} */ (null))
+  const [runSheets, setRunSheets] = useState(/** @type {VenueRunSheetExpectedView[]} */ ([]))
   const [suppliers, setSuppliers] = useState(/** @type {SupplierCoordinationExpectedView[]} */ ([]))
-  const [milestones, setMilestones] = useState([])
-  const [profitability, setProfitability] = useState(null)
-  const [venueReport, setVenueReport] = useState([])
+  const [milestones, setMilestones] = useState(/** @type {VenueMilestoneExpectedView[]} */ ([]))
+  const [profitability, setProfitability] = useState(/** @type {VenueProfitabilityExpectedView|null} */ (null))
+  const [venueReport, setVenueReport] = useState(/** @type {VenueProfitabilityReportRowExpectedView[]} */ ([]))
 
-  const [selectedEvent, setSelectedEvent] = useState(null)
-  const [leadModal, setLeadModal] = useState(null)
+  const [selectedEvent, setSelectedEvent] = useState(/** @type {VenueSettlementEventExpectedView|null} */ (null))
+  const [leadModal, setLeadModal] = useState(/** @type {(VenueLeadExpectedView|VenueLeadDraft)|null} */ (null))
   const [availResourceKey, setAvailResourceKey] = useState('')
   const [availCalendarDate, setAvailCalendarDate] = useState(new Date().toISOString().slice(0, 10))
-  const [runSheetModal, setRunSheetModal] = useState(null)
+  const [runSheetModal, setRunSheetModal] = useState(/** @type {RunSheetForm|null} */ (null))
   const [supplierModal, setSupplierModal] = useState(/** @type {SupplierCoordinationForm|null} */ (null))
-  const [milestoneModal, setMilestoneModal] = useState(null)
+  const [milestoneModal, setMilestoneModal] = useState(/** @type {(VenueMilestoneExpectedView|VenueMilestoneDraft)|null} */ (null))
   const [settlementForm, setSettlementForm] = useState({ final_total: 0, adjustment_amount: 0, adjustment_type: '', adjustment_reason: '', notes: '' })
-  const [settlementResult, setSettlementResult] = useState(null)
+  const [settlementResult, setSettlementResult] = useState(/** @type {VenueSettlementResultExpectedView|null} */ (null))
   const [settling, setSettling] = useState(false)
-  const [settlementKey, setSettlementKey] = useState(null)
-  const [confirmAction, setConfirmAction] = useState(null)
+  const [settlementKey, setSettlementKey] = useState(/** @type {string|null} */ (null))
+  const [confirmAction, setConfirmAction] = useState(/** @type {unknown} */ (null))
   const [filterStatus, setFilterStatus] = useState('')
   const [supplierFilterEvent, setSupplierFilterEvent] = useState('')
   const [depositFilterEvent, setDepositFilterEvent] = useState('')
@@ -100,7 +123,8 @@ export default function VenueManagement() {
 
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null); setWarnings([])
-    const warn = []
+    const warn = /** @type {string[]} */ ([])
+    /** @param {string} label @param {Promise<unknown>} promise */
     const settle = async (label, promise) => {
       try { return await promise } catch (e) { warn.push(`${label}: ${e?.message || 'failed'}`); return null }
     }
@@ -116,8 +140,9 @@ export default function VenueManagement() {
       }
       setWarnings(warn)
       if (evts) setEvents(Array.isArray(evts) ? /** @type {VenueEventOptionExpectedView[]} */ (evts) : [])
-      if (lds) setLeads(Array.isArray(lds) ? lds : [])
-      if (rpts?.data) setVenueReport(rpts.data)
+      // These are consumer-expected IPC row views only; Array.isArray does not validate row fields.
+      if (lds) setLeads(Array.isArray(lds) ? /** @type {VenueLeadExpectedView[]} */ (lds) : [])
+      if (rpts?.data) setVenueReport(/** @type {VenueProfitabilityReportRowExpectedView[]} */ (rpts.data))
     } catch (e) {
       setError(e?.message || 'Failed to load venue management')
     } finally { setLoading(false) }
@@ -167,6 +192,7 @@ export default function VenueManagement() {
     } catch (e) { setError(e?.message || 'Failed to save lead') }
   }
 
+  /** @param {string} leadId */
   const handleConvertLead = async (leadId) => {
     try {
       const result = await window.api.venueManagement.convertLeadToBooking(leadId)
@@ -179,10 +205,12 @@ export default function VenueManagement() {
   const handleLoadAvailability = async () => {
     try {
       const rules = await window.api.venueManagement.getVenueAvailabilityRules(availResourceKey || null)
-      setAvailabilityRules(Array.isArray(rules) ? rules : [])
+      // The guard confirms an array container; it does not validate rule fields.
+      setAvailabilityRules(Array.isArray(rules) ? /** @type {VenueAvailabilityRuleExpectedView[]} */ (rules) : [])
     } catch (e) { setError(e?.message || 'Failed to load availability rules') }
   }
 
+  /** @param {VenueAvailabilityRuleExpectedView} rule */
   const handleToggleAvailability = async (rule) => {
     try {
       const payload = {
@@ -207,14 +235,16 @@ export default function VenueManagement() {
       const data = await window.api.venueManagement.getVenueAvailabilityCalendar(
         availResourceKey, availCalendarDate, end.toISOString().slice(0, 10)
       )
-      setAvailabilityCalendar(data)
+      // Local consumer view only: the calendar RPC result is not runtime-validated.
+      setAvailabilityCalendar(/** @type {VenueAvailabilityCalendarExpectedView|null} */ (data))
     } catch (e) { setError(e?.message || 'Failed to load calendar') }
   }
 
   // ── Run Sheet handlers ───────────────────────────────────────────────────
+  /** @param {string} eventBookingId */
   const handleLoadRunSheet = async (eventBookingId) => {
     try {
-      const data = await window.api.venueManagement.getRunSheet(eventBookingId)
+      const data = /** @type {RunSheetReadResult|null} */ (await window.api.venueManagement.getRunSheet(eventBookingId))
       const existing = data?.id ? data : null
       setRunSheetModal(existing || { event_booking_id: eventBookingId, title: '', event_date: today, setup_notes: '', timeline: [], catering_notes: '', audio_visual_notes: '', floor_plan_notes: '', special_instructions: '', status: 'draft' })
       return existing
@@ -233,6 +263,7 @@ export default function VenueManagement() {
     } catch (e) { setError(e?.message || 'Failed to save run sheet') }
   }
 
+  /** @param {string} id */
   const handleFinalizeRunSheet = async (id) => {
     try {
       const result = await window.api.venueManagement.finalizeRunSheet(id)
@@ -241,6 +272,7 @@ export default function VenueManagement() {
     } catch (e) { setError(e?.message || 'Failed to finalize run sheet') }
   }
 
+  /** @param {string} id */
   const handleExecuteRunSheet = async (id) => {
     try {
       const result = await window.api.venueManagement.executeRunSheet(id)
@@ -257,18 +289,23 @@ export default function VenueManagement() {
     })
   }
 
+  /** @param {number} idx @param {keyof RunSheetTimelineItem} field @param {string} value */
   const handleUpdateTimelineItem = (idx, field, value) => {
     const t = [...(runSheetModal.timeline || [])]
-    if (t[idx]) { t[idx] = { ...t[idx], [field]: value }; setRunSheetModal({ ...runSheetModal, timeline: t }) }
+    // This callback is rendered only inside the truthy run sheet modal branch.
+    if (t[idx]) { t[idx] = { ...t[idx], [field]: value }; setRunSheetModal({ .../** @type {RunSheetForm} */ (runSheetModal), timeline: t }) }
   }
 
+  /** @param {number} idx */
   const handleRemoveTimelineItem = (idx) => {
     const t = [...(runSheetModal.timeline || [])]
     t.splice(idx, 1)
-    setRunSheetModal({ ...runSheetModal, timeline: t })
+    // This callback is rendered only inside the truthy run sheet modal branch.
+    setRunSheetModal({ .../** @type {RunSheetForm} */ (runSheetModal), timeline: t })
   }
 
   // ── Supplier handlers ────────────────────────────────────────────────────
+  /** @param {string} eventBookingId */
   const handleLoadSuppliers = async (eventBookingId) => {
     if (!eventBookingId) return
     setSupplierFilterEvent(eventBookingId)
@@ -301,12 +338,14 @@ export default function VenueManagement() {
   }
 
   // ── Deposit handlers ─────────────────────────────────────────────────────
+  /** @param {string} eventBookingId */
   const handleLoadDeposits = async (eventBookingId) => {
     if (!eventBookingId) return
     setDepositFilterEvent(eventBookingId)
     try {
       const data = await window.api.venueManagement.getDepositMilestones(eventBookingId)
-      setMilestones(Array.isArray(data) ? data : [])
+      // The guard confirms an array container; it does not validate milestone fields.
+      setMilestones(Array.isArray(data) ? /** @type {VenueMilestoneExpectedView[]} */ (data) : [])
     } catch (e) { setError(e?.message || 'Failed to load deposit milestones') }
   }
 
@@ -365,7 +404,8 @@ export default function VenueManagement() {
         setError(result.error || 'Settlement failed')
         return
       }
-      setSettlementResult(result)
+      // Expected UI view only; the settlement RPC result is not runtime-validated here.
+      setSettlementResult(/** @type {VenueSettlementResultExpectedView} */ (result))
       setSettlementKey(null)
       loadAll()
     } catch (e) {
@@ -386,7 +426,8 @@ export default function VenueManagement() {
     if (!eventBookingId) return
     try {
       const data = await window.api.venueManagement.getEventProfitability(eventBookingId)
-      setProfitability(data)
+      // This is the existing component's expected view; the RPC result is not validated.
+      setProfitability(/** @type {VenueProfitabilityExpectedView|null} */ (data))
       setSelectedEvent(events.find((e) => e.id === eventBookingId) || { id: eventBookingId })
     } catch (e) { setError(e?.message || 'Failed to load profitability') }
   }
@@ -713,11 +754,13 @@ export default function VenueManagement() {
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button type="button" className="ht-text-btn" onClick={() => setRunSheetModal(null)}>Cancel</button>
+              {/* The finalize button's callback is rendered only while the id is truthy. */}
               {runSheetModal.id && runSheetModal.status === 'draft' && (
-                <button type="button" className="ht-text-btn" onClick={() => handleFinalizeRunSheet(runSheetModal.id)}><Check size={14} /> Finalize</button>
+                <button type="button" className="ht-text-btn" onClick={() => handleFinalizeRunSheet(/** @type {string} */ (runSheetModal.id))}><Check size={14} /> Finalize</button>
               )}
+              {/* The execute button's callback is rendered only while the id is truthy. */}
               {runSheetModal.id && runSheetModal.status === 'final' && (
-                <button type="button" className="ht-text-btn" onClick={() => handleExecuteRunSheet(runSheetModal.id)}><CheckCircle size={14} /> Execute</button>
+                <button type="button" className="ht-text-btn" onClick={() => handleExecuteRunSheet(/** @type {string} */ (runSheetModal.id))}><CheckCircle size={14} /> Execute</button>
               )}
               <button type="button" className="ht-text-btn primary" onClick={handleSaveRunSheet}><Save size={14} /> {runSheetModal.id ? 'Update' : 'Create'} Run Sheet</button>
             </div>

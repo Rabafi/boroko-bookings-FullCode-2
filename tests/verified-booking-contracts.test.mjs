@@ -44,7 +44,11 @@ test('forward SQL migration contains atomic booking status/import/group/public c
 test('bulk booking import uses one authoritative row RPC and preserves per-row errors', () => {
   const source = read('src/main/domains/misc.js')
   const importer = between(source, 'export async function bulkImportBookings', 'async function createImportedEntity')
-  assert.match(importer, /state\.supabase\.rpc\('import_booking_row'/)
+  const executableImporter = importer.replace(
+    /\(\/\*\* @type \{MiscOnlineSupabaseExpectedView\} \*\/\s*\(state\.supabase\)\)/,
+    'state.supabase'
+  )
+  assert.match(executableImporter, /state\.supabase\.rpc\('import_booking_row'/)
   assert.match(importer, /p_amount_paid: amountPaid/)
   assert.match(importer, /p_target_status: targetStatus \|\| 'confirmed'/)
   assert.match(importer, /const importBookingId = randomUUID\(\)/)

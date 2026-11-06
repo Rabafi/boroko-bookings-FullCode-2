@@ -3,12 +3,20 @@ import { state } from '../state.js';
 import { readCache, writeCache, dedupePromise } from './infrastructure.js';
 
 /**
+ * Expected view of JSON returned by the corporate billing mutation RPCs.
+ * Their SQL producers return success plus optional failure/message fields;
+ * this documents the consumer expectation and does not validate RPC data.
+ * @typedef {{success: boolean, error?: string, message?: string, [field: string]: unknown}} CorporateBillingMutationExpectedView
+ */
+
+/**
  * Corporate billing financial/status mutations are ONLINE-ONLY (docs/OFFLINE_MATRIX.md).
  * They must never be silently queued — charge, payment, and account status require server locks.
  */
 /** @param {string} operation */
 function requireOnline(operation) {
   if (!state.isOnline) {
+    /** @type {Error & {onlineOnly?: boolean}} */
     const err = new Error(
       `${operation} requires an internet connection. Corporate billing mutations cannot be queued offline.`
     );
@@ -37,7 +45,7 @@ function readThrownMessage(error) {
 async function _getAllCorporateBilling() {
   if (!state.isOnline) return readCache('corporate-invoices');
   try {
-    const { data, error } = await state.supabase
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
       .from('corporate_invoice_items')
       .select('*, corporate_payments(*)')
       .eq('lodge_id', state.lodgeId)
@@ -46,9 +54,11 @@ async function _getAllCorporateBilling() {
     writeCache('corporate-invoices', data || []);
     return data || [];
   } catch (err) {
-    const cached = readCache('corporate-invoices');
+    // This cache key is written above from the table's row-array response.
+    // The expected view does not validate persisted cache contents.
+    const cached = /** @type {unknown[]} */ (readCache('corporate-invoices'));
     if (cached?.length > 0) return cached;
-    throw new Error(readThrownMessage(err) || 'Failed to load corporate billing');
+    throw new Error(/** @type {string | undefined} */ (readThrownMessage(err)) || 'Failed to load corporate billing');
   }
 }
 
@@ -76,7 +86,7 @@ export async function chargeToCorporateAccount(accountId, bookingId, amount, des
     || stableIdempotencyKey('corp-charge', [accountId, bookingId, amount, description, settleBooking]);
 
   // p_idempotency_key and p_settle_booking are supported by 20260714200000 migration
-  const { data, error } = await state.supabase.rpc('charge_to_corporate_account', {
+  const { data: rawData, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('charge_to_corporate_account', {
     p_account_id: accountId,
     p_lodge_id: state.lodgeId,
     p_booking_id: bookingId,
@@ -85,6 +95,9 @@ export async function chargeToCorporateAccount(accountId, bookingId, amount, des
     p_settle_booking: settleBooking,
     p_idempotency_key: key
   });
+  // SQL producer: 20260705105000_corporate_billing_workflow.sql; expected
+  // JSON view only, with no runtime validation or coercion.
+  const data = /** @type {CorporateBillingMutationExpectedView} */ (rawData);
   if (error) throw new Error(error.message);
   if (!data?.success) throw new Error(data?.error || 'Could not charge to corporate account');
   return { ...data, idempotency_key: key };
@@ -94,7 +107,7 @@ export async function chargeToCorporateAccount(accountId, bookingId, amount, des
 export async function getCorporateOutstanding(accountId) {
   if (!state.isOnline) return readCache('corporate-outstanding');
   try {
-    const { data, error } = await state.supabase.rpc('get_corporate_outstanding', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_corporate_outstanding', {
       p_account_id: accountId,
       p_lodge_id: state.lodgeId
     });
@@ -104,7 +117,7 @@ export async function getCorporateOutstanding(accountId) {
   } catch (err) {
     const cached = readCache('corporate-outstanding');
     if (cached) return cached;
-    throw new Error(readThrownMessage(err) || 'Failed to get outstanding');
+    throw new Error(/** @type {string | undefined} */ (readThrownMessage(err)) || 'Failed to get outstanding');
   }
 }
 
@@ -114,9 +127,9 @@ export async function recordCorporatePayment(accountId, invoiceIds, amount, meth
   if (!accountId) throw new Error('Corporate account is required');
 
   const key = options.idempotencyKey
-    || stableIdempotencyKey('corp-pay', [accountId, amount, method, reference, ...(invoiceIds || [])]);
+    || stableIdempotencyKey('corp-pay', [accountId, amount, method, reference, .../** @type {Iterable<unknown>} */ (invoiceIds || [])]);
 
-  const { data, error } = await state.supabase.rpc('record_corporate_payment', {
+  const { data: rawData, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('record_corporate_payment', {
     p_account_id: accountId,
     p_lodge_id: state.lodgeId,
     p_invoice_ids: invoiceIds,
@@ -125,6 +138,7 @@ export async function recordCorporatePayment(accountId, invoiceIds, amount, meth
     p_reference: reference || '',
     p_idempotency_key: key
   });
+  const data = /** @type {CorporateBillingMutationExpectedView} */ (rawData);
   if (error) throw new Error(error.message);
   if (!data?.success) throw new Error(data?.error || 'Could not record payment');
   return { ...data, idempotency_key: key };
@@ -134,7 +148,7 @@ export async function recordCorporatePayment(accountId, invoiceIds, amount, meth
 export async function getCorporateStatement(accountId, periodStart, periodEnd) {
   if (!state.isOnline) return readCache('corporate-statement');
   try {
-    const { data, error } = await state.supabase.rpc('get_corporate_statement', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_corporate_statement', {
       p_account_id: accountId,
       p_lodge_id: state.lodgeId,
       p_period_start: periodStart,
@@ -146,7 +160,7 @@ export async function getCorporateStatement(accountId, periodStart, periodEnd) {
   } catch (err) {
     const cached = readCache('corporate-statement');
     if (cached) return cached;
-    throw new Error(readThrownMessage(err) || 'Failed to get statement');
+    throw new Error(/** @type {string | undefined} */ (readThrownMessage(err)) || 'Failed to get statement');
   }
 }
 
@@ -162,7 +176,7 @@ export async function checkCreditLimitWithPending(accountId, pendingAmount) {
       error: 'Credit limit check requires an internet connection'
     };
   }
-  const { data, error } = await state.supabase.rpc('check_credit_limit_with_pending', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('check_credit_limit_with_pending', {
     p_account_id: accountId,
     p_lodge_id: state.lodgeId,
     p_pending_amount: pendingAmount
@@ -174,11 +188,12 @@ export async function checkCreditLimitWithPending(accountId, pendingAmount) {
 /** @param {unknown} accountId @param {unknown} reason @returns {Promise<unknown>} */
 export async function suspendCorporateAccount(accountId, reason) {
   requireOnline('Suspend corporate account');
-  const { data, error } = await state.supabase.rpc('suspend_corporate_account', {
+  const { data: rawData, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('suspend_corporate_account', {
     p_account_id: accountId,
     p_lodge_id: state.lodgeId,
     p_reason: reason || ''
   });
+  const data = /** @type {CorporateBillingMutationExpectedView} */ (rawData);
   if (error) throw new Error(error.message);
   if (!data?.success) throw new Error(data?.error || 'Could not suspend account');
   return data;
@@ -187,10 +202,11 @@ export async function suspendCorporateAccount(accountId, reason) {
 /** @param {unknown} accountId @returns {Promise<unknown>} */
 export async function reactivateCorporateAccount(accountId) {
   requireOnline('Reactivate corporate account');
-  const { data, error } = await state.supabase.rpc('reactivate_corporate_account', {
+  const { data: rawData, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('reactivate_corporate_account', {
     p_account_id: accountId,
     p_lodge_id: state.lodgeId
   });
+  const data = /** @type {CorporateBillingMutationExpectedView} */ (rawData);
   if (error) throw new Error(error.message);
   if (!data?.success) throw new Error(data?.error || 'Could not reactivate account');
   return data;

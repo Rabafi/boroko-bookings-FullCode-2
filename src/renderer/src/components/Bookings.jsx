@@ -113,7 +113,7 @@ function buildWhatsAppMessage(b, settings) {
   const vocab = getUiVocabulary({ settings })
   const lodge = getBusinessDisplayName(settings, vocab)
   const currency = settings?.currency || 'P'
-  const nights = Math.max(0, Math.ceil((new Date(b.check_out) - new Date(b.check_in)) / 86400000))
+  const nights = Math.max(0, Math.ceil((new Date(b.check_out).getTime() - new Date(b.check_in).getTime()) / 86400000))
   return [
     `Dear ${b.customer_name},`,
     '',
@@ -130,15 +130,24 @@ function buildWhatsAppMessage(b, settings) {
   ].filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n')
 }
 
+/**
+ * Values are expected booking rows from the existing IPC/cache merge. The
+ * shared financial helper accepts a plain record, but its leaves remain unknown.
+ * @typedef {NonNullable<Parameters<typeof getBookingFinancialView>[0]>} BookingFinancialConsumerInput
+ */
+
+/** @param {BookingFinancialConsumerInput} booking */
 function bookingOutstandingAmount(booking) {
   return getBookingFinancialView(booking).outstanding
 }
 
+/** @param {BookingFinancialConsumerInput} booking */
 function bookingRefundPending(booking) {
   const financial = getBookingFinancialView(booking)
   return !financial.pending && booking?.status === 'cancelled' && financial.amountPaid > 0.01 && booking.refund_settled !== true
 }
 
+/** @param {BookingFinancialConsumerInput} booking */
 function bookingNeedsAttention(booking) {
   const financial = getBookingFinancialView(booking)
   if (financial.pending) return false
@@ -152,11 +161,13 @@ function bookingNeedsAttention(booking) {
   return false
 }
 
+/** @param {BookingFinancialConsumerInput} booking @param {ReadonlySet<unknown>} failedSyncIds */
 function bookingHasSyncFailure(booking, failedSyncIds) {
   const syncState = String(booking?._sync_state || '').trim().toLowerCase()
   return failedSyncIds.has(booking?.id) || syncState === 'failed' || syncState === 'sync_failed'
 }
 
+/** @param {BookingFinancialConsumerInput} booking */
 function bookingHasAttentionState(booking) {
   const syncState = String(booking?._sync_state || '').trim().toLowerCase()
   return booking?._needs_attention === true || syncState === 'manual_review_required'
@@ -166,15 +177,28 @@ function isSessionExpiredError(message = '') {
   return /not authenticated|authenticated.*required|authentication.*required|session.*expired|session.*required/i.test(String(message || ''))
 }
 
+/** @param {unknown} result */
 function normalizeChargesResponse(result) {
-  if (Array.isArray(result)) return { items: result, unavailable: false }
-  if (result?.unavailable) return { items: [], unavailable: true }
+  if (Array.isArray(result)) {
+    // Array.isArray proves only the collection boundary; the rows stay unknown.
+    return { items: /** @type {unknown[]} */ (result), unavailable: false }
+  }
+  // This view narrows only the existing optional property read; it does not validate IPC output.
+  const expectedResponse = /** @type {{unavailable?: unknown} | null | undefined} */ (result)
+  if (expectedResponse?.unavailable) return { items: [], unavailable: true }
   return { items: [], unavailable: false }
 }
+
+/** Display fields read from the existing booking-charges query. IPC/cache rows stay unknown; this expected view does not validate them. The DB amount column is numeric. @typedef {{id: string, description: string, category?: string | null, quantity?: number | null, amount: number, outlets?: {name?: string | null} | null}} BookingChargeReadExpectedView */
+/** `charges:add` / `charges:delete` return these online/offline success variants; IPC catches expose `{success:false,error}`. This view does not validate the result. */
+/** @typedef {{success: true, id?: string, offline?: true, queued?: true} | {success: true, voided: boolean, offline?: true, queued?: true} | {success: false, error?: string}} BookingChargeMutationReadExpectedView */
+/** @param {unknown} row */
+const expectedBookingCharge = (row) => /** @type {BookingChargeReadExpectedView} */ (row)
 
 // Sanitize raw sync error text for display to front-desk operators.
 // Strips UUIDs and translates known technical patterns to plain language.
 // Returns null for errors already covered by a specific badge (e.g. room conflict).
+/** @param {unknown} raw */
 function sanitizeSyncError(raw) {
   if (!raw) return null
   const msg = String(raw)
@@ -216,31 +240,64 @@ const emptyBooking = {
   notes: ''
 }
 
+/** @param {unknown} startA @param {unknown} endA @param {unknown} startB @param {unknown} endB */
 function rangesOverlap(startA, endA, startB, endB) {
   if (!startA || !endA || !startB || !endB) return false
-  return startA < endB && endA > startB
+  // Booking inputs and mesh producers normally use date strings; these views
+  // preserve the existing relational coercion and do not validate remote locks.
+  return /** @type {string | number} */ (startA) < /** @type {string | number} */ (endB) && /** @type {string | number} */ (endA) > /** @type {string | number} */ (startB)
 }
 
+/** Expected field reads from local/peer mesh lock rows; peer values remain unvalidated. */
+/** @typedef {{roomId?: unknown, sourceNodeId?: unknown, startDate?: unknown, endDate?: unknown}} BookingMeshRoomLockExpectedReadView */
+/** Mesh snapshot fields constructed by getMeshHealthSnapshot; lock rows and node identity remain unvalidated. */
+/** @typedef {{activeLocks: unknown[], peerCount: number, nodeId?: unknown}} BookingMeshHealthExpectedReadView */
+/** sync:getStatus may return its minimal offline fallback; this read view documents only consumed fields and does not validate IPC data. */
+/** @typedef {{failedBookingIds?: unknown[], financialPendingBookingIds?: unknown[], financialFailedBookingIds?: unknown[], cacheStale?: {active?: unknown} | null, mesh?: BookingMeshHealthExpectedReadView | null}} BookingSyncStatusExpectedReadView */
+/** @param {unknown[]} activeLocks @param {unknown} roomId @param {unknown} checkIn @param {unknown} checkOut @param {unknown} localNodeId */
 function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localNodeId) {
   if (!roomId || !checkIn || !checkOut) return []
   return activeLocks.filter((lock) => (
-    String(lock?.roomId) === String(roomId) &&
-    lock.sourceNodeId !== localNodeId &&
-    rangesOverlap(lock.startDate, lock.endDate, checkIn, checkOut)
+    String(/** @type {BookingMeshRoomLockExpectedReadView | null | undefined} */ (lock)?.roomId) === String(roomId) &&
+    /** @type {BookingMeshRoomLockExpectedReadView} */ (lock).sourceNodeId !== localNodeId &&
+    rangesOverlap(
+      /** @type {BookingMeshRoomLockExpectedReadView} */ (lock).startDate,
+      /** @type {BookingMeshRoomLockExpectedReadView} */ (lock).endDate,
+      checkIn,
+      checkOut
+    )
   ))
 }
 
 /**
- * Expected fields consumed by the booking-list grouping and derived counters.
+ * Expected fields consumed by booking-list grouping, derived counters, and row actions.
  * `bookings:getAll` returns the query projection merged with persisted cache;
  * this is a read-site view only and does not validate IPC or cached rows.
  * Monetary values retain number/string forms until the existing Number calls.
- * @typedef {{id: string, is_exclusive_event?: boolean | null, notes?: string | null, check_in?: string | null, total_amount?: number | string | null, amount_paid?: number | string | null, source?: string | null, status?: string | null, _pending_sync?: boolean, created_at?: string | null}} BookingListRowExpectedView
+ * @typedef {{id: string, booking_id?: string, customer_id?: string | null, room_id?: string | null, is_exclusive_event?: boolean | null, notes?: string | null, check_in?: string | null, check_out?: string | null, total_amount?: number | string | null, amount_paid?: number | string | null, charges_total?: number | string | null, payment_status?: string | null, payment_method?: string | null, source?: string | null, status?: string | null, _pending_sync?: boolean, _sync_created_offline?: boolean, _sync_state?: string | null, created_at?: string | null, updated_at?: string | null, customer_name?: string | null, customer_phone?: string | null, customer_email?: string | null, invoice_number?: string | null, _local_invoice_number?: unknown, room_name?: string | null, room_number?: string | null, room_type?: string | null, refund_settled?: boolean}} BookingListRowExpectedView
  * @typedef {BookingListRowExpectedView & {room_count: number, total_amount: number, amount_paid: number, _event_group: true, room_number: string}} EventBookingGroupExpectedView
  * `rooms:getAll` returns the database room projection or persisted cache array; row values are not runtime-validated here.
  * @typedef {{id: string, name?: string | null, room_number?: string | null, room_type?: string | null, status?: string | null, rate_per_night?: number | string | null, max_occupancy?: number | string | null, max_tents?: number | string | null, max_vehicles?: number | string | null, accommodation_kind?: string | null, rate_mode?: string | null, rate_per_person?: number | string | null, rate_per_tent?: number | string | null, rate_per_vehicle?: number | string | null, capacity_adults?: number | string | null, capacity_children?: number | string | null}} BookingRoomDerivedExpectedView
  * @typedef {{rate: unknown, name?: string | null}} BookingApplicableRateReadExpectedView
  * @typedef {{rate_per_night: number, name: string}} BookingApplicableRateExpectedView
+ * `outlets:getAll` can return database, cached, or virtual offline rows; this
+ * read-site view does not validate IPC/cache values. Virtual outlets have a null id.
+ * @typedef {{id: string | null, name: string, type: string}} BookingOutletReadExpectedView
+ * `customers:getAll` selects these columns and may return persisted cache rows;
+ * this consumer view does not validate either source.
+ * @typedef {{id: string | number, name: string, email?: string | null, phone?: string | null, id_number?: string | null, nationality?: string | null, is_blacklisted?: boolean, blacklist_reason?: string | null}} BookingCustomerReadExpectedView
+ * `usage:getSnapshot` returns the shared usage summary or `{error}` on failure.
+ * This read-site view describes those producer variants without validating IPC.
+ * @typedef {{plan: string, limits: import('../../../shared/subscriptionPlans.js').UsageLimits, usage: {monthlyBookings?: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, source: string, statuses?: {bookingTargetMonth?: ReturnType<typeof canCreateBooking>, bookingCreationMonth?: ReturnType<typeof canCreateBooking>}, bookingAllowance?: {targetMonthStatus?: ReturnType<typeof canCreateBooking>, creationMonthStatus?: ReturnType<typeof canCreateBooking>, createdMonthUsed?: number}, recommendation?: unknown}} BookingUsageSnapshotReadExpectedView
+ * mesh:lockRoom returns {success, lockId} or {success:false,error}; values are not IPC-validated.
+ * @typedef {{success: boolean, lockId?: string | null, error?: string}} BookingRoomLockResultExpectedView
+ * bookings:createEvent returns db.createEventBooking fields with the documented
+ * deposit-warning error variant; this view does not validate the IPC payload.
+ * @typedef {{bookingId: string, count: number, groupId: string, rooms: unknown[], totalPrice: number, nights: number, pendingSync?: boolean, idempotent?: boolean, depositWarning?: string | null}} EventBookingCreationExpectedView
+ * @typedef {{success: true} & EventBookingCreationExpectedView | {success: false, error?: string}} EventBookingCreateResultExpectedView
+ * @typedef {{created_at?: string | null, date?: string | null, description: string, amount: number | string, paid_at?: string | null, type?: string | null, method?: string | null}} BookingHistoryChargeExpectedView
+ * @typedef {{action?: string, before_snapshot?: Record<string, unknown> | null, after_snapshot?: Record<string, unknown> | null, created_at?: string | null}} BookingHistoryAuditExpectedView
+ * @typedef {{amount: number | string, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null}} BookingHistoryPaymentExpectedView
  */
 export default function Bookings() {
   const { user, logout } = useAuth()
@@ -251,9 +308,9 @@ export default function Bookings() {
   const navigate = useNavigate()
 
   const [openMenuId, setOpenMenuId] = useState(null)
-  const [bookings, setBookings] = useState([])
+  const [bookings, setBookings] = useState(/** @type {BookingListRowExpectedView[]} */ ([]))
   const [rooms, setRooms] = useState(/** @type {BookingRoomDerivedExpectedView[]} */ ([]))
-  const [customers, setCustomers] = useState([])
+  const [customers, setCustomers] = useState(/** @type {BookingCustomerReadExpectedView[]} */ ([]))
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
   const [filterPayment, setFilterPayment] = useState('all')
@@ -269,20 +326,20 @@ export default function Bookings() {
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const [success, setSuccess] = useState('')
-  const [usageSnapshot, setUsageSnapshot] = useState(null)
+  const [usageSnapshot, setUsageSnapshot] = useState(/** @type {BookingUsageSnapshotReadExpectedView | null} */ (null))
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false)
-  const successTimerRef = useRef(null)
+  const successTimerRef = useRef(/** @type {number | null} */ (null))
   const [modalWarning, setModalWarning] = useState('')  // amber — booking saved but deposit failed
   const [loading, setLoading] = useState(false)
   const [statusLoadingId, setStatusLoadingId] = useState(null)
   const [statusLoadingAction, setStatusLoadingAction] = useState('')
   const [applicableRate, setApplicableRate] = useState(/** @type {BookingApplicableRateExpectedView | null} */ (null))
-  const [receiptBooking, setReceiptBooking] = useState(null)
-  const [failedSyncIds, setFailedSyncIds] = useState(new Set())
-  const [financialPendingIds, setFinancialPendingIds] = useState(new Set())
-  const [financialFailedIds, setFinancialFailedIds] = useState(new Set())
+  const [receiptBooking, setReceiptBooking] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
+  const [failedSyncIds, setFailedSyncIds] = useState(/** @type {Set<unknown>} */ (new Set()))
+  const [financialPendingIds, setFinancialPendingIds] = useState(/** @type {Set<unknown>} */ (new Set()))
+  const [financialFailedIds, setFinancialFailedIds] = useState(/** @type {Set<unknown>} */ (new Set()))
   const [financialCacheStale, setFinancialCacheStale] = useState(false)
-  const [meshStatus, setMeshStatus] = useState({ activeLocks: [], peerCount: 0 })
+  const [meshStatus, setMeshStatus] = useState(/** @type {BookingMeshHealthExpectedReadView} */ ({ activeLocks: [], peerCount: 0 }))
   const meshLockIdRef = useRef(null)
   const meshLockSignatureRef = useRef('')
   const FINANCIAL_SYNC_BLOCK_MESSAGE = 'Financial actions are temporarily locked until booking and payment sync are fully confirmed. Review System Health, then try again.'
@@ -312,7 +369,7 @@ export default function Bookings() {
   useEffect(() => {
     const loadSyncStatus = async () => {
       try {
-        const s = await window.api.sync.getStatus()
+        const s = /** @type {BookingSyncStatusExpectedReadView} */ (await window.api.sync.getStatus())
         setFailedSyncIds(new Set(s?.failedBookingIds || []))
         setFinancialPendingIds(new Set(s?.financialPendingBookingIds || []))
         setFinancialFailedIds(new Set(s?.financialFailedBookingIds || []))
@@ -323,7 +380,7 @@ export default function Bookings() {
     loadSyncStatus()
     const interval = setInterval(loadSyncStatus, 30_000)
     const unsubscribe = window.api?.sync?.onStatusChanged?.((status) => {
-      setMeshStatus(status?.mesh || { activeLocks: [], peerCount: 0 })
+      setMeshStatus((/** @type {BookingSyncStatusExpectedReadView | null | undefined} */ (status))?.mesh || { activeLocks: [], peerCount: 0 })
     })
     return () => {
       clearInterval(interval)
@@ -333,16 +390,16 @@ export default function Bookings() {
 
   // History Timeline modal
   const [showHistory, setShowHistory] = useState(false)
-  const [historyBooking, setHistoryBooking] = useState(null)
+  const [historyBooking, setHistoryBooking] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
 
   // Event booking modal
   const [showEventModal, setShowEventModal] = useState(false)
   const [eventForm, setEventForm] = useState({ event_name: '', contact_phone: '', contact_email: '', check_in: '', check_out: '', event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
   const [eventLoading, setEventLoading] = useState(false)
-  const [eventResult, setEventResult] = useState(null) // success result
+  const [eventResult, setEventResult] = useState(/** @type {EventBookingCreationExpectedView | null} */ (null)) // success result
 
   // Reschedule modal
-  const [rescheduleBookingState, setRescheduleBookingState] = useState(null)
+  const [rescheduleBookingState, setRescheduleBookingState] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
   const [rescheduleForm, setRescheduleForm] = useState({ new_check_in: '', new_check_out: '', new_room_id: '', reason: '', overpayment_action: 'reject' })
   const [rescheduleLoading, setRescheduleLoading] = useState(false)
   const [rescheduleError, setRescheduleError] = useState('')
@@ -353,7 +410,7 @@ export default function Bookings() {
   const [customerCreditLoading, setCustomerCreditLoading] = useState(false)
 
   // Payment modal
-  const [paymentBooking, setPaymentBooking] = useState(null)
+  const [paymentBooking, setPaymentBooking] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
   const [paymentIntentKey, setPaymentIntentKey] = useState(null)
   const [payForm, setPayForm] = useState({ payment_status: 'paid', payment_method: 'cash', amount_paid: '' })
   const [payLoading, setPayLoading] = useState(false)
@@ -361,20 +418,21 @@ export default function Bookings() {
   const paymentIntentCacheRef = useRef(new Map())
 
   // Charges modal
-  const [chargesBooking, setChargesBooking] = useState(null)
-  const [charges, setCharges] = useState([])
+  const [chargesBooking, setChargesBooking] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
+  const [charges, setCharges] = useState(/** @type {unknown[]} */ ([]))
   const [chargesUnavailable, setChargesUnavailable] = useState(false)
-  const [chargeForm, setChargeForm] = useState({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: '' })
+  const [chargeForm, setChargeForm] = useState(/** @type {{description: string, amount: string, category: string, quantity: string | number, outlet_id: string | null}} */ ({ description: '', amount: '', category: 'Food & Beverage', quantity: 1, outlet_id: '' }))
   const [chargeLoading, setChargeLoading] = useState(false)
   const [chargeError, setChargeError] = useState('')
   const chargeIntentCacheRef = useRef(new Map())
-  const [voidChargeRequest, setVoidChargeRequest] = useState(null)
+  const [voidChargeRequest, setVoidChargeRequest] = useState(/** @type {string | null} */ (null))
   const [voidReason, setVoidReason] = useState('Entered in error')
 
   // Outlets for charge attribution
-  const [chargeOutlets, setChargeOutlets] = useState([])
-  const [frontDeskId, setFrontDeskId] = useState('')
+  const [chargeOutlets, setChargeOutlets] = useState(/** @type {BookingOutletReadExpectedView[]} */ ([]))
+  const [frontDeskId, setFrontDeskId] = useState(/** @type {string | null} */ (''))
 
+  /** @param {BookingListRowExpectedView} b */
   const openCharges = async (b) => {
     if (isFinanciallySyncBlocked(b.id)) {
       setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
@@ -389,38 +447,41 @@ export default function Bookings() {
     setChargesUnavailable(normalized.unavailable)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleAddCharge = async (e) => {
     e.preventDefault()
     if (isFinanciallySyncBlocked(chargesBooking?.id)) {
       setChargeError(FINANCIAL_SYNC_BLOCK_MESSAGE)
       return
     }
+    // The form is rendered from the selected booking's charges modal; keep existing direct access behavior.
     setChargeLoading(true)
     setChargeError('')
     try {
       const chargeSignature = JSON.stringify({
-        booking_id: chargesBooking.id,
+        booking_id: /** @type {BookingListRowExpectedView} */ (chargesBooking).id,
         description: String(chargeForm.description || '').trim(),
         amount: Number(chargeForm.amount || 0).toFixed(2),
         category: chargeForm.category || 'Other',
         quantity: Number(chargeForm.quantity || 1),
         outlet_id: chargeForm.outlet_id || null
       })
-      const cachedIntent = chargeIntentCacheRef.current.get(chargesBooking.id)
+      const cachedIntent = chargeIntentCacheRef.current.get(/** @type {BookingListRowExpectedView} */ (chargesBooking).id)
       const idempotencyKey = cachedIntent?.signature === chargeSignature
         ? cachedIntent.key
         : crypto.randomUUID()
-      chargeIntentCacheRef.current.set(chargesBooking.id, { signature: chargeSignature, key: idempotencyKey })
-      const res = await window.api.charges.add(chargesBooking.id, {
+      chargeIntentCacheRef.current.set(/** @type {BookingListRowExpectedView} */ (chargesBooking).id, { signature: chargeSignature, key: idempotencyKey })
+      const res = /** @type {BookingChargeMutationReadExpectedView | null | undefined} */ (await window.api.charges.add(/** @type {BookingListRowExpectedView} */ (chargesBooking).id, {
         ...chargeForm,
         unit_price: parseFloat(chargeForm.amount),
         amount: parseFloat(chargeForm.amount),
-        quantity: parseInt(chargeForm.quantity),
+        // JavaScript parseInt applies ToString to these existing number|string input values.
+        quantity: /** @type {(value: string | number) => number} */ (parseInt)(chargeForm.quantity),
         idempotency_key: idempotencyKey
-      })
+      }))
       if (res?.success === false) throw new Error(res.error || 'Failed to add charge')
-      chargeIntentCacheRef.current.delete(chargesBooking.id)
-      const result = await window.api.charges.getByBooking(chargesBooking.id).catch(() => ({ unavailable: true }))
+      chargeIntentCacheRef.current.delete(/** @type {BookingListRowExpectedView} */ (chargesBooking).id)
+      const result = await window.api.charges.getByBooking(/** @type {BookingListRowExpectedView} */ (chargesBooking).id).catch(() => ({ unavailable: true }))
       const normalized = normalizeChargesResponse(result)
       setCharges(normalized.items)
       setChargesUnavailable(normalized.unavailable)
@@ -429,11 +490,12 @@ export default function Bookings() {
       loadAll()
       showSuccess('Extra charge added. Booking totals have been refreshed.')
     } catch (err) {
-      setChargeError(err.message || 'Failed to add charge')
+      setChargeError((/** @type {{message?: string}} */ (err)).message || 'Failed to add charge')
     }
     setChargeLoading(false)
   }
 
+  /** @param {string} id */
   const requestDeleteCharge = (id) => {
     if (isFinanciallySyncBlocked(chargesBooking?.id)) {
       setChargeError(FINANCIAL_SYNC_BLOCK_MESSAGE)
@@ -451,12 +513,12 @@ export default function Bookings() {
       setChargeError('A void reason is required.')
       return
     }
-    const result = await window.api.charges.delete(id, String(reason).trim()).catch((error) => ({ success: false, error: error?.message }))
+    const result = /** @type {BookingChargeMutationReadExpectedView | null | undefined} */ (await window.api.charges.delete(id, String(reason).trim()).catch((error) => ({ success: false, error: error?.message })))
     if (result?.success === false) {
       setChargeError(result.error || 'Failed to void charge')
       return
     }
-    const chargesResult = await window.api.charges.getByBooking(chargesBooking.id).catch(() => ({ unavailable: true }))
+    const chargesResult = await window.api.charges.getByBooking(/** @type {BookingListRowExpectedView} */ (chargesBooking).id).catch(() => ({ unavailable: true }))
     const normalized = normalizeChargesResponse(chargesResult)
     setCharges(normalized.items)
     setChargesUnavailable(normalized.unavailable)
@@ -475,16 +537,20 @@ export default function Bookings() {
       window.api.rooms.getAll(),
       window.api.customers.getAll()
     ])
-    setBookings(b)
+    // This is the existing bookings:getAll read shape, not IPC validation.
+    setBookings(/** @type {BookingListRowExpectedView[]} */ (b))
     setRooms(/** @type {BookingRoomDerivedExpectedView[]} */ (r))
-    setCustomers(c)
+    // customers:getAll selects these fields; its cache fallback is not validated.
+    setCustomers(/** @type {BookingCustomerReadExpectedView[]} */ (c))
     setListLoading(false)
   }, [])
 
+  /** @param {string} bookingId */
   const isFinanciallySyncBlocked = (bookingId) => (
     financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
 
+  /** @param {BookingListRowExpectedView | null | undefined} booking */
   const getCheckoutBlockMessage = (booking) => {
     if (!booking) return ''
     if (isPendingBookingFinancial(booking)) return 'Cannot checkout: booking money is pending server confirmation'
@@ -505,7 +571,9 @@ export default function Bookings() {
     // Load outlets for booking charge attribution; fail silently — outlet_id will be null if unavailable
     window.api.outlets.getAll()
       .then((data) => {
-        const list = data || []
+        // Producer returns normalized DB/cache rows or virtual offline rows;
+        // this expected-data view does not validate the IPC result.
+        const list = /** @type {BookingOutletReadExpectedView[]} */ (data || [])
         setChargeOutlets(list)
         const fd = list.find(o =>
           o.name?.toLowerCase().includes('front') || o.type === 'accommodation'
@@ -520,7 +588,10 @@ export default function Bookings() {
 
   useEffect(() => {
     if (!window.api?.usage?.getSnapshot) return
-    window.api.usage.getSnapshot().then((snapshot) => {
+    window.api.usage.getSnapshot(undefined).then((rawSnapshot) => {
+      // This forwards undefined through preload, as the original no-arg call did.
+      // The expected-data view records producer variants without validating IPC.
+      const snapshot = /** @type {BookingUsageSnapshotReadExpectedView & {error?: string}} */ (/** @type {unknown} */ (rawSnapshot))
       if (!snapshot?.error) setUsageSnapshot(snapshot)
     }).catch(() => {})
   }, [bookings.length])
@@ -580,7 +651,9 @@ export default function Bookings() {
     navigate(location.pathname, { replace: true, state: {} })
   }, [bookings, location.pathname, location.state, navigate, paymentBooking, financialCacheStale, financialFailedIds, financialPendingIds])
 
-  useEffect(() => () => window.clearTimeout(successTimerRef.current), [])
+  useEffect(() => () => {
+    window.clearTimeout(successTimerRef.current ?? 0)
+  }, [])
 
   useEffect(() => {
     const releaseCurrentLock = async () => {
@@ -602,7 +675,9 @@ export default function Bookings() {
     releaseCurrentLock()
     let cancelled = false
     const timer = window.setTimeout(async () => {
-      const result = await window.api.mesh.lockRoom(form.room_id, form.check_in, form.check_out).catch(() => null)
+      const rawResult = await window.api.mesh.lockRoom(form.room_id, form.check_in, form.check_out).catch(() => null)
+      // Concrete mesh:lockRoom handler result; this does not validate IPC data.
+      const result = /** @type {BookingRoomLockResultExpectedView | null} */ (/** @type {unknown} */ (rawResult))
       if (cancelled) {
         if (result?.lockId) await window.api.mesh.unlockRoom(result.lockId).catch(() => null)
         return
@@ -655,9 +730,10 @@ export default function Bookings() {
     return () => { cancelled = true }
   }, [showModal, form.room_id, form.check_in, form.check_out])
 
+  /** @param {string} message */
   const showSuccess = (message) => {
     setSuccess(message)
-    window.clearTimeout(successTimerRef.current)
+    window.clearTimeout(successTimerRef.current ?? 0)
     successTimerRef.current = window.setTimeout(() => setSuccess(''), 3500)
   }
 
@@ -692,6 +768,7 @@ export default function Bookings() {
     setShowModal(false)
   }
 
+  /** @param {BookingListRowExpectedView} b */
   const openEdit = (b) => {
     setEditingId(b.id)
     setEditingBaseUpdatedAt(b.updated_at || null)
@@ -734,11 +811,13 @@ export default function Bookings() {
     setCustomerCreditLoading(false)
   }
 
+  /** @param {string} bookingId @param {string} paymentStatus @param {unknown} amount */
   const getPaymentAttemptSignature = (bookingId, paymentStatus, amount) => {
     const safeAmount = Math.max(0, Number(amount) || 0).toFixed(2)
     return `${bookingId}:${paymentStatus}:${safeAmount}`
   }
 
+  /** @param {string} bookingId @param {string} paymentStatus @param {unknown} amount */
   const getOrCreatePaymentIntentKey = (bookingId, paymentStatus, amount) => {
     const signature = getPaymentAttemptSignature(bookingId, paymentStatus, amount)
     const existing = paymentIntentCacheRef.current.get(bookingId)
@@ -750,6 +829,7 @@ export default function Bookings() {
     return key
   }
 
+  /** @param {BookingListRowExpectedView} b */
   const openPayment = async (b) => {
     if (isFinanciallySyncBlocked(b.id)) {
       setWarning(FINANCIAL_SYNC_BLOCK_MESSAGE)
@@ -788,6 +868,7 @@ export default function Bookings() {
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleSave = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -1030,6 +1111,10 @@ export default function Bookings() {
     setPayLoading(false)
   }
 
+  /**
+   * @param {string} id
+   * @param {'confirmed' | 'checked_in' | 'checked_out' | 'cancelled'} status
+   */
   const handleStatusChange = async (id, status) => {
     const booking = bookings.find((entry) => entry.id === id)
     const isOfflineCreatedPendingBooking = booking?._pending_sync && booking?._sync_created_offline
@@ -1087,11 +1172,11 @@ export default function Bookings() {
         setWarning(`Status update failed: ${result.error || 'Please try again.'}`)
       } else {
         loadAll()
-        const labels = {
+        const labels = /** @type {Partial<Record<typeof status, string>>} */ ({
           checked_in: 'Guest checked in successfully.',
           checked_out: 'Guest checked out successfully.',
           cancelled: 'Booking cancelled.'
-        }
+        })
         showSuccess(labels[status] || 'Booking status updated.')
       }
     } finally {
@@ -1107,17 +1192,18 @@ export default function Bookings() {
     setShowEventModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleEventSave = async (e) => {
     e.preventDefault()
     setEventLoading(true)
     try {
-      const res = await window.api.bookings.createEvent({ ...eventForm, created_by: user.id })
+      const res = /** @type {EventBookingCreateResultExpectedView} */ (await window.api.bookings.createEvent({ ...eventForm, created_by: user.id }))
       if (res.success === false) throw new Error(res.error)
       // Pass depositWarning into eventResult so the success screen can display it
       setEventResult({ ...res, depositWarning: res.depositWarning || null })
       loadAll()
     } catch (err) {
-      setError(err.message || 'Failed to create event booking')
+      setError((/** @type {{message?: string}} */ (err)).message || 'Failed to create event booking')
     }
     setEventLoading(false)
   }
@@ -1139,6 +1225,7 @@ export default function Bookings() {
     setRescheduleError('')
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleRescheduleSave = async (e) => {
     e.preventDefault()
     if (!rescheduleBookingState) return
@@ -1293,15 +1380,15 @@ export default function Bookings() {
     () => rooms,
     [rooms]
   )
-  const activeMeshLocks = Array.isArray(meshStatus?.activeLocks) ? meshStatus.activeLocks : []
+  const activeMeshLocks = /** @type {unknown[]} */ (Array.isArray(meshStatus?.activeLocks) ? meshStatus.activeLocks : [])
   const selectedPeerLocks = useMemo(
     () => getMeshLocksForRoom(activeMeshLocks, form.room_id, form.check_in, form.check_out, meshStatus?.nodeId),
     [activeMeshLocks, form.room_id, form.check_in, form.check_out, meshStatus?.nodeId]
   )
   const meshLockedRoomIds = useMemo(() => new Set(
     activeMeshLocks
-      .filter((lock) => lock.sourceNodeId !== meshStatus?.nodeId && rangesOverlap(lock.startDate, lock.endDate, form.check_in, form.check_out))
-      .map((lock) => String(lock.roomId))
+      .filter((lock) => (/** @type {BookingMeshRoomLockExpectedReadView} */ (lock)).sourceNodeId !== meshStatus?.nodeId && rangesOverlap((/** @type {BookingMeshRoomLockExpectedReadView} */ (lock)).startDate, (/** @type {BookingMeshRoomLockExpectedReadView} */ (lock)).endDate, form.check_in, form.check_out))
+      .map((lock) => String((/** @type {BookingMeshRoomLockExpectedReadView} */ (lock)).roomId))
   ), [activeMeshLocks, form.check_in, form.check_out, meshStatus?.nodeId])
 
   const selectedNightlyRate = applicableRate?.rate_per_night ?? selectedRoom?.rate_per_night ?? 0
@@ -1957,7 +2044,9 @@ export default function Bookings() {
               </div>
             ) : charges.length > 0 ? (
               <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white/70 px-1">
-                {charges.map((c) => (
+                {charges.map((rawCharge) => {
+                  const c = expectedBookingCharge(rawCharge)
+                  return (
                   <div key={c.id} className="flex items-center justify-between px-3 py-3 text-sm">
                     <div>
                       <p className="font-medium text-slate-800">{c.description}</p>
@@ -1975,10 +2064,11 @@ export default function Bookings() {
                       >✕</button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
                 <div className="flex justify-between px-3 pb-2 pt-3 text-sm font-bold text-slate-800">
                   <span>Total extras</span>
-                  <span>{currency} {charges.reduce((s, c) => s + Number(c.amount), 0).toFixed(2)}</span>
+                  <span>{currency} {charges.reduce((/** @type {number} */ sum, /** @type {unknown} */ charge) => /** @type {number} */ (sum + Number(expectedBookingCharge(charge).amount)), 0).toFixed(2)}</span>
                 </div>
               </div>
             ) : (
@@ -2982,6 +3072,7 @@ export default function Bookings() {
   )
 }
 
+/** @param {{label: string, children: import('react').ReactNode}} props */
 function F({ label, children }) {
   return (
     <div>
@@ -2991,35 +3082,38 @@ function F({ label, children }) {
   )
 }
 
+/** @param {{booking: BookingListRowExpectedView, onClose: () => void}} props */
 function BookingHistoryModal({ booking, onClose }) {
   const { settings } = useSettings()
-  const [charges, setCharges] = useState([])
+  const [charges, setCharges] = useState(/** @type {BookingHistoryChargeExpectedView[]} */ ([]))
   const [chargesUnavailable, setChargesUnavailable] = useState(false)
-  const [payments, setPayments] = useState([])
-  const [auditRows, setAuditRows] = useState([])
+  const [payments, setPayments] = useState(/** @type {BookingHistoryPaymentExpectedView[]} */ ([]))
+  const [auditRows, setAuditRows] = useState(/** @type {BookingHistoryAuditExpectedView[]} */ ([]))
   const bookingId = booking.id || booking.booking_id
 
   useEffect(() => {
     if (!bookingId) return
     window.api.charges.getByBooking(bookingId).then((result) => {
       const normalized = normalizeChargesResponse(result)
-      setCharges(normalized.items)
+      setCharges(/** @type {BookingHistoryChargeExpectedView[]} */ (normalized.items))
       setChargesUnavailable(normalized.unavailable)
     }).catch(() => {
       setCharges([])
       setChargesUnavailable(true)
     })
-    window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? data : [])).catch(() => {})
+    window.api.bookings.getPayments(bookingId).then((data) => setPayments(Array.isArray(data) ? /** @type {BookingHistoryPaymentExpectedView[]} */ (data) : [])).catch(() => {})
     window.api.reports.financialAudit({ bookingId, limit: 100, offset: 0 })
-      .then((data) => setAuditRows(Array.isArray(data) ? data : []))
+      .then((data) => setAuditRows(Array.isArray(data) ? /** @type {BookingHistoryAuditExpectedView[]} */ (data) : []))
       .catch(() => setAuditRows([]))
   }, [bookingId])
 
   const currency = settings?.currency || 'P'
-  const nights = Math.max(0, Math.ceil((new Date(booking.check_out) - new Date(booking.check_in)) / (1000 * 60 * 60 * 24)))
+  // Date construction keeps the existing coercion/invalid-date behavior;
+  // this consumer view does not validate cached or IPC date strings.
+  const nights = Math.max(0, Math.ceil((new Date(/** @type {string} */ (booking.check_out)) - new Date(/** @type {string} */ (booking.check_in))) / (1000 * 60 * 60 * 24)))
 
   const events = useMemo(() => {
-    const list = []
+    const list = /** @type {Array<{at: string | null | undefined, tone: string, title: string, detail: string}>} */ ([])
     if (booking.created_at) {
       list.push({
         at: booking.created_at,
@@ -3069,7 +3163,7 @@ function BookingHistoryModal({ booking, onClose }) {
         detail: booking.status === 'checked_out' ? 'Booking closed.' : 'Guest is currently in house.'
       })
     }
-    return list.sort((a, b) => new Date(b.at) - new Date(a.at))
+    return list.sort((a, b) => new Date(/** @type {string} */ (b.at)) - new Date(/** @type {string} */ (a.at)))
   }, [booking, charges, payments, auditRows, currency, nights])
 
   return (
@@ -3105,6 +3199,12 @@ function BookingHistoryModal({ booking, onClose }) {
   )
 }
 
+/**
+ * Callbacks are the existing row-action closures in the bookings table.
+ * The row and settings are read-site expectations for the existing
+ * bookings:getAll projection/cache merge; neither is runtime validation.
+ * @param {{b: BookingListRowExpectedView, isOpen: boolean, onToggle: () => void, onClose: () => void, onCheckIn: () => void, onCheckOut: () => void, onCancel: () => void, onEdit: () => void, onReschedule: () => void, onPayment: () => void, onExtras: () => void, onReceipt: () => void, onHistory: () => void, settings: Record<string, unknown> | null | undefined}} props
+ */
 function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCancel, onEdit, onReschedule, onPayment, onExtras, onReceipt, onHistory, settings }) {
   const ref = useRef(null)
   useEffect(() => {
@@ -3240,6 +3340,7 @@ function BookingMenu({ b, isOpen, onToggle, onClose, onCheckIn, onCheckOut, onCa
   )
 }
 
+/** @param {{children: import('react').ReactNode, onClick: () => void, disabled?: boolean, title?: string, color?: 'default' | 'green' | 'blue' | 'red' | 'primary' | 'whatsapp', icon?: import('lucide-react').LucideIcon}} props */
 function MenuItem({ children, onClick, disabled, title, color, icon: Icon }) {
   const colors = {
     default:  'text-slate-700',
@@ -3266,6 +3367,7 @@ function Divider() {
   return <div className="my-1 border-t border-slate-100" />
 }
 
+/** @param {{label: string, color: 'green' | 'blue' | 'red' | 'gray' | 'yellow', onClick: () => void, disabled?: boolean, title?: string}} props */
 function ActionBtn({ label, color, onClick, disabled, title }) {
   const colors = {
     green: 'text-green-600 hover:bg-green-50',

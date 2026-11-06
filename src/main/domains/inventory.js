@@ -31,10 +31,65 @@ import { normalizeBarcode } from '../../shared/barcodeScanner.js'
  * Cache JSON and query rows are not validated here; provenance fields remain
  * optional because the legacy SELECT omits them and older cached rows may not
  * carry them.
- * @typedef {{id: unknown, lodge_id: unknown, item_id: unknown, quantity_purchased: unknown, unit_cost: unknown, total_cost: unknown, date?: unknown, _deleted_offline?: unknown, operation_id?: unknown, source_document_type?: unknown, payload_hash?: unknown, valuation_method?: unknown}} InventoryPurchaseReadExpectedData
+ * @typedef {{id: unknown, lodge_id: unknown, item_id: unknown, quantity_purchased: unknown, unit_cost: unknown, total_cost: unknown, date?: unknown, notes?: unknown, created_at?: unknown, _deleted_offline?: unknown, operation_id?: unknown, source_document_type?: unknown, payload_hash?: unknown, valuation_method?: unknown}} InventoryPurchaseReadExpectedData
  */
 
 /** @typedef {{message?: unknown}} InventoryPurchaseErrorMessageReadView */
+/** Built-in Error.message is expected to be a string; arbitrary rejection values are still preserved at the boundary and are not validated. @typedef {{message?: string}} InventoryItemErrorMessageExpectedView */
+
+/** @typedef {{unit_cost?: unknown}} InventoryUnitCostInputReadView */
+/** @typedef {{barcode?: unknown}} InventoryBarcodeInputReadView */
+/** @typedef {{export_all?: unknown, exportAll?: unknown}} InventoryItemsReadOptions */
+/** @typedef {{item_id?: unknown, itemId?: unknown, start_date?: unknown, startDate?: unknown, end_date?: unknown, endDate?: unknown, limit?: unknown, export_all?: unknown, exportAll?: unknown}} InventoryMovementsReadFilters */
+/** @typedef {{id?: unknown, outlet_id?: unknown, title?: unknown, notes?: unknown}} InventoryStocktakeCreateInputReadView */
+/** Inventory create/update values are forwarded to the existing RPC/cache paths; this expected IPC view does not add runtime validation. @typedef {{id?: unknown, name?: unknown, category?: unknown, unit?: unknown, current_stock?: unknown, reorder_level?: unknown, unit_cost?: unknown, selling_price?: unknown, outlet_id?: unknown, barcode?: unknown}} InventoryMutationInputExpectedData */
+/** Purchase identifiers follow the existing form/RPC contract; numeric and optional metadata values are still coerced or forwarded as before. @typedef {{id?: string|null, item_id: string, quantity_purchased: unknown, total_cost: unknown, date?: string|null, notes?: unknown, source_document_type?: string|null, source_document_id?: string|null, evidence_ref?: unknown, receipt_reference?: unknown, lot_id?: unknown, valuation_method?: string|null}} InventoryPurchaseMutationInputExpectedData */
+/** Raw bar batch lines are inspected/coerced by normalizeBarStockBatchLines; this view does not validate incoming IPC data. @typedef {Record<string, unknown>} InventoryBarBatchLineReadView */
+/** @typedef {{item_id: string, reason: string, reason_code: string, expected_qty?: number, actual_qty?: number, quantity?: number, expected_updated_at?: string}} InventoryNormalizedBarBatchLine */
+/** @typedef {{item_id: unknown, counted_qty: unknown, notes?: unknown}} InventoryStocktakeCountInputReadView */
+/** The view records fields consumed from existing RPC results; values are expected data and are not validated here. @typedef {{success?: unknown, id?: string, new_stock?: unknown, error?: unknown, rows?: unknown, source?: unknown, complete?: unknown}} InventoryRpcExpectedResultView */
+/** @typedef {InventoryMovementExpectedData & {item_name?: unknown, item_unit?: unknown, item_category?: unknown, outlet_id?: unknown, inventory_items?: InventoryItemSelectRowExpectedData|null}} InventoryMovementDisplayExpectedData */
+/** @typedef {{id?: unknown, lodge_id?: unknown, created_at?: unknown, notes?: unknown, status?: unknown, _pending_sync?: unknown, _sync_state?: unknown, _pending_void?: unknown, _void_reason?: unknown, pos_order_items?: InventoryPosOrderLineExpectedData[], items?: InventoryPosOrderLineExpectedData[]}} InventoryPosOrderExpectedData */
+/** @typedef {{id?: unknown, item_name?: unknown, inventory_item_id?: unknown, quantity?: unknown, depletion_qty?: unknown}} InventoryPosOrderLineExpectedData */
+/** @typedef {{id?: unknown, order_id?: unknown, reason?: unknown, created_at?: unknown, _pending_sync?: unknown, _sync_state?: unknown}} InventoryPosVoidExpectedData */
+/** @typedef {{item_id: string, counted_qty: unknown, notes?: unknown}} InventoryStocktakeCountPayload */
+
+/**
+ * Expected result projection of selectInventoryItems. The Supabase SELECT is
+ * the producer; row fields remain unknown and this view does not validate the
+ * remote response.
+ * @typedef {{id?: unknown, name?: unknown, category?: unknown, unit?: unknown, current_stock?: unknown, reorder_level?: unknown, selling_price?: unknown, outlet_id?: unknown, latest_unit_cost?: unknown, lodge_id?: unknown, created_at?: unknown, updated_at?: unknown, sku?: unknown, barcode?: unknown, is_active?: unknown}} InventoryItemSelectRowExpectedData
+ * The SELECT producer returns its own error field; the timeout wrapper can
+ * reject with any JavaScript value, so this boundary stays unknown.
+ * @typedef {{data: InventoryItemSelectRowExpectedData[]|null, error: unknown}} InventoryItemSelectResponseExpectedData
+ */
+
+/**
+ * Expected fields consumed while reading and mutating cached inventory items.
+ * Cache JSON is not validated; this view preserves unknown field values.
+ * @typedef {InventoryItemSelectRowExpectedData & {_deleted_offline?: unknown, _pending_sync?: unknown, _sync_state?: unknown, _sync_error?: unknown}} InventoryItemCacheMutationExpectedData
+ */
+
+/**
+ * Expected cache identity fields used when filtering purchases by item or id.
+ * Parsed purchase cache rows remain unvalidated.
+ * @typedef {{id?: unknown, item_id?: unknown}} InventoryPurchaseCacheIdentityExpectedData
+ */
+
+/**
+ * Expected fields used by this module for stocktake headers written to and
+ * read from the local cache. Cache JSON is not validated; only id is required
+ * by the module's local header operations, and all values retain their
+ * unvalidated types.
+ * @typedef {{id: unknown, notes?: unknown, _pending_sync?: unknown}} InventoryStocktakeHeaderExpectedData
+ */
+
+/**
+ * Expected fields used by local stocktake line operations. These rows come
+ * from the stocktake query or this module's cache writes. Cache JSON is not
+ * validated and values remain unknown.
+ * @typedef {{stocktake_id: unknown, item_id: unknown, item_name?: unknown, expected_qty?: unknown, counted_qty?: unknown, notes?: unknown}} InventoryStocktakeLineExpectedData
+ */
 
 // ─── INVENTORY ────────────────────────────────────────────────────────────────
 
@@ -44,48 +99,52 @@ const INVENTORY_ITEM_LEGACY_SELECT = 'id, name, category, unit, current_stock, r
 const INVENTORY_PURCHASE_SELECT = 'id, item_id, quantity_purchased, unit_cost, total_cost, supplier, date, notes, lodge_id, created_at, updated_at';
 const INVENTORY_PURCHASE_EVIDENCE_SELECT = `${INVENTORY_PURCHASE_SELECT}, operation_id, payload_hash, source_document_type, source_document_id, lot_id, valuation_method, evidence_ref`;
 
+// Online inventory operations use the already initialized Supabase client;
+// the erased assertions below document this existing lifecycle invariant and
+// leave query/RPC values as expected, unvalidated data.
+
 /**
  * Expected inventory movement shape written by this module and selected from
  * `inventory_movements`. Cache JSON is not runtime-validated before use.
  * @typedef {Object} InventoryMovementExpectedData
- * @property {string} id
- * @property {string | null} lodge_id
- * @property {string} item_id
- * @property {string} movement_type
- * @property {number | string} quantity
- * @property {number | string} unit_cost
- * @property {number | string} total_cost
- * @property {string | null} notes
- * @property {string | null} reference_type
- * @property {string | null} reference_id
- * @property {string | null} operation_id
- * @property {string | null} source_document_type
- * @property {string | null} source_document_id
- * @property {string | null} valuation_method
- * @property {string | null} payload_hash
- * @property {number | string | null} [quantity_before]
- * @property {number | string | null} [quantity_after]
- * @property {number | string | null} [expected_qty]
- * @property {number | string | null} [actual_qty]
- * @property {string | null} [reason_code]
- * @property {string} source
- * @property {string | null} created_by
- * @property {string | null} [created_by_name]
- * @property {string} created_at
- * @property {string} [date]
- * @property {boolean} [_pending_sync]
- * @property {string} [_sync_state]
+ * @property {unknown} id
+ * @property {unknown} lodge_id
+ * @property {unknown} item_id
+ * @property {unknown} movement_type
+ * @property {unknown} quantity
+ * @property {unknown} unit_cost
+ * @property {unknown} total_cost
+ * @property {unknown} notes
+ * @property {unknown} [reference_type]
+ * @property {unknown} [reference_id]
+ * @property {unknown} [operation_id]
+ * @property {unknown} [source_document_type]
+ * @property {unknown} [source_document_id]
+ * @property {unknown} [valuation_method]
+ * @property {unknown} [payload_hash]
+ * @property {unknown} [quantity_before]
+ * @property {unknown} [quantity_after]
+ * @property {unknown} [expected_qty]
+ * @property {unknown} [actual_qty]
+ * @property {unknown} [reason_code]
+ * @property {unknown} source
+ * @property {unknown} [created_by]
+ * @property {unknown} [created_by_name]
+ * @property {unknown} created_at
+ * @property {unknown} [date]
+ * @property {unknown} [_pending_sync]
+ * @property {unknown} [_sync_state]
  */
 
 /**
  * @typedef {Object} InventoryMovementInput
- * @property {string} item_id
+ * @property {unknown} item_id
  * @property {string} movement_type
  * @property {string} [id]
  * @property {unknown} [quantity]
  * @property {unknown} [unit_cost]
  * @property {unknown} [total_cost]
- * @property {string | null} [notes]
+ * @property {unknown} [notes]
  * @property {string | null} [reference_type]
  * @property {string | null} [reference_id]
  * @property {string | null} [operation_id]
@@ -116,12 +175,17 @@ function withReadMetadata(rows, source, complete) {
   return /** @type {ReadMetadataRows} */ (result);
 }
 
+/** @param {unknown} error */
 function isMissingInventoryCompatibilityColumnError(error) {
-  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(error?.message || ''));
+  const errorView = /** @type {{message?: unknown}|null|undefined} */ (error);
+  return /column\s+inventory_items\.(barcode|is_active|sku|updated_at)\s+does\s+not\s+exist/i.test(String(errorView?.message || ''));
 }
 
 async function selectInventoryItems(selectColumns = INVENTORY_ITEM_SELECT, from = 0, pageSize = 500) {
-  return state.supabase.
+  // This private query helper is called only from _getInventoryItems' online
+  // branch. Runtime initialization creates the client before connectivity can
+  // mark the app online; preserve the existing access/failure behavior here.
+  return /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('inventory_items').
   select(selectColumns).
   eq('lodge_id', state.lodgeId).
@@ -142,6 +206,7 @@ function normalizePositiveQty(value, fallback = 1) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+/** @param {InventoryUnitCostInputReadView} [data] */
 function readOptionalUnitCost(data = {}) {
   if (!Object.prototype.hasOwnProperty.call(data, 'unit_cost')) return undefined
   const parsed = parseOptionalNonNegativeCost(data.unit_cost)
@@ -155,6 +220,7 @@ function readOptionalUnitCost(data = {}) {
  * queue. `undefined` means the caller did not intend to change the barcode;
  * `null` is an explicit clear operation.
  */
+/** @param {InventoryBarcodeInputReadView} [data] */
 function readOptionalBarcode(data = {}) {
   if (!Object.prototype.hasOwnProperty.call(data, 'barcode')) return undefined
   if (data.barcode == null || String(data.barcode).trim() === '') return null
@@ -179,8 +245,8 @@ function localDateBoundary(value, endExclusive = false) {
   return boundary.toISOString();
 }
 
-/** @param {InventoryMovementExpectedData[]} [rows] @param {unknown} startDate @param {unknown} endDate */
-function filterMovementsByDate(rows = [], startDate, endDate) {
+/** @param {InventoryMovementExpectedData[]} [rows] @param {unknown} [startDate] @param {unknown} [endDate] */
+function filterMovementsByDate(rows = [], startDate = undefined, endDate = undefined) {
   const start = localDateBoundary(startDate);
   const end = localDateBoundary(endDate, true);
   return rows.filter((row) => {
@@ -189,7 +255,7 @@ function filterMovementsByDate(rows = [], startDate, endDate) {
   });
 }
 
-/** @param {InventoryMovementExpectedData | Record<string, undefined>} [row] */
+/** @param {Partial<InventoryMovementExpectedData>} [row] */
 function movementIdentity(row = {}) {
   if (row.reference_type && row.reference_id && row.item_id && row.movement_type) {
     return `${row.reference_type}:${row.reference_id}:${row.item_id}:${row.movement_type}`;
@@ -203,11 +269,31 @@ function readInventoryMovementsCache() {
   return Array.isArray(rows) ? /** @type {InventoryMovementExpectedData[]} */ (rows) : [];
 }
 
+/**
+ * Expected row view for existing inventory-item cache consumers. The cache
+ * remains unvalidated; this preserves the module's existing expected-shape
+ * reads without claiming that parsed cache data has been checked.
+ * @returns {InventoryItemCacheMutationExpectedData[]}
+ */
+function readInventoryItemCacheExpectedData() {
+  return /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
+}
+
+/**
+ * Expected purchase-cache rows consumed by this module. Cache JSON is returned
+ * unchanged; this view does not validate the parsed data.
+ * @returns {InventoryPurchaseReadExpectedData[]}
+ */
+function readInventoryPurchaseCacheExpectedData() {
+  return /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases'));
+}
+
 /** @param {InventoryMovementExpectedData[]} [rows] */
 function writeInventoryMovementsCache(rows = []) {
   writeCache(INVENTORY_MOVEMENTS_CACHE, rows.slice(0, 1000));
 }
 
+/** @param {string} id */
 function removeInventoryDraftFromQueues(id) {
   const activeQueue = readSyncQueue();
   const nextActive = removeQueuedInventoryDraft(activeQueue, id);
@@ -261,20 +347,23 @@ export function upsertLocalInventoryMovement(entry = {}) {
   return row;
 }
 
+/** @param {InventoryItemsReadOptions} [options] */
 async function _getInventoryItems(options = {}) {
   const exportAll = options?.export_all === true || options?.exportAll === true;
   const pageSize = exportAll ? 1000 : 500;
   const maxRows = exportAll ? 100000 : pageSize;
   if (state.isOnline) {
+    /** @type {InventoryItemSelectRowExpectedData[]} */
     const liveRows = [];
     let error = null;
     let legacyShape = false;
     for (let from = 0; from < maxRows; from += pageSize) {
-      const fetchPage = (select, offset) => withNetworkTimeout(
+      /** @param {string} select @param {number} offset @returns {Promise<InventoryItemSelectResponseExpectedData>} */
+      const fetchPage = (select, offset) => /** @type {Promise<InventoryItemSelectResponseExpectedData>} */ (withNetworkTimeout(
         selectInventoryItems(select, offset, pageSize),
         undefined,
         'Stock list'
-      ).catch((timeoutError) => ({ data: null, error: timeoutError }));
+      ).catch((timeoutError) => ({ data: null, error: /** @type {unknown} */ (timeoutError) })));
       let result = await fetchPage(legacyShape ? INVENTORY_ITEM_LEGACY_SELECT : INVENTORY_ITEM_SELECT, from);
       if (result.error && !legacyShape && isMissingInventoryCompatibilityColumnError(result.error)) {
         console.warn('inventory_items compatibility columns are missing in the remote schema; loading inventory with defaults until the migration is applied');
@@ -296,7 +385,7 @@ async function _getInventoryItems(options = {}) {
     const data = liveRows;
     if (!error) {
       if (!data || data.length === 0) {
-        const cached = readCache('inventory-items');
+        const cached = readInventoryItemCacheExpectedData();
         if (cached.length > 0) {
           console.warn('getInventoryItems received empty live result; using cached inventory items instead');
           return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
@@ -304,7 +393,9 @@ async function _getInventoryItems(options = {}) {
       }
       const liveRows = applyQueuedDayUseInventoryReservations(applyQueuedPosInventoryReservations(data || []));
       // Merge with local state to preserve any pending-sync or failed items
-      const merged = mergeRemoteInventoryWithLocalState(liveRows);
+      // Merge output may include unvalidated cache rows; this projection records
+      // only the fields this module subsequently reads and validates nothing.
+      const merged = /** @type {InventoryItemCacheMutationExpectedData[]} */ (mergeRemoteInventoryWithLocalState(liveRows));
       writeCache('inventory-items', merged);
       return withReadMetadata(
         merged,
@@ -312,16 +403,17 @@ async function _getInventoryItems(options = {}) {
         liveRows.length < maxRows && !legacyShape && merged.every((row) => row?._pending_sync !== true && row?._sync_state !== 'pending')
       );
     }
-    const cached = readCache('inventory-items');
+    const cached = readInventoryItemCacheExpectedData();
     if (cached.length > 0) {
-      console.warn('getInventoryItems falling back to cache:', error.message);
+      console.warn('getInventoryItems falling back to cache:', /** @type {InventoryItemErrorMessageExpectedView} */ (error).message);
       return withReadMetadata(cached.filter((row) => row?._deleted_offline !== true), 'cache', false);
     }
-    throw new Error(error.message);
+    throw new Error(/** @type {InventoryItemErrorMessageExpectedView} */ (error).message);
   }
-  return withReadMetadata(readCache('inventory-items').filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
+  return withReadMetadata(readInventoryItemCacheExpectedData().filter((row) => row?._deleted_offline !== true), 'offline-cache', false);
 }
 
+/** @param {InventoryItemsReadOptions} [options] */
 export function getInventoryItems(options = {}) {
   const exportAll = options?.export_all === true || options?.exportAll === true;
   return dedupePromise(`getInventoryItems:${exportAll ? 'export' : 'screen'}`, () => _getInventoryItems(options));
@@ -335,7 +427,10 @@ export function getInventoryItems(options = {}) {
  */
 export async function getBarStockAging(outletId = null) {
   if (!state.isOnline) throw new Error('Stock aging requires an online connection.');
-  const { data, error } = await state.supabase.rpc('get_bar_stock_aging', {
+  // initializeInfrastructure creates state.supabase before connectivity can
+  // mark the app online; this assertion follows the guard above without
+  // changing the existing RPC failure behavior.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_bar_stock_aging', {
     p_lodge_id: state.lodgeId,
     p_outlet_id: outletId || null
   });
@@ -344,16 +439,17 @@ export async function getBarStockAging(outletId = null) {
 }
 
 export async function getDayUseInventoryItems() {
-  const rows = await getInventoryItems().catch(() => readCache('inventory-items'));
+  const rows = /** @type {InventoryItemCacheMutationExpectedData[]} */ (await getInventoryItems().catch(() => readInventoryItemCacheExpectedData()));
   // Operational list: delisted stock (product deleted, nothing else references
   // it) is excluded; its movement history remains server-side for audit.
   return (rows || []).filter((item) => !item?.outlet_id && item?.is_active !== false);
 }
 
+/** @param {unknown} id */
 export async function getInventoryItemById(id) {
   if (!id) return null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('inventory_items').
     select('*').
     eq('id', id).
@@ -362,10 +458,11 @@ export async function getInventoryItemById(id) {
     if (error) throw error;
     return data || null;
   } catch {
-    return readCache('inventory-items').find((item) => item.id === id) || null;
+    return /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items')).find((item) => item.id === id) || null;
   }
 }
 
+/** @param {InventoryMutationInputExpectedData} data */
 export async function createInventoryItem(data) {
   const id = randomUUID();
   const unitCost = readOptionalUnitCost(data)
@@ -384,10 +481,13 @@ export async function createInventoryItem(data) {
     barcode: barcode ?? null
   };
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_inventory_item', { payload: item });
-    if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not create inventory item');
-    const cached = readCache('inventory-items');
+    const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_inventory_item', { payload: item });
+    if (error) throw new Error(/** @type {{message: string}} */ (error).message);
+    const result = /** @type {InventoryRpcExpectedResultView|null} */ (rawResult);
+    // The RPC error is expected to be a message string; leave Error's native
+    // coercion and malformed-value behavior untouched (no runtime validation).
+    if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not create inventory item'));
+    const cached = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
     const savedId = result?.id || id;
     writeCache('inventory-items', [...cached, { ...item, id: savedId }]);
     if (Number(item.current_stock || 0) > 0) {
@@ -404,7 +504,7 @@ export async function createInventoryItem(data) {
     return { success: true, id: result?.id };
   }
   // Offline: write to cache optimistically and queue the RPC for later replay
-  const cached = readCache('inventory-items');
+  const cached = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
   const newItem = { ...item, _pending_sync: true, created_at: new Date().toISOString() };
   writeCache('inventory-items', [...cached, newItem]);
   if (Number(item.current_stock || 0) > 0) {
@@ -426,6 +526,7 @@ export async function createInventoryItem(data) {
   return { success: true, id, offline: true };
 }
 
+/** @param {string} id @param {InventoryMutationInputExpectedData} data */
 export async function updateInventoryItem(id, data) {
   const unitCost = readOptionalUnitCost(data)
   const barcode = readOptionalBarcode(data)
@@ -441,7 +542,7 @@ export async function updateInventoryItem(id, data) {
     ...(data.outlet_id !== undefined ? { outlet_id: data.outlet_id || null } : {}),
     ...(barcode !== undefined ? { barcode } : {})
   };
-  const cached = readCache('inventory-items') || [];
+  const cached = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items')) || [];
   const existing = cached.find((row) => row.id === id);
   if (existing && existing._pending_sync) {
     const updatedRow = { ...existing, ...update };
@@ -463,7 +564,7 @@ export async function updateInventoryItem(id, data) {
   }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_inventory_item', {
+    const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_inventory_item', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       payload: update
@@ -471,13 +572,13 @@ export async function updateInventoryItem(id, data) {
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update inventory item');
     if (unitCost !== undefined) {
-      const { data: costResult, error: costError } = await state.supabase.rpc('set_inventory_unit_cost', {
+      const { data: costResult, error: costError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_inventory_unit_cost', {
         p_item_id: id, p_lodge_id: state.lodgeId, p_unit_cost: unitCost
       });
       if (costError) throw new Error(costError.message);
       if (!costResult?.success) throw new Error(costResult?.error || 'Could not update the unit cost');
     }
-    const cached = readCache('inventory-items');
+    const cached = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
     writeCache('inventory-items', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
   }
@@ -500,15 +601,16 @@ export async function updateInventoryItem(id, data) {
   return { success: true, offline: true, queued: true };
 }
 
+/** @param {string} id */
 export async function deleteInventoryItem(id) {
   if (!state.isOnline) {
-    const cached = readCache('inventory-items');
+    const cached = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
     const existing = cached.find((row) => row?.id === id);
     if (!existing) return { success: false, error: 'Inventory item not found in offline cache' };
     if (existing._pending_sync) {
       removeInventoryDraftFromQueues(id);
       writeCache('inventory-items', cached.filter((row) => row.id !== id));
-      writeCache('inventory-purchases', readCache('inventory-purchases').filter((row) => row.item_id !== id));
+     writeCache('inventory-purchases', /** @type {InventoryPurchaseCacheIdentityExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id !== id));
       return { success: true, offline: true, queued: false };
     }
     writeCache('inventory-items', cached.map((row) => row.id === id ? {
@@ -527,17 +629,18 @@ export async function deleteInventoryItem(id) {
     });
     return { success: true, offline: true, queued: true };
   }
-  const { data: result, error } = await state.supabase.rpc('delete_inventory_item', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_inventory_item', {
     p_id: id,
     p_lodge_id: state.lodgeId
   });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not delete inventory item');
-  writeCache('inventory-items', readCache('inventory-items').filter((row) => row.id !== id));
-  writeCache('inventory-purchases', readCache('inventory-purchases').filter((row) => row.item_id !== id));
+  writeCache('inventory-items', /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items')).filter((row) => row.id !== id));
+  writeCache('inventory-purchases', /** @type {InventoryPurchaseCacheIdentityExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id !== id));
   return { success: true };
 }
 
+/** @param {InventoryPurchaseMutationInputExpectedData} data */
 export async function addInventoryPurchase(data) {
   const qty = Number(data.quantity_purchased);
   const cost = Number(data.total_cost);
@@ -561,7 +664,7 @@ export async function addInventoryPurchase(data) {
     operation_id: id
   };
   if (!state.isOnline) {
-    const items = readCache('inventory-items');
+    const items = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
     const item = items.find((row) => row?.id === data.item_id);
     if (!item) return { success: false, error: 'Inventory item not found on this computer.' };
     writeCache('inventory-items', items.map((row) => row.id === data.item_id ?
@@ -576,7 +679,7 @@ export async function addInventoryPurchase(data) {
     } :
     row
     ));
-    const cachedPurchases = readCache('inventory-purchases');
+    const cachedPurchases = readInventoryPurchaseCacheExpectedData();
     writeCache('inventory-purchases', [
     { ...purchase, _pending_sync: true, _sync_state: 'pending', _sync_error: null, created_at: new Date().toISOString() },
     ...cachedPurchases.filter((row) => row?.id !== id)]
@@ -606,10 +709,13 @@ export async function addInventoryPurchase(data) {
     });
     return { success: true, id, unit_cost: unitCost, new_stock: Number(item.current_stock || 0) + qty, offline: true, queued: true };
   }
-  const { data: result, error } = await state.supabase.rpc('add_inventory_purchase', { payload: purchase });
-  if (error) throw new Error(error.message);
-  if (!result?.success) throw new Error(result?.error || 'Could not record inventory purchase');
-  const items = readCache('inventory-items');
+  const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('add_inventory_purchase', { payload: purchase });
+  if (error) throw new Error(/** @type {{message: string}} */ (error).message);
+  const result = /** @type {InventoryRpcExpectedResultView|null} */ (rawResult);
+  // The RPC error is expected to be a message string; leave Error's native
+  // coercion and malformed-value behavior untouched (no runtime validation).
+  if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not record inventory purchase'));
+  const items = /** @type {InventoryItemCacheMutationExpectedData[]} */ (readCache('inventory-items'));
   writeCache('inventory-items', items.map((row) => row.id === data.item_id ?
   {
     ...row,
@@ -618,7 +724,7 @@ export async function addInventoryPurchase(data) {
   } :
   row
   ));
-  const cachedPurchases = readCache('inventory-purchases');
+  const cachedPurchases = readInventoryPurchaseCacheExpectedData();
   writeCache('inventory-purchases', [
   { ...purchase, id: result?.id || `local-${Date.now()}` },
   ...cachedPurchases]
@@ -647,7 +753,7 @@ export async function addInventoryPurchase(data) {
 export async function getInventoryPurchases(itemId) {
   // Expected cache shape at the existing direct filter; persisted JSON remains
   // unvalidated, including the native failure if the value has no .filter.
-  const cached = /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
+  const cached = readInventoryPurchaseCacheExpectedData().filter((row) => row.item_id === itemId && row?._deleted_offline !== true);
   if (!state.isOnline) {
     return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
   }
@@ -672,7 +778,7 @@ export async function getInventoryPurchases(itemId) {
     // Array.isArray preserves the existing container fallback; row fields are
     // still an expected, unvalidated view of the selected purchase columns.
     const liveRows = /** @type {InventoryPurchaseReadExpectedData[]} */ (Array.isArray(data) ? data : []);
-    const otherCachedRows = /** @type {InventoryPurchaseReadExpectedData[]} */ (readCache('inventory-purchases')).filter((row) => row.item_id !== itemId);
+    const otherCachedRows = readInventoryPurchaseCacheExpectedData().filter((row) => row.item_id !== itemId);
     if (liveRows.length === 0 && cached.length > 0) {
       console.warn('getInventoryPurchases received empty live result; using cached purchases instead');
       return withReadMetadata(cached.sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))), 'cache', false);
@@ -712,7 +818,7 @@ export async function getAllInventoryPurchases() {
       range(from, from + 499);
       /** @type {{data: unknown, error: unknown}} */
       let { data, error } = await query;
-      if (error && !legacyShape && /column|schema cache|PGRST/i.test(String(error.message || error))) {
+      if (error && !legacyShape && /column|schema cache|PGRST/i.test(String((/** @type {{message?: unknown}} */ (error)).message || error))) {
         legacyShape = true;
         const legacyResult = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_purchases').select(INVENTORY_PURCHASE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).range(from, from + 499);
         data = legacyResult.data;
@@ -746,13 +852,14 @@ export async function getAllInventoryPurchases() {
   }
 }
 
+/** @param {string} itemId @param {unknown} delta @param {unknown} notes @param {string|null} [operationId] */
 export async function adjustInventoryStock(itemId, delta, notes, operationId = null) {
   const numericDelta = Number(delta);
   if (!Number.isFinite(numericDelta) || numericDelta === 0) {
     return { success: false, error: 'Enter a non-zero stock adjustment.' };
   }
   const adjustmentId = operationId || randomUUID();
-  const cached = readCache('inventory-items');
+  const cached = readInventoryItemCacheExpectedData();
   const existing = cached.find((row) => row.id === itemId);
 
   if (!state.isOnline) {
@@ -793,7 +900,7 @@ export async function adjustInventoryStock(itemId, delta, notes, operationId = n
     return { success: true, new_stock: newStock, offline: true };
   }
 
-  const { data: result, error } = await state.supabase.rpc('adjust_inventory_stock', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('adjust_inventory_stock', {
     p_item_id: itemId,
     p_lodge_id: state.lodgeId,
     p_delta: numericDelta,
@@ -827,6 +934,7 @@ export async function adjustInventoryStock(itemId, delta, notes, operationId = n
   return { success: true, new_stock: result?.new_stock };
 }
 
+/** @param {InventoryBarBatchLineReadView[]} [lines] @param {'count'|'delivery'} [mode] @returns {InventoryNormalizedBarBatchLine[]} */
 function normalizeBarStockBatchLines(lines = [], mode = 'count') {
   if (!Array.isArray(lines) || lines.length === 0) throw new Error('At least one stock line is required.')
   if (lines.length > 500) throw new Error('A stock operation cannot contain more than 500 lines.')
@@ -858,15 +966,18 @@ function normalizeBarStockBatchLines(lines = [], mode = 'count') {
   }).sort((a, b) => a.item_id.localeCompare(b.item_id))
 }
 
+/** @param {string} operationId @param {'count'|'delivery'} mode @param {InventoryNormalizedBarBatchLine[]} lines @param {string|null} [outletId] */
 function markLocalBarBatchPending(operationId, mode, lines, outletId = null) {
-  const items = readCache('inventory-items') || []
-  const lineById = new Map(lines.map((line) => [line.item_id, line]))
+  const items = readInventoryItemCacheExpectedData() || []
+  const lineById = /** @type {Map<unknown, InventoryNormalizedBarBatchLine>} */ (new Map(lines.map((line) => [line.item_id, line])))
   const now = new Date().toISOString()
   const nextItems = items.map((item) => {
     const line = lineById.get(item?.id)
     if (!line) return item
     const current = normalizeStockNumber(item.current_stock)
-    const nextStock = mode === 'count' ? line.actual_qty : current + line.quantity
+    // The preceding normalizer validates and returns numeric quantities for
+    // the selected mode; these erased assertions preserve that mode contract.
+    const nextStock = mode === 'count' ? /** @type {number} */ (line.actual_qty) : current + /** @type {number} */ (line.quantity)
     return {
       ...item,
       current_stock: nextStock,
@@ -882,8 +993,8 @@ function markLocalBarBatchPending(operationId, mode, lines, outletId = null) {
   for (const line of lines) {
     const item = items.find((row) => row?.id === line.item_id)
     if (!item) continue
-    const expected = mode === 'count' ? line.expected_qty : normalizeStockNumber(item.current_stock)
-    const actual = mode === 'count' ? line.actual_qty : expected + line.quantity
+    const expected = mode === 'count' ? /** @type {number} */ (line.expected_qty) : normalizeStockNumber(item.current_stock)
+    const actual = mode === 'count' ? /** @type {number} */ (line.actual_qty) : expected + /** @type {number} */ (line.quantity)
     const delta = actual - expected
     upsertLocalInventoryMovement({
       id: `${operationId}:${line.item_id}`,
@@ -912,19 +1023,21 @@ function markLocalBarBatchPending(operationId, mode, lines, outletId = null) {
   }
 }
 
+/** @param {InventoryNormalizedBarBatchLine[]} [lines] @returns {string[]} */
 function queuedBarBatchDependencies(lines = []) {
   // A local cache row can be pending for many reasons. Only declare a
   // predecessor when its actual create operation is present in the queue;
   // otherwise a batch would wait forever on an invented dependency.
   const queuedCreates = new Set(readSyncQueue()
-    .filter((item) => item?.type === 'rpc' && item?.table === 'create_inventory_item')
-    .map((item) => String(item?._queue_id || '').trim())
+    .filter((/** @type {{type?: unknown, table?: unknown, _queue_id?: unknown}|null|undefined} */ item) => item?.type === 'rpc' && item?.table === 'create_inventory_item')
+    .map((/** @type {{_queue_id?: unknown}|null|undefined} */ item) => String(item?._queue_id || '').trim())
     .filter(Boolean))
   return lines
     .map((line) => `inventory-item-${line.item_id}`)
     .filter((dependency) => queuedCreates.has(dependency))
 }
 
+/** @param {{outlet_id?: string|null, operation_id?: string|null, lines?: InventoryBarBatchLineReadView[], notes?: unknown}|undefined} [options] */
 export async function postBarPhysicalCount({ outlet_id: outletId = null, operation_id: operationId = null, lines = [], notes = null } = {}) {
   const stableOperationId = operationId || randomUUID()
   const normalizedLines = normalizeBarStockBatchLines(lines, 'count')
@@ -936,7 +1049,7 @@ export async function postBarPhysicalCount({ outlet_id: outletId = null, operati
     p_notes: notes ? String(notes).trim().slice(0, 300) : null
   }
   if (!state.isOnline) {
-    const cached = readCache('inventory-items') || []
+    const cached = readInventoryItemCacheExpectedData() || []
     const missing = normalizedLines.find((line) => !cached.some((item) => item?.id === line.item_id))
     if (missing) return { success: false, error: 'A counted stock item is not available on this computer. Refresh before counting.' }
     const dependencies = queuedBarBatchDependencies(normalizedLines)
@@ -947,13 +1060,14 @@ export async function postBarPhysicalCount({ outlet_id: outletId = null, operati
     })
     return { success: true, operation_id: stableOperationId, offline: true, queued: true, server_complete: false }
   }
-  const { data: result, error } = await state.supabase.rpc('post_bar_physical_count', payload)
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('post_bar_physical_count', payload)
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not post the physical count.')
   await getInventoryItems().catch(() => {})
   return result
 }
 
+/** @param {{outlet_id?: string|null, operation_id?: string|null, lines?: InventoryBarBatchLineReadView[], notes?: unknown}|undefined} [options] */
 export async function postBarSimpleDelivery({ outlet_id: outletId = null, operation_id: operationId = null, lines = [], notes = null } = {}) {
   const stableOperationId = operationId || randomUUID()
   const normalizedLines = normalizeBarStockBatchLines(lines, 'delivery')
@@ -965,7 +1079,7 @@ export async function postBarSimpleDelivery({ outlet_id: outletId = null, operat
     p_notes: notes ? String(notes).trim().slice(0, 300) : null
   }
   if (!state.isOnline) {
-    const cached = readCache('inventory-items') || []
+    const cached = readInventoryItemCacheExpectedData() || []
     const missing = normalizedLines.find((line) => !cached.some((item) => item?.id === line.item_id))
     if (missing) return { success: false, error: 'A delivery stock item is not available on this computer. Refresh before receiving.' }
     const dependencies = queuedBarBatchDependencies(normalizedLines)
@@ -976,19 +1090,20 @@ export async function postBarSimpleDelivery({ outlet_id: outletId = null, operat
     })
     return { success: true, operation_id: stableOperationId, offline: true, queued: true, server_complete: false }
   }
-  const { data: result, error } = await state.supabase.rpc('post_bar_simple_delivery', payload)
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('post_bar_simple_delivery', payload)
   if (error) throw new Error(error.message)
   if (!result?.success) throw new Error(result?.error || 'Could not receive the delivery.')
   await getInventoryItems().catch(() => {})
   return result
 }
 
+/** @param {unknown} [outletId] @param {number} [limit] */
 export async function getBarStockCountHistory(outletId = null, limit = 200) {
   if (!state.isOnline) {
-    const rows = readInventoryMovementsCache().filter((row) => ['bar_physical_count', 'bar_simple_delivery'].includes(row?.reference_type))
+    const rows = readInventoryMovementsCache().filter((row) => /** @type {unknown[]} */ (['bar_physical_count', 'bar_simple_delivery']).includes(row?.reference_type))
     return { rows: rows.slice(0, Math.max(1, Math.min(500, Number(limit || 200)))), source: 'cache', complete: false }
   }
-  const { data, error } = await state.supabase.rpc('get_bar_stock_count_history', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_bar_stock_count_history', {
     p_lodge_id: state.lodgeId,
     p_outlet_id: outletId || null,
     p_limit: Math.max(1, Math.min(500, Number(limit || 200)))
@@ -1001,25 +1116,27 @@ export async function getBarStockCountHistory(outletId = null, limit = 200) {
   }
 }
 
+/** @param {unknown} barcode @param {unknown} [outletId] */
 export async function findInventoryItemByBarcode(barcode, outletId = null) {
   const value = normalizeBarcode(String(barcode || '').trim())
   if (!value) return null
   if (state.isOnline) {
-    const { data, error } = await state.supabase.from('inventory_items').select(INVENTORY_ITEM_SELECT).eq('lodge_id', state.lodgeId).eq('barcode', value).limit(10)
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('inventory_items').select(INVENTORY_ITEM_SELECT).eq('lodge_id', state.lodgeId).eq('barcode', value).limit(10)
     if (error) throw new Error(error.message)
     const rows = (data || []).filter((item) => !outletId || String(item.outlet_id || '') === String(outletId))
     if (rows.length > 1) throw new Error('This barcode matches more than one stock item. Resolve the duplicate barcode before receiving.')
     return rows[0] || null
   }
-  const rows = (readCache('inventory-items') || []).filter((item) => String(item?.barcode || '') === value && (!outletId || String(item.outlet_id || '') === String(outletId)))
+  const rows = (readInventoryItemCacheExpectedData() || []).filter((item) => String(item?.barcode || '') === value && (!outletId || String(item.outlet_id || '') === String(outletId)))
   if (rows.length > 1) throw new Error('This barcode matches more than one cached stock item.')
   return rows[0] || null
 }
 
+/** @param {InventoryMovementDisplayExpectedData[]} [rows] @returns {InventoryMovementDisplayExpectedData[]} */
 function decorateMovementRows(rows = []) {
-  const itemMap = new Map((readCache('inventory-items') || []).map((item) => [item.id, item]));
+  const itemMap = new Map((readInventoryItemCacheExpectedData() || []).map((item) => [item.id, item]));
   return (rows || []).map((row) => {
-    const item = itemMap.get(row.item_id) || row.inventory_items || {};
+    const item = /** @type {InventoryItemSelectRowExpectedData} */ (itemMap.get(row.item_id) || row.inventory_items || {});
     return {
       ...row,
       item_name: row.item_name || item?.name || 'Inventory item',
@@ -1032,13 +1149,13 @@ function decorateMovementRows(rows = []) {
 
 function buildDerivedInventoryMovements() {
   const rows = [];
-  const inventoryItems = readCache('inventory-items') || [];
+  const inventoryItems = readInventoryItemCacheExpectedData() || [];
   const itemMap = new Map(inventoryItems.map((item) => [item.id, item]));
   const cachedLocalMovements = readInventoryMovementsCache();
 
   rows.push(...cachedLocalMovements);
 
-  for (const purchase of readCache('inventory-purchases') || []) {
+  for (const purchase of readInventoryPurchaseCacheExpectedData() || []) {
     if (!purchase?.item_id) continue;
     rows.push({
       id: `purchase-${purchase.id || purchase.item_id}-${purchase.date || purchase.created_at || ''}`,
@@ -1056,8 +1173,8 @@ function buildDerivedInventoryMovements() {
     });
   }
 
-  const voidsByOrder = new Map((readCache('pos-void-history') || []).map((entry) => [entry.order_id, entry]));
-  for (const order of readCache('pos-orders') || []) {
+  const voidsByOrder = new Map((/** @type {InventoryPosVoidExpectedData[]} */ (readCache('pos-void-history')) || []).map((entry) => [entry.order_id, entry]));
+  for (const order of /** @type {InventoryPosOrderExpectedData[]} */ (readCache('pos-orders') || [])) {
     const orderItems = Array.isArray(order?.pos_order_items) ? order.pos_order_items : Array.isArray(order?.items) ? order.items : [];
     for (const line of orderItems) {
       const inventoryItemId = line?.inventory_item_id || null;
@@ -1114,6 +1231,7 @@ function buildDerivedInventoryMovements() {
   return decorateMovementRows([...unique.values()].sort(movementSort));
 }
 
+/** @param {InventoryMovementsReadFilters} [filters] */
 export async function getInventoryMovements(filters = {}) {
   const itemId = filters?.item_id || filters?.itemId || null;
   const startDate = filters?.start_date || filters?.startDate || null;
@@ -1126,7 +1244,7 @@ export async function getInventoryMovements(filters = {}) {
     try {
       const liveRows = [];
       for (let from = 0; from < maxRows; from += pageSize) {
-        let query = state.supabase.
+        let query = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
         from('inventory_movements').
         select('*, inventory_items(name, unit, category, outlet_id)').
         eq('lodge_id', state.lodgeId).
@@ -1150,8 +1268,8 @@ export async function getInventoryMovements(filters = {}) {
         liveRows.length < maxRows && decoratedRows.every((row) => row.operation_id && row.source_document_type && row.payload_hash && row.valuation_method !== 'unknown_legacy')
       );
     } catch (error) {
-      if (!/inventory_movements|does not exist|schema cache|PGRST/i.test(String(error?.message || error))) {
-        console.warn('[INVENTORY] Movement ledger query failed; using derived history:', error?.message || error);
+      if (!/inventory_movements|does not exist|schema cache|PGRST/i.test(String((/** @type {InventoryPurchaseErrorMessageReadView|null|undefined} */ (error))?.message || error))) {
+        console.warn('[INVENTORY] Movement ledger query failed; using derived history:', (/** @type {InventoryPurchaseErrorMessageReadView|null|undefined} */ (error))?.message || error);
       }
     }
   }
@@ -1182,23 +1300,26 @@ export async function getInventoryMovementsWithReadStatus(filters = {}) {
 }
 
 function readInventoryStocktakeHeaders() {
-  return readCache('inventory-stocktakes');
+  return /** @type {InventoryStocktakeHeaderExpectedData[]} */ (readCache('inventory-stocktakes'));
 }
 
+/** @param {InventoryStocktakeHeaderExpectedData[]} [rows] */
 function writeInventoryStocktakeHeaders(rows = []) {
   writeCache('inventory-stocktakes', rows);
 }
 
 function readInventoryStocktakeLines() {
-  return readCache('inventory-stocktake-lines');
+  return /** @type {InventoryStocktakeLineExpectedData[]} */ (readCache('inventory-stocktake-lines'));
 }
 
+/** @param {InventoryStocktakeLineExpectedData[]} [rows] */
 function writeInventoryStocktakeLines(rows = []) {
   writeCache('inventory-stocktake-lines', rows);
 }
 
+/** @param {unknown} stocktakeId @param {unknown} [outletId] */
 function buildLocalInventoryStocktakeLines(stocktakeId, outletId = null) {
-  return (readCache('inventory-items') || [])
+  return (readInventoryItemCacheExpectedData() || [])
     .filter((item) => item?._deleted_offline !== true)
     .filter((item) => !outletId || item.outlet_id === outletId)
     .map((item) => ({
@@ -1220,10 +1341,11 @@ function buildLocalInventoryStocktakeLines(stocktakeId, outletId = null) {
     }));
 }
 
+/** @param {number} [limit] */
 export async function getInventoryStocktakes(limit = 12) {
   const cached = readInventoryStocktakeHeaders();
   if (!state.isOnline) return cached.slice(0, Number(limit || 12));
-  const { data, error } = await state.supabase.
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('inventory_stocktakes').
   select('*, outlets(name, type)').
   eq('lodge_id', state.lodgeId).
@@ -1239,16 +1361,17 @@ export async function getInventoryStocktakes(limit = 12) {
   return rows;
 }
 
+/** @param {InventoryStocktakeCreateInputReadView} [data] */
 export async function createInventoryStocktakeSession(data = {}) {
   const id = data.id || randomUUID();
-  const payload = {
+  const payload = /** @type {Record<string, unknown>} */ ({
     id,
     lodge_id: state.lodgeId,
     outlet_id: data.outlet_id || null,
     title: data.title || null,
     notes: data.notes || null,
     created_by: state.currentUser?.id || null
-  };
+  });
   if (!state.isOnline) {
     const now = new Date().toISOString();
     const header = {
@@ -1269,12 +1392,13 @@ export async function createInventoryStocktakeSession(data = {}) {
     });
     return { success: true, id, stocktake_id: id, offline: true, queued: true };
   }
-  const { data: result, error } = await state.supabase.rpc('create_inventory_stocktake_session', { payload });
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_inventory_stocktake_session', { payload });
   if (error) throw new Error(error.message);
   if (!result?.success) throw new Error(result?.error || 'Could not start inventory stock take');
   return result;
 }
 
+/** @param {string} stocktakeId */
 export async function getInventoryStocktakeSession(stocktakeId) {
   if (!state.isOnline) {
     const header = readInventoryStocktakeHeaders().find((row) => row?.id === stocktakeId);
@@ -1287,13 +1411,13 @@ export async function getInventoryStocktakeSession(stocktakeId) {
     };
   }
   const [{ data: header, error: headerError }, { data: lines, error: linesError }] = await Promise.all([
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('inventory_stocktakes').
   select('*, outlets(name, type)').
   eq('lodge_id', state.lodgeId).
   eq('id', stocktakeId).
   maybeSingle(),
-  state.supabase.
+  /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
   from('inventory_stocktake_lines').
   select('*, inventory_items(name, category, unit, outlet_id)').
   eq('lodge_id', state.lodgeId).
@@ -1317,11 +1441,12 @@ export async function getInventoryStocktakeSession(stocktakeId) {
   };
 }
 
+/** @param {string} stocktakeId */
 export async function getInventoryStocktakeById(stocktakeId) {
   if (!stocktakeId) return null;
   if (!state.isOnline) return readInventoryStocktakeHeaders().find((row) => row?.id === stocktakeId) || null;
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('inventory_stocktakes').
     select('*').
     eq('id', stocktakeId).
@@ -1334,6 +1459,7 @@ export async function getInventoryStocktakeById(stocktakeId) {
   }
 }
 
+/** @param {string} stocktakeId @param {InventoryStocktakeCountInputReadView[]} lines */
 export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
   const payload = (Array.isArray(lines) ? lines : []).map((line) => ({
     item_id: line.item_id,
@@ -1347,7 +1473,7 @@ export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
     const counts = new Map(payload.map((line) => [line.item_id, line]));
     writeInventoryStocktakeLines(readInventoryStocktakeLines().map((line) => {
       if (line.stocktake_id !== stocktakeId || !counts.has(line.item_id)) return line;
-      const count = counts.get(line.item_id);
+      const count = /** @type {InventoryStocktakeCountInputReadView} */ (counts.get(line.item_id));
       const counted = Number(count.counted_qty || 0);
       return {
         ...line,
@@ -1376,7 +1502,7 @@ export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
     });
     return { success: true, offline: true, queued: true };
   }
-  const { data: result, error } = await state.supabase.rpc('save_inventory_stocktake_counts', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('save_inventory_stocktake_counts', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_lines: payload
@@ -1386,6 +1512,7 @@ export async function saveInventoryStocktakeCounts(stocktakeId, lines) {
   return result;
 }
 
+/** @param {string} stocktakeId @param {string|null} [notes] */
 export async function postInventoryStocktakeSession(stocktakeId, notes) {
   if (!state.isOnline) {
     const headers = readInventoryStocktakeHeaders();
@@ -1394,7 +1521,7 @@ export async function postInventoryStocktakeSession(stocktakeId, notes) {
     const lines = readInventoryStocktakeLines().filter((line) => line?.stocktake_id === stocktakeId);
     const countable = lines.filter((line) => line.counted_qty !== null && line.counted_qty !== undefined);
     const itemCounts = new Map(countable.map((line) => [line.item_id, line]));
-    writeCache('inventory-items', readCache('inventory-items').map((item) => {
+    writeCache('inventory-items', readInventoryItemCacheExpectedData().map((item) => {
       const line = itemCounts.get(item.id);
       if (!line) return item;
       const counted = Number(line.counted_qty || 0);
@@ -1441,7 +1568,7 @@ export async function postInventoryStocktakeSession(stocktakeId, notes) {
     });
     return { success: true, offline: true, queued: true };
   }
-  const { data: result, error } = await state.supabase.rpc('post_inventory_stocktake_session', {
+  const { data: result, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('post_inventory_stocktake_session', {
     p_stocktake_id: stocktakeId,
     p_lodge_id: state.lodgeId,
     p_notes: notes || null
@@ -1452,10 +1579,11 @@ export async function postInventoryStocktakeSession(stocktakeId, notes) {
   return result;
 }
 
+/** @param {string|null} startDate @param {string|null} endDate @param {string} [outletId] */
 export async function getInventorySpend(startDate, endDate, outletId = 'all') {
   if (state.isOnline) {
     try {
-      const { data, error } = await state.supabase.rpc('get_inventory_spend_summary', {
+      const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_inventory_spend_summary', {
         p_lodge_id: state.lodgeId,
         p_start_date: startDate,
         p_end_date: endDate,
@@ -1483,23 +1611,25 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
     }
   }
 
-  const inventoryMap = new Map(readCache('inventory-items').map((item) => [item.id, item]));
-  const cachedPurchases = readCache('inventory-purchases').
-  filter((row) => (!startDate || row.date >= startDate) && (!endDate || row.date <= endDate)).
+  const inventoryMap = new Map(readInventoryItemCacheExpectedData().map((item) => [item.id, item]));
+  const cachedPurchases = readInventoryPurchaseCacheExpectedData().
+  filter((row) => (!startDate || /** @type {string} */ (row.date) >= startDate) && (!endDate || /** @type {string} */ (row.date) <= endDate)).
   map((row) => ({
     ...row,
     inventory_items: inventoryMap.get(row.item_id) ?
     {
-      name: inventoryMap.get(row.item_id).name,
-      category: inventoryMap.get(row.item_id).category,
-      outlet_id: inventoryMap.get(row.item_id).outlet_id || null
+      // Existing cache lookup is the only producer evidence here; these
+      // assertions do not validate the cached row or change missing-key errors.
+      name: /** @type {InventoryItemCacheMutationExpectedData} */ (inventoryMap.get(row.item_id)).name,
+      category: /** @type {InventoryItemCacheMutationExpectedData} */ (inventoryMap.get(row.item_id)).category,
+      outlet_id: /** @type {InventoryItemCacheMutationExpectedData} */ (inventoryMap.get(row.item_id)).outlet_id || null
     } :
     null
   })).
   sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   let purchases = [];
   try {
-    const { data, error } = await state.supabase.
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
     from('inventory_purchases').
     select('*, inventory_items(name, category, outlet_id)').
     eq('lodge_id', state.lodgeId).
@@ -1513,7 +1643,7 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
   } catch (error) {
     purchases = cachedPurchases;
     if (!purchases.length && state.isOnline) {
-      throw new Error(error?.message || 'Failed to load inventory spend report');
+      throw new Error((/** @type {InventoryItemErrorMessageExpectedView|null|undefined} */ (error))?.message || 'Failed to load inventory spend report');
     }
   }
   if (outletId && outletId !== 'all') {
@@ -1523,10 +1653,10 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
     purchases = purchases.filter((p) => p.inventory_items?.outlet_id === outletId);
   }
   const total = purchases.reduce((s, p) => s + Number(p.total_cost || 0), 0);
-  const by_category = {};
+  const by_category = /** @type {Record<string, number>} */ ({});
   for (const p of purchases) {
     const cat = p.inventory_items?.category || 'Uncategorised';
-    by_category[cat] = (by_category[cat] || 0) + Number(p.total_cost || 0);
+    by_category[/** @type {string} */ (cat)] = (by_category[/** @type {string} */ (cat)] || 0) + Number(p.total_cost || 0);
   }
   return {
     total,
@@ -1541,12 +1671,13 @@ export async function getInventorySpend(startDate, endDate, outletId = 'all') {
 }
 
 export async function getLowStockItems() {
-  const rows = await getInventoryItems().catch(() => readCache('inventory-items'));
+  const rows = /** @type {InventoryItemCacheMutationExpectedData[]} */ (await getInventoryItems().catch(() => readInventoryItemCacheExpectedData()));
   return (rows || []).filter(
     (item) => Number(item.reorder_level) > 0 && Number(item.current_stock) <= Number(item.reorder_level)
   );
 }
 
+/** @param {string} id */
 export async function discardDraft(id) {
   const trimmedActiveQueue = removeQueuedInventoryDraft(readSyncQueue(), id);
   if (trimmedActiveQueue.removed) {
@@ -1557,7 +1688,7 @@ export async function discardDraft(id) {
     writeFailedSyncQueue(trimmedFailedQueue.queue);
   }
 
-  const cached = readCache('inventory-items');
+  const cached = readInventoryItemCacheExpectedData();
   writeCache('inventory-items', cached.filter((item) => item.id !== id));
 
   return { success: true };

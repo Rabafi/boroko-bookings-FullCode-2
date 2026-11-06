@@ -5,20 +5,17 @@ import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const modern = readFileSync(path.join(root, 'src/renderer/src/components/hospitality-pos/BarLocalWorkspace.jsx'), 'utf8')
 const legacy = readFileSync(path.join(root, 'legacy-pos/src/renderer/src/screens/BarLocalWorkspace.jsx'), 'utf8')
 const contracts = readFileSync(path.join(root, 'packages/bar-contracts/src/registry.ts'), 'utf8')
 const migration = readFileSync(path.join(root, 'services/bar-local/db/migrations/0046_drawer_cash_count.sql'), 'utf8')
 const databaseTest = readFileSync(path.join(root, 'services/bar-local/tests/db-drawer-movements.test.mjs'), 'utf8')
 const { COMMANDS } = await import(pathToFileURL(path.join(root, 'packages/bar-contracts/dist/index.js')).href)
 
-test('Modern and Legacy expose local physical drawer counts with explicit balance semantics', () => {
-  for (const source of [modern, legacy]) {
-    assert.match(source, /<option value="count">Count till cash<\/option>/)
-    assert.match(source, /Physical cash counted/)
-    assert.match(source, /variance \$\{displayMoney\(result\.result\.variance\)\}/)
-    assert.match(source, /count does not change the drawer balance/)
-  }
+test('Legacy local workspace exposes physical drawer counts with explicit balance semantics', () => {
+  assert.match(legacy, /<option value="count">Count till cash<\/option>/)
+  assert.match(legacy, /Physical cash counted/)
+  assert.match(legacy, /variance \$\{displayMoney\(result\.result\.variance\)\}/)
+  assert.match(legacy, /count does not change the drawer balance/)
 })
 
 test('drawer count contract permits zero while the service snapshots expected cash and preserves replay', () => {

@@ -8,6 +8,8 @@ import { readHealthFaults } from '../syncStore.js';
 
 /** @typedef {{ nodeId: unknown, address: string, httpPort: number, lastSeenAt: string, clockOffsetMs: number, manual: boolean, discoverySource: unknown, sameSubnet: unknown }} MeshPeer */
 /** @typedef {{ name: string, address: string, netmask: string, network: string, broadcast: string, cidr: string | null, private: boolean }} MeshInterface */
+/** @typedef {{ at: string, peerCount: number, importedCount: number, missingCount: number, conflictCount: number, conflictSamples: Array<Record<string, unknown>>, perPeer: Array<Record<string, unknown>> }} MeshQueueRepairStatus */
+/** @typedef {{ at: string, peerCount: number, perPeer: Array<Record<string, unknown>> }} MeshTeamSyncStatus */
 
 export const meshState = {
   enabled: false,
@@ -23,14 +25,14 @@ export const meshState = {
   discoverySocket: /** @type {unknown} */ (null), // UDP Socket
   serverNonceCache: new Set(), // Received nonces (HMAC replay protection)
   lastQueueMergeAt: /** @type {Date | null} */ (null),
-  lastQueueRepair: null,
+  lastQueueRepair: /** @type {MeshQueueRepairStatus | null} */ (null),
   localInterfaces: /** @type {MeshInterface[]} */ ([]),
   discoveryTargets: /** @type {string[]} */ ([]),
   lastBeaconAt: /** @type {string | null} */ (null),
   lastPeerSeenAt: /** @type {string | null} */ (null),
   lastDiscoveryError: /** @type {string | null} */ (null)
 };
-/** @type {typeof meshState & { lastTeamSync?: unknown }} */
+/** The key is added only after an actual sync; this finite view does not add it to the initial state object. @type {typeof meshState & { lastTeamSync?: MeshTeamSyncStatus | null }} */
 const meshStateWithTeamSync = meshState;
 
 const REMEMBERED_PEERS_FILE = 'mesh-peers.json';

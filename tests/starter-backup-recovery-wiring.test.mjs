@@ -102,10 +102,10 @@ test('automation IPC always derives lodge scope from the active session', () => 
 
   const configure = handlerBlock(main, 'backup:automationConfigure')
   assert.match(configure, /stripRendererLodgeScope\(payload\)/)
-  assert.match(configure, /\.\.\.stripRendererLodgeScope\(payload\),\s*lodge_id:\s*lodgeId/)
+  assert.match(configure, /\.\.\.stripRendererLodgeScope\(payload\),\s*lodge_id:\s*(?:lodgeId|\/\*\* @type \{BackupAutomationLodgeScopeExpectedView\} \*\/ \(lodgeId\))/)
   const runNow = handlerBlock(main, 'backup:automationRunNow')
   assert.match(runNow, /stripRendererLodgeScope\(payload\)/)
-  assert.match(runNow, /\.\.\.stripRendererLodgeScope\(payload\),\s*lodgeId/)
+  assert.match(runNow, /\.\.\.stripRendererLodgeScope\(payload\),\s*lodgeId:\s*(?:lodgeId|\/\*\* @type \{BackupAutomationLodgeScopeExpectedView\} \*\/ \(lodgeId\))/)
 })
 
 test('recovery operation responses are scrubbed before crossing IPC and verification is awaited', () => {

@@ -4,11 +4,15 @@ import { CalendarDays, Hotel, Users, Tag, CheckCircle2, Clock, CreditCard } from
 import { rpc } from '../lib/publicApi.js'
 import { useGuestPortal } from './GuestPortalSession.jsx'
 
+/** Expected RPC response emitted by `get_guest_portal_booking_details`; this is a local view, not runtime validation. */
+/** @typedef {{booking_id: string|null, booking_reference: string|null, check_in: string|null, check_out: string|null, room_type: string|null, room_number: string|null, status: string|null, total_amount: number|string|null, amount_paid: number|string|null, balance: number|string|null}} GuestBookingViewData */
+/** @typedef {{success?: boolean, error?: string|null, booking?: GuestBookingViewData|null}} GuestBookingResponse */
+
 export default function GuestBookingView() {
   const { token } = useGuestPortal()
-  const [booking, setBooking] = useState(null)
+  const [booking, setBooking] = useState(/** @type {GuestBookingViewData|null} */ (null))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(/** @type {string|null} */ (null))
 
   useEffect(() => {
     let cancelled = false
@@ -19,10 +23,12 @@ export default function GuestBookingView() {
         const { data, error: rpcErr } = await rpc('get_guest_portal_booking_details', { p_token: token })
         if (cancelled) return
         if (rpcErr) { setError(rpcErr.message); return }
-        if (!data || data.success === false) { setError(data?.error || 'Could not load booking.'); return }
-        setBooking(data.booking)
+        // SQL defines this shape; the API JSON remains unvalidated at runtime.
+        const response = /** @type {GuestBookingResponse|null} */ (data)
+        if (!response || response.success === false) { setError(response?.error || 'Could not load booking.'); return }
+        setBooking(response.booking)
       } catch (e) {
-        if (!cancelled) setError(e.message || 'Network error.')
+        if (!cancelled) setError((/** @type {Error} */ (e)).message || 'Network error.')
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -58,6 +64,7 @@ export default function GuestBookingView() {
     )
   }
 
+  /** @type {Record<string, string>} */
   const statusColors = {
     confirmed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     pending: 'bg-amber-50 text-amber-700 border-amber-200',

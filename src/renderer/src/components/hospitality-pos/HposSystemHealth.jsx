@@ -30,8 +30,39 @@ import {
   HposStatusBadge,
 } from './HposUi';
 
-/** Expected UI projection only; the assertion does not validate persisted row content. Selected leaves remain unknown. */
-/** @typedef {Record<string, unknown> & {_queue_id?: unknown, id?: unknown, action?: unknown, event_type?: unknown, type?: unknown, scope?: unknown, operation?: unknown, severity?: unknown, level?: unknown}} PosHealthRowProjection */
+/** Expected UI projection only; assertions at the existing array boundaries do not validate persisted row content. */
+/** @typedef {Record<string, unknown> & {_queue_id?: string | number | null, id?: string | number | null, action?: string | null, event_type?: string | null, type?: string | null, scope?: string | null, operation?: string | null, severity?: string | null, level?: string | null, created_at?: string | number | null, timestamp?: string | number | null, detected_at?: string | number | null, message?: string | null, error?: string | null, description?: string | null, entity_type?: string | null, entity_id?: string | number | null, details?: {reason?: string | null, message?: string | null} | null, isFinancial?: boolean, table?: string | null, displayError?: string | null, lastError?: string | null, dependencyLabel?: string | null, order_id?: string | number | null, reason?: string | null, _sync_error?: string | null, _sync_state?: string | null}} PosHealthRowProjection */
+/** @typedef {PosHealthRowProjection & {_audit_source?: string}} HposAuditRowExpected */
+/** Failed/pending queue rows are persisted data; this view describes fields read by the existing queue panel only. */
+/** @typedef {PosHealthRowProjection & {_queue_id?: string | number | null, id?: string | number | null, table?: string | null, type?: string | null, displayError?: string | null, lastError?: string | null, isFinancial?: boolean, dependencyLabel?: string | null}} HposQueueRowExpected */
+/** The details handler constructs aggregate fields or its queue-array fallback; neither path validates queue row contents. */
+/** @typedef {Omit<Partial<import('../../../../shared/desktopIpcContracts.js').SyncDetailsSnapshot>, 'pending'|'failed'> & {pending?: HposQueueRowExpected[], failed?: HposQueueRowExpected[]}} HposSyncDetailsExpected */
+/** Main POS event sends construct this payload; the renderer event boundary remains unvalidated. */
+/** @typedef {{subject?: string}} HposMeshConflictEventExpected */
+/** The hardware adapter and main handler return these result variants; this view does not validate the IPC value. */
+/** @typedef {{success: true, message?: string, verified?: boolean} | {success: false, error: string, message?: string, manual?: boolean}} HposHardwareTestResultExpected */
+/** The open-display handler returns its constructed window result or a message failure envelope. */
+/** @typedef {{success: true, kind: string, fullScreen: boolean, restored: boolean, displayId: string | null} | {success: false, error: string}} HposOpenDisplayResultExpected */
+/** @typedef {{success: true, resolved?: string, disposition?: string} | {success: false, error: string}} HposDiscardVoidResultExpected */
+/** @typedef {{success: true, subnet: string, port: number, found: Array<{host: string, port: number}>, message: string} | {success: false, error: string}} HposNetworkPrinterScanResultExpected */
+/** Caught values and their message fields stay unvalidated. The following string view records the usual Error.message plus fallback contract; a malformed truthy non-string message still passes through unchanged. */
+/** @typedef {{message?: unknown} | null | undefined} HposThrownMessageReadView */
+/** The local decoder returns these literal outcome variants; this view records its implementation contract without changing or validating runtime data. */
+/** @typedef {import('../../../../shared/barcodeScanner.js').BarcodeScanFailure | import('../../../../shared/barcodeScanner.js').BarcodeScanSuccess} BarcodeDecoderOutcomeResultExpected */
+/** @typedef {import('../../../../shared/barcodeScanner.js').BarcodeScanFailure & {error?: unknown}} BarcodeFailureLegacyMessageReadExpected */
+/** @typedef {{type: 'ignored'} | {type: 'completed', result: BarcodeDecoderOutcomeResultExpected}} BarcodeDecoderFlushOutcomeExpected */
+/** @typedef {BarcodeDecoderFlushOutcomeExpected | {type: 'buffered', length: number, barcode: string}} BarcodeDecoderKeyOutcomeExpected */
+/** Main mesh IPC handlers attach a snapshot to both success and error results. The snapshot and transport value remain unvalidated here. */
+/** Expected mesh IPC response: handlers forward Error.message on failure; no runtime validation is added, and the mesh snapshot remains unknown. @typedef {{success: true, mesh: unknown} | {success: false, error: string, mesh: unknown}} HposMeshActionResultExpected */
+/** The staff access audit RPC projects timestamped row objects; IPC leaves remain unvalidated. */
+/** @typedef {Record<string, unknown> & {created_at: unknown}} HposStaffAccessAuditEntryExpected */
+/** @typedef {{success: true, entries: HposStaffAccessAuditEntryExpected[]} | {success: false, error: string, entries: HposStaffAccessAuditEntryExpected[]}} HposAccessAuditResultExpected */
+/** Retry and clear IPC producers construct these success records or return the existing IPC failure envelope; assertions here do not validate transported data. */
+/** @typedef {import('../../types/desktop-api').SyncRetryResult} HposSyncRetryResultExpected */
+/** @typedef {import('../../types/desktop-api').SyncClearFailedResult} HposSyncClearFailedResultExpected */
+/** The main listPosSystemDisplays producer returns these fields; the renderer's Array.isArray check does not validate IPC row contents. */
+/** @typedef {{id: string, label: string, isPrimary: boolean, bounds: {width: number, height: number}}} HposDisplayExpectedData */
+/** @typedef {'customer' | 'kitchen' | 'bar'} HposDisplayKind */
 /** @param {unknown} row */
 const queueId = (row) => /** @type {PosHealthRowProjection | null | undefined} */ (row)?._queue_id || /** @type {PosHealthRowProjection | null | undefined} */ (row)?.id || null;
 /** @param {unknown} row */
@@ -77,13 +108,14 @@ export default function HposSystemHealth() {
   // The component intentionally replaces a failed read with {} before storing it.
   const [status, setStatus] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot> | null} */ (null));
   // Failed IPC reads become {}; summary fields remain partial and queue rows unknown.
-  const [details, setDetails] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').SyncDetailsSnapshot> | null} */ (null));
+  const [details, setDetails] = useState(/** @type {HposSyncDetailsExpected | null} */ (null));
   // The IPC producer constructs the settings projection, while this component
   // also keeps an empty local fallback and applies partial UI edits.
   const [hardware, setHardware] = useState(/** @type {Partial<import('../../../../shared/desktopIpcContracts.js').PosHardwareSettings>} */ ({}));
   // Existing Array.isArray checks establish only the outer container.
-  const [displays, setDisplays] = useState(/** @type {unknown[]} */ ([]));
-  const [audit, setAudit] = useState(/** @type {unknown[]} */ ([]));
+  // Main constructs display rows, but this expected view does not validate IPC data.
+  const [displays, setDisplays] = useState(/** @type {HposDisplayExpectedData[]} */ ([]));
+  const [audit, setAudit] = useState(/** @type {HposAuditRowExpected[]} */ ([]));
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState('');
@@ -91,10 +123,12 @@ export default function HposSystemHealth() {
   const [scannerVerifying, setScannerVerifying] = useState(false);
   const [scannerCaptureCount, setScannerCaptureCount] = useState(0);
   const [pendingScannerVerification, setPendingScannerVerification] = useState(/** @type {import('../../../../shared/barcodeScanner.js').BarcodeScanSuccess | null} */ (null));
-  const [criticalErrors, setCriticalErrors] = useState(/** @type {unknown[]} */ ([]));
-  const [unsyncedVoids, setUnsyncedVoids] = useState(/** @type {unknown[]} */ ([]));
-  const [rendererErrors, setRendererErrors] = useState(/** @type {unknown[]} */ ([]));
-  const [printers, setPrinters] = useState(/** @type {unknown[]} */ ([]));
+  const [criticalErrors, setCriticalErrors] = useState(/** @type {PosHealthRowProjection[]} */ ([]));
+  const [unsyncedVoids, setUnsyncedVoids] = useState(/** @type {PosHealthRowProjection[]} */ ([]));
+  const [rendererErrors, setRendererErrors] = useState(/** @type {PosHealthRowProjection[]} */ ([]));
+  // Electron's getPrintersAsync supplies printer names; the IPC array check
+  // below does not validate individual values.
+  const [printers, setPrinters] = useState(/** @type {Array<{name: string}>} */ ([]));
   const [showAdvancedScanner, setShowAdvancedScanner] = useState(false);
   const [displayFullScreen, setDisplayFullScreen] = useState(true);
   const [testingAll, setTestingAll] = useState(false);
@@ -111,7 +145,10 @@ export default function HposSystemHealth() {
   const [peerPort, setPeerPort] = useState('');
   const canCashup = canAccessCapability(access, 'pos.cashup');
   const dailyChecksKey = `hpos-daily-checks:${new Date().toLocaleDateString('en-CA')}`;
-  const [dailyChecks, setDailyChecks] = useState(/** @type {() => unknown} */ (() => {
+  // The current screen writes these fields; the object check does not validate
+  // values loaded from localStorage or change malformed-data behavior.
+  /** @typedef {{open?: Record<string, boolean> | null, close?: Record<string, boolean> | null, cardMachineTotal?: string | null, tillCardTotal?: string | null}} HposDailyChecksExpectedData */
+  const [dailyChecks, setDailyChecks] = useState(/** @type {() => HposDailyChecksExpectedData} */ (() => {
     try {
       const raw = window.localStorage?.getItem(`hpos-daily-checks:${new Date().toLocaleDateString('en-CA')}`);
       const parsed = raw ? JSON.parse(raw) : null;
@@ -126,7 +163,10 @@ export default function HposSystemHealth() {
     setScannerCaptureCount(0);
     if (!result?.success) {
       setPendingScannerVerification(null);
-      setError(result?.error || `Barcode scan failed: ${result?.code || 'invalid_scan'}.`);
+      // The pre-migration expression read result?.error || the code fallback.
+      // The shared decoder currently emits code-only failures; this expected
+      // view preserves any legacy extra error value without validating it.
+      setError(/** @type {string} */ ((/** @type {BarcodeFailureLegacyMessageReadExpected} */ (result))?.error || `Barcode scan failed: ${result?.code || 'invalid_scan'}.`));
       return;
     }
     setPendingScannerVerification(result);
@@ -137,20 +177,21 @@ export default function HposSystemHealth() {
     const result = pendingScannerVerification;
     if (!result?.success) return;
     try {
-      const saved = await window.api?.pos?.verifyBarcodeScanner?.({
+      const saved = /** @type {import('../../../../shared/desktopIpcContracts.js').BarcodeScannerVerificationResult | undefined} */ (await window.api?.pos?.verifyBarcodeScanner?.({
         barcode: result.barcode,
         terminator: result.terminator,
         characterCount: result.characterCount,
         averageInterKeyMs: result.averageInterKeyMs,
-      });
-      if (saved?.success === false) throw new Error(saved.error || 'Scanner verification failed.');
+      }));
+      // Error keeps its original coercion here; the expected string view does not validate the IPC failure value.
+      if (saved?.success === false) throw new Error(/** @type {string} */ (saved.error || 'Scanner verification failed.'));
       if (saved?.settings) setHardware(saved.settings);
       playScanBeep(true);
       setNotice(`Scanner input verified (${result.characterCount} characters, ${result.terminator || 'idle'} terminator).${scanProductName ? ` This barcode belongs to: ${scanProductName}.` : ''}`);
       setPendingScannerVerification(null);
     } catch (verificationError) {
       playScanBeep(false);
-      setError(verificationError?.message || 'Scanner verification failed.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (verificationError))?.message || 'Scanner verification failed.'));
     }
   }, [pendingScannerVerification, scanProductName]);
 
@@ -188,13 +229,14 @@ export default function HposSystemHealth() {
       acceptTab: hardware.barcode_scanner_accept_tab !== false,
     });
     const finishIdle = () => {
-      const outcome = decoder.flush('idle');
+      const outcome = /** @type {BarcodeDecoderFlushOutcomeExpected} */ (decoder.flush('idle'));
       if (outcome.type === 'completed') scannerVerification(outcome.result);
     };
+    /** @param {KeyboardEvent} event */
     const onKeyDown = (event) => {
       const key = String(event.key || '');
       if (!(key.length === 1 || key === 'Enter' || key === 'NumpadEnter' || key === 'Tab')) return;
-      const outcome = decoder.consumeKey(event);
+      const outcome = /** @type {BarcodeDecoderKeyOutcomeExpected} */ (decoder.consumeKey(event));
       if (outcome.type === 'buffered' || outcome.type === 'completed') event.preventDefault();
       if (idleTimer) window.clearTimeout(idleTimer);
       if (outcome.type === 'buffered') {
@@ -228,28 +270,28 @@ export default function HposSystemHealth() {
         window.api?.pos?.getVoidHistory?.('', '').catch(() => []) || Promise.resolve([]),
         window.api?.receipts?.listPrinters?.().catch(() => []) || Promise.resolve([]),
       ]);
-      setStatus(results[0].status === 'fulfilled' ? results[0].value || {} : {});
-      setDetails(results[1].status === 'fulfilled' ? results[1].value || {} : {});
-      setHardware(results[2].status === 'fulfilled' ? results[2].value || {} : {});
-      setDisplays(results[3].status === 'fulfilled' && Array.isArray(results[3].value) ? results[3].value : []);
+      setStatus(results[0].status === 'fulfilled' ? /** @type {Partial<import('../../../../shared/desktopIpcContracts.js').FullSyncStatusSnapshot>} */ (results[0].value || {}) : {});
+      setDetails(results[1].status === 'fulfilled' ? /** @type {HposSyncDetailsExpected} */ (results[1].value || {}) : {});
+      setHardware(results[2].status === 'fulfilled' ? /** @type {Partial<import('../../../../shared/desktopIpcContracts.js').PosHardwareSettings>} */ (results[2].value || {}) : {});
+      setDisplays(results[3].status === 'fulfilled' && Array.isArray(results[3].value) ? /** @type {HposDisplayExpectedData[]} */ (results[3].value) : []);
       const posAudit = results[4].status === 'fulfilled' && Array.isArray(results[4].value) ? results[4].value : [];
-      const accessAudit = results[5].status === 'fulfilled' && results[5].value?.success !== false && Array.isArray(results[5].value?.entries)
-        ? results[5].value.entries.map((entry) => ({ ...entry, _audit_source: 'staff access' }))
+      const accessAudit = results[5].status === 'fulfilled' && /** @type {HposAccessAuditResultExpected} */ (results[5].value)?.success !== false && Array.isArray(/** @type {HposAccessAuditResultExpected} */ (results[5].value)?.entries)
+        ? /** @type {HposAccessAuditResultExpected} */ (results[5].value).entries.map((entry) => ({ ...entry, _audit_source: 'staff access' }))
         : [];
-      setAudit([...posAudit, ...accessAudit]
+      setAudit([.../** @type {HposAuditRowExpected[]} */ (posAudit), .../** @type {HposAuditRowExpected[]} */ (accessAudit)]
         .sort((a, b) => new Date(b.created_at || b.timestamp || 0) - new Date(a.created_at || a.timestamp || 0))
         .slice(0, 150));
-      setCriticalErrors(results[6].status === 'fulfilled' && Array.isArray(results[6].value) ? results[6].value : []);
-      setRendererErrors(results[7].status === 'fulfilled' && Array.isArray(results[7].value) ? results[7].value : []);
-      const voidRows = results[8].status === 'fulfilled' && Array.isArray(results[8].value) ? results[8].value : [];
+      setCriticalErrors(results[6].status === 'fulfilled' && Array.isArray(results[6].value) ? /** @type {PosHealthRowProjection[]} */ (results[6].value) : []);
+      setRendererErrors(results[7].status === 'fulfilled' && Array.isArray(results[7].value) ? /** @type {PosHealthRowProjection[]} */ (results[7].value) : []);
+      const voidRows = results[8].status === 'fulfilled' && Array.isArray(results[8].value) ? /** @type {PosHealthRowProjection[]} */ (results[8].value) : [];
       setUnsyncedVoids(voidRows.filter((row) => row?._pending_sync === true
         || ['pending', 'failed', 'manual_review_required'].includes(String(row?._sync_state || ''))));
-      setPrinters(results[9]?.status === 'fulfilled' && Array.isArray(results[9].value) ? results[9].value : []);
+      setPrinters(results[9]?.status === 'fulfilled' && Array.isArray(results[9].value) ? /** @type {Array<{name: string}>} */ (results[9].value) : []);
       if (results[0].status === 'rejected' && results[1].status === 'rejected') {
         throw new Error('System status could not be loaded.');
       }
     } catch (loadError) {
-      setError(loadError?.message || 'System status could not be loaded.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (loadError))?.message || 'System status could not be loaded.'));
     } finally {
       setLoading(false);
     }
@@ -264,25 +306,27 @@ export default function HposSystemHealth() {
     }
   }, []);
 
+  /** @param {'refresh'|'connect'} action */
   const meshAction = async (action) => {
     setMeshBusy(true);
     setNotice('');
     setError('');
     try {
+      /** @type {HposMeshActionResultExpected | null | undefined} */
       let result = null;
-      if (action === 'refresh') result = await window.api?.mesh?.refreshDiscovery?.();
+      if (action === 'refresh') result = /** @type {HposMeshActionResultExpected | undefined} */ (await window.api?.mesh?.refreshDiscovery?.());
       if (action === 'connect') {
         const address = String(peerAddress || '').trim();
         if (!address) throw new Error('Type the other till’s address first (for example 192.168.1.20).');
         const port = Number(peerPort) > 0 ? Number(peerPort) : null;
-        result = await window.api?.mesh?.connectManualPeer?.(address, port);
+        result = /** @type {HposMeshActionResultExpected | undefined} */ (await window.api?.mesh?.connectManualPeer?.(address, port));
         if (result?.success === false) throw new Error(result.error || 'The other till did not answer.');
       }
       if (result?.mesh) setMesh(result.mesh);
       else await loadMesh();
       setNotice(action === 'refresh' ? 'Looking for nearby tills…' : 'Connection attempt sent — the till appears below when it answers.');
     } catch (meshError) {
-      setError(meshError?.message || 'The mesh action failed.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (meshError))?.message || 'The mesh action failed.'));
     } finally {
       setMeshBusy(false);
     }
@@ -296,7 +340,7 @@ export default function HposSystemHealth() {
       if (next?.mesh && typeof next.mesh === 'object') setMesh(next.mesh);
     });
     const offConflict = window.api?.mesh?.onConflictDetected?.((payload) => {
-      setError(`The two tills disagree on ${payload?.subject || 'a record'} — a manager should review it in Open tabs or System Health before retrying.`);
+      setError(`The two tills disagree on ${(/** @type {HposMeshConflictEventExpected} */ (payload))?.subject || 'a record'} — a manager should review it in Open tabs or System Health before retrying.`);
     });
     return () => { off?.(); offConflict?.(); };
   }, [load, loadMesh]);
@@ -311,29 +355,31 @@ export default function HposSystemHealth() {
       setNotice('Sync check completed.');
       await load();
     } catch (runError) {
-      setError(runError?.message || 'Sync could not run.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (runError))?.message || 'Sync could not run.'));
     } finally {
       setRunning(false);
     }
   };
 
+  /** @param {HposQueueRowExpected | null} [row] The existing empty argument retries all; a selected row carries its original queue ID. */
   const retryFailed = async (row = null) => {
     setRunning(true);
     setNotice('');
     setError('');
     try {
       const ids = row ? [queueId(row)].filter(Boolean) : (details?.failed || []).map(queueId).filter(Boolean);
-      const result = await window.api?.sync?.retryFailed?.(ids);
-      if (result?.success === false) throw new Error(result.error || 'Retry could not be queued.');
+      const result = /** @type {HposSyncRetryResultExpected | undefined} */ (await window.api?.sync?.retryFailed?.(ids));
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || 'Retry could not be queued.'));
       setNotice(`${Number(result?.retried ?? ids.length)} failed operation${Number(result?.retried ?? ids.length) === 1 ? '' : 's'} returned to the existing sync queue.`);
       await load();
     } catch (retryError) {
-      setError(retryError?.message || 'Failed operations could not be retried.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (retryError))?.message || 'Failed operations could not be retried.'));
     } finally {
       setRunning(false);
     }
   };
 
+  /** @param {HposQueueRowExpected | null} [row] The existing empty argument clears all; a selected row carries its original queue ID. */
   const clearFailedItems = async (row = null) => {
     setRunning(true);
     setNotice('');
@@ -348,13 +394,13 @@ export default function HposSystemHealth() {
       }
       const ids = rows.map(queueId).filter(Boolean);
       if (row && ids.length === 0) throw new Error('This failed operation has no reference to clear.');
-      const result = await window.api?.sync?.clearFailed?.(row ? ids : undefined);
-      if (result?.success === false) throw new Error(result.error || 'Failed operations could not be cleared.');
+      const result = /** @type {HposSyncClearFailedResultExpected | undefined} */ (await window.api?.sync?.clearFailed?.(row ? ids : undefined));
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error || 'Failed operations could not be cleared.'));
       const removed = Number(result?.removed ?? ids.length ?? 0);
       setNotice(`${removed} cleared operation${removed === 1 ? '' : 's'} recorded for manager review on this computer.`);
       await load();
     } catch (clearError) {
-      setError(clearError?.message || 'Failed operations could not be cleared.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (clearError))?.message || 'Failed operations could not be cleared.'));
     } finally {
       setRunning(false);
     }
@@ -372,14 +418,14 @@ export default function HposSystemHealth() {
         `Discard the unconfirmed void record for order ${orderShort} (${row?.reason || 'no reason recorded'})? The server is checked first — a confirmed void is never discarded. Discarding keeps the server state as-is and records the decision for manager review. Discard anyway?`,
       );
       if (!okToDiscard) return;
-      const result = await window.api?.pos?.discardLocalVoidRecord?.(overrideId);
+      const result = /** @type {HposDiscardVoidResultExpected | undefined} */ (await window.api?.pos?.discardLocalVoidRecord?.(overrideId));
       if (!result?.success) throw new Error(result?.error || 'Void record could not be discarded.');
       setNotice(result?.resolved === 'synced'
         ? 'The server already recorded that void — marked confirmed.'
         : `Void record discarded (${result?.disposition || 'reviewed'}). Recorded for manager review on this computer.`);
       await load();
     } catch (discardError) {
-      setError(discardError?.message || 'Void record could not be discarded.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (discardError))?.message || 'Void record could not be discarded.'));
     } finally {
       setRunning(false);
     }
@@ -390,13 +436,13 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.reports?.clearCriticalErrors?.();
+      const result = /** @type {{success?: boolean, error?: string} | undefined} */ (await window.api?.reports?.clearCriticalErrors?.());
       if (result?.success === false) throw new Error(result.error || 'Saved app issues could not be cleared.');
       setCriticalErrors([]);
       setNotice('Saved app issues cleared on this computer.');
       window.dispatchEvent(new Event('saved-app-issues-cleared'));
     } catch (clearError) {
-      setError(clearError?.message || 'Saved app issues could not be cleared.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (clearError))?.message || 'Saved app issues could not be cleared.'));
     } finally {
       setRunning(false);
     }
@@ -407,13 +453,13 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.pos?.saveHardwareSettings?.(next);
+      const result = /** @type {{success?: boolean, error?: string, settings?: import('../../../../shared/desktopIpcContracts.js').PosHardwareSettings} | undefined} */ (await window.api?.pos?.saveHardwareSettings?.(next));
       if (result?.success === false) throw new Error(result.error || 'Device settings could not be saved.');
       if (result?.settings) setHardware(result.settings);
       else setHardware(next);
       setNotice(successMessage);
     } catch (saveError) {
-      setError(saveError?.message || 'Device settings could not be saved.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (saveError))?.message || 'Device settings could not be saved.'));
     } finally {
       setRunning(false);
     }
@@ -421,12 +467,14 @@ export default function HposSystemHealth() {
 
   const saveHardware = async () => saveHardwareWith(hardware);
 
+  /** @param {HposDisplayKind} kind */
   const pinFieldForKind = (kind) => kind === 'bar'
     ? 'display_bar_display_id'
     : kind === 'kitchen'
       ? 'display_kitchen_display_id'
       : 'display_customer_display_id';
 
+  /** @param {HposDisplayKind} kind @param {string} displayId @param {string | undefined} displayLabel */
   const pinDisplay = async (kind, displayId, displayLabel) => {
     const field = pinFieldForKind(kind);
     const name = kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar board' : 'Kitchen board';
@@ -446,7 +494,7 @@ export default function HposSystemHealth() {
   const reopenPinnedDisplays = async () => {
     setNotice('');
     setError('');
-    const kinds = barOnly ? ['customer', 'bar'] : ['customer', 'kitchen', 'bar'];
+    const kinds = /** @type {HposDisplayKind[]} */ (barOnly ? ['customer', 'bar'] : ['customer', 'kitchen', 'bar']);
     const pinned = kinds.filter((kind) => hardware[pinFieldForKind(kind)]);
     if (pinned.length === 0) {
       setError('No display is pinned yet. Pin each screen below first.');
@@ -456,12 +504,12 @@ export default function HposSystemHealth() {
     try {
       for (const kind of pinned) {
         const displayId = hardware[pinFieldForKind(kind)];
-        const result = await window.api?.pos?.openDisplay?.(kind, { displayId, fullScreen: displayFullScreen });
+        const result = /** @type {HposOpenDisplayResultExpected | undefined} */ (await window.api?.pos?.openDisplay?.(kind, { displayId, fullScreen: displayFullScreen }));
         if (result?.success === false) throw new Error(result.error || `${kind} display could not be opened.`);
       }
       setNotice(`Reopened ${pinned.length} pinned display${pinned.length === 1 ? '' : 's'} on ${pinned.length === 1 ? 'its' : 'their'} pinned screen${displayFullScreen ? ' full screen' : ''}.`);
     } catch (reopenError) {
-      setError(reopenError?.message || 'Pinned displays could not be reopened.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (reopenError))?.message || 'Pinned displays could not be reopened.'));
     } finally {
       setRunning(false);
     }
@@ -472,7 +520,7 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await Promise.resolve(window.api?.pos?.testHardware?.(kind)).catch(() => null);
+      const result = /** @type {HposHardwareTestResultExpected | null | undefined} */ (await Promise.resolve(window.api?.pos?.testHardware?.(kind)).catch(() => null));
       if (!result) throw new Error('Device test is unavailable in this app build.');
       // Manual card mode is not a failure: nothing to test, machine as usual.
       if (result?.success === false && result?.manual === true) {
@@ -482,21 +530,22 @@ export default function HposSystemHealth() {
       if (result?.success === false) throw new Error(result.error || result.message || 'Device test failed.');
       setNotice(result?.message || `${kind.replaceAll('-', ' ')} test completed.`);
     } catch (testError) {
-      setError(testError?.message || 'Device test failed.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (testError))?.message || 'Device test failed.'));
     } finally {
       setRunning(false);
     }
   };
 
+  /** @param {HposDisplayKind} kind @param {string} displayId @param {boolean} [fullScreen] */
   const openDisplay = async (kind, displayId, fullScreen = true) => {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.pos?.openDisplay?.(kind, { displayId, fullScreen });
+      const result = /** @type {HposOpenDisplayResultExpected | undefined} */ (await window.api?.pos?.openDisplay?.(kind, { displayId, fullScreen }));
       if (result?.success === false) throw new Error(result.error || 'Display could not be opened.');
       setNotice(`${kind === 'customer' ? 'Customer' : kind === 'bar' ? 'Bar' : 'Kitchen'} display opened${fullScreen ? ' full screen' : ''}.`);
     } catch (displayError) {
-      setError(displayError?.message || 'Display could not be opened.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (displayError))?.message || 'Display could not be opened.'));
     }
   };
 
@@ -505,11 +554,11 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.pos?.testHardware?.('drawer');
+      const result = /** @type {HposHardwareTestResultExpected | undefined} */ (await window.api?.pos?.testHardware?.('drawer'));
       if (result?.success === false) throw new Error(result.error || result.message || 'Cash drawer test failed.');
       setNotice(result?.message || 'Cash drawer test completed.');
     } catch (drawerError) {
-      setError(drawerError?.message || 'Cash drawer test failed.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (drawerError))?.message || 'Cash drawer test failed.'));
     } finally {
       setRunning(false);
     }
@@ -522,19 +571,19 @@ export default function HposSystemHealth() {
     setError('');
     const outcomes = [];
     try {
-      const receipt = await Promise.resolve(window.api?.pos?.testHardware?.('receipt')).catch(() => null);
+      const receipt = /** @type {HposHardwareTestResultExpected | null | undefined} */ (await Promise.resolve(window.api?.pos?.testHardware?.('receipt')).catch(() => null));
       outcomes.push(receipt?.success === false
         ? `Receipt: ${receipt?.error || 'failed'}`
         : receipt?.verified === false
           ? `Receipt: set up, not proven — use Test receipt to print a real page (${receipt?.message || 'Windows printer mode'})`
           : `Receipt: ${receipt?.message || 'ok'}`);
       if (hardware.cash_drawer_enabled === true && hardware.cash_drawer_manual !== true) {
-        const drawer = await Promise.resolve(window.api?.pos?.testHardware?.('drawer')).catch(() => null);
+        const drawer = /** @type {HposHardwareTestResultExpected | null | undefined} */ (await Promise.resolve(window.api?.pos?.testHardware?.('drawer')).catch(() => null));
         outcomes.push(`Drawer: ${drawer?.success === false ? drawer?.error || 'failed' : drawer?.message || 'ok'}`);
       } else {
         outcomes.push(hardware.cash_drawer_manual === true ? 'Drawer: manual drawer — no kick test' : 'Drawer: skipped (not enabled)');
       }
-      const terminal = await Promise.resolve(window.api?.pos?.testHardware?.('payment-terminal')).catch(() => null);
+      const terminal = /** @type {HposHardwareTestResultExpected | null | undefined} */ (await Promise.resolve(window.api?.pos?.testHardware?.('payment-terminal')).catch(() => null));
       outcomes.push(terminal?.success === false && terminal?.manual === true
         ? `Card terminal: manual mode — nothing to test (${terminal?.error || 'charge on the machine as usual'})`
         : `Card terminal: ${terminal?.success === false ? terminal?.error || 'failed' : terminal?.message || 'ok'}`);
@@ -550,7 +599,7 @@ export default function HposSystemHealth() {
       else setNotice(outcomes.join(' · '));
       await load();
     } catch (testAllError) {
-      setError(testAllError?.message || outcomes.join(' · ') || 'Device tests could not run.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (testAllError))?.message || outcomes.join(' · ') || 'Device tests could not run.'));
     } finally {
       setTestingAll(false);
       setRunning(false);
@@ -572,13 +621,13 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.pos?.scanNetworkPrinters?.();
+      const result = /** @type {HposNetworkPrinterScanResultExpected | undefined} */ (await window.api?.pos?.scanNetworkPrinters?.());
       if (result?.success === false) throw new Error(result.error || 'Network printer scan failed.');
       setScanResults(result?.found || []);
       setNotice(result?.message || 'Network scan finished.');
     } catch (scanError) {
       setScanResults([]);
-      setError(scanError?.message || 'Network printer scan failed.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (scanError))?.message || 'Network printer scan failed.'));
     } finally {
       setScanning(false);
     }
@@ -606,12 +655,12 @@ export default function HposSystemHealth() {
     setNotice('');
     setError('');
     try {
-      const result = await window.api?.pos?.openCashDrawer?.({ reason: `manual_no_sale: ${reason}` });
+      const result = /** @type {HposHardwareTestResultExpected | undefined} */ (await window.api?.pos?.openCashDrawer?.({ reason: `manual_no_sale: ${reason}` }));
       if (result?.success === false) throw new Error(result.error || 'The drawer did not open.');
       setDrawerReason('');
       setNotice(result?.message || 'Cash drawer opened. The reason was recorded.');
     } catch (drawerError) {
-      setError(drawerError?.message || 'The drawer did not open.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (drawerError))?.message || 'The drawer did not open.'));
     } finally {
       setRunning(false);
     }
@@ -648,13 +697,13 @@ export default function HposSystemHealth() {
       ]);
       setNotice('Morning check finished — green means ready, red means fix before the rush.');
     } catch (checkError) {
-      setError(checkError?.message || 'Morning check could not run.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (checkError))?.message || 'Morning check could not run.'));
     } finally {
       setCheckingMorning(false);
     }
   };
 
-  const toggleDailyCheck = (group, key) => {
+  const toggleDailyCheck = (/** @type {'open' | 'close'} */ group, /** @type {string} */ key) => {
     setDailyChecks((previous) => {
       const next = {
         open: { ...(previous.open || {}) },
@@ -668,7 +717,7 @@ export default function HposSystemHealth() {
     });
   };
 
-  const setDailyCardTotals = (field, value) => {
+  const setDailyCardTotals = (/** @type {'cardMachineTotal' | 'tillCardTotal'} */ field, /** @type {string} */ value) => {
     setDailyChecks((previous) => {
       const next = { ...previous, [field]: value };
       try { window.localStorage?.setItem(dailyChecksKey, JSON.stringify(next)); } catch { /* per-day helper */ }
@@ -705,7 +754,7 @@ export default function HposSystemHealth() {
       }
       setNotice('Help request sent. Support can see your device summary — never type PINs or card numbers here.');
     } catch (helpError) {
-      setError(helpError?.message || 'The help request could not be sent.');
+      setError(/** @type {string} */ ((/** @type {HposThrownMessageReadView} */ (helpError))?.message || 'The help request could not be sent.'));
     } finally {
       setHelpBusy(false);
     }
@@ -768,7 +817,9 @@ export default function HposSystemHealth() {
     () => new Set(displays.map((display) => String(display.id))),
     [displays],
   );
+  /** @type {HposDisplayKind[]} */
   const pinnedKinds = barOnly ? ['customer', 'bar'] : ['customer', 'kitchen', 'bar'];
+  /** @param {HposDisplayKind} kind */
   const pinnedName = (kind) => kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar board' : 'Kitchen board';
 
   // Numbered first-time setup: printer → drawer → scanner → screens → card.
@@ -1016,10 +1067,10 @@ export default function HposSystemHealth() {
           <section className="hpos-sync-desk">
             <div className="hpos-section-heading">
               <span><AlertTriangle size={18} /></span>
-              <div><h2>Recent crashes</h2><p>Crash details for when this app needs recovery.</p></div>
+              <div><h2>Recent crashes</h2><p>Saved crashes recorded for this business. Older computer history is kept separately and is not attributed to this bar.</p></div>
             </div>
             {rendererErrors.length === 0 ? (
-              <HposEmptyState icon={CheckCircle2} title="No recent crashes" description="No crashes were found on this computer." />
+              <HposEmptyState icon={CheckCircle2} title="No recent crashes" description="No crashes have been recorded for this business." />
             ) : (
               <div className="hpos-sync-list">
                 {rendererErrors.map((entry, index) => (

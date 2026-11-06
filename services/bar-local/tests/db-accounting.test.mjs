@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { createHarness, sha256Json } from './harness.mjs'
 
 test('accounting journals, trial balance, outbox and period locking stay authoritative', async (t) => {
@@ -26,6 +27,37 @@ test('accounting journals, trial balance, outbox and period locking stay authori
   assert.equal(journal.ok, true, JSON.stringify(journal.error))
   assert.equal(Number(journal.result.debits), 100)
   assert.equal(Number(journal.result.credits), 100)
+
+  const ledger = await h.query('accounting.journal_entries', { from: businessDate, to: businessDate })
+  assert.equal(ledger.complete, true)
+  assert.equal(ledger.scope.outlet_id, h.outletId)
+  assert.equal(ledger.data.length, 1)
+  assert.equal(ledger.data[0].description, 'Opening cash sale')
+  assert.equal(ledger.data[0].posting_key, journalEnvelope.operation_id)
+  assert.deepEqual(ledger.data[0].lines.map((line) => [line.account_code, line.debit, line.credit]), [
+    ['1000', '100.00', '0.00'], ['4000', '0.00', '100.00']
+  ])
+  assert.equal((await h.query('accounting.journal_entries', {
+    from: businessDate, to: businessDate, account_code: '4000'
+  })).data.length, 1)
+  await assert.rejects(h.query('accounting.journal_entries', { from: businessDate, to: '2000-01-01' }), /end date/i)
+
+  // An entry for another outlet in the same business must not affect this
+  // authority's journal page or trial balance.
+  const foreignOutletId = randomUUID()
+  const foreignOperationId = randomUUID()
+  const foreignEntryId = randomUUID()
+  await h.migrator.query(`INSERT INTO bar_local.outlets(id,business_id,name,code) VALUES($1,$2,'Other outlet','OTHER')`, [foreignOutletId,h.businessId])
+  await h.migrator.query(`INSERT INTO bar_local.operations(
+    operation_id,authority_id,authority_epoch,business_id,outlet_id,device_id,actor_staff_id,command,payload_hash,payload,status,outcome
+  ) VALUES($1,$2,1,$3,$4,$5,$6,'accounting.journal.post',$7,'{}'::jsonb,'committed','committed_local')`,
+    [foreignOperationId,h.authorityId,h.businessId,foreignOutletId,h.deviceId,h.ownerStaffId,'a'.repeat(64)])
+  await h.migrator.query(`INSERT INTO bar_local.journal_entries(id,business_id,entry_date,period,memo,source_type,operation_id)
+    VALUES($1,$2,$3,$4,'Foreign outlet entry','test',$5)`,
+    [foreignEntryId,h.businessId,businessDate,period,foreignOperationId])
+  await h.migrator.query(`INSERT INTO bar_local.journal_lines(entry_id,account_code,debit,credit) VALUES
+    ($1,'1000',999,0),($1,'4000',0,999)`,[foreignEntryId])
+  assert.equal((await h.query('accounting.journal_entries', { from: businessDate, to: businessDate })).data.length, 1)
 
   const unbalanced = await h.call('cmd_journal_post', h.envelope('accounting.journal.post', {
     entry_date: businessDate,

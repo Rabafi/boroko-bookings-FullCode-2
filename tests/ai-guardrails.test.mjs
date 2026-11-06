@@ -15,6 +15,10 @@
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+const ts = require('typescript')
 
 async function read(relativePath) {
   return readFile(new URL(`../${relativePath}`, import.meta.url), 'utf8')
@@ -34,6 +38,64 @@ function test(name, fn) {
   }
 }
 
+function assertAiTurnSafeErrorContract(sourceText) {
+  const sourceFile = ts.createSourceFile('src/main/index.js', sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  assert.equal(sourceFile.parseDiagnostics.length, 0, 'main index source should parse')
+
+  let aiTurnHandler
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'handle' &&
+      ts.isStringLiteral(node.arguments[0]) &&
+      node.arguments[0].text === 'ai:turn'
+    ) {
+      aiTurnHandler = node.arguments[1]
+    }
+    node.forEachChild(visit)
+  }
+  visit(sourceFile)
+  assert.ok(aiTurnHandler && ts.isArrowFunction(aiTurnHandler), 'ai:turn should register a handler')
+  assert.ok(ts.isBlock(aiTurnHandler.body), 'ai:turn handler should have a block body')
+
+  const tryStatement = aiTurnHandler.body.statements.find(ts.isTryStatement)
+  assert.ok(tryStatement?.catchClause, 'ai:turn should catch turn failures')
+  const failureReturn = tryStatement.catchClause.block.statements.find(ts.isReturnStatement)
+  assert.ok(failureReturn?.expression, 'ai:turn catch should return an error result')
+  let result = failureReturn.expression
+  while (ts.isParenthesizedExpression(result)) result = result.expression
+  assert.ok(ts.isObjectLiteralExpression(result), 'ai:turn catch should return a result object')
+
+  const findProperty = (name) => result.properties.find((property) =>
+    ts.isPropertyAssignment(property) &&
+    ((ts.isIdentifier(property.name) && property.name.text === name) ||
+      (ts.isStringLiteral(property.name) && property.name.text === name))
+  )
+  const success = findProperty('success')
+  const error = findProperty('error')
+  assert.ok(success && error, 'ai:turn error result should include success and error fields')
+  assert.equal(success.initializer.kind, ts.SyntaxKind.FalseKeyword, 'ai:turn failure must be marked unsuccessful')
+
+  let errorValue = error.initializer
+  while (ts.isParenthesizedExpression(errorValue)) errorValue = errorValue.expression
+  assert.ok(ts.isBinaryExpression(errorValue) && errorValue.operatorToken.kind === ts.SyntaxKind.BarBarToken,
+    'ai:turn failure should use an error-message fallback')
+  let messageAccess = errorValue.left
+  while (ts.isParenthesizedExpression(messageAccess) || ts.isAsExpression(messageAccess) || ts.isTypeAssertionExpression(messageAccess)) {
+    messageAccess = messageAccess.expression
+  }
+  assert.ok(ts.isPropertyAccessExpression(messageAccess) && messageAccess.name.text === 'message',
+    'ai:turn failure should return the caught error message')
+  let caughtError = messageAccess.expression
+  while (ts.isParenthesizedExpression(caughtError) || ts.isAsExpression(caughtError) || ts.isTypeAssertionExpression(caughtError)) {
+    caughtError = caughtError.expression
+  }
+  assert.ok(ts.isIdentifier(caughtError) && caughtError.text === tryStatement.catchClause.variableDeclaration.name.text,
+    'ai:turn should read message from the caught error')
+  assert.ok(ts.isStringLiteral(errorValue.right) && errorValue.right.text,
+    'ai:turn error result should provide a nonempty fallback message')
+}
 async function run() {
 
   const aiOrchestrator = await read('src/main/ai/aiOrchestrator.js')
@@ -174,8 +236,13 @@ async function run() {
   })
 
   test('ai:turn returns safe error on failure', () => {
-    // Check the IPC handler wraps in try/catch returning safe error
-    assert.match(mainIndex, /return\s*\{\s*success:\s*false,\s*error:\s*e\.message/, 'ai:turn should catch and return safe error')
+    assertAiTurnSafeErrorContract(mainIndex)
+  })
+
+  test('ai:turn safe-error guard rejects removal of the caught-message fallback', () => {
+    const changed = mainIndex.replace("(/** @type {ErrorMessageReadView} */ (e)).message || 'AI request failed.'", "'redacted'")
+    assert.notEqual(changed, mainIndex, 'mutation should target the actual ai:turn error expression')
+    assert.throws(() => assertAiTurnSafeErrorContract(changed), /error-message fallback/)
   })
 
   test('ai:execute returns safe error on failure', () => {

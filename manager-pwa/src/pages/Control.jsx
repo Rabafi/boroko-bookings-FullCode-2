@@ -11,15 +11,26 @@ import { buildSupportAuthorFromUser, normalizeSupportMessages, supportMessageSid
 import { getFrontDeskNotificationSourceKey } from '../lib/frontDeskNotifications'
 import { useToast } from '../App'
 
+/** @typedef {Record<string, unknown> & {id: unknown, ticket_id: unknown, lodge_id: unknown, body: string, sender_type: string, sender_name: string, sender_role: string, sender_user_id: string, sender_surface: string, metadata: unknown, created_at: unknown}} SupportMessageExpectedView */
+/** @typedef {Record<string, unknown> & {id: string, title?: string|null, description?: string|null, status?: string|null, requester_name?: string|null, manager_has_unread?: boolean, front_desk_read_message_id?: string|null, messages?: unknown, updated_at?: string|null, created_at?: string|null}} SupportRequestExpectedView */
+/** @typedef {{id: string, type: string, payload?: {body?: string, ticket_id?: string, title?: string, description?: string}, createdAt?: string}} PwaQueueItemExpectedView */
+/** @typedef {{queueLength: unknown, blockedCount: number, deadLetterCount: number, unresolvedItems: {id?: string|null, type: string, label: string, lastError?: string|null}[], deviceOnly: true, checkedAt: string}} PwaQueueHealthExpectedView */
+/** @typedef {{queueLength: unknown, queueBytes: number|null, warn: boolean, warnCount: number, deviceOnly: boolean, checkedAt: string}} PwaStorageHealthExpectedView */
+/** @typedef {{message?: string}|null|undefined} ControlCaughtErrorExpectedView */
+/** @typedef {{id?: string, queued?: boolean}} SupportMutationResultExpectedView */
+
+/** @param {SupportRequestExpectedView} request */
 function latestMessage(request) {
   const messages = normalizeSupportMessages(request)
   return messages[messages.length - 1] || null
 }
 
+/** @param {SupportRequestExpectedView} request */
 function conversationTimestamp(request) {
   return request?.updated_at || latestMessage(request)?.created_at || request?.created_at || ''
 }
 
+/** @param {string} body @param {{name?: unknown}} [user] */
 function conversationTitle(body, user) {
   const firstLine = String(body || '').split(/\r?\n/).find((line) => line.trim()) || ''
   const trimmed = firstLine.trim()
@@ -27,12 +38,14 @@ function conversationTitle(body, user) {
   return `Message from ${user?.name || 'Manager'}`
 }
 
+/** @param {string|null|undefined} name */
 function initials(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return 'FD'
   return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('')
 }
 
+/** @param {string|null|undefined} status */
 function statusTone(status) {
   const value = String(status || 'open').toLowerCase()
   if (value === 'resolved' || value === 'closed') return 'bg-green-900/50 text-green-300'
@@ -41,6 +54,7 @@ function statusTone(status) {
   return 'bg-gray-900 text-gray-300'
 }
 
+/** @param {{request: SupportRequestExpectedView, onSelect: () => void}} props */
 function ConversationRow({ request, onSelect }) {
   const latest = latestMessage(request)
   const latestSender = latest ? supportSenderName(latest) : request.requester_name || 'Manager'
@@ -59,7 +73,7 @@ function ConversationRow({ request, onSelect }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <p className={`truncate text-sm font-semibold ${isUnread ? 'text-white' : 'text-gray-300'}`}>{request.title || 'Conversation'}</p>
-          <span className="shrink-0 text-[10px] text-gray-500">{shortDateTime(conversationTimestamp(request))}</span>
+          <span className="shrink-0 text-[10px] text-gray-500">{shortDateTime(/** @type {string|number|null|undefined} */ (conversationTimestamp(request)))}</span>
         </div>
         <p className={`mt-0.5 truncate text-xs ${isUnread ? 'text-gray-300' : 'text-gray-500'}`}>
           {latestSender}: {latest?.body || request.description || 'No messages yet'}
@@ -72,9 +86,10 @@ function ConversationRow({ request, onSelect }) {
   )
 }
 
+/** @param {{message: SupportMessageExpectedView, request: SupportRequestExpectedView, isPending?: boolean}} props */
 function ChatBubble({ message, request, isPending }) {
   const isManager = supportMessageSide(message) === 'manager'
-  const isQueued = message.metadata?.queued === true || isPending
+  const isQueued = /** @type {{queued?: boolean}|null|undefined} */ (message.metadata)?.queued === true || isPending
   const messages = normalizeSupportMessages(request)
   const readMessageId = request?.front_desk_read_message_id
   const isRead = isManager && !isQueued && readMessageId && (() => {
@@ -103,7 +118,7 @@ function ChatBubble({ message, request, isPending }) {
               </p>
             ) : null}
           </div>
-          <span className="shrink-0 text-[10px] opacity-70">{shortDateTime(message.created_at)}</span>
+          <span className="shrink-0 text-[10px] opacity-70">{shortDateTime(/** @type {string|number|null|undefined} */ (message.created_at))}</span>
         </div>
         <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{message.body}</p>
         {isManager && (
@@ -116,6 +131,7 @@ function ChatBubble({ message, request, isPending }) {
   )
 }
 
+/** @param {{item: PwaQueueItemExpectedView}} props */
 function PendingMessageBubble({ item }) {
   const payload = item.payload || {}
   const body = payload.body || ''
@@ -130,6 +146,7 @@ function PendingMessageBubble({ item }) {
   )
 }
 
+/** @param {{item: PwaQueueItemExpectedView}} props */
 function PendingConversationBubble({ item }) {
   const payload = item.payload || {}
   const title = payload.title || 'New conversation'
@@ -145,9 +162,16 @@ function PendingConversationBubble({ item }) {
 
 export default function Control() {
   const { user } = useAuth()
+  // AppShell's authenticated route guard is the guarantee for this page.
+  // The shared hook remains nullable; keep the assertion local to this consumer.
+  const manager = /** @type {NonNullable<typeof user>} */ (user)
+  const barOnly = manager.product_family === 'hospitality_pos' && String(manager.hospitality_mode || '').toLowerCase() === 'bar_only'
+  const supportTeam = barOnly ? 'Bar support' : 'Front desk'
   const { features } = useFeatures()
   const { showToast } = useToast()
-  const { conversations, loading: inboxLoading, error: inboxError, refreshFresh, updateConversation } = useInbox()
+  // InboxProvider filters fetched rows with isFrontDeskConversation and the shared
+  // support normalizer supplies the displayed message/request fields below.
+  const { conversations, loading: inboxLoading, error: inboxError, refreshFresh, updateConversation } = /** @type {{conversations: SupportRequestExpectedView[], loading: boolean, error: string, refreshFresh: () => void, updateConversation: (ticketId: string, updates: Partial<SupportRequestExpectedView>) => void}} */ (useInbox())
   const [loadError, setLoadError] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [startingNew, setStartingNew] = useState(false)
@@ -155,10 +179,10 @@ export default function Control() {
   const [replyDraft, setReplyDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [queueHealth, setQueueHealth] = useState(() => null)
-  const [storageHealth, setStorageHealth] = useState(() => null)
-  const messagesEndRef = useRef(null)
-  const textareaRef = useRef(null)
+  const [queueHealth, setQueueHealth] = useState(/** @type {PwaQueueHealthExpectedView|null} */ (null))
+  const [storageHealth, setStorageHealth] = useState(/** @type {PwaStorageHealthExpectedView|null} */ (null))
+  const messagesEndRef = useRef(/** @type {HTMLDivElement|null} */ (null))
+  const textareaRef = useRef(/** @type {HTMLTextAreaElement|null} */ (null))
   const acknowledgedMessagesRef = useRef(new Set())
   const pwaDisabled = Object.keys(features).length > 0 && features.pwa !== true
 
@@ -185,33 +209,35 @@ export default function Control() {
   )
 
   const pendingMessages = useMemo(() => {
-    if (!user?.lodge_id) return []
-    const queue = getOfflineQueue(user.lodge_id)
+    if (!manager?.lodge_id) return []
+    // The queue is persisted browser data and is not validated by getOfflineQueue;
+    // this expected envelope documents the existing array consumer assumption only.
+    const queue = /** @type {PwaQueueItemExpectedView[]} */ (getOfflineQueue(manager.lodge_id))
     if (!activeRequest) return queue.filter((item) => item.type === 'support/create')
     return queue.filter((item) => item.type === 'support/message' && item.payload?.ticket_id === activeRequest.id)
-  }, [user?.lodge_id, activeRequest])
+  }, [manager?.lodge_id, activeRequest])
 
   const pendingNewConversations = useMemo(() => {
-    if (!user?.lodge_id || activeRequest) return []
-    const queue = getOfflineQueue(user.lodge_id)
+    if (!manager?.lodge_id || activeRequest) return []
+    const queue = /** @type {PwaQueueItemExpectedView[]} */ (getOfflineQueue(manager.lodge_id))
     return queue.filter((item) => item.type === 'support/create')
-  }, [user?.lodge_id, activeRequest])
+  }, [manager?.lodge_id, activeRequest])
 
   const load = useCallback(async () => {
-    if (pwaDisabled || !user?.lodge_id) return
+    if (pwaDisabled || !manager?.lodge_id) return
     try {
       setLoadError('')
-      const health = getPwaQueueHealth(user.lodge_id)
+      const health = /** @type {PwaQueueHealthExpectedView} */ (getPwaQueueHealth(manager.lodge_id))
       setQueueHealth(health)
-      setStorageHealth(getPwaStorageHealth(user.lodge_id))
+      setStorageHealth(/** @type {PwaStorageHealthExpectedView} */ (getPwaStorageHealth(manager.lodge_id)))
       const isOnline = typeof navigator !== 'undefined' && navigator.onLine !== false
       if (isOnline) {
-        publishPwaHealth(user.lodge_id, supabase, health)
+        publishPwaHealth(manager.lodge_id, supabase, health)
       }
     } catch (error) {
-      setLoadError(error?.message || 'Inbox could not load.')
+      setLoadError(/** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Inbox could not load.')
     }
-  }, [pwaDisabled, user?.lodge_id])
+  }, [pwaDisabled, manager?.lodge_id])
 
   useEffect(() => {
     if (pwaDisabled) return undefined
@@ -225,7 +251,7 @@ export default function Control() {
   }, [load, pwaDisabled])
 
   useEffect(() => {
-    if (!activeRequest?.id || !user?.lodge_id || activeRequest.manager_has_unread === false) return
+    if (!activeRequest?.id || !manager?.lodge_id || activeRequest.manager_has_unread === false) return
     const latestDeskMessage = [...activeMessages].reverse().find((message) => supportMessageSide(message) === 'desk')
     if (!latestDeskMessage?.id) return
 
@@ -233,7 +259,7 @@ export default function Control() {
     if (acknowledgedMessagesRef.current.has(acknowledgementKey)) return
     acknowledgedMessagesRef.current.add(acknowledgementKey)
 
-    markSupportRequestRead(user.lodge_id, activeRequest.id, 'manager', latestDeskMessage.id)
+    markSupportRequestRead(manager.lodge_id, activeRequest.id, 'manager', /** @type {string} */ (latestDeskMessage.id))
       .then(() => {
         updateConversation(activeRequest.id, {
           manager_has_unread: false,
@@ -241,14 +267,14 @@ export default function Control() {
           manager_read_at: new Date().toISOString()
         })
         markPwaNotificationReadBySourceKey(
-          user.lodge_id,
+          manager.lodge_id,
           getFrontDeskNotificationSourceKey(activeRequest)
         )
       })
       .catch(() => {
         acknowledgedMessagesRef.current.delete(acknowledgementKey)
       })
-  }, [activeMessages, activeRequest, updateConversation, user?.lodge_id])
+  }, [activeMessages, activeRequest, updateConversation, manager?.lodge_id])
 
   useEffect(() => {
     if (activeRequest) {
@@ -271,7 +297,7 @@ export default function Control() {
   }
 
   function buildRequestAuthorPayload(source = 'manager_pwa') {
-    const author = buildSupportAuthorFromUser(user, 'manager_pwa')
+    const author = buildSupportAuthorFromUser(manager, 'manager_pwa')
     return {
       source,
       ...author,
@@ -288,14 +314,14 @@ export default function Control() {
     setSending(true)
     try {
       const authorPayload = buildRequestAuthorPayload('manager_pwa_inbox_message')
-      const result = await createSupportTicket(user.lodge_id, {
-        lodge_name: user.lodge_display_name,
-        title: conversationTitle(body, user),
+      const result = /** @type {SupportMutationResultExpectedView|null} */ (await createSupportTicket(manager.lodge_id, {
+        lodge_name: manager.lodge_display_name,
+        title: conversationTitle(body, manager),
         description: body,
         category: 'Front Desk Request',
         priority: 'Normal',
         ...authorPayload
-      })
+      }))
       setNewMessage('')
       setStartingNew(false)
       if (result?.id) setSelectedId(result.id)
@@ -303,14 +329,14 @@ export default function Control() {
         title: result?.queued ? 'Message saved offline' : 'Message sent',
         message: result?.queued
           ? 'It will appear in the inbox when the device reconnects.'
-          : 'Front desk can now see this conversation.',
+          : `${supportTeam} can now see this conversation.`,
         tone: result?.queued ? 'queued' : 'success'
       })
       refreshFresh()
     } catch (error) {
       showToast({
         title: 'Message was not sent',
-        message: error?.message || 'Please try again.',
+        message: /** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Please try again.',
         tone: 'error'
       })
     } finally {
@@ -324,8 +350,8 @@ export default function Control() {
     if (!body) return
     setSending(true)
     try {
-      const author = buildSupportAuthorFromUser(user, 'manager_pwa')
-      const result = await addSupportTicketMessage(user.lodge_id, activeRequest.id, {
+      const author = buildSupportAuthorFromUser(manager, 'manager_pwa')
+      const result = /** @type {SupportMutationResultExpectedView|null} */ (await addSupportTicketMessage(manager.lodge_id, activeRequest.id, {
         body,
         status: ['resolved', 'closed'].includes(String(activeRequest.status || '').toLowerCase()) ? 'in_progress' : null,
         ...author,
@@ -333,20 +359,20 @@ export default function Control() {
           source: 'manager_pwa_inbox_reply',
           requestTitle: activeRequest.title || ''
         }
-      })
+      }))
       setReplyDraft('')
       showToast({
         title: result?.queued ? 'Reply saved offline' : 'Reply sent',
         message: result?.queued
-          ? 'It will reach front desk automatically when the internet returns.'
-          : 'Front desk can now see your latest message.',
+          ? `It will reach ${supportTeam.toLowerCase()} when the internet returns.`
+          : `${supportTeam} can now see your latest message.`,
         tone: result?.queued ? 'queued' : 'success'
       })
       refreshFresh()
     } catch (error) {
       showToast({
         title: 'Reply was not sent',
-        message: error?.message || 'Please try again.',
+        message: /** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Please try again.',
         tone: 'error'
       })
     } finally {
@@ -355,8 +381,12 @@ export default function Control() {
   }
 
   async function syncNow() {
+    if (barOnly) {
+      showToast({ title: 'Bar sync unavailable', message: 'The verified local Bar upload is not connected. Queued messages have been left untouched.', tone: 'error' })
+      return
+    }
     try {
-      const result = await flushOfflineQueue(user.lodge_id)
+      const result = await flushOfflineQueue(manager.lodge_id)
       refreshFresh()
       showToast({
         title: 'Sync finished',
@@ -368,7 +398,7 @@ export default function Control() {
     } catch (error) {
       showToast({
         title: 'Sync could not finish',
-        message: error?.message || 'Please try again when the connection is stable.',
+        message: /** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Please try again when the connection is stable.',
         tone: 'error'
       })
     }
@@ -376,7 +406,7 @@ export default function Control() {
 
   function exportQueue() {
     try {
-      const exported = exportPwaOfflineQueue(user.lodge_id)
+      const exported = exportPwaOfflineQueue(manager.lodge_id)
       const blob = new Blob([exported.json], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -394,7 +424,7 @@ export default function Control() {
     } catch (error) {
       showToast({
         title: 'Export failed',
-        message: error?.message || 'Could not export the waiting queue.',
+        message: /** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Could not export the waiting queue.',
         tone: 'error'
       })
     }
@@ -403,7 +433,7 @@ export default function Control() {
   async function clearBlocked() {
     if (!window.confirm('Remove blocked items that can never send? Export first if support needs them.')) return
     try {
-      const result = clearPwaBlockedOperations(user.lodge_id)
+      const result = /** @type {{removed: number}} */ (clearPwaBlockedOperations(manager.lodge_id))
       load()
       showToast({
         title: 'Blocked items cleared',
@@ -413,7 +443,7 @@ export default function Control() {
     } catch (error) {
       showToast({
         title: 'Clear failed',
-        message: error?.message || 'Could not clear blocked items.',
+        message: /** @type {ControlCaughtErrorExpectedView} */ (error)?.message || 'Could not clear blocked items.',
         tone: 'error'
       })
     }
@@ -442,7 +472,7 @@ export default function Control() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{activeRequest.title}</p>
                     <p className="text-[10px] text-gray-500">
-                      {activeRequest.requester_name ? `${activeRequest.requester_name} · ` : ''}{shortDateTime(conversationTimestamp(activeRequest))}
+                      {activeRequest.requester_name ? `${activeRequest.requester_name} · ` : ''}{shortDateTime(/** @type {string|number|null|undefined} */ (conversationTimestamp(activeRequest)))}
                     </p>
                   </div>
                 ) : null}
@@ -461,7 +491,7 @@ export default function Control() {
                 <div className="text-center text-sm text-gray-500">
                   <MessageCircle size={28} className="mx-auto text-gray-600 mb-3" />
                   <p className="font-semibold text-white mb-1">Start a new conversation</p>
-                  <p className="text-xs">Write your first message below. Front desk will see it on desktop.</p>
+                  <p className="text-xs">Write your first message below. {supportTeam} will see it on desktop.</p>
                 </div>
               </div>
               <div className="border-t border-white/10 bg-gray-900 p-3">
@@ -470,8 +500,8 @@ export default function Control() {
                     ref={textareaRef}
                     className="w-full resize-none rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-500 min-h-[40px] max-h-[120px]"
                     style={{ height: 'auto' }}
-                    onInput={(e) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
-                    placeholder="Message front desk..."
+                    onInput={(e) => { const target = /** @type {HTMLTextAreaElement} */ (e.target); target.style.height = 'auto'; target.style.height = Math.min(target.scrollHeight, 120) + 'px'; }}
+                    placeholder={`Message ${supportTeam.toLowerCase()}...`}
                     value={newMessage}
                     onChange={(event) => setNewMessage(event.target.value)}
                     maxLength={1200}
@@ -494,7 +524,7 @@ export default function Control() {
             <div className="flex-1 flex flex-col">
               <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
                 {activeMessages.map((message) => (
-                  <ChatBubble key={message.id} message={message} request={activeRequest} />
+                  <ChatBubble key={/** @type {string|number} */ (message.id)} message={/** @type {SupportMessageExpectedView} */ (message)} request={activeRequest} />
                 ))}
                 {pendingMessages.map((item) => (
                   <PendingMessageBubble key={`pending-${item.id}`} item={item} />
@@ -508,8 +538,8 @@ export default function Control() {
                     ref={textareaRef}
                     className="w-full resize-none rounded-xl border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-500 min-h-[40px] max-h-[120px]"
                     style={{ height: 'auto' }}
-                    onInput={(e) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
-                    placeholder="Reply to front desk..."
+                    onInput={(e) => { const target = /** @type {HTMLTextAreaElement} */ (e.target); target.style.height = 'auto'; target.style.height = Math.min(target.scrollHeight, 120) + 'px'; }}
+                    placeholder={`Reply to ${supportTeam.toLowerCase()}...`}
                     value={replyDraft}
                     onChange={(event) => setReplyDraft(event.target.value)}
                     maxLength={1000}
@@ -613,7 +643,7 @@ export default function Control() {
               <div className="text-center py-12">
                 <MessageCircle size={28} className="mx-auto text-gray-600 mb-3" />
                 <p className="text-sm font-semibold text-white">No chats yet</p>
-                <p className="text-xs text-gray-500 mt-1 mb-4">Start a message and front desk will see it on desktop.</p>
+                <p className="text-xs text-gray-500 mt-1 mb-4">Start a message and {supportTeam} will see it on desktop.</p>
                 <button
                   type="button"
                   onClick={() => { setStartingNew(true); setSelectedId(''); }}
@@ -632,28 +662,31 @@ export default function Control() {
                     {navigator.onLine ? 'Online' : 'Offline'}
                   </p>
                   <p className="mt-1 text-xs text-gray-500">
-                    {queueHealth?.queueLength > 0
-                      ? `${queueHealth.queueLength} saved item${queueHealth.queueLength === 1 ? '' : 's'} waiting to send`
+                    {queueHealth && /** @type {number} */ (queueHealth.queueLength) > 0
+                      ? `${/** @type {number} */ (queueHealth.queueLength)} saved item${/** @type {number} */ (queueHealth.queueLength) === 1 ? '' : 's'} waiting to send`
                       : 'No saved messages waiting to send'}
                   </p>
                   <p className="mt-0.5 text-[10px] text-gray-600">this device only</p>
                   {storageHealth?.warn && (
                     <p className="mt-1 text-[11px] text-amber-300">
-                      Waiting list is getting large ({storageHealth.queueLength} items). Sync soon or export a copy.
+                      {/* runtime.js reads this from local queue.length; the persisted queue value is not validated here. */}
+                      Waiting list is getting large ({/** @type {number|string} */ (storageHealth.queueLength)} items). Sync soon or export a copy.
                     </p>
                   )}
                 </div>
-                {queueHealth?.queueLength > 0 && (
-                  <button
-                    type="button"
-                    onClick={syncNow}
-                    className="shrink-0 rounded-xl border border-white/10 bg-gray-800 px-3 py-2 text-xs font-semibold text-white"
-                  >
-                    Sync now
-                  </button>
+                {queueHealth && /** @type {number} */ (queueHealth.queueLength) > 0 && (
+                  barOnly
+                    ? <span className="shrink-0 rounded-xl border border-amber-800 bg-amber-950/40 px-3 py-2 text-xs font-semibold text-amber-200">Bar sync unavailable</span>
+                    : <button
+                      type="button"
+                      onClick={syncNow}
+                      className="shrink-0 rounded-xl border border-white/10 bg-gray-800 px-3 py-2 text-xs font-semibold text-white"
+                    >
+                      Sync now
+                    </button>
                 )}
               </div>
-              {queueHealth?.queueLength > 0 && (
+              {queueHealth && /** @type {number} */ (queueHealth.queueLength) > 0 && (
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
@@ -668,7 +701,7 @@ export default function Control() {
                       onClick={clearBlocked}
                       className="rounded-xl border border-white/10 bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-200"
                     >
-                      Clear blocked ({queueHealth.blockedCount})
+                      Clear blocked ({queueHealth?.blockedCount})
                     </button>
                   )}
                 </div>

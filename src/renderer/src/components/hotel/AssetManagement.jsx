@@ -8,6 +8,25 @@ import { ErrorNotice } from '../shared/ErrorNotice'
 const COST_TYPES = ['purchase', 'installation', 'repair', 'maintenance', 'upgrade', 'other']
 const ASSET_TYPES = ['equipment', 'furniture', 'fixture', 'vehicle', 'tool', 'appliance', 'system', 'other']
 
+/** Fields consumed from the property-asset RPC/cache rows; this view does not validate IPC data. */
+/** @typedef {{id: string, asset_name: string, asset_type: string, status?: string|null, category?: string|null, serial_number?: string|null, manufacturer?: string|null, model?: string|null, location?: string|null, purchase_date?: string|null, purchase_cost?: number|string|null, warranty_expiry?: string|null, warranty_provider?: string|null, expected_lifespan_years?: number|string|null, notes?: string|null}} PropertyAssetExpectedView */
+/** Asset registry maintenance-history fields consumed by the detail panel. */
+/** @typedef {{id: string, description?: string|null, maintenance_date?: string|null, cost?: number|string|null, maintenance_ticket_id?: string|null}} AssetMaintenanceHistoryExpectedView */
+/** Dashboard RPC/cache fields read by this view; getAssetDashboard may return null and cached data is not validated. */
+/** @typedef {{total_assets?: number|null, active_warranties?: number|null, upcoming_inspections?: number|null, overdue_preventive?: number|null, total_cost_ytd?: number|string|null, assets_by_category?: {category: string, count: number}[]|null}} AssetDashboardExpectedView */
+/** Category RPC/cache row fields used in the nested category editor. */
+/** @typedef {{id: string, name: string, parent_category_id?: string|null, is_active?: boolean|null, description?: string|null, icon?: string|null}} AssetCategoryExpectedView */
+/** Asset management list-row fields used by warranty UI. */
+/** @typedef {{id: string, asset_id: string, provider?: string|null, warranty_number?: string|null, start_date?: string|null, end_date?: string|null, coverage_details?: string|null, contact_phone?: string|null}} AssetWarrantyExpectedView */
+/** Inspection RPC/cache rows displayed by the inspection table. */
+/** @typedef {{id: string, asset_id: string, inspection_date?: string|null, result?: string|null, inspector_name?: string|null, notes?: string|null, next_inspection_date?: string|null, cost?: number|string|null}} AssetInspectionExpectedView */
+/** Preventive RPC/cache rows read by this component. */
+/** @typedef {{id: string, asset_id?: string|null, template_id?: string|null, status?: string|null, next_due_date?: string|null, last_completed_date?: string|null, assigned_to?: string|null, completed_notes?: string|null, completed_at?: string|null}} PreventiveAssignmentExpectedView */
+/** @typedef {{id: string, title: string, description?: string|null, asset_category_id?: string|null, frequency_days?: number|null, estimated_duration_minutes?: number|null, assigned_role?: string|null, requires_room_ooo?: boolean, is_active?: boolean}} PreventiveTemplateExpectedView */
+/** Cost RPC/cache rows; amounts retain the producer's numeric/string representation. */
+/** @typedef {{id: string, asset_id?: string|null, cost_type?: string|null, amount?: number|string|null, description?: string|null, vendor?: string|null, incurred_at?: string|null, cost_date?: string|null}} AssetCostExpectedView */
+/** @typedef {{cost_type: string, total_amount: number|string|null, count: number}} AssetCostSummaryExpectedView */
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -98,7 +117,7 @@ export default function AssetManagement() {
 function DashboardTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [dashboard, setDashboard] = useState(null)
+  const [dashboard, setDashboard] = useState(/** @type {AssetDashboardExpectedView|null} */ (null))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -106,7 +125,7 @@ function DashboardTab() {
     try {
       const data = await window.api.assetManagement.getAssetDashboard()
       if (data && typeof data === 'object') {
-        setDashboard(data)
+        setDashboard(/** @type {AssetDashboardExpectedView} */ (/** @type {unknown} */ (data)))
       } else {
         setDashboard(null)
       }
@@ -180,13 +199,13 @@ function DashboardTab() {
 }
 
 function AssetsTab() {
-  const [assets, setAssets] = useState([])
+  const [assets, setAssets] = useState(/** @type {PropertyAssetExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
-  const [selectedAsset, setSelectedAsset] = useState(null)
+  const [selectedAsset, setSelectedAsset] = useState(/** @type {PropertyAssetExpectedView|null} */ (null))
   const [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ asset_name: '', asset_type: 'equipment', category: '', manufacturer: '', model: '', serial_number: '', location: '', purchase_date: '', purchase_cost: '', warranty_expiry: '', warranty_provider: '', expected_lifespan_years: '', notes: '' })
@@ -363,7 +382,7 @@ function AssetsTab() {
 }
 
 function AssetDetailPanel({ asset, onClose, onRefresh }) {
-  const [history, setHistory] = useState([])
+  const [history, setHistory] = useState(/** @type {AssetMaintenanceHistoryExpectedView[]} */ ([]))
   const [loadingHistory, setLoadingHistory] = useState(true)
 
   useEffect(() => {
@@ -423,11 +442,11 @@ function AssetDetailPanel({ asset, onClose, onRefresh }) {
 }
 
 function CategoriesTab() {
-  const [categories, setCategories] = useState([])
+  const [categories, setCategories] = useState(/** @type {AssetCategoryExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(/** @type {AssetCategoryExpectedView|null} */ (null))
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ name: '', description: '', icon: '', parent_category_id: '' })
 
@@ -544,8 +563,8 @@ function CategoriesTab() {
 }
 
 function WarrantiesTab() {
-  const [warranties, setWarranties] = useState([])
-  const [assets, setAssets] = useState([])
+  const [warranties, setWarranties] = useState(/** @type {AssetWarrantyExpectedView[]} */ ([]))
+  const [assets, setAssets] = useState(/** @type {PropertyAssetExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [formOpen, setFormOpen] = useState(false)
@@ -698,8 +717,8 @@ function WarrantiesTab() {
 }
 
 function InspectionsTab() {
-  const [inspections, setInspections] = useState([])
-  const [assets, setAssets] = useState([])
+  const [inspections, setInspections] = useState(/** @type {AssetInspectionExpectedView[]} */ ([]))
+  const [assets, setAssets] = useState(/** @type {PropertyAssetExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [assetFilter, setAssetFilter] = useState('')
@@ -853,9 +872,9 @@ function InspectionsTab() {
 }
 
 function PreventiveTab() {
-  const [assignments, setAssignments] = useState([])
-  const [templates, setTemplates] = useState([])
-  const [assets, setAssets] = useState([])
+  const [assignments, setAssignments] = useState(/** @type {PreventiveAssignmentExpectedView[]} */ ([]))
+  const [templates, setTemplates] = useState(/** @type {PreventiveTemplateExpectedView[]} */ ([]))
+  const [assets, setAssets] = useState(/** @type {PropertyAssetExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -1061,9 +1080,9 @@ function PreventiveTab() {
 }
 
 function CostsTab() {
-  const [costs, setCosts] = useState([])
-  const [summary, setSummary] = useState([])
-  const [assets, setAssets] = useState([])
+  const [costs, setCosts] = useState(/** @type {AssetCostExpectedView[]} */ ([]))
+  const [summary, setSummary] = useState(/** @type {AssetCostSummaryExpectedView[]} */ ([]))
+  const [assets, setAssets] = useState(/** @type {PropertyAssetExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [startDate, setStartDate] = useState(new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10))

@@ -216,6 +216,24 @@ test('local Bar HTTP service commissions, trades, replays and enforces approvals
   assert.equal(managerLogin.status, 201, JSON.stringify(managerLogin.body))
   const managerToken = managerLogin.body.session_token
 
+  const managerPinVerification = await h.request('/v1/manager-pin/verify', {
+    token: managerToken,
+    deviceId,
+    body: { staff_id: managerStaffId, pin: '5678' }
+  })
+  assert.equal(managerPinVerification.status, 200, JSON.stringify(managerPinVerification.body))
+  assert.equal(managerPinVerification.body.ok, true)
+  assert.equal(managerPinVerification.body.verified, true)
+  assert.equal(managerPinVerification.body.staff_id, managerStaffId)
+  assert.match(managerPinVerification.body.correlation_id, /^[0-9a-f-]{36}$/i)
+  const invalidManagerPin = await h.request('/v1/manager-pin/verify', {
+    token: managerToken,
+    deviceId,
+    body: { staff_id: managerStaffId, pin: '9999' }
+  })
+  assert.equal(invalidManagerPin.status, 401)
+  assert.equal(invalidManagerPin.body.code, 'AUTH_INVALID')
+
   const returnEnvelope = envelope('sale.return', {
     sale_id: saleId,
     reason: 'Customer changed mind',

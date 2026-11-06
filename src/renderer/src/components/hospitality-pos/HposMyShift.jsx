@@ -8,6 +8,7 @@ import { classifyPosTransaction } from '../../../../shared/posFinancialTruth'
 import { summarizeWasteMovements } from '../../../../shared/wasteSummary'
 import { unpackTransport } from '../../transportUnpack'
 import { HposButton, HposNotice, HposPageHero, HposStatusBadge } from './HposUi'
+import { createLocalHposMyShiftApi } from './bar-local/hposMyShiftApi.js'
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isRecord(value) {
@@ -104,10 +105,11 @@ function MyStaffPinCard() {
   </section>
 }
 
-export default function HposMyShift() {
+export default function HposMyShift({ localAuthority: localAuthorityProp = false }) {
   const { user } = useAuth()
   const { settings } = useSettings()
   const barOnly = isBarOnlyMode(settings)
+  const localAuthority = localAuthorityProp || settings?.authority_mode === 'bar_local'
   const access = useAccess()
   const canManagePos = canAccessCapability(access, 'pos.manage')
   const [outlets, setOutlets] = useState([])
@@ -141,6 +143,17 @@ export default function HposMyShift() {
     setLoading(true)
     setError('')
     try {
+      if (localAuthority) {
+        const localOutletId = String(settings?.outlet_id || '')
+        const localOutletName = String(settings?.outlet_name || 'Bar')
+        if (!localOutletId || !user?.id) throw new Error('Your local outlet or staff identity is unavailable. Sign in again before starting a shift.')
+        const localApi = createLocalHposMyShiftApi(window.api?.barLocal, { outletId: localOutletId, staffId: user.id })
+        const mine = await localApi.readMine()
+        setOutlets([{ id: localOutletId, name: localOutletName, cash_model: settings?.cash_model || 'personal' }])
+        setOutletId(localOutletId); setShift(mine.shift); setCashupSubmission(mine.submission)
+        setAttendance(null); setDailyOpening(null)
+        return
+      }
       const rows = await window.api?.outlets?.getAll?.() || []
       const nextOutlets = Array.isArray(rows) ? rows : []
       const nextOutletId = preferredOutletId && nextOutlets.some((outlet) => outlet.id === preferredOutletId)
@@ -164,12 +177,16 @@ export default function HposMyShift() {
     } finally {
       setLoading(false)
     }
-  }, [barOnly, canManagePos, outletId, user?.id])
+  }, [barOnly, canManagePos, localAuthority, outletId, settings?.cash_model, settings?.outlet_id, settings?.outlet_name, user?.id])
 
   useEffect(() => { refresh() }, [refresh])
 
   useEffect(() => {
     if (!shift?.id) { setHandover(null); return }
+    if (localAuthority) {
+      setHandover({ salesCount: 0, salesReady: false, tabs: null, tabsReady: false, wasteText: '', wasteReady: false })
+      return
+    }
     let active = true
     setHandover(null)
     const openedAt = shift.opened_at || null
@@ -222,9 +239,10 @@ export default function HposMyShift() {
     })
     return () => { active = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shift])
+  }, [localAuthority, shift])
 
   const changeOutlet = async (nextOutletId) => {
+    if (localAuthority) return
     setOutletId(nextOutletId)
     setLoading(true)
     setError('')
@@ -240,7 +258,21 @@ export default function HposMyShift() {
     setSaving(true)
     setError('')
     setNotice('')
+    let localAttemptStorageKey = null
     try {
+      if (localAuthority) {
+        if (!user?.id || !outletId) throw new Error('Your local staff or outlet scope is unavailable. Refresh before starting a shift.')
+        localAttemptStorageKey = `hpos:pending-local-shift:${user.id}:${outletId}`
+        const attemptKey = localStorage.getItem(localAttemptStorageKey) || crypto.randomUUID()
+        localStorage.setItem(localAttemptStorageKey, attemptKey)
+        const localApi = createLocalHposMyShiftApi(window.api?.barLocal, { outletId, staffId: user.id })
+        const opened = await localApi.openShift({ openingFloat: String(openingFloat).trim(), operationId: attemptKey })
+        setShift(opened); setAttendance(null); setCashupSubmission(null)
+        localStorage.removeItem(localAttemptStorageKey)
+        setOpeningFloat('')
+        setNotice('Your shift was opened by the local Bar database. You can now take payments in Till.')
+        return
+      }
       const attemptStorageKey = `hpos:pending-shift:${user?.id || 'current'}:${outletId}`
       const attemptKey = localStorage.getItem(attemptStorageKey) || crypto.randomUUID()
       localStorage.setItem(attemptStorageKey, attemptKey)
@@ -264,6 +296,7 @@ export default function HposMyShift() {
       setOpeningFloat('')
       setNotice(result?.already_open ? 'Your shift was already open.' : result?.offline ? 'Attendance and Till shift are saved on this device. You can take payments offline; they remain provisional until sync.' : 'Attendance and Till shift started. You can now take payments in Till.')
     } catch (saveError) {
+      if (localAuthority && saveError?.outcome === 'refused' && localAttemptStorageKey) localStorage.removeItem(localAttemptStorageKey)
       setError(saveError?.message || 'Could not start your shift.')
     } finally {
       setSaving(false)
@@ -278,6 +311,7 @@ export default function HposMyShift() {
     if (shift && activeOutlet?.cash_model !== 'shared_drawer' && !['submitted', 'approved'].includes(cashupSubmission?.status)) { setError('Submit My Cash-up before clocking out. A manager can review it after your attendance is closed.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
+      if (localAuthority) throw new Error('Local attendance clock-out is not available yet. Your local Till shift and cash-up remain saved; ask a manager to record attendance after this workflow is enabled.')
       const result = await window.api?.pos?.clockOutStaff?.({ shiftId: attendance.id })
       if (result?.success === false) throw new Error(result.error || 'Could not clock out.')
       setAttendance(null)
@@ -333,6 +367,8 @@ export default function HposMyShift() {
       <div><span><MessageSquareHeart size={20}/></span><div><p>Guest voice</p><h2>Log guest feedback</h2><small>Send a compliment, concern or request to the manager follow-up queue.</small></div></div>
       <form onSubmit={submitFeedback}><label>Rating<select value={feedback.rating} onChange={(event) => setFeedback({ ...feedback, rating: event.target.value })}>{[5, 4, 3, 2, 1].map((rating) => <option key={rating} value={rating}>{rating} / 5</option>)}</select></label><label>Channel<select value={feedback.channel} onChange={(event) => setFeedback({ ...feedback, channel: event.target.value })}>{['in_store', 'phone', 'online', 'delivery_platform'].map((channel) => <option key={channel} value={channel}>{channel.replaceAll('_', ' ')}</option>)}</select></label><label className="is-wide">What did the guest say?<textarea required rows="3" value={feedback.message} onChange={(event) => setFeedback({ ...feedback, message: event.target.value })} placeholder="Keep it factual so the manager can follow up." /></label><HposButton tone="primary" type="submit" disabled={feedbackSaving || !feedback.message.trim()}>{feedbackSaving ? 'Sending…' : 'Send to manager'}</HposButton></form>
     </section>}
-    <MyStaffPinCard />
+    {localAuthority
+      ? <section className="hpos-my-shift-card" aria-label="My Staff PIN"><div className="hpos-my-shift-manager-note">Changing a staff PIN in local mode is not available yet. No PIN change was submitted. Keep using your current PIN; local staff PIN management is still pending.</div></section>
+      : <MyStaffPinCard />}
   </div>
 }

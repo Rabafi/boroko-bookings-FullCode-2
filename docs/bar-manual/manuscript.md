@@ -35,6 +35,8 @@ The setup acceptance check is complete when a demonstration operator can open a 
 
 For a new Bar on this computer, the owner first confirms the saved owner email, then creates an owner PIN of 4–12 digits and a password of 12–128 characters with no spaces at either end. Confirm the password before finishing. The PIN is used for in-person approvals; the email and password are used for owner sign-in, including offline sign-in. If setup asks to resume, keep using the same saved owner identity and original password: do not start a second setup or reset the local database. If the saved email or original password is unknown after setup has started, stop and contact support. While setup is unfinished, the raw password is not retained; after account creation, Bar stores a protected sign-in check rather than a readable password.
 
+After the app reopens, sign in with the owner email and password you chose. A new local Bar starts with an empty menu. In the Bar counter workspace, select Menu and add the first item with its code, name, selling price and tax percentage. Save the item, then select Stock to receive and verify its opening quantity. Trading remains paused until the menu contains an active item and setup checks pass. A failed menu check does not mean the menu is empty: refresh the menu and confirm it loaded before adding the first item. Do not open a shift or retry a sale to clear a setup warning.
+
 ## Part C — Run a shift
 
 Open the shift by typing the Opening cash float explicitly — type 0.00 when starting with no cash — and choose Start my shift. An empty float never starts a shift. If the Till asks, choose Unlock Till, select the operator in Who is taking this order?, enter Staff PIN and choose Unlock Till. A wrong Staff PIN says to ask an admin to reset it in Staff Management. Each operator sets their own PIN in My Shift > My Staff PIN while signed in (profile menu > My Staff PIN; admins keep the Staff Management override); if the current PIN is forgotten, ask an admin to reset it. On Sell, build and correct the unpaid basket before payment. My Shift shows a handover for the open shift: completed sales count, open tabs, waste since the shift started, and cash-up state — counts and names only, never takings.
@@ -77,7 +79,7 @@ Manage > Sales report supports From and To dates, receipt/tab/operator/tender se
 
 ## Part G — Optional packages
 
-Stock & Purchasing Pro adds supplier, purchasing, detailed receiving, lots/expiry, recipes, preparation and variance work. Accounting & Workforce adds expenses, workforce, payroll, tips, supplier bills, ledger, bank reconciliation and financial reporting. Growth & Multi-outlet adds customers, loyalty, vouchers, promotions, multiple outlets and advanced reporting.
+Stock & Purchasing Pro adds supplier, purchasing, detailed receiving, lots/expiry, recipes, preparation and variance work. Accounting & Workforce adds expenses, workforce, payroll, tips, supplier bills, ledger, bank reconciliation and financial reporting. Accounting & Workforce requires Stock & Purchasing Pro: select them together, priced at P6,000/year combined (P2,500 for Stock & Purchasing Pro plus P3,500 for Accounting & Workforce). Growth & Multi-outlet adds customers, loyalty, vouchers, promotions, multiple outlets and advanced reporting. Growth & Multi-outlet is P2,000/year and does not require either other add-on.
 
 Daily workflows include Manage > Bar expenses > Record expense, Manage > Supplier bills, Manage > Accounting, General ledger, Bank reconciliation, Financial statements, Payroll, Workforce, Customers & loyalty, Vouchers, Multi-outlet control and Growth analytics. Package access, staff permission, outlet scope and the visible task screen are separate requirements.
 
@@ -119,3 +121,15 @@ For historical receipts, use the cashier or authorized manager path above and re
 
 A signed peer's conflicting incoming operation is quarantined. The original remains under Waiting for confirmation; normal sync/replay is not automatically paused. This path creates no Failed operations row and has no quarantine Retry/Clear controls. Keep the original visible. Do not repeat the transaction or stock action, change its operation key or clear pending work. A normal replay failure is different: its real item appears under Failed operations; manager Retry reuses its original identifiers and payload, while Clear stops retries and records manager review. For the identity conflict, read the persistent Network note in Manage > System Health > Sync & queue > Other tills on this network. If support is needed, use App issues > Send problem to support to send the device status summary; provide only safe outlet/time/reference details if requested.
 
+
+## New cloud Bar: first products and access
+
+A newly registered cloud Bar can have an empty product catalogue. The Till shows **Add your first product** after a successful empty catalogue read. An authorized manager chooses **Add products**, creates the drinks or other products, and records opening stock for stock-tracked products before selling. Search results with no matches are separate from an empty catalogue.
+
+**Products could not load** means the catalogue read failed; it does not prove there are no products. Retry loading products. If access is denied, sign out and sign in to the intended business again; contact support if it continues. A failure in another POS service can pause selling even when products loaded. Do not repeat a sale or payment to resolve a loading error.
+
+Manage requires your personal manager PIN, which is separate from your sign-in password. If no PIN was created, choose **No PIN yet? Set up My Staff PIN**, create your own PIN while signed in, then return to unlock Manage. An existing PIN still requires its current value; forgotten PINs use the existing reset/support path.
+
+App Issues shows crashes recorded for this business. Earlier computer logs without a business identity are retained for diagnostics and are not attributed to a newly created Bar.
+
+When you switch business or sign in again while data is loading, an earlier load may be stopped. If the app says **The business or signed-in session changed while data was loading**, refresh the workspace and check the business and operator before continuing. A stopped load is not evidence of missing products or missing stock.

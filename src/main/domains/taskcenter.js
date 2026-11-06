@@ -5,8 +5,15 @@
 import { state } from '../state.js'
 import { getRuntimeProductId } from '../../shared/productIdentity.js'
 
+/** @typedef {Record<string, unknown>} TaskCenterRecordExpectedView */
+/** @typedef {{message?: unknown}} TaskCenterErrorReadView */
+/** @typedef {ReturnType<ReturnType<NonNullable<typeof state.adminDb>['from']>['select']>} TaskCenterSelectQuery */
+
+/** @param {string} name @param {Record<string, unknown>} [params] */
 function adminRpc(name, params = {}) {
-  return state.adminDb.rpc(name, params)
+  // adminDb is configured by the admin task-center startup path. Keep the
+  // existing direct access failure if called before that initialization.
+  return /** @type {NonNullable<typeof state.adminDb>} */ (state.adminDb).rpc(name, params)
 }
 
 // ── Daily Task Center ──
@@ -18,12 +25,13 @@ export async function getAdminToday() {
     return data || { ok: true, summary: {}, overdue_bookings: [], trials_ending: [], failed_devices: [], urgent_tickets: [], lead_followups: [], recent_payments: [] }
   } catch (err) {
     console.error('[TaskCenter] getAdminToday error:', err)
-    return { ok: false, error: err.message, summary: {}, overdue_bookings: [], trials_ending: [], failed_devices: [], urgent_tickets: [], lead_followups: [], recent_payments: [] }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message, summary: {}, overdue_bookings: [], trials_ending: [], failed_devices: [], urgent_tickets: [], lead_followups: [], recent_payments: [] }
   }
 }
 
 // ── Global Search ──
 
+/** @param {unknown} query @param {number} [limit] */
 export async function globalSearch(query, limit = 20) {
   try {
     const { data, error } = await adminRpc('app_global_search', { p_query: query, p_limit: limit })
@@ -31,12 +39,13 @@ export async function globalSearch(query, limit = 20) {
     return data || { ok: true, results: [] }
   } catch (err) {
     console.error('[TaskCenter] globalSearch error:', err)
-    return { ok: false, error: err.message, results: [] }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message, results: [] }
   }
 }
 
 // ── Bulk Actions (leads, tickets only — no financial mutations) ──
 
+/** @param {unknown} entityType @param {unknown} entityIds @param {unknown} newStatus */
 export async function bulkUpdateStatus(entityType, entityIds, newStatus) {
   try {
     const { data, error } = await adminRpc('app_bulk_update_status', {
@@ -48,10 +57,11 @@ export async function bulkUpdateStatus(entityType, entityIds, newStatus) {
     return data || { ok: true, updated: 0 }
   } catch (err) {
     console.error('[TaskCenter] bulkUpdateStatus error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
+/** @param {unknown} entityType @param {unknown} entityIds */
 export async function bulkDelete(entityType, entityIds) {
   try {
     const { data, error } = await adminRpc('app_bulk_delete', {
@@ -62,10 +72,11 @@ export async function bulkDelete(entityType, entityIds) {
     return data || { ok: true, deleted: 0 }
   } catch (err) {
     console.error('[TaskCenter] bulkDelete error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
+/** @param {unknown} entityType @param {unknown} entityIds @param {unknown} message */
 export async function bulkNotify(entityType, entityIds, message) {
   try {
     const { data, error } = await adminRpc('app_bulk_notify', {
@@ -77,7 +88,7 @@ export async function bulkNotify(entityType, entityIds, message) {
     return data || { ok: true, notified: 0 }
   } catch (err) {
     console.error('[TaskCenter] bulkNotify error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
@@ -90,10 +101,11 @@ export async function getSyncQueueStatus() {
     return data || { ok: true, devices: [], stale_count: 0, total_devices: 0 }
   } catch (err) {
     console.error('[TaskCenter] getSyncQueueStatus error:', err)
-    return { ok: false, error: err.message, devices: [], stale_count: 0, total_devices: 0 }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message, devices: [], stale_count: 0, total_devices: 0 }
   }
 }
 
+/** @param {unknown} version @param {unknown} [message] @param {unknown} [force] */
 export async function pushUpdateNotification(version, message = '', force = false) {
   try {
     const { data, error } = await adminRpc('app_push_update_notification', {
@@ -105,47 +117,56 @@ export async function pushUpdateNotification(version, message = '', force = fals
     return data || { ok: true }
   } catch (err) {
     console.error('[TaskCenter] pushUpdateNotification error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
 // ── Release Rollout Control ──
 
+/** @param {unknown} release */
 export async function createRelease(release) {
+  // This view covers only fields this RPC builder reads; it does not validate
+  // release input or change the existing failure on null/non-object input.
+  const releaseView = /** @type {TaskCenterRecordExpectedView} */ (release)
   try {
     const { data, error } = await adminRpc('app_create_product_release', {
-      p_product_id: release.product_id || getRuntimeProductId(),
-      p_version: release.version,
-      p_release_notes: release.release_notes || '',
-      p_channel: release.channel || 'stable',
-      p_force_update: release.force_update || false,
-      p_min_version: release.min_version || null
+      p_product_id: releaseView.product_id || getRuntimeProductId(),
+      p_version: releaseView.version,
+      p_release_notes: releaseView.release_notes || '',
+      p_channel: releaseView.channel || 'stable',
+      p_force_update: releaseView.force_update || false,
+      p_min_version: releaseView.min_version || null
     })
     if (error) throw error
     return data || { ok: true }
   } catch (err) {
     console.error('[TaskCenter] createRelease error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
+/** @param {unknown} version @param {unknown} [updates] */
 export async function updateRelease(version, updates = {}) {
+  // The RPC builder reads these fields directly; malformed inputs retain the
+  // existing caught property-access failure.
+  const updatesView = /** @type {TaskCenterRecordExpectedView} */ (updates)
   try {
     const { data, error } = await adminRpc('app_update_product_release', {
-      p_product_id: updates.product_id || getRuntimeProductId(),
+      p_product_id: updatesView.product_id || getRuntimeProductId(),
       p_version: version,
-      ...(updates.rollout_pct !== undefined ? { p_rollout_pct: updates.rollout_pct } : {}),
-      ...(updates.status ? { p_status: updates.status } : {}),
-      ...(updates.release_notes ? { p_release_notes: updates.release_notes } : {})
+      ...(updatesView.rollout_pct !== undefined ? { p_rollout_pct: updatesView.rollout_pct } : {}),
+      ...(updatesView.status ? { p_status: updatesView.status } : {}),
+      ...(updatesView.release_notes ? { p_release_notes: updatesView.release_notes } : {})
     })
     if (error) throw error
     return data || { ok: true }
   } catch (err) {
     console.error('[TaskCenter] updateRelease error:', err)
-    return { ok: false, error: err.message }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message }
   }
 }
 
+/** @param {unknown} currentVersion @param {unknown} [deviceId] */
 export async function checkUpdateAvailability(currentVersion, deviceId = null) {
   try {
     if (!state.supabase) {
@@ -160,10 +181,11 @@ export async function checkUpdateAvailability(currentVersion, deviceId = null) {
     return data || { ok: true, update_available: false }
   } catch (err) {
     console.error('[TaskCenter] checkUpdateAvailability error:', err)
-    return { ok: false, error: err.message, update_available: false }
+    return { ok: false, error: (/** @type {TaskCenterErrorReadView} */ (err)).message, update_available: false }
   }
 }
 
+/** @param {unknown} productId */
 export async function getReleases(productId = getRuntimeProductId()) {
   const { data, error } = await adminRpc('app_get_product_releases', { p_product_id: productId })
   if (error) throw new Error(error.message)
@@ -172,22 +194,28 @@ export async function getReleases(productId = getRuntimeProductId()) {
 
 // ── Cross-Surface Intelligence ──
 
+/** @param {unknown} days */
 function daysAgoIso(days) {
   return new Date(Date.now() - Number(days || 0) * 24 * 60 * 60 * 1000).toISOString()
 }
 
+/** @param {string} table @param {string} select @param {(query: TaskCenterSelectQuery) => TaskCenterSelectQuery} [configure] */
 async function safeAdminSelect(table, select, configure = (query) => query) {
   try {
     if (!state.adminDb) throw new Error('Admin database is not configured')
-    const query = configure(state.adminDb.from(table).select(select))
+    const query = configure(/** @type {TaskCenterSelectQuery} */ (/** @type {NonNullable<typeof state.adminDb>} */ (state.adminDb).from(table).select(select)))
     const { data, error } = await query
     if (error) throw error
-    return { rows: Array.isArray(data) ? data : [], error: null }
+    // The selected table rows are read directly by this report builder. The
+    // view does not validate data returned by Supabase.
+    return { rows: Array.isArray(data) ? /** @type {TaskCenterRecordExpectedView[]} */ (data) : [], error: null }
   } catch (err) {
-    return { rows: [], error: `${table}: ${err?.message || String(err)}` }
+    const errorView = /** @type {TaskCenterErrorReadView | null | undefined} */ (err)
+    return { rows: [], error: `${table}: ${errorView?.message || String(err)}` }
   }
 }
 
+/** @param {unknown} value */
 function normalizeSurfaceClientType(value = '') {
   const raw = String(value || '').toLowerCase().replace(/[-\s]+/g, '_')
   if (raw === 'pos' || raw === 'legacypos' || raw === 'legacy_pos') return 'legacy_pos'
@@ -196,25 +224,28 @@ function normalizeSurfaceClientType(value = '') {
   return raw || 'unknown'
 }
 
+/** @param {TaskCenterRecordExpectedView[]} rows @param {string[]} [fields] */
 function maxIso(rows, fields = ['reported_at', 'last_seen_at', 'created_at', 'updated_at']) {
   let max = 0
   for (const row of rows || []) {
     for (const field of fields) {
       const value = row?.[field]
       if (!value) continue
-      const time = new Date(value).getTime()
+      const time = new Date(/** @type {string | number} */ (value)).getTime()
       if (Number.isFinite(time) && time > max) max = time
     }
   }
   return max ? new Date(max).toISOString() : null
 }
 
+/** @param {unknown} value @param {number} [days] */
 function isRecent(value, days = 7) {
   if (!value) return false
-  const time = new Date(value).getTime()
+  const time = new Date(/** @type {string | number} */ (value)).getTime()
   return Number.isFinite(time) && time >= Date.now() - days * 24 * 60 * 60 * 1000
 }
 
+/** @param {TaskCenterRecordExpectedView[]} rows @param {string} field @param {string} [fallback] */
 function countBy(rows, field, fallback = 'unknown') {
   const counts = {}
   for (const row of rows || []) {
@@ -224,6 +255,7 @@ function countBy(rows, field, fallback = 'unknown') {
   return counts
 }
 
+/** @param {TaskCenterRecordExpectedView[]} [rows] */
 function deviceIssueCount(rows = []) {
   return rows.reduce((sum, row) => {
     const failed = Number(row.failed_queue_count || 0)
@@ -235,6 +267,7 @@ function deviceIssueCount(rows = []) {
   }, 0)
 }
 
+/** @param {{id: string, label: string, description: string, primaryMetric?: {value?: unknown} | null, secondaryMetric?: unknown, rows?: TaskCenterRecordExpectedView[], issues?: unknown, lastSeen?: string | null, status?: string, details?: Record<string, unknown>}} surface */
 function buildSurface({ id, label, description, primaryMetric, secondaryMetric, rows = [], issues = 0, lastSeen = null, status = 'unknown', details = {} }) {
   const issueCount = Number(issues || 0)
   const inferredStatus = status !== 'unknown'

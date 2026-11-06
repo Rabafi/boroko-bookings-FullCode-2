@@ -5,10 +5,10 @@ import { Modal } from './shared/Modal'
 import { POSReceipt } from './shared/POSReceipt'
 import { ErrorNotice } from './shared/ErrorNotice'
 import HorizontalScrollArea from './shared/HorizontalScrollArea'
-import POSFavouritesBar from './pos/POSFavouritesBar'
-import POSTerminalCartLine from './pos/POSTerminalCartLine'
-import POSTerminalProductCard from './pos/POSTerminalProductCard'
-import POSKeyboardHelp from './pos/POSKeyboardHelp'
+import POSFavouritesBarImpl from './pos/POSFavouritesBar'
+import POSTerminalCartLineImpl from './pos/POSTerminalCartLine'
+import POSTerminalProductCardImpl from './pos/POSTerminalProductCard'
+import POSKeyboardHelpImpl from './pos/POSKeyboardHelp'
 import { DESKTOP_PAYMENT_METHODS, formatPaymentMethod } from '../constants/paymentMethods'
 import { useSettings, useAccess, useAuth } from '../app-context'
 import { canAccessCapability } from '../../../shared/accessControl'
@@ -36,18 +36,84 @@ const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
 
 /** Local consumer expectations; IPC, cache, and RPC values are not runtime-validated by these typedefs. */
 /** @typedef {Record<string, unknown> & {id?: unknown}} PosRecord */
+/** Offline creation uses `label`; the database reader exposes `item_label`. This expected view does not validate IPC/cache rows. */
+/** @typedef {{id: string, is_completed: boolean, label: string, item_label?: string}|{id: string, is_completed: boolean, item_label: string, label?: string}} PosChecklistItemExpectedView */
+/** @typedef {{id: unknown, checklist_type: string, status: string, items: PosChecklistItemExpectedView[]}} PosChecklistExpectedView */
+/** `get_restaurant_alert_history` rows are expected data; this view does not validate the RPC or unavailable-read envelope. */
+/** @typedef {Record<string, unknown> & {id: string, severity: string, alert_type: string, message: string, resolved_reason?: string|null}} PosAlertExpectedView */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosChecklistCreateResult} PosChecklistCreateResult */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosAlertRecordResult} PosAlertRecordResult */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosAlertResolutionResult} PosAlertResolutionResult */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosOwnerDigestResult} PosOwnerDigestResult */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').PosOwnerDigestSummaryExpectedView} PosOwnerDigestSummaryExpectedView */
+/** The active-shift RPC/cache rows are expected data, not validated by this view. */
+/** @typedef {Record<string, unknown> & {id: string, staff_name: string, role: string, clock_in: string}} PosActiveShiftExpectedView */
+/** The supplier RPC/cache rows are expected data, not validated by this view. */
+/** @typedef {Record<string, unknown> & {id: string, name: string, contact_person?: string|null, phone?: string|null}} PosSupplierExpectedView */
+/** The drawer RPC result and local open-session view are expected data, not validated here. */
+/** @typedef {Record<string, unknown> & {id: string, opened_at: string, opening_float: unknown}} PosOpenDrawerExpectedView */
 /** @typedef {import('../../../shared/desktopIpcContracts.js').PosHardwareSettings} PosHardwareSettings */
+/** `sync:getStatus` may return its explicit compact fallback; status-change events carry the full constructed snapshot. */
+/** @typedef {import('../../../shared/desktopIpcContracts.js').SyncStatusSnapshot} PosSyncStatusSnapshot */
+/** Existing open/close Till IPC result shapes; offline success remains provisional, and these expected views do not validate the result. */
+/** @typedef {{success?: boolean, error?: string|null, offline?: boolean, queued?: boolean, provisional?: boolean, already_open?: boolean, already_closed?: boolean}} PosShiftMutationResultExpectedView */
+/** Existing PIN approval IPC result fields read by this consumer; the complete response remains unvalidated. */
+/** @typedef {{success?: boolean, error?: string|null}} PosDiscountApprovalExpectedView */
+/** Hardware settings save result fields from the existing main-process writer; no runtime validation is added. */
+/** @typedef {{success?: boolean, error?: string|null, settings?: PosHardwareSettingsDraft|null}} PosHardwareSettingsSaveExpectedView */
+/** Device test result fields returned by the existing adapter/main IPC surface; no runtime validation is added. */
+/** @typedef {{success?: boolean, error?: string|null, message?: string|null}} PosHardwareTestExpectedView */
+/** Display-open result fields returned by openPosDisplayWindow or its existing IPC error branch. */
+/** @typedef {{success?: boolean, error?: string|null, restored?: boolean, fullScreen?: boolean}} PosDisplayOpenExpectedView */
 /**
  * Draft state starts empty, receives the main-process settings record on load,
- * and is updated one field at a time by the existing form handlers. Its
- * partial shape records those states; it does not validate IPC/cache values.
- * @typedef {Partial<PosHardwareSettings>} PosHardwareSettingsDraft
+ * and is updated one field at a time by the existing form handlers. This view
+ * records expected input types for fields rendered as form values; loaded IPC
+ * and cache settings remain unvalidated and retain their runtime values.
+ * @typedef {Partial<PosHardwareSettings> & {
+ *   receipt_printer_name?: string,
+ *   receipt_print_mode?: string,
+ *   receipt_paper_width?: string,
+ *   escpos_connection_type?: string,
+ *   escpos_network_host?: string,
+ *   escpos_network_port?: string | number,
+ *   escpos_printer_path?: string,
+ *   escpos_codepage?: string,
+ *   escpos_timeout_ms?: string | number,
+ *   cash_drawer_open_timing?: string,
+ *   cash_drawer_pin?: string,
+ *   cash_drawer_pulse_on_ms?: string | number,
+ *   cash_drawer_pulse_off_ms?: string | number,
+ *   payment_terminal_provider?: string,
+ *   payment_terminal_name?: string,
+ *   payment_terminal_mode?: string,
+ *   payment_terminal_bridge_url?: string,
+ *   payment_terminal_timeout_ms?: string | number
+ * }} PosHardwareSettingsDraft
  */
 /** Expected fields from Electron `getPrintersAsync`; the IPC rows are not runtime-validated. @typedef {{name: string, displayName?: string}} PosPrinterView */
 /** The main `listPosSystemDisplays` IPC projection includes these consumer fields; no Electron types enter the browser program. @typedef {{id: string, label: string, isPrimary: boolean}} PosSystemDisplayView */
 /** @typedef {Record<string, unknown> & {id: string | null, name: string, type: string}} PosOutletRecord */
 /** App provides null for unrestricted access and an outlet ID list otherwise; the default context may omit it. The nullable member preserves the existing includes check for virtual outlet ids. */
 /** @typedef {{allowedOutletIds?: Array<string | null> | null}} PosAccessView */
+/** Room-picker fields selected by getAllRooms and its local cache; this expected view does not validate IPC/cache rows. */
+/** @typedef {{id: string, room_number: string, room_type: string, status: string}} PosRoomOptionExpectedView */
+/** Event-picker fields selected by pos:getActiveEvents; the RPC result remains unvalidated. */
+/** @typedef {{id: string, event_name: string|null, event_type: string, booking_date: string}} PosActiveEventOptionExpectedView */
+/** `pos:getTickets` forwards `getPosTickets` rows selected from the ticket table or the local ticket cache; nested JSON is only expected array data, not validated here. */
+/** @typedef {{id: string, station: string, status: string, table_name?: string|null, tab_name?: string|null, room_id?: string|null, created_at: string, waiter_name?: string|null, items: Array<{item_name?: string|null, quantity?: number|string|null, modifiers?: Array<{name?: string|null}>, item_notes?: string|null}>, notes?: string|null}} PosPrepTicketExpectedView */
+/** `getPosStations` projects these fields from the station RPC and cache fallback. */
+/** @typedef {{id: string, station_key?: string|null, name?: string|null, enabled?: boolean}} PosKitchenStationView */
+/** `getPosPromotions` returns selected table/cache rows; the main handler's unavailable envelope is a known mismatch with this consumer's array-only rendering. */
+/** @typedef {{id: string, name: string, discount_type: string, discount_value: unknown, applies_to_category?: unknown, active?: unknown}} PosPromotionExpectedView */
+/** The floor-layout cache reader forwards its object unchanged; nested areas remain unvalidated. */
+/** @typedef {{areas?: unknown}} PosFloorLayoutExpectedView */
+/** UI expectation at the existing area list consumers; cache/RPC values are not validated against it. */
+/** @typedef {{id: string, name: string}} PosFloorLayoutAreaExpectedView */
+/** `getPosAuditLog` returns locally written audit rows; persisted details are intentionally not inspected here. */
+/** @typedef {{id: string, action: string, staff_name?: string|null, created_at: string|number}} PosAuditEntryExpectedView */
+/** The restaurant customer DTO and compatibility RPC expose id/name; RPC/cache rows remain unvalidated. */
+/** @typedef {{id: string, name: string, loyalty_points?: number|string|null, account_balance?: unknown}} PosCustomerExpectedView */
 /** @typedef {Record<string, unknown> & {id: string, name?: string | null, email?: string | null, role?: string | null, has_pin: boolean, allowed_outlet_ids?: string[], capability_overrides?: Record<string, unknown>}} PosStaffRecord */
 /** @typedef {{id?: string | null, name?: string | null, email?: string | null, role?: string | null}} PosOperatorIdentity */
 /** @typedef {{success: true, staff: PosStaffRecord, offline?: boolean, provisional?: boolean} | {success: false, error?: unknown}} PosStaffPinResult */
@@ -66,6 +132,9 @@ const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
  *   barcode?: string | null,
  *   inventory_item_id?: string | null,
  *   depletion_qty?: unknown,
+ *   dietary_flags?: unknown,
+ *   prep_time_minutes?: number | string | null,
+ *   is_popular?: boolean | null,
  *   kitchen_station_id?: string | null,
  *   outlet_id?: string | null,
  *   template_kind?: string | null,
@@ -73,6 +142,7 @@ const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
  *   _virtual_inventory_item?: boolean
  * }} PosMenuItem
  */
+/** @typedef {{name: string, category: string | null | undefined, price: string, barcode: string, inventory_item_id: string, depletion_qty: string, outlet_id: string, dietary_flags: unknown[], prep_time_minutes: number | string, is_popular: boolean, kitchen_station_id: string}} PosMenuFormExpectedView */
 /**
  * Expected projection of `inventory:getItems`, whose live and compatibility
  * queries select the fields used by the Till. Offline cache rows are not
@@ -121,15 +191,25 @@ const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
  * the history and return UI.
  * @typedef {Record<string, unknown> & {
  *   id: string,
- *   status?: unknown,
+ *   status: string,
+ *   created_at: string,
+ *   total?: number|string|null,
+ *   walk_in_name?: string|null,
+ *   room_id?: string|null,
+ *   notes?: string|null,
+ *   outlets?: {name?: string|null}|null,
+ *   _sync_error?: string|null,
+ *   _void_approver_name?: string|null,
+ *   _void_approved_by?: string|null,
+ *   _void_reason?: string|null,
  *   outlet_id?: unknown,
  *   payment_method?: unknown,
  *   pos_order_items?: PosHistoryOrderLine[],
  *   items?: PosHistoryOrderLine[]
  * }} PosHistoryOrderRow
- * @typedef {Record<string, unknown> & {id: string, quantity: unknown, unit_price: unknown, item_name?: unknown, menu_item_id?: unknown, inventory_item_id?: unknown, depletion_qty?: unknown}} PosHistoryOrderLine
+ * @typedef {Record<string, unknown> & {id: string, quantity: number|string, unit_price: number|string, subtotal?: number|string|null, item_name?: string|null, menu_item_id?: unknown, inventory_item_id?: unknown, depletion_qty?: unknown}} PosHistoryOrderLine
  * @typedef {PosHistoryOrderRow[] & {_source?: unknown, _complete?: unknown, _tender_complete?: unknown}} PosHistoryOrderReadRows
- * @typedef {Record<string, unknown> & {id: unknown, order_id: unknown, action: string, approved_by?: unknown, approver_name?: unknown, reason?: unknown, outlet_id?: unknown, created_at?: unknown, _pending_sync?: unknown, _sync_state?: unknown, return_order_id?: unknown, return_total?: unknown}} PosVoidHistoryRow
+ * @typedef {Record<string, unknown> & {id: string, order_id: string, action: string, approved_by?: string|null, approver_name?: string|null, reason?: string|null, outlet_id?: string|null, created_at?: string|null, _pending_sync?: unknown, _sync_state?: unknown, return_order_id?: unknown, return_total?: unknown}} PosVoidHistoryRow
  * @typedef {{source: string, complete: boolean, tenderComplete: boolean}} PosOrderReadCompleteness
  * @typedef {{success: true, offline?: unknown, override_log_id?: unknown, approved_by?: unknown, approver_name?: unknown, reason?: unknown}|{success: false, error?: unknown}} PosVoidApprovalExpectedResult
  * @typedef {{success: true}|{success: false, error?: unknown}} PosPartialReturnExpectedResult
@@ -157,11 +237,27 @@ const IS_LODGE_PRODUCT = getRuntimeProductId() === 'lodge-camp'
  */
 /** @typedef {Record<string, unknown> & {unit_price?: unknown, quantity?: unknown, inventory_item_id?: string | null, depletion_qty?: unknown, modifiers?: Array<string | {id?: unknown}>}} PosSubmitSignatureLine */
 /** @typedef {{current_stock: unknown}} PosInventoryRow */
+/** Props consumed by the existing favourites child implementation. */
+/** @typedef {{favouriteItems: PosMenuItem[], currency: string, fmt: (value: unknown) => string, touchMode: boolean, touchItemCardClass?: string, getCrossOutletName: (item: PosMenuItem|PosInventoryItem) => string|null, getInventoryAvailableUnits: (inventoryMap: Map<string, PosInventoryRow>, inventoryItemId: string|null|undefined, depletionQty?: unknown) => number, inventoryById: Map<string, PosInventoryRow>, isOrderableMenuItem: (item: PosRecord & {inventory_item_id?: string|null, depletion_qty?: unknown, is_available?: unknown}, inventoryMap: Map<string, PosInventoryRow>) => boolean, onAdd: (item: PosMenuItem) => void, onToggleFavourite: (itemId: string) => void}} POSFavouritesBarProps */
+/** Props consumed by the existing terminal product child implementation. */
+/** @typedef {{item: PosMenuItem, currency: string, fmt: (value: unknown) => string, touchMode: boolean, touchItemCardClass: string, soldOut: boolean, crossOutlet: string|null, availableUnits: number, isFav: boolean, isPopular: boolean, dietaryFlags: unknown[], prepTime: number, onAdd: (item: PosMenuItem) => void, onToggleFavourite: (itemId: string) => void}} POSTerminalProductCardProps */
+/** Props consumed by the existing cart-line child implementation. */
+/** @typedef {{item: PosOrderLine, idx: number, currency: string, fmt: (value: unknown) => string, touchMode: boolean, qtyButtonClass: string, qtyButtonPlusClass: string, isSelected: boolean, totalLines: number, onIncrement: (idx: number) => void, onDecrement: (idx: number) => void, onSetQty: (idx: number, rawValue: string) => void, onOpenModifiers: (idx: number) => void, onSelect: import('react').Dispatch<import('react').SetStateAction<number>>}} POSTerminalCartLineProps */
+/** The existing help overlay only invokes this close callback. */
+/** @typedef {{onClose: () => void}} POSKeyboardHelpProps */
+const POSFavouritesBar = /** @type {import('react').ComponentType<POSFavouritesBarProps>} */ (POSFavouritesBarImpl)
+const POSTerminalCartLine = /** @type {import('react').ComponentType<POSTerminalCartLineProps>} */ (POSTerminalCartLineImpl)
+const POSTerminalProductCard = /** @type {import('react').ComponentType<POSTerminalProductCardProps>} */ (POSTerminalProductCardImpl)
+const POSKeyboardHelp = /** @type {import('react').ComponentType<POSKeyboardHelpProps>} */ (POSKeyboardHelpImpl)
 /** Expected recipe and ingredient fields projected by get_restaurant_recipes; IPC/cache rows are not validated here. */
 /** @typedef {{id?: string, inventory_item_id: string, quantity: number | string, unit: string, waste_percent: number | string, latest_unit_cost?: unknown}} PosRecipeIngredientView */
 /** @typedef {{id: string, name: string, menu_item_id: string | null, serving_size: number | string, ingredients?: PosRecipeIngredientView[]}} PosRecipeView */
 /** @typedef {{name: string, menu_item_id: string, serving_size: string, ingredients: Array<{inventory_item_id: string, quantity: string, unit: string, waste_percent: string}>}} PosRecipeForm */
 /** @typedef {{success: true, recipe?: PosRecipeView} | {success: false, error?: string}} PosSaveRecipeResult */
+/** Success/failure envelopes from pos:saveModifierGroup, savePromotion, and saveFloorLayout; main returns domain results or a caught `{success:false,error}`. IPC payloads remain unvalidated. */
+/** @typedef {{success: true, offline?: boolean, queued?: boolean, group?: unknown, promotion?: unknown, layout?: unknown}|{success: false, error?: unknown}} PosCatalogMutationExpectedResult */
+/** The adapter forwards unvalidated terminal bridge fields; this view records unknown payload values without validating them. */
+/** @typedef {{success?: unknown, approval_code?: unknown, reference?: unknown, message?: unknown, error?: unknown}} PosPaymentTerminalExpectedView */
 /** @typedef {{success?: boolean, filePath?: string, error?: string}} PosHistoryExportResultExpected */
 /**
  * Consumer view of the cash-up summary assembled by main from the local
@@ -193,6 +289,11 @@ const recordedLineAmount = (item = {}) => {
   return Number.isFinite(numeric) ? numeric : null
 }
 const ACTIVE_TABLE_STATUSES = new Set(['open', 'running', 'ready', 'delivered'])
+
+/** Expected display fields selected by pos:getModifierGroups or written to the local cache; IPC/cache rows remain unvalidated.
+ * @typedef {{id: string, name: string, active?: boolean|null, applies_to_categories?: unknown, min_selections?: unknown, max_selections?: unknown, options?: PosModifierOptionExpectedReadView[]|null}} PosModifierGroupExpectedReadView
+ * @typedef {{id?: string, name: string, price_delta?: unknown}} PosModifierOptionExpectedReadView
+ */
 
 /** @typedef {{id?: string | null, customer_name?: string | null, guest_name?: string | null, items?: unknown, notes?: string | null, waiter_name?: string | null}} PosRouteTabHandoff */
 /** Expected route view from HposFloorPlan.openTill and retained top-level aliases; values are not runtime-validated here. */
@@ -313,7 +414,7 @@ function recordedSingleTenderMethod(order = {}) {
   return methods.length === 1 ? methods[0] : ''
 }
 
-/** @param {Record<string, unknown> | null | undefined} status */
+/** @param {{isOnline?: boolean, isPaused?: unknown, backendAvailable?: unknown, backendUnavailable?: unknown} | null | undefined} status */
 function isSyncOffline(status) {
   if (!status) return false
   if (status.isOnline === false) return true
@@ -513,9 +614,9 @@ export default function POS() {
   // POS/Hpos tab rows. Route and saved-tab contents stay unvalidated.
   const [orderItems, setOrderItems] = useState(/** @type {PosOrderLine[]} */ ([]))
   const [customerType, setCustomerType] = useState('walkin') // walkin | room | event
-  const [rooms, setRooms] = useState([])
+  const [rooms, setRooms] = useState(/** @type {PosRoomOptionExpectedView[]} */ ([]))
   const [selectedRoom, setSelectedRoom] = useState('')
-  const [activeEvents, setActiveEvents] = useState([])
+  const [activeEvents, setActiveEvents] = useState(/** @type {PosActiveEventOptionExpectedView[]} */ ([]))
   const [selectedEventId, setSelectedEventId] = useState('')
   const [walkInName, setWalkInName] = useState('')
   const [orderNotes, setOrderNotes] = useState('')
@@ -539,8 +640,8 @@ export default function POS() {
   // These values are forwarded from POS IPC/cache reads without shape guards.
   // Keep their full payloads unknown; `value || []` is not array validation.
   const [openTabs, setOpenTabs] = useState(/** @type {PosTableTabView[]} */ ([]))
-  const [tickets, setTickets] = useState(/** @type {unknown} */ ([]))
-  const [currentShift, setCurrentShift] = useState(/** @type {unknown} */ (null))
+  const [tickets, setTickets] = useState(/** @type {PosPrepTicketExpectedView[]} */ ([]))
+  const [currentShift, setCurrentShift] = useState(/** @type {import('../types/desktop-api.js').DesktopPosCurrentShiftReadView|null} */ (null))
   const [shiftFloat, setShiftFloat] = useState('')
   const [shiftCloseCash, setShiftCloseCash] = useState('')
   const [shiftCloseMessage, setShiftCloseMessage] = useState('')
@@ -560,25 +661,25 @@ export default function POS() {
   const [pendingWaiterStaffId, setPendingWaiterStaffId] = useState('')
   const [waiterPin, setWaiterPin] = useState('')
   const [showWaiterPicker, setShowWaiterPicker] = useState(false)
-  const [modifierGroups, setModifierGroups] = useState(/** @type {unknown} */ ([]))
-  const [promotions, setPromotions] = useState(/** @type {unknown} */ ([]))
+  const [modifierGroups, setModifierGroups] = useState(/** @type {PosModifierGroupExpectedReadView[]} */ ([]))
+  const [promotions, setPromotions] = useState(/** @type {PosPromotionExpectedView[]} */ ([]))
   const [floorLayout, setFloorLayout] = useState(/** @type {unknown} */ ({ areas: [] }))
-  const [auditLog, setAuditLog] = useState(/** @type {unknown} */ ([]))
-  const [modifierTargetIdx, setModifierTargetIdx] = useState(null)
+  const [auditLog, setAuditLog] = useState(/** @type {PosAuditEntryExpectedView[]} */ ([]))
+  const [modifierTargetIdx, setModifierTargetIdx] = useState(/** @type {number|null} */ (null))
   const [modifierDraftNotes, setModifierDraftNotes] = useState('')
   const [modifierForm, setModifierForm] = useState({ name: '', options: '', min_selections: '', max_selections: '', applies_to_categories: '' })
   const [promotionForm, setPromotionForm] = useState({ name: '', discount_type: 'amount', discount_value: '', applies_to_category: 'All' })
-  const [appliedPromotionId, setAppliedPromotionId] = useState(null)
+  const [appliedPromotionId, setAppliedPromotionId] = useState(/** @type {string|null} */ (null))
   const [floorAreaName, setFloorAreaName] = useState('')
   const [ticketClock, setTicketClock] = useState(Date.now())
   const [submitting, setSubmitting] = useState(false)
   const [orderSuccess, setOrderSuccess] = useState(false)
-  const [syncStatus, setSyncStatus] = useState(null)
+  const [syncStatus, setSyncStatus] = useState(/** @type {PosSyncStatusSnapshot | null} */ (null))
 
   // Phase 4: Customer & loyalty
-  const [posCustomers, setPosCustomers] = useState(/** @type {unknown} */ ([]))
+  const [posCustomers, setPosCustomers] = useState(/** @type {PosCustomerExpectedView[]} */ ([]))
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
-  const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [selectedCustomer, setSelectedCustomer] = useState(/** @type {PosCustomerExpectedView | null} */ (null))
   const [loyaltyPointsEarned, setLoyaltyPointsEarned] = useState(0)
   const [voucherCode, setVoucherCode] = useState('')
   const [voucherAmount, setVoucherAmount] = useState('')
@@ -587,33 +688,33 @@ export default function POS() {
   const [customerAccountCharge, setCustomerAccountCharge] = useState(false)
 
   // Phase 5: Operations
-  const [activeShifts, setActiveShifts] = useState([])
-  const [openDrawerSession, setOpenDrawerSession] = useState(null)
+  const [activeShifts, setActiveShifts] = useState(/** @type {PosActiveShiftExpectedView[]} */ ([]))
+  const [openDrawerSession, setOpenDrawerSession] = useState(/** @type {PosOpenDrawerExpectedView|null} */ (null))
   const [drawerFloat, setDrawerFloat] = useState('')
   const [drawerClosingTotal, setDrawerClosingTotal] = useState('')
   const [drawerDeclaredTotal, setDrawerDeclaredTotal] = useState('')
-  const [suppliers, setSuppliers] = useState([])
+  const [suppliers, setSuppliers] = useState(/** @type {PosSupplierExpectedView[]} */ ([]))
   const [supplierForm, setSupplierForm] = useState({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
   const [poForm, setPoForm] = useState({ supplier_id: '', notes: '', items: [{ description: '', quantity: '', unit_cost: '' }] })
-  const [activeAlerts, setActiveAlerts] = useState([])
+  const [activeAlerts, setActiveAlerts] = useState(/** @type {PosAlertExpectedView[]} */ ([]))
   const [alertForm, setAlertForm] = useState({ alert_type: 'stock_low', severity: 'warning', message: '' })
   const alertOperationIdsRef = useRef(new Map())
-  const [checklists, setChecklists] = useState([])
+  const [checklists, setChecklists] = useState(/** @type {PosChecklistExpectedView[]} */ ([]))
   const [checklistType, setChecklistType] = useState('daily_opening')
-  const [ownerDigest, setOwnerDigest] = useState(null)
+  const [ownerDigest, setOwnerDigest] = useState(/** @type {PosOwnerDigestSummaryExpectedView|null} */ (null))
 
   // Barcode scanner
   const barcodeBufferRef = useRef('')
-  const barcodeTimerRef = useRef(null)
-  const menuSearchInputRef = useRef(null)
-  const selectedOutletRef = useRef(null)
-  const outletsRef = useRef([])
+  const barcodeTimerRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null))
+  const menuSearchInputRef = useRef(/** @type {HTMLInputElement | null} */ (null))
+  const selectedOutletRef = useRef(/** @type {PosOutletRecord | null} */ (null))
+  const outletsRef = useRef(/** @type {PosOutletRecord[]} */ ([]))
   const menuItemsRef = useRef(/** @type {PosMenuItem[]} */ ([]))
   const inventoryItemsRef = useRef(/** @type {PosInventoryItem[]} */ ([]))
   const liveRefreshBusyRef = useRef(false)
-  const submitIntentRef = useRef({ signature: null, intentId: null })
+  const submitIntentRef = useRef(/** @type {{signature: string | null, intentId: string | null}} */ ({ signature: null, intentId: null }))
   const splitOperationIdRef = useRef(/** @type {string|null} */ (null))
-  const [barcodeFlash, setBarcodeFlash] = useState(null) // null | { name, found, wrongOutlet? }
+  const [barcodeFlash, setBarcodeFlash] = useState(/** @type {{name: string, found: boolean, wrongOutlet?: string} | null} */ (null))
 
   // Favourites
   // This expected persisted-ID view does not validate parsed localStorage;
@@ -648,13 +749,13 @@ export default function POS() {
   // Order history
   const [orders, setOrders] = useState(/** @type {PosHistoryOrderRow[]} */ ([]))
   const [voidHistory, setVoidHistory] = useState(/** @type {PosVoidHistoryRow[]} */ ([]))
-  const [ordersError, setOrdersError] = useState(null)
+  const [ordersError, setOrdersError] = useState(/** @type {string|null} */ (null))
   const [orderReadCompleteness, setOrderReadCompleteness] = useState(/** @type {PosOrderReadCompleteness} */ ({ source: 'unknown', complete: false, tenderComplete: false }))
   const [histStart, setHistStart] = useState(() => toLocalDateInput(new Date(Date.now() - 48 * 60 * 60 * 1000)))
   const [histEnd, setHistEnd] = useState(() => toLocalDateInput(new Date()))
   const [historyExporting, setHistoryExporting] = useState('')
   const [historyExportMsg, setHistoryExportMsg] = useState('')
-  const [expandedOrder, setExpandedOrder] = useState(null)
+  const [expandedOrder, setExpandedOrder] = useState(/** @type {string|null} */ (null))
   const [voidModal, setVoidModal] = useState(false)
   const [voidTarget, setVoidTarget] = useState(/** @type {PosHistoryOrderRow|null} */ (null))
   const [voidPin, setVoidPin] = useState('')
@@ -680,7 +781,7 @@ export default function POS() {
   const [splitLoading, setSplitLoading] = useState(false)
   const [splitMode, setSplitMode] = useState('items')
   const [splitEvenCount, setSplitEvenCount] = useState(2)
-  const [splitEvenNames, setSplitEvenNames] = useState([])
+  const [splitEvenNames, setSplitEvenNames] = useState(/** @type {string[]} */ ([]))
   const [splitError, setSplitError] = useState('')
 
   const [discountApprovalModal, setDiscountApprovalModal] = useState(false)
@@ -712,16 +813,16 @@ export default function POS() {
 
   // Menu item form modal
   const [menuModal, setMenuModal] = useState(false)
-  const [editingItem, setEditingItem] = useState(null)
-  const [menuForm, setMenuForm] = useState({
+  const [editingItem, setEditingItem] = useState(/** @type {PosMenuItem | null} */ (null))
+  const [menuForm, setMenuForm] = useState(/** @type {PosMenuFormExpectedView} */ ({
     name: '', category: 'Food', price: '', barcode: '',
     inventory_item_id: '', depletion_qty: '1', outlet_id: '',
     dietary_flags: [], prep_time_minutes: 0, is_popular: false, kitchen_station_id: ''
-  })
+  }))
   const [menuSaving, setMenuSaving] = useState(false)
   const [menuError, setMenuError] = useState('')
   const [barTemplateSavingKey, setBarTemplateSavingKey] = useState('')
-  const [kitchenStations, setKitchenStations] = useState(/** @type {unknown} */ ([]))
+  const [kitchenStations, setKitchenStations] = useState(/** @type {PosKitchenStationView[]} */ ([]))
 
   // Floor-plan navigation carries an explicit POS handoff. Apply it once per
   // router navigation so a table click opens the same outlet, service mode,
@@ -788,12 +889,12 @@ export default function POS() {
 
   const visibleOutlets = useMemo(() => {
     if (!access?.allowedOutletIds) return posOutlets // full access
-    return posOutlets.filter((o) => access.allowedOutletIds.includes(o.id))
+    return posOutlets.filter((o) => (/** @type {Array<string | null>} */ (access.allowedOutletIds)).includes(o.id))
   }, [posOutlets, access?.allowedOutletIds])
 
   const isBarOutlet = selectedOutlet?.type === 'beverage'
   const isKitchenOutlet = selectedOutlet?.type === 'food'
-  const matchesSelectedOutlet = (item) => {
+  const matchesSelectedOutlet = /** @param {PosMenuItem | PosInventoryItem | undefined} item */ (item) => {
     if (!selectedOutlet) return true
     if (!item?.outlet_id) return true
     if (selectedOutlet.id) return item.outlet_id === selectedOutlet.id
@@ -819,7 +920,7 @@ export default function POS() {
     }),
     [inventoryItems, selectedOutlet]
   )
-  const fallbackBarMenuItems = useMemo(
+  const fallbackBarMenuItems = /** @type {PosMenuItem[]} */ (useMemo(
     () => selectedBarInventoryItems
       .filter((inventoryItem) => Number(inventoryItem.selling_price || 0) > 0)
       .filter((inventoryItem) => !menuItems.some(
@@ -839,17 +940,17 @@ export default function POS() {
         _virtual_inventory_item: true
       })),
     [selectedBarInventoryItems, menuItems, selectedOutlet]
-  )
+  ))
   // This must come after fallbackBarMenuItems. Hooks execute while POS renders,
   // so referencing that const above its initializer sends the terminal straight
   // to the recovery screen.
   const favouriteItems = useMemo(() => {
     if (favourites.length === 0) return []
     const allItems = [...menuItems, ...fallbackBarMenuItems]
-    return favourites
+    return /** @type {PosMenuItem[]} */ (favourites
       .map((id) => allItems.find((item) => item.id === id))
       .filter(Boolean)
-      .filter((item) => matchesSelectedOutlet(item))
+      .filter((item) => matchesSelectedOutlet(item)))
   }, [favourites, menuItems, fallbackBarMenuItems, selectedOutlet])
   const inventoryById = useMemo(
     () => new Map((inventoryItems || []).map((item) => [item.id, item])),
@@ -918,12 +1019,14 @@ export default function POS() {
 
   const loadRooms = useCallback(async () => {
     const data = await window.api.rooms.getAll().catch(() => [])
-    setRooms((data || []).filter((r) => r.status !== 'maintenance'))
+    // The main reader selects these room fields and the fallback is its cache; this is an expected row view, not validation.
+    setRooms((/** @type {PosRoomOptionExpectedView[]} */ (data || [])).filter((r) => r.status !== 'maintenance'))
   }, [])
 
   const loadEvents = useCallback(async () => {
     const data = await window.api.pos.getActiveEvents().catch(() => [])
-    setActiveEvents(data || [])
+    // The main handler selects these event fields; the expected view does not validate the query result.
+    setActiveEvents(/** @type {PosActiveEventOptionExpectedView[]} */ (data || []))
   }, [])
 
   const loadOrders = useCallback(async () => {
@@ -950,6 +1053,7 @@ export default function POS() {
     }
   }, [histEnd, histStart])
 
+  /** @param {'pdf'|'excel'} format */
   const exportPosHistory = useCallback(async (format) => {
     setHistoryExporting(format)
     setHistoryExportMsg('')
@@ -1036,7 +1140,7 @@ export default function POS() {
     // Main combines live tab rows with pending local rows. This expected view
     // preserves the existing fallback/filter and does not validate IPC/cache data.
     setOpenTabs((/** @type {PosTableTabView[]} */ (tabs || [])).filter((row) => ACTIVE_TABLE_STATUSES.has(String(row.status || 'open').toLowerCase())))
-    setTickets(ticketRows || [])
+    setTickets(/** @type {PosPrepTicketExpectedView[]} */ (ticketRows || []))
     setCurrentShift(shift || null)
     // Main returns the concrete settings record on success and `{}` on its
     // caught capability/read failure. `hardware || null` remains the original
@@ -1045,10 +1149,13 @@ export default function POS() {
     // getStaff returns the safe pos_get_safe_staff projection or its cache;
     // preserve the existing fallback/coercion without claiming validation.
     setPosStaff(/** @type {PosStaffRecord[]} */ (staffRows || []))
-    setModifierGroups(modifierRows || [])
-    setPromotions(promotionRows || [])
+    setModifierGroups(/** @type {PosModifierGroupExpectedReadView[]} */ (modifierRows || []))
+    // The promotions handler can return an unavailable envelope, while this
+    // component currently consumes rows directly; this expected row view does
+    // not validate the response or hide that producer/consumer mismatch.
+    setPromotions(/** @type {PosPromotionExpectedView[]} */ (promotionRows || []))
     setFloorLayout(floorRows || { areas: [] })
-    setAuditLog(auditRows || [])
+    setAuditLog(/** @type {PosAuditEntryExpectedView[]} */ (auditRows || []))
     // The optional status reader falls back to the raw table reader on older
     // app builds; both feed the same existing table-list fields here.
     setPosTables(/** @type {PosFloorTableView[]} */ (tables || []))
@@ -1059,8 +1166,8 @@ export default function POS() {
     // getPosRecipes returns the SQL projection or its persisted array cache;
     // this expected view does not validate either source.
     setRecipes(/** @type {PosRecipeView[]} */ (recipeRows || []))
-    setPosCustomers(customerRows || [])
-    setKitchenStations(stationRows || [])
+    setPosCustomers(/** @type {PosCustomerExpectedView[]} */ (customerRows || []))
+    setKitchenStations(/** @type {PosKitchenStationView[]} */ (stationRows || []))
 
     // Phase 5: Load operations data in restaurant mode
     if (restaurantMode && !rushTab) {
@@ -1070,10 +1177,11 @@ export default function POS() {
         window.api.pos.getSuppliers?.().catch(() => []),
         window.api.pos.getActiveAlerts?.().catch(() => [])
       ])
-      setActiveShifts(shifts || [])
-      setOpenDrawerSession(drawer || null)
-      setSuppliers(supplierList || [])
-      setActiveAlerts(alertList || [])
+      // These IPC/cache views remain unvalidated; retain the existing truthy fallbacks.
+      setActiveShifts(/** @type {PosActiveShiftExpectedView[]} */ (shifts || []))
+      setOpenDrawerSession(/** @type {PosOpenDrawerExpectedView|null} */ (drawer || null))
+      setSuppliers(/** @type {PosSupplierExpectedView[]} */ (supplierList || []))
+      setActiveAlerts(/** @type {PosAlertExpectedView[]} */ (alertList || []))
     }
   }, [currentUser?.id, selectedOutlet?.id, selectedPosStaff?.id, restaurantMode, tab])
 
@@ -1203,7 +1311,7 @@ export default function POS() {
   useEffect(() => {
     if (tab !== 'terminal') return
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {KeyboardEvent} */ e) => {
       // Don't hijack input fields — let user type normally in text inputs
       const activeTag = document.activeElement?.tagName
       if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return
@@ -1258,7 +1366,7 @@ export default function POS() {
   useEffect(() => {
     if (tab !== 'terminal') return
 
-    const handleShortcut = (e) => {
+    const handleShortcut = (/** @type {KeyboardEvent} */ e) => {
       const activeTag = document.activeElement?.tagName
       const isInputFocused = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT'
 
@@ -1413,8 +1521,8 @@ export default function POS() {
     })
   }, [])
 
-  const incrementQty = useCallback((idx) => updateQty(idx, 1), [updateQty])
-  const decrementQty = useCallback((idx) => updateQty(idx, -1), [updateQty])
+  const incrementQty = useCallback((/** @type {number} */ idx) => updateQty(idx, 1), [updateQty])
+  const decrementQty = useCallback((/** @type {number} */ idx) => updateQty(idx, -1), [updateQty])
 
   /** @type {(idx: number, rawValue: string) => void} */
   const setQty = useCallback((idx, rawValue) => {
@@ -1820,6 +1928,7 @@ export default function POS() {
     return (
       <div className="flex gap-2">
         {visibleOutlets.map((o) => {
+          /** @type {Record<string, {active: string, idle: string}>} */
           const palette = {
             food: { active: 'bg-orange-500 text-white ring-2 ring-orange-300 shadow-md', idle: 'bg-orange-50 text-orange-700 hover:bg-orange-100 border border-orange-200' },
             beverage: { active: 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-md', idle: 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200' }
@@ -1854,6 +1963,7 @@ export default function POS() {
     setMenuModal(true)
   }
 
+  /** @param {PosMenuItem} item */
   const openEditMenu = (item) => {
     if (offlineMode) return
     setEditingItem(item)
@@ -1874,6 +1984,7 @@ export default function POS() {
     setMenuModal(true)
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleMenuSubmit = async (e) => {
     e.preventDefault()
     if (offlineMode) return
@@ -1912,6 +2023,7 @@ export default function POS() {
     }
   }
 
+  /** @param {PosMenuItem} item */
   const toggleAvailable = async (item) => {
     if (offlineMode) return
     try {
@@ -1925,6 +2037,7 @@ export default function POS() {
     }
   }
 
+  /** @param {PosMenuItem} item */
   const deleteMenuItem = async (item) => {
     if (offlineMode) return
     if (!confirm(`Delete "${item.name}"?`)) return
@@ -1939,6 +2052,7 @@ export default function POS() {
     }
   }
 
+  /** @param {string} inventoryItemId @param {number} packSize @param {boolean} enabled */
   const toggleBarPackTemplate = async (inventoryItemId, packSize, enabled) => {
     if (offlineMode) return
     const key = `${inventoryItemId}:${packSize}`
@@ -1977,10 +2091,10 @@ export default function POS() {
     )
   }), [normalizedMenuSearch, visibleMenuItems])
 
-  const menuByCategory = useMemo(() => MENU_CATEGORIES.reduce((acc, cat) => {
+  const menuByCategory = useMemo(() => /** @type {Record<string, PosMenuItem[]>} */ (MENU_CATEGORIES.reduce((acc, cat) => {
     acc[cat] = filteredVisibleMenuItems.filter((m) => m.category === cat && m.is_available !== false)
     return acc
-  }, {}), [filteredVisibleMenuItems])
+  }, {})), [filteredVisibleMenuItems])
   const terminalCategoryTabs = useMemo(
     () => ['All', ...MENU_CATEGORIES.filter((cat) => (menuByCategory[cat] || []).length > 0)],
     [menuByCategory]
@@ -2002,6 +2116,7 @@ export default function POS() {
 
   // Returns the name of the outlet an item belongs to if it's different from selectedOutlet.
   // Used for cross-outlet blocking on tap and barcode scan.
+  /** @param {PosMenuItem|PosInventoryItem} item */
   const getCrossOutletName = (item) => {
     if (!item.outlet_id || !selectedOutlet) return null
     if (selectedOutlet.id && item.outlet_id === selectedOutlet.id) return null
@@ -2183,11 +2298,14 @@ export default function POS() {
     }
     return DESKTOP_PAYMENT_METHODS.filter((method) => keys.has(method.value))
   }, [cashupSummary])
+  const pendingCashupCount = cashupSummary?.pending_count
 
+  /** @param {string} method @param {string} value */
   const setCashupCountedMethod = (method, value) => {
     setCashupCounted((current) => ({ ...current, [method]: value }))
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const submitCashup = async (e) => {
     e.preventDefault()
     setCashupSaving(true)
@@ -2220,6 +2338,7 @@ export default function POS() {
     }
   }
 
+  /** @param {number} idx @param {Partial<{method: string, amount: string, reference: string}>} patch */
   const setSplitPayment = (idx, patch) => {
     setPaymentSplits((rows) => rows.map((row, i) => i === idx ? { ...row, ...patch } : row))
   }
@@ -2228,6 +2347,7 @@ export default function POS() {
     setPaymentSplits((rows) => [...rows, { method: 'cash', amount: '', reference: '' }])
   }
 
+  /** @param {number} idx */
   const removeSplitPayment = (idx) => {
     setPaymentSplits((rows) => rows.filter((_, i) => i !== idx))
   }
@@ -2271,6 +2391,7 @@ export default function POS() {
     setShowWaiterPicker(false)
   }
 
+  /** @param {PosPromotionExpectedView|null|undefined} promotion */
   const applyPromotion = (promotion) => {
     if (!promotion) return
     setAppliedPromotionId(promotion.id || null)
@@ -2279,6 +2400,7 @@ export default function POS() {
     setDiscountReason(promotion.name || 'Promotion')
   }
 
+  /** @param {number} idx */
   const openModifierEditor = useCallback((idx) => {
     const line = orderItems[idx]
     if (!line) return
@@ -2324,13 +2446,13 @@ export default function POS() {
       return { name: String(name || '').trim(), price_delta: Number(price || 0) }
     }).filter((option) => option.name)
     const appliesToCategories = modifierForm.applies_to_categories.split(',').map((c) => c.trim()).filter(Boolean)
-    const res = await window.api.pos.saveModifierGroup?.({
+    const res = /** @type {PosCatalogMutationExpectedResult|null|undefined} */ (await window.api.pos.saveModifierGroup?.({
       name: modifierForm.name,
       options,
       min_selections: modifierForm.min_selections ? Number(modifierForm.min_selections) : 0,
       max_selections: modifierForm.max_selections ? Number(modifierForm.max_selections) : 0,
       applies_to_categories: appliesToCategories
-    })
+    }))
     if (!res?.success) {
       alert(res?.error || 'Could not save modifier group.')
       return
@@ -2340,7 +2462,7 @@ export default function POS() {
   }
 
   const savePromotion = async () => {
-    const res = await window.api.pos.savePromotion?.(promotionForm)
+    const res = /** @type {PosCatalogMutationExpectedResult|null|undefined} */ (await window.api.pos.savePromotion?.(promotionForm))
     if (!res?.success) {
       alert(res?.error || 'Could not save promotion.')
       return
@@ -2352,8 +2474,9 @@ export default function POS() {
   const addFloorArea = async () => {
     const name = floorAreaName.trim()
     if (!name) return
-    const next = { areas: [...(floorLayout?.areas || []), { id: crypto.randomUUID(), name }] }
-    const res = await window.api.pos.saveFloorLayout?.(next)
+    // The existing area UI expects {id,name}; this erased view does not validate cached rows.
+    const next = { areas: [...(/** @type {PosFloorLayoutAreaExpectedView[]} */ ((/** @type {PosFloorLayoutExpectedView|null|undefined} */ (floorLayout))?.areas || [])), { id: crypto.randomUUID(), name }] }
+    const res = /** @type {PosCatalogMutationExpectedResult|null|undefined} */ (await window.api.pos.saveFloorLayout?.(next))
     if (!res?.success) {
       alert(res?.error || 'Could not save floor area.')
       return
@@ -2558,13 +2681,14 @@ export default function POS() {
     }
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const submitDiscountApproval = async (e) => {
     e.preventDefault()
     if (!discountApprovalPin.trim()) return
     setDiscountApprovalLoading(true)
     setDiscountApprovalError('')
     try {
-      const res = await window.api.pos.approveDiscountWithPin?.({
+      const res = /** @type {PosDiscountApprovalExpectedView|null|undefined} */ (await window.api.pos.approveDiscountWithPin?.({
         pin: discountApprovalPin.trim(),
         discount_type: discountMode,
         discount_value: parsedDiscountValue,
@@ -2572,7 +2696,7 @@ export default function POS() {
         cashier_user_id: currentOperator.id || null,
         outlet_id: selectedOutlet?.id || null,
         order_total: orderSubtotal
-      })
+      }))
       if (!res?.success) {
         setDiscountApprovalError(res?.error || 'PIN verification failed.')
         return
@@ -2588,15 +2712,15 @@ export default function POS() {
     }
   }
 
-  const pendingDiscountApprovalRef = useRef(null)
+  const pendingDiscountApprovalRef = useRef(/** @type {PosDiscountApprovalExpectedView|null} */ (null))
 
   const openShift = async () => {
-    const res = await window.api.pos.openShift?.({
+    const res = /** @type {PosShiftMutationResultExpectedView|null|undefined} */ (await window.api.pos.openShift?.({
       outlet_id: selectedOutlet?.id || null,
       cashier_id: currentOperator.id || null,
       cashier_name: currentOperator.name || currentOperator.email || null,
       opening_float: Number(shiftFloat || 0)
-    })
+    }))
     if (!res?.success) {
       alert(res?.error || 'Could not open shift.')
       return
@@ -2607,13 +2731,13 @@ export default function POS() {
 
   const closeShift = async () => {
     setShiftCloseMessage('Close is pending server confirmation. Keep this shift open until the result is resolved.')
-    const res = await window.api.pos.closeShift?.({
+    const res = /** @type {PosShiftMutationResultExpectedView|null|undefined} */ (await window.api.pos.closeShift?.({
       shift_id: currentShift?.id || null,
       outlet_id: selectedOutlet?.id || null,
       cashier_id: currentOperator.id || null,
       cashier_name: currentOperator.name || currentOperator.email || null,
       closing_cash: Number(shiftCloseCash || 0)
-    })
+    }))
     if (!res?.success) {
       setShiftCloseMessage(res?.error || 'Could not close shift. The local shift remains open; retry the same close or ask a manager to reconcile it.')
       return
@@ -2623,14 +2747,16 @@ export default function POS() {
     await loadPosOperations()
   }
 
+  /** @param {PosPrepTicketExpectedView} ticket @param {string} status */
   const setTicketStatus = async (ticket, status) => {
-    const res = await window.api.pos.updateTicketStatus?.(ticket.id, status)
+    const res = /** @type {PosShiftMutationResultExpectedView|null|undefined} */ (await window.api.pos.updateTicketStatus?.(ticket.id, status))
     if (!res?.success) alert(res?.error || 'Could not update ticket.')
     await loadPosOperations()
   }
 
+  /** @param {Partial<PosHardwareSettingsDraft>} [patch] */
   const saveHardware = async (patch = {}) => {
-    const res = await window.api.pos.saveHardwareSettings?.({ ...(hardwareSettings || {}), ...patch })
+    const res = /** @type {PosHardwareSettingsSaveExpectedView|null|undefined} */ (await window.api.pos.saveHardwareSettings?.({ ...(hardwareSettings || {}), ...patch }))
     if (res?.success) {
       setHardwareSettings(res.settings || null)
       setHardwareMsg('POS hardware settings saved.')
@@ -2656,15 +2782,17 @@ export default function POS() {
     }
   }, [hardwareSettings])
 
+  /** @param {'receipt'|'escpos'|'payment-terminal'} kind */
   const testHardware = async (kind) => {
-    const res = await window.api.pos.testHardware?.(kind)
+    const res = /** @type {PosHardwareTestExpectedView|null|undefined} */ (await window.api.pos.testHardware?.(kind))
     setHardwareMsg(res?.message || res?.error || 'Hardware test finished.')
   }
 
+  /** @param {'customer'|'kitchen'|'bar'} kind @param {{fullScreen?: boolean}} [options] */
   const openDisplay = async (kind, options = {}) => {
     const targetDisplayId = displayTargets[kind] || ''
     const requestOptions = targetDisplayId ? { ...options, displayId: targetDisplayId } : options
-    const res = await window.api.pos.openDisplay?.(kind, requestOptions)
+    const res = /** @type {PosDisplayOpenExpectedView|null|undefined} */ (await window.api.pos.openDisplay?.(kind, requestOptions))
     if (!res?.success) {
       setHardwareMsg(res?.error || 'Could not open POS display.')
       return
@@ -2678,12 +2806,14 @@ export default function POS() {
     setHardwareMsg(`${kind === 'customer' ? 'Customer display' : kind === 'bar' ? 'Bar tickets' : 'Kitchen tickets'} opened${res.fullScreen ? ' in full screen' : ' in a separate window'}${placement}.`)
   }
 
+  /** @param {'customer'|'kitchen'|'bar'} kind @returns {'display_bar_display_id'|'display_kitchen_display_id'|'display_customer_display_id'} */
   const displayPinField = (kind) => kind === 'bar'
     ? 'display_bar_display_id'
     : kind === 'kitchen'
       ? 'display_kitchen_display_id'
       : 'display_customer_display_id'
 
+  /** @param {'customer'|'kitchen'|'bar'} kind */
   const renderDisplayTargetSelect = (kind) => {
     const pinnedId = hardwareSettings?.[displayPinField(kind)] || ''
     const pinnedMissing = Boolean(pinnedId) && systemDisplays.length > 0
@@ -3239,7 +3369,8 @@ export default function POS() {
                       <option value="">Walk-in customer (no account)</option>
                       {posCustomers.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.name} {c.loyalty_points > 0 ? `(${c.loyalty_points} pts)` : ''}
+                          {/* DTO-backed loyalty value is expected numeric data; this assertion does not validate IPC/cache rows. */}
+                          {c.name} {/** @type {number | string | null | undefined} */ (c.loyalty_points) > 0 ? `(${c.loyalty_points} pts)` : ''}
                         </option>
                       ))}
                     </select>
@@ -3293,12 +3424,14 @@ export default function POS() {
                           type="button"
                           className="mt-1.5 w-full rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700"
                           onClick={async () => {
-                            const res = await window.api.pos.sendPaymentTerminalTotal?.({ amount: orderTotal, reference: activeTabId || tableName || null })
+                            const res = /** @type {PosPaymentTerminalExpectedView|null|undefined} */ (await window.api.pos.sendPaymentTerminalTotal?.({ amount: orderTotal, reference: activeTabId || tableName || null }))
                             if (res?.success) {
-                              const nextReference = res.approval_code || res.reference || ''
+                              // Adapter bridge values are not validated; this UI
+                              // retains its existing expected text consumption.
+                              const nextReference = (/** @type {string|null|undefined} */ (res.approval_code)) || (/** @type {string|null|undefined} */ (res.reference)) || ''
                               if (nextReference) setPaymentReference(nextReference)
                             }
-                            alert(res?.message || res?.error || 'Payment terminal request finished.')
+                            alert((/** @type {string|null|undefined} */ (res?.message)) || (/** @type {string|null|undefined} */ (res?.error)) || 'Payment terminal request finished.')
                           }}
                         >
                           Send Total to Card Machine
@@ -3377,7 +3510,7 @@ export default function POS() {
               </div>
             )}
 
-            {restaurantMode && selectedCustomer && selectedCustomer.account_balance > 0 && (
+            {restaurantMode && selectedCustomer && /** Producer normalizes the live DTO balance to a number; cached data remains unvalidated. */ /** @type {number | string | null | undefined} */ (selectedCustomer.account_balance) > 0 && (
               <div className="mb-1.5 shrink-0">
                 <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs">
                   <input
@@ -3485,7 +3618,7 @@ export default function POS() {
                       >
                         <div className="flex items-center justify-between">
                           <span className="block truncate">{table.name}</span>
-                          {table.seats > 0 && <span className="text-[0.6rem] opacity-60">{table.seats}p</span>}
+                          {table.seats != null && table.seats > 0 && <span className="text-[0.6rem] opacity-60">{table.seats}p</span>}
                         </div>
                         <span className="mt-0.5 block text-[0.68rem] uppercase tracking-wide opacity-75">
                           {status === 'available' ? 'Available' : status === 'ready' ? 'Ready' : status === 'delivered' ? 'Delivered' : 'Running'}
@@ -4402,9 +4535,9 @@ export default function POS() {
               </div>
             )}
 
-            {cashupSummary?.pending_count > 0 && (
+            {pendingCashupCount != null && pendingCashupCount > 0 && (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                {cashupSummary.pending_count} order{cashupSummary.pending_count === 1 ? '' : 's'} in this cash-up period are still waiting to sync.
+                {pendingCashupCount} order{pendingCashupCount === 1 ? '' : 's'} in this cash-up period are still waiting to sync.
               </div>
             )}
 
@@ -4559,7 +4692,7 @@ export default function POS() {
                           <span className="font-medium text-slate-800">{item.item_name}</span>
                           <span className="text-slate-500">x{item.quantity}</span>
                           </div>
-                          {(item.modifiers?.length > 0 || item.item_notes) && (
+                          {(/** The optional chain may produce undefined; keep the original JS numeric comparison semantics without validation. */ /** @type {number} */ (item.modifiers?.length) > 0 || item.item_notes) && (
                             <p className="mt-1 text-xs font-semibold text-amber-700">
                               {[...(item.modifiers || []).map((mod) => mod.name), item.item_notes].filter(Boolean).join(' · ')}
                             </p>
@@ -4633,7 +4766,8 @@ export default function POS() {
               <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="font-semibold text-emerald-900">Open shift</p>
                 <p className="mt-1 text-sm text-emerald-800">Operator: {currentShift.cashier_name || currentOperator.name}</p>
-                <p className="mt-1 text-sm text-emerald-800">Opened {new Date(currentShift.opened_at).toLocaleString()}</p>
+                {/* Main forwards opened_at unchanged; keep malformed timestamp behavior intact. */}
+                <p className="mt-1 text-sm text-emerald-800">Opened {new Date(/** @type {string} */ (currentShift.opened_at)).toLocaleString()}</p>
                 <p className="mt-1 text-sm text-emerald-800">Opening float: {currency} {fmt(currentShift.opening_float || 0)}</p>
                 <div className="mt-3 flex gap-2">
                   <input className="input" type="number" step="0.01" min="0" value={shiftCloseCash} onChange={(e) => setShiftCloseCash(e.target.value)} placeholder="Closing cash" />
@@ -5316,7 +5450,7 @@ export default function POS() {
               <button className="btn-primary" onClick={addFloorArea}>Add</button>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              {(floorLayout?.areas || []).map((area) => (
+              {(/** @type {PosFloorLayoutAreaExpectedView[]} */ ((/** @type {PosFloorLayoutExpectedView|null|undefined} */ (floorLayout))?.areas || [])).map((area) => (
                 <span key={area.id} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{area.name}</span>
               ))}
             </div>
@@ -5352,7 +5486,7 @@ export default function POS() {
                         if (!confirm(`Clock out ${s.staff_name}?`)) return
                         await window.api.pos.clockOutStaff({ shiftId: s.id })
                         const shifts = await window.api.pos.getActiveShifts().catch(() => [])
-                        setActiveShifts(shifts)
+                        setActiveShifts(/** @type {PosActiveShiftExpectedView[]} */ (shifts))
                       }}>Clock Out</button>
                     </div>
                   ))}
@@ -5360,12 +5494,13 @@ export default function POS() {
                   <div className="flex gap-2">
                     <input className="input flex-1" placeholder="Staff name" id="staffNameInput" />
                     <button className="btn-primary" onClick={async () => {
-                      const name = document.getElementById('staffNameInput')?.value?.trim()
+                      const name = (/** @type {HTMLInputElement|null} */ (document.getElementById('staffNameInput')))?.value?.trim()
                       if (!name) return alert('Enter a staff name')
                       await window.api.pos.clockInStaff({ staffName: name, role: 'cashier' })
-                      document.getElementById('staffNameInput').value = ''
+                      const staffNameInput = /** @type {HTMLInputElement} */ (document.getElementById('staffNameInput'))
+                      staffNameInput.value = ''
                       const shifts = await window.api.pos.getActiveShifts().catch(() => [])
-                      setActiveShifts(shifts)
+                      setActiveShifts(/** @type {PosActiveShiftExpectedView[]} */ (shifts))
                     }}>Clock In</button>
                   </div>
                 </div>
@@ -5438,7 +5573,7 @@ export default function POS() {
                     if (r?.success) {
                       setSupplierForm({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
                       const list = await window.api.pos.getSuppliers().catch(() => [])
-                      setSuppliers(list)
+                      setSuppliers(/** @type {PosSupplierExpectedView[]} */ (list))
                     } else alert(r?.error || 'Failed to add supplier')
                   }}>Add Supplier</button>
                 </div>
@@ -5464,7 +5599,7 @@ export default function POS() {
                         : checklistType === 'cleaning'
                         ? [{ label: 'Mop floors' }, { label: 'Clean bathroom' }, { label: 'Empty bins' }]
                         : [{ label: 'Check fire extinguishers' }, { label: 'Test first aid kit' }, { label: 'Check equipment condition' }]
-                      const r = await window.api.pos.createChecklist({ checklistType, items }).catch((e) => ({ success: false, error: e.message }))
+                      const r = /** @type {PosChecklistCreateResult} */ (await window.api.pos.createChecklist({ checklistType, items }).catch((e) => ({ success: false, error: e.message })))
                       if (r?.success) {
                         const cl = { id: r.checklist_id, checklist_type: checklistType, status: 'pending', items: items.map((it, i) => ({ id: `${r.checklist_id}-${i}`, ...it, is_completed: false })) }
                         setChecklists([cl, ...checklists])
@@ -5508,7 +5643,7 @@ export default function POS() {
                           if (!reason || reason.trim().length < 3) return
                           const operationId = alertOperationIdsRef.current.get(a.id) || `pos-alert-resolve:${a.id}`
                           alertOperationIdsRef.current.set(a.id, operationId)
-                          const result = await window.api.pos.resolveAlert(a.id, reason.trim(), operationId).catch((e) => ({ success: false, error: e.message }))
+                          const result = /** @type {PosAlertResolutionResult} */ (await window.api.pos.resolveAlert(a.id, reason.trim(), operationId).catch((e) => ({ success: false, error: e.message })))
                           if (!result?.success || !result.resolved_at) {
                             alert(result?.error || 'The alert could not be resolved. Retry with the same reason to preserve safe replay.')
                             return
@@ -5535,11 +5670,11 @@ export default function POS() {
                     </select>
                     <button className="btn-primary text-sm" onClick={async () => {
                       if (!alertForm.message.trim()) return alert('Enter alert message')
-                      const r = await window.api.pos.recordAlert(alertForm).catch((e) => ({ success: false, error: e.message }))
+                      const r = /** @type {PosAlertRecordResult} */ (await window.api.pos.recordAlert(alertForm).catch((e) => ({ success: false, error: e.message })))
                       if (r?.success) {
                         setAlertForm({ alert_type: 'stock_low', severity: 'warning', message: '' })
                         const alerts = await window.api.pos.getActiveAlerts().catch(() => [])
-                        setActiveAlerts(alerts)
+                        setActiveAlerts(/** @type {PosAlertExpectedView[]} */ (alerts))
                       }
                     }}>Add Alert</button>
                   </div>
@@ -5553,7 +5688,7 @@ export default function POS() {
                 {restaurantMode && <p className="mt-1 text-xs text-blue-600">Also available at <strong>Owner Digest</strong> in the sidebar.</p>}
                 <div className="mt-4">
                   <button className="btn-primary" onClick={async () => {
-                    const r = await window.api.pos.generateOwnerDigest().catch((e) => ({ success: false, error: e.message }))
+                    const r = /** @type {PosOwnerDigestResult} */ (await window.api.pos.generateOwnerDigest().catch((e) => ({ success: false, error: e.message })))
                     if (r?.success) setOwnerDigest(r.digest)
                     else alert(r?.error || 'Failed to generate digest')
                   }}>Generate Digest</button>
@@ -5581,6 +5716,7 @@ export default function POS() {
           <div className="space-y-4">
             {modifierGroups.filter((group) => {
               if (group.active === false) return false
+              /** @type {unknown[]} */
               const appliesTo = Array.isArray(group.applies_to_categories) ? group.applies_to_categories : []
               if (appliesTo.length === 0 || appliesTo.some((c) => String(c).toLowerCase() === 'all')) return true
               const itemCategory = String(orderItems[modifierTargetIdx].category || '').toLowerCase()
@@ -5694,6 +5830,7 @@ export default function POS() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-slate-700">Category *</label>
+                    {/* The source category can be null; retain that value despite React's narrower declaration. */}
                     <select
                       className="input"
                       value={menuForm.category}

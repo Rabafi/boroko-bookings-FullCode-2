@@ -66,12 +66,55 @@ const tabs = [
     capability: 'incident_log.view',
   },
 ];
+/**
+ * Each IPC/cache array below remains a Record<string, unknown>[] container;
+ * unpackTransport and this view do not validate rows. Required properties in
+ * each per-use view include undefined/null because existing records may omit
+ * them; these types describe reads, not runtime validation.
+ * @typedef {Record<string, unknown> & {item_name: string | null | undefined; name: string | null | undefined; quantity: string | number | null | undefined; net_subtotal: unknown; subtotal: unknown; gross_subtotal: unknown; gross: unknown; net: unknown}} HposControlOrderLineExpectedView
+ * @typedef {Record<string, unknown> & {classification: string | undefined; status: string | null | undefined; total: string | number | null | undefined; total_amount: string | number | null | undefined; created_at: string | null | undefined; discount_total: string | number | null | undefined; discount_amount: string | number | null | undefined; pos_order_items: unknown; items: unknown; cashier_name: string | null | undefined; waiter_name: string | null | undefined}} HposControlSalesRowExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; name: string | undefined; category: string | null | undefined; template_kind: string | null | undefined; pack_size: string | number | null | undefined; price: string | number | null | undefined}} HposControlMenuItemExpectedView
+ * @typedef {Record<string, unknown> & {clock_out: unknown}} HposControlShiftExpectedView
+ * @typedef {Record<string, unknown> & {is_completed: unknown}} HposControlChecklistExpectedView
+ * @typedef {{expenses_complete?: unknown; total_expenses?: unknown; generated_at?: string | number | null; staff_on_duty?: string | number | null; summary?: {expenses_complete?: unknown; total_expenses?: unknown; generated_at?: string | number | null; staff_on_duty?: string | number | null}}} HposControlOwnerDigestExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; item_name: string | null | undefined; inventory_item_name: string | null | undefined; expiry_date: string | null | undefined; expires_at: string | null | undefined}} HposControlExpiryRowExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; staff_name: string | null | undefined; role: string | null | undefined; shift_date: string | null | undefined; start_time: string | null | undefined; end_time: string | null | undefined}} HposControlShiftPlanExpectedView
+ * @typedef {Record<string, unknown> & {id?: string | number; supplier_id: string | null | undefined; suggested_quantity: unknown; last_unit_cost: unknown; item_name: string | null | undefined; inventory_item_name?: string | null; supplier_name?: string | null; current_stock?: string | number; name: string | null | undefined}} HposControlSuggestionExpectedView
+ * @typedef {Record<string, unknown> & {status: string | null | undefined}} HposControlPurchaseOrderExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; active: unknown; name: string | null | undefined; discount_type: string | null | undefined; discount_value: string | number | null | undefined; starts_at: string | null | undefined}} HposControlPromotionExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; customer_name: string | null | undefined; guest_name: string | null | undefined; reservation_date: string | null | undefined; date: string | null | undefined; party_size: string | number | null | undefined; guests: string | number | null | undefined; status: string | null | undefined}} HposControlReservationExpectedView
+ * @typedef {Record<string, unknown> & {cashier_name: string | null | undefined; staff_name: string | null | undefined; user_id: string | null | undefined}} HposControlVoidExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; created_at: string | number | null | undefined; staff_name: string | null | undefined; action: string | null | undefined; entity_type: string | null | undefined}} HposControlAuditExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; title: string | null | undefined; message: string | null | undefined; alert_type: string | null | undefined; created_at: string | number | null | undefined}} HposControlAlertExpectedView
+ * @typedef {Record<string, unknown> & {id: string | number | undefined; title: string | null | undefined; incident_type: string | null | undefined; status: string | null | undefined; created_at: string | number | null | undefined}} HposControlIncidentExpectedView
+ * @typedef {Record<string, unknown>[] & {_complete?: unknown; _source?: unknown}} HposControlOrdersExpectedContainer
+ * @typedef {Record<string, unknown> & {
+ *   orders: HposControlOrdersExpectedContainer,
+ *   menu: Record<string, unknown>[], recipes: Record<string, unknown>[],
+ *   shifts: Record<string, unknown>[], plans: Record<string, unknown>[],
+ *   suggestions: Record<string, unknown>[], purchaseOrders: Record<string, unknown>[],
+ *   promotions: Record<string, unknown>[], reservations: Record<string, unknown>[],
+ *   waitlist: Record<string, unknown>[], alerts: Record<string, unknown>[],
+ *   checklists: Record<string, unknown>[], audit: Record<string, unknown>[],
+ *   expiry: Record<string, unknown>[], incidents: Record<string, unknown>[],
+ *   digest: HposControlOwnerDigestExpectedView | null,
+ *   voids: Record<string, unknown>[]
+ * }} HposControlDataExpectedView
+ * @typedef {{sales: number, orders: number, topItems: {name: string, units: number, sales: number}[], itemDetailComplete: boolean, averageDay: number, forecast7: number, forecastTrend: number | null, forecastConfidence: string, voids: number, discountCount: number}} HposControlMetrics
+ */
+/** @param {Date} date @param {string} [timeZone] */
 const dateKey = (date, timeZone = 'Africa/Gaborone') => {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).reduce(
+    /** @param {Record<string, string>} result @param {Intl.DateTimeFormatPart} part */
+    (result, part) => ({ ...result, [part.type]: part.value }),
+    /** @type {Record<string, string>} */ ({}),
+  );
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
+/** @param {number | string | null | undefined} value @param {string} currency */
 const money = (value, currency) =>
   `${currency} ${Number(value || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** @param {Record<string, unknown>} [item] */
 const recordedItemAmount = (item = {}) => {
   for (const key of ['net_subtotal', 'subtotal', 'gross_subtotal', 'gross', 'net']) {
     const raw = item?.[key];
@@ -88,12 +131,12 @@ export default function HposBusinessControl() {
   const navigate = useNavigate();
   const currency = settings?.currency || 'P';
   const barOnly = isBarOnlyMode(settings);
-  const [active, setActive] = useState('owner');
+  const [active, setActive] = useState(/** @type {string} */ ('owner'));
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [sourceWarnings, setSourceWarnings] = useState([]);
-  const [data, setData] = useState({
+  const [sourceWarnings, setSourceWarnings] = useState(/** @type {string[]} */ ([]));
+  const [data, setData] = useState(/** @type {HposControlDataExpectedView} */ ({
     orders: [],
     menu: [],
     recipes: [],
@@ -111,7 +154,7 @@ export default function HposBusinessControl() {
     incidents: [],
     digest: null,
     voids: [],
-  });
+  }));
   const [showVariance, setShowVariance] = useState(false);
   const posFinancialReady = data.orders?._complete === true && data.orders?._source === 'server' && !sourceWarnings.includes('POS orders');
   const visibleTabs = tabs.filter(
@@ -162,7 +205,7 @@ export default function HposBusinessControl() {
     ];
     const rejectedSources = calls
       .map((call, index) => call.status === 'rejected' ? sourceLabels[index] : null)
-      .filter(Boolean);
+      .filter((source) => typeof source === 'string');
     const incompleteSources = calls
       .map((call, index) => {
         if (call.status !== 'fulfilled') return null;
@@ -175,14 +218,17 @@ export default function HposBusinessControl() {
         }
         return null;
       })
-      .filter(Boolean);
+      .filter((source) => typeof source === 'string');
     setSourceWarnings([...new Set([...rejectedSources, ...incompleteSources])]);
+    /** @param {number} index @param {Record<string, unknown>[]} [fallback] @returns {Record<string, unknown>[]} */
     const value = (index, fallback = []) => {
       const result = calls[index]?.status === 'fulfilled' ? unpackTransport(calls[index].value) : undefined;
-      return Array.isArray(result) ? result : fallback;
+      // Existing callers consume array rows directly; this labels that
+      // assumption without asserting a runtime validation that does not occur.
+      return Array.isArray(result) ? /** @type {Record<string, unknown>[]} */ (result) : fallback;
     };
     setData({
-      orders: value(0),
+      orders: /** @type {HposControlOrdersExpectedContainer} */ (value(0)),
       menu: value(1),
       recipes: value(2),
       shifts: value(3),
@@ -197,7 +243,7 @@ export default function HposBusinessControl() {
       expiry: value(12),
       incidents: value(13),
       digest: calls[14]?.status === 'fulfilled' && calls[14].value?._available !== false
-        ? (calls[14].value?.digest || calls[14].value?.summary || calls[14].value)
+        ? /** @type {HposControlDataExpectedView['digest']} */ (calls[14].value?.digest || calls[14].value?.summary || calls[14].value)
         : null,
       voids: value(15),
       plans: value(16),
@@ -212,17 +258,18 @@ export default function HposBusinessControl() {
     load();
   }, [load]);
 
-  const metrics = useMemo(() => {
+  const metrics = /** @type {HposControlMetrics} */ (useMemo(() => {
     const truth = calculatePosFinancialTruth(data.orders, { dataset_complete: posFinancialReady });
-    const completed = truth.rows.filter((order) => order.classification === 'sale');
+    const completed = /** @type {HposControlSalesRowExpectedView[]} */ (truth.rows.filter(/** @param {HposControlSalesRowExpectedView} order */ (order) => order.classification === 'sale'));
     const sales = completed.reduce(
       (sum, order) => sum + Number(order.total || order.total_amount || 0),
       0,
     );
+    /** @type {Record<string, {name: string, units: number, sales: number}>} */
     const itemMap = {};
     let itemDetailComplete = true;
     completed.forEach((order) =>
-      (order.pos_order_items || order.items || []).forEach((item) => {
+      (/** @type {HposControlOrderLineExpectedView[]} */ (order.pos_order_items || order.items || [])).forEach((item) => {
         const name = item.item_name || item.name || 'Unlabelled item';
         const row = itemMap[name] || { name, units: 0, sales: 0 };
         row.units += Number(item.quantity || 1);
@@ -235,6 +282,7 @@ export default function HposBusinessControl() {
     const topItems = itemDetailComplete
       ? Object.values(itemMap).sort((a, b) => b.sales - a.sales)
       : [];
+    /** @type {Record<string, number>} */
     const byDay = {};
     completed.forEach((order) => {
       const day = String(order.created_at || '').slice(0, 10) || 'unknown';
@@ -275,8 +323,9 @@ export default function HposBusinessControl() {
           Number(order.discount_total || order.discount_amount || 0) > 0,
       ).length,
     };
-  }, [data.orders, data.voids, posFinancialReady]);
+  }, [data.orders, data.voids, posFinancialReady]));
 
+  /** @param {number} count */
   const statusTone = (count) => (count > 0 ? 'warning' : 'success');
   return (
     <div className="hpos-page-frame">
@@ -397,7 +446,9 @@ export default function HposBusinessControl() {
   );
 }
 
+/** @param {{metrics: HposControlMetrics, data: HposControlDataExpectedView, currency: string, loading: boolean, sourceComplete: boolean, financialReady: boolean, onGenerate: () => Promise<void>}} props */
 function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financialReady, onGenerate }) {
+  /** This fallback is the existing empty object used when no digest is available. @type {HposControlOwnerDigestExpectedView} */
   const digest = data.digest?.summary || data.digest || {};
   const recordedExpenses = digest.expenses_complete === true && Number.isFinite(Number(digest.total_expenses))
     ? Number(digest.total_expenses)
@@ -405,7 +456,9 @@ function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financia
   const operatingMovement = financialReady && sourceComplete && recordedExpenses !== null
     ? metrics.sales - recordedExpenses
     : null;
+  /** @param {number} value */
   const certifiedMoney = (value) => sourceComplete ? money(value, currency) : 'Unavailable';
+  /** @param {number} value */
   const readyMoney = (value) => financialReady ? certifiedMoney(value) : 'Unavailable';
   const recordedExpenseDisplay = recordedExpenses === null ? 'Unavailable' : (!sourceComplete ? 'Unavailable' : certifiedMoney(recordedExpenses));
   return (
@@ -420,7 +473,7 @@ function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financia
             readyMoney(metrics.forecast7),
             Sparkles,
           ],
-        ].map(([label, value, Icon]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([label, value, Icon]) => (
           <article key={label}>
             <Icon size={18} />
             <small>{label}</small>
@@ -459,7 +512,7 @@ function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financia
           <Signal
             icon={ClipboardList}
             label="Open checklists"
-            value={data.checklists.filter((item) => !item.is_completed).length}
+            value={data.checklists.filter((/** @type {HposControlChecklistExpectedView} */ item) => !item.is_completed).length}
             detail="Opening, closing and safety work."
           />
           <Signal
@@ -499,7 +552,7 @@ function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financia
               <span>Staff on duty</span>
               <strong>
                 {digest.staff_on_duty ??
-                  data.shifts.filter((shift) => !shift.clock_out).length}
+                  data.shifts.filter((/** @type {HposControlShiftExpectedView} */ shift) => !shift.clock_out).length}
               </strong>
             </div>
           </div>
@@ -508,6 +561,7 @@ function OwnerBrief({ metrics, data, currency, loading, sourceComplete, financia
     </div>
   );
 }
+/** @param {{icon: import('lucide-react').LucideIcon, label: string, value: string | number, detail: string}} props */
 function Signal({ icon: Icon, label, value, detail }) {
   return (
     <div className="hpos-signal">
@@ -523,8 +577,9 @@ function Signal({ icon: Icon, label, value, detail }) {
   );
 }
 
+/** @param {{data: HposControlDataExpectedView, currency: string, sourceWarnings?: string[], onVariance: () => void, onNotice: (message: string) => void}} props */
 function BarControl({ data, currency, sourceWarnings = [], onVariance }) {
-  const barItems = data.menu.filter((item) =>
+  const barItems = data.menu.filter((/** @type {HposControlMenuItemExpectedView} */ item) =>
     /beer|spirit|wine|cocktail|bar|drink|soft/i.test(
       `${item.category || ''} ${item.template_kind || ''} ${item.name || ''}`,
     ),
@@ -540,7 +595,7 @@ function BarControl({ data, currency, sourceWarnings = [], onVariance }) {
           ['Pack templates', packs.length, PackageCheck],
           ['Expiry lots', data.expiry.length, Clock3],
           ['Stock decisions', data.suggestions.length, AlertTriangle],
-        ].map(([label, value, Icon]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([label, value, Icon]) => (
           <article key={label}>
             <Icon size={18} />
             <small>{label}</small>
@@ -594,7 +649,7 @@ function BarControl({ data, currency, sourceWarnings = [], onVariance }) {
             </HposStatusBadge>
           </div>
           {sourceWarnings.includes('expiry lots') && <HposNotice tone="warning">Expiry data is unavailable. Reconnect before treating this as a clear stock check.</HposNotice>}
-          {!sourceWarnings.includes('expiry lots') && data.expiry.slice(0, 8).map((lot) => (
+          {!sourceWarnings.includes('expiry lots') && data.expiry.slice(0, 8).map((/** @type {HposControlExpiryRowExpectedView} */ lot) => (
             <div className="hpos-list-row" key={lot.id}>
               <span>
                 <strong>
@@ -618,8 +673,9 @@ function BarControl({ data, currency, sourceWarnings = [], onVariance }) {
   );
 }
 
+/** @param {{data: HposControlDataExpectedView, onClose: () => void, onNotice: (message: string) => void, onReload: () => Promise<void>}} props */
 function VarianceModal({ data, onClose, onNotice, onReload }) {
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(/** @type {{id: string | number; name?: string; item_name?: string}[]} */ ([]));
   const [form, setForm] = useState({
     itemId: '',
     quantity: '',
@@ -636,6 +692,7 @@ function VarianceModal({ data, onClose, onNotice, onReload }) {
       .then((rows) => setItems(Array.isArray(rows) ? rows : []))
       .catch(() => {});
   }, []);
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const save = async (e) => {
     e.preventDefault();
     const measuredVariance =
@@ -648,22 +705,24 @@ function VarianceModal({ data, onClose, onNotice, onReload }) {
     if (!form.itemId || !measuredVariance) return;
     setSaving(true);
     try {
-      const result = await window.api.inventory.adjustStock(
+      const result = /** @type {{success?: boolean; error?: unknown}} */ (await window.api.inventory.adjustStock(
         form.itemId,
         -measuredVariance,
         `${form.reason} (${form.unit}); expected close ${form.expectedClosing || 'n/a'}; actual close ${form.actualClosing || 'n/a'}; ${form.notes}`.trim(),
         null,
         crypto.randomUUID(),
-      );
+      ));
       if (result?.success === false)
-        throw new Error(result.error || 'Could not record variance');
+        throw new Error(/** @type {string} */ (result.error || 'Could not record variance'));
       onNotice(
         'Bar variance recorded through the inventory adjustment contract.',
       );
       onClose();
       await onReload();
     } catch (error) {
-      onNotice(error.message || 'Could not record variance.');
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (error);
+      onNotice(/** @type {string} */ (rejection.message) || 'Could not record variance.');
     } finally {
       setSaving(false);
     }
@@ -783,6 +842,7 @@ function VarianceModal({ data, onClose, onNotice, onReload }) {
   );
 }
 
+/** @param {{currency: string, metrics: HposControlMetrics, barOnly: boolean, financialReady: boolean, sourceWarnings?: string[]}} props */
 function MenuMargin({ currency, metrics, barOnly, financialReady, sourceWarnings = [] }) {
   return (
     <div className="hpos-control-section">
@@ -844,9 +904,11 @@ function MenuMargin({ currency, metrics, barOnly, financialReady, sourceWarnings
     </div>
   );
 }
+/** @param {{data: HposControlDataExpectedView, currency: string, metrics: HposControlMetrics, onReload: () => Promise<void>, barOnly: boolean, financialReady: boolean}} props */
 function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) {
+  /** @type {Record<string, {name: string, sales: number, orders: number}>} */
   const staff = {};
-  (financialReady ? data.orders : []).forEach((order) => {
+  (financialReady ? data.orders : []).forEach((/** @type {HposControlSalesRowExpectedView} */ order) => {
     if (String(order.status || '').toLowerCase() !== 'completed' && String(order.status || '').toLowerCase() !== 'settled') return;
     const name = order.cashier_name || order.waiter_name || 'Unassigned';
     staff[name] ??= { name, sales: 0, orders: 0 };
@@ -867,13 +929,15 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
     e.preventDefault();
     setSaving(true);
     try {
-      const r = await window.api.pos.saveRestaurantShiftPlan(form);
-      if (r?.success === false) throw new Error(r.error);
+      const r = /** @type {{success?: boolean; error?: unknown}} */ (await window.api.pos.saveRestaurantShiftPlan(form));
+      if (r?.success === false) throw new Error(/** @type {string} */ (r.error));
       setMessage('Shift plan saved.');
       setForm({ ...form, staff_name: '' });
       await onReload();
     } catch (error) {
-      setMessage(error.message || 'Could not save shift plan.');
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (error);
+      setMessage(/** @type {string} */ (rejection.message) || 'Could not save shift plan.');
     } finally {
       setSaving(false);
     }
@@ -881,11 +945,13 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
   const remove = async (id) => {
     try {
       const r = await window.api.pos.deleteRestaurantShiftPlan(id);
-      if (r?.success === false) throw new Error(r.error);
+      if (r?.success === false) throw new Error(/** @type {string} */ (r.error));
       setMessage('Shift plan removed.');
       await onReload();
     } catch (error) {
-      setMessage(error.message);
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (error);
+      setMessage(/** @type {string} */ (rejection.message));
     }
   };
   return (
@@ -894,7 +960,7 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
         {[
           [
             'Active shifts',
-            data.shifts.filter((s) => !s.clock_out).length,
+            data.shifts.filter((/** @type {HposControlShiftExpectedView} */ s) => !s.clock_out).length,
             Clock3,
           ],
           ['Planned shifts', data.plans.length, CalendarDays],
@@ -907,7 +973,7 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
             ),
             DollarSign,
           ],
-        ].map(([l, v, I]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([l, v, I]) => (
           <article key={l}>
             <I size={18} />
             <small>{l}</small>
@@ -967,7 +1033,7 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
             </button>
           </form>
           {message && <p className="hpos-control-copy">{message}</p>}
-          {data.plans.slice(0, 12).map((plan) => (
+          {data.plans.slice(0, 12).map((/** @type {HposControlShiftPlanExpectedView} */ plan) => (
             <div className="hpos-list-row" key={plan.id}>
               <span>
                 <strong>
@@ -1034,8 +1100,9 @@ function Labour({ data, currency, metrics, onReload, barOnly, financialReady }) 
     </div>
   );
 }
+/** @param {{data: HposControlDataExpectedView, currency: string, onNotice: (message: string) => void, onReload: () => Promise<void>, sourceWarnings?: string[]}} props */
 function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }) {
-  const [selected, setSelected] = useState([]);
+  const [selected, setSelected] = useState(/** @type {number[]} */ ([]));
   const toggle = (i) =>
     setSelected((current) =>
       current.includes(i) ? current.filter((x) => x !== i) : [...current, i],
@@ -1067,12 +1134,14 @@ function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }
         rows,
         'Manager-approved reorder from Business Control',
       );
-      if (result?.success === false) throw new Error(result.error);
+      if (result?.success === false) throw new Error(/** @type {string} */ (result.error));
       onNotice('Purchase order created from selected reorder suggestions.');
       setSelected([]);
       await onReload();
     } catch (e) {
-      onNotice(e.message);
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (e);
+      onNotice(/** @type {string} */ (rejection.message));
     }
   };
   return (
@@ -1082,19 +1151,19 @@ function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }
           ['Reorder suggestions', data.suggestions.length, PackageCheck],
           [
             'Suppliers',
-            new Set(data.suggestions.map((s) => s.supplier_id).filter(Boolean))
+            new Set(data.suggestions.map((/** @type {HposControlSuggestionExpectedView} */ s) => s.supplier_id).filter(Boolean))
               .size,
             Users,
           ],
           [
             'Open POs',
             data.purchaseOrders.filter(
-              (p) => !['received', 'cancelled'].includes(p.status),
+              (/** @type {HposControlPurchaseOrderExpectedView} */ p) => !['received', 'cancelled'].includes(p.status),
             ).length,
             ShoppingCart,
           ],
           ['Selected value', reorderUnavailable ? 'Unavailable' : money(total, currency), DollarSign],
-        ].map(([l, v, I]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([l, v, I]) => (
           <article key={l}>
             <I size={18} />
             <small>{l}</small>
@@ -1115,7 +1184,7 @@ function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }
           )}
         </div>
         {reorderUnavailable && <HposNotice tone="warning">Reorder data is unavailable. No reorder decision is certified until inventory and purchase-order sources reconnect.</HposNotice>}
-        {!reorderUnavailable && data.suggestions.map((row, index) => (
+        {!reorderUnavailable && data.suggestions.map((/** @type {HposControlSuggestionExpectedView} */ row, index) => (
           <label className="hpos-list-row" key={row.id || index}>
             <input
               type="checkbox"
@@ -1150,6 +1219,7 @@ function Procurement({ data, currency, onNotice, onReload, sourceWarnings = [] }
     </div>
   );
 }
+/** @param {{data: HposControlDataExpectedView, onNotice: (message: string) => void, onReload: () => Promise<void>}} props */
 function Revenue({ data, onNotice, onReload }) {
   const [form, setForm] = useState({
     name: '',
@@ -1162,11 +1232,12 @@ function Revenue({ data, onNotice, onReload }) {
     customer_segment: '',
     active: true,
   });
+  /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const save = async (e) => {
     e.preventDefault();
     try {
-      const r = await window.api.pos.savePromotion(form);
-      if (r?.success === false) throw new Error(r.error);
+      const r = /** @type {{success?: boolean; error?: unknown}} */ (await window.api.pos.savePromotion(form));
+      if (r?.success === false) throw new Error(/** @type {string} */ (r.error));
       onNotice('Scheduled promotion saved to the server-backed catalog.');
       setForm({
         name: '',
@@ -1181,7 +1252,9 @@ function Revenue({ data, onNotice, onReload }) {
       });
       await onReload();
     } catch (error) {
-      onNotice(error.message || 'Could not save promotion.');
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (error);
+      onNotice(/** @type {string} */ (rejection.message) || 'Could not save promotion.');
     }
   };
   return (
@@ -1194,12 +1267,12 @@ function Revenue({ data, onNotice, onReload }) {
           </div>
           <HposStatusBadge
             tone={
-              data.promotions.filter((p) => p.active !== false).length
+              data.promotions.filter((/** @type {HposControlPromotionExpectedView} */ p) => p.active !== false).length
                 ? 'success'
                 : 'neutral'
             }
           >
-            {data.promotions.filter((p) => p.active !== false).length} active
+            {data.promotions.filter((/** @type {HposControlPromotionExpectedView} */ p) => p.active !== false).length} active
           </HposStatusBadge>
         </div>
         <form className="hpos-inline-form hpos-promotion-form" onSubmit={save}>
@@ -1270,7 +1343,7 @@ function Revenue({ data, onNotice, onReload }) {
           </button>
         </form>
         <div className="hpos-mini-table">
-          {data.promotions.map((p) => (
+          {data.promotions.map((/** @type {HposControlPromotionExpectedView} */ p) => (
             <div key={p.id}>
               <strong>{p.name}</strong>
               <span>
@@ -1296,6 +1369,7 @@ function Revenue({ data, onNotice, onReload }) {
     </div>
   );
 }
+/** @param {{data: HposControlDataExpectedView, onManage: () => void}} props */
 function GuestFlow({ data, onManage }) {
   return (
     <div className="hpos-control-section">
@@ -1306,10 +1380,10 @@ function GuestFlow({ data, onManage }) {
           ['Alerts', data.alerts.length, AlertTriangle],
           [
             'Open checks',
-            data.orders.filter((o) => o.status === 'open').length,
+            data.orders.filter((/** @type {HposControlSalesRowExpectedView} */ o) => o.status === 'open').length,
             ClipboardList,
           ],
-        ].map(([l, v, I]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([l, v, I]) => (
           <article key={l}>
             <I size={18} />
             <small>{l}</small>
@@ -1336,7 +1410,7 @@ function GuestFlow({ data, onManage }) {
             Manage guests
           </HposButton>
         </div>
-        {data.reservations.slice(0, 10).map((row) => (
+        {data.reservations.slice(0, 10).map((/** @type {HposControlReservationExpectedView} */ row) => (
           <div className="hpos-list-row" key={row.id}>
             <span>
               <strong>
@@ -1363,9 +1437,10 @@ function GuestFlow({ data, onManage }) {
     </div>
   );
 }
+/** @param {{data: HposControlDataExpectedView, onNotice: (message: string) => void, onReload: () => Promise<void>}} props */
 function ControlSafety({ data, onNotice, onReload }) {
   const [showIncident, setShowIncident] = useState(false);
-  const voidsByOperator = data.voids.reduce((map, row) => {
+  const voidsByOperator = data.voids.reduce(/** @param {Record<string, number>} map @param {HposControlVoidExpectedView} row */ (map, row) => {
     const key =
       row.cashier_name || row.staff_name || row.user_id || 'Unknown operator';
     map[key] = (map[key] || 0) + 1;
@@ -1374,7 +1449,7 @@ function ControlSafety({ data, onNotice, onReload }) {
   const repeatedVoids = Object.entries(voidsByOperator).filter(
     ([, count]) => count >= 3,
   );
-  const afterHours = data.audit.filter((row) => {
+  const afterHours = data.audit.filter((/** @type {HposControlAuditExpectedView} */ row) => {
     const hour = row.created_at ? new Date(row.created_at).getHours() : 12;
     return hour < 5 || hour >= 23;
   });
@@ -1386,12 +1461,12 @@ function ControlSafety({ data, onNotice, onReload }) {
           ['Active alerts', data.alerts.length, AlertTriangle],
           [
             'Open checklists',
-            data.checklists.filter((x) => !x.is_completed).length,
+            data.checklists.filter((/** @type {HposControlChecklistExpectedView} */ x) => !x.is_completed).length,
             ClipboardList,
           ],
           ['Audit events', data.audit.length, ShieldAlert],
           ['Risk signals', riskSignals, ShieldAlert],
-        ].map(([l, v, I]) => (
+        ].map(/** @param {[string, string|number, import('lucide-react').LucideIcon]} metric */ ([l, v, I]) => (
           <article key={l}>
             <I size={18} />
             <small>{l}</small>
@@ -1407,7 +1482,7 @@ function ControlSafety({ data, onNotice, onReload }) {
               <h2>Exceptions and approvals</h2>
             </div>
           </div>
-          {data.alerts.slice(0, 8).map((row) => (
+          {data.alerts.slice(0, 8).map((/** @type {HposControlAlertExpectedView} */ row) => (
             <div className="hpos-list-row" key={row.id}>
               <span>
                 <strong>
@@ -1466,7 +1541,7 @@ function ControlSafety({ data, onNotice, onReload }) {
               Log incident
             </HposButton>
           </div>
-          {data.incidents.slice(0, 5).map((row) => (
+          {data.incidents.slice(0, 5).map((/** @type {HposControlIncidentExpectedView} */ row) => (
             <div className="hpos-list-row" key={row.id}>
               <span>
                 <strong>{row.title || row.incident_type || 'Incident'}</strong>
@@ -1484,7 +1559,7 @@ function ControlSafety({ data, onNotice, onReload }) {
               </HposStatusBadge>
             </div>
           ))}
-          {data.audit.slice(0, 5).map((row) => (
+          {data.audit.slice(0, 5).map((/** @type {HposControlAuditExpectedView} */ row) => (
             <div className="hpos-list-row" key={`audit-${row.id}`}>
               <span>
                 <strong>{row.action || row.entity_type || 'POS action'}</strong>
@@ -1516,6 +1591,7 @@ function ControlSafety({ data, onNotice, onReload }) {
   );
 }
 
+/** @param {{onClose: () => void, onNotice: (message: string) => void, onReload: () => Promise<void>}} props */
 function IncidentModal({ onClose, onNotice, onReload }) {
   const [form, setForm] = useState({
     title: '',
@@ -1528,14 +1604,16 @@ function IncidentModal({ onClose, onNotice, onReload }) {
     e.preventDefault();
     setSaving(true);
     try {
-      const r = await window.api.incidents.create(form);
+      const r = /** @type {{success?: boolean; error?: unknown}} */ (await window.api.incidents.create(form));
       if (r?.success === false)
-        throw new Error(r.error || 'Could not log incident');
+        throw new Error(/** @type {string} */ (r.error || 'Could not log incident'));
       onNotice('Incident logged for manager follow-up.');
       onClose();
       await onReload();
     } catch (error) {
-      onNotice(error.message || 'Could not log incident.');
+      // Rejection values are unvalidated; retain the existing direct message read.
+      const rejection = /** @type {{message?: unknown}} */ (error);
+      onNotice(/** @type {string} */ (rejection.message) || 'Could not log incident.');
     } finally {
       setSaving(false);
     }

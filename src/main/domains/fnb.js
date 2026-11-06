@@ -5,12 +5,17 @@ import { checkOnline } from './connectivity.js'
 import { isFnbOptionalModuleKey } from '../../shared/fnbModules.js'
 
 const FNB_PREFS_CACHE = 'fnb-module-preferences'
+/** @typedef {Error & {code?: unknown, details?: unknown, blockers?: unknown, server_version?: unknown, server_enabled?: unknown, status?: unknown, remaining_covers?: unknown}} FnbApplicationError */
 // Cache keys are scoped by lodge + outlet + date/range: offline data for one
 // outlet or period must never render under another.
+/** @param {string} lodgeId @param {string|null} outletId */
 const fnbTodayCacheKey = (lodgeId, outletId) => `fnb-today:${lodgeId}:${outletId || 'all'}`
+/** @param {string} lodgeId @param {string} start @param {string} end @param {string|null} outletId */
 const fnbReportCacheKey = (lodgeId, start, end, outletId) => `fnb-consolidated-report:${lodgeId}:${start}:${end}:${outletId || 'all'}`
+/** @param {string} lodgeId @param {string} date @param {string|null} outletId */
 const fnbDemandCacheKey = (lodgeId, date, outletId) => `fnb-demand-recommendations:${lodgeId}:${date}:${outletId || 'all'}`
 
+/** @param {string|null} [override] */
 function lodgeIdOrThrow(override = null) {
   const lodgeId = override || state.lodgeId
   if (!lodgeId) throw new Error('No lodge selected')
@@ -21,13 +26,15 @@ function failClosedOfflineError(feature = 'This F&B action') {
   return new Error(`${feature} needs an online connection. Your last confirmed data is shown; reconnect and retry.`)
 }
 
+/** @param {unknown} error @param {string} fallback @returns {FnbApplicationError} */
 function normalizeRpcError(error, fallback) {
-  const message = String(error?.message || error || fallback || 'Request failed.')
-  const err = new Error(message)
+  const rpcError = /** @type {{message?: unknown, code?: unknown, details?: unknown}|null} */ (error)
+  const message = String(rpcError?.message || error || fallback || 'Request failed.')
+  const err = /** @type {FnbApplicationError} */ (new Error(message))
   err.cause = error
   // Preserve machine-readable codes surfaced by PostgREST/RPC bodies.
-  if (error?.code) err.code = error.code
-  if (error?.details) err.details = error.details
+  if (rpcError?.code) err.code = rpcError.code
+  if (rpcError?.details) err.details = rpcError.details
   return err
 }
 
@@ -35,23 +42,24 @@ function normalizeRpcError(error, fallback) {
 // Offline activation is unavailable by product decision. The renderer keeps
 // the last confirmed state and shows a retry message.
 
+/** @param {string|null} [lodgeIdArg] */
 async function _getFnbModulePreferences(lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const online = await checkOnline().catch(() => false)
   if (!online) {
     const cached = readCache(FNB_PREFS_CACHE)
     if (Array.isArray(cached) && cached.length > 0) {
-      const stale = [...cached]
+      const stale = /** @type {unknown[] & {_source?: string, _complete?: boolean}} */ ([...cached])
       stale._source = 'cache'
       stale._complete = false
       return { success: true, lodge_id: lodgeId, modules: cached, source: 'cache', offline: true }
     }
     throw failClosedOfflineError('F&B module settings')
   }
-  const { data, error } = await state.supabase.rpc('get_fnb_module_preferences', { p_lodge_id: lodgeId })
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_fnb_module_preferences', { p_lodge_id: lodgeId })
   if (error) throw normalizeRpcError(error, 'Could not load F&B module settings.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not load F&B module settings.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not load F&B module settings.'))
     err.code = data.code
     throw err
   }
@@ -60,6 +68,7 @@ async function _getFnbModulePreferences(lodgeIdArg = null) {
   return { success: true, lodge_id: data?.lodge_id || lodgeId, modules, source: 'server' }
 }
 
+/** @param {...(string|null)} args */
 export const getFnbModulePreferences = (...args) =>
   dedupePromise('getFnbModulePreferences', () => _getFnbModulePreferences(...args))
 
@@ -68,6 +77,7 @@ export function getCachedFnbModulePreferences() {
   return Array.isArray(cached) ? cached : []
 }
 
+/** @param {string} moduleKey @param {boolean} enabled @param {string|number|null} [expectedVersion] @param {string|null} [lodgeIdArg] */
 export async function setFnbModulePreference(moduleKey, enabled, expectedVersion = null, lodgeIdArg = null) {
   const key = String(moduleKey || '')
   if (!isFnbOptionalModuleKey(key)) throw new Error('Unknown F&B module.')
@@ -75,7 +85,7 @@ export async function setFnbModulePreference(moduleKey, enabled, expectedVersion
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('F&B module activation')
-  const { data, error } = await state.supabase.rpc('set_fnb_module_preference', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_fnb_module_preference', {
     p_lodge_id: lodgeId,
     p_module_key: key,
     p_enabled: enabled,
@@ -83,7 +93,7 @@ export async function setFnbModulePreference(moduleKey, enabled, expectedVersion
   })
   if (error) throw normalizeRpcError(error, 'Could not update the F&B module.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not update the F&B module.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not update the F&B module.'))
     err.code = data.code
     err.blockers = data.blockers
     err.server_version = data.server_version
@@ -101,11 +111,12 @@ export async function setFnbModulePreference(moduleKey, enabled, expectedVersion
 
 // ── Today + consolidated reads (server-confirmed, cache-labelled) ──────────
 
+/** @param {string|null} [outletId] @param {string|null} [lodgeIdArg] */
 async function _getFnbToday(outletId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const cacheKey = fnbTodayCacheKey(lodgeId, outletId)
   try {
-    const { data, error } = await state.supabase.rpc('get_fnb_today', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_fnb_today', {
       p_lodge_id: lodgeId,
       p_outlet_id: outletId || null
     })
@@ -116,7 +127,7 @@ async function _getFnbToday(outletId = null, lodgeIdArg = null) {
   } catch (e) {
     const cached = readCache(cacheKey)
     if (cached && typeof cached === 'object') {
-      return { ...cached, _source: 'cache', _complete: false, _stale_error: String(e?.message || e) }
+      return { ...cached, _source: 'cache', _complete: false, _stale_error: String((/** @type {{message?: unknown}|null} */ (e))?.message || e) }
     }
     throw normalizeRpcError(e, 'Today view is unavailable. Reconnect and retry.')
   }
@@ -124,15 +135,17 @@ async function _getFnbToday(outletId = null, lodgeIdArg = null) {
 
 // Dedupe key includes outlet + lodge so concurrent requests for different
 // outlets never share one in-flight promise.
+/** @param {string|null} [outletId] @param {string|null} [lodgeIdArg] */
 export const getFnbToday = (outletId = null, lodgeIdArg = null) =>
   dedupePromise(`getFnbToday:${lodgeIdArg || state.lodgeId}:${outletId || 'all'}`, () => _getFnbToday(outletId, lodgeIdArg))
 
+/** @param {string} start @param {string} end @param {string|null} [outletId] @param {string|null} [lodgeIdArg] */
 export async function getFnbConsolidatedReport(start, end, outletId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   if (!start || !end) throw new Error('A valid date range is required.')
   const cacheKey = fnbReportCacheKey(lodgeId, start, end, outletId)
   try {
-    const { data, error } = await state.supabase.rpc('get_fnb_consolidated_report', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_fnb_consolidated_report', {
       p_lodge_id: lodgeId,
       p_start: start,
       p_end: end,
@@ -148,7 +161,7 @@ export async function getFnbConsolidatedReport(start, end, outletId = null, lodg
   } catch (e) {
     const cached = readCache(cacheKey)
     if (cached && typeof cached === 'object') {
-      return { ...cached, _source: 'cache', _complete: false, _stale_error: String(e?.message || e) }
+      return { ...cached, _source: 'cache', _complete: false, _stale_error: String((/** @type {{message?: unknown}|null} */ (e))?.message || e) }
     }
     throw normalizeRpcError(e, 'Consolidated report is unavailable. Reconnect and retry.')
   }
@@ -156,6 +169,7 @@ export async function getFnbConsolidatedReport(start, end, outletId = null, lodg
 
 // ── Room service (offline-eligible create, online transitions) ─────────────
 
+/** @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function createFnbRoomServiceOrder(payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const opId = operationId || randomUUID()
@@ -169,20 +183,21 @@ export async function createFnbRoomServiceOrder(payload = {}, operationId = null
     }, null, { _queue_id: `fnb-room-service-${opId}` })
     return { success: true, offline: true, operation_id: opId, _pending: true }
   }
-  const { data, error } = await state.supabase.rpc('create_fnb_room_service_order', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_fnb_room_service_order', {
     p_lodge_id: lodgeId,
     p_payload: body,
     p_operation_id: opId
   })
   if (error) throw normalizeRpcError(error, 'Could not create the room-service order.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not create the room-service order.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not create the room-service order.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} orderId @param {string} toStatus @param {Record<string, unknown>} [payload] @param {string|null} [operationId] */
 export async function updateFnbRoomServiceStatus(orderId, toStatus, payload = {}, operationId = null) {
   if (!orderId) throw new Error('An order ID is required.')
   const online = await checkOnline().catch(() => false)
@@ -191,7 +206,7 @@ export async function updateFnbRoomServiceStatus(orderId, toStatus, payload = {}
   if (!online) throw failClosedOfflineError('Room-service status changes')
   // folio_posted is server-derived on delivery; strip any client value.
   const { folio_posted: _stripFolio, ...safePayload } = payload || {}
-  const { data, error } = await state.supabase.rpc('update_fnb_room_service_status', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_fnb_room_service_status', {
     p_order_id: orderId,
     p_to_status: toStatus,
     p_payload: safePayload,
@@ -199,7 +214,7 @@ export async function updateFnbRoomServiceStatus(orderId, toStatus, payload = {}
   })
   if (error) throw normalizeRpcError(error, 'Could not update the room-service order.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not update the room-service order.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not update the room-service order.'))
     err.code = data.code
     err.status = data.status
     throw err
@@ -209,6 +224,7 @@ export async function updateFnbRoomServiceStatus(orderId, toStatus, payload = {}
 
 // ── Meal plans (offline-eligible, same RPC + stable key on replay) ──────────
 
+/** @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function createFnbMealEntitlement(payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const opId = operationId || randomUUID()
@@ -221,20 +237,21 @@ export async function createFnbMealEntitlement(payload = {}, operationId = null,
     }, null, { _queue_id: `fnb-meal-entitlement-${opId}` })
     return { success: true, offline: true, operation_id: opId, _pending: true }
   }
-  const { data, error } = await state.supabase.rpc('create_fnb_meal_entitlement', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_fnb_meal_entitlement', {
     p_lodge_id: lodgeId,
     p_payload: payload || {},
     p_operation_id: opId
   })
   if (error) throw normalizeRpcError(error, 'Could not grant the meal plan.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not grant the meal plan.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not grant the meal plan.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} entitlementId @param {Record<string, unknown>} [payload] @param {string|null} [operationId] */
 export async function redeemFnbMeal(entitlementId, payload = {}, operationId = null) {
   if (!entitlementId) throw new Error('An entitlement ID is required.')
   const opId = operationId || randomUUID()
@@ -251,14 +268,14 @@ export async function redeemFnbMeal(entitlementId, payload = {}, operationId = n
     }, null, { _queue_id: `fnb-meal-redeem-${opId}` })
     return { success: true, offline: true, operation_id: opId, _pending: true }
   }
-  const { data, error } = await state.supabase.rpc('redeem_fnb_meal', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('redeem_fnb_meal', {
     p_entitlement_id: entitlementId,
     p_payload: safePayload,
     p_operation_id: opId
   })
   if (error) throw normalizeRpcError(error, 'Could not redeem the meal.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not redeem the meal.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not redeem the meal.'))
     err.code = data.code
     err.remaining_covers = data.remaining_covers
     throw err
@@ -268,6 +285,7 @@ export async function redeemFnbMeal(entitlementId, payload = {}, operationId = n
 
 // ── Food safety (offline-eligible logs, online close) ───────────────────────
 
+/** @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function createFnbTemperatureLog(payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const opId = operationId || randomUUID()
@@ -280,32 +298,33 @@ export async function createFnbTemperatureLog(payload = {}, operationId = null, 
     }, null, { _queue_id: `fnb-temp-${opId}` })
     return { success: true, offline: true, operation_id: opId, _pending: true }
   }
-  const { data, error } = await state.supabase.rpc('create_fnb_temperature_log', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_fnb_temperature_log', {
     p_lodge_id: lodgeId,
     p_payload: payload || {},
     p_operation_id: opId
   })
   if (error) throw normalizeRpcError(error, 'Could not record the temperature.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not record the temperature.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not record the temperature.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} actionId @param {string} closeNote @param {string|null} [operationId] */
 export async function closeFnbCorrectiveAction(actionId, closeNote, operationId = null) {
   if (!actionId) throw new Error('A corrective-action ID is required.')
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('Corrective-action close-out')
-  const { data, error } = await state.supabase.rpc('close_fnb_corrective_action', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('close_fnb_corrective_action', {
     p_action_id: actionId,
     p_close_note: closeNote,
     p_operation_id: operationId || null
   })
   if (error) throw normalizeRpcError(error, 'Could not close the corrective action.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not close the corrective action.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not close the corrective action.'))
     err.code = data.code
     throw err
   }
@@ -314,6 +333,7 @@ export async function closeFnbCorrectiveAction(actionId, closeNote, operationId 
 
 // ── Invoice matching (offline-eligible capture, online approval/handoff) ────
 
+/** @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function captureFnbSupplierInvoice(payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const opId = operationId || randomUUID()
@@ -326,24 +346,25 @@ export async function captureFnbSupplierInvoice(payload = {}, operationId = null
     }, null, { _queue_id: `fnb-invoice-${opId}` })
     return { success: true, offline: true, operation_id: opId, _pending: true }
   }
-  const { data, error } = await state.supabase.rpc('capture_fnb_supplier_invoice', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('capture_fnb_supplier_invoice', {
     p_lodge_id: lodgeId,
     p_payload: payload || {},
     p_operation_id: opId
   })
   if (error) throw normalizeRpcError(error, 'Could not capture the supplier invoice.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not capture the supplier invoice.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not capture the supplier invoice.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} invoiceId @param {boolean} approve @param {string|null} [note] @param {string|null} [operationId] */
 export async function approveFnbInvoiceMatch(invoiceId, approve, note = null, operationId = null) {
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('Invoice variance approval')
-  const { data, error } = await state.supabase.rpc('approve_fnb_invoice_match', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('approve_fnb_invoice_match', {
     p_invoice_id: invoiceId,
     p_approve: approve,
     p_note: note,
@@ -351,23 +372,24 @@ export async function approveFnbInvoiceMatch(invoiceId, approve, note = null, op
   })
   if (error) throw normalizeRpcError(error, 'Could not decide the invoice match.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not decide the invoice match.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not decide the invoice match.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} invoiceId @param {string|null} [operationId] */
 export async function handoffFnbInvoiceToAccounting(invoiceId, operationId = null) {
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('Accounting handoff')
-  const { data, error } = await state.supabase.rpc('handoff_fnb_invoice_to_accounting', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('handoff_fnb_invoice_to_accounting', {
     p_invoice_id: invoiceId,
     p_operation_id: operationId || null
   })
   if (error) throw normalizeRpcError(error, 'Could not hand the invoice to accounting.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not hand the invoice to accounting.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not hand the invoice to accounting.'))
     err.code = data.code
     throw err
   }
@@ -376,11 +398,12 @@ export async function handoffFnbInvoiceToAccounting(invoiceId, operationId = nul
 
 // ── Demand planning (advisory read + explicit online approval) ──────────────
 
+/** @param {string} date @param {string|null} [outletId] @param {string|null} [lodgeIdArg] */
 export async function getFnbDemandRecommendations(date, outletId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const cacheKey = fnbDemandCacheKey(lodgeId, date, outletId)
   try {
-    const { data, error } = await state.supabase.rpc('get_fnb_demand_recommendations', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_fnb_demand_recommendations', {
       p_lodge_id: lodgeId,
       p_date: date,
       p_outlet_id: outletId || null
@@ -392,7 +415,7 @@ export async function getFnbDemandRecommendations(date, outletId = null, lodgeId
   } catch (e) {
     const cached = readCache(cacheKey)
     if (cached && typeof cached === 'object') {
-      return { ...cached, _source: 'cache', _complete: false, _stale_error: String(e?.message || e) }
+      return { ...cached, _source: 'cache', _complete: false, _stale_error: String((/** @type {{message?: unknown}|null} */ (e))?.message || e) }
     }
     throw normalizeRpcError(e, 'Demand planning is unavailable. Reconnect and retry.')
   }
@@ -400,17 +423,19 @@ export async function getFnbDemandRecommendations(date, outletId = null, lodgeId
 
 // ── Operational queues (server reads; no local estimates) ───────────────────
 
+/** @param {string} rpc @param {Record<string, unknown>} args @param {string} label */
 async function fnbRead(rpc, args, label) {
-  const { data, error } = await state.supabase.rpc(rpc, args)
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc(rpc, args)
   if (error) throw normalizeRpcError(error, `${label} is unavailable. Reconnect and retry.`)
   if (data && data.success === false) {
-    const err = new Error(data.error || `${label} is unavailable.`)
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || `${label} is unavailable.`))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string|null} [outletId] @param {boolean} [includeClosed] @param {string|null} [lodgeIdArg] */
 export async function getFnbRoomServiceQueue(outletId = null, includeClosed = false, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   return fnbRead('get_fnb_room_service_queue', {
@@ -421,6 +446,7 @@ export async function getFnbRoomServiceQueue(outletId = null, includeClosed = fa
   }, 'Room-service queue')
 }
 
+/** @param {boolean} [includeDepleted] @param {string|null} [lodgeIdArg] */
 export async function getFnbMealEntitlements(includeDepleted = false, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   return fnbRead('get_fnb_meal_entitlements', {
@@ -430,11 +456,13 @@ export async function getFnbMealEntitlements(includeDepleted = false, lodgeIdArg
   }, 'Meal plans')
 }
 
+/** @param {string|null} [lodgeIdArg] */
 export async function getFnbFoodSafetyTemplates(lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   return fnbRead('get_fnb_food_safety_templates', { p_lodge_id: lodgeId }, 'Check templates')
 }
 
+/** @param {boolean} [includeClosed] @param {string|null} [lodgeIdArg] */
 export async function getFnbCorrectiveQueue(includeClosed = false, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   return fnbRead('get_fnb_corrective_queue', {
@@ -444,34 +472,37 @@ export async function getFnbCorrectiveQueue(includeClosed = false, lodgeIdArg = 
   }, 'Corrective actions')
 }
 
+/** @param {string|null} [lodgeIdArg] */
 export async function getFnbSupplierInvoices(lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   return fnbRead('get_fnb_supplier_invoices', { p_lodge_id: lodgeId, p_limit: 50 }, 'Supplier invoices')
 }
 
+/** @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function createFnbFoodSafetyTemplate(payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('Check templates')
-  const { data, error } = await state.supabase.rpc('create_fnb_food_safety_template', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_fnb_food_safety_template', {
     p_lodge_id: lodgeId,
     p_payload: payload || {},
     p_operation_id: operationId || randomUUID()
   })
   if (error) throw normalizeRpcError(error, 'Could not create the check template.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not create the check template.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not create the check template.'))
     err.code = data.code
     throw err
   }
   return data
 }
 
+/** @param {string} recommendationKey @param {string} action @param {Record<string, unknown>} [payload] @param {string|null} [operationId] @param {string|null} [lodgeIdArg] */
 export async function approveFnbDemandRecommendation(recommendationKey, action, payload = {}, operationId = null, lodgeIdArg = null) {
   const lodgeId = lodgeIdOrThrow(lodgeIdArg)
   const online = await checkOnline().catch(() => false)
   if (!online) throw failClosedOfflineError('Demand approvals')
-  const { data, error } = await state.supabase.rpc('approve_fnb_demand_recommendation', {
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('approve_fnb_demand_recommendation', {
     p_lodge_id: lodgeId,
     p_recommendation_key: recommendationKey,
     p_action: action,
@@ -480,7 +511,7 @@ export async function approveFnbDemandRecommendation(recommendationKey, action, 
   })
   if (error) throw normalizeRpcError(error, 'Could not approve the recommendation.')
   if (data && data.success === false) {
-    const err = new Error(data.error || 'Could not approve the recommendation.')
+    const err = /** @type {FnbApplicationError} */ (new Error(data.error || 'Could not approve the recommendation.'))
     err.code = data.code
     throw err
   }

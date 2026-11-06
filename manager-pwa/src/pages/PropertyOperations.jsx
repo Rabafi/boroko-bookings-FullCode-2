@@ -13,16 +13,23 @@ const MODES = {
   maintenance: { title: 'Maintenance', subtitle: 'Live ticket watch and new requests', icon: Wrench }
 }
 
+/** @typedef {{id: string, room_number: string, room_type?: string | null, status?: string | null, housekeeping_status?: string | null}} PropertyRoomExpectedView */
+/** @typedef {{id: string, room_id?: string | null, customer_name?: string | null, guest_name?: string | null, customer?: {name?: string | null} | null, room?: {room_number?: string | null} | null, status: string, check_in: string, check_out: string}} PropertyBookingExpectedView */
+/** @typedef {{id: string, room_id?: string | null, status: string, title?: string | null, issue?: string | null, priority?: string | null, reported_date?: string | null, created_at?: string | null}} PropertyMaintenanceExpectedView */
+/** @typedef {{room: PropertyRoomExpectedView, status: string}} PropertyRoomCardView */
+/** @param {PropertyBookingExpectedView} booking @returns {string} */
 function stayName(booking) {
   return booking.customer_name || booking.guest_name || booking.customer?.name || 'Guest'
 }
 
+/** @param {PropertyRoomExpectedView} room @param {PropertyBookingExpectedView[]} activeBookings @param {PropertyMaintenanceExpectedView[]} openTickets @returns {string} */
 function roomStatus(room, activeBookings, openTickets) {
   if (openTickets.some((ticket) => String(ticket.room_id || '') === String(room.id))) return 'maintenance'
   if (activeBookings.some((booking) => String(booking.room_id || '') === String(room.id))) return 'occupied'
   return String(room.housekeeping_status || room.status || 'clean').toLowerCase()
 }
 
+/** @param {string} status */
 function statusTone(status) {
   if (status === 'occupied') return 'border-red-800 bg-red-950/35 text-red-200'
   if (status === 'maintenance' || status === 'out_of_service') return 'border-orange-800 bg-orange-950/35 text-orange-200'
@@ -31,17 +38,19 @@ function statusTone(status) {
   return 'border-emerald-800 bg-emerald-950/35 text-emerald-200'
 }
 
+/** @param {{mode: string}} props */
 export default function PropertyOperations({ mode }) {
-  const { user } = useAuth()
-  const config = MODES[mode] || MODES.roomgrid
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
+  const config = MODES[/** @type {keyof typeof MODES} */ (mode)] || MODES.roomgrid
   const Icon = config.icon
-  const [rooms, setRooms] = useState([])
-  const [bookings, setBookings] = useState([])
-  const [tickets, setTickets] = useState([])
+  const [rooms, setRooms] = useState(/** @type {PropertyRoomExpectedView[]} */ ([]))
+  const [bookings, setBookings] = useState(/** @type {PropertyBookingExpectedView[]} */ ([]))
+  const [tickets, setTickets] = useState(/** @type {PropertyMaintenanceExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
+  const [updatedAt, setUpdatedAt] = useState(/** @type {string | null} */ (null))
   const [title, setTitle] = useState('')
   const [roomId, setRoomId] = useState('')
 
@@ -49,17 +58,19 @@ export default function PropertyOperations({ mode }) {
     setLoading(true)
     setError('')
     try {
-      const [roomRows, bookingRows, ticketRows] = await Promise.all([
+      const [roomData, bookingData, ticketData] = await Promise.all([
         listRooms(user.lodge_id),
         listBookings(user.lodge_id, { forceFresh: true }),
         listMaintenanceTickets(user.lodge_id, { forceFresh: true })
       ])
-      setRooms(roomRows || [])
-      setBookings(bookingRows || [])
-      setTickets(ticketRows || [])
+      // Room, booking-cache, and maintenance-cache payloads are not runtime
+      // validated here; these are the rows this view has always consumed.
+      setRooms(/** @type {PropertyRoomExpectedView[]} */ (roomData || []))
+      setBookings(/** @type {PropertyBookingExpectedView[]} */ (bookingData || []))
+      setTickets(/** @type {PropertyMaintenanceExpectedView[]} */ (ticketData || []))
       setUpdatedAt(new Date().toISOString())
     } catch (loadError) {
-      setError(loadError?.message || `${config.title} could not load.`)
+      setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || `${config.title} could not load.`)
     } finally {
       setLoading(false)
     }
@@ -72,6 +83,7 @@ export default function PropertyOperations({ mode }) {
   const orderedBookings = useMemo(() => [...activeBookings].sort((a, b) => String(a.check_in || '').localeCompare(String(b.check_in || ''))), [activeBookings])
   const roomRows = useMemo(() => rooms.map((room) => ({ room, status: roomStatus(room, activeBookings.filter((booking) => booking.status === 'checked_in'), openTickets) })), [activeBookings, openTickets, rooms])
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submitTicket = async (event) => {
     event.preventDefault()
     if (!title.trim()) return
@@ -89,7 +101,7 @@ export default function PropertyOperations({ mode }) {
       setRoomId('')
       await load()
     } catch (submitError) {
-      setError(submitError?.message || 'Maintenance ticket could not be raised.')
+      setError((/** @type {{message?: string} | null | undefined} */ (submitError))?.message || 'Maintenance ticket could not be raised.')
     } finally {
       setSaving(false)
     }

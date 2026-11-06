@@ -45,16 +45,58 @@ const ADMIN_GUARD_STATUSES = new Set(['active', 'suspended']);
 const SUPABASE_AUTH_USER_PAGE_SIZE = 1000;
 const MANAGER_MANAGED_ROLES = new Set(['cashier', 'supervisor', 'receptionist', 'operations']);
 
+/**
+ * Expected user fields consumed after the existing users query normalizer or
+ * by the local cache paths below. Cache values are not validated; these types
+ * record existing consumer expectations only. Raw RPC result fields remain
+ * unknown in AuthRpcExpectedResultView.
+ * @typedef {{id: string, auth_user_id?: string|null, name?: string|null, email: string, password_hash?: string|null, role?: string|null, status?: string|null, lodge_id?: string|null, pin_hash?: string|null, pwa_enabled?: boolean|null, pwa_password_hash?: string|null, pwa_password_set_at?: string|null, pwa_password_reset_by?: string|null, pwa_disabled_reason?: string|null, allowed_outlet_ids?: unknown, capability_overrides?: unknown, last_sign_in_at?: string|null, last_desktop_sign_in_at?: string|null, last_pwa_sign_in_at?: string|null, last_activity_at?: string|null, invite_sent_at?: string|null, password_updated_at?: string|null, created_at?: string|null, isMasterAdmin?: boolean}} AuthUserExpectedView
+ */
+
+/** Expected data shape of the existing create/update staff IPC payloads; this is not runtime validation. @typedef {{id?: string, name?: string, email?: string, password?: string, role?: string, status?: string, pin?: unknown, allowed_outlet_ids?: unknown, capability_overrides?: unknown, pwa_enabled?: unknown, pwa_password?: unknown, pwa_password_hash?: unknown, pwa_disabled_reason?: unknown, pwa_reset_by?: unknown, _delete?: unknown, _audit?: unknown}} AuthUserMutationExpectedData */
+/** @typedef {AuthUserMutationExpectedData & {name: string, email: string, password: string}} AuthUserCreateInputExpectedView */
+/** @typedef {{current_pin?: unknown, currentPin?: unknown, new_pin?: unknown, newPin?: unknown}} StaffPinChangeInputExpectedView */
+/** @typedef {{_delete?: unknown, _audit?: unknown, role?: unknown, capability_overrides?: unknown, pwa_enabled?: unknown, pwa_password?: unknown, pwa_disabled_reason?: unknown, allowed_outlet_ids?: unknown, status?: unknown}} StarterGuardDataExpectedView */
+/** @typedef {{requested: false}|{requested: true, enabled: boolean, password_hash: string|null, autoDisableForRole: boolean, disabled_reason: string|null}} PwaAccessResolutionExpectedView */
+/** @typedef {{data?: StarterGuardDataExpectedView, existingUser?: AuthUserExpectedView|null, hasExistingUsers?: boolean, allowArchive?: boolean}} StarterGuardOptionsExpectedView */
+/** @typedef {{message?: unknown, code?: unknown, details?: unknown, hint?: unknown, stack?: unknown}} AuthErrorExpectedView */
+/** @typedef {{staff_basic?: boolean, staff?: boolean, pwa?: boolean}} EntitlementFeatureExpectedView */
+/**
+ * Supabase RPC data has no runtime validation here. Error fields stay unknown;
+ * the narrow string assertions at Error/createAppError call sites erase at
+ * runtime and preserve the constructors' existing coercion behavior.
+ * @typedef {{success?: unknown, id?: unknown, error?: unknown}} AuthRpcExpectedResultView
+ */
+/** @typedef {{found: boolean, authenticated: boolean, id: unknown, email: string, role: unknown, status: string, lodge_id: string|null, name: unknown, password_hash: unknown, last_sign_in_at: unknown, last_desktop_sign_in_at: unknown, last_pwa_sign_in_at: unknown, last_activity_at: unknown, invite_sent_at: unknown, password_updated_at: unknown, capability_overrides: Record<string, unknown>, session_token: unknown, session_expires_at: unknown}} AuthContractRowExpectedView */
+/** @typedef {{ok: true, row: AuthContractRowExpectedView}|{ok: false, reason: string}} AuthContractResultExpectedView */
+/** @typedef {{online: boolean, lodge_id: string|null, hasOfflineAccess: boolean, hasTrustedSession: boolean, savedSessionCount: number, hasCachedUsers: boolean, hasSavedAccounts: boolean, message: string}} AuthStatusResultExpectedView */
+/**
+ * @typedef {object} AuthHealthResultExpectedView
+ * @property {boolean} ok
+ * @property {string|null} code
+ * @property {string} error
+ * @property {{id?: unknown}|null} user
+ * @property {boolean} online
+ * @property {string|null} lodge_id
+ * @property {number} contract_version
+ * @property {'lodge'|null} settings_mode
+ * @property {{lodge_id_is_uuid: boolean, settings_row_exists: boolean, settings_uses_uuid_contract: boolean, target_user_exists: boolean, authenticate_user_contract_valid: boolean}} checks
+ */
+
 async function getStarterUsersAccessMode() {
   const entitlement = await getTrialStatus(state.lodgeId, { forceFresh: state.isOnline });
   const plan = normalizeSubscriptionPlan(entitlement?.plan || entitlement?.subscription_plan || 'Starter');
-  const features = entitlement?.effective_features || {};
+  // The authoritative entitlement producer builds this map from
+  // getPlanFeatureMap/mergeFeatureOverrides; only these existing flag reads
+  // are projected here, and the response is not runtime-validated.
+  const features = /** @type {EntitlementFeatureExpectedView|null|undefined} */ (entitlement?.effective_features) || {};
   return {
     isStarter: plan === 'Starter' && features.staff_basic !== false && features.staff !== true,
     entitlement
   };
 }
 
+/** @param {unknown} enabled */
 async function assertPwaEntitlementForUpdate(enabled) {
   if (enabled !== true) return;
   if (state.isOnline !== true) {
@@ -66,7 +108,8 @@ async function assertPwaEntitlementForUpdate(enabled) {
   } catch {
     throw new Error('Manager mobile app access could not be enabled because the live Pro entitlement could not be verified. Check the connection and try again.');
   }
-  if (entitlement?.effective_features?.pwa !== true) {
+  const features = /** @type {EntitlementFeatureExpectedView|null|undefined} */ (entitlement?.effective_features);
+  if (features?.pwa !== true) {
     throw new Error('Manager mobile app access is not included in this subscription. Upgrade to Pro for mobile access.');
   }
 }
@@ -77,6 +120,7 @@ async function assertPwaEntitlementForUpdate(enabled) {
  * callers an immediate, actionable error and keeps offline queue payloads
  * within the same fixed-role contract.
  */
+/** @param {StarterGuardOptionsExpectedView} [options] */
 export async function assertStarterUsersAccessLite({ data = {}, existingUser = null, hasExistingUsers = false, allowArchive = false } = {}) {
   const { isStarter } = await getStarterUsersAccessMode();
   if (!isStarter) return false;
@@ -134,18 +178,20 @@ async function hasExistingLodgeUsers() {
       .limit(1);
     if (!error) return (data || []).length > 0;
   }
-  return readCache('users')
+  return /** @type {AuthUserExpectedView[]} */ (readCache('users'))
     .map(normalizeUserRecord)
-    .filter(Boolean)
+    .filter((user) => user !== null)
     .some((user) => normalizeLodgeId(user.lodge_id) === lodgeId);
 }
 
+/** @param {{allowInitialSetup?: boolean}} [options] */
 async function requireStaffAdmin({ allowInitialSetup = false } = {}) {
   if (currentUserCanAdministerStaff()) return;
   if (allowInitialSetup && !(await hasExistingLodgeUsers())) return;
   throw new Error('Only a manager or admin can manage staff accounts.');
 }
 
+/** @param {string} label @param {unknown} [payload] */
 function authTrace(label, payload = {}) {
   if (process.env.BOROKO_AUTH_TRACE !== '1') return;
   try {
@@ -155,6 +201,7 @@ function authTrace(label, payload = {}) {
   }
 }
 
+/** @param {Parameters<NonNullable<typeof state.queueOperation>>} args */
 function queueOperationBridge(...args) {
   if (typeof state.queueOperation !== 'function') {
     throw new Error('Queue operation runtime is not available.');
@@ -166,6 +213,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/** @param {import('@supabase/supabase-js').SupabaseClient} adminClient @param {string} emailLower */
 async function findSupabaseAuthUserByEmail(adminClient, emailLower) {
   if (!adminClient || !emailLower) return null;
   // Supabase Auth does not provide an email-filtered admin lookup. Do not put
@@ -186,11 +234,14 @@ async function findSupabaseAuthUserByEmail(adminClient, emailLower) {
   }
 }
 
+/** @param {unknown} error */
 function isSupabaseAuthEmailAlreadyRegisteredError(error) {
-  const message = String(error?.message || error || '');
+  const errorView = /** @type {AuthErrorExpectedView|null|undefined} */ (error);
+  const message = String(errorView?.message || error || '');
   return /user already registered|email.+already.+(?:registered|exists)|duplicate.+(?:email|user)|already exists/i.test(message);
 }
 
+/** @param {import('@supabase/supabase-js').SupabaseClient} adminClient @param {string} authUserId @param {string} password @param {Record<string, unknown>} metadata */
 async function updateSupabaseAuthStaffUser(adminClient, authUserId, password, metadata) {
   const { data, error } = await adminClient.auth.admin.updateUserById(authUserId, {
     password,
@@ -201,6 +252,7 @@ async function updateSupabaseAuthStaffUser(adminClient, authUserId, password, me
   return data?.user?.id || authUserId;
 }
 
+/** @param {AuthUserExpectedView} user @param {string} password @param {{adminClient?: import('@supabase/supabase-js').SupabaseClient|null, lodgeId?: unknown}} [options] */
 export async function ensureSupabaseAuthStaffUserReady(user, password, options = {}) {
   const adminClient = options.adminClient || state.adminDb;
   const lodgeId = normalizeLodgeId(options.lodgeId || user?.lodge_id || state.lodgeId);
@@ -257,14 +309,17 @@ export async function ensureSupabaseAuthStaffUserReady(user, password, options =
   return authUserId;
 }
 
+/** @param {AuthUserExpectedView|null|undefined} user */
 function isProtectedAdmin(user) {
   return normalizeStaffRole(user?.role) === 'admin' && ADMIN_GUARD_STATUSES.has(normalizeStaffStatus(user?.status));
 }
 
+/** @param {AuthUserExpectedView[]} [users] @param {unknown} [excludingId] */
 function countProtectedAdmins(users = [], excludingId = null) {
   return users.filter((user) => user?.id !== excludingId && isProtectedAdmin(user)).length;
 }
 
+/** @param {string} [email] @param {{expectedUserId?: unknown}} [options] @returns {Promise<AuthHealthResultExpectedView|{ok: false, code: string, error: string, user: null, online: boolean, lodge_id: null, contract_version: number, settings_mode: null, checks: AuthHealthResultExpectedView['checks']}>} */
 export async function runAuthHealthCheck(email = '', options = {}) {
   authTrace('healthCheck start', { email: normalizeEmail(email), lodge_id: state.lodgeId });
   await checkOnline();
@@ -291,7 +346,7 @@ export async function runAuthHealthCheck(email = '', options = {}) {
   }
   const emailLower = normalizeEmail(email);
   const expectedUserId = isUuid(options?.expectedUserId) ? options.expectedUserId : null;
-  const health = {
+  const health = /** @type {AuthHealthResultExpectedView} */ ({
     ok: false,
     code: null,
     error: '',
@@ -307,7 +362,7 @@ export async function runAuthHealthCheck(email = '', options = {}) {
       target_user_exists: !emailLower,
       authenticate_user_contract_valid: false
     }
-  };
+  });
 
   console.log('[AUTH HEALTH] start:', {
     email: emailLower || null,
@@ -338,10 +393,11 @@ export async function runAuthHealthCheck(email = '', options = {}) {
     normalizeLodgeId(authContext?.lodge_id) === normalizeLodgeId(state.lodgeId) &&
     Object.prototype.hasOwnProperty.call(authContext || {}, 'deleted');
   } catch (e) {
-    health.code = isBackendAuthSchemaError(e.message || '') ? 'backend_auth_schema_outdated' : 'health_check_failed';
-    health.error = isBackendAuthSchemaError(e.message || '') ?
+    const errorView = /** @type {AuthErrorExpectedView} */ (e);
+    health.code = isBackendAuthSchemaError(/** @type {string} */ (errorView.message || '')) ? 'backend_auth_schema_outdated' : 'health_check_failed';
+    health.error = isBackendAuthSchemaError(/** @type {string} */ (errorView.message || '')) ?
     'The backend lodge auth context schema is outdated for this desktop auth flow. Run the checked-in auth migrations, then try again.' :
-    e.message;
+    /** @type {string} */ (errorView.message);
     authTrace('healthCheck return', health);
     return health;
   }
@@ -354,12 +410,16 @@ export async function runAuthHealthCheck(email = '', options = {}) {
   }
 
   const probeEmail = emailLower || '__auth_health_check__@invalid.local';
-  const { rpcResult, contract } = await fetchAuthenticateUserContract(probeEmail);
-  if (rpcResult?.error) {
-    health.code = isBackendAuthSchemaError(rpcResult.error.message || '') ? 'backend_auth_schema_outdated' : 'health_check_failed';
-    health.error = isBackendAuthSchemaError(rpcResult.error.message || '') ?
+  const { rpcResult, contract: rawContract } = await fetchAuthenticateUserContract(probeEmail);
+  const contract = /** @type {AuthContractResultExpectedView} */ (rawContract);
+  // Supabase PostgrestError.message and the helper's catch-path message are
+  // strings at this producer boundary. Other RPC fields remain untrusted.
+  const rpcErrorView = /** @type {{message?: string|null}|null|undefined} */ (rpcResult?.error);
+  if (rpcErrorView) {
+    health.code = isBackendAuthSchemaError(rpcErrorView.message || '') ? 'backend_auth_schema_outdated' : 'health_check_failed';
+    health.error = isBackendAuthSchemaError(rpcErrorView.message || '') ?
     'The canonical authenticate_user function is missing or outdated. Run the checked-in auth migrations, then try again.' :
-    rpcResult.error.message;
+    /** @type {string} */ (rpcErrorView.message);
     authTrace('healthCheck return', health);
     return health;
   }
@@ -429,9 +489,10 @@ export async function runAuthHealthCheck(email = '', options = {}) {
   return health;
 }
 
+/** @param {AuthUserCreateInputExpectedView} data */
 export async function createUser(data) {
   await requireStaffAdmin({ allowInitialSetup: true });
-  const currentUsers = state.isOnline ? await getAllUsers() : readCache('users');
+  const currentUsers = /** @type {AuthUserExpectedView[]} */ (state.isOnline ? await getAllUsers() : readCache('users'));
   await assertStarterUsersAccessLite({ data, hasExistingUsers: currentUsers.length > 0 });
   assertManagerCanManageRole(data?.role);
   if (currentUserIsLimitedStaffManager() && Object.keys(data?.capability_overrides || {}).length > 0) {
@@ -440,13 +501,13 @@ export async function createUser(data) {
   await assertCreationWithinUsageLimit('user', { forceRemoteRefresh: state.isOnline });
   const emailLower = data.email.trim().toLowerCase();
   if (state.isOnline) {
-    const query = state.supabase.from('users').select('id').eq('email', emailLower).eq('lodge_id', state.lodgeId);
+    const query = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('users').select('id').eq('email', emailLower).eq('lodge_id', state.lodgeId);
     const { data: existing } = await query.limit(1);
     if (existing && existing.length > 0) {
       throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`);
     }
   } else {
-    const cached = readCache('users');
+    const cached = /** @type {AuthUserExpectedView[]} */ (readCache('users'));
     const duplicate = cached.some((u) => u.email?.toLowerCase() === emailLower && u.lodge_id === state.lodgeId);
     if (duplicate) {
       throw new Error(`A user with the email "${emailLower}" already exists in this lodge.`);
@@ -454,10 +515,10 @@ export async function createUser(data) {
   }
 
   const hash = bcrypt.hashSync(data.password, 10);
-  const pwaAccess = resolvePwaAccessUpdate({}, data);
-  await assertPwaEntitlementForUpdate(pwaAccess.enabled);
+  const pwaAccess = /** @type {PwaAccessResolutionExpectedView} */ (resolvePwaAccessUpdate({}, data));
+  await assertPwaEntitlementForUpdate(pwaAccess.requested ? pwaAccess.enabled : undefined);
   const id = randomUUID();
-  const user = {
+  const user = /** @type {AuthUserExpectedView} */ ({
     id,
     auth_user_id: null,
     name: data.name,
@@ -472,20 +533,21 @@ export async function createUser(data) {
     last_activity_at: null,
     invite_sent_at: null,
     password_updated_at: nowIso(),
-    pwa_enabled: pwaAccess.enabled === true,
-    pwa_password_hash: pwaAccess.password_hash,
-    pwa_password_set_at: pwaAccess.password_hash ? new Date().toISOString() : null,
-    pwa_password_reset_by: pwaAccess.password_hash ? state.currentUser?.id || null : null,
+    pwa_enabled: pwaAccess.requested ? pwaAccess.enabled === true : false,
+    pwa_password_hash: pwaAccess.requested ? pwaAccess.password_hash : undefined,
+    pwa_password_set_at: pwaAccess.requested && pwaAccess.password_hash ? new Date().toISOString() : null,
+    pwa_password_reset_by: pwaAccess.requested && pwaAccess.password_hash ? state.currentUser?.id || null : null,
     pwa_disabled_reason: pwaAccess.enabled === true ? null : pwaAccess.requested ? pwaAccess.disabled_reason : null,
     allowed_outlet_ids: Array.isArray(data.allowed_outlet_ids) ? data.allowed_outlet_ids : [],
     capability_overrides: normalizeCapabilityOverrides(data.capability_overrides)
-  };
+  });
   if (data.pin) {
     user.pin_hash = bcrypt.hashSync(String(data.pin).trim(), 10);
   }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_user', { payload: user });
+    const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('create_user', { payload: user });
+    const result = /** @type {AuthRpcExpectedResultView|null} */ (rawResult);
     if (error) {
       const message = error.message || '';
       if (/users_admin_email_unique/i.test(message)) {
@@ -511,29 +573,30 @@ export async function createUser(data) {
     if (!result?.success || !result?.id) {
       throw createAppError(
         'user_create_failed',
-        result?.error || 'Supabase did not return the new staff account after insert.',
+        /** @type {string} */ (result?.error || 'Supabase did not return the new staff account after insert.'),
         { email: emailLower, lodge_id: state.lodgeId }
       );
     }
     try {
       if (state.adminDb) {
         await ensureSupabaseAuthStaffUserReady(
-          { ...user, id: result.id, auth_user_id: null },
+          /** @type {AuthUserExpectedView} */ ({ ...user, id: result.id, auth_user_id: null }),
           data.password
         );
       } else {
         await createSupabaseAuthUserForStaff(emailLower, data.password);
       }
     } catch (authError) {
+      const authErrorView = /** @type {AuthErrorExpectedView|null|undefined} */ (authError);
       console.error('[AUTH] Staff profile was created but Supabase Auth preparation failed:', {
         email: emailLower,
         lodge_id: state.lodgeId,
         user_id: result.id,
-        message: authError?.message || 'unknown_error'
+        message: authErrorView?.message || 'unknown_error'
       });
     }
     if (pwaAccess.requested) {
-      const { data: pwaResult, error: pwaError } = await state.supabase.rpc('set_user_pwa_access', {
+      const { data: rawPwaResult, error: pwaError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_user_pwa_access', {
         p_id: result.id,
         p_lodge_id: state.lodgeId,
         p_enabled: pwaAccess.enabled,
@@ -541,6 +604,7 @@ export async function createUser(data) {
         p_disabled_reason: pwaAccess.disabled_reason,
         p_reset_by: state.currentUser?.id || null
       });
+      const pwaResult = /** @type {AuthRpcExpectedResultView|null} */ (rawPwaResult);
       if (pwaError) {
         throw createAppError('pwa_access_update_failed', pwaError.message || 'Could not prepare manager mobile app access.', {
           email: emailLower,
@@ -551,7 +615,7 @@ export async function createUser(data) {
       if (!pwaResult?.success) {
         throw createAppError(
           'pwa_access_update_failed',
-          pwaResult?.error || 'Could not prepare manager mobile app access.',
+          /** @type {string} */ (pwaResult?.error || 'Could not prepare manager mobile app access.'),
           { email: emailLower, lodge_id: state.lodgeId, user_id: result.id }
         );
       }
@@ -609,7 +673,7 @@ export async function createUser(data) {
     return result?.id;
   }
 
-  const cached = readCache('users');
+  const cached = /** @type {AuthUserExpectedView[]} */ (readCache('users'));
   const newUser = {
     ...user,
     created_at: new Date().toISOString()
@@ -644,15 +708,17 @@ function currentUserIsLimitedStaffManager() {
   return !state.currentUser?.isMasterAdmin && normalizeStaffRole(state.currentUser?.role) === 'manager';
 }
 
+/** @param {unknown} role */
 function assertManagerCanManageRole(role) {
   if (currentUserIsLimitedStaffManager() && !MANAGER_MANAGED_ROLES.has(normalizeStaffRole(role))) {
     throw new Error('Managers can manage service-team accounts only. An administrator must assign finance, manager, or owner access.');
   }
 }
 
+/** @param {string} id @param {AuthUserMutationExpectedData} data */
 export async function updateUser(id, data) {
   await requireStaffAdmin();
-  const cachedUsers = readCache('users');
+  const cachedUsers = /** @type {AuthUserExpectedView[]} */ (readCache('users'));
   const existingUser = cachedUsers.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
   await assertStarterUsersAccessLite({ data, existingUser });
@@ -665,7 +731,7 @@ export async function updateUser(id, data) {
       throw new Error('Managers cannot set custom permission exceptions. Ask an administrator to make this access change.');
     }
   }
-  const update = {};
+  const update = /** @type {Record<string, unknown>} */ ({});
   if (Object.prototype.hasOwnProperty.call(data, 'name')) update.name = data.name;
   if (Object.prototype.hasOwnProperty.call(data, 'email') && data.email) update.email = data.email.trim().toLowerCase();
   if (Object.prototype.hasOwnProperty.call(data, 'role')) update.role = normalizeStaffRole(data.role);
@@ -683,8 +749,8 @@ export async function updateUser(id, data) {
   if (password_hash) {
     update.password_updated_at = nowIso();
   }
-  const pwaAccess = resolvePwaAccessUpdate(existingUser, buildPwaAccessInput(data));
-  await assertPwaEntitlementForUpdate(pwaAccess.enabled);
+  const pwaAccess = /** @type {PwaAccessResolutionExpectedView} */ (resolvePwaAccessUpdate(existingUser, buildPwaAccessInput(data)));
+  await assertPwaEntitlementForUpdate(pwaAccess.requested ? pwaAccess.enabled : undefined);
   const nextRole = update.role || existingUser.role;
   const nextStatus = update.status || existingUser.status;
   const currentStatus = normalizeStaffStatus(existingUser.status);
@@ -705,26 +771,28 @@ export async function updateUser(id, data) {
 
   if (state.isOnline) {
     if (Object.keys(update).length > 0) {
-      const { data: result, error } = await state.supabase.rpc('update_user_profile', {
+      const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('update_user_profile', {
         p_id: id,
         p_lodge_id: state.lodgeId,
         payload: update
       });
+      const result = /** @type {AuthRpcExpectedResultView|null} */ (rawResult);
       if (error) throw new Error(error.message);
-      if (!result?.success) throw new Error(result?.error || 'Could not update user');
+      if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not update user'));
     }
     if (password_hash) {
-      const { data: passwordResult, error: passwordError } = await state.supabase.rpc('set_user_password', {
+      const { data: rawPasswordResult, error: passwordError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_user_password', {
         p_id: id,
         p_lodge_id: state.lodgeId,
         p_password_hash: password_hash
       });
+      const passwordResult = /** @type {AuthRpcExpectedResultView|null} */ (rawPasswordResult);
       if (passwordError) throw new Error(passwordError.message);
-      if (!passwordResult?.success) throw new Error(passwordResult?.error || 'Could not update user password');
-      await ensureSupabaseAuthStaffUserReady({ ...existingUser, id, ...update }, data.password);
+      if (!passwordResult?.success) throw new Error(/** @type {string} */ (passwordResult?.error || 'Could not update user password'));
+      await ensureSupabaseAuthStaffUserReady(/** @type {AuthUserExpectedView} */ ({ ...existingUser, id, ...update }), /** @type {string} */ (data.password));
     }
     if (pwaAccess.requested) {
-      const { data: pwaResult, error: pwaError } = await state.supabase.rpc('set_user_pwa_access', {
+      const { data: rawPwaResult, error: pwaError } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_user_pwa_access', {
         p_id: id,
         p_lodge_id: state.lodgeId,
         p_enabled: pwaAccess.enabled,
@@ -732,8 +800,9 @@ export async function updateUser(id, data) {
         p_disabled_reason: pwaAccess.disabled_reason,
         p_reset_by: state.currentUser?.id || null
       });
+      const pwaResult = /** @type {AuthRpcExpectedResultView|null} */ (rawPwaResult);
       if (pwaError) throw new Error(pwaError.message);
-      if (!pwaResult?.success) throw new Error(pwaResult?.error || 'Could not update manager mobile app access');
+      if (!pwaResult?.success) throw new Error(/** @type {string} */ (pwaResult?.error || 'Could not update manager mobile app access'));
     }
     await refreshCache('users');
   } else {
@@ -807,6 +876,7 @@ export async function updateUser(id, data) {
   }
 }
 
+/** @param {number|string} [limit] */
 export async function getStaffAccessAudit(limit = 100) {
   await requireStaffAdmin()
   await assertStarterUsersAccessLite({ data: { _audit: true } });
@@ -824,9 +894,10 @@ export async function getStaffAccessAudit(limit = 100) {
   return Array.isArray(data) ? data : []
 }
 
+/** @param {string} id @param {string} password */
 export async function resetUserPassword(id, password) {
   await requireStaffAdmin();
-  const users = state.isOnline ? await getAllUsers() : readCache('users');
+  const users = /** @type {AuthUserExpectedView[]} */ (state.isOnline ? await getAllUsers() : readCache('users'));
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
   assertManagerCanManageRole(existingUser.role);
@@ -835,16 +906,17 @@ export async function resetUserPassword(id, password) {
   const password_hash = bcrypt.hashSync(password, 10);
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('set_user_password', {
+    const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('set_user_password', {
       p_id: id,
       p_lodge_id: state.lodgeId,
       p_password_hash: password_hash
     });
+    const result = /** @type {AuthRpcExpectedResultView|null} */ (rawResult);
     if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not reset password');
+    if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not reset password'));
     await refreshCache('users');
   } else {
-    const cached = readCache('users');
+  const cached = /** @type {AuthUserExpectedView[]} */ (readCache('users'));
     const idx = cached.findIndex((u) => u.id === id);
     if (idx < 0) throw new Error('Staff account not found in local data.');
     cached[idx] = { ...cached[idx], password_hash };
@@ -862,6 +934,7 @@ export async function resetUserPassword(id, password) {
   logActivity('staff_password_reset', `${existingUser.name || existingUser.email} · desktop password updated`);
 }
 
+/** @param {StaffPinChangeInputExpectedView} [input] */
 export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newPin } = {}) {
   // Self-service Staff PIN change for the signed-in operator (bartenders,
   // cashiers and everyone else). Admin/manager override via updateUser is
@@ -874,7 +947,7 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
   if (!/^[0-9]{4,6}$/.test(newDigits)) throw new Error('Staff PIN must be 4–6 digits.');
   const currentDigits = String(current_pin ?? currentPin ?? '').trim();
 
-  const cachedUsers = readCache('users') || [];
+  const cachedUsers = /** @type {AuthUserExpectedView[]} */ (readCache('users')) || [];
   const cachedSelf = cachedUsers.find((entry) => entry?.id === actorId) || null;
   const hasPin = Boolean(cachedSelf?.pin_hash);
   if (hasPin && !currentDigits) {
@@ -889,7 +962,7 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
   }
   if (!state.lodgeId) throw new Error('A business context is required to change your Staff PIN.');
 
-  const { data: result, error } = await state.supabase.rpc('change_own_staff_pin', {
+  const { data: rawResult, error } = await state.supabase.rpc('change_own_staff_pin', {
     payload: {
       lodge_id: state.lodgeId,
       current_pin: currentDigits || null,
@@ -897,6 +970,7 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
       device_id: `desktop-${String(state.lodgeId).slice(0, 8)}`
     }
   });
+  const result = /** @type {AuthRpcExpectedResultView|null} */ (rawResult);
   if (error) {
     const message = String(error.message || '');
     if (/could not find the function|PGRST202|does not exist|schema cache/i.test(message)) {
@@ -904,13 +978,13 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
     }
     throw new Error(message || 'Could not change your Staff PIN.');
   }
-  if (!result?.success) throw new Error(result?.error || 'Could not change your Staff PIN.');
+  if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not change your Staff PIN.'));
 
   // Keep the trusted offline verifier working on this computer without
   // queueing a second write (the server already committed + audited).
   try {
     const newHash = bcrypt.hashSync(newDigits, 10);
-    const cached = readCache('users') || [];
+    const cached = /** @type {AuthUserExpectedView[]} */ (readCache('users')) || [];
     const idx = cached.findIndex((entry) => entry?.id === actorId);
     if (idx >= 0) {
       cached[idx] = { ...cached[idx], pin_hash: newHash };
@@ -918,7 +992,7 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
     }
     await refreshCache('users').catch(() => {});
     try {
-      const after = readCache('users') || [];
+      const after = /** @type {AuthUserExpectedView[]} */ (readCache('users')) || [];
       const nextIdx = after.findIndex((entry) => entry?.id === actorId);
       if (nextIdx >= 0 && !after[nextIdx]?.pin_hash) {
         after[nextIdx] = { ...after[nextIdx], pin_hash: newHash };
@@ -931,6 +1005,7 @@ export async function changeOwnStaffPin({ current_pin, currentPin, new_pin, newP
   return { success: true };
 }
 
+/** @param {string} [email] @returns {Promise<AuthStatusResultExpectedView>} */
 export async function getAuthStatus(email = '') {
   await checkOnline();
   if (!state.lodgeId) {
@@ -946,13 +1021,13 @@ export async function getAuthStatus(email = '') {
     };
   }
   const emailLower = normalizeEmail(email);
-  const authEntries = readAuthCache().filter((entry) => entry.lodge_id === state.lodgeId);
-  const cachedUsers = readCache('users').
+  const authEntries = /** @type {{lodge_id?: unknown, email?: unknown, password_hash?: unknown, deprecated?: unknown}[]} */ (readAuthCache()).filter((entry) => entry.lodge_id === state.lodgeId);
+  const cachedUsers = /** @type {AuthUserExpectedView[]} */ (readCache('users')).
   map(normalizeUserRecord).
-  filter((entry) => entry && (!entry.lodge_id || entry.lodge_id === normalizeLodgeId(state.lodgeId)));
+  filter((entry) => entry !== null && (!entry.lodge_id || entry.lodge_id === normalizeLodgeId(state.lodgeId)));
   const trustedSessions = pruneExpiredTrustedSessions().
   map(normalizeTrustedSessionRecord).
-  filter((session) => session && (!session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId)));
+  filter((session) => session !== null && session !== undefined && (!session.lodge_id || session.lodge_id === normalizeLodgeId(state.lodgeId)));
   const legacySession = normalizeTrustedSessionRecord(readSessionNonce());
   const allTrustedSessions = [
   ...trustedSessions,
@@ -994,9 +1069,10 @@ export async function getAuthStatus(email = '') {
   };
 }
 
+/** @param {string} id */
 export async function deleteUser(id) {
   await requireStaffAdmin();
-  const users = state.isOnline ? await getAllUsers() : readCache('users').map(normalizeUserRecord).filter(Boolean);
+  const users = /** @type {AuthUserExpectedView[]} */ (state.isOnline ? await getAllUsers() : /** @type {AuthUserExpectedView[]} */ (readCache('users')).map(normalizeUserRecord).filter((user) => user !== null));
   const existingUser = users.find((u) => u.id === id);
   if (!existingUser) throw new Error('Staff account not found.');
   await assertStarterUsersAccessLite({ data: { _delete: true }, existingUser });
@@ -1008,15 +1084,16 @@ export async function deleteUser(id) {
   }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('delete_user', {
+    const { data: rawResult, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('delete_user', {
       p_id: id,
       p_lodge_id: state.lodgeId
     });
+    const result = /** @type {AuthRpcExpectedResultView|null} */ (rawResult);
     if (error) throw new Error(error.message);
-    if (!result?.success) throw new Error(result?.error || 'Could not delete user');
+    if (!result?.success) throw new Error(/** @type {string} */ (result?.error || 'Could not delete user'));
     await refreshCache('users');
   } else {
-    const cached = readCache('users');
+    const cached = /** @type {AuthUserExpectedView[]} */ (readCache('users'));
     writeCache('users', cached.filter((u) => u.id !== id));
     await queueOperationBridge('rpc', 'delete_user', {
       p_id: id,

@@ -14,6 +14,7 @@ import {
   Filter, RefreshCw, AlertTriangle, Mail, Phone, Building2, Home, FileDown
 } from 'lucide-react'
 
+/** @type {Partial<Record<string, RequestStatusMeta>> & {draft: RequestStatusMeta}} */
 const STATUS_META = {
   draft: { label: 'Draft', color: 'bg-gray-500/20 text-gray-400', icon: FileText },
   submitted: { label: 'Submitted', color: 'bg-blue-500/20 text-blue-300', icon: Send },
@@ -38,14 +39,65 @@ const STATUS_FLOW = [
   { from: 'payment_under_review', to: 'rejected', label: 'Reject' }
 ]
 
+/**
+ * These are expected renderer views of the current RPC rows, not validation.
+ * The main domain preserves unvalidated RPC fields after normalizing the rows
+ * container and requested_addons array; cached and historical row contents may
+ * still violate these views.
+ * @typedef {{
+ *   id: string,
+ *   status: string,
+ *   requested_plan: string,
+ *   requested_addons: string[],
+ *   product_id: string|null,
+ *   commercial_package_key: string|null,
+ *   lodge_id?: string|null,
+ *   existing_license_id?: string|null,
+ *   current_plan?: string|null,
+ *   property_name?: string|null,
+ *   company_name?: string|null,
+ *   contact_name?: string|null,
+ *   contact_email?: string|null,
+ *   contact_phone?: string|null,
+ *   quote_number?: string|null,
+ *   invoice_number?: string|null,
+ *   room_count?: number|null,
+ *   user_count?: number|null,
+ *   expected_monthly_bookings?: number|null,
+ *   notes?: string|null,
+ *   submitted_at?: string|null,
+ *   reviewed_at?: string|null,
+ *   reviewed_by?: string|null,
+ *   activated_at?: string|null,
+ *   activated_by?: string|null,
+ *   rejection_reason?: string|null,
+ *   quote_payload?: SubscriptionRequestDocumentExpectedView|null,
+ *   invoice_payload?: SubscriptionRequestDocumentExpectedView|null
+ * }} SubscriptionRequestExpectedView
+ */
+/** @typedef {{document_number?: string|null, notes?: string|null}} SubscriptionRequestDocumentExpectedView */
 /** @typedef {{ rows: unknown[], total: unknown }} SubscriptionRequestPage */
+/** @typedef {{id: string, lodge_id: string|null, lodge_name: string|null, subscription_plan: string, subscription_state: string, payment_status: string, is_active: boolean|null, product_id?: string|null}} SubscriptionRequestLicenseExpectedView */
+/** @typedef {{label?: string}} CommercialAddonLabelExpectedView */
+/**
+ * The renderer receives an unvalidated nullable product ID from persisted/RPC
+ * request data. The current shared implementation compares it with the two
+ * known IDs and returns null for every other value, so this display-only view
+ * preserves the unsupported-ID fallback without claiming the ID was validated.
+ * @type {(productId: string|null, addonKey: string) => CommercialAddonLabelExpectedView|null}
+ */
+/** @typedef {{label: string, color: string, icon: import('lucide-react').LucideIcon}} RequestStatusMeta */
+/** @typedef {{from: string, to: string, label: string}} RequestStatusAction */
 
+/** @param {string} key @param {string|null} [productId] */
 function addonLabel(key, productId = null) {
-  const addon = getCommercialAddon(productId, key)
+  /** @type {CommercialAddonLabelExpectedView|null|undefined} */
+  const addon = /** @type {(productId: string|null, addonKey: string) => CommercialAddonLabelExpectedView|null} */ (getCommercialAddon)(productId, key)
     || ENTERPRISE_ADDON_CATALOG.find((a) => a.key === key)
   return addon?.label || key?.replace(/_/g, ' ')
 }
 
+/** @param {SubscriptionRequestLicenseExpectedView|null|undefined} license @param {SubscriptionRequestExpectedView|null|undefined} request */
 function isActivationTargetLicense(license, request) {
   if (!license || !request?.lodge_id) return false
   if (String(license.lodge_id || '') !== String(request.lodge_id)) return false
@@ -55,19 +107,24 @@ function isActivationTargetLicense(license, request) {
   return !request.product_id || String(license.product_id || '') === String(request.product_id)
 }
 
+/** @param {{companies?: unknown[], licenses?: SubscriptionRequestLicenseExpectedView[]}} props */
 export default function SubscriptionRequests({ licenses = [] }) {
   const toast = useToast()
   const [requests, setRequests] = useState(/** @type {unknown[]} */ ([]))
   const [total, setTotal] = useState(/** @type {unknown} */ (0))
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState(null)
+  const [statusFilter, setStatusFilter] = useState(/** @type {string|null} */ (null))
   const [selected, setSelected] = useState(/** @type {unknown} */ (null))
   const [detailLoading, setDetailLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [showReject, setShowReject] = useState(false)
   const [showActivationConfirm, setShowActivationConfirm] = useState(false)
-  const [selectedLicenseId, setSelectedLicenseId] = useState(/** @type {unknown} */ (''))
+  const [selectedLicenseId, setSelectedLicenseId] = useState('')
+  // These are presentation views only. The stored rows and detail result remain
+  // unvalidated; malformed data keeps the component's existing render behavior.
+  const selectedRequest = /** @type {SubscriptionRequestExpectedView|null} */ (selected)
+  const totalForView = /** @type {number} */ (total)
 
   const loadRequests = useCallback(async () => {
     setLoading(true)
@@ -89,12 +146,13 @@ export default function SubscriptionRequests({ licenses = [] }) {
 
   useEffect(() => { loadRequests() }, [loadRequests])
 
+  /** @param {SubscriptionRequestExpectedView} req */
   const openDetail = async (req) => {
     setSelected(req)
     setSelectedLicenseId(req.existing_license_id || '')
     setDetailLoading(true)
     try {
-      const full = await window.api.subscriptionRequests.getById(req.id)
+      const full = /** @type {SubscriptionRequestExpectedView|null} */ (await window.api.subscriptionRequests.getById(req.id))
       if (full) {
         setSelected(full)
         setSelectedLicenseId(full.existing_license_id || req.existing_license_id || '')
@@ -106,6 +164,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
     }
   }
 
+  /** @param {string} requestId @param {string} newStatus */
   const updateStatus = async (requestId, newStatus) => {
     setActionLoading(true)
     try {
@@ -131,8 +190,8 @@ export default function SubscriptionRequests({ licenses = [] }) {
       setShowReject(false)
       setRejectReason('')
       await loadRequests()
-      if (selected?.id === requestId) {
-        const updated = await window.api.subscriptionRequests.getById(requestId)
+      if (selectedRequest?.id === requestId) {
+        const updated = /** @type {SubscriptionRequestExpectedView|null} */ (await window.api.subscriptionRequests.getById(requestId))
         if (updated) setSelected(updated)
       }
     } catch (err) {
@@ -142,29 +201,30 @@ export default function SubscriptionRequests({ licenses = [] }) {
     }
   }
 
+  /** @param {string} requestId */
   const activateRequest = async (requestId) => {
     setActionLoading(true)
     try {
       const license = licenses.find((entry) => entry.id === selectedLicenseId) || null
       const lodgeId = license?.lodge_id || null
-      if (!selectedLicenseId || !lodgeId || !isActivationTargetLicense(license, selected)) {
+      if (!selectedLicenseId || !lodgeId || !isActivationTargetLicense(license, selectedRequest)) {
         throw new Error('Select the active license for this exact company and product before continuing.')
       }
       const result = await window.api.subscriptionRequests.activate(requestId, null, {
         operation_id: crypto.randomUUID(),
         license_id: selectedLicenseId,
         lodge_id: lodgeId,
-        plan: selected?.requested_plan,
-        product_id: selected?.product_id || null,
-        commercial_package_key: selected?.commercial_package_key || null,
-        enterprise_addons: selected?.requested_addons || [],
+        plan: selectedRequest?.requested_plan,
+        product_id: selectedRequest?.product_id || null,
+        commercial_package_key: selectedRequest?.commercial_package_key || null,
+        enterprise_addons: selectedRequest?.requested_addons || [],
         activation_reason: 'Manual Command Central activation after payment approval'
       })
       if (result?.success === false) throw new Error(result.error)
       toast.success('Request activated successfully')
       await loadRequests()
-      if (selected?.id === requestId) {
-        const updated = await window.api.subscriptionRequests.getById(requestId)
+      if (selectedRequest?.id === requestId) {
+        const updated = /** @type {SubscriptionRequestExpectedView|null} */ (await window.api.subscriptionRequests.getById(requestId))
         if (updated) setSelected(updated)
       }
     } catch (err) {
@@ -189,14 +249,16 @@ export default function SubscriptionRequests({ licenses = [] }) {
     }
   }
 
+  /** @type {RequestStatusAction[]} */
   const availableActions = useMemo(() => {
-    if (!selected) return []
-    return STATUS_FLOW.filter((f) => f.from === selected.status)
-  }, [selected])
+    if (!selectedRequest) return []
+    return STATUS_FLOW.filter((f) => f.from === selectedRequest.status)
+  }, [selectedRequest])
 
   const summary = useMemo(() => {
+    /** @type {Record<string, number>} */
     const counts = {}
-    for (const req of requests) {
+    for (const req of /** @type {SubscriptionRequestExpectedView[]} */ (requests)) {
       counts[req.status] = (counts[req.status] || 0) + 1
     }
     return counts
@@ -204,8 +266,8 @@ export default function SubscriptionRequests({ licenses = [] }) {
 
   const licenseOptions = useMemo(() => {
     const rows = Array.isArray(licenses) ? licenses : []
-    return rows.filter((license) => isActivationTargetLicense(license, selected))
-  }, [licenses, selected])
+    return rows.filter((license) => isActivationTargetLicense(license, selectedRequest))
+  }, [licenses, selectedRequest])
 
   const selectedActivationLicense = useMemo(
     () => licenseOptions.find((license) => license.id === selectedLicenseId) || null,
@@ -215,12 +277,12 @@ export default function SubscriptionRequests({ licenses = [] }) {
   return (
     <div className="flex gap-5 h-full">
       {/* List */}
-      <div className={`flex-1 min-w-0 bg-gray-800 rounded-xl overflow-hidden ${selected ? 'hidden md:block' : ''}`}>
+      <div className={`flex-1 min-w-0 bg-gray-800 rounded-xl overflow-hidden ${selectedRequest ? 'hidden md:block' : ''}`}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
           <div className="flex items-center gap-3">
             <FileText size={16} className="text-purple-400" />
             <p className="text-sm font-semibold text-white">Subscription Requests</p>
-            <span className="text-xs text-gray-500">({total})</span>
+            <span className="text-xs text-gray-500">({totalForView})</span>
           </div>
           <button onClick={loadRequests} className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors">
             <RefreshCw size={14} />
@@ -237,16 +299,16 @@ export default function SubscriptionRequests({ licenses = [] }) {
           >
             All ({requests.length})
           </button>
-          {Object.entries(STATUS_META).map(([key, meta]) => (
+            {Object.entries(STATUS_META).map(([key, meta]) => (
             summary[key] > 0 && (
               <button
                 key={key}
                 onClick={() => setStatusFilter(key)}
                 className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                  statusFilter === key ? `${meta.color} border border-current/30` : 'bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700'
+                  statusFilter === key ? `${/** @type {RequestStatusMeta} */ (meta).color} border border-current/30` : 'bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700'
                 }`}
               >
-                {meta.label} ({summary[key]})
+                {/** @type {RequestStatusMeta} */ (meta).label} ({summary[key]})
               </button>
             )
           ))}
@@ -265,7 +327,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
           </div>
         ) : (
           <div className="divide-y divide-gray-700/50 max-h-[calc(100vh-280px)] overflow-y-auto">
-            {requests.map((req) => {
+            {/** @type {SubscriptionRequestExpectedView[]} */ (requests).map((req) => {
               const meta = STATUS_META[req.status] || STATUS_META.draft
               const Icon = meta.icon
               return (
@@ -273,7 +335,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                   key={req.id}
                   onClick={() => openDetail(req)}
                   className={`w-full text-left px-4 py-3 transition-colors hover:bg-gray-700/50 ${
-                    selected?.id === req.id ? 'bg-gray-700/50 border-l-2 border-purple-500' : ''
+                    selectedRequest?.id === req.id ? 'bg-gray-700/50 border-l-2 border-purple-500' : ''
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -307,7 +369,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
       </div>
 
       {/* Detail panel */}
-      {selected && (
+      {selectedRequest && (
         <div className="w-full md:w-[420px] shrink-0 bg-gray-800 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
             <p className="text-sm font-semibold text-white">Request Detail</p>
@@ -324,7 +386,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
               {/* Status badge */}
               <div className="flex items-center gap-2">
                 {(() => {
-                  const meta = STATUS_META[selected.status] || STATUS_META.draft
+                  const meta = STATUS_META[selectedRequest.status] || STATUS_META.draft
                   const Icon = meta.icon
                   return (
                     <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${meta.color}`}>
@@ -333,11 +395,11 @@ export default function SubscriptionRequests({ licenses = [] }) {
                     </span>
                   )
                 })()}
-                {selected.quote_number && (
-                  <span className="text-xs font-mono text-gray-500">{selected.quote_number}</span>
+                {selectedRequest.quote_number && (
+                  <span className="text-xs font-mono text-gray-500">{selectedRequest.quote_number}</span>
                 )}
-                {selected.invoice_number && (
-                  <span className="text-xs font-mono text-orange-300">{selected.invoice_number}</span>
+                {selectedRequest.invoice_number && (
+                  <span className="text-xs font-mono text-orange-300">{selectedRequest.invoice_number}</span>
                 )}
               </div>
 
@@ -345,24 +407,24 @@ export default function SubscriptionRequests({ licenses = [] }) {
               <div className="bg-gray-900 rounded-xl p-3 space-y-2">
                 <div className="flex items-center gap-2 text-sm text-white">
                   <Building2 size={14} className="text-gray-400" />
-                  {selected.property_name || selected.company_name || 'Unknown'}
+                  {selectedRequest.property_name || selectedRequest.company_name || 'Unknown'}
                 </div>
-                {selected.contact_name && (
+                {selectedRequest.contact_name && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <Home size={12} className="text-gray-500" />
-                    {selected.contact_name}
+                    {selectedRequest.contact_name}
                   </div>
                 )}
-                {selected.contact_email && (
+                {selectedRequest.contact_email && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <Mail size={12} className="text-gray-500" />
-                    {selected.contact_email}
+                    {selectedRequest.contact_email}
                   </div>
                 )}
-                {selected.contact_phone && (
+                {selectedRequest.contact_phone && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <Phone size={12} className="text-gray-500" />
-                    {selected.contact_phone}
+                    {selectedRequest.contact_phone}
                   </div>
                 )}
               </div>
@@ -371,15 +433,15 @@ export default function SubscriptionRequests({ licenses = [] }) {
               <div className="bg-gray-900 rounded-xl p-3">
                 <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Plan Change</p>
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-400">{normalizePlanName(selected.current_plan || 'Starter')}</span>
+                  <span className="text-gray-400">{normalizePlanName(selectedRequest.current_plan || 'Starter')}</span>
                   <span className="text-gray-600">→</span>
-                  <span className="text-white font-semibold">{normalizePlanName(selected.requested_plan)}</span>
+                  <span className="text-white font-semibold">{normalizePlanName(selectedRequest.requested_plan)}</span>
                 </div>
-                {selected.requested_addons?.length > 0 && (
+                {selectedRequest.requested_addons?.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {selected.requested_addons.map((key) => (
+                    {selectedRequest.requested_addons.map((key) => (
                       <span key={key} className="inline-block rounded-full bg-purple-500/20 text-purple-300 px-2 py-0.5 text-[10px] font-medium">
-                        {addonLabel(key, selected.product_id)}
+                        {addonLabel(key, selectedRequest.product_id)}
                       </span>
                     ))}
                   </div>
@@ -390,74 +452,74 @@ export default function SubscriptionRequests({ licenses = [] }) {
               <div className="bg-gray-900 rounded-xl p-3 grid grid-cols-3 gap-2 text-center">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase">Rooms</p>
-                  <p className="text-sm font-semibold text-white">{selected.room_count || '—'}</p>
+                  <p className="text-sm font-semibold text-white">{selectedRequest.room_count || '—'}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase">Users</p>
-                  <p className="text-sm font-semibold text-white">{selected.user_count || '—'}</p>
+                  <p className="text-sm font-semibold text-white">{selectedRequest.user_count || '—'}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase">Bookings/mo</p>
-                  <p className="text-sm font-semibold text-white">{selected.expected_monthly_bookings || '—'}</p>
+                  <p className="text-sm font-semibold text-white">{selectedRequest.expected_monthly_bookings || '—'}</p>
                 </div>
               </div>
 
               {/* Notes */}
-              {selected.notes && (
+              {selectedRequest.notes && (
                 <div className="bg-gray-900 rounded-xl p-3">
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Notes</p>
-                  <p className="text-xs text-gray-300 whitespace-pre-wrap">{selected.notes}</p>
+                  <p className="text-xs text-gray-300 whitespace-pre-wrap">{selectedRequest.notes}</p>
                 </div>
               )}
 
               {/* Timestamps */}
               <div className="text-[10px] text-gray-500 space-y-0.5">
-                <p>Submitted: {selected.submitted_at ? new Date(selected.submitted_at).toLocaleString() : '—'}</p>
-                {selected.reviewed_at && <p>Reviewed: {new Date(selected.reviewed_at).toLocaleString()} by {selected.reviewed_by}</p>}
-                {selected.activated_at && <p>Activated: {new Date(selected.activated_at).toLocaleString()} by {selected.activated_by}</p>}
-                {selected.rejection_reason && <p className="text-red-400">Rejection reason: {selected.rejection_reason}</p>}
+                <p>Submitted: {selectedRequest.submitted_at ? new Date(selectedRequest.submitted_at).toLocaleString() : '—'}</p>
+                {selectedRequest.reviewed_at && <p>Reviewed: {new Date(selectedRequest.reviewed_at).toLocaleString()} by {selectedRequest.reviewed_by}</p>}
+                {selectedRequest.activated_at && <p>Activated: {new Date(selectedRequest.activated_at).toLocaleString()} by {selectedRequest.activated_by}</p>}
+                {selectedRequest.rejection_reason && <p className="text-red-400">Rejection reason: {selectedRequest.rejection_reason}</p>}
               </div>
 
-              {(selected.quote_payload || selected.invoice_payload) && (
+              {(selectedRequest.quote_payload || selectedRequest.invoice_payload) && (
                 <div className="bg-gray-900 rounded-xl p-3 space-y-2">
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">Commercial Documents</p>
-                  {selected.quote_payload && (
+                  {selectedRequest.quote_payload && (
                     <div className="rounded-lg border border-gray-700 p-2">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-white">Quote {selected.quote_payload.document_number || selected.quote_number}</p>
+                        <p className="text-xs font-semibold text-white">Quote {selectedRequest.quote_payload.document_number || selectedRequest.quote_number}</p>
                         <button
                           type="button"
                           disabled={actionLoading}
-                          onClick={() => exportDocumentPdf(selected.quote_payload)}
+                          onClick={() => exportDocumentPdf(selectedRequest.quote_payload)}
                           className="inline-flex items-center gap-1 rounded-md bg-gray-800 px-2 py-1 text-[10px] font-semibold text-gray-200 hover:bg-gray-700 disabled:opacity-50"
                         >
                           <FileDown size={11} /> PDF
                         </button>
                       </div>
-                      <p className="text-[10px] text-gray-500">{selected.quote_payload.notes || 'Quote record saved on this request.'}</p>
+                      <p className="text-[10px] text-gray-500">{selectedRequest.quote_payload.notes || 'Quote record saved on this request.'}</p>
                     </div>
                   )}
-                  {selected.invoice_payload && (
+                  {selectedRequest.invoice_payload && (
                     <div className="rounded-lg border border-orange-500/30 p-2">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-orange-200">Pro-forma {selected.invoice_payload.document_number || selected.invoice_number}</p>
+                        <p className="text-xs font-semibold text-orange-200">Pro-forma {selectedRequest.invoice_payload.document_number || selectedRequest.invoice_number}</p>
                         <button
                           type="button"
                           disabled={actionLoading}
-                          onClick={() => exportDocumentPdf(selected.invoice_payload)}
+                          onClick={() => exportDocumentPdf(selectedRequest.invoice_payload)}
                           className="inline-flex items-center gap-1 rounded-md bg-orange-500/20 px-2 py-1 text-[10px] font-semibold text-orange-200 hover:bg-orange-500/30 disabled:opacity-50"
                         >
                           <FileDown size={11} /> PDF
                         </button>
                       </div>
-                      <p className="text-[10px] text-gray-500">{selected.invoice_payload.notes || 'Manual payment invoice record saved on this request.'}</p>
+                      <p className="text-[10px] text-gray-500">{selectedRequest.invoice_payload.notes || 'Manual payment invoice record saved on this request.'}</p>
                     </div>
                   )}
                 </div>
               )}
 
               {/* Activation target */}
-              {selected.status === 'approved' && (
+              {selectedRequest.status === 'approved' && (
                 <div className="bg-gray-900 rounded-xl p-3 space-y-2">
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">Activation Target</p>
                   <select
@@ -474,7 +536,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                   </select>
                   {licenseOptions.length === 0 ? (
                     <p className="text-[10px] leading-4 text-amber-300">
-                      No active {selected.product_id || 'matching'} license is linked to this exact company. Create or correct the product-matched assignment in Licensing Workbench, set its commercial due date and payment state, then return here to activate the approved request.
+                      No active {selectedRequest.product_id || 'matching'} license is linked to this exact company. Create or correct the product-matched assignment in Licensing Workbench, set its commercial due date and payment state, then return here to activate the approved request.
                     </p>
                   ) : (
                     <p className="text-[10px] leading-4 text-gray-500">
@@ -504,7 +566,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                               setShowActivationConfirm(true)
                             }
                           } else {
-                            updateStatus(selected.id, action.to)
+                            updateStatus(selectedRequest.id, action.to)
                           }
                         }}
                         className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
@@ -533,7 +595,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
                       <div className="flex gap-2">
                         <button
                           disabled={actionLoading}
-                          onClick={() => updateStatus(selected.id, 'rejected')}
+                          onClick={() => updateStatus(selectedRequest.id, 'rejected')}
                           className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
                         >
                           Confirm Reject
@@ -563,7 +625,7 @@ export default function SubscriptionRequests({ licenses = [] }) {
         onCancel={() => setShowActivationConfirm(false)}
         onConfirm={() => {
           setShowActivationConfirm(false)
-          if (selected) activateRequest(selected.id)
+          if (selectedRequest) activateRequest(selectedRequest.id)
         }}
       />
     </div>

@@ -20,10 +20,27 @@ import {
   normalizeSubscriptionPlan
 } from '../../../shared/subscriptionPlans'
 import { formatLocalDate } from '../utils/localDate'
-import { getCommercialAddon, getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
+import { getCommercialAddon, getCommercialAddonDependents, getCommercialAddonDependencyError, getCommercialAddonOffers, getCommercialOffers, isCommercialSelectionEligible } from '../../../shared/commercialEntitlements'
 import { formatCommercialMoney } from '../../../shared/commercialPackages'
 import { getProductFamilyLabel, resolveProductFamily } from '../../../shared/productIdentity'
 import { ErrorNotice } from './shared/ErrorNotice'
+
+/**
+ * Expected top-level views forwarded by AdminCentral after its existing array
+ * checks. The views describe main-process normalized rows; no additional IPC
+ * row validation is performed by this component.
+ * @typedef {{lodge_id: string, lodge_name: string|null, company_name: string|null, business_type: string|null, property_type: string|null, operating_profile?: {hospitality_mode?: unknown}}} LicensingCompanyExpectedView
+ * @typedef {{id: string, lodge_id: string|null, lodge_name: string|null, business_type: string|null, subscription_plan: string, subscription_state: string, payment_status: string, is_active: boolean|null, monthly_fee: number|string|null, currency: string|null, issued_at: string|null, expires_at: string|null, next_due_date: string|null, last_payment_date: string|null, created_at?: string|null, updated_at?: string|null, license_key?: string|null, notes?: string|null, product_id?: string|null, commercial_package_key?: string|null, commercial_pricing_snapshot?: {selection?: {selected_addon_keys?: unknown, requested_addons?: unknown}|null, selected_addon_keys?: unknown}|null, selected_addon_keys?: unknown, enterprise_addons?: unknown, operating_profile?: {hospitality_mode?: unknown}|null, _product_inferred?: boolean}} LicensingLicenseExpectedView
+ * @typedef {{id: string, lodge_id: string|null, lodge_name: string|null, category: string|null, description: string|null, status: string|null}} LicensingSupportTicketExpectedView
+ * @typedef {{lodge_id: string|null, lodge_name: string|null, subscription_plan: string, notes: string}} LicensingAssignmentPrefillExpectedView
+ * @typedef {{id: string, feature_key: string|null, enabled: boolean|null, limit_key: string|null, limit_value: number|null, reason: string, revoked_at: string|null, expires_at: string|null}} CommercialEntitlementOverrideExpectedView
+ * @typedef {{code: string, message: string, limit?: number, used?: number, excess?: number}} LicensingAssignmentBlockerExpectedView
+ * @typedef {{success: boolean, error?: string|null, status?: string, pending_remediation?: boolean, blockers?: LicensingAssignmentBlockerExpectedView[], license?: {license_key?: string|null}|null, license_key?: string|null}} LicensingAssignmentResultExpectedView
+ * @typedef {LicensingAssignmentBlockerExpectedView & {targetPackageKey: string}} LicensingPendingUserRemediationExpectedView
+ * @typedef {{id: string, name: string|null, email: string|null, role: string, status: string|null}} LicensingRemediationUserExpectedView
+ * @typedef {{success: boolean, error?: string|null, suspended_users?: number}} LicensingUserRemediationResultExpectedView
+ * @typedef {{message?: string|null}} LicensingThrownMessageExpectedView
+ */
 
 const PLAN_FLAGS = {
   Starter: {
@@ -78,14 +95,17 @@ const ADDON_OVERRIDE_GROUPS = [
   }
 ]
 
+/** @param {unknown} plan */
 function normalizePlanName(plan) {
   return normalizeSubscriptionPlan(plan)
 }
 
+/** @param {LicensingCompanyExpectedView|null|undefined} company @param {LicensingLicenseExpectedView|null} [license] */
 function getCompanyProductId(company, license = null) {
   return license?.product_id || resolveProductFamily(company?.property_type || company?.business_type || license?.business_type)
 }
 
+/** @param {LicensingCompanyExpectedView|null|undefined} company @param {LicensingLicenseExpectedView|null} [license] */
 function getCompanyOperatingProfile(company, license = null) {
   const configured = company?.operating_profile?.hospitality_mode
     || company?.operating_profile
@@ -97,6 +117,7 @@ function getCompanyOperatingProfile(company, license = null) {
   return configured || (getCompanyProductId(company, license) === 'hospitality-pos' ? 'restaurant_bar' : null)
 }
 
+/** @param {{productId: string, operatingProfile: unknown}} input */
 function getEligibleCommercialOffers({ productId, operatingProfile }) {
   return getCommercialOffers(productId).filter((offer) => isCommercialSelectionEligible({
     productId,
@@ -105,12 +126,14 @@ function getEligibleCommercialOffers({ productId, operatingProfile }) {
   }))
 }
 
+/** @param {{productId: string, propertyType: string|null|undefined, operatingProfile: unknown, commercialPackageKey: string|null|undefined}} input */
 function getEligibleCommercialAddons({ productId, propertyType, operatingProfile, commercialPackageKey }) {
   return getCommercialAddonOffers(productId, propertyType)
     .filter((addon) => !addon.eligiblePackageKeys || addon.eligiblePackageKeys.includes(commercialPackageKey))
     .filter((addon) => !addon.eligibleOperatingProfiles || addon.eligibleOperatingProfiles.length === 0 || addon.eligibleOperatingProfiles.includes(operatingProfile))
 }
 
+/** @param {LicensingCompanyExpectedView|null|undefined} company @param {LicensingLicenseExpectedView|null} [license] */
 function getCompanyOffer(company, license = null) {
   const offers = getEligibleCommercialOffers({
     productId: getCompanyProductId(company, license),
@@ -120,11 +143,13 @@ function getCompanyOffer(company, license = null) {
     || offers.find((offer) => offer.internalPlan === normalizePlanName(license?.subscription_plan))
     || offers[0]
 }
+/** @param {string|null|undefined} value */
 function fmtDate(value) {
   if (!value) return '—'
   return new Date(value).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/** @param {unknown} status */
 function statusTone(status) {
   const raw = String(status || '').toLowerCase()
   if (raw === 'active' || raw === 'licensed') return 'bg-green-500/15 text-green-300'
@@ -136,10 +161,12 @@ function statusTone(status) {
   return 'bg-gray-500/15 text-gray-300'
 }
 
+/** @param {LicensingLicenseExpectedView|null|undefined} license */
 function getLicenseStatusLabel(license) {
   return String(license?.subscription_state || license?.payment_status || 'active').replace(/_/g, ' ')
 }
 
+/** @param {LicensingCompanyExpectedView|null|undefined} company @param {LicensingLicenseExpectedView|null|undefined} license */
 function getAssignmentLabel(company, license) {
   const state = String(license?.subscription_state || license?.payment_status || '').toLowerCase()
   if (state === 'trial' || String(license?.payment_status || '').toLowerCase() === 'trial') return 'Trial'
@@ -147,14 +174,17 @@ function getAssignmentLabel(company, license) {
   return getCompanyOffer(company, license)?.displayName || normalizePlanName(license?.subscription_plan)
 }
 
+/** @param {unknown} value */
 function lodgeKey(value) {
   return String(value || '').trim().toLowerCase()
 }
 
+/** @param {unknown} lodgeId @param {unknown} productId */
 function assignmentKey(lodgeId, productId) {
   return `${lodgeKey(lodgeId)}::${String(productId || '').trim().toLowerCase()}`
 }
 
+/** @param {unknown} value */
 function normalizeAddonKeyEntry(value) {
   if (typeof value === 'string') return value.trim()
   if (value && typeof value === 'object') {
@@ -163,8 +193,11 @@ function normalizeAddonKeyEntry(value) {
   return String(value || '').trim()
 }
 
+/** @param {LicensingLicenseExpectedView|null|undefined} license */
 function selectedAddonKeys(license) {
+  /** @type {string[]} */
   const collected = []
+  /** @param {unknown} maybeArray */
   const pushAll = (maybeArray) => {
     if (Array.isArray(maybeArray)) {
       for (const entry of maybeArray) {
@@ -187,18 +220,21 @@ function selectedAddonKeys(license) {
 
 const UNASSIGNED_LICENSE_STATES = new Set(['cancelled', 'expired', 'superseded', 'deleted', 'inactive'])
 
+/** @param {LicensingLicenseExpectedView|null|undefined} license */
 function isAssignedLicense(license) {
   if (!license || !lodgeKey(license.lodge_id) || license.is_active === false) return false
   const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
   return !UNASSIGNED_LICENSE_STATES.has(state)
 }
 
+/** @param {LicensingLicenseExpectedView} license */
 function licenseSortTime(license) {
   const value = license?.updated_at || license?.issued_at || license?.created_at || license?.expires_at || license?.next_due_date
   const time = value ? new Date(value).getTime() : 0
   return Number.isFinite(time) ? time : 0
 }
 
+/** @param {LicensingLicenseExpectedView|null} current @param {LicensingLicenseExpectedView} candidate */
 function pickPreferredLicense(current, candidate) {
   if (!current) return candidate
   const currentPlanRank = SUBSCRIPTION_PLAN_ORDER.indexOf(normalizePlanName(current.subscription_plan))
@@ -207,6 +243,7 @@ function pickPreferredLicense(current, candidate) {
   return licenseSortTime(candidate) >= licenseSortTime(current) ? candidate : current
 }
 
+/** @param {LicensingLicenseExpectedView[]} [licenses] */
 function buildAssignedLicenseMap(licenses = []) {
   const map = new Map()
   ;(licenses || []).forEach((license) => {
@@ -217,12 +254,14 @@ function buildAssignedLicenseMap(licenses = []) {
   return map
 }
 
+/** @param {string|null|undefined} value */
 function isPastDate(value) {
   if (!value) return false
   const time = new Date(value).getTime()
   return Number.isFinite(time) && time < Date.now()
 }
 
+/** @param {LicensingLicenseExpectedView|null|undefined} license */
 function shouldClearStaleExpiry(license) {
   if (!license || !isPastDate(license.expires_at)) return false
   const state = String(license.subscription_state || license.payment_status || 'active').toLowerCase()
@@ -231,9 +270,11 @@ function shouldClearStaleExpiry(license) {
     ['active', 'trial', 'free', 'overdue'].includes(paymentStatus)
 }
 
+/** @param {string|null|undefined} [description] */
 function parseUpgradeRequest(description = '') {
   const text = String(description || '')
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  /** @param {string} prefix */
   const read = (prefix) => lines.find((line) => line.startsWith(prefix))?.slice(prefix.length).trim() || ''
   return {
     requestedPlan: read('Requested plan:'),
@@ -242,6 +283,7 @@ function parseUpgradeRequest(description = '') {
   }
 }
 
+/** @param {{licenses: LicensingLicenseExpectedView[]}} props */
 function PlanCatalog({ licenses }) {
   const countsByPackage = useMemo(() => {
     return (licenses || []).reduce((accumulator, license) => {
@@ -307,20 +349,25 @@ function PlanCatalog({ licenses }) {
   )
 }
 
+/**
+ * `prefill.lodge_id` preserves the nullable ticket value passed by the parent;
+ * this annotation does not normalize it before the existing form assignment.
+ * @param {{companies: LicensingCompanyExpectedView[], licenses: LicensingLicenseExpectedView[], onRefresh: () => Promise<void>, prefill: {lodge_id: string|null, lodge_name: string|null, subscription_plan: string, notes: string}|null, clearPrefill: () => void}} props
+ */
 function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill }) {
-  const [editingLicense, setEditingLicense] = useState(null)
+  const [editingLicense, setEditingLicense] = useState(/** @type {LicensingLicenseExpectedView|null} */ (null))
   const [form, setForm] = useState({
-    lodge_id: '',
-    lodge_name: '',
+    lodge_id: /** @type {string|null} */ (''),
+    lodge_name: /** @type {string|null} */ (''),
     business_type: 'lodge',
-    operating_profile: null,
+    operating_profile: /** @type {unknown} */ (null),
     product_id: 'lodge-camp',
     commercial_package_key: 'starter',
     subscription_plan: 'Starter',
     payment_status: 'active',
     monthly_fee: '',
     currency: 'BWP',
-    selected_addon_keys: [],
+    selected_addon_keys: /** @type {string[]} */ ([]),
     expires_at: '',
     next_due_date: '',
     notes: '',
@@ -331,9 +378,9 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   const [filter, setFilter] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [pendingUserRemediation, setPendingUserRemediation] = useState(null)
-  const [remediationUsers, setRemediationUsers] = useState([])
-  const [keepUserIds, setKeepUserIds] = useState([])
+  const [pendingUserRemediation, setPendingUserRemediation] = useState(/** @type {LicensingPendingUserRemediationExpectedView|null} */ (null))
+  const [remediationUsers, setRemediationUsers] = useState(/** @type {LicensingRemediationUserExpectedView[]} */ ([]))
+  const [keepUserIds, setKeepUserIds] = useState(/** @type {string[]} */ ([]))
   const [remediating, setRemediating] = useState(false)
 
   useEffect(() => {
@@ -375,6 +422,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     })
   }, [companies, filter, licenses])
 
+  /** @param {LicensingCompanyExpectedView|null} company */
   const startCreate = (company) => {
     const productId = getCompanyProductId(company)
     const offer = getCompanyOffer(company)
@@ -382,9 +430,13 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     // fresh assignment form never looks unticked when the client already
     // has enabled bundles.
     const existingLicense = buildAssignedLicenseMap(licenses).get(assignmentKey(company?.lodge_id, productId)) || null
+    const existingAddonKeys = existingLicense ? selectedAddonKeys(existingLicense) : []
+    const dependencyError = getCommercialAddonDependencyError(productId, existingAddonKeys)
     setEditingLicense(null)
     setError('')
-    setNotice(existingLicense ? 'This client already has an active assignment — its enabled add-ons are preselected below.' : '')
+    setNotice(existingLicense
+      ? `This client already has an active assignment — its enabled add-ons are preselected below.${dependencyError ? ` ${dependencyError}; add the required add-on before saving.` : ''}`
+      : '')
     setAssignmentOperationId(crypto.randomUUID())
     setForm({
       lodge_id: company?.lodge_id || '',
@@ -405,14 +457,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     })
   }
 
+  /** @param {LicensingLicenseExpectedView} license */
   const startEdit = (license) => {
     const company = companyById.get(lodgeKey(license.lodge_id))
     const productId = getCompanyProductId(company, license)
     const offer = getCompanyOffer(company, license)
     const clearStaleExpiry = shouldClearStaleExpiry(license)
+    const dependencyError = getCommercialAddonDependencyError(productId, selectedAddonKeys(license))
     setEditingLicense(license)
     setError('')
-    setNotice(clearStaleExpiry ? 'This active assignment had an expired hard expiry date. Saving will clear that stale expiry and keep billing on the next due date.' : '')
+    setNotice([
+      clearStaleExpiry ? 'This active assignment had an expired hard expiry date. Saving will clear that stale expiry and keep billing on the next due date.' : '',
+      dependencyError ? `${dependencyError}. This existing assignment is retained until you save; add the required add-on before saving.` : ''
+    ].filter(Boolean).join(' '))
     setAssignmentOperationId(crypto.randomUUID())
     setForm({
       lodge_id: license.lodge_id || '',
@@ -433,6 +490,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     })
   }
 
+  /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const submit = async (event) => {
     event.preventDefault()
     setError('')
@@ -446,7 +504,8 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
         if (String(editingLicense.id || '').startsWith('entitlement:')) {
           throw new Error('This assignment was recovered from entitlement data but no editable license row was returned. Refresh licenses, then open Supabase if this still appears.')
         }
-        const result = await window.api.admin.assignCommercialSubscription({
+        // Expected response fields from the assignment preview/RPC; IPC and RPC JSON remain unvalidated.
+        const result = /** @type {LicensingAssignmentResultExpectedView|null} */ (await window.api.admin.assignCommercialSubscription({
           operation_id: operationId,
           license_id: editingLicense.id,
           lodge_id: form.lodge_id,
@@ -462,14 +521,15 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           next_due_date: form.next_due_date || null,
           notes: form.notes || null,
           activation_reason: form.notes
-        })
+        }))
         if (!result?.success) throw new Error(result?.error || 'Could not update license assignment')
         if (result?.status === 'pending_remediation' || result?.pending_remediation === true) {
           const blockerCopy = (result.blockers || []).map((item) => item.message).filter(Boolean).join(' ')
           setNotice(`${form.subscription_plan} is selected as the target package, but the current license was not changed yet. Complete the listed remediation and save again. ${blockerCopy}`.trim())
           const userBlocker = (result.blockers || []).find((item) => item.code === 'users_over_limit')
           if (userBlocker) {
-            const users = await window.api.admin.getCompanyUsers(form.lodge_id).catch(() => [])
+            // Expected selected columns from getCompanyUsers; the returned rows are not runtime-validated.
+            const users = /** @type {LicensingRemediationUserExpectedView[]|null} */ (await window.api.admin.getCompanyUsers(form.lodge_id).catch(() => []))
             setRemediationUsers((users || []).filter((user) => String(user.status || 'active').toLowerCase() === 'active'))
             setKeepUserIds([])
             setPendingUserRemediation({ ...userBlocker, targetPackageKey: form.commercial_package_key })
@@ -485,7 +545,8 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
           startEdit(existing)
           throw new Error('This lodge already has an active assignment. I opened the existing license for editing instead.')
         }
-        const result = await window.api.admin.assignCommercialSubscription({
+        // Expected response fields from the assignment preview/RPC; IPC and RPC JSON remain unvalidated.
+        const result = /** @type {LicensingAssignmentResultExpectedView|null} */ (await window.api.admin.assignCommercialSubscription({
             operation_id: operationId,
             lodge_id: form.lodge_id,
             lodge_name: form.lodge_name,
@@ -501,7 +562,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
             next_due_date: form.next_due_date || null,
             notes: form.notes || null,
             activation_reason: form.notes
-        })
+        }))
         if (!result?.success) throw new Error(result?.error || 'Could not generate license')
         if (result?.status === 'pending_remediation' || result?.pending_remediation === true) {
           const blockerCopy = (result.blockers || []).map((item) => item.message).filter(Boolean).join(' ')
@@ -527,7 +588,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
       if (doneMessage) setNotice(doneMessage)
       await onRefresh()
     } catch (err) {
-      setError(err?.message || 'Could not save license assignment')
+      setError((/** @type {LicensingThrownMessageExpectedView|null|undefined} */ (err))?.message || 'Could not save license assignment')
     } finally {
       setSaving(false)
     }
@@ -540,20 +601,23 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
     setRemediating(true)
     setError('')
     try {
-      const result = await window.api.admin.applyCommercialUserRemediation({
+      // The action button is rendered only for this existing pending-remediation view.
+      // This local expected view is not a runtime validation step.
+      const pending = /** @type {LicensingPendingUserRemediationExpectedView} */ (pendingUserRemediation)
+      const result = /** @type {LicensingUserRemediationResultExpectedView|null} */ (await window.api.admin.applyCommercialUserRemediation({
         lodge_id: form.lodge_id,
         product_id: form.product_id,
-        target_package_key: pendingUserRemediation.targetPackageKey,
+        target_package_key: pending.targetPackageKey,
         keep_user_ids: keepUserIds,
         reason: form.notes.trim()
-      })
+      }))
       if (!result?.success) throw new Error(result?.error || 'Could not apply user remediation')
       setPendingUserRemediation(null)
       setRemediationUsers([])
       setKeepUserIds([])
       setAssignmentOperationId(crypto.randomUUID())
       setNotice(`${result.suspended_users || 0} overflow account(s) were suspended, not deleted, and their sessions were revoked. Save the assignment again to activate the selected package.`)
-    } catch (err) { setError(err?.message || 'Could not apply user remediation') }
+    } catch (err) { setError((/** @type {LicensingThrownMessageExpectedView|null|undefined} */ (err))?.message || 'Could not apply user remediation') }
     finally { setRemediating(false) }
   }
 
@@ -726,12 +790,19 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
               const offer = getEligibleCommercialOffers({ productId: form.product_id, operatingProfile: form.operating_profile })
                 .find((item) => item.commercialPackageKey === event.target.value)
               setForm((current) => {
-                const selected_addon_keys = current.selected_addon_keys.filter((addonKey) => getEligibleCommercialAddons({
+                const eligibleAddons = getEligibleCommercialAddons({
                   productId: current.product_id,
                   propertyType: current.business_type,
                   operatingProfile: current.operating_profile,
                   commercialPackageKey: event.target.value
-                }).some((addon) => addon.addonKey === addonKey))
+                })
+                let selected_addon_keys = current.selected_addon_keys.filter((addonKey) => eligibleAddons.some((addon) => addon.addonKey === addonKey))
+                for (const entry of eligibleAddons) {
+                  const missingRequired = (entry.requiredAddonKeys || []).some((key) => !selected_addon_keys.includes(key))
+                  if (missingRequired && selected_addon_keys.includes(entry.addonKey)) {
+                    selected_addon_keys = selected_addon_keys.filter((key) => key !== entry.addonKey)
+                  }
+                }
                 return { ...current, commercial_package_key: event.target.value, subscription_plan: offer?.internalPlan || current.subscription_plan, selected_addon_keys }
               })
             }}>
@@ -752,21 +823,47 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
               <div className="grid md:grid-cols-2 gap-2">
                 {getEligibleCommercialAddons({ productId: form.product_id, propertyType: form.business_type, operatingProfile: form.operating_profile, commercialPackageKey: form.commercial_package_key }).map((addon) => {
                   const checked = form.selected_addon_keys.includes(addon.addonKey)
+                  const requiredAddons = (addon.requiredAddonKeys || []).flatMap((key) => {
+                    const required = getCommercialAddon(form.product_id, key)
+                    return required ? [required] : []
+                  })
+                  const dependents = getCommercialAddonDependents(form.product_id, addon.addonKey)
                   return (
                     <label key={addon.addonKey} className="flex items-start gap-2 rounded-lg border border-gray-700 px-3 py-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={checked}
-                        onChange={(event) => setForm((current) => ({
-                          ...current,
-                          selected_addon_keys: event.target.checked
-                            ? [...new Set([...current.selected_addon_keys, addon.addonKey])]
-                            : current.selected_addon_keys.filter((key) => key !== addon.addonKey)
-                        }))}
+                        onChange={(event) => {
+                          setError('')
+                          if (event.target.checked) {
+                            setForm((current) => ({
+                              ...current,
+                              selected_addon_keys: [...new Set([
+                                ...current.selected_addon_keys,
+                                addon.addonKey,
+                                ...(addon.requiredAddonKeys || [])
+                              ])]
+                            }))
+                            return
+                          }
+                          if (dependents.length > 0) {
+                            setError(`${addon.displayName} is required by ${dependents.map((entry) => entry.displayName).join(', ')}. Remove the dependent add-on first.`)
+                            return
+                          }
+                          setForm((current) => ({
+                            ...current,
+                            selected_addon_keys: current.selected_addon_keys.filter((key) => key !== addon.addonKey)
+                          }))
+                        }}
                       />
                       <span>
                         <span className="block text-sm text-white">{addon.displayName} <span className="text-emerald-300">— {formatCommercialMoney(addon.annualPriceBwp || addon.oneTimePriceBwp)}{addon.annualPriceBwp ? '/year' : ''}</span></span>
                         <span className="block text-[11px] text-gray-500">{addon.description}</span>
+                        {requiredAddons.length > 0 && (
+                          <span className="mt-1 block text-[11px] font-medium text-amber-300">
+                            Requires {requiredAddons.map((entry) => entry.displayName).join(', ')}. Selecting this add-on selects the requirement too.
+                          </span>
+                        )}
                       </span>
                     </label>
                   )
@@ -851,6 +948,7 @@ function AssignmentDesk({ companies, licenses, onRefresh, prefill, clearPrefill 
   )
 }
 
+/** @param {{companies: LicensingCompanyExpectedView[], licenses: LicensingLicenseExpectedView[]}} props */
 function LegacyOverrideDesk({ companies, licenses }) {
   const [selectedLodge, setSelectedLodge] = useState('')
   const [flags, setFlags] = useState({})
@@ -1122,16 +1220,17 @@ function LegacyOverrideDesk({ companies, licenses }) {
   )
 }
 
+/** @param {{companies: LicensingCompanyExpectedView[], licenses: LicensingLicenseExpectedView[]}} props */
 function OverrideDesk({ companies, licenses }) {
   const [selectedLodge, setSelectedLodge] = useState('')
   const [selectedProduct, setSelectedProduct] = useState('')
   const [referencePackageKey, setReferencePackageKey] = useState('')
-  const [overrides, setOverrides] = useState([])
+  const [overrides, setOverrides] = useState(/** @type {CommercialEntitlementOverrideExpectedView[]} */ ([]))
   const [loading, setLoading] = useState(false)
   const [savingKey, setSavingKey] = useState('')
   const [reason, setReason] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
-  const [limitDrafts, setLimitDrafts] = useState({})
+  const [limitDrafts, setLimitDrafts] = useState(/** @type {Record<string, string>} */ ({}))
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -1191,7 +1290,10 @@ function OverrideDesk({ companies, licenses }) {
     setError('')
     try {
       const rows = await window.api.admin.getCommercialEntitlementOverrides(selectedLodge, selectedProduct)
-      setOverrides(Array.isArray(rows) ? rows : [])
+      // The admin RPC returns its existing row array unchanged through IPC.
+      // This is the local expected row view for the fields consumed below;
+      // Array.isArray narrows only the outer container, and no row validation is claimed.
+      setOverrides(Array.isArray(rows) ? /** @type {CommercialEntitlementOverrideExpectedView[]} */ (rows) : [])
     } catch (err) {
       setOverrides([])
       setError(err?.message || 'Could not load commercial overrides')
@@ -1279,6 +1381,7 @@ function OverrideDesk({ companies, licenses }) {
   </div>
 }
 
+/** @param {{companies: LicensingCompanyExpectedView[], licenses: LicensingLicenseExpectedView[], tickets: LicensingSupportTicketExpectedView[], onApprove: (ticket: LicensingSupportTicketExpectedView) => void}} props */
 function ClientHealthDesk({ companies, licenses, tickets, onApprove }) {
   const today = new Date()
   const activeLicenses = Array.from(buildAssignedLicenseMap(licenses).values())
@@ -1399,10 +1502,12 @@ function ClientHealthDesk({ companies, licenses, tickets, onApprove }) {
   )
 }
 
+/** @param {{companies: LicensingCompanyExpectedView[], licenses: LicensingLicenseExpectedView[], tickets: LicensingSupportTicketExpectedView[], onRefresh: () => Promise<void>}} props */
 export default function LicensingWorkbench({ companies, licenses, tickets, onRefresh }) {
   const [tab, setTab] = useState('plans')
-  const [prefill, setPrefill] = useState(null)
+  const [prefill, setPrefill] = useState(/** @type {LicensingAssignmentPrefillExpectedView|null} */ (null))
 
+  /** @param {LicensingSupportTicketExpectedView} ticket */
   const handleApprove = (ticket) => {
     const parsed = parseUpgradeRequest(ticket.description)
     setPrefill({

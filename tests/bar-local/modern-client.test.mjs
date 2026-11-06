@@ -518,6 +518,27 @@ test('login, refresh and revoke manage the local session and never log secrets',
   }
 })
 
+test('Manage verifies the full owner PIN and distinguishes an older service endpoint without replacing the session', async () => {
+  const server = await createFakeService()
+  server.route('POST', '/v1/sessions', (_req, res) => json(res, 200, sessionPayload()))
+  server.route('POST', '/v1/manager-pin/verify', (_req, res) => json(res, 404, { ok: false, code: 'ROUTE_NOT_FOUND' }))
+  const harness = makeClient(server)
+  try {
+    await harness.client.login({ staff_id: STAFF_ID, pin: '123456789012' })
+    const sessionBefore = structuredClone(harness.client.session)
+    await assert.rejects(harness.client.verifyManagerPin({ staff_id: STAFF_ID, pin: '123456789012' }),
+      { code: 'LOCAL_SERVICE_UPDATE_REQUIRED' })
+    assert.deepEqual(harness.client.session, sessionBefore)
+    server.route('POST', '/v1/manager-pin/verify', (_req, res, body) => json(res, 200, { ok: true, verified: true, staff_id: body.staff_id }))
+    assert.equal((await harness.client.verifyManagerPin({ staff_id: STAFF_ID, pin: '123456789012' })).verified, true)
+    const calls = server.requests.filter((entry) => entry.path === '/v1/manager-pin/verify')
+    assert.equal(calls.every((entry) => entry.body.pin === '123456789012'), true)
+    await assert.rejects(harness.client.verifyManagerPin({ staff_id: SESSION_ID, pin: '123456789012' }), { code: 'CAPABILITY_DENIED' })
+    assert.equal(server.requests.filter((entry) => entry.path === '/v1/manager-pin/verify').length, calls.length)
+    assert.deepEqual(harness.client.session, sessionBefore)
+  } finally { harness.cleanup(); await server.close() }
+})
+
 test('manager approval command uses trusted local scope and verifies exact operation hash', async () => {
   const server = await createFakeService()
   server.route('POST', '/v1/sessions', (_req, res) => json(res, 200, sessionPayload()))
@@ -1424,6 +1445,68 @@ test('event feed gaps leave the cursor in place until an explicit resync', async
 
     harness.client.resetEventCursor(10)
     assert.equal(harness.client.eventCursor, 10)
+  } finally {
+    harness.cleanup()
+    await server.close()
+  }
+})
+
+test('an empty legacy PostgreSQL outbox normalizes its NULL event watermark to zero', async () => {
+  const server = await createFakeService()
+  server.route('POST', '/v1/sessions', (req, res) => json(res, 200, sessionPayload()))
+  server.route('GET', '/v1/events', (req, res) => json(res, 200, {
+    ok: true,
+    events: [],
+    event_count: 0,
+    next_cursor: 0,
+    latest_commit_sequence: 0,
+    latest_event_sequence: null,
+    retention_floor_sequence: null,
+    gap_detected: false,
+    complete: true,
+    scope: QUERY_SCOPE
+  }))
+  const harness = makeClient(server)
+  try {
+    await harness.client.login({ staff_id: STAFF_ID, pin: '2468' })
+    const result = await harness.client.pollEvents()
+    assert.equal(result.latest_event_sequence, 0)
+    assert.equal(result.cursor, 0)
+    assert.equal(result.resync_required, false)
+  } finally {
+    harness.cleanup()
+    await server.close()
+  }
+})
+
+test('an event feed with rows still rejects a NULL latest-event watermark', async () => {
+  const server = await createFakeService()
+  const event = {
+    commit_sequence: 1,
+    event_index: 0,
+    event_type: 'sale.committed',
+    operation_id: OP_EXECUTING,
+    payload: {},
+    payload_hash: '0'.repeat(64),
+    created_at: '2026-10-20T10:00:00.000Z'
+  }
+  server.route('POST', '/v1/sessions', (req, res) => json(res, 200, sessionPayload()))
+  server.route('GET', '/v1/events', (req, res) => json(res, 200, {
+    ok: true,
+    events: [event],
+    event_count: 1,
+    next_cursor: 1,
+    latest_commit_sequence: 1,
+    latest_event_sequence: null,
+    retention_floor_sequence: null,
+    gap_detected: false,
+    complete: true,
+    scope: QUERY_SCOPE
+  }))
+  const harness = makeClient(server)
+  try {
+    await harness.client.login({ staff_id: STAFF_ID, pin: '2468' })
+    await assert.rejects(harness.client.pollEvents(), /events\.latest_event_sequence must be an integer/)
   } finally {
     harness.cleanup()
     await server.close()

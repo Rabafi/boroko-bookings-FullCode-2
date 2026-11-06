@@ -28,6 +28,8 @@ async function run(command,args){
 if(process.platform==='win32')await run(process.env.ComSpec??'cmd.exe',['/d','/s','/c','npm --prefix packages/bar-contracts run build'])
 else await run('npm',['--prefix','packages/bar-contracts','run','build'])
 await run(process.execPath,['--test','--test-concurrency=1',
- 'tests/bar-local/invoice-math.test.mjs','tests/bar-local/finance-browser.test.mjs',
- 'tests/bar-local/handover-browser.test.mjs','tests/bar-local/operator-controls-browser.test.mjs',
- 'tests/bar-local/startup-browser.test.mjs'])
+ 'tests/bar-local/invoice-math.test.mjs',
+ 'tests/bar-local/startup-browser.test.mjs',
+ 'services/bar-local/tests/native-hpos-menu-rendered-smoke.test.mjs',
+ 'services/bar-local/tests/mixed-profile-login-rendered.test.mjs',
+ 'services/bar-local/tests/native-hpos-stock-rendered-smoke.test.mjs'])

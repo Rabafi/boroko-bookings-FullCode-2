@@ -9,6 +9,11 @@ import {
   dedupePromise
 } from './infrastructure.js';
 
+/** Existing expense query/cache projections; cache JSON and IPC-authored fields remain unvalidated.
+ * @typedef {Record<string, unknown> & {id?: unknown, date: string, outlet_id?: unknown, status?: unknown, _deleted_offline?: unknown, _pending_sync?: unknown}}
+ * ExpenseCacheReadView
+ */
+
 /** @param {unknown} payload */
 function payloadHasAmount(payload) {
   return !!payload && Object.prototype.hasOwnProperty.call(payload, 'amount');
@@ -26,7 +31,7 @@ function withReadMetadata(rows, source, complete) {
 
 /** @param {string|undefined} startDate @param {string|undefined} endDate @param {unknown} [outletId] */
 async function _getExpenses(startDate, endDate, outletId = 'all') {
-  const canonicalExpenses = readCache('expenses');
+  const canonicalExpenses = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
   const cachedExpenses = canonicalExpenses.
   filter((row) => row?._deleted_offline !== true).
   filter((row) =>
@@ -78,7 +83,7 @@ export function getExpenses(startDate, endDate, outletId = 'all') {
 /** @param {unknown} id */
 export async function getExpenseById(id) {
   if (!id) return null;
-  if (!state.isOnline) return readCache('expenses').find((row) => row?.id === id) || null;
+  if (!state.isOnline) return /** @type {ExpenseCacheReadView[]} */ (readCache('expenses')).find((row) => row?.id === id) || null;
   const { data, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).
   from('expenses').
   select('*').
@@ -123,7 +128,7 @@ export async function createExpense(data) {
     const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('create_expense', { payload: expense });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not create expense');
-    const cached = readCache('expenses');
+    const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
     writeCache('expenses', [{ ...expense, id: result?.id }, ...cached.filter((row) => row.id !== result?.id)]);
     return { success: true, id: result?.id };
   }
@@ -135,7 +140,7 @@ export async function createExpense(data) {
     _sync_state: 'pending',
     _sync_error: null
   };
-  writeCache('expenses', [offlineExpense, ...readCache('expenses').filter((row) => row?.id !== id)]);
+  writeCache('expenses', [offlineExpense, .../** @type {ExpenseCacheReadView[]} */ (readCache('expenses')).filter((row) => row?.id !== id)]);
   queueOperation('rpc', 'create_expense', { payload: expense }, null, {
     _queue_id: `expense-${id}`
   });
@@ -175,11 +180,11 @@ export async function updateExpense(id, data) {
     });
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not update expense');
-    const cached = readCache('expenses');
+    const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
     writeCache('expenses', cached.map((row) => row.id === id ? { ...row, ...update } : row));
     return { success: true };
   }
-  const cached = readCache('expenses');
+  const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
   const existing = cached.find((row) => row?.id === id);
   if (!existing) return { success: false, error: 'Expense not found in offline cache' };
   writeCache('expenses', cached.map((row) => row.id === id ? {
@@ -209,11 +214,11 @@ async function transitionExpense(id, action, payload = {}, operationId = randomU
     const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc(rpcName, args);
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || `Could not ${action} expense`);
-    const cached = readCache('expenses');
+    const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
     writeCache('expenses', cached.map((row) => row.id === id ? { ...row, ...result, status: result.status || row.status } : row));
     return result;
   }
-  const cached = readCache('expenses');
+  const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
   const existing = cached.find((row) => row?.id === id);
   if (!existing) return { success: false, error: 'Expense not found in offline cache' };
   writeCache('expenses', cached.map((row) => row.id === id ? {
@@ -272,11 +277,11 @@ export async function deleteExpense(id, operationId) {
     const { data: result, error } = await (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).rpc('delete_expense', args);
     if (error) throw new Error(error.message);
     if (!result?.success) throw new Error(result?.error || 'Could not void expense');
-    const cached = readCache('expenses');
+    const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
     writeCache('expenses', cached.map((row) => row.id === id ? { ...row, ...result, status: result.status || 'voided' } : row));
     return result;
   }
-  const cached = readCache('expenses');
+  const cached = /** @type {ExpenseCacheReadView[]} */ (readCache('expenses'));
   const existing = cached.find((row) => row?.id === id);
   if (!existing) return { success: false, error: 'Expense not found in offline cache' };
   writeCache('expenses', cached.map((row) => row.id === id ? {

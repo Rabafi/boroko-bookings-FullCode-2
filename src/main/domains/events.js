@@ -16,22 +16,37 @@ const VALID_EVENT_TYPES = ['conference', 'meeting', 'party', 'wedding', 'corpora
 const VALID_SCOPES = ['venue_only', 'venue_with_rooms', 'exclusive_lodge']
 const VALID_EVENT_STATUSES = ['draft', 'reserved', 'confirmed', 'active', 'completed', 'cancelled']
 
+/**
+ * Expected IPC input, cache and RPC consumer views; these declarations do not
+ * validate the incoming IPC payload, cache rows or RPC JSON. Cache IDs come
+ * from the existing conference-booking/item writers (UUIDs or database IDs).
+ * Numeric fields retain the number/string forms already handled by Number().
+ * @typedef {{id: string, event_booking_id?: string|undefined, inventory_item_id?: string|null, voided_at?: string|null, void_reason?: string|null, cancelled_at?: string|null, cancellation_reason?: string|null, status?: string|null, created_at?: string|null, updated_at?: string|null, booking_date?: string|null|undefined, start_time?: string|null, client_name?: string|null, amount_paid?: number|string|null, deposit_paid?: number|string|null, total_amount?: number|string|null, balance_due?: number|string|null, subtotal?: number|string|null, unit_price?: number|string|null, quantity?: number|string|null, depletion_quantity?: number|string|null, extras_total?: number|string|null, charges_total?: number|string|null, current_stock?: number|string|null, payment_status?: string|null, _pending_sync?: boolean, _pending_payment?: boolean, _financial_estimate?: boolean, _sync_state?: string, _sync_error?: string|null}} EventCacheExpectedData
+ * These input views describe the local call shapes; IPC payloads are not validated here.
+ * @typedef {{booking_date: string, start_time: string, end_time: string, id?: string, idempotency_key?: string, customer_id?: string|null, event_name?: string, event_type?: string, reservation_scope?: string, status?: string, client_name?: string, company?: string|null, adults?: number, children?: number, room_name?: string|null, setup_type?: string, includes_catering?: boolean, catering_notes?: string|null, total_amount?: number|string, deposit_amount?: number|string, payment_method?: string|null, currency?: string, notes?: string|null, room_ids?: string[]|null, resources?: unknown, check_in?: string|null, check_out?: string|null, event_daily_rate?: number|string|null, quotation_id?: string|null}} CreateEventBookingInputExpectedData\n * @typedef {{event_name?: string, event_type?: string, reservation_scope?: string, status?: string, client_name?: string, company?: string|null, adults?: number, children?: number, room_name?: string|null, setup_type?: string, includes_catering?: boolean, catering_notes?: string|null, booking_date?: string, start_time?: string, end_time?: string, total_amount?: number|string, currency?: string, notes?: string|null, idempotency_key?: string, expected_updated_at?: string|null}} UpdateEventBookingPatchExpectedData\n * @typedef {{event_booking_id: string, id?: string, idempotency_key?: string, line_type?: string, description?: string, category?: string|null, quantity?: number|string, unit_price?: number|string, inventory_item_id?: string|null, depletion_quantity?: number|string|null}} AddEventLineItemInputExpectedData
+ * @typedef {{success?: boolean, error?: string, event_id?: string, exclusive_booking_id?: string|null, idempotent?: boolean, line_item_id?: string, subtotal?: number|string}} EventRpcResultExpectedData
+ * @typedef {{id: string, package_name: string, description: string|null, category: string, base_price: number, max_capacity: number|null, min_capacity: number|null, duration_hours: number|null, items: unknown, is_active: boolean|null, created_at: string, updated_at: string}} VenuePackageCacheExpectedData
+ */
+
+/** @param {string} eventId */
 function getCachedEventLineItems(eventId) {
-  return readCache('event-line-items')
+  return /** @type {EventCacheExpectedData[]} */ (readCache('event-line-items'))
     .filter((line) => line?.event_booking_id === eventId && !line?.voided_at)
     .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
 }
 
+/** @param {Partial<EventCacheExpectedData>} [line] */
 function upsertCachedEventLineItem(line = {}) {
   if (!line?.id) return
   writeCache('event-line-items', [
     line,
-    ...readCache('event-line-items').filter((row) => row?.id !== line.id)
+    .../** @type {EventCacheExpectedData[]} */ (readCache('event-line-items')).filter((row) => row?.id !== line.id)
   ].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))
 }
 
+/** @param {string} lineItemId @param {Partial<EventCacheExpectedData>} [patch] */
 function patchCachedEventLineItem(lineItemId, patch = {}) {
-  const rows = readCache('event-line-items')
+  const rows = /** @type {EventCacheExpectedData[]} */ (readCache('event-line-items'))
   const idx = rows.findIndex((line) => line?.id === lineItemId)
   if (idx < 0) return null
   const next = [...rows]
@@ -40,8 +55,9 @@ function patchCachedEventLineItem(lineItemId, patch = {}) {
   return next[idx]
 }
 
+/** @param {string} eventId @param {number} [delta] */
 function patchCachedEventTotals(eventId, delta = 0) {
-  const rows = readCache('conference-bookings')
+  const rows = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   const idx = rows.findIndex((row) => row?.id === eventId)
   if (idx < 0) return null
   const current = rows[idx]
@@ -67,12 +83,13 @@ function patchCachedEventTotals(eventId, delta = 0) {
   return next
 }
 
+/** @param {Partial<EventCacheExpectedData>} [line] @param {boolean} [restore] */
 function patchEventInventoryEstimate(line = {}, restore = false) {
   if (!line?.inventory_item_id) return
   const depletion = Number(line.depletion_quantity || line.quantity || 0)
   if (!Number.isFinite(depletion) || depletion <= 0) return
   const multiplier = restore ? 1 : -1
-  writeCache('inventory-items', readCache('inventory-items').map((item) => item.id === line.inventory_item_id ? {
+  writeCache('inventory-items', (/** @type {EventCacheExpectedData[]} */ (readCache('inventory-items'))).map((item) => item.id === line.inventory_item_id ? {
     ...item,
     current_stock: Math.max(0, Number(item.current_stock || 0) + multiplier * depletion),
     _pending_sync: true,
@@ -82,14 +99,16 @@ function patchEventInventoryEstimate(line = {}, restore = false) {
   } : item))
 }
 
+/** @param {string|null} [start] @param {string|null} [end] */
 export function getEventBookings(start, end) {
-  const cached = readCache('conference-bookings')
+  const cached = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   if (!state.isOnline) {
     return cached
       .filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end))
       .sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || '')))
   }
-  let q = state.supabase
+  // This existing online branch is the lifecycle guard for the optional client in state.js.
+  let q = /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
     .from('conference_bookings')
     .select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id, customer_id, event_name, event_type, reservation_scope, status, adults, children, subtotal, extras_total, charges_total, amount_paid, balance_due, currency, exclusive_booking_id, quotation_id, cancelled_at, cancellation_reason')
     .eq('lodge_id', state.lodgeId)
@@ -102,10 +121,11 @@ export function getEventBookings(start, end) {
   return q.then(({ data }) => data || []).catch(() => cached)
 }
 
+/** @param {string} id */
 export async function getEventBookingById(id) {
   if (!id) return null
-  if (!state.isOnline) return readCache('conference-bookings').find((row) => row.id === id) || null
-  const { data, error } = await state.supabase
+  if (!state.isOnline) return (/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))).find((row) => row.id === id) || null
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
     .from('conference_bookings')
     .select('*')
     .eq('lodge_id', state.lodgeId)
@@ -115,27 +135,30 @@ export async function getEventBookingById(id) {
   return data || null
 }
 
+/** @param {string} id */
 export async function getEventBookingDetails(id) {
   if (!id) return null
   if (!state.isOnline) {
-    const event = readCache('conference-bookings').find((row) => row.id === id) || null
+    const event = (/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))).find((row) => row.id === id) || null
     return event ? { event, resources: [], line_items: getCachedEventLineItems(id), rooms: [], payments: [] } : null
   }
-  const { data, error } = await state.supabase.rpc('get_event_booking_details', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_event_booking_details', {
     p_event_id: id,
     p_lodge_id: state.lodgeId
   })
   if (error) throw new Error(error.message)
-  if (!data?.success) throw new Error(data?.error || 'Could not load event details')
-  if (Array.isArray(data.line_items)) {
+  const details = /** @type {{success?: boolean, error?: string, line_items?: EventCacheExpectedData[]}} */ (data)
+  if (!details?.success) throw new Error(details?.error || 'Could not load event details')
+  if (Array.isArray(details.line_items)) {
     writeCache('event-line-items', [
-      ...data.line_items,
-      ...readCache('event-line-items').filter((line) => line?.event_booking_id !== id)
+      ...details.line_items,
+      .../** @type {EventCacheExpectedData[]} */ (readCache('event-line-items')).filter((line) => line?.event_booking_id !== id)
     ])
   }
   return data
 }
 
+/** @param {CreateEventBookingInputExpectedData} data */
 export async function createEventBooking(data) {
   const idempotencyKey = data.idempotency_key || `event-${Date.now()}-${crypto.randomUUID()}`
   const payload = {
@@ -172,7 +195,8 @@ export async function createEventBooking(data) {
   }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('create_event_booking', { payload })
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_event_booking', { payload })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not create event booking')
     await refreshCache('conference-bookings')
@@ -191,16 +215,17 @@ export async function createEventBooking(data) {
     _sync_error: null,
     created_at: new Date().toISOString()
   }
-  writeCache('conference-bookings', [offlineRow, ...readCache('conference-bookings').filter((row) => row.id !== payload.id)], { source: 'local' })
+  writeCache('conference-bookings', [offlineRow, .../** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings')).filter((row) => row.id !== payload.id)], { source: 'local' })
   queueOperation('rpc', 'create_event_booking', { payload }, null, { _queue_id: `event-${payload.id}` })
   logActivity('event_created', `(Offline) Event created · ${payload.event_name} · ${payload.booking_date}`)
   return { id: payload.id }
 }
 
+/** @param {string} id @param {UpdateEventBookingPatchExpectedData} data */
 export async function updateEventBooking(id, data) {
   if (!id) throw new Error('Event booking ID is required')
   const idempotencyKey = data.idempotency_key || `event-update-${Date.now()}-${crypto.randomUUID()}`
-  const existing = readCache('conference-bookings').find((row) => row.id === id)
+  const existing = (/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))).find((row) => row.id === id)
   const expectedUpdatedAt = data.expected_updated_at || existing?.updated_at || null
 
   const rpcPayload = {
@@ -223,16 +248,17 @@ export async function updateEventBooking(id, data) {
     currency: data.currency,
     notes: data.notes
   }
-  Object.keys(rpcPayload).forEach((k) => { if (rpcPayload[k] === undefined) delete rpcPayload[k] })
+  Object.keys(rpcPayload).forEach((k) => { if ((/** @type {Record<string, unknown>} */ (rpcPayload))[k] === undefined) delete (/** @type {Record<string, unknown>} */ (rpcPayload))[k] })
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_event_booking', {
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_event_booking', {
       p_event_id: id,
       p_lodge_id: state.lodgeId,
       payload: rpcPayload,
       p_expected_updated_at: expectedUpdatedAt,
       p_idempotency_key: idempotencyKey
     })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not update event')
     await refreshCache('conference-bookings')
@@ -240,7 +266,7 @@ export async function updateEventBooking(id, data) {
     return { success: true }
   }
 
-  const cached = readCache('conference-bookings')
+  const cached = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   const idx = cached.findIndex((row) => row.id === id)
   const dependsOn = existing?._pending_sync ? `event-${id}` : null
   queueOperation('rpc', 'update_event_booking', {
@@ -257,17 +283,19 @@ export async function updateEventBooking(id, data) {
   return { success: true }
 }
 
+/** @param {string} id @param {string} reason @param {boolean} [cancelLinkedRooms] */
 export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
   if (!id) throw new Error('Event booking ID is required')
   if (!reason) throw new Error('Cancellation reason is required')
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('cancel_event_booking', {
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('cancel_event_booking', {
       p_event_id: id,
       p_lodge_id: state.lodgeId,
       p_reason: reason,
       p_cancel_linked_rooms: cancelLinkedRooms
     })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not cancel event')
     await refreshCache('conference-bookings')
@@ -275,7 +303,7 @@ export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
     return { success: true }
   }
 
-  const cached = readCache('conference-bookings')
+  const cached = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   const idx = cached.findIndex((row) => row.id === id)
   const dependsOn = cached[idx]?._pending_sync ? `event-${id}` : null
   queueOperation('rpc', 'cancel_event_booking', {
@@ -291,6 +319,7 @@ export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
   return { success: true }
 }
 
+/** @param {AddEventLineItemInputExpectedData} data */
 export async function addEventLineItem(data) {
   if (!data.event_booking_id) throw new Error('event_booking_id is required')
   const idempotencyKey = data.idempotency_key || `line-${Date.now()}-${crypto.randomUUID()}`
@@ -308,7 +337,8 @@ export async function addEventLineItem(data) {
   }
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('add_event_line_item', { payload })
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('add_event_line_item', { payload })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not add line item')
     await refreshCache('conference-bookings')
@@ -344,22 +374,24 @@ export async function addEventLineItem(data) {
   queueOperation('rpc', 'add_event_line_item', { payload }, null, {
     _queue_id: `event-line-${lineId}`,
     _local_line_item_id: lineId,
-    ...(readCache('conference-bookings').find((row) => row?.id === payload.event_booking_id)?._pending_sync ? { _depends_on: `event-${payload.event_booking_id}` } : {})
+    ...((/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))).find((row) => row?.id === payload.event_booking_id)?._pending_sync ? { _depends_on: `event-${payload.event_booking_id}` } : {})
   })
   logActivity('event_line_item_added', `(Offline) Line item added · ${payload.description} · ${quantity}x ${unitPrice}`)
   return { id: lineId, subtotal, offline: true, queued: true }
 }
 
+/** @param {string} lineItemId @param {string} reason */
 export async function voidEventLineItem(lineItemId, reason) {
   if (!lineItemId) throw new Error('Line item ID is required')
   if (!reason) throw new Error('Void reason is required')
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('void_event_line_item', {
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('void_event_line_item', {
       p_line_item_id: lineItemId,
       p_lodge_id: state.lodgeId,
       p_reason: reason
     })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not void line item')
     await refreshCache('conference-bookings')
@@ -367,7 +399,7 @@ export async function voidEventLineItem(lineItemId, reason) {
     return { success: true }
   }
 
-  const line = readCache('event-line-items').find((row) => row?.id === lineItemId)
+  const line = (/** @type {EventCacheExpectedData[]} */ (readCache('event-line-items'))).find((row) => row?.id === lineItemId)
   if (!line) throw new Error('Line item not found in offline cache')
   patchCachedEventLineItem(lineItemId, {
     voided_at: new Date().toISOString(),
@@ -391,6 +423,7 @@ export async function voidEventLineItem(lineItemId, reason) {
   return { success: true, offline: true, queued: true }
 }
 
+/** @param {string} id @param {number|string} amount @param {string} method @param {string} [type] @param {string|null} [idempotencyKey] */
 export async function updateEventPayment(id, amount, method, type = 'payment', idempotencyKey = null) {
   if (!id) throw new Error('Event booking ID is required')
   if (!amount || Number(amount) <= 0) throw new Error('Payment amount must be greater than zero')
@@ -399,7 +432,7 @@ export async function updateEventPayment(id, amount, method, type = 'payment', i
   const intentKey = idempotencyKey || `event-pay-${Date.now()}-${crypto.randomUUID()}`
 
   if (state.isOnline) {
-    const { data: result, error } = await state.supabase.rpc('update_event_payment', {
+    const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_event_payment', {
       p_event_id: id,
       p_lodge_id: state.lodgeId,
       p_amount: numericAmount,
@@ -408,15 +441,16 @@ export async function updateEventPayment(id, amount, method, type = 'payment', i
       p_idempotency_key: intentKey,
       p_recorded_by: state.currentUser?.id || null
     })
+    const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
     if (!result?.success) throw new Error(result?.error || 'Could not record payment')
     await refreshCache('conference-bookings')
-    const name = (readCache('conference-bookings') || []).find((row) => row.id === id)?.client_name || 'Guest'
+    const name = (/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings')) || []).find((row) => row.id === id)?.client_name || 'Guest'
     logActivity('event_payment_recorded', `Event payment ${numericAmount.toFixed(2)} · ${name} · ${method}`)
     return result
   }
 
-  const cached = readCache('conference-bookings')
+  const cached = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   const idx = cached.findIndex((row) => row.id === id)
   if (idx < 0) throw new Error('Event not found in offline cache')
   const row = cached[idx]
@@ -446,9 +480,10 @@ export async function updateEventPayment(id, amount, method, type = 'payment', i
   return { success: true, offline: true, queued: true }
 }
 
+/** @param {string} resourceKey @param {string} startAt @param {string} endAt @param {string|null} [excludeEventId] */
 export async function checkEventResourceAvailability(resourceKey, startAt, endAt, excludeEventId = null) {
   if (!state.isOnline) return { available: true }
-  const { data, error } = await state.supabase.rpc('check_event_resource_conflict', {
+  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('check_event_resource_conflict', {
     p_lodge_id: state.lodgeId,
     p_resource_key: resourceKey,
     p_start_at: startAt,
@@ -462,11 +497,12 @@ export async function checkEventResourceAvailability(resourceKey, startAt, endAt
 // ── Venue Packages ──────────────────────────────────────────────────────────
 const PACKAGES_CACHE = 'venue-packages'
 
+/** @param {string|null} [category] @param {boolean} [activeOnly] */
 async function _getVenuePackages(category, activeOnly) {
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) return []
   try {
-    const { data, error } = await state.supabase.rpc('get_venue_packages', {
+    const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_venue_packages', {
       p_lodge_id: currentLodgeId,
       p_category: category || null,
       p_active_only: activeOnly !== false
@@ -476,25 +512,27 @@ async function _getVenuePackages(category, activeOnly) {
     return data || []
   } catch (e) {
     const cached = readCache(PACKAGES_CACHE)
-    if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return cached
+    if (Array.isArray(cached) && (cached.length > 0 || !state.isOnline)) return /** @type {VenuePackageCacheExpectedData[]} */ (cached)
     return []
   }
 }
+/** @type {(...args: [string|null, (boolean|undefined)?]) => ReturnType<typeof _getVenuePackages>} */
 export const getVenuePackages = (...args) => dedupePromise('getVenuePackages', () => _getVenuePackages(...args))
 
 function requireOnline() {
   if (!state.isOnline) {
-    const err = new Error('Venue packages require an internet connection')
+    const err = /** @type {Error & {onlineOnly?: boolean}} */ (new Error('Venue packages require an internet connection'))
     err.onlineOnly = true
     throw err
   }
 }
 
+/** @param {Record<string, unknown>} data */
 export async function createVenuePackage(data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('create_venue_package', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('create_venue_package', {
     p_lodge_id: currentLodgeId,
     p_payload: data
   })
@@ -502,11 +540,12 @@ export async function createVenuePackage(data) {
   return result
 }
 
+/** @param {string} id @param {Record<string, unknown>} data */
 export async function updateVenuePackage(id, data) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('update_venue_package', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('update_venue_package', {
     p_id: id,
     p_lodge_id: currentLodgeId,
     p_payload: data
@@ -515,11 +554,12 @@ export async function updateVenuePackage(id, data) {
   return result
 }
 
+/** @param {string} id */
 export async function deleteVenuePackage(id) {
   requireOnline()
   const currentLodgeId = state.lodgeId
   if (!currentLodgeId) throw new Error('No lodge selected')
-  const { data: result, error } = await state.supabase.rpc('delete_venue_package', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('delete_venue_package', {
     p_id: id,
     p_lodge_id: currentLodgeId
   })
@@ -527,6 +567,7 @@ export async function deleteVenuePackage(id) {
   return result
 }
 
+/** @param {string} packageId @param {string} eventBookingId @param {number} quantity @param {string} idempotencyKey */
 export async function applyVenuePackageToEvent(packageId, eventBookingId, quantity, idempotencyKey) {
   requireOnline()
   const currentLodgeId = state.lodgeId
@@ -535,7 +576,7 @@ export async function applyVenuePackageToEvent(packageId, eventBookingId, quanti
   if (intentKey.length < 8 || intentKey.length > 128) {
     throw new Error('A stable idempotency key between 8 and 128 characters is required')
   }
-  const { data: result, error } = await state.supabase.rpc('apply_venue_package_to_event', {
+  const { data: result, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('apply_venue_package_to_event', {
     p_package_id: packageId,
     p_event_booking_id: eventBookingId,
     p_lodge_id: currentLodgeId,

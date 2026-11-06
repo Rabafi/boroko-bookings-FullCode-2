@@ -162,7 +162,7 @@ async function run() {
   assert.match(syncShared, /next\.data\.p_expected_updated_at = null/)
   assert.match(syncShared, /next\.table === 'update_booking_status'[\s\S]{0,240}startsWith\('booking-'\)/)
   assert.match(database, /function isBenignBookingDriftFault\(fault = \{\}\)/)
-  assert.match(database, /parsed\.filter\(\(fault\) => !isBenignBookingDriftFault\(fault\)\)/)
+  assert.match(database, /parsed\.filter\(\((?:\/\*\*\s*@type \{unknown\}\s*\*\/\s*)?fault\)\s*=>\s*!isBenignBookingDriftFault\(fault\)\)/)
   assert.match(mainIndex, /ipcMain\.handle\('sync:getStatus'/)
   assert.doesNotMatch(mainIndex, /sync:getStatus'[\s\S]{0,140}requireCapability\('system\.health'\)/)
   assert.match(mainIndex, /ipcMain\.handle\('sync:getDetails'/)

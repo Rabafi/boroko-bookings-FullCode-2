@@ -77,12 +77,13 @@ test('POS surfaces enforce policy and preserve operator identity', () => {
 
 test('fresh Shift-mode payments await proof renewal before creating the order', () => {
   const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
-  const preflight = terminal.indexOf('const renewed = await window.api?.pos?.touchSharedTillOperator?.({')
-  const submit = terminal.indexOf('const result = await window.api.pos.createOrder(orderPayload);')
+  const preflight = terminal.indexOf('const renewed =')
+  const submit = terminal.indexOf('await window.api.pos.createOrder(orderPayload)')
 
   assert.ok(preflight >= 0, 'payment must synchronously renew the server-side Till proof')
+  assert.match(terminal.slice(preflight, submit), /window\.api\?\.pos\?\.touchSharedTillOperator\?\./, 'The preflight must await the authoritative proof renewal')
   assert.ok(submit > preflight, 'proof renewal must finish before the order RPC starts')
-  assert.match(terminal, /!retryingSubmit[\s\S]*const renewed = await window\.api\?\.pos\?\.touchSharedTillOperator/)
+  assert.match(terminal, /!retryingSubmit[\s\S]{0,300}const renewed = [\s\S]{0,200}window\.api\?\.pos\?\.touchSharedTillOperator/)
   assert.match(terminal, /if \(!renewed\?\.success\)[\s\S]*clearTillOperatorState\([\s\S]*showUnlock: true/)
 })
 

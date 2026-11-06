@@ -18,6 +18,24 @@ The owner supplied the following canonical spellings for implementation:
 
 Internal product-family keys are not public branding. `lodge-camp`, `hotel`, `hospitality-pos`, `lodge_camp`, `hospitality_pos`, entitlement keys, RPC names, table and column names, migration history, and idempotency payload fields remain stable unless a separately reviewed schema/API migration proves that changing them is necessary.
 
+## Confirmed public domains and mailboxes (2026-10-22)
+
+The owner supplied the following canonical public addresses:
+
+| Surface | Canonical address |
+| --- | --- |
+| Marketing site | `https://tsabonno.com` and `https://www.tsabonno.com` |
+| Public booking site | `https://book.tsabonno.com` |
+| Manager PWA | `https://manager.tsabonno.com` |
+| Support mailbox (confirmed) | `support@tsabonno.com` |
+| Sales mailbox (reserved, not provisioned) | `sales@tsabonno.com` — do not publish until provisioned |
+
+The legacy marketing, booking, and Manager hosts remain compatibility endpoints. Repository redirect configuration now sends marketing and booking traffic to the canonical hosts with path preservation. The Manager legacy aliases are deliberately not redirected yet because installed-PWA and offline migration behavior have not been assessed.
+
+This section records repository configuration only. DNS attachment, Netlify/Vercel domain verification, Supabase Auth allowlists, mailbox provisioning, and mail-sending configuration are hosted actions and are not proven by a local build.
+
+`support@tsabonno.com` is the only confirmed customer-facing mailbox. `sales@tsabonno.com` is reserved but not provisioned; customer-facing recovery, help, and contact links must use support until a sales mailbox or alias is provisioned and tested.
+
 ## Safety invariants
 
 1. Existing Lodge customers must receive an in-place update, not a side-by-side application.
@@ -42,10 +60,22 @@ Internal product-family keys are not public branding. `lodge-camp`, `hotel`, `ho
 | Legacy POS releases | `Rabafi/boroko-pos-legacy-releases` | Treat as a separate deployed product until scope is explicitly resolved |
 | Marketing Netlify site | site ID `85265a3c-f9c1-4bf2-b1fd-3c6cbdd97098` | Preserve site ID; change display name/domain only with redirects and smoke tests |
 | Booking Netlify site | site ID `29d20c46-e260-4f04-9025-aa606e2512bb` | Preserve site ID; change display name/domain only with redirects and smoke tests |
-| Manager PWA Vercel project | `tsa-bonno-hospitalityos-manager`, project ID `prj_b9milxVRjSkmlcR2kQcuN4rz2Cq8` | Renamed and deployed; both `tsa-bonno-hospitalityos-manager.vercel.app` and legacy `boroko-bookings.vercel.app` are verified production domains |
+| Manager PWA Vercel project | `tsa-bonno-hospitalityos-manager`, project ID `prj_b9milxVRjSkmlcR2kQcuN4rz2Cq8` | Canonical `https://manager.tsabonno.com` and reset path `/reset-password` are configured in source/examples; attach and verify the domain in Vercel before claiming deployment. Both Vercel aliases remain compatibility endpoints |
 | Supabase | project ref `oicgpknsmtvcsjacymum` | Branding migration `20260713013000` is deployed and all three live `product_family_label` RPC results are verified; preserve project ref and API endpoint |
 
 The two existing Netlify sites were redeployed with renamed content and official logos on 2026-07-13 while retaining their site IDs and legacy `*.netlify.app` hostnames. Netlify couples a site's editable name to its default hostname, so those slugs remain compatibility endpoints until a new canonical domain/alias transition can preserve incoming links. The booking-confirmation Supabase Edge Function and marketing quote-download function were also redeployed with Tsa Bonno customer-facing copy. The linked Supabase dashboard display name is `Tsa Bonno HospitalityOS`, with the original project ref and API endpoint preserved.
+
+## Domain and mailbox cutover checklist
+
+Repository changes alone do not complete the migration. The owner or deployment operator must still perform and verify the following hosted actions:
+
+1. **Marketing Netlify site** (`85265a3c-f9c1-4bf2-b1fd-3c6cbdd97098`): publish the `marketing-site` source root, not the obsolete ignored `marketing-site/dist` snapshot. If `marketing-site/dist` or a cached `marketing-site/.netlify/netlify.toml` exists in the deploy checkout, remove it so Netlify resolves the current `marketing-site/netlify.toml`, then attach `tsabonno.com` and `www.tsabonno.com`, preserve the existing site identity, deploy the updated canonical metadata and redirect rules, and confirm both legacy hostnames redirect to `https://tsabonno.com` with the path and query string preserved.
+2. **Booking Netlify site** (`29d20c46-e260-4f04-9025-aa606e2512bb`): attach `book.tsabonno.com`, ensure `VITE_PUBLIC_BOOKING_BASE_URL` is unset or set to `https://book.tsabonno.com`, deploy the updated canonical metadata and redirect rules, and confirm `https://borokoonlinebookings.netlify.app/<slug>/book?...` redirects to `https://book.tsabonno.com/<slug>/book?...` without losing the slug, path, or query string.
+3. **Manager Vercel project** (`prj_b9milxVRjSkmlcR2kQcuN4rz2Cq8`): attach `manager.tsabonno.com`, set `VITE_AUTH_REDIRECT_URL=https://manager.tsabonno.com/reset-password` in the production environment, redeploy, and verify the reset flow. Do not redirect the legacy Vercel aliases until installed-PWA and offline migration behavior have been assessed.
+4. **Supabase Auth**: set the hosted Site URL to `https://manager.tsabonno.com`, add `https://manager.tsabonno.com/reset-password` to the redirect allowlist, and verify the reset and invite flows. Keep any legacy redirect entries required by released desktop clients until their redirect configuration is updated.
+5. **Mail**: `support@tsabonno.com` is confirmed working and is the only customer-facing recovery/help mailbox. `sales@tsabonno.com` is reserved but not provisioned; do not publish it in customer-facing links until it is provisioned and tested. When the sales mailbox is available, configure MX, SPF, DKIM, and DMARC for the domain. No custom SMTP or Resend configuration is present in this repository, so auth mail delivery through the new domain must not be claimed until it is configured and tested.
+6. **Marketing documents**: the downloadable brochure was rebuilt from the updated `marketing-site/brochure.html` source on 2026-10-22 and verified to carry no retired domain or mailbox text; deploy the updated PDF with the marketing site.
+7. **Smoke tests**: verify the new marketing, booking, guest-portal, Manager login, and password-reset URLs, plus old-link compatibility. Record the deployment identifiers and results in deployment evidence rather than inferring success from local tests.
 
 ## Repository-wide inventory baseline
 

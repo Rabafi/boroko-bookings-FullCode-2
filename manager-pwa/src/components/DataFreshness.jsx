@@ -18,19 +18,23 @@ function useOnlineStatus() {
   return online
 }
 
-export default function DataFreshness({ updatedAt, loading = false, error = '', realtimeActive = false, className = '' }) {
+/**
+ * @param {{ updatedAt?: string | null, lastUpdated?: string | null, loading?: boolean, error?: string | null, realtimeActive?: boolean, className?: string }} props
+ */
+export default function DataFreshness({ updatedAt, lastUpdated, loading = false, error = '', realtimeActive = false, className = '' }) {
   const online = useOnlineStatus()
+  const effectiveUpdatedAt = updatedAt || lastUpdated || null
 
   const label = loading
     ? 'Updating\u2026'
     : error
-      ? `Update failed \u2022 showing ${updatedAt ? shortDateTime(updatedAt) : 'no data'}`
+      ? `Update failed \u2022 showing ${effectiveUpdatedAt ? shortDateTime(effectiveUpdatedAt) : 'no data'}`
       : !online
-        ? `Offline \u2022 cached ${updatedAt ? shortDateTime(updatedAt) : ''}`
+        ? `Offline \u2022 cached ${effectiveUpdatedAt ? shortDateTime(effectiveUpdatedAt) : 'no saved data'}`
         : realtimeActive
           ? 'Live'
-          : updatedAt
-            ? `Updated ${shortDateTime(updatedAt)}`
+          : effectiveUpdatedAt
+            ? `Updated ${shortDateTime(effectiveUpdatedAt)}`
             : 'Loading\u2026'
 
   return (
@@ -39,3 +43,5 @@ export default function DataFreshness({ updatedAt, loading = false, error = '', 
     </p>
   )
 }
+
+

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Building2, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useProfiles } from '../app-context'
@@ -6,6 +6,7 @@ import { productLogoLight } from '../assets/productLogos'
 import { getProductDefinition, getRuntimeProductId } from '../../../shared/productIdentity'
 import { HOTEL_CHROME } from './hotel/hotelChrome'
 import { ErrorNotice } from './shared/ErrorNotice'
+import { projectBarChooserProfiles } from '../../../shared/barLocalChooser'
 
 const BUILD_PRODUCT = getProductDefinition(getRuntimeProductId())
 const IS_LODGE = BUILD_PRODUCT.id === 'lodge-camp'
@@ -32,17 +33,46 @@ export default function LodgeChooser() {
 
   const [workingId, setWorkingId] = useState('')
   const [error, setError] = useState('')
-  const [localBarOpened, setLocalBarOpened] = useState(false)
+  const [localBarEntry, setLocalBarEntry] = useState({ status: 'loading', label: null, origin_profile_id: null })
 
-  const openSavedLocalBar = async () => {
+  useEffect(() => {
+    if (!IS_HPOS) return
+    let cancelled = false
+    Promise.resolve(window.api?.barLocal?.getChooserEntry?.()).then((entry) => {
+      if (cancelled) return
+      const status = ['none', 'draft', 'ready', 'recovery'].includes(entry?.status) ? entry.status : 'recovery'
+      setLocalBarEntry({
+        status,
+        label: typeof entry?.label === 'string' && entry.label.trim() ? entry.label.trim() : status === 'none' ? null : 'Saved Bar setup',
+        origin_profile_id: typeof entry?.origin_profile_id === 'string' ? entry.origin_profile_id : null
+      })
+    }).catch(() => {
+      if (!cancelled) setLocalBarEntry({ status: 'recovery', label: 'Saved Bar setup', origin_profile_id: null })
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const selectSavedLocalBar = async () => {
     setWorkingId('local-bar')
     setError('')
     try {
-      const result = await window.api?.barLocal?.openLocalBarWorkspace?.({ resume_existing: true })
-      if (result?.opened !== true) throw new Error('The saved Bar window could not be confirmed. Your existing setup is preserved.')
-      setLocalBarOpened(true)
-    } catch (e) { setError(e?.message || 'Could not open the saved local Bar. Do not create another business; contact support.') }
+      const result = await window.api?.barLocal?.selectLocalBarWorkspace?.()
+      if (result?.restart_required !== true || result?.workspace !== 'local_bar') throw new Error('The saved Bar could not be selected. Your existing setup is preserved.')
+    } catch (e) { setError(e?.message || 'Could not select the saved local Bar. Do not create another business; contact support.') }
     finally { setWorkingId('') }
+  }
+
+  const linkDraftToLocalBar = async (profile) => {
+    if (!window.confirm(`Show “${localBarEntry.label}” and this draft as one Bar entry? The saved draft data will be kept.`)) return
+    setWorkingId(`link:${profile.lodge_id}`)
+    setError('')
+    try {
+      const linked = await window.api?.barLocal?.linkChooserDraft?.({ profile_id: profile.lodge_id })
+      if (!linked || !['draft', 'ready', 'recovery'].includes(linked.status)) throw new Error('The Bar profile link could not be confirmed. Both saved records were kept.')
+      setLocalBarEntry(linked)
+    } catch (e) {
+      setError(e?.message || 'Could not link this saved draft. Both saved records were kept.')
+    } finally { setWorkingId('') }
   }
 
   const sortedProfiles = useMemo(() => {
@@ -53,6 +83,13 @@ export default function LodgeChooser() {
       return String(b.last_used_at || '').localeCompare(String(a.last_used_at || ''))
     })
   }, [profiles])
+
+  const projectedProfiles = useMemo(
+    () => projectBarChooserProfiles(sortedProfiles, localBarEntry).profiles,
+    [sortedProfiles, localBarEntry]
+  )
+  const hasLocalBarEntry = IS_HPOS && ['draft', 'ready', 'recovery'].includes(localBarEntry.status)
+  const hasChooserEntries = projectedProfiles.length > 0 || hasLocalBarEntry
 
   const handleUseProfile = async (profile) => {
     setError('')
@@ -296,12 +333,6 @@ export default function LodgeChooser() {
         </div>
 
         <div className="px-8 py-6">
-          {IS_HPOS && <section className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4">
-            <h2 className="font-semibold text-gray-900">Already started a local Bar setup?</h2>
-            <p className="mt-1 text-sm text-gray-700">Open its separate Bar window to continue the same saved installation. Your Restaurant profiles stay as they are.</p>
-            <button type="button" disabled={Boolean(workingId)} onClick={() => void openSavedLocalBar()} className="mt-3 rounded-lg bg-amber-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{workingId === 'local-bar' ? 'Opening saved Bar…' : 'Open saved local Bar setup'}</button>
-            {localBarOpened && <p role="status" className="mt-2 text-sm text-gray-700">The saved Bar window is open. Use that window to check or continue its existing attempt.</p>}
-          </section>}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
             <div>
               <p className="text-sm font-medium text-gray-700">Local {BUSINESS_NOUN} profiles</p>
@@ -335,9 +366,9 @@ export default function LodgeChooser() {
             </div>
           )}
 
-          {profilesLoading ? (
+          {profilesLoading || (IS_HPOS && localBarEntry.status === 'loading') ? (
             <div className="py-12 text-center text-gray-500 text-sm">Loading local {BUSINESS_NOUN} profiles...</div>
-          ) : sortedProfiles.length === 0 ? (
+          ) : !hasChooserEntries ? (
             <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-6 py-12 text-center">
               <div className={`mx-auto mb-3 w-14 h-14 rounded-2xl flex items-center justify-center ${emptyIcon}`}>
                 <Building2 size={24} />
@@ -349,7 +380,22 @@ export default function LodgeChooser() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {sortedProfiles.map((profile) => {
+              {hasLocalBarEntry && <article className={`rounded-2xl border p-5 ${localBarEntry.status === 'ready' ? activeCard : 'border-amber-300 bg-amber-50'}`}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-lg font-semibold text-gray-800 truncate">{localBarEntry.label}</h2>
+                  {localBarEntry.status === 'ready' && <span className={`text-[11px] font-semibold px-2 py-1 rounded-full ${readyBadge}`}>Ready</span>}
+                  {localBarEntry.status === 'draft' && <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">Draft Setup</span>}
+                  {localBarEntry.status === 'recovery' && <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">Saved setup</span>}
+                </div>
+                <div className="mt-5 flex items-center justify-between gap-3">
+                  <p className="text-sm text-gray-600">{localBarEntry.status === 'ready' ? 'Your local Bar is set up on this computer.' : localBarEntry.status === 'draft' ? 'Continue the saved setup for this Bar.' : 'Open this saved setup to check or continue it.'}</p>
+                  <button type="button" onClick={() => void selectSavedLocalBar()} disabled={Boolean(workingId)} className={`${useBtn} ml-0`}>
+                    {workingId === 'local-bar' ? <Loader2 size={16} className="animate-spin" /> : null}
+                    {workingId === 'local-bar' ? 'Switching to Bar…' : localBarEntry.status === 'ready' ? 'Open Bar' : localBarEntry.status === 'draft' ? 'Continue setup' : 'Open Bar'}
+                  </button>
+                </div>
+              </article>}
+              {projectedProfiles.map((profile) => {
                 const isActive = activeProfile?.lodge_id === profile.lodge_id
                 return (
                   <div
@@ -377,7 +423,7 @@ export default function LodgeChooser() {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-gray-500 mt-3 break-all">{profile.lodge_id}</p>
+                        {!IS_HPOS && <p className="text-xs text-gray-500 mt-3 break-all">{profile.lodge_id}</p>}
                         <p className="text-xs text-gray-400 mt-2">
                           Last used {profile.last_used_at ? new Date(profile.last_used_at).toLocaleString() : 'just now'}
                         </p>
@@ -416,6 +462,16 @@ export default function LodgeChooser() {
                         {profile.status === 'draft' ? 'Continue Setup' : `Use ${BUSINESS_NOUN_TITLE}`}
                       </button>
                     </div>
+                    {IS_HPOS && profile.status === 'draft' && hasLocalBarEntry && !localBarEntry.origin_profile_id && (
+                      <button
+                        type="button"
+                        onClick={() => void linkDraftToLocalBar(profile)}
+                        disabled={Boolean(workingId)}
+                        className="mt-4 text-sm font-semibold text-[#7a2e1c] underline underline-offset-2 disabled:opacity-60"
+                      >
+                        This is the same Bar
+                      </button>
+                    )}
                   </div>
                 )
               })}

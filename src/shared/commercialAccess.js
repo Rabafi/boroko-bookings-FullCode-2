@@ -205,7 +205,7 @@ export function isCommercialFeatureIncluded(productId, commercialPackageKey, fea
   })
 }
 
-/** @param {string | null} productId @param {string | null} commercialPackageKey @param {string[]} [selectedAddonKeys] @param {unknown} [commercialEntitlement] @param {string | null} [expectedLodgeId] @returns {Set<string>} */
+/** @param {string | null} productId @param {string | null} commercialPackageKey @param {unknown} [selectedAddonKeys] @param {unknown} [commercialEntitlement] @param {string | null} [expectedLodgeId] @returns {Set<string>} */
 export function getCommercialFeatureSet(productId, commercialPackageKey, selectedAddonKeys = [], commercialEntitlement = null, expectedLodgeId = null) {
   const normalizedProductId = normalizeProductId(productId)
   if (normalizedProductId === COMMERCIAL_PRODUCT_IDS.HOSPITALITY_POS && commercialEntitlement !== null) {

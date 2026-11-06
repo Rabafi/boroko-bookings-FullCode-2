@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "esModuleInterop": true,
     "checkJs": true,
+    "allowImportingTsExtensions": true,
     "types": ["node"]
   },
   "files": [

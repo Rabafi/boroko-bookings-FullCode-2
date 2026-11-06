@@ -45,13 +45,13 @@ export function bookingStatusClass(status) {
   }[status] || 'bg-gray-800 text-gray-300'
 }
 
-/** @param {string} status */
+/** @param {string|null|undefined} status */
 export function paymentStatusClass(status) {
   return {
     paid: 'bg-green-900/40 text-green-300',
     partial: 'bg-yellow-900/40 text-yellow-300',
     unpaid: 'bg-red-900/30 text-red-300'
-  }[status] || 'bg-gray-800 text-gray-300'
+  }[/** @type {string} */ (status)] || 'bg-gray-800 text-gray-300'
 }
 
 /** @param {unknown} value */

@@ -865,7 +865,7 @@ function getPwaDeviceId() {
   return id
 }
 
-/** @param {unknown} lodgeId @param {any} supabase upstream Supabase client has no generated database type in this app. @param {{queueLength?: number, deadLetterCount?: number, blockedCount?: number, lastFlushAt?: unknown}} summary */
+/** @param {unknown} lodgeId @param {any} supabase upstream Supabase client has no generated database type in this app. @param {{queueLength?: unknown, deadLetterCount?: number, blockedCount?: number, lastFlushAt?: unknown}} summary */
 export async function publishPwaHealth(lodgeId, supabase, summary) {
   if (!lodgeId || !supabase) return
   try {

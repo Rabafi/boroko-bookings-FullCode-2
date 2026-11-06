@@ -173,7 +173,7 @@ export const CAPABILITY_LABELS = {
   'payment_gateway.view': 'View payment gateway settings',
   'payment_gateway.manage': 'Manage payment gateway settings',
   'lost_found.view': 'View lost & found items',
-  'lost_found.manage': 'Manage lost & found items',
+  'lost_found.manage': 'Manage lost and found',
   'channel_manager.manage': 'Manage channel mappings and sync',
   'documents.manage': 'Manage document templates',
   'documents.generate': 'Generate documents',
@@ -220,8 +220,6 @@ export const CAPABILITY_LABELS = {
   'housekeeping.assign': 'Assign housekeeping',
   'housekeeping.inspect': 'Inspect rooms',
   'linen.manage': 'Manage linen/laundry',
-  // Preserve the existing later label override and property insertion position.
-  [/** @type {string} */ ('lost_found.manage')]: 'Manage lost and found',
   'incidents.manage': 'Manage incidents',
   'visitors.manage': 'Manage visitor register',
   'emergency.view': 'View emergency/evacuation list',

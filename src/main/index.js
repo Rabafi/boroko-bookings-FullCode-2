@@ -1,4 +1,5 @@
 // @ts-check
+import { handleStartupRetry } from './startupRetry.js'
 /** Read view of existing caught error fields; it documents property use and does not validate thrown values. */
 /** @typedef {{message?: unknown, code?: unknown}} ErrorMessageReadView */
 /** The catch sites below read existing error-like fields directly; leaves remain unknown and no validation or coercion is claimed. */
@@ -30,6 +31,7 @@ import { accountingExportRowCount } from './accountingExportRowCount.js'
 import { assertCompleteAccountingExport } from './accountingExportCompleteness.js'
 import { showAccountingExportSaveDialog } from './accountingExportSaveDialog.js'
 
+/** @param {string} stage @param {Record<string, unknown>} [details] */
 function startupTrace(stage, details = {}) {
   console.info('[STARTUP]', stage, { uptime_ms: Math.round(process.uptime() * 1000), ...details })
 }
@@ -68,6 +70,7 @@ const TRANSPORT_ENVELOPE_CHANNELS = new Set([
 ])
 /** @typedef {{ __rowsTransport: true, rows: unknown[], _source?: unknown, _complete?: unknown, _tender_complete?: unknown, _item_detail_complete?: unknown, _available?: unknown }} IpcRowsTransportEnvelope */
 /** @typedef {{ success: false, error: unknown, code?: unknown }} MainIpcFailure */
+/** This IPC keeps forwarding proposalId unchanged; the concrete execute producer ignores extra arguments and always rejects. The narrow view preserves that call while using its actual rejecting result. @typedef {(payload: {proposalId: string}) => Promise<never>} AiExecuteIpcExpectedView */
 /** @typedef {{ success: true, offline: true, queued: true } | (Record<string, unknown> & { success: unknown, offline: unknown }) | MainIpcFailure} BookingPaymentIpcResult */
 /** @typedef {import('../shared/desktopIpcContracts.js').BookingRefundSuccessResult | MainIpcFailure} BookingRefundIpcResult */
 /** The IPC handler forwards the domain result unchanged, adding a till session only on its existing success branch. @typedef {Awaited<ReturnType<typeof db.createPosOrder>> | (Record<string, unknown> & {till_session: {staffId: string, staffName: unknown, outletId: string|null, shiftId: string|null, mode: 'strict'|'shift', inactivityMinutes: number, lastActivityAt: number, expiresAt: number}}) | MainIpcFailure} PosCreateOrderIpcResult */
@@ -177,6 +180,7 @@ import { resolveAuthorizeShiftId } from '../shared/tillAuthorizeShift.js'
 import { isBarOnlyMode } from '../shared/propertyTypes.js'
 import { cloudCompanySetupRefusal } from '../shared/barLocalCompanySetup.js'
 import { LOCAL_BAR_WORKSPACE_DIR, isDedicatedLocalBarWorkspaceArgv } from '../shared/barLocalWorkspace.js'
+import { BAR_WORKSPACE_SELECTION_FILE, parseBarWorkspaceSelection, selectedWorkspaceUserDataPath } from '../shared/barWorkspaceSelection.js'
 import { createTillOperatorSessionStore, TILL_OPERATOR_SESSION_CODES } from './domains/tillOperatorSession.js'
 import { resolveSharedTillHistoryAccess } from './domains/tillOperatorHistory.js'
 import { calculatePosFinancialTruth, hasRecordedPosTenderEnvelope } from '../shared/posFinancialTruth.js'
@@ -413,10 +417,18 @@ if (process.argv.includes('--bar-training')) {
 // profile, device credential, intent journal and caches never touch the cloud
 // business, and it takes its own single-instance lock. The cloud workspace is
 // never imported, converted or erased by this flow.
-if (isDedicatedLocalBarWorkspaceArgv(process.argv)) {
+const selectedBarWorkspace = (() => {
+  if (BUILD_PRODUCT_ID !== 'hospitality-pos' || process.env.BOROKO_TEST_USER_DATA_DIR) return null
+  if (isDedicatedLocalBarWorkspaceArgv(process.argv)) return 'local_bar'
+  try {
+    const selectionFile = join(app.getPath('userData'), BAR_WORKSPACE_SELECTION_FILE)
+    return parseBarWorkspaceSelection(fs.readFileSync(selectionFile, 'utf8'))
+  } catch { return null }
+})()
+if (selectedBarWorkspace === 'local_bar') {
   if (BUILD_PRODUCT_ID !== 'hospitality-pos') throw new Error('A separate local Bar workspace is available only in Bar POS.')
   if (process.argv.includes('--bar-training')) throw new Error('Practice mode cannot open a live local Bar workspace.')
-  app.setPath('userData', join(app.getPath('userData'), LOCAL_BAR_WORKSPACE_DIR))
+  app.setPath('userData', selectedWorkspaceUserDataPath(app.getPath('userData'), 'local_bar'))
   app.setName(`${BUILD_PRODUCT.name} — Local Bar`)
 }
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -493,6 +505,32 @@ function isAllowedAppNavigation(url) {
   } catch {
     return false
   }
+}
+
+/**
+ * Electron's dialogs accept an optional parent window. `fromWebContents` can
+ * return null after its owning window closes, so use the existing parentless
+ * overload in that case. The options, returned promise, and cancellation
+ * result remain those of Electron's original dialog call.
+ * @param {BrowserWindow | null} parentWindow
+ * @param {Electron.SaveDialogOptions} options
+ * @returns {Promise<Electron.SaveDialogReturnValue>}
+ */
+function showSaveDialogForWindow(parentWindow, options) {
+  return parentWindow
+    ? dialog.showSaveDialog(parentWindow, options)
+    : dialog.showSaveDialog(options)
+}
+
+/**
+ * @param {BrowserWindow | null} parentWindow
+ * @param {Electron.OpenDialogOptions} options
+ * @returns {Promise<Electron.OpenDialogReturnValue>}
+ */
+function showOpenDialogForWindow(parentWindow, options) {
+  return parentWindow
+    ? dialog.showOpenDialog(parentWindow, options)
+    : dialog.showOpenDialog(options)
 }
 
 /**
@@ -912,6 +950,7 @@ function createStartupSplashWindow() {
 }
 
 /** Keep a visible native recovery screen when the renderer cannot start. */
+/** @param {string} message */
 function showStartupProblem(message) {
   const splash = activeSplashWindow && !activeSplashWindow.isDestroyed()
     ? activeSplashWindow
@@ -1710,7 +1749,9 @@ function buildSubscriptionRequestDocumentPdfHtml(documentPayload = {}) {
  *   vatEnabled?: boolean, vatRate?: number, expByCategory?: Record<string, number>
  * }} DetailedExportProfitLossReadView
  * @typedef {Record<string, unknown> & {balance: unknown}} DetailedExportCreditReadView
- * @typedef {{message?: unknown}} DetailedExportVerificationErrorReadView
+ * XLSX.read failures and the local missing-sheet assertion throw Error objects;
+ * this view only describes the existing optional message.includes check.
+ * @typedef {{message?: string|null}} DetailedExportVerificationErrorReadView
  * The existing POS revenue reader normalizes its local projection and certified
  * export rows to numeric totals; this consumer view does not validate its RPC/cache data.
  * @typedef {{total_revenue?: number, total_orders?: number, avg_order?: number, gross_revenue?: number, discount_total?: number, returns_total?: number, tax_total?: number, tip_total?: number, by_payment?: Record<string, number>, by_cashier?: Record<string, number>, top_items?: Array<{name?: unknown, qty?: unknown, revenue?: number, margin?: unknown}>, daily?: Array<{date?: unknown, total?: number}>}} DetailedExportPosRevenueReadView
@@ -2643,8 +2684,10 @@ function assertCompletePosHistoryExport(orders, voidHistory, localOrders = []) {
     // The cast carries the existing string membership check through includes;
     // it does not validate or coerce cached or RPC-backed row values.
     .filter((row) => /** @type {PosHistoryPendingOrderExpectedData} */ (row)?._pending_sync
-      || ['pending', 'failed', 'manual_review_required'].includes(/** @type {string | null | undefined} */ ((/** @type {PosHistoryPendingOrderExpectedData} */ (row))?._sync_state)))
-  const pendingVoids = voidHistory.filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(row?._sync_state))
+      || ['pending', 'failed', 'manual_review_required'].includes(/** @type {string} */ ((/** @type {PosHistoryPendingOrderExpectedData} */ (row))?._sync_state)))
+  // Keep the existing Array.includes strict-equality check for persisted status
+  // values. This expected-data assertion does not validate or coerce the row.
+  const pendingVoids = voidHistory.filter((row) => row?._pending_sync || ['pending', 'failed', 'manual_review_required'].includes(/** @type {string} */ (row?._sync_state)))
   if (pendingOrders.length || pendingVoids.length) {
     throw new Error(`POS history export is blocked while ${pendingOrders.length + pendingVoids.length} financial operation(s) await sync or resolution.`)
   }
@@ -2680,7 +2723,7 @@ function buildPosHistoryPdfHtml({
 } = {}) {
   const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
   const summary = getPosHistorySummary(orders)
-  const fmt = (value) => formatReportMoney(currency, value)
+  const fmt = (/** @type {unknown} */ value) => formatReportMoney(currency, value)
   const orderRows = orders.length
     ? orders.map((order) => `
       <tr>
@@ -3135,6 +3178,13 @@ function showDesktopNotification({ title = APP_BRAND_NAME, body = '', sound = tr
 autoUpdater.autoDownload = false       // let the user review the release before downloading
 autoUpdater.autoInstallOnAppQuit = true // install when user quits naturally
 
+/**
+ * State emitted by the existing updater events and update IPC handlers. The
+ * fields reflect those concrete producers; update metadata itself remains the
+ * electron-updater SDK's typed value.
+ * @typedef {{phase: string, currentVersion: string, version: string|null, releaseName: string, releaseDate: string, releaseNotes: string, progress: {percent: number, transferred: number, total: number, bytesPerSecond: number}|null, error: string}} DesktopUpdateState
+ */
+/** @type {DesktopUpdateState} */
 const updateState = {
   phase: 'idle',
   currentVersion: app.getVersion(),
@@ -3177,6 +3227,7 @@ function normalizeReleaseNotes(notes) {
   return String(notes).trim()
 }
 
+/** @param {Partial<DesktopUpdateState>} [patch] */
 function setUpdateState(patch = {}) {
   Object.assign(updateState, patch)
   updateState.currentVersion = app.getVersion()
@@ -3579,6 +3630,7 @@ function createWindow() {
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (handleStartupRetry(event, url, mainWindow.webContents, isAllowedAppNavigation)) return
     if (isAllowedAppNavigation(url)) return
     event.preventDefault()
     if (isSafeExternalUrl(url)) shell.openExternal(url)
@@ -3694,7 +3746,8 @@ function centerBoundsOnDisplay(kind, display, fullScreen) {
 
 /**
  * @typedef {{ bounds: import('electron').Rectangle | null, fullScreen: boolean, restored: boolean, displayId: number | null }} SavedDisplayWindowState
- * @typedef {{ bounds: unknown, displayId: unknown, fullScreen: unknown }} PosDisplayLayoutExpectedData
+ * Persisted local JSON view written by savePosDisplayWindowLayout; it is not validated on read.
+ * @typedef {{ bounds?: unknown, displayId?: unknown, fullScreen?: unknown }} PosDisplayLayoutExpectedData
  * @param {string} kind
  * @param {{ displayId?: unknown, fullScreen?: unknown }} [options]
  * @returns {SavedDisplayWindowState}
@@ -3772,9 +3825,13 @@ function rememberPosDisplayWindow(kind, displayWindow) {
     saveTimer = setTimeout(() => savePosDisplayWindowLayout(kind, displayWindow), 350)
   }
 
-  for (const eventName of ['move', 'resize', 'enter-full-screen', 'leave-full-screen', 'maximize', 'unmaximize', 'restore']) {
-    displayWindow.on(eventName, scheduleSave)
-  }
+  displayWindow.on('move', scheduleSave)
+  displayWindow.on('resize', scheduleSave)
+  displayWindow.on('enter-full-screen', scheduleSave)
+  displayWindow.on('leave-full-screen', scheduleSave)
+  displayWindow.on('maximize', scheduleSave)
+  displayWindow.on('unmaximize', scheduleSave)
+  displayWindow.on('restore', scheduleSave)
   displayWindow.on('close', () => {
     if (saveTimer) clearTimeout(saveTimer)
     savePosDisplayWindowLayout(kind, displayWindow)
@@ -4349,7 +4406,7 @@ function buildFullExportWorkbook(data) {
   ), 'Maintenance')
 
   if (hasSection('inventoryItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.inventoryItems || []).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
+    (/** @type {FullExportStockItemExpectedData[]} */ (/** @type {unknown} */ (data.inventoryItems || []))).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
       'Stock': Number(item.current_stock || item.stock_quantity || 0),
@@ -4372,7 +4429,7 @@ function buildFullExportWorkbook(data) {
   ), 'Inventory Purchases')
 
   if (hasSection('supplyItems')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
-    (data.supplyItems || []).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
+    (/** @type {FullExportStockItemExpectedData[]} */ (/** @type {unknown} */ (data.supplyItems || []))).map((/** @type {FullExportStockItemExpectedData} */ item) => ({
       'Item': item.name || item.item_name || '',
       'Category': item.category || '',
       'Stock': Number(item.current_stock || item.stock_quantity || 0),
@@ -4574,7 +4631,9 @@ function buildFullExportWorkbook(data) {
 
   if (hasSection('checklists')) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
     (/** @type {FullExportChecklistWorkbookReadView[]} */ (/** @type {unknown} */ (data.checklists || []))).map(c => ({
-      'Type': (c.checklist_type || '').replace(/_/g, ' '),
+      // Persisted export rows are consumed as strings here; this assertion
+      // preserves the existing replace call and does not validate cache data.
+      'Type': (/** @type {string} */ (c.checklist_type || '')).replace(/_/g, ' '),
       'Status': c.status || '',
       'Items Total': Array.isArray(c.items) ? c.items.length : 0,
       'Items Done': Array.isArray(c.items) ? c.items.filter(i => i.is_completed).length : 0,
@@ -4654,6 +4713,13 @@ async function getCurrentLodgeSettings() {
   }
 }
 
+/**
+ * Expected booking projection consumed by the lifecycle email templates.
+ * getAllBookings reads BOOKING_LIST_SELECT plus the customer join and may
+ * merge persisted cache rows; this view does not validate either source.
+ * @typedef {Parameters<typeof sendBookingConfirmationEmail>[0]['booking'] & {id?: unknown, customer_email?: string|null}} BookingEmailContextBookingExpectedData
+ */
+
 /** @param {string} bookingId */
 async function getBookingEmailContext(bookingId) {
   const [bookings, invoices, settings] = await Promise.all([
@@ -4661,9 +4727,13 @@ async function getBookingEmailContext(bookingId) {
     db.getBookingInvoices().catch(() => []),
     getCurrentLodgeSettings()
   ])
+  /** @type {BookingEmailContextBookingExpectedData[]} */
+  const bookingRows = /** @type {BookingEmailContextBookingExpectedData[]} */ (bookings || [])
+  /** @type {BookingEmailContextInvoiceExpectedData[]} */
+  const invoiceRows = /** @type {BookingEmailContextInvoiceExpectedData[]} */ (invoices || [])
   return {
-    booking: (bookings || []).find((entry) => entry.id === bookingId),
-    invoice: (invoices || []).find((entry) => entry.booking_id === bookingId),
+    booking: bookingRows.find((entry) => entry.id === bookingId),
+    invoice: invoiceRows.find((entry) => entry.booking_id === bookingId),
     settings
   }
 }
@@ -5052,25 +5122,25 @@ app.whenReady().then(async () => {
   })
 
   // -- Lodge Profiles --------------------------------------------------------
-  ipcMain.handle('profiles:list', async () => {
+  ipcMain.handle('profiles:list', /** @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileListReadView[]>} */ async () => {
     try { return db.getProfiles() }
     catch { return [] }
   })
-  ipcMain.handle('profiles:getActive', async () => {
+  ipcMain.handle('profiles:getActive', /** @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileReadView|null>} */ async () => {
     try { return db.getActiveProfile() }
     catch { return null }
   })
   // These handlers preserve raw properties from thrown values; this narrow
   // view does not assert that database rejections are Error instances.
-  ipcMain.handle('profiles:select', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId */ async (_, lodgeId) => {
+  ipcMain.handle('profiles:select', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileSelectResult>} */ async (_, lodgeId) => {
     try { return { success: true, data: await db.selectProfile(lodgeId) } }
     catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not switch lodge.' } }
   })
-  ipcMain.handle('profiles:createDraft', async () => {
+  ipcMain.handle('profiles:createDraft', /** @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileCreateDraftResult>} */ async () => {
     try { return { success: true, data: await db.createDraftProfile() } }
     catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not create a new lodge profile.' } }
   })
-  ipcMain.handle('profiles:removeDraft', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId */ async (_, lodgeId) => {
+  ipcMain.handle('profiles:removeDraft', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string} lodgeId @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopProfileRemoveDraftResult>} */ async (_, lodgeId) => {
     try { return await db.removeDraftProfile(lodgeId) }
     catch (e) { return { success: false, code: (/** @type {ErrorMessageReadView} */ (e)).code || 'remove_draft_failed', error: (/** @type {ErrorMessageReadView} */ (e)).message || 'Could not remove the draft lodge.' } }
   })
@@ -5142,12 +5212,13 @@ app.whenReady().then(async () => {
    *   product_id?: string|null,
    *   commercial_package_key?: string|null,
    *   enterprise_addons?: unknown[],
-   *   lodge_id?: string|null
+   *   lodge_id?: string|null,
+   *   effective_features?: Record<string, unknown>|null
    * }} CommercialEntitlementExpectedData
-   * @typedef {import('../shared/accessControl.js').CapabilitySnapshot & {
+   * @typedef {Omit<import('../shared/accessControl.js').CapabilitySnapshot, 'commercialPackageKey'|'commercialAddonKeys'> & {
    *   entitlement?: CommercialEntitlementExpectedData,
-   *   commercialPackageKey?: string|null,
-   *   commercialAddonKeys?: unknown[]
+   *   commercialPackageKey?: unknown,
+   *   commercialAddonKeys?: unknown
    * }} AccessSnapshotExpectedData
    */
   /** @returns {Promise<AccessSnapshotExpectedData>} */
@@ -5160,9 +5231,12 @@ app.whenReady().then(async () => {
 
     const activeProfile = db.getActiveProfile?.()
     const currentLodgeId = activeProfile?.lodge_id
-    const entitlement = currentLodgeId
+    // The entitlement producer reads its cached/Supabase fields as unknown,
+    // while this consumer already treats these values as its expected shape.
+    // This view changes no runtime value and performs no validation.
+    const entitlement = /** @type {CommercialEntitlementExpectedData} */ (currentLodgeId
       ? await db.getTrialStatus(currentLodgeId)
-      : { effective_features: {} }
+      : { effective_features: {} })
     const entitlementProductId = entitlement?.product_id || null
     const commercialContextMatches = !entitlementProductId || entitlementProductId === BUILD_PRODUCT_ID
 
@@ -5569,7 +5643,7 @@ app.whenReady().then(async () => {
       await requireCapability('dashboard.view')
       const proposalId = String(payload?.proposalId || '').trim()
       if (!proposalId) return { success: false, error: 'proposalId is required.' }
-      const result = await ai.execute({ proposalId })
+      const result = await (/** @type {AiExecuteIpcExpectedView} */ (ai.execute))({ proposalId })
       return { success: true, ...result }
     } catch (e) {
       return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message || 'AI action failed.' }
@@ -6485,7 +6559,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('admin:exportExcel', async (event, /** @type {unknown} */ payload = {}) => {
     const { title = 'Export', rows = [], sheetName, columns } = /** @type {AdminExportPayloadExpectedData} */ (payload)
     const win = BrowserWindow.fromWebContents(event.sender)
-    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+    const { filePath, canceled } = await showSaveDialogForWindow(win, {
       title: `Export ${title} to Excel`,
       defaultPath: `${APP_EXPORT_PREFIX}-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -6512,7 +6586,7 @@ app.whenReady().then(async () => {
     const { title = 'Export', rows = [], columns } = /** @type {AdminExportPayloadExpectedData} */ (payload)
     const cols = columns || (rows.length ? Object.keys(rows[0]).map(k => ({ key: k, header: k })) : [])
     const win = BrowserWindow.fromWebContents(event.sender)
-    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+    const { filePath, canceled } = await showSaveDialogForWindow(win, {
       title: `Export ${title} to PDF`,
       defaultPath: `${APP_EXPORT_PREFIX}-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.pdf`,
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -6537,6 +6611,14 @@ app.whenReady().then(async () => {
     printWin.destroy()
     return { success: true, filePath }
   })
+  /**
+   * The preload forwards this options argument unchanged to the database facade.
+   * Retain the legacy getCommercialBillingHistory producer's {productId}
+   * property as a compatibility arm; the database facade currently ignores it.
+   * This expected input view does not validate arbitrary IPC values.
+   * @param {unknown} lodgeId
+   * @param {(NonNullable<Parameters<typeof db.getClientCommercialInvoices>[1]> & {productId?: unknown})} [options]
+   */
   async function loadClientCommercialInvoices(lodgeId, options = {}) {
     try {
       const user = getCurrentUserOrRestore()
@@ -6662,7 +6744,7 @@ app.whenReady().then(async () => {
       await requireCapability('system.health')
       const win = BrowserWindow.fromWebContents(event.sender)
       const today = new Date().toISOString().slice(0, 10)
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         title: 'Export Support Bundle',
         defaultPath: `${APP_EXPORT_PREFIX}-support-bundle-${today}.json`,
         filters: [{ name: 'JSON Files', extensions: ['json'] }]
@@ -6696,7 +6778,7 @@ app.whenReady().then(async () => {
       await requireCapability('bookings.view')
       const win = BrowserWindow.fromWebContents(event.sender)
       const today = new Date().toISOString().slice(0, 10)
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         title: 'Export Offline Safety Manifest',
         defaultPath: `offline-safety-manifest-${today}.xlsx`,
         filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
@@ -6779,7 +6861,9 @@ app.whenReady().then(async () => {
       if (normalizeAppRole(actor?.role) !== 'manager' && data?.role && normalizeAppRole(data.role) !== 'receptionist') {
         await requireCapability('staff.permissions')
       }
-      return { success: true, id: await db.createUser(data) }
+      // The Staff renderer sends the create-user payload. Keep malformed direct
+      // IPC behavior at createUser's existing property reads; this view adds no validation.
+      return { success: true, id: await db.createUser(/** @type {Parameters<typeof db.createUser>[0]} */ (data)) }
     } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:update', /**
@@ -6796,7 +6880,9 @@ app.whenReady().then(async () => {
       if (normalizeAppRole(actor?.role) !== 'manager' && data?.role) {
         await requireCapability('staff.permissions')
       }
-      await db.updateUser(id, data); return { success: true }
+      // The Staff renderer sends the update-user payload. This expected-data
+      // assertion preserves the original IPC value and adds no runtime guard.
+      await db.updateUser(id, /** @type {Parameters<typeof db.updateUser>[1]} */ (data)); return { success: true }
     } catch (e) { return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message } }
   })
   ipcMain.handle('users:resetPassword', /**
@@ -7135,7 +7221,7 @@ app.whenReady().then(async () => {
       return []
     }
   })
-  ipcMain.handle('bookings:getPendingOnline', async () => {
+  ipcMain.handle('bookings:getPendingOnline', /** @returns {Promise<import('../shared/desktopIpcContracts.js').PendingOnlineBookingReadView[]>} */ async () => {
     try {
       await requireCapability('bookings.view')
       return await db.getPendingOnlineBookings()
@@ -7502,7 +7588,7 @@ app.whenReady().then(async () => {
       date = ''
     } = payload || {}
     const period = start && end ? `${start}-to-${end}` : date || ''
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: `Save ${reportTitle} as PDF`,
       defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: reportTitle || reportType, period, extension: 'pdf' }),
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -7588,7 +7674,7 @@ app.whenReady().then(async () => {
       generatedAt = new Date().toLocaleString()
     } = payload || {}
     const period = start && end ? `${start}-to-${end}` : ''
-    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+    const { filePath, canceled } = await showSaveDialogForWindow(win, {
       title: `Export ${reportTitle} to Excel`,
       defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -7597,7 +7683,7 @@ app.whenReady().then(async () => {
     try {
       const wb = XLSX.utils.book_new()
       const sym = currency || 'P'
-      const totalDays = Math.max(1, Math.ceil((new Date(end) - new Date(start)) / 86400000))
+      const totalDays = Math.max(1, Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000))
       const resolvedLodge = lodgeName || companyName || APP_BRAND_NAME
       const sharedMeta = { lodgeName: resolvedLodge, companyName, periodLabel: `${start} to ${end}`, generatedAt }
       const outletMeta = { ...sharedMeta, outletLabel }
@@ -7817,7 +7903,7 @@ app.whenReady().then(async () => {
     } = payload || {}
     if (!startDate || !endDate) return { success: false, error: 'Date range is required.' }
     const period = `${startDate}-to-${endDate}`
-    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+    const { filePath, canceled } = await showSaveDialogForWindow(win, {
       title: 'Export Detailed Reports to Excel',
       defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'detailed-reports', period, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -8351,7 +8437,7 @@ app.whenReady().then(async () => {
     } = payload || {}
     if (!startDate || !endDate) return { success: false, error: 'Date range is required.' }
     const period = `${startDate}-to-${endDate}`
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: 'Save Detailed Report as PDF',
       defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: `${reportType}-report`, period, extension: 'pdf' }),
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -8498,7 +8584,7 @@ app.whenReady().then(async () => {
         ? 'all-dates'
         : `${normalized.startDate}-to-${normalized.endDate}`
       const privacyLabel = normalized.privacyMode ? '-redacted' : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      const { filePath, canceled } = await showSaveDialogForWindow(win, {
         title: 'Export All Lodge Data',
         defaultPath: `${APP_EXPORT_PREFIX}-${presetLabel}-export-${rangeLabel}-${today}${privacyLabel}.xlsx`,
         filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }]
@@ -8605,7 +8691,7 @@ app.whenReady().then(async () => {
       if (serverResult?.success === false) return serverResult
       const entries = Array.isArray(serverResult?.data?.entries) ? serverResult.data.entries : []
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         title: 'Export Guest Deposits ledger',
         defaultPath: `${APP_EXPORT_PREFIX}-prepayments-${formatFilenameStamp()}.csv`,
         filters: [{ name: 'CSV Files', extensions: ['csv'] }],
@@ -8672,6 +8758,7 @@ app.whenReady().then(async () => {
         .map(([key, nested]) => [key, stripRecoveryIpcData(nested)])
     )
   }
+  /** @param {unknown} payload The renderer IPC value remains unvalidated; this helper only preserves the existing object spread behavior. */
   const stripRendererLodgeScope = (payload) => {
     const source = payload && typeof payload === 'object' ? payload : {}
     const { lodge_id: _lodgeId, lodgeId: _camelLodgeId, ...safePayload } = source
@@ -8689,7 +8776,7 @@ app.whenReady().then(async () => {
         'Starter backup is not included in the current commercial package.'
       )
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         // Starter core-data backup is retained as the internal compatibility label.
         title: 'Save Core data recovery export',
         defaultPath: `tsa-bonno-core-data-recovery-${formatFilenameStamp()}.tbbackup`,
@@ -8786,7 +8873,7 @@ app.whenReady().then(async () => {
       const verification = /** @type {StarterBackupCopyVerificationExpectedData} */ (db.verifyStarterBackupAtPath(source, { passphrase, expectedLodgeId: lodgeId }))
       if (!verification.success) return stripRecoveryIpcData(verification)
       const win = BrowserWindow.fromWebContents(event.sender)
-      const targetResult = await dialog.showSaveDialog(win, { title: 'Save another copy of this recovery export', defaultPath: `tsa-bonno-core-data-recovery-copy-${formatFilenameStamp()}.tbbackup`, filters: [{ name: 'Tsa Bonno recovery package', extensions: ['tbbackup'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] })
+      const targetResult = await showSaveDialogForWindow(win, { title: 'Save another copy of this recovery export', defaultPath: `tsa-bonno-core-data-recovery-copy-${formatFilenameStamp()}.tbbackup`, filters: [{ name: 'Tsa Bonno recovery package', extensions: ['tbbackup'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] })
       if (targetResult.canceled || !targetResult.filePath) return { success: false, canceled: true }
       const target = targetResult.filePath.toLowerCase().endsWith('.tbbackup') ? targetResult.filePath : `${targetResult.filePath}.tbbackup`
       if (resolve(source) === resolve(target)) return { success: false, error: 'Choose a different destination for the additional copy.' }
@@ -8832,7 +8919,7 @@ app.whenReady().then(async () => {
       requireFreshCommandCentralReauth()
       await requireCapability('command_central.recovery.manage')
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showOpenDialog(win, {
+      const result = await showOpenDialogForWindow(win, {
         title: 'Choose Customer Recovery Backup',
         properties: ['openFile'],
         filters: [{ name: 'Tsa Bonno Backup', extensions: ['tbbackup'] }]
@@ -8922,13 +9009,18 @@ app.whenReady().then(async () => {
       return { success: true, ...stripRecoveryIpcData(result) }
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Recovery verification failed.' } }
   })
+  // The user session and sanitized active profile expose the same expected
+  // lodge UUID here. Restored user fields may come from persisted JSON; this
+  // view does not validate or coerce them.
+  /** @typedef {string|null} BackupAutomationLodgeScopeExpectedView */
+
   // --- Automation: weekly encrypted Starter backup (customer-owned, opt-in)
   ipcMain.handle('backup:automationStatus', async () => {
     try {
       await requireCapability('backup.starter_automation')
       await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      return db.getStarterBackupAutomationStatus(lodgeId)
+      return db.getStarterBackupAutomationStatus(/** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId))
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation status is unavailable.' } }
   })
   ipcMain.handle('backup:automationConfigure', async (_, payload = {}) => {
@@ -8936,7 +9028,7 @@ app.whenReady().then(async () => {
       await requireCapability('backup.starter_automation')
       await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      const result = db.configureStarterBackupAutomation({ ...stripRendererLodgeScope(payload), lodge_id: lodgeId })
+      const result = db.configureStarterBackupAutomation({ ...stripRendererLodgeScope(payload), lodge_id: /** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId) })
       return result
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation could not be configured.' } }
   })
@@ -8944,21 +9036,21 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      return db.disableStarterBackupAutomation(lodgeId)
+      return db.disableStarterBackupAutomation(/** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId))
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation could not be disabled.' } }
   })
   ipcMain.handle('backup:automationSnooze', async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      return db.snoozeStarterBackupAutomation(lodgeId)
+      return db.snoozeStarterBackupAutomation(/** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId))
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation snooze failed.' } }
   })
   ipcMain.handle('backup:automationClearSnooze', async () => {
     try {
       await requireCapability('backup.starter_automation')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      return db.clearStarterBackupAutomationSnooze(lodgeId)
+      return db.clearStarterBackupAutomationSnooze(/** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId))
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Automation snooze could not be cleared.' } }
   })
   ipcMain.handle('backup:automationRunNow', async (_, payload = {}) => {
@@ -8966,7 +9058,8 @@ app.whenReady().then(async () => {
       await requireCapability('backup.starter_automation')
       await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
       const lodgeId = db.getCurrentUser?.()?.lodge_id || db.getActiveProfile?.()?.lodge_id || null
-      const result = await db.runStarterBackupAutomationOnce({ ...stripRendererLodgeScope(payload), lodgeId })
+      /** The callee passes lodgeId to resolveLodgeId(candidate), which accepts unknown and preserves its existing null-as-absent coercion. Keep the actual nullable value and the other declared option fields unchanged at this IPC boundary. */
+      const result = await (/** @type {(options: Omit<Parameters<typeof db.runStarterBackupAutomationOnce>[0], 'lodgeId'> & {lodgeId: BackupAutomationLodgeScopeExpectedView}) => ReturnType<typeof db.runStarterBackupAutomationOnce>} */ (db.runStarterBackupAutomationOnce))({ ...stripRendererLodgeScope(payload), lodgeId: /** @type {BackupAutomationLodgeScopeExpectedView} */ (lodgeId) })
       return result
     } catch (e) { return { success: false, error: (/** @type {IpcCaughtErrorExpectedView|null|undefined} */ (e))?.message || 'Scheduled backup could not be run.' } }
   })
@@ -9132,7 +9225,7 @@ app.whenReady().then(async () => {
     try {
       await requireCapability('backup.manage')
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showOpenDialog(win, {
+      const result = await showOpenDialogForWindow(win, {
         title: 'Choose Managed Backup Folder',
         properties: ['openDirectory', 'createDirectory']
       })
@@ -9281,7 +9374,7 @@ app.whenReady().then(async () => {
       await requireCapability('backup.starter_automation')
       await requireCommercialFeature('starter_backup_automation', 'Weekly backup automation is not included in the current commercial package.')
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showOpenDialog(win, {
+      const result = await showOpenDialogForWindow(win, {
         title: 'Choose Weekly Backup Folder',
         properties: ['openDirectory']
       })
@@ -9302,7 +9395,7 @@ app.whenReady().then(async () => {
       const rangeDays = Number(payload?.rangeDays)
       if (![1, 7, 30].includes(rangeDays)) return { success: false, error: 'Choose a 1, 7, or 30-day report period before saving.' }
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         title: 'Save Starter Basic Report as PDF',
         defaultPath: buildReportExportFilename({
           prefix: APP_EXPORT_PREFIX,
@@ -9473,7 +9566,7 @@ app.whenReady().then(async () => {
     const receiptPayload = typeof guestName === 'object' && guestName !== null ? guestName : { guestName }
     const safe = (receiptPayload?.defaultFilename || receiptPayload?.guestName || 'receipt').replace(/[^a-z0-9]/gi, '-').toLowerCase()
     const isPrepayment = receiptPayload?.documentType === 'prepayment'
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: isPrepayment ? 'Save Advance Payment Receipt as PDF' : 'Save Invoice as PDF',
       defaultPath: `${isPrepayment ? 'advance-payment-receipt' : 'invoice'}-${safe}.pdf`,
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -9568,7 +9661,7 @@ app.whenReady().then(async () => {
     const safeName = (customerName    || '').replace(/[^a-z0-9]/gi, '-').toLowerCase()
     const safeNum  = (quotationNumber || 'quotation').replace(/[^a-z0-9]/gi, '-').toLowerCase()
     const safe     = safeName ? `${safeNum}-${safeName}` : safeNum
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: 'Save Quotation as PDF',
       defaultPath: `${safe}.pdf`,
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -9650,9 +9743,11 @@ app.whenReady().then(async () => {
       return await db.deletePosMenuItem(id)
     } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
+  // Both POS renderer callers send the fields consumed by the existing main
+  // database facade. This is an IPC expected-data view, not runtime validation.
   ipcMain.handle('pos:setBarPackTemplate', /**
    * @param {import('electron').IpcMainInvokeEvent} _
-   * @param {unknown} data
+   * @param {Parameters<typeof db.setBarPosPackTemplate>[0]} data
    */ async (_, data) => {
     try {
       await requireCapability('pos.menu_manage')
@@ -9744,7 +9839,7 @@ app.whenReady().then(async () => {
       const start = (/** @type {PosHistoryExportFilterExpectedData} */ (payload)).start || ''
       const end = (/** @type {PosHistoryExportFilterExpectedData} */ (payload)).end || ''
       const period = start && end ? `${start}-to-${end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      const { filePath, canceled } = await showSaveDialogForWindow(parentWin, {
         title: 'Export POS History to Excel',
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'pos-history', period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -9927,7 +10022,7 @@ app.whenReady().then(async () => {
       const start = (/** @type {PosHistoryExportFilterExpectedData} */ (payload)).start || ''
       const end = (/** @type {PosHistoryExportFilterExpectedData} */ (payload)).end || ''
       const period = start && end ? `${start}-to-${end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      const { filePath, canceled } = await showSaveDialogForWindow(parentWin, {
         title: 'Export POS History as PDF',
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'pos-history', period, extension: 'pdf' }),
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -10016,8 +10111,12 @@ app.whenReady().then(async () => {
   // UNCONFIRMED. Certified gates and writers are never touched.
   /** Expected order rows from the existing query/cache reader; this view does not validate row JSON. */
   /** @typedef {Awaited<ReturnType<typeof db.getPosOrders>>[number]} DevicePosRecordsOrderExpectedData */
-  /** Expected settings fields from getSettings/cache; this view does not validate persisted settings. */
-  /** @typedef {Record<string, unknown> & {currency?: unknown, lodge_name?: unknown, company_name?: unknown}} DevicePosRecordsSettingsExpectedData */
+  /**
+   * Expected settings fields from getSettings/cache; this view does not
+   * validate persisted settings. lodge_name/company_name are nullable text
+   * columns in the baseline settings schema and string inputs in settings.js.
+   */
+  /** @typedef {Record<string, unknown> & {currency?: unknown, lodge_name?: string | null, company_name?: string | null}} DevicePosRecordsSettingsExpectedData */
   /** @typedef {{count: number, gross: number, pending: number, voids: number}} DevicePosRecordsSummary */
   /**
    * Date strings are expected from HposReports; IPC input remains unvalidated
@@ -10092,7 +10191,7 @@ app.whenReady().then(async () => {
       const start = payload.start || ''
       const end = payload.end || ''
       const period = start && end ? `${start}-to-${end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      const { filePath, canceled } = await showSaveDialogForWindow(parentWin, {
         title: 'Export Device Sales Records to Excel',
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'device-records-pos', period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -10141,7 +10240,7 @@ app.whenReady().then(async () => {
       const start = payload.start || ''
       const end = payload.end || ''
       const period = start && end ? `${start}-to-${end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      const { filePath, canceled } = await showSaveDialogForWindow(parentWin, {
         title: 'Export Device Sales Records as PDF',
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'device-records-pos', period, extension: 'pdf' }),
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -10181,7 +10280,7 @@ app.whenReady().then(async () => {
         loadAuthoritativePosHistoryExportDeduped({ startDate: date, endDate: date, outletId }),
         db.getPosVoidHistory(date, date, outletFilter),
         db.getPosOrders(date, date, outletFilter),
-        db.getSettings().catch(() => ({}))
+        /** @type {Promise<DevicePosRecordsSettingsExpectedData>} */ (db.getSettings().catch(() => ({})))
       ])
       assertCompletePosHistoryExport(authoritative.orders, voidHistory, localOrders)
       reportRunId = authoritative.reportRunId
@@ -10189,7 +10288,7 @@ app.whenReady().then(async () => {
       const wantsPrint = payload.print === true
       let filePath = null
       if (!wantsPrint) {
-        const result = await dialog.showSaveDialog(parentWin, {
+        const result = await showSaveDialogForWindow(parentWin, {
           title: 'Save certified daily-close summary',
           defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle: 'daily-close-summary', period: date, extension: 'pdf' }),
           filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -10208,7 +10307,9 @@ app.whenReady().then(async () => {
         return { success: true, printed: true, reportRunId, dataHash: authoritative.dataHash }
       }
       const pdfBuffer = await renderHtmlToPdfBuffer(html, { pageSize: 'A4', printBackground: true, margins: { marginType: 'default' } }, { minTextLength: 20 })
-      const saved = writePosHistoryPdfArtifact(filePath, pdfBuffer)
+      // Non-print exports reach the artifact writer only after the save-dialog branch
+      // returned for a canceled or missing path; the print branch returned above.
+      const saved = writePosHistoryPdfArtifact(/** @type {string} */ (filePath), pdfBuffer)
       await db.recordReportArtifactResult({ reportRunId, artifactType: 'pdf', filePath, fileHash: saved.fileHash, byteCount: saved.byteCount })
       return { success: true, filePath, reportRunId, dataHash: authoritative.dataHash, fileHash: saved.fileHash }
     } catch (error) {
@@ -10624,7 +10725,7 @@ app.whenReady().then(async () => {
     try { await requireCapability('pos.view'); return await db.createPosCashupProofSignedUrl(submissionId, attachmentId) }
     catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
-  ipcMain.handle('pos:getCurrentShift', async (_, outletId, cashierId) => {
+  ipcMain.handle('pos:getCurrentShift', /** @param {import('electron').IpcMainInvokeEvent} _ @param {string|null} outletId @param {string|null} cashierId @returns {Promise<import('../shared/desktopIpcContracts.js').DesktopPosCurrentShiftReadView|null>} */ async (_, outletId, cashierId) => {
     try { await requireCapability('pos.view'); return await db.getCurrentPosShift(outletId || null, cashierId || null) }
     catch { return null }
   })
@@ -11016,12 +11117,21 @@ app.whenReady().then(async () => {
     try { await requireCapability('inventory.manage'); await requireCommercialFeature('purchasing'); return await db.updatePurchaseOrderDraft(orderId, data || {}) }
     catch (e) { return { success: false, error: /** @type {ErrorMessageReadView} */ (e).message } }
   })
+  /**
+   * Read projection returned by getPosPurchaseOrders for the PDF/email handlers
+   * below. The database reader selects/maps these fields, while its shared POS
+   * metadata helper currently exposes the general POS-order row view. Values
+   * remain the reader's expected data; this assertion does not validate them.
+   * @typedef {Record<string, unknown> & {id?: unknown, status?: unknown, created_at?: unknown, order_date?: unknown, expected_delivery?: unknown, total?: unknown, notes?: unknown, supplier?: {name?: unknown, contact_person?: unknown, phone?: unknown, email?: unknown}|null, items?: Array<{description?: unknown, quantity?: unknown, unit_cost?: unknown, total?: unknown}>|null}} PurchaseOrderDocumentReadView
+   */
+  /** Settings fields read by purchase-order documents; defaults and the settings table use text values. Cached/RPC data remains unvalidated. */
+  /** @typedef {Record<string, unknown> & {lodge_name?: string|null, company_name?: string|null, currency?: string|null}} PurchaseOrderDocumentSettingsExpectedView */
   /** @param {unknown} orderId Raw IPC id is compared with strict equality; no coercion or validation is added. */
   const getPurchaseOrderForDocument = async (orderId) => {
-    const orders = await db.getPosPurchaseOrders()
+    const orders = /** @type {PurchaseOrderDocumentReadView[]} */ (await db.getPosPurchaseOrders())
     const order = (orders || []).find((row) => row.id === orderId)
     if (!order) throw new Error('Purchase order was not found for this business.')
-    const settings = await db.getSettings().catch(() => ({}))
+    const settings = /** @type {PurchaseOrderDocumentSettingsExpectedView} */ (await db.getSettings().catch(() => ({})))
     return { order, settings: settings || {} }
   }
   ipcMain.handle('pos:savePurchaseOrderPdf', async (event, orderId) => {
@@ -11030,7 +11140,7 @@ app.whenReady().then(async () => {
       const { order, settings } = await getPurchaseOrderForDocument(orderId)
       const reference = `po-${String(order.id).slice(-6).toLowerCase()}`
       const win = BrowserWindow.fromWebContents(event.sender)
-      const result = await dialog.showSaveDialog(win, { title: 'Save purchase order as PDF', defaultPath: `${reference}.pdf`, filters: [{ name: 'PDF Files', extensions: ['pdf'] }] })
+      const result = await showSaveDialogForWindow(win, { title: 'Save purchase order as PDF', defaultPath: `${reference}.pdf`, filters: [{ name: 'PDF Files', extensions: ['pdf'] }] })
       if (result.canceled || !result.filePath) return { success: false, canceled: true }
       const pdf = await renderHtmlToPdfBuffer(buildPurchaseOrderPdfHtml({ purchaseOrder: order, business: settings, currency: settings.currency || 'P' }), { pageSize: 'A4', printBackground: true }, { minTextLength: 40 })
       fs.writeFileSync(result.filePath, pdf)
@@ -11046,7 +11156,8 @@ app.whenReady().then(async () => {
       if (!recipient) return { success: false, error: 'Add an email address to this supplier before sending the purchase order.' }
       const reference = `po-${String(order.id).slice(-6).toLowerCase()}.pdf`
       const pdf = await renderHtmlToPdfBuffer(buildPurchaseOrderPdfHtml({ purchaseOrder: order, business: settings, currency: settings.currency || 'P' }), { pageSize: 'A4', printBackground: true }, { minTextLength: 40 })
-      const sent = await sendPurchaseOrderEmail({ to: recipient, purchaseOrder: order, businessName: settings.lodge_name || settings.company_name, currency: settings.currency || 'P', pdfBuffer: pdf, filename: reference })
+      // The email helper reads only id, total and supplier.name; its shared email-record type also includes optional date fields that this helper does not read.
+      const sent = await sendPurchaseOrderEmail({ to: recipient, purchaseOrder: /** @type {Parameters<typeof sendPurchaseOrderEmail>[0]['purchaseOrder']} */ (order), businessName: settings.lodge_name || settings.company_name, currency: settings.currency || 'P', pdfBuffer: pdf, filename: reference })
       if (sent?.success) Promise.resolve(db.recordActivity?.('purchase_order_emailed', `Purchase order ${String(order.id).slice(-6).toUpperCase()} emailed to ${recipient}`)).catch(() => {})
       return sent
     } catch (error) { return { success: false, error: (/** @type {CaughtErrorMessageReadView | null | undefined} */ (error))?.message || 'Could not email purchase order.' } }
@@ -11989,7 +12100,7 @@ app.whenReady().then(async () => {
       const win = BrowserWindow.fromWebContents(event.sender)
       const reportTitle = payload.reportTitle || 'Room Supplies Cost Report'
       const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      const { filePath, canceled } = await showSaveDialogForWindow(win, {
         title: `Export ${reportTitle} to Excel`,
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'xlsx' }),
         filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -12080,7 +12191,7 @@ app.whenReady().then(async () => {
       const parentWin = BrowserWindow.fromWebContents(event.sender)
       const reportTitle = payload.reportTitle || 'Room Supplies Cost Report'
       const period = payload.start && payload.end ? `${payload.start}-to-${payload.end}` : ''
-      const { filePath, canceled } = await dialog.showSaveDialog(parentWin, {
+      const { filePath, canceled } = await showSaveDialogForWindow(parentWin, {
         title: `Export ${reportTitle} as PDF`,
         defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period, extension: 'pdf' }),
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
@@ -12461,7 +12572,7 @@ app.whenReady().then(async () => {
       generatedAt = new Date().toLocaleString(),
       reportTitle = 'Night Audit'
     } = payload || {}
-    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+    const { filePath, canceled } = await showSaveDialogForWindow(win, {
       title: `Export ${reportTitle} to Excel`,
       defaultPath: buildReportExportFilename({ prefix: APP_EXPORT_PREFIX, reportTitle, period: date, extension: 'xlsx' }),
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -12759,7 +12870,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('sync:setOfflineMode', /** @param {import('electron').IpcMainInvokeEvent} _ @param {unknown} payload @returns {Promise<import('../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult>} */ async (_, payload) => {
     try {
       await requireCapability('sync.manage')
-      return db.setOfflineModeState(payload || {})
+      // The local writer constructs only the two outcomes in this IPC contract; this view does not validate the request or any persisted data.
+      return /** @type {import('../shared/desktopIpcContracts.js').SyncOfflineModeWriteResult} */ (db.setOfflineModeState(payload || {}))
     } catch (e) { return { success: false, error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
   ipcMain.handle('sync:exportOfflineOperations', async () => {
@@ -12848,7 +12960,7 @@ app.whenReady().then(async () => {
       let filePath = String(providedFilePath || '').trim()
       if (!filePath) {
         const win = BrowserWindow.fromWebContents(event.sender)
-        const result = await dialog.showOpenDialog(win, {
+        const result = await showOpenDialogForWindow(win, {
           title: 'Select Excel File to Import',
           filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
           properties: ['openFile']
@@ -12920,11 +13032,13 @@ app.whenReady().then(async () => {
     } catch (e) { return { error: (/** @type {CaughtErrorExpectedData} */ (e)).message } }
   })
 
+  /** DataImport supplies this row shape; direct IPC values are not runtime-validated here. */
+  /** @typedef {{row: number, errors: string[], error?: string, suggestions?: {room_number?: string[]}}} ImportDryRunErrorExpectedView */
   ipcMain.handle('import:exportErrors', async (event, payload = {}) => {
     await requireCapability('data.import')
     const win = BrowserWindow.fromWebContents(event.sender)
     const rows = Array.isArray(payload.rows) ? payload.rows : []
-    const errors = Array.isArray(payload.errors) ? payload.errors : []
+    const errors = /** @type {ImportDryRunErrorExpectedView[]} */ (Array.isArray(payload.errors) ? payload.errors : [])
     if (!errors.length) return { error: 'Run a dry check first. No row issues were found to export.' }
 
     const errorRows = errors.map((entry) => {
@@ -12942,7 +13056,7 @@ app.whenReady().then(async () => {
     const ws = XLSX.utils.json_to_sheet(errorRows)
     ws['!cols'] = Object.keys(errorRows[0] || { Row: '', Issue: '' }).map((key) => ({ wch: Math.max(12, Math.min(42, key.length + 8)) }))
     XLSX.utils.book_append_sheet(wb, ws, 'Rows To Fix')
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: 'Save Import Issues Workbook',
       defaultPath: `${APP_EXPORT_PREFIX}-import-issues-${new Date().toISOString().slice(0, 10)}.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -12990,7 +13104,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('import:downloadTemplate', async (event, type = 'bookings') => {
     await requireCapability('data.import')
     const win = BrowserWindow.fromWebContents(event.sender)
-    const fields = db.generateImportTemplate(type)
+    // Supported own template keys return fixed arrays; unsupported own keys
+    // use the existing bookings fallback. Ordinary object lookup also exposes
+    // inherited keys, so this view does not validate the IPC `type` value.
+    const fields = /** @type {Parameters<typeof buildImportTemplateWorkbook>[0]['fields']} */ (db.generateImportTemplate(type))
+    /** @type {Record<string, Record<string, unknown>>} */
     const samples = {
       bookings: {
       'Guest Name': 'John Smith',
@@ -13026,7 +13144,7 @@ app.whenReady().then(async () => {
       fields,
       sample: samples[type] || samples.bookings
     })
-    const result = await dialog.showSaveDialog(win, {
+    const result = await showSaveDialogForWindow(win, {
       title: 'Save Import Template',
       defaultPath: `${APP_EXPORT_PREFIX}-${String(type || 'bookings')}-import-template.xlsx`,
       filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
@@ -13060,6 +13178,9 @@ app.whenReady().then(async () => {
         const hardware = await db.getPosHardwareSettings().catch(() => null)
         if (!hardware || hardware.display_customer_auto_open !== true) return
         if (hardware.customer_display_enabled === false) return
+        // The layout writer stores this shape. Keep persisted JSON unvalidated and
+        // preserve direct property access if malformed non-object values are present.
+        /** @type {PosDisplayLayoutExpectedData} */
         const saved = readPosDisplayLayouts()?.customer
         const pinnedId = String(hardware.display_customer_display_id || '').trim()
         if (!pinnedId && (!saved || (!saved.bounds && !saved.displayId))) return
@@ -13212,16 +13333,16 @@ app.whenReady().then(async () => {
         return { success: true, updateAvailable: false, gated: true, state: { ...updateState } }
       }
       const result = await autoUpdater.checkForUpdates()
-      const info = result?.updateInfo || {}
-      const latestVersion = info.version
+      const info = result?.updateInfo
+      const latestVersion = info?.version
       const updateAvailable = latestVersion && latestVersion !== app.getVersion()
       return {
         success: true,
         updateAvailable,
         latestVersion,
-        releaseName: info.releaseName || '',
-        releaseDate: info.releaseDate || '',
-        releaseNotes: normalizeReleaseNotes(info.releaseNotes),
+        releaseName: info?.releaseName || '',
+        releaseDate: info?.releaseDate || '',
+        releaseNotes: normalizeReleaseNotes(info?.releaseNotes),
         state: { ...updateState }
       }
     }
@@ -14328,7 +14449,7 @@ app.whenReady().then(async () => {
       await requireCapability('command_central.licensing.manage')
       const win = BrowserWindow.fromWebContents(event.sender)
       const docNumber = String(documentPayload.document_number || 'subscription-document').replace(/[^\w.-]+/g, '-')
-      const result = await dialog.showSaveDialog(win, {
+      const result = await showSaveDialogForWindow(win, {
         title: 'Save subscription document PDF',
         defaultPath: `${docNumber}.pdf`,
         filters: [{ name: 'PDF Files', extensions: ['pdf'] }]

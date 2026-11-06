@@ -6,18 +6,25 @@ import { isBarHospitalityMode } from '../lib/productShell'
 import { money } from '../lib/format'
 import EmptyState from '../components/EmptyState'
 
+// listRestaurantMenu selects prep_time_minutes; the database column is integer. Cached rows stay unvalidated.
+/** @typedef {{id: string, name: string, category?: string | null, price?: number | string | null, is_available?: boolean, prep_time_minutes?: number | null}} RestaurantMenuItemExpectedView */
+
 export default function RestaurantMenu() {
-  const { user } = useAuth()
+  // AppShell renders this route only after its authenticated-user guard.
+  const { user } = /** @type {{user: NonNullable<ReturnType<typeof useAuth>['user']>}} */ (useAuth())
   const barOnly = isBarHospitalityMode(user?.hospitality_mode)
-  const [items, setItems] = useState([])
+  const [items, setItems] = useState(/** @type {RestaurantMenuItemExpectedView[]} */ ([]))
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
-    try { setItems(await listRestaurantMenu(user.lodge_id)) }
-    catch (loadError) { setError(loadError?.message || 'Products could not load.') }
+    try {
+      // The query cache may contain persisted rows that have not been validated.
+      setItems(/** @type {RestaurantMenuItemExpectedView[]} */ (await listRestaurantMenu(user.lodge_id)))
+    }
+    catch (loadError) { setError((/** @type {{message?: string} | null | undefined} */ (loadError))?.message || 'Products could not load.') }
     finally { setLoading(false) }
   }, [user.lodge_id])
   useEffect(() => { load() }, [load])

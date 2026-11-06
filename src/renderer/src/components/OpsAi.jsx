@@ -21,6 +21,21 @@ import {
 import { ShieldAlert, RefreshCw, ChevronDown, ChevronUp, Clock } from 'lucide-react'
 import Fuse from 'fuse.js/basic'
 
+/** Expected alert rendering view: normal DB producers supply text/UUID strings; cached or legacy booking rows remain unvalidated and may violate this view. */
+/** @typedef {{type: string, booking_id: string, guest: string|null, amount: number, timestamp: string, user: string|null, reason: string, evidence: string[], risk_score: number, severity: string}} OpsAiFraudAlertExpectedView */
+/** @typedef {{type: string, user: string, risk_score: number, severity: string, alerts: OpsAiFraudAlertExpectedView[]}} OpsAiFraudClusterExpectedView */
+/** @typedef {{clusters: OpsAiFraudClusterExpectedView[], summary: {total_alerts: number, critical: number, high: number, medium: number, low: number}}} OpsAiFraudResultExpectedView */
+/** @typedef {{route: string, label?: string, screen?: string, params?: Record<string, unknown>, state?: Record<string, unknown>|null}} OpsAiRecommendationExpectedView */
+/** @typedef {{id: string, role: string, text: string, at?: string, recommendation?: OpsAiRecommendationExpectedView|null, toolResult?: {tool?: string, result?: unknown}|null, localHelp?: Record<string, unknown>|null, localIntent?: Record<string, unknown>|null, proposal?: unknown}} OpsAiMessageExpectedView */
+/** @typedef {{id: string, title: string, createdAt: string, updatedAt: string, messages: OpsAiMessageExpectedView[]}} OpsAiThreadExpectedView */
+/** @typedef {{id: string, title: string, category?: string, summary?: string, screen?: string}} OpsAiCatalogItemExpectedView */
+/** @typedef {{kind?: string, severity?: string, title?: string, detail?: string, action?: string}} OpsAiAttentionItemExpectedView */
+/** @typedef {{items?: OpsAiAttentionItemExpectedView[]}} OpsAiAttentionExpectedView */
+/** @typedef {'overdue'|'due_today'|'future'} OpsAiCollectionsBucket */
+/** @typedef {{sourceRoute?: string|null, screenLabel?: string|null, activeTabLabel?: string|null, activeBookingId?: string|null, activeGuestName?: string|null, roomNumber?: string|null}} OpsAiContextExpectedView */
+/** @typedef {{success?: boolean, error?: string, assistantText?: string, recommendation?: OpsAiRecommendationExpectedView|null, toolResult?: {tool?: string, result?: unknown}|null, localHelp?: Record<string, unknown>|null, localIntent?: Record<string, unknown>|null}} OpsAiTurnResultExpectedView */
+
+/** @param {{alert: OpsAiFraudAlertExpectedView|null, onBack: () => void, onAction: (message: string) => void}} props */
 function InvestigationPanel({ alert, onBack, onAction }) {
   if (!alert) return null
 
@@ -71,11 +86,12 @@ function InvestigationPanel({ alert, onBack, onAction }) {
   )
 }
 
+/** @param {{result: OpsAiFraudResultExpectedView|null, busy: boolean, onRefresh: () => void, onInvestigate: (message: string) => void}} props */
 function FraudAlertsCard({ result, busy, onRefresh, onInvestigate }) {
   const clusters = result?.clusters || []
   const summary = result?.summary || { total_alerts: 0, critical: 0, high: 0, medium: 0, low: 0 }
   const [expanded, setExpanded] = useState(false)
-  const [selectedAlert, setSelectedAlert] = useState(null)
+  const [selectedAlert, setSelectedAlert] = useState(/** @type {OpsAiFraudAlertExpectedView|null} */ (null))
 
   if (clusters.length === 0 && !busy && result) return null
 
@@ -83,6 +99,7 @@ function FraudAlertsCard({ result, busy, onRefresh, onInvestigate }) {
      return <InvestigationPanel alert={selectedAlert} onBack={() => setSelectedAlert(null)} onAction={(msg) => { setSelectedAlert(null); onInvestigate(msg); }} />
   }
 
+  /** @param {string} sev */
   const getBadgeColor = (sev) => {
     if (sev === 'critical') return 'bg-rose-600 text-white border-rose-700'
     if (sev === 'high') return 'bg-rose-100 text-rose-700 border-rose-200'
@@ -90,6 +107,7 @@ function FraudAlertsCard({ result, busy, onRefresh, onInvestigate }) {
     return 'bg-amber-100 text-amber-700 border-amber-200'
   }
 
+  /** @param {string} sev */
   const getDotColor = (sev) => {
     if (sev === 'critical') return 'bg-rose-600'
     if (sev === 'high') return 'bg-rose-500'
@@ -182,29 +200,35 @@ function nowIso() {
 const AI_HISTORY_KEY = 'bb_ai_threads_v1'
 const AI_FEEDBACK_KEY = 'bb_ai_feedback_v1'
 
+/** @param {string} [title] @returns {OpsAiThreadExpectedView} */
 function createThread(title = 'New chat') {
   const now = nowIso()
   return { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now, messages: [] }
 }
 
+/** @returns {OpsAiThreadExpectedView[]} */
 function loadThreads() {
   try {
     const raw = localStorage.getItem(AI_HISTORY_KEY)
     const parsed = raw ? JSON.parse(raw) : []
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    // Existing local threads are intentionally not validated at read time.
+    if (Array.isArray(parsed) && parsed.length > 0) return /** @type {OpsAiThreadExpectedView[]} */ (parsed)
   } catch {}
   return [createThread()]
 }
 
+/** @param {unknown} value */
 function safeString(value) {
   return String(value ?? '').trim()
 }
 
+/** @param {string} currency @param {unknown} value */
 function formatMoney(currency, value) {
   const amount = Number(value)
   return `${currency} ${Number.isFinite(amount) ? amount.toFixed(2) : '0.00'}`
 }
 
+/** @param {import('react-router').NavigateFunction} navigate @param {string} route @param {unknown} [state] */
 function openGuideTarget(navigate, route, state = null) {
   if (!route) return
   navigate(route, state ? { state } : undefined)
@@ -214,6 +238,7 @@ function openGuideTarget(navigate, route, state = null) {
 // exact screen that performs it. The button only navigates — the action
 // itself happens on the normal screen with its own capability and validation
 // gates. Nothing here executes anything.
+/** @param {{recommendation: OpsAiRecommendationExpectedView, onOpen: () => void}} props */
 function RecommendationCard({ recommendation, onOpen }) {
   if (!recommendation?.route) return null
   const params = recommendation.params && typeof recommendation.params === 'object' ? recommendation.params : {}
@@ -238,15 +263,18 @@ function RecommendationCard({ recommendation, onOpen }) {
   )
 }
 
+/** @returns {Record<string, unknown>} */
 function loadFeedback() {
   try {
-    return JSON.parse(localStorage.getItem(AI_FEEDBACK_KEY) || '{}')
+    // Local storage is not validated; this is the existing consumer view only.
+    return /** @type {Record<string, unknown>} */ (JSON.parse(localStorage.getItem(AI_FEEDBACK_KEY) || '{}'))
   } catch {
     return {}
   }
 }
 
 // ─── Collections Intelligence Widget ─────────────────────────────────────────
+/** @param {{label: string, count: number, total: number, currency: string, color: 'red'|'amber'|'blue'}} props */
 function BucketPill({ label, count, total, currency, color }) {
   const colors = {
     red: 'border-rose-200 bg-rose-50 text-rose-700',
@@ -262,6 +290,7 @@ function BucketPill({ label, count, total, currency, color }) {
   )
 }
 
+/** @param {{delta: unknown, percent: number|null, direction: string, suffix?: string}} props */
 function DeltaText({ delta, percent, direction, suffix = '' }) {
   const value = Number(delta || 0)
   const cls = direction === 'up' ? 'text-emerald-700' : direction === 'down' ? 'text-rose-700' : 'text-slate-500'
@@ -270,11 +299,14 @@ function DeltaText({ delta, percent, direction, suffix = '' }) {
   return <p className={`mt-1 text-[11px] font-semibold ${cls}`}>{sign}{value}{suffix}{pct} vs yesterday</p>
 }
 
+/** @param {{result: {total_outstanding?: number, unpaid_count?: number, breakdown?: Record<string, {count?: number, total?: number}>, comparison?: {outstanding?: {delta?: number}|null}|null, all_rows?: {id: string, guest: string, room_number?: string|null, bucket?: string|null, status?: string|null, balance: number}[]}, currency: string, onOpenBooking?: (id: string) => void, onCollectPayment?: (id: string) => void}} props */
 function CollectionsWidget({ result, currency, onOpenBooking, onCollectPayment }) {
   const bd = result?.breakdown || {}
   const rows = Array.isArray(result?.all_rows) ? result.all_rows : []
   const comparison = result?.comparison || null
+  /** @type {Record<OpsAiCollectionsBucket, string>} */
   const bucketLabel = { overdue: 'Overdue', due_today: 'Due Today', future: 'Upcoming' }
+  /** @type {Record<OpsAiCollectionsBucket, 'red'|'amber'|'blue'>} */
   const bucketColor = { overdue: 'red', due_today: 'amber', future: 'blue' }
 
   return (
@@ -292,7 +324,7 @@ function CollectionsWidget({ result, currency, onOpenBooking, onCollectPayment }
 
       {/* Buckets */}
       <div className="grid grid-cols-3 gap-3 p-4">
-        {['overdue','due_today','future'].map((k) => (
+        {/** @type {OpsAiCollectionsBucket[]} */ (['overdue','due_today','future']).map((k) => (
           <BucketPill
             key={k}
             label={bucketLabel[k]}
@@ -340,22 +372,22 @@ export default function OpsAi() {
   const currency = 'P'
   const location = useLocation()
   const navigate = useNavigate()
-  const [threads, setThreads] = useState(() => loadThreads())
+  const [threads, setThreads] = useState(/** @type {OpsAiThreadExpectedView[]} */ (loadThreads()))
   const [currentThreadId, setCurrentThreadId] = useState(() => loadThreads()[0]?.id || createThread().id)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const scrollRef = useRef(null)
+  const scrollRef = useRef(/** @type {HTMLDivElement|null} */ (null))
 
-  const [fraudAlerts, setFraudAlerts] = useState(null)
+  const [fraudAlerts, setFraudAlerts] = useState(/** @type {OpsAiFraudResultExpectedView|null} */ (null))
   const [fraudBusy, setFraudBusy] = useState(false)
-  const [attentionPulse, setAttentionPulse] = useState(null)
+  const [attentionPulse, setAttentionPulse] = useState(/** @type {OpsAiAttentionExpectedView|null} */ (null))
   const [pulseBusy, setPulseBusy] = useState(false)
-  const [catalog, setCatalog] = useState([])
+  const [catalog, setCatalog] = useState(/** @type {OpsAiCatalogItemExpectedView[]} */ ([]))
   const [sidebarTab, setSidebarTab] = useState('chats')
   const [topicQuery, setTopicQuery] = useState('')
-  const [feedback, setFeedback] = useState(() => loadFeedback())
-  const [sessionContext, setSessionContext] = useState(null)
+  const [feedback, setFeedback] = useState(/** @type {Record<string, unknown>} */ (loadFeedback()))
+  const [sessionContext, setSessionContext] = useState(/** @type {OpsAiContextExpectedView|null} */ (null))
   const hasProcessedInitialRef = useRef(false)
 
   const currentThread = useMemo(() => {
@@ -398,6 +430,7 @@ export default function OpsAi() {
     }
   }, [uiContext])
 
+  /** @param {string} threadId @param {OpsAiMessageExpectedView[]} nextMessages */
   const appendMessagesToThread = useCallback((threadId, nextMessages) => {
     setThreads((prev) => prev.map((thread) => {
       if (thread.id !== threadId) return thread
@@ -424,7 +457,8 @@ export default function OpsAi() {
   const loadFraudAlerts = useCallback(async () => {
     setFraudBusy(true)
     try {
-      const res = await window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: null, threadId: currentThreadId })
+      // The AI tool output has no runtime schema validation; consume its known fraud result shape as expected data.
+      const res = /** @type {{toolResult?: {tool?: unknown, result: OpsAiFraudResultExpectedView}|null}} */ (await window.api.ai.turn({ message: 'Run detect_payment_anomalies tool now.', model: null, threadId: currentThreadId }))
       if (res?.toolResult?.tool === 'detect_payment_anomalies') {
         setFraudAlerts(res.toolResult.result)
       }
@@ -436,13 +470,13 @@ export default function OpsAi() {
   const loadAttentionPulse = useCallback(async () => {
     setPulseBusy(true)
     try {
-      const res = await window.api.ai.turn({
+      const res = /** @type {{toolResult?: {tool?: unknown, result: OpsAiAttentionExpectedView}|null}} */ (await window.api.ai.turn({
         message: 'What needs my attention right now?',
         model: null,
         route: effectiveUiContext.sourceRoute || location.pathname,
         threadId: `${currentThreadId}:pulse`,
         uiContext: effectiveUiContext
-      })
+      }))
       if (res?.toolResult?.tool === 'get_attention') setAttentionPulse(res.toolResult.result)
     } catch (_) {
     } finally {
@@ -455,7 +489,10 @@ export default function OpsAi() {
   useEffect(() => {
     let alive = true
     window.api?.ai?.catalog?.().then((res) => {
-      if (alive && res?.success && Array.isArray(res.items)) setCatalog(res.items)
+      if (alive && res?.success && Array.isArray(res.items)) {
+        // The catalog API returns its existing array of topic rows; row contents remain unvalidated.
+        setCatalog(/** @type {OpsAiCatalogItemExpectedView[]} */ (res.items))
+      }
     }).catch(() => {})
     return () => { alive = false }
   }, [])
@@ -536,7 +573,7 @@ export default function OpsAi() {
       acc[key] ||= []
       acc[key].push(item)
       return acc
-    }, {})
+    }, /** @type {Record<string, OpsAiCatalogItemExpectedView[]>} */ ({}))
   }, [catalog, catalogFuse, topicQuery])
 
   const topicDidYouMean = useMemo(() => {
@@ -546,6 +583,7 @@ export default function OpsAi() {
     return hit ? hit.item : null
   }, [catalogSuggestFuse, groupedCatalog, topicQuery])
 
+  /** @param {string} prompt */
   const send = useCallback(async (prompt) => {
     const text = safeString(prompt ?? draft)
     if (!text || busy) return
@@ -555,7 +593,8 @@ export default function OpsAi() {
     setBusy(true)
 
     try {
-      const result = await window.api.ai.turn({ message: text, model: null, route: effectiveUiContext.sourceRoute || location.pathname, threadId: currentThreadId, uiContext: effectiveUiContext })
+      // The AI turn producer owns this result envelope; nested model/tool payloads remain unvalidated.
+      const result = /** @type {OpsAiTurnResultExpectedView} */ (await window.api.ai.turn({ message: text, model: null, route: effectiveUiContext.sourceRoute || location.pathname, threadId: currentThreadId, uiContext: effectiveUiContext }))
       if (!result?.success) throw new Error(result?.error || 'AI request failed')
 
       const aiMsg = {
@@ -571,7 +610,7 @@ export default function OpsAi() {
       }
       appendMessagesToThread(currentThreadId, [aiMsg])
     } catch (e) {
-      setError(e?.message || 'AI request failed.')
+      setError((/** @type {{message?: string}|null|undefined} */ (e))?.message || 'AI request failed.')
     } finally {
       setBusy(false)
     }
@@ -595,6 +634,7 @@ export default function OpsAi() {
     }
   }
 
+  /** @param {string} messageId @param {'up'|'down'} value */
   const setMessageFeedback = (messageId, value) => {
     if (!messageId) return
     setFeedback((prev) => ({ ...prev, [messageId]: value }))

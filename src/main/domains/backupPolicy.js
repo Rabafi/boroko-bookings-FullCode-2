@@ -37,11 +37,11 @@ export function normalizeManagedBackupPolicy(raw = {}) {
     last_json_path: typeof source?.last_json_path === 'string' ? source.last_json_path : '',
     last_excel_path: typeof source?.last_excel_path === 'string' ? source.last_excel_path : '',
     // The assertion only adapts Array.includes' TypeScript signature; runtime still compares the original value.
-    enforcement_level: ['reminder', 'warning', 'strict'].includes(/** @type {string} */ (source?.enforcement_level)) ? source?.enforcement_level : 'reminder'
+    enforcement_level: ['reminder', 'warning', 'strict'].includes(/** @type {string} */ (source?.enforcement_level)) ? /** @type {'reminder' | 'warning' | 'strict'} */ (source?.enforcement_level) : 'reminder'
   };
 }
 
-/** @param {unknown} policy */
+/** @param {unknown} policy @returns {import('../../shared/desktopIpcContracts.js').ManagedBackupStatusReadView} */
 export function buildManagedBackupStatus(policy) {
   const normalized = normalizeManagedBackupPolicy(policy);
   const now = new Date();

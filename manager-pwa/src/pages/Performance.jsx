@@ -1,3 +1,4 @@
+// @ts-check
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, BarChart3, CircleAlert, RefreshCw, ShieldCheck, TrendingDown, TrendingUp } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
@@ -21,6 +22,10 @@ import DataFreshness from '../components/DataFreshness'
 import { isBarHospitalityMode, isRestaurantProductFamily } from '../lib/productShell'
 import { buildPerformanceMetrics, formatPerformanceValue, mergePerformanceActivity } from '../lib/performance'
 
+/** @typedef {{key: string, label: string, value: number|null, format: 'money'|'number'|'percent', trend?: number|null, tone: string}} PerformanceMetricView */
+/** @typedef {{id: string, type: unknown, title: unknown, sub: unknown, amount: unknown, created_at: unknown, source: unknown}} PerformanceActivityView */
+/** @typedef {Partial<{reports: import('../lib/api').ReportsSnapshotExpectedData|null, dashboard: import('../lib/api').DashboardSnapshotExpectedData|null, activity: unknown, bookings: unknown, expenses: unknown, inventory: unknown, maintenance: unknown, quotations: unknown, conference: unknown, dayUse: unknown, staff: unknown, pos: (import('../lib/api').ManagerPosSnapshotExpectedData & {gross_sales?: number, average_sale?: number, return_count?: number, discount_total?: number, void_count?: number, outlets?: unknown[], by_outlet?: unknown[], top_items?: unknown[]})|null, posTransactions: {transactions?: unknown}|null}>} PerformanceSnapshotExpectedView */
+
 const TONE = {
   green: 'text-emerald-300',
   blue: 'text-sky-300',
@@ -29,12 +34,14 @@ const TONE = {
   rose: 'text-rose-300'
 }
 
+/** @param {unknown} source */
 function sourceLabel(source) {
   return String(source || 'activity')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** @param {{metric: PerformanceMetricView}} props */
 function PerformanceCard({ metric }) {
   const TrendIcon = metric.trend === null || metric.trend === undefined ? null : metric.trend >= 0 ? TrendingUp : TrendingDown
   const trendTone = metric.trend === null || metric.trend === undefined ? 'text-gray-500' : metric.trend >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -42,13 +49,13 @@ function PerformanceCard({ metric }) {
     <div className="rounded-2xl bg-gray-800 p-3">
       <p className="text-[11px] text-gray-400">{metric.label}</p>
       <div className="mt-1 flex items-end justify-between gap-2">
-        <p className={'text-xl font-bold ' + (TONE[metric.tone] || 'text-white')}>
+        <p className={'text-xl font-bold ' + (TONE[/** @type {keyof typeof TONE} */ (metric.tone)] || 'text-white')}>
           {formatPerformanceValue(metric.value, metric.format)}
         </p>
         {TrendIcon && (
           <span className={'flex items-center gap-0.5 text-[10px] font-semibold ' + trendTone}>
             <TrendIcon size={12} />
-            {metric.trend === null ? 'New' : Math.abs(metric.trend) + '%'}
+            {metric.trend === null ? 'New' : Math.abs(/** @type {number} */ (metric.trend)) + '%'}
           </span>
         )}
       </div>
@@ -56,6 +63,7 @@ function PerformanceCard({ metric }) {
   )
 }
 
+/** @param {{item: PerformanceActivityView}} props */
 function ActivityRow({ item }) {
   const hasAmount = item.amount !== null && item.amount !== undefined
   const amount = Number(item.amount || 0)
@@ -66,10 +74,10 @@ function ActivityRow({ item }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
-          <p className="truncate text-sm font-semibold text-white">{item.title}</p>
-          <span className="shrink-0 text-[10px] text-gray-500">{shortDateTime(item.created_at)}</span>
+          <p className="truncate text-sm font-semibold text-white">{/** @type {import('react').ReactNode} */ (item.title)}</p>
+          <span className="shrink-0 text-[10px] text-gray-500">{shortDateTime(/** @type {string} */ (item.created_at))}</span>
         </div>
-        <p className="mt-0.5 truncate text-xs text-gray-400">{item.sub || 'Recorded activity'}</p>
+        <p className="mt-0.5 truncate text-xs text-gray-400">{/** @type {import('react').ReactNode} */ (item.sub || 'Recorded activity')}</p>
         <div className="mt-1 flex items-center gap-2">
           <span className="rounded-full bg-white/5 px-2 py-0.5 text-[9px] uppercase tracking-[0.15em] text-gray-500">{sourceLabel(item.source)}</span>
           {hasAmount && <span className={'text-[11px] font-semibold ' + (amount < 0 ? 'text-rose-300' : 'text-emerald-300')}>{money(amount)}</span>}
@@ -79,6 +87,7 @@ function ActivityRow({ item }) {
   )
 }
 
+/** @param {{failures: string[]}} props */
 function FailureNotice({ failures }) {
   if (failures.length === 0) return null
   return (
@@ -90,16 +99,19 @@ function FailureNotice({ failures }) {
 }
 
 export default function Performance() {
-  const { user } = useAuth()
+  const { user: routeUser } = useAuth()
+  /** AppShell's authenticated route guard establishes a non-null session here; the source view remains nullable and this assertion does not validate its contents. @type {NonNullable<typeof routeUser> & {product_family: string|null}} */
+  const user = /** @type {NonNullable<typeof routeUser> & {product_family: string|null}} */ (routeUser)
   const restaurantMode = isRestaurantProductFamily(user?.product_family)
-  const barOnly = restaurantMode && isBarHospitalityMode(user?.hospitality_mode)
+  // isBarHospitalityMode string-coerces all inputs; preserve the raw session value and its runtime coercion.
+  const barOnly = restaurantMode && isBarHospitalityMode(/** @type {string|null|undefined} */ (user?.hospitality_mode))
   const today = businessDate()
   const monthStart = today.slice(0, 7) + '-01'
-  const [snapshot, setSnapshot] = useState(null)
+  const [snapshot, setSnapshot] = useState(/** @type {PerformanceSnapshotExpectedView|null} */ (null))
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [failures, setFailures] = useState([])
+  const [lastUpdated, setLastUpdated] = useState(/** @type {string|null} */ (null))
+  const [failures, setFailures] = useState(/** @type {string[]} */ ([]))
   const [reloadVersion, setReloadVersion] = useState(0)
 
   const load = useCallback(() => setReloadVersion((version) => version + 1), [])
@@ -109,6 +121,7 @@ export default function Performance() {
     async function run() {
       setLoading(true)
       setLoadError('')
+      /** @type {[string, () => Promise<unknown>][]} */
       const taskFactories = [
         ['reports', () => getReportsSnapshot(user.lodge_id, { today, forceFresh: true })],
         ['dashboard', () => getDashboardSnapshot(user.lodge_id)],
@@ -128,12 +141,12 @@ export default function Performance() {
         try {
           return { key, value: await factory() }
         } catch (error) {
-          return { key, error: error?.message || 'unavailable' }
+          return { key, error: (/** @type {{message?: string}|null|undefined} */ (error))?.message || 'unavailable' }
         }
       }))
       if (cancelled) return
-      const values = {}
-      const nextFailures = []
+      const values = /** @type {Record<string, unknown> & PerformanceSnapshotExpectedView} */ ({})
+      const nextFailures = /** @type {string[]} */ ([])
       results.forEach((result) => {
         values[result.key] = result.value
         if (result.error) nextFailures.push(result.key)

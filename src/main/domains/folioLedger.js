@@ -16,13 +16,20 @@ const CACHE_KEY = 'folio-ledger';
 const FOLIO_INTENT_KINDS = new Set(['create', 'charge', 'payment', 'booking_charge', 'transfer', 'split', 'void', 'close', 'reopen', 'lock']);
 
 /** @typedef {Record<string, unknown>} FolioPropertyView */
-/** @typedef {{intentId: string, lodgeId: string, actorId: string, operationKind: string, payload: Record<string, unknown>}} HotelFolioIntentSubmission */
+/** @typedef {import('./hotelFolioIntentJournal.js').HotelFolioOperationKind} HotelFolioOperationKind */
+/** Persisted folio and line-item read shape; cache JSON stays unvalidated. @typedef {Record<string, unknown> & {id?: unknown, booking_id?: unknown, balance?: unknown}} FolioCachedRowExpectedView */
+/** @typedef {{folios?: unknown}} FolioListRpcReadView */
+/** Expected message property at existing direct Error construction sites; the type assertion satisfies TypeScript only and leaves native Error coercion intact without validation. */
+/** @typedef {{message?: unknown}} FolioErrorMessageReadView */
+/** @typedef {Error & {onlineOnly?: boolean}} FolioOnlineOnlyError */
+/** @typedef {{intentId: string, lodgeId: string, actorId: string, operationKind: HotelFolioOperationKind, payload: Record<string, unknown>}} HotelFolioIntentSubmission */
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {string|undefined} */
 function canonicalIntentJson(value) {
   if (Array.isArray(value)) return '[' + value.map(canonicalIntentJson).join(',') + ']'
   if (!value || typeof value !== 'object') return JSON.stringify(value)
-  return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonicalIntentJson(value[key])).join(',') + '}'
+  const fields = /** @type {Record<string, unknown>} */ (value)
+  return '{' + Object.keys(fields).sort().map((key) => JSON.stringify(key) + ':' + canonicalIntentJson(fields[key])).join(',') + '}'
 }
 
 /** @param {unknown} intentId @param {string} operation */
@@ -36,7 +43,7 @@ function requireIntentKey(intentId, operation) {
 /** @param {string} operation */
 function requireOnline(operation) {
   if (!state.isOnline) {
-    const err = new Error(operation + ' requires an internet connection. Folio financial mutations cannot be queued offline.');
+    const err = /** @type {FolioOnlineOnlyError} */ (new Error(operation + ' requires an internet connection. Folio financial mutations cannot be queued offline.'));
     err.onlineOnly = true;
     throw err;
   }
@@ -46,6 +53,7 @@ function requireOnline(operation) {
 function normalizeIntentPayload(kind, input = {}) {
   // This view preserves the original property reads, including their behavior for null and primitives.
   const fields = /** @type {FolioPropertyView} */ (input);
+  /** @param {unknown} value */
   const number = (value) => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) throw new Error('A finite amount is required for the folio operation.');
@@ -164,7 +172,7 @@ async function dispatchIntent(entry) {
     try {
       markHotelFolioIntent(intentId, { status: 'confirmed', serverReceipt: data, serverConfirmedAt: new Date().toISOString(), lastError: null });
     } catch (journalError) {
-      console.error('[Hotel Folio Journal] Server receipt arrived but its local acknowledgement could not be saved:', journalError?.message || journalError);
+      console.error('[Hotel Folio Journal] Server receipt arrived but its local acknowledgement could not be saved:', (/** @type {FolioErrorMessageReadView|null|undefined} */ (journalError))?.message || journalError);
       return unknownIntentResult(intentId, 'The server response arrived, but its receipt could not be saved. Retry this same intent to recover the original receipt.');
     }
     logActivity('hotel_folio_' + operationKind, 'Hotel folio ' + operationKind + ' confirmed');
@@ -172,12 +180,12 @@ async function dispatchIntent(entry) {
     const result = details.result && typeof details.result === 'object' ? details.result : details;
     return { ...result, success: true, status: 'confirmed', intentId, serverReceipt: data };
   } catch (error) {
-    const message = String(error?.message || error || 'Folio operation failed');
+    const message = String((/** @type {FolioErrorMessageReadView|null|undefined} */ (error))?.message || error || 'Folio operation failed');
     const status = isAmbiguousFolioError(error) ? 'unknown' : 'rejected';
     try {
       markHotelFolioIntent(intentId, { status, lastError: message });
     } catch (journalError) {
-      console.error('[Hotel Folio Journal] Unable to persist the latest outcome; the original intent remains reserved:', journalError?.message || journalError);
+      console.error('[Hotel Folio Journal] Unable to persist the latest outcome; the original intent remains reserved:', (/** @type {FolioErrorMessageReadView|null|undefined} */ (journalError))?.message || journalError);
       return unknownIntentResult(intentId, 'The server response could not be safely saved locally.');
     }
     if (status === 'unknown') return unknownIntentResult(intentId, message);
@@ -185,7 +193,7 @@ async function dispatchIntent(entry) {
   }
 }
 
-/** @param {string} operationKind @param {unknown} [input] @param {unknown} [intentId] */
+/** @param {HotelFolioOperationKind} operationKind @param {unknown} [input] @param {string} [intentId] */
 export async function submitIntent(operationKind, input = {}, intentId = randomUUID()) {
   if (!FOLIO_INTENT_KINDS.has(operationKind)) throw new Error('Unsupported Hotel folio operation.');
   requireOnline('Hotel folio ' + operationKind);
@@ -257,70 +265,77 @@ export async function reopenFolio(folioId, idempotencyKey) {
 export async function lockFolio(folioId, idempotencyKey) {
   return submitIntent('lock', { folioId }, requireIntentKey(idempotencyKey, 'Lock folio'));
 }
+/** @param {unknown} bookingId */
 async function _getFolios(bookingId) {
   if (!state.isOnline) {
-    const cached = readCache(CACHE_KEY) || [];
+    const cached = /** @type {FolioCachedRowExpectedView[]} */ (readCache(CACHE_KEY) || []);
     if (bookingId) return cached.filter((f) => f.booking_id === bookingId);
     return cached;
   }
 
   try {
-    const { data, error } = await state.supabase.rpc('get_hotel_folios', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_hotel_folios', {
       p_lodge_id: state.lodgeId,
       p_booking_id: bookingId || null
     });
     if (error) throw error;
+    // The RPC accepts an array or the legacy `{folios}` envelope; its JSON is not validated here.
+    const rpcData = /** @type {FolioListRpcReadView|null|undefined} */ (data);
     const rows = Array.isArray(data)
-      ? data
-      : (Array.isArray(data?.folios) ? data.folios : []);
+      ? /** @type {FolioCachedRowExpectedView[]} */ (data)
+      : (Array.isArray(rpcData?.folios) ? /** @type {FolioCachedRowExpectedView[]} */ (rpcData.folios) : []);
     writeCache(CACHE_KEY, rows);
     return rows;
   } catch (error) {
-    const cached = readCache(CACHE_KEY) || [];
+    const cached = /** @type {FolioCachedRowExpectedView[]} */ (readCache(CACHE_KEY) || []);
     if (cached.length > 0) return bookingId ? cached.filter((f) => f.booking_id === bookingId) : cached;
-    throw new Error(error?.message || 'Failed to load folios');
+    throw new Error(/** @type {string} */ ((/** @type {FolioErrorMessageReadView|null|undefined} */ (error))?.message || 'Failed to load folios'));
   }
 }
 
+/** @param {unknown} bookingId */
 export function getFolios(bookingId) {
   return dedupePromise(`${CACHE_KEY}-list-${bookingId || 'all'}`, () => _getFolios(bookingId));
 }
 
+/** @param {unknown} folioId */
 async function _getLineItems(folioId) {
   if (!state.isOnline) {
-    return readCache(`${CACHE_KEY}-items-${folioId}`) || [];
+    return /** @type {FolioCachedRowExpectedView[]} */ (readCache(`${CACHE_KEY}-items-${folioId}`) || []);
   }
 
   try {
-    const { data, error } = await state.supabase.rpc('get_folio_line_items', {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_folio_line_items', {
       p_lodge_id: state.lodgeId,
       p_folio_id: folioId
     });
     if (error) throw error;
-    const result = Array.isArray(data) ? data : [];
+    const result = Array.isArray(data) ? /** @type {FolioCachedRowExpectedView[]} */ (data) : [];
     writeCache(`${CACHE_KEY}-items-${folioId}`, result);
     return result;
   } catch (error) {
-    const cached = readCache(`${CACHE_KEY}-items-${folioId}`) || [];
+    const cached = /** @type {FolioCachedRowExpectedView[]} */ (readCache(`${CACHE_KEY}-items-${folioId}`) || []);
     if (cached.length > 0) return cached;
-    throw new Error(error?.message || 'Failed to load line items');
+    throw new Error(/** @type {string} */ ((/** @type {FolioErrorMessageReadView|null|undefined} */ (error))?.message || 'Failed to load line items'));
   }
 }
 
+/** @param {unknown} folioId */
 export function getLineItems(folioId) {
   return dedupePromise(`${CACHE_KEY}-items-${folioId}`, () => _getLineItems(folioId));
 }
 
+/** @param {unknown} folioId */
 export async function getBalance(folioId) {
   const payload = { p_lodge_id: state.lodgeId, p_folio_id: folioId };
 
   if (state.isOnline) {
-    const { data, error } = await state.supabase.rpc('get_folio_balance', payload);
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_folio_balance', payload);
     if (error) throw new Error(error.message);
     return Number(data || 0);
   }
 
-  const cached = readCache(CACHE_KEY) || [];
+  const cached = /** @type {FolioCachedRowExpectedView[]} */ (readCache(CACHE_KEY) || []);
   const folio = cached.find((f) => f.id === folioId);
   return folio ? Number(folio.balance || 0) : 0;
 }

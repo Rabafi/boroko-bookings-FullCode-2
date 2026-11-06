@@ -318,6 +318,19 @@ function validateCashupReview(payload: Payload) {
   }
 }
 
+function validateCashupHandover(payload: Payload) {
+  object(payload, 'payload')
+  keys(payload, 'payload', ['shift_id', 'expected_shift_version', 'counted_cash', 'notes'])
+  const countedCash = money(payload.counted_cash, 'counted_cash', { allowZero: true, maxScale: 2, maxIntegerDigits: 12 })
+  if (countedCash.startsWith('-')) fail('counted_cash', 'must be non-negative')
+  return {
+    shift_id: uuid(payload.shift_id, 'shift_id'),
+    expected_shift_version: integer(payload.expected_shift_version, 'expected_shift_version', { min: 1, max: 999999999 }),
+    counted_cash: countedCash,
+    notes: optionalString(payload.notes, 'notes', { max: 2000, trim: true })
+  }
+}
+
 function validateCashupReopen(payload: Payload) {
   object(payload, 'payload')
   keys(payload, 'payload', ['cashup_id', 'expected_status', 'counted_cash', 'counted_card', 'notes', 'proof_refs', 'reason', 'approval_id'])
@@ -375,6 +388,50 @@ function validateStockStocktake(payload: Payload) {
     counted_quantity: quantity(payload.counted_quantity, 'counted_quantity', { allowZero: true }),
     reason: optionalString(payload.reason, 'reason', { max: 500, trim: true })
   }
+}
+
+function validateStockBatchRecord(payload: Payload) {
+  object(payload, 'payload')
+  keys(payload, 'payload', ['mode', 'lines', 'notes'])
+  const mode = enumeration(payload.mode, 'mode', ['receive', 'count'])
+  const seen = new Set<string>()
+  const lines = array(payload.lines, 'lines', { min: 1, max: 200 }).map((value, index) => {
+    const path = `lines[${index}]`
+    const row = object(value, path)
+    keys(row, path, ['product_id', 'quantity', 'expected_stock_version', 'reason'])
+    const productId = uuid(row.product_id, `${path}.product_id`)
+    if (seen.has(productId)) fail(`${path}.product_id`, 'must not repeat in one stock operation')
+    seen.add(productId)
+    const version = optionalInteger(row.expected_stock_version, `${path}.expected_stock_version`, { min: 0 })
+    if (mode === 'count' && version === null) fail(`${path}.expected_stock_version`, 'is required for every physical count')
+    const amount = quantity(row.quantity, `${path}.quantity`, { allowZero: mode === 'count' })
+    if (amount.startsWith('-')) fail(`${path}.quantity`, 'must not be negative')
+    return { product_id: productId, quantity: amount,
+      expected_stock_version: version, reason: longText(row.reason, `${path}.reason`, 500) }
+  })
+  return { mode, lines, notes: optionalString(payload.notes, 'notes', { max: 1000, trim: true }) }
+}
+
+function validateStockItemSave(payload: Payload) {
+  object(payload, 'payload')
+  keys(payload, 'payload', ['product_id', 'expected_version', 'outlet_id', 'name', 'category', 'unit', 'barcode', 'reorder_level', 'unit_cost', 'opening_stock'])
+  const productId = optionalUuid(payload.product_id, 'product_id')
+  const version = optionalInteger(payload.expected_version, 'expected_version', { min: 1 })
+  if (productId && version === null) fail('expected_version', 'is required when editing a counted stock item')
+  if (!productId && version !== null) fail('expected_version', 'is only valid when editing a counted stock item')
+  const opening = quantity(payload.opening_stock ?? '0', 'opening_stock', { allowZero: true })
+  if (opening.startsWith('-')) fail('opening_stock', 'must not be negative')
+  if (productId && Number(opening) !== 0) fail('opening_stock', 'cannot be added again when editing stock details')
+  const reorder = quantity(payload.reorder_level ?? '0', 'reorder_level', { allowZero: true })
+  const cost = optionalMoney(payload.unit_cost, 'unit_cost', { allowZero: true, maxScale: 4 })
+  if (reorder.startsWith('-')) fail('reorder_level', 'must not be negative')
+  if (cost?.startsWith('-')) fail('unit_cost', 'must not be negative')
+  return { product_id: productId, expected_version: version, outlet_id: optionalUuid(payload.outlet_id, 'outlet_id'),
+    name: string(payload.name, 'name', { min: 1, max: 200, trim: true }),
+    category: optionalString(payload.category, 'category', { max: 80, trim: true }),
+    unit: string(payload.unit, 'unit', { min: 1, max: 40, trim: true }),
+    barcode: optionalString(payload.barcode, 'barcode', { max: 120, trim: true }),
+    reorder_level: reorder, unit_cost: cost, opening_stock: opening }
 }
 
 function validateStockWaste(payload: Payload) {
@@ -564,6 +621,62 @@ function validateCatalogueUpsert(payload: Payload) {
     tax_rate: money(String(payload.tax_rate ?? '0'), 'tax_rate', { allowZero: true, maxScale: 4 }),
     track_stock: optionalBoolean(payload.track_stock, 'track_stock', true),
     active: optionalBoolean(payload.active, 'active', true)
+  }
+}
+
+function validateBarProductSave(payload: Payload) {
+  object(payload, 'payload')
+  keys(payload, 'payload', [
+    'menu_item_id', 'expected_menu_version', 'inventory_item_id', 'expected_stock_version',
+    'name', 'category', 'price', 'barcode', 'depletion_qty', 'is_available', 'stock_mode', 'track_stock',
+    'stock_name', 'stock_category', 'stock_unit', 'stock_barcode', 'outlet_id',
+    'opening_stock', 'reorder_level', 'unit_cost', 'selling_price',
+    'pack6', 'pack12', 'pack24', 'pack6Barcode', 'pack12Barcode', 'pack24Barcode'
+  ])
+  const menuItemId = optionalUuid(payload.menu_item_id, 'menu_item_id')
+  const expectedMenuVersion = optionalInteger(payload.expected_menu_version, 'expected_menu_version', { min: 1 })
+  if (menuItemId && expectedMenuVersion === null) fail('expected_menu_version', 'is required when editing a Bar product')
+  if (!menuItemId && expectedMenuVersion !== null) fail('expected_menu_version', 'is only valid when editing a Bar product')
+  const inventoryItemId = optionalUuid(payload.inventory_item_id, 'inventory_item_id')
+  const stockMode = enumeration(payload.stock_mode, 'stock_mode', ['create', 'link'])
+  const trackStock = optionalBoolean(payload.track_stock, 'track_stock', true) === true
+  if (stockMode === 'link' && !inventoryItemId) fail('inventory_item_id', 'is required when linking existing stock')
+  if (stockMode === 'link' && !trackStock) fail('track_stock', 'must be enabled when linking a stock item')
+  const expectedStockVersion = optionalInteger(payload.expected_stock_version, 'expected_stock_version', { min: 0 })
+  if (stockMode === 'link' && expectedStockVersion === null) fail('expected_stock_version', 'is required when linking stock')
+  const openingStock = quantity(payload.opening_stock ?? '0', 'opening_stock', { allowZero: true, maxScale: 6 })
+  if (menuItemId && Number(openingStock) > 0) fail('opening_stock', 'must be zero when editing a product; use the Stock receipt workflow instead')
+  if (!trackStock && Number(openingStock) > 0) fail('opening_stock', 'requires stock tracking')
+  if (stockMode === 'create' && inventoryItemId && !menuItemId) fail('inventory_item_id', 'cannot be supplied for newly created stock')
+  const packs = [6, 12, 24].map((size) => ({
+    pack_size: size,
+    enabled: optionalBoolean(payload[`pack${size}`], `pack${size}`, false),
+    barcode: optionalString(payload[`pack${size}Barcode`], `pack${size}Barcode`, { max: 128, trim: true })
+  }))
+  if (!trackStock && packs.some((pack) => pack.enabled)) fail('packs', 'require a tracked stock product')
+  return {
+    menu_item_id: menuItemId,
+    expected_menu_version: expectedMenuVersion,
+    inventory_item_id: inventoryItemId,
+    expected_stock_version: expectedStockVersion,
+    name: string(payload.name, 'name', { min: 1, max: 200, trim: true }),
+    category: string(payload.category, 'category', { min: 1, max: 80, trim: true }),
+    price: money(payload.price, 'price', { allowZero: false, maxScale: 2 }),
+    barcode: optionalString(payload.barcode, 'barcode', { max: 128, trim: true }),
+    depletion_qty: quantity(payload.depletion_qty ?? '1', 'depletion_qty', { allowZero: false }),
+    is_available: optionalBoolean(payload.is_available, 'is_available', true),
+    stock_mode: stockMode,
+    track_stock: trackStock,
+    stock_name: string(payload.stock_name, 'stock_name', { min: 1, max: 200, trim: true }),
+    stock_category: string(payload.stock_category, 'stock_category', { min: 1, max: 80, trim: true }),
+    stock_unit: string(payload.stock_unit, 'stock_unit', { min: 1, max: 32, trim: true }),
+    stock_barcode: optionalString(payload.stock_barcode, 'stock_barcode', { max: 128, trim: true }),
+    outlet_id: optionalUuid(payload.outlet_id, 'outlet_id'),
+    opening_stock: openingStock,
+    reorder_level: quantity(payload.reorder_level ?? '0', 'reorder_level', { allowZero: true, maxScale: 6 }),
+    unit_cost: money(payload.unit_cost ?? '0', 'unit_cost', { allowZero: true, maxScale: 4 }),
+    selling_price: money(payload.selling_price ?? payload.price, 'selling_price', { allowZero: true, maxScale: 2 }),
+    packs
   }
 }
 
@@ -1283,6 +1396,18 @@ function validateQueryFilters(payload: Payload, allowed: readonly string[]): Pay
   return filters
 }
 
+function validateSalesMineQuery(payload: Payload): Payload {
+  const filters = object(payload, 'filters')
+  keys(filters, 'filters', ['from', 'to', 'limit', 'cursor'])
+  const from = filters.from === undefined ? undefined : dateString(filters.from, 'from')
+  const to = filters.to === undefined ? undefined : dateString(filters.to, 'to')
+  const limit = optionalInteger(filters.limit, 'limit', { min: 1, max: 200 })
+  const cursor = optionalString(filters.cursor, 'cursor', { max: 80 })
+  if (cursor && !/^\d{4}-\d{2}-\d{2}\|[1-9]\d{0,18}$/.test(cursor)) fail('cursor', 'must be a valid local sales cursor')
+  if (from && to && to < from) fail('to', 'must be on or after from')
+  return { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(limit ? { limit } : {}), ...(cursor ? { cursor } : {}) }
+}
+
 function validateExportBundleGet(payload: Payload): Payload {
   const filters = object(payload, 'filters')
   keys(filters, 'filters', ['batch_id'])
@@ -1304,11 +1429,13 @@ const commandDefinitions = {
   'shift.close': { version: 1, capability: CAPABILITIES.POS_MANAGE, approval: null, validate: validateShiftClose, description: 'Close a shift after checking open tabs and cash evidence.' },
   'drawer.movement': { version: 1, capability: CAPABILITIES.POS_CASHUP, approval: CAPABILITIES.POS_CASHUP, validate: validateDrawerMovement, description: 'Record a drawer movement; paired handovers require outgoing-operator approval and receiving-operator confirmation.' },
   'cashup.submit': { version: 1, capability: CAPABILITIES.POS_CASHUP, approval: null, validate: validateCashupSubmit, description: 'Submit counted cash/card evidence for manager review.' },
+  'cashup.handover': { version: 1, capability: CAPABILITIES.POS_CASHUP, approval: null, validate: validateCashupHandover, description: 'Atomically close your own shift and submit or correct its blind physical cash count.' },
   'cashup.review': { version: 1, capability: CAPABILITIES.POS_CASHUP, approval: CAPABILITIES.POS_CASHUP, validate: validateCashupReview, description: 'Approve or reject a submitted cash-up with a distinct reviewer.' },
   'cashup.reopen': { version: 1, capability: CAPABILITIES.POS_CASHUP, approval: CAPABILITIES.POS_CASHUP, validate: validateCashupReopen, description: 'Reopen a reviewed cash-up as a new submission revision with an exact approval.' },
   'stock.receive': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: null, validate: validateStockReceive, description: 'Receive stock into the outlet movement ledger.' },
   'stock.adjust': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: CAPABILITIES.INVENTORY_APPROVE, validate: validateStockAdjust, description: 'Apply a negative stock adjustment with approval.' },
   'stock.stocktake': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: null, validate: validateStockStocktake, description: 'Reconcile a locked counted quantity against the movement ledger.' },
+  'stock.batch.record': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: null, validate: validateStockBatchRecord, description: 'Atomically receive or version-check and count a complete stock batch.' },
   'stock.waste': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: CAPABILITIES.INVENTORY_APPROVE, validate: validateStockWaste, description: 'Record stock waste with approval.' },
   'stock.lot.waste': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: CAPABILITIES.INVENTORY_APPROVE, validate: validateStockLotWaste, description: 'Record manager-approved waste from one selected stock lot.' },
   'stock.lot.release': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: CAPABILITIES.INVENTORY_APPROVE, validate: validateStockLotRelease, description: 'Release a quarantined return lot after an approved physical inspection.' },
@@ -1321,6 +1448,8 @@ const commandDefinitions = {
   'customer.credit.payment': { version: 1, capability: CAPABILITIES.CUSTOMERS_MANAGE, approval: null, validate: validateCreditPayment, description: 'Record a customer credit payment against the local credit ledger.' },
   'voucher.issue': { version: 1, capability: CAPABILITIES.VOUCHERS_MANAGE, approval: CAPABILITIES.VOUCHERS_MANAGE, validate: validateVoucherIssue, description: 'Issue a locally owned voucher liability.' },
   'catalogue.upsert': { version: 1, capability: CAPABILITIES.MENU_MANAGE, approval: null, validate: validateCatalogueUpsert, description: 'Create or version-update a catalogue product with stale-write protection.' },
+  'catalogue.bar_product.save': { version: 1, capability: CAPABILITIES.MENU_MANAGE, approval: null, validate: validateBarProductSave, description: 'Atomically save a Bar product, its shared stock identity, pack recipes and one-time opening stock.' },
+  'catalogue.stock_item.save': { version: 1, capability: CAPABILITIES.INVENTORY_MANAGE, approval: null, validate: validateStockItemSave, description: 'Create counted stock or edit stock metadata without changing sellability, tax or on-hand quantities.' },
   'catalogue.availability.set': { version: 1, capability: CAPABILITIES.MENU_MANAGE, approval: null, validate: validateCatalogueAvailability, description: 'Mark a catalogue product available or sold out in the current outlet.' },
   'expense.create': { version: 1, capability: CAPABILITIES.ACCOUNTING_MANAGE, approval: null, validate: validateExpenseCreate, description: 'Record an outlet expense and post its balanced journal entry.' },
   'expense.void': { version: 1, capability: CAPABILITIES.ACCOUNTING_MANAGE, approval: CAPABILITIES.ACCOUNTING_APPROVE, validate: validateExpenseVoid, description: 'Reverse a posted expense with an approved compensating journal entry.' },
@@ -1389,9 +1518,19 @@ const queryDefinitions = {
   'expenses.list': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'from', 'to', 'status', 'category', 'limit', 'cursor']) },
   'expense.get': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'expense_id']) },
   'accounting.accounts.list': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload) => validateQueryFilters(payload, ['type', 'include_inactive', 'search', 'limit', 'cursor']) },
+  'accounting.journal_entries': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload: Payload) => {
+    const filters = validateQueryFilters(payload, ['from', 'to', 'account_code', 'limit', 'cursor'])
+    return {
+      ...filters,
+      from: optionalDate(filters.from, 'from'),
+      to: optionalDate(filters.to, 'to'),
+      account_code: optionalString(filters.account_code, 'account_code', { max: 64, trim: true })
+    }
+  } },
   'tabs.list': { version: 1, capability: CAPABILITIES.POS_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'status', 'limit', 'cursor']) },
   'tab.get': { version: 1, capability: CAPABILITIES.POS_VIEW, validate: (payload) => validateQueryFilters(payload, ['tab_id']) },
   'sales.list': { version: 1, capability: CAPABILITIES.POS_REPORTS, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'from', 'to', 'limit', 'cursor']) },
+  'sales.mine': { version: 1, capability: CAPABILITIES.POS_VIEW, validate: validateSalesMineQuery },
   'reports.sales_summary': { version: 1, capability: CAPABILITIES.POS_REPORTS, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'from', 'to', 'shift_id']) },
   'reports.post_close_corrections': { version: 1, capability: CAPABILITIES.POS_REPORTS, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'from', 'to', 'original_sale_id', 'limit', 'cursor']) },
   'reports.stock': { version: 1, capability: CAPABILITIES.POS_REPORTS, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'from', 'to', 'threshold']) },
@@ -1406,7 +1545,11 @@ const queryDefinitions = {
   'sale.get': { version: 1, capability: CAPABILITIES.POS_VIEW, validate: (payload) => validateQueryFilters(payload, ['sale_id', 'receipt_number']) },
   'shift.current': { version: 1, capability: CAPABILITIES.POS_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id']) },
   'cashup.summary': { version: 1, capability: CAPABILITIES.POS_CASHUP, validate: (payload) => validateQueryFilters(payload, ['shift_id', 'outlet_id']) },
+  'cashup.pending': { version: 1, capability: CAPABILITIES.POS_CASHUP, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'limit', 'cursor']) },
+  'cashup.mine': { version: 1, capability: CAPABILITIES.POS_CASHUP, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'shift_id']) },
   'stock.list': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'low_only', 'limit', 'cursor']) },
+  'stock.history': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'product_id', 'counts_only', 'limit', 'cursor']) },
+  'stock.aging': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'limit', 'cursor']) },
   'stock.lot_expiry': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'limit', 'cursor']) },
   'stock.lot_balances': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'limit', 'cursor']) },
   'suppliers.list': { version: 1, capability: CAPABILITIES.INVENTORY_VIEW, validate: (payload) => validateQueryFilters(payload, ['search', 'include_inactive', 'limit', 'cursor']) },
@@ -1420,7 +1563,10 @@ const queryDefinitions = {
   'outbox.bundle.get': { version: 1, capability: CAPABILITIES.EXPORT_MANAGE, validate: validateExportBundleGet },
   'loyalty.programs.list': { version: 1, capability: CAPABILITIES.ACCOUNTING_MANAGE, validate: (payload) => validateQueryFilters(payload, []) },
   'loyalty.account.get': { version: 1, capability: CAPABILITIES.CUSTOMERS_MANAGE, validate: (payload) => { const filters = validateQueryFilters(payload, ['customer_id']); return { customer_id: uuid(filters.customer_id, 'customer_id') } } },
-  'accounting.trial_balance': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload) => validateQueryFilters(payload, ['from', 'to']) },
+  'accounting.trial_balance': { version: 1, capability: CAPABILITIES.ACCOUNTING_READ, validate: (payload: Payload) => {
+    const filters = validateQueryFilters(payload, ['from', 'to'])
+    return { ...filters, from: optionalDate(filters.from, 'from'), to: optionalDate(filters.to, 'to') }
+  } },
   'support.reports.list': { version: 1, capability: CAPABILITIES.SETTINGS_MANAGE, validate: (payload) => validateQueryFilters(payload, ['outlet_id', 'limit', 'cursor']) }
 } satisfies Readonly<Record<string, QueryDefinition>>
 

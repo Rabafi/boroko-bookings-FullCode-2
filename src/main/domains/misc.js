@@ -42,6 +42,21 @@ import {
 } from './infrastructure.js'
 
 
+/** @typedef {Record<string, unknown> & {check_in?: string, check_out?: string}} ImportRowExpectedData */
+/** readCache does not validate persisted rows; these views reflect the fields the import consumers read. */
+/** @typedef {{room_number: string, id: string}} ImportRoomCacheExpectedView */
+/** @typedef {{room_id: string|null, customer_id?: string|null, status: string|null, check_in: string, check_out: string}} ImportBookingCacheExpectedView */
+/** @typedef {{id: string, email?: string|null, name?: string|null, full_name?: string|null}} ImportCustomerCacheExpectedView */
+/** @typedef {{row: number, guest: string, errors: string[], suggestions?: {room_number: string[]}}} ImportDryRunErrorExpectedView */
+/** @typedef {{row: number, guest: string, error: string}} ImportExecutionErrorExpectedView */
+/** @typedef {{id: string, filename: string, entity_type?: string, row_count: number, error_count: number, booking_ids?: string[], created_ids?: string[], created_at: string}} ImportBatchCacheExpectedView */
+/** Caught values and operational log entries retain the fields these paths already read; these views do not validate the values. */
+/** @typedef {{message?: string}} MiscCaughtErrorExpectedView */
+/** @typedef {import('@supabase/supabase-js').SupabaseClient} MiscOnlineSupabaseExpectedView */
+/** @typedef {{scope?: string|null, message?: string|null}} OperationalLogEntryExpectedView */
+/** Cache rows are expected-data views only; readCache does not validate persisted values. */
+/** @typedef {Record<string, unknown>} ImportDuplicateRowExpectedData */
+
 const IMPORT_TEMPLATES = {
   bookings: [
   { key: 'guest_name', label: 'Guest Name', required: true },
@@ -139,10 +154,12 @@ const IMPORT_TEMPLATES = {
 
 };
 
+/** @param {string} [type] @returns {keyof typeof IMPORT_TEMPLATES} */
 function normalizeImportType(type = 'bookings') {
-  return Object.prototype.hasOwnProperty.call(IMPORT_TEMPLATES, type) ? type : 'bookings';
+  return Object.prototype.hasOwnProperty.call(IMPORT_TEMPLATES, type) ? /** @type {keyof typeof IMPORT_TEMPLATES} */ (type) : 'bookings';
 }
 
+/** @param {ImportRowExpectedData} [row] @param {...string} keys @returns {string} */
 function importRowValue(row = {}, ...keys) {
   for (const key of keys) {
     const value = row?.[key];
@@ -151,6 +168,7 @@ function importRowValue(row = {}, ...keys) {
   return '';
 }
 
+/** @param {ImportRowExpectedData} [row] @param {string[]} [keys] @param {number} [fallback] */
 function importNumber(row = {}, keys = [], fallback = 0) {
   for (const key of keys) {
     const value = row?.[key];
@@ -162,12 +180,13 @@ function importNumber(row = {}, keys = [], fallback = 0) {
   return fallback;
 }
 
+/** @param {string} type @param {ImportRowExpectedData} [row] */
 function findImportDuplicate(type, row = {}) {
   if (type === 'guests') {
     const name = importRowValue(row, 'name', 'guest_name').toLowerCase();
     const email = importRowValue(row, 'email').toLowerCase();
     const phone = importRowValue(row, 'phone');
-    return readCache('customers').find((customer) =>
+    return (/** @type {ImportDuplicateRowExpectedData[]} */ (readCache('customers'))).find((customer) =>
     email && String(customer.email || '').toLowerCase() === email ||
     phone && name && String(customer.phone || '') === phone && String(customer.name || customer.full_name || '').toLowerCase() === name ||
     !email && !phone && name && String(customer.name || customer.full_name || '').toLowerCase() === name
@@ -175,12 +194,12 @@ function findImportDuplicate(type, row = {}) {
   }
   if (type === 'rooms') {
     const roomNumber = importRowValue(row, 'room_number');
-    return readCache('rooms').find((room) => String(room.room_number || '').trim() === roomNumber);
+    return (/** @type {ImportDuplicateRowExpectedData[]} */ (readCache('rooms'))).find((room) => String(room.room_number || '').trim() === roomNumber);
   }
   if (type === 'inventory') {
     const name = importRowValue(row, 'name', 'item_name').toLowerCase();
     const category = importRowValue(row, 'category').toLowerCase();
-    return readCache('inventory-items').find((item) =>
+    return (/** @type {ImportDuplicateRowExpectedData[]} */ (readCache('inventory-items'))).find((item) =>
     String(item.name || item.item_name || '').toLowerCase() === name &&
     String(item.category || '').toLowerCase() === category
     );
@@ -188,7 +207,7 @@ function findImportDuplicate(type, row = {}) {
   if (type === 'supplies') {
     const name = importRowValue(row, 'name', 'item_name').toLowerCase();
     const category = importRowValue(row, 'category').toLowerCase();
-    return readCache('supply-items').find((item) =>
+    return (/** @type {ImportDuplicateRowExpectedData[]} */ (readCache('supply-items'))).find((item) =>
     String(item.name || item.item_name || '').toLowerCase() === name &&
     String(item.category || '').toLowerCase() === category
     );
@@ -198,7 +217,7 @@ function findImportDuplicate(type, row = {}) {
     const category = importRowValue(row, 'category').toLowerCase();
     const description = importRowValue(row, 'description').toLowerCase();
     const amount = importNumber(row, ['amount'], 0);
-    return readCache('expenses').find((expense) =>
+    return (/** @type {ImportDuplicateRowExpectedData[]} */ (readCache('expenses'))).find((expense) =>
     String(expense.date || '') === date &&
     String(expense.category || '').toLowerCase() === category &&
     String(expense.description || '').toLowerCase() === description &&
@@ -208,6 +227,7 @@ function findImportDuplicate(type, row = {}) {
   return null;
 }
 
+/** @param {string} type @param {ImportRowExpectedData} [row] @returns {string[]} */
 function validateImportRow(type, row = {}) {
   const errors = [];
   if (type === 'guests') {
@@ -227,6 +247,7 @@ function validateImportRow(type, row = {}) {
   return errors;
 }
 
+/** @param {string} [msg] */
 function friendlyImportError(msg = '') {
   const m = String(msg).toLowerCase();
   if (m.includes('room is already booked') || m.includes('no_overlapping_bookings'))
@@ -254,10 +275,12 @@ function friendlyImportError(msg = '') {
   return msg || 'An unexpected error occurred.';
 }
 
+/** @param {unknown} [value] */
 function normalizeRoomCandidate(value = '') {
   return String(value || '').toLowerCase().replace(/^room\s+/i, '').replace(/[^a-z0-9]/g, '');
 }
 
+/** @param {string} [a] @param {string} [b] */
 function levenshteinDistance(a = '', b = '') {
   const left = String(a);
   const right = String(b);
@@ -273,6 +296,7 @@ function levenshteinDistance(a = '', b = '') {
   return dp[left.length][right.length];
 }
 
+/** @param {unknown} inputRoomNumber @param {{room_number?: unknown}[]} [rooms] */
 function suggestRoomNumbers(inputRoomNumber, rooms = []) {
   const target = normalizeRoomCandidate(inputRoomNumber);
   if (!target) return [];
@@ -289,10 +313,12 @@ function suggestRoomNumbers(inputRoomNumber, rooms = []) {
   map((entry) => entry.room_number);
 }
 
+/** @param {string} dirPath */
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+/** @param {string} filePath @param {unknown} fallback @returns {unknown} */
 function readJsonFile(filePath, fallback) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -301,18 +327,20 @@ function readJsonFile(filePath, fallback) {
   }
 }
 
+/** @param {string} filePath @param {unknown} value */
 function writeJsonFile(filePath, value) {
   ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf-8');
 }
 
+/** @param {string} action @param {string} description */
 export function recordActivity(action, description) {
   logActivity(action, description);
 }
 
 export function getActivityLog(limit = 200) {
   try {
-    const logPath = path.join(state.cacheDir, 'activity-log.json');
+    const logPath = path.join(/** @type {string} */ (state.cacheDir), 'activity-log.json');
     const log = JSON.parse(fs.readFileSync(logPath, 'utf-8'));
     return log.slice(0, limit);
   } catch {
@@ -322,14 +350,14 @@ export function getActivityLog(limit = 200) {
 
 export function clearActivityLog() {
   try {
-    fs.writeFileSync(path.join(state.cacheDir, 'activity-log.json'), '[]', 'utf-8');
+    fs.writeFileSync(path.join(/** @type {string} */ (state.cacheDir), 'activity-log.json'), '[]', 'utf-8');
   } catch (e) {
     console.error('Clear activity log failed:', e);
   }
 }
 
 export function getCriticalErrorLog(limit = 100) {
-  return readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE).
+  return /** @type {OperationalLogEntryExpectedView[]} */ (readAuxiliaryLog(CRITICAL_ERROR_LOG_FILE)).
   filter((entry) => !isNonCriticalOperationalError(entry?.scope, entry?.message)).
   slice(0, limit);
 }
@@ -356,16 +384,22 @@ export function getSupportedImportTypes() {
 
 }
 
+/** @param {string} [type] */
 export function generateImportTemplate(type = 'bookings') {
-  return IMPORT_TEMPLATES[type] || IMPORT_TEMPLATES.bookings;
+  return (/** @type {Record<string, unknown>} */ (IMPORT_TEMPLATES))[type] || IMPORT_TEMPLATES.bookings;
 }
 
+/** @param {ImportRowExpectedData[]} rows */
 export async function checkImportDuplicates(rows) {
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
-  const roomMap = {};
+  const rooms = /** @type {ImportRoomCacheExpectedView[]} */ (readCache('rooms'));
+  const bookings = /** @type {ImportBookingCacheExpectedView[]} */ (readCache('bookings'));
+  /** @type {Record<string, string>} */
+  const roomMap = {}
   rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r.id;});
 
+  // Date columns stay optional on imported rows. These local expectations retain
+  // the existing JavaScript relational comparisons (including undefined); they
+  // do not validate or normalize user-supplied dates.
   return rows.filter((row) => {
     const roomId = roomMap[String(row.room_number).trim()];
     if (!roomId) return false;
@@ -373,17 +407,19 @@ export async function checkImportDuplicates(rows) {
       (b) =>
       b.room_id === roomId &&
       b.status !== 'cancelled' &&
-      b.check_in < row.check_out &&
-      b.check_out > row.check_in
+      b.check_in < /** @type {string} */ (row.check_out) &&
+      b.check_out > /** @type {string} */ (row.check_in)
     );
   });
 }
 
+/** @param {ImportRowExpectedData[]} [rows] */
 export function dryRunBookingImport(rows = []) {
-  const rooms = readCache('rooms');
-  const bookings = readCache('bookings');
-  const customers = readCache('customers');
-  const roomMap = {};
+  const rooms = /** @type {ImportRoomCacheExpectedView[]} */ (readCache('rooms'));
+  const bookings = /** @type {ImportBookingCacheExpectedView[]} */ (readCache('bookings'));
+  const customers = /** @type {ImportCustomerCacheExpectedView[]} */ (readCache('customers'));
+  /** @type {Record<string, ImportRoomCacheExpectedView>} */
+  const roomMap = {}
   rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r;});
 
   const report = {
@@ -392,7 +428,7 @@ export function dryRunBookingImport(rows = []) {
     would_create_customers: 0,
     would_reuse_customers: 0,
     overlaps: 0,
-    errors: [],
+    errors: /** @type {ImportDryRunErrorExpectedView[]} */ ([]),
     warnings: []
   };
 
@@ -410,8 +446,8 @@ export function dryRunBookingImport(rows = []) {
     const overlap = room && bookings.some((booking) =>
     booking.room_id === room.id &&
     booking.status !== 'cancelled' &&
-    booking.check_in < row.check_out &&
-    booking.check_out > row.check_in
+    booking.check_in < /** @type {string} */ (row.check_out) &&
+    booking.check_out > /** @type {string} */ (row.check_in)
     );
     if (overlap) {
       report.overlaps += 1;
@@ -440,6 +476,7 @@ export function dryRunBookingImport(rows = []) {
   return report;
 }
 
+/** @param {string} [type] @param {ImportRowExpectedData[]} [rows] */
 export function dryRunImport(type = 'bookings', rows = []) {
   const normalizedType = normalizeImportType(type);
   if (normalizedType === 'bookings') return dryRunBookingImport(rows);
@@ -450,7 +487,7 @@ export function dryRunImport(type = 'bookings', rows = []) {
     valid: 0,
     duplicates: 0,
     would_create: 0,
-    errors: []
+    errors: /** @type {ImportDryRunErrorExpectedView[]} */ ([])
   };
 
   (Array.isArray(rows) ? rows : []).forEach((row, index) => {
@@ -470,16 +507,18 @@ export function dryRunImport(type = 'bookings', rows = []) {
   return report;
 }
 
+/** @param {ImportRowExpectedData[]} rows @param {{filename?: string, onProgress?: ((progress: {current: number, total: number}) => void) | undefined}} [options] */
 export async function bulkImportBookings(rows, { filename = '', onProgress } = {}) {
   if (!state.isOnline) throw new Error('Internet connection required to import bookings.');
 
-  const rooms = readCache('rooms');
-  const roomMap = {};
+  const rooms = /** @type {ImportRoomCacheExpectedView[]} */ (readCache('rooms'));
+  /** @type {Record<string, string>} */
+  const roomMap = {}
   rooms.forEach((r) => {roomMap[String(r.room_number).trim()] = r.id;});
 
   const batchId = randomUUID();
   const importedIds = [];
-  const errors = [];
+  const errors = /** @type {ImportExecutionErrorExpectedView[]} */ ([])
   let imported = 0;
   let skipped = 0;
 
@@ -499,7 +538,7 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
       if (row.check_in >= row.check_out) throw new Error('Check-out must be after check-in');
 
       // Find or create customer
-      const customers = readCache('customers');
+      const customers = /** @type {ImportCustomerCacheExpectedView[]} */ (readCache('customers'));
       const emailNorm = String(row.email || '').trim().toLowerCase();
       let customer = emailNorm ?
       customers.find((c) => c.email?.toLowerCase() === emailNorm) :
@@ -530,7 +569,7 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
       // retry the exact same payload without asking the RPC to generate a new
       // booking UUID (which would change its request hash).
       const importBookingId = randomUUID();
-      const { data: importedResult, error: importError } = await state.supabase.rpc('import_booking_row', {
+      const { data: importedResult, error: importError } = await (/** @type {MiscOnlineSupabaseExpectedView} */ (state.supabase)).rpc('import_booking_row', {
         p_lodge_id: state.lodgeId,
         p_customer_id: customerId,
         p_room_id: roomId,
@@ -555,13 +594,13 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
       importedIds.push(bookingId);
       imported++;
     } catch (e) {
-      errors.push({ row: rowNum, guest: guestName, error: friendlyImportError(e.message) });
+      errors.push({ row: rowNum, guest: guestName, error: friendlyImportError((/** @type {MiscCaughtErrorExpectedView} */ (e)).message) });
       skipped++;
     }
   }
 
   // Persist batch for undo
-  const batches = readCache('import-batches');
+  const batches = /** @type {ImportBatchCacheExpectedView[]} */ (readCache('import-batches'));
   batches.unshift({
     id: batchId,
     filename: filename || 'unknown',
@@ -581,6 +620,7 @@ export async function bulkImportBookings(rows, { filename = '', onProgress } = {
   return { imported, skipped, errors, batchId: imported > 0 ? batchId : null };
 }
 
+/** @param {string} type @param {ImportRowExpectedData} row */
 async function createImportedEntity(type, row) {
   if (type === 'guests') {
     return await createCustomer({
@@ -634,6 +674,7 @@ async function createImportedEntity(type, row) {
   throw new Error('Unsupported import type.');
 }
 
+/** @param {string | undefined} type @param {ImportRowExpectedData[]} rows @param {{filename?: string, onProgress?: ((progress: {current: number, total: number}) => void) | undefined}} [options] */
 export async function bulkImportTyped(type = 'bookings', rows, { filename = '', onProgress } = {}) {
   const normalizedType = normalizeImportType(type);
   if (normalizedType === 'bookings') return bulkImportBookings(rows, { filename, onProgress });
@@ -641,7 +682,7 @@ export async function bulkImportTyped(type = 'bookings', rows, { filename = '', 
 
   const batchId = randomUUID();
   const createdIds = [];
-  const errors = [];
+  const errors = /** @type {ImportExecutionErrorExpectedView[]} */ ([])
   let imported = 0;
   let skipped = 0;
 
@@ -662,13 +703,13 @@ export async function bulkImportTyped(type = 'bookings', rows, { filename = '', 
       errors.push({
         row: i + 1,
         guest: importRowValue(row, 'name', 'guest_name', 'room_number', 'description'),
-        error: friendlyImportError(error.message)
+        error: friendlyImportError((/** @type {MiscCaughtErrorExpectedView} */ (error)).message)
       });
       skipped += 1;
     }
   }
 
-  const batches = readCache('import-batches');
+  const batches = /** @type {ImportBatchCacheExpectedView[]} */ (readCache('import-batches'));
   batches.unshift({
     id: batchId,
     filename: filename || 'unknown',
@@ -691,7 +732,7 @@ export async function getImportBatches() {
 export async function undoImportBatch(batchId) {
   if (!state.isOnline) throw new Error('Internet connection required to undo an import.');
 
-  const batches = readCache('import-batches');
+  const batches = /** @type {ImportBatchCacheExpectedView[]} */ (readCache('import-batches'));
   const batch = batches.find((b) => b.id === batchId);
   if (!batch) return { error: 'Import batch not found.' };
 
@@ -702,7 +743,7 @@ export async function undoImportBatch(batchId) {
 
   if (type === 'bookings') {
     for (const bookingId of bookingIds) {
-      const { error } = await state.supabase.
+      const { error } = await (/** @type {MiscOnlineSupabaseExpectedView} */ (state.supabase)).
       from('bookings').
       delete().
       eq('id', bookingId).
@@ -711,17 +752,17 @@ export async function undoImportBatch(batchId) {
     }
   } else if (type === 'guests') {
     for (const id of createdIds) {
-      const hasBookings = readCache('bookings').some((booking) => booking.customer_id === id);
+      const hasBookings = (/** @type {ImportBookingCacheExpectedView[]} */ (readCache('bookings'))).some((booking) => booking.customer_id === id);
       if (hasBookings) {
         errors.push(id);
         continue;
       }
-      const { error } = await state.supabase.from('customers').delete().eq('id', id).eq('lodge_id', state.lodgeId);
+      const { error } = await (/** @type {MiscOnlineSupabaseExpectedView} */ (state.supabase)).from('customers').delete().eq('id', id).eq('lodge_id', state.lodgeId);
       if (error) errors.push(id);
     }
   } else if (type === 'rooms') {
     for (const id of createdIds) {
-      const hasBookings = readCache('bookings').some((booking) => booking.room_id === id);
+      const hasBookings = (/** @type {ImportBookingCacheExpectedView[]} */ (readCache('bookings'))).some((booking) => booking.room_id === id);
       if (hasBookings) {
         errors.push(id);
         continue;
@@ -762,6 +803,7 @@ export function getManagedBackupPolicy() {
   return readManagedBackupPolicy();
 }
 
+/** @param {Record<string, unknown>} [updates] */
 export function saveManagedBackupPolicy(updates = {}) {
   const current = getManagedBackupPolicy();
   const next = normalizeManagedBackupPolicy({ ...current, ...updates });
@@ -769,6 +811,7 @@ export function saveManagedBackupPolicy(updates = {}) {
   return buildManagedBackupStatus(next);
 }
 
+/** @param {{success?: unknown, error?: unknown, jsonPath?: unknown, excelPath?: unknown}} [result] */
 export function recordManagedBackupRun(result = {}) {
   const current = getManagedBackupPolicy();
   const now = new Date().toISOString();
@@ -784,6 +827,7 @@ export function recordManagedBackupRun(result = {}) {
   return buildManagedBackupStatus(next);
 }
 
+/** @returns {import('../../shared/desktopIpcContracts.js').BackupInfoReadResult} */
 export function getBackupInfo() {
   try {
     const backupDir = path.join(app.getPath('userData'), 'boroko-backups');
@@ -831,6 +875,7 @@ function getBackupHealthSummary(backupsInfo = getBackupInfo()) {
   };
 }
 
+/** @param {string} name */
 export function verifyLocalBackup(name) {
   try {
     const safeName = path.basename(String(name || ''));
@@ -872,10 +917,11 @@ export function verifyLocalBackup(name) {
       issues
     };
   } catch (error) {
-    return { success: false, error: error?.message || 'Backup verification failed.' };
+    return { success: false, error: (/** @type {MiscCaughtErrorExpectedView|null|undefined} */ (error))?.message || 'Backup verification failed.' };
   }
 }
 
+/** @param {string} name */
 export function previewLocalBackupRestore(name) {
   const verification = verifyLocalBackup(name);
   if (!verification.name) return verification;
@@ -891,6 +937,7 @@ export function previewLocalBackupRestore(name) {
   };
 }
 
+/** @param {string} name */
 export function createRestoreRehearsalPackage(name) {
   const preview = previewLocalBackupRestore(name);
   if (!preview.name) return preview;
@@ -906,7 +953,7 @@ export function createRestoreRehearsalPackage(name) {
     fs.writeFileSync(reportPath, JSON.stringify(preview, null, 2), 'utf-8');
     return { success: true, filePath: targetPath, reportPath, preview };
   } catch (error) {
-    return { success: false, error: error?.message || 'Could not create restore rehearsal package.' };
+    return { success: false, error: (/** @type {MiscCaughtErrorExpectedView|null|undefined} */ (error))?.message || 'Could not create restore rehearsal package.' };
   }
 }
 
@@ -988,6 +1035,7 @@ async function buildExpandedBackupPayload() {
   return backup;
 }
 
+/** @param {string} filePath */
 export async function writeExpandedBackupToPath(filePath) {
   const backup = await buildExpandedBackupPayload();
   ensureDir(path.dirname(filePath));

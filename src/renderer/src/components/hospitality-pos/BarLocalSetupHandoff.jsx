@@ -6,12 +6,13 @@ import { ErrorNotice } from '../shared/ErrorNotice'
  * Bar handoff inside the ordinary company-creation journey.
  *
  * A Bar is local-first, so this handoff never sends Bar details to a hosted account.
- * When this window already runs another workspace, the local Bar is opened in
- * a dedicated window with its own profile directory and saved records.
+ * When this window already runs another workspace, this same application
+ * reopens in the isolated Bar setup profile. It never leaves two operational
+ * windows running side by side.
  *
- * @param {{ businessName?: string, currency?: string, businessProfile?: Record<string, string>, onBackToDetails?: () => void }} props
+ * @param {{ businessName?: string, currency?: string, businessProfile?: Record<string, string>, originProfileId?: string|null, onBackToDetails?: () => void }} props
  */
-export default function BarLocalSetupHandoff({ businessName = '', currency = 'BWP', businessProfile = {}, onBackToDetails }) {
+export default function BarLocalSetupHandoff({ businessName = '', currency = 'BWP', businessProfile = {}, originProfileId = null, onBackToDetails }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [opened, setOpened] = useState(false)
@@ -31,10 +32,11 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
         business_name: businessName,
         currency,
         entry_mode: entryMode,
+        origin_profile_id: originProfileId,
         ...businessProfile
       })
-      if (!result || result.opened !== true) {
-        throw new Error('The local Bar setup window did not open. Try again, or restart the application.')
+      if (!result || result.opened !== true || result.restart_required !== true) {
+        throw new Error('This app could not reopen in Bar setup. Your existing business and setup details are preserved.')
       }
       setOpenedMode(entryMode)
       setOpened(true)
@@ -77,9 +79,9 @@ export default function BarLocalSetupHandoff({ businessName = '', currency = 'BW
 
       {opened ? (
         <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-          <p className="text-sm font-semibold text-emerald-800">{openedMode === 'join' ? 'Your existing-Bar connection window is ready' : 'Your new-Bar setup window is ready'}</p>
+          <p className="text-sm font-semibold text-emerald-800">{openedMode === 'join' ? 'Reopening this app to connect to your Bar' : 'Reopening this app to set up your Bar'}</p>
           <p className="mt-1 text-xs text-emerald-800">
-            Continue in the Bar window to finish setup.
+            Continue in this app to finish setup. Your Restaurant stays saved separately.
           </p>
           <p className="mt-2 text-xs text-emerald-800">
           Windows may ask for administrator approval once when this computer becomes the Bar server. Keep the setup

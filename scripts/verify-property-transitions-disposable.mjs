@@ -1,8 +1,7 @@
 // LodgingOS property-type transition: disposable-database verification driver.
 //
-// Applies supabase/migrations/20261014010000_property_type_transitions.sql
-// then 20261014020000_property_type_transition_lodge_scope_deny.sql on a
-// VERIFIED disposable database and exercises the full server contract:
+// Verifies the already-deployed property-transition schema on a VERIFIED
+// disposable database and exercises the full server contract:
 // authorized preview+commit, unauthorized actor denied, wrong-lodge denied
 // (preview/commit/status), all 5x4 same-product previews plus a commit chain
 // visiting every supported type, cross-product rejections, stale-state
@@ -20,12 +19,10 @@
 // The linked production project (oicgpknsmtvcsjacymum) is refused before
 // connecting; credentials are never printed.
 //
-// When the disposable env is absent the script prints SKIP with the exact
-// variables needed and exits 0. Run from the repository root:
+// Missing or invalid database configuration is a blocked required gate and
+// exits 2. Run from the repository root:
 //   node scripts/verify-property-transitions-disposable.mjs
-import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { pathToFileURL } from 'node:url'
 import {
   connectVerifiedDisposableDatabase,
   DisposableDatabaseBlocked
@@ -41,12 +38,6 @@ const REQUIRED_ENV = [
 const SUPPORTED_TYPES = ['guest_house', 'bnb', 'lodge', 'camp', 'motel']
 const CROSS_PRODUCT_TYPES = ['hotel', 'resort', 'restaurant', 'bar', 'pos_only']
 
-function skip(message) {
-  console.log('SKIP property-transitions-disposable: ' + message)
-  console.log('To run, set: ' + REQUIRED_ENV.join(', '))
-  console.log('Raw SUPABASE_* URLs are not accepted; only the verified disposable contract above.')
-}
-
 let connected = null
 try {
   const rawUrl = String(process.env.LUNA_REMEDIATION_TEST_DB_URL || '').toLowerCase()
@@ -57,8 +48,10 @@ try {
   connected = await connectVerifiedDisposableDatabase()
 } catch (error) {
   if (error instanceof DisposableDatabaseBlocked) {
-    skip(error.message)
-    process.exit(0)
+    console.error('BLOCKED property-transitions-disposable: ' + error.message)
+    console.error('To run, set: ' + REQUIRED_ENV.join(', '))
+    console.error('Raw SUPABASE_* URLs are not accepted; only the verified disposable contract above.')
+    process.exit(2)
   }
   throw error
 }
@@ -83,6 +76,17 @@ async function asSession(token) {
 async function endSession() {
   await db.query('rollback').catch(() => {})
 }
+async function setupReclassify(type) {
+  await db.query('begin')
+  try {
+    await db.query("select set_config('app.property_transition_writer', '1', true)")
+    await db.query('update public.settings set property_type = $2 where lodge_id = $1', [lodge, type])
+    await db.query('commit')
+  } catch (error) {
+    await db.query('rollback').catch(() => {})
+    throw error
+  }
+}
 
 const lodge = randomUUID()
 const otherLodge = randomUUID()
@@ -92,19 +96,34 @@ const adminToken = 'verify-admin-' + randomUUID()
 const cashierToken = 'verify-cashier-' + randomUUID()
 
 try {
-  // 0. Migration files apply in deployment order (idempotent re-runnable).
-  for (const file of [
-    '../supabase/migrations/20261014010000_property_type_transitions.sql',
-    '../supabase/migrations/20261014020000_property_type_transition_lodge_scope_deny.sql'
-  ]) {
-    const sql = readFileSync(new URL(file, import.meta.url), 'utf8')
-    await db.query(sql)
-  }
-  const rpcs = (await db.query(
-    "select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and proname in ('preview_property_type_change','commit_property_type_change','get_property_type_transition_status')"
-  )).rows.map((row) => row.proname)
-  check('migration-rpcs-present', SUPPORTED_TYPES.length === 5 && rpcs.length === 3, JSON.stringify(rpcs))
-  check('migration-table-present', (await db.query("select to_regclass('public.property_type_transitions') as r")).rows[0].r !== null)
+  // Acceptance inspects the current schema. It never reapplies migrations:
+  // one-time historical patches can replace corrected function bodies.
+  const rpcRows = (await db.query(
+    `select p.proname, pg_get_functiondef(p.oid) as definition
+       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public'
+        and p.proname in ('preview_property_type_change','commit_property_type_change','get_property_type_transition_status')`
+  )).rows
+  const rpcNames = new Set(rpcRows.map((row) => row.proname))
+  check('current-schema-rpcs-present', SUPPORTED_TYPES.length === 5
+    && ['preview_property_type_change', 'commit_property_type_change', 'get_property_type_transition_status'].every((name) => rpcNames.has(name)),
+  JSON.stringify([...rpcNames]))
+  const commitDefinition = rpcRows.find((row) => row.proname === 'commit_property_type_change')?.definition || ''
+  const previewDefinition = rpcRows.find((row) => row.proname === 'preview_property_type_change')?.definition || ''
+  const guardRow = (await db.query(
+    `select t.tgname, pg_get_triggerdef(t.oid) as trigger_definition,
+            pg_get_functiondef(t.tgfoid) as function_definition
+       from pg_trigger t
+      where t.tgrelid = 'public.settings'::regclass
+        and t.tgname = 'settings_property_transition_guard'
+        and not t.tgisinternal`
+  )).rows[0]
+  check('current-schema-transition-guards', /expectations_required/.test(commitDefinition)
+    && guardRow?.tgname === 'settings_property_transition_guard'
+    && /before update of property_type, business_type/i.test(guardRow?.trigger_definition || '')
+    && /classification_locked/.test(guardRow?.function_definition || '')
+    && /expectations_required/.test(previewDefinition), 'expected guarded forward definitions')
+  check('transition-table-present', (await db.query("select to_regclass('public.property_type_transitions') as r")).rows[0].r !== null)
 
   // Fixtures (committed; removed at the end).
   await db.query(
@@ -138,7 +157,7 @@ try {
   // 1. Authorized preview + commit.
   await asSession(adminToken)
   try {
-    const settingsBefore = (await db.query('select property_type, updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+    const settingsBefore = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
     const preview = await call('public.preview_property_type_change($1, $2, $3, $4::timestamptz)', [lodge, 'camp', 'lodge', settingsBefore.updated_at])
     check('authorized-preview', preview?.success === true && preview?.data?.target_type === 'camp' && preview?.data?.current_type === 'lodge')
     check('preview-shape', Array.isArray(preview?.data?.navigation?.notes) && preview.data.navigation.notes.length > 0
@@ -165,13 +184,20 @@ try {
 
     // 3. Mismatched-payload reuse raises 23505.
     const mismatchKey = randomUUID()
-    const firstIntent = await call('public.commit_property_type_change($1, $2, null, null, $3, $4)', [lodge, 'motel', mismatchKey, 'first intent'])
+    const mismatchExpected = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+    const firstIntent = await call('public.commit_property_type_change($1, $2, $3, $4::timestamptz, $5, $6)',
+      [lodge, 'motel', mismatchExpected.property_type, mismatchExpected.updated_at, mismatchKey, 'first intent'])
     check('mismatch-first-commit', firstIntent?.success === true)
     let mismatchCode = null
+    await db.query('savepoint mismatch_reuse')
     try {
-      await call('public.commit_property_type_change($1, $2, null, null, $3, $4)', [lodge, 'bnb', mismatchKey, 'different intent'])
+      await call('public.commit_property_type_change($1, $2, $3, $4::timestamptz, $5, $6)',
+        [lodge, 'bnb', mismatchExpected.property_type, mismatchExpected.updated_at, mismatchKey, 'different intent'])
     } catch (error) {
       mismatchCode = error?.code
+    } finally {
+      await db.query('rollback to savepoint mismatch_reuse')
+      await db.query('release savepoint mismatch_reuse')
     }
     check('mismatch-reuse-23505', mismatchCode === '23505', String(mismatchCode))
 
@@ -211,28 +237,41 @@ try {
     check('wrong-lodge-commit', wrongCommit?.success === false && wrongCommit?.code === 'LODGE_SCOPE_DENIED', JSON.stringify(wrongCommit))
     const wrongStatus = await call('public.get_property_type_transition_status($1, $2)', [otherLodge, randomUUID()])
     check('wrong-lodge-status', wrongStatus?.success === false && wrongStatus?.code === 'LODGE_SCOPE_DENIED', JSON.stringify(wrongStatus))
-    const foreignRows = Number((await db.query('select count(*)::integer as c from public.property_type_transitions where lodge_id = $1', [otherLodge])).rows[0].c)
-    check('wrong-lodge-no-write', foreignRows === 0)
   } finally {
     await endSession()
   }
+  // Private ledger inspection uses the verified test connection after the
+  // app-role request has ended; it is not part of the anon RPC contract.
+  const foreignRows = Number((await db.query('select count(*)::integer as c from public.property_type_transitions where lodge_id = $1', [otherLodge])).rows[0].c)
+  check('wrong-lodge-no-write', foreignRows === 0)
 
   // 7. All 5x4 same-product previews OK; cross-product rejected.
-  await asSession(adminToken)
-  try {
-    let previewPairs = 0
-    for (const from of SUPPORTED_TYPES) {
+  let previewPairs = 0
+  for (const from of SUPPORTED_TYPES) {
+    await setupReclassify(from)
+    const expected = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+    await asSession(adminToken)
+    try {
       for (const to of SUPPORTED_TYPES) {
         if (from === to) continue
-        const preview = await call('public.preview_property_type_change($1, $2, null, null)', [lodge, to])
+        const preview = await call('public.preview_property_type_change($1, $2, $3, $4::timestamptz)',
+          [lodge, to, expected.property_type, expected.updated_at])
         if (preview?.success === true && preview?.data?.target_type === to) previewPairs += 1
       }
+    } finally {
+      await endSession()
     }
-    check('same-product-preview-matrix-20', previewPairs === 20, `${previewPairs}/20`)
+  }
+  check('same-product-preview-matrix-20', previewPairs === 20, `${previewPairs}/20`)
+  const crossExpected = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+  await asSession(adminToken)
+  try {
     let crossRejected = 0
     for (const target of CROSS_PRODUCT_TYPES) {
-      const preview = await call('public.preview_property_type_change($1, $2, null, null)', [lodge, target])
-      const commit = await call('public.commit_property_type_change($1, $2, null, null, $3, null)', [lodge, target, randomUUID()])
+      const preview = await call('public.preview_property_type_change($1, $2, $3, $4::timestamptz)',
+        [lodge, target, crossExpected.property_type, crossExpected.updated_at])
+      const commit = await call('public.commit_property_type_change($1, $2, $3, $4::timestamptz, $5, null)',
+        [lodge, target, crossExpected.property_type, crossExpected.updated_at, randomUUID()])
       if (preview?.success === false && preview?.code === 'cross_product_rejected'
         && commit?.success === false && commit?.code === 'cross_product_rejected') crossRejected += 1
     }
@@ -241,7 +280,7 @@ try {
     // 8. Commit chain visits every supported type.
     const visited = new Set()
     for (const target of ['guest_house', 'bnb', 'lodge', 'camp', 'motel']) {
-      const current = (await db.query('select property_type, updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+      const current = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
       if (current.property_type === target) {
         visited.add(target)
         continue
@@ -261,7 +300,8 @@ try {
   check('preserve-payments', (await countFor('payments')) === paymentsBefore)
 
   // 10. Ordinary-save / profile-smuggle bypass rejected at the domain layer.
-  const helpers = await import(pathToFileURL(new URL('../tests/helpers/domain-test-setup.mjs', import.meta.url)).href)
+  const domainTestSetupUrl = new URL('../tests/helpers/domain-test-setup.mjs', import.meta.url)
+  const helpers = await import(domainTestSetupUrl.href)
   const { state, resetState } = await helpers.importState()
   resetState()
   state.isOnline = true
@@ -293,38 +333,15 @@ try {
   }
   check('profile-smuggle-rejected', profileCode === 'property_transition_required', String(profileCode))
 
-  // ── Phase B: forward corrections R1/R2/R3/R7 ──────────────────────────
-  // Applied AFTER every Phase A check above has run under the base
-  // contract, so the Phase A assertions keep their original semantics.
-  for (const file of [
-    '../supabase/migrations/20261014030000_campsite_quotation_conversion_carry.sql',
-    '../supabase/migrations/20261014040000_property_transition_receipt_first.sql',
-    '../supabase/migrations/20261014050000_settings_classification_guard.sql',
-    '../supabase/migrations/20261014060000_campsite_priced_tent_kind.sql'
-  ]) {
-    const sql = readFileSync(new URL(file, import.meta.url), 'utf8')
-    await db.query(sql)
-  }
-  check('phase-b-migrations-applied', true)
-  const setupReclassify = async (type) => {
-    await db.query('begin')
-    try {
-      await db.query("select set_config('app.property_transition_writer', '1', true)")
-      await db.query('update public.settings set property_type = $2 where lodge_id = $1', [lodge, type])
-      await db.query('commit')
-    } catch (error) {
-      await db.query('rollback').catch(() => {})
-      throw error
-    }
-  }
-
+  // The following phase-B checks exercise forward corrections already
+  // installed on the target. Never apply those migrations during acceptance.
   // B1. Receipt-first replay survives an unrelated settings touch.
   await asSession(adminToken)
   let b1First = null
   let b1Before = null
   let b1Key = null
   try {
-    b1Before = (await db.query('select property_type, updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+    b1Before = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
     b1Key = randomUUID()
     b1First = await call('public.commit_property_type_change($1, $2, $3, $4::timestamptz, $5, $6)',
       [lodge, b1Before.property_type, b1Before.property_type, b1Before.updated_at, b1Key, 'phase b'])
@@ -359,16 +376,17 @@ try {
   }
 
   // B3. Unsupported source rejected, then restored via the trusted path.
-  const b3Current = (await db.query('select property_type, updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
+  const b3Current = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
   await setupReclassify('hotel')
+  const b3Unsupported = (await db.query('select property_type, updated_at::text as updated_at from public.settings where lodge_id = $1', [lodge])).rows[0]
   await asSession(adminToken)
   try {
     const srcCommit = await call('public.commit_property_type_change($1, $2, $3, $4::timestamptz, $5, null)',
-      [lodge, 'lodge', 'hotel', b3Current.updated_at, randomUUID()])
+      [lodge, 'lodge', b3Unsupported.property_type, b3Unsupported.updated_at, randomUUID()])
     check('phase-b-unsupported-source-commit', srcCommit?.success === false && srcCommit?.code === 'unsupported_source',
       JSON.stringify(srcCommit))
     const srcPreview = await call('public.preview_property_type_change($1, $2, $3, $4::timestamptz)',
-      [lodge, 'lodge', 'hotel', b3Current.updated_at])
+      [lodge, 'lodge', b3Unsupported.property_type, b3Unsupported.updated_at])
     check('phase-b-unsupported-source-preview', srcPreview?.success === false && srcPreview?.code === 'unsupported_source',
       JSON.stringify(srcPreview))
   } finally {
@@ -379,28 +397,41 @@ try {
     (await db.query('select property_type from public.settings where lodge_id = $1', [lodge])).rows[0].property_type === b3Current.property_type)
 
   // B4. Server classification guard: stale revert rejected, unrelated save OK.
+  await db.query(`create or replace function pg_temp.verify_classification_guard(p_lodge uuid, p_type text)
+    returns void language plpgsql security definer set search_path = pg_temp, public as $$
+    begin
+      update public.settings set property_type = p_type where lodge_id = p_lodge;
+    end $$`)
   await asSession(adminToken)
+  let guardCurrentType
   try {
     const cur = (await db.query('select property_type from public.settings where lodge_id = $1', [lodge])).rows[0]
+    guardCurrentType = cur.property_type
     let guardCode = null
     let guardMessage = ''
+    await db.query('savepoint classification_guard_probe')
     try {
-      await db.query('update public.settings set lodge_name = $2, property_type = $3 where lodge_id = $1',
-        [lodge, 'Stale Device', cur.property_type === 'camp' ? 'lodge' : 'camp'])
+      await db.query('select pg_temp.verify_classification_guard($1, $2)',
+        [lodge, cur.property_type === 'camp' ? 'lodge' : 'camp'])
     } catch (error) {
       guardCode = error?.code
       guardMessage = String(error?.message || '')
+    } finally {
+      await db.query('rollback to savepoint classification_guard_probe')
+      await db.query('release savepoint classification_guard_probe')
     }
     check('phase-b-guard-rejects-stale-revert', guardCode === 'P0001' && /classification_locked/.test(guardMessage),
       `${guardCode} ${guardMessage}`)
     const kept = (await db.query('select property_type from public.settings where lodge_id = $1', [lodge])).rows[0]
     check('phase-b-guard-preserves-type', kept.property_type === cur.property_type)
-    await db.query('update public.settings set lodge_name = $2 where lodge_id = $1', [lodge, 'Verify Lodge'])
-    const renamed = (await db.query('select lodge_name, property_type from public.settings where lodge_id = $1', [lodge])).rows[0]
-    check('phase-b-unrelated-save-ok', renamed.lodge_name === 'Verify Lodge' && renamed.property_type === cur.property_type)
   } finally {
     await endSession()
   }
+  // Use the verified database connection for an unrelated profile write; the
+  // app-role request intentionally has no direct settings UPDATE grant.
+  await db.query('update public.settings set lodge_name = $2 where lodge_id = $1', [lodge, 'Verify Lodge'])
+  const renamed = (await db.query('select lodge_name, property_type from public.settings where lodge_id = $1', [lodge])).rows[0]
+  check('phase-b-unrelated-save-ok', renamed.lodge_name === 'Verify Lodge' && renamed.property_type === guardCurrentType)
 
   // B5. Priced-kind helper truth table (owner-only helper: privileged query).
   const pricedKinds = ['campsite', 'tent']

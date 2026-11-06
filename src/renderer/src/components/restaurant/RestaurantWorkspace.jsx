@@ -394,7 +394,7 @@ function WorkspaceTabDenied({ reason, feature, context = 'restaurant' }) {
   )
 }
 
-export default function RestaurantWorkspace({ workspace, defaultTab = null, context = 'restaurant', theme = 'restaurant', compactHeader = false, outletId = null, fnbModules = null, returnTo = null }) {
+export default function RestaurantWorkspace({ workspace, defaultTab = null, context = 'restaurant', theme = 'restaurant', compactHeader = false, outletId = null, fnbModules = null, returnTo = null, enabledTabs = null }) {
   const [searchParams] = useSearchParams()
   const { settings } = useSettings()
   const access = useAccess()
@@ -411,6 +411,7 @@ export default function RestaurantWorkspace({ workspace, defaultTab = null, cont
   const definition = useMemo(() => {
     if (!baseDefinition) return baseDefinition
     let nextDefinition = baseDefinition
+    if (Array.isArray(enabledTabs)) nextDefinition = { ...nextDefinition, tabs: nextDefinition.tabs.filter((tab) => enabledTabs.includes(tab.key)) }
     const allowedTabs = {
       menu: new Set(['menu', 'recipes', 'prep', 'variance']),
       stock: new Set(['stock', 'purchasing', 'suggestions', 'lots']),
@@ -450,7 +451,7 @@ export default function RestaurantWorkspace({ workspace, defaultTab = null, cont
         return { ...tab, Component: () => <LodgeCanonicalBridge adapter={adapter} bridge={bridge} outletId={outletId} returnTo={returnTo} />, description: bridge.description, nextStep: bridge.action, isCanonicalBridge: true }
       })
     return { ...nextDefinition, tabs }
-  }, [access, features, adapter, barOnly, baseDefinition, fnbModules, isPropertyOutlet, outletId, returnTo, workspace])
+  }, [access, features, adapter, barOnly, baseDefinition, enabledTabs, fnbModules, isPropertyOutlet, outletId, returnTo, workspace])
   const requestedTab = searchParams.get('tab')
   // Standalone Bar resolves against the same filtered list shown in
   // navigation; a denied ?tab= renders an explicit denial, never the child.

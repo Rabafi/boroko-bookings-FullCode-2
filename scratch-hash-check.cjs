@@ -1,0 +1,4 @@
+const fs=require('fs'),crypto=require('crypto');
+const pairs=[['src/main/index.js','docs/engineering/typescript-migration/evidence/preimage-batch83/index.js.before'],['src/main/domains/pos.js','docs/engineering/typescript-migration/evidence/preimage-batch83/pos.js.before'],['src/renderer/src/components/Reports.jsx','docs/engineering/typescript-migration/evidence/preimage-batch83/Reports.jsx.before'],['src/main/domains/supplies.js','docs/engineering/typescript-migration/evidence/preimage-batch82/supplies.js.before'],['src/renderer/src/components/SystemHealthPanel.jsx','docs/engineering/typescript-migration/evidence/preimage-batch82/SystemHealthPanel.jsx.before']];
+const h=f=>crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').toUpperCase();
+for(const [a,b] of pairs) console.log(h(a), a, '| preimage', h(b));

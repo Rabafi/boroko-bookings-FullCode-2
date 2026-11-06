@@ -8,6 +8,7 @@ import {
   validateSingleStockQuantity,
 } from '../src/renderer/src/components/hospitality-pos/hposStockState.js'
 import { summarizeWasteMovements, WASTE_MOVEMENT_PREFIX } from '../src/shared/wasteSummary.js'
+import { BAR_CATEGORY_VISUALS } from '../src/shared/barModeProfile.js'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -179,12 +180,12 @@ test('Till cards show a matching icon and tone per Bar category', () => {  const
   for (const category of ['Beer', 'Cider', 'Spirits', 'Softs', 'Wine', 'Snacks', 'Simple Food', 'Other']) {
     assert.ok(shared.includes(`${category.toLowerCase()}: Object.freeze({ icon:`) || shared.includes(`'${category.toLowerCase()}': Object.freeze({ icon:`), `missing visual for ${category}`)
   }
-  const icons = [...shared.matchAll(/icon: '(\w+)'/g)].map((match) => match[1])
+  const icons = Object.values(BAR_CATEGORY_VISUALS).map((visual) => visual.icon)
   for (const icon of ['beer', 'apple', 'martini', 'cupSoda', 'wine']) {
     assert.ok(icons.includes(icon), `missing icon ${icon}`)
   }
   assert.equal(new Set(icons).size, icons.length)
-  const tones = [...shared.matchAll(/tone: '(#[0-9a-f]{6})'/g)].map((match) => match[1])
+  const tones = Object.values(BAR_CATEGORY_VISUALS).map((visual) => visual.tone)
   assert.ok(tones.length >= 8)
   // No new colors: every visual reuses the existing Till card palette.
   const palette = new Set(['#f3c981', '#c8dfd9', '#f2b5aa', '#e6be69', '#d8dec0', '#efe2cf'])
@@ -195,9 +196,9 @@ test('Till cards show a matching icon and tone per Bar category', () => {  const
   assert.notEqual(visualFor('beer'), visualFor('snacks'))
   // The Till resolves Bar visuals first and keeps the restaurant chain.
   const terminal = read('src/renderer/src/components/hospitality-pos/HposTerminal.jsx')
-  assert.match(terminal, /BAR_CATEGORY_VISUALS/)
-  assert.match(terminal, /BAR_CATEGORY_ICON_COMPONENTS\[barVisual\.icon\]/)
-  assert.match(terminal, /barVisual\?\.tone/)
+  assert.match(terminal, /BAR_CATEGORY_VISUALS\)\[normalizedCategory\]/)
+  assert.match(terminal, /BAR_CATEGORY_ICON_COMPONENTS\)\[/)
+  assert.match(terminal, /barVisualTone/)
   assert.match(terminal, /normalizedCategory\.includes\("drink"\)/)
 })
 

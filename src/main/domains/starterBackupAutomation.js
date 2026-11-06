@@ -11,6 +11,26 @@ const AUTOMATION_MAX_RETAINED = 8 // latest verified + 7 weekly
 const SNOOZE_MS = 24 * 60 * 60 * 1000
 const RUN_LOCK_STALE_MS = 6 * 60 * 60 * 1000
 
+/**
+ * Expected shapes for values written by this module. Files are still parsed
+ * with JSON.parse without validation; these views do not certify persisted
+ * data at runtime.
+ * @typedef {{now?: () => Date|number|string}} AutomationClock
+ * The standard TS Date constructor declaration omits Date inputs, but native
+ * `new Date(date)` is used here to preserve its exact object conversion semantics.
+ * @typedef {new (value: Date|string|number) => Date} AutomationDateConstructorExpectedView
+ * @typedef {object} AutomationDependencies
+ * @property {typeof captureBackupContext} [captureBackupContext]
+ * @property {typeof writeStarterBackupToPath} [writeBackup]
+ * @property {typeof verifyStarterBackupAtPath} [verifyBackup]
+ * @property {(lodgeId: string) => string} [retrievePassphrase]
+ * @property {(input: Record<string, unknown>) => Promise<unknown>} [recordAudit]
+ * @property {(input: Record<string, unknown>) => Promise<unknown>} [recordHistory]
+ * @typedef {{lodgeId?: string, activeLodgeId?: string, now?: Date|number|string, nowMs?: number, clock?: AutomationClock, staleAfterMs?: number, force?: boolean, isOnline?: boolean, appVersion?: string, dependencies?: AutomationDependencies}} AutomationOptions
+ * @typedef {{run_id: string, window_id: string, lodge_id: string, started_at: string, state: string, finished_at?: string, destination?: string, fileName?: string, sha256?: string, audit_state?: string, error?: string}} AutomationRunRecord
+ * @typedef {{audit_state?: string|null, last_success_at?: string|null, next_due_at?: string|null, snoozed_until?: string|null}} AutomationStatusExpectedData
+ */
+
 // Electron exposes this as a named API in the main process, while Node's
 // headless test loader exposes the CommonJS module through its default export.
 import electron from 'electron'
@@ -20,28 +40,32 @@ function canUseSafeStorage() {
   try { return Boolean(safeStorage?.isEncryptionAvailable?.()) } catch { return false }
 }
 
+/** @param {unknown} value */
 function encryptWithSafeStorage(value) {
   if (!canUseSafeStorage()) throw new Error('OS secure storage is unavailable.')
   return safeStorage.encryptString(String(value)).toString('base64')
 }
 
+/** @param {unknown} b64 */
 function decryptWithSafeStorage(b64) {
   if (!canUseSafeStorage()) throw new Error('OS secure storage is unavailable.')
   return safeStorage.decryptString(Buffer.from(String(b64), 'base64'))
 }
 
+/** @param {string} lodgeId */
 function getAutomationRoot(lodgeId) {
   const base = String(state.cacheRootDir || state.cacheDir || '').trim() || String(process.env.APPDATA || process.cwd())
   const safeLodge = String(lodgeId || state.lodgeId || 'unknown-lodge').replace(/[^a-zA-Z0-9_-]/g, '_')
   return path.join(base, 'starter-backup-automation', safeLodge)
 }
 
-function getConfigPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-config.json') }
-function getStatusPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-status.json') }
-function getRunsPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'runs.json') }
-function getCredentialPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-credential.json') }
-function getHistoryPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'starter-backup-history.json') }
+/** @param {string} lodgeId */ function getConfigPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-config.json') }
+/** @param {string} lodgeId */ function getStatusPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-status.json') }
+/** @param {string} lodgeId */ function getRunsPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'runs.json') }
+/** @param {string} lodgeId */ function getCredentialPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'automation-credential.json') }
+/** @param {string} lodgeId */ function getHistoryPath(lodgeId) { return path.join(getAutomationRoot(lodgeId), 'starter-backup-history.json') }
 
+/** @param {AutomationOptions} [options] */
 function resolveNow(options = {}) {
   if (typeof options.clock?.now === 'function') {
     const value = options.clock.now()
@@ -55,11 +79,13 @@ function resolveNow(options = {}) {
   return new Date()
 }
 
+/** @param {AutomationOptions} [options] */
 function nowIso(options = {}) {
   const value = resolveNow(options)
   return Number.isFinite(value.getTime()) ? value.toISOString() : new Date().toISOString()
 }
 
+/** @param {unknown} candidate @param {AutomationOptions} [options] */
 function resolveLodgeId(candidate, options = {}) {
   const requested = String(candidate || '').trim()
   // state.lodgeId is the authoritative active-lodge context. The explicit hook is
@@ -73,6 +99,7 @@ function resolveLodgeId(candidate, options = {}) {
   return lodgeId
 }
 
+/** @param {string} destinationFolder @param {{probe?: boolean}} [options] */
 function assertDestinationFolder(destinationFolder, { probe = true } = {}) {
   const target = path.resolve(String(destinationFolder || '').trim())
   if (!target) throw new Error('Choose a destination folder for scheduled backups.')
@@ -88,13 +115,15 @@ function assertDestinationFolder(destinationFolder, { probe = true } = {}) {
       fsyncDir(target)
     }
   } catch (error) {
-    if (error?.message === 'The configured backup destination is not a folder.') throw error
-    const code = error?.code || 'unavailable'
+    const caught = /** @type {{message?: unknown, code?: unknown}} */ (error);
+    if (caught?.message === 'The configured backup destination is not a folder.') throw error
+    const code = caught?.code || 'unavailable'
     throw new Error(`The configured backup destination is unavailable or not writable. Choose another folder. (${code})`)
   }
   return target
 }
 
+/** @param {string} filePath */
 function fsyncFile(filePath) {
   try {
     const handle = fs.openSync(filePath, 'r+')
@@ -102,6 +131,7 @@ function fsyncFile(filePath) {
   } catch {}
 }
 
+/** @param {string} dirPath */
 function fsyncDir(dirPath) {
   try {
     const handle = fs.openSync(dirPath, 'r')
@@ -109,6 +139,7 @@ function fsyncDir(dirPath) {
   } catch {}
 }
 
+/** @param {string} filePath @param {unknown} data */
 function writeAtomicJson(filePath, data) {
   const dir = path.dirname(filePath)
   fs.mkdirSync(dir, { recursive: true })
@@ -120,6 +151,7 @@ function writeAtomicJson(filePath, data) {
   fsyncDir(dir)
 }
 
+/** @param {string} filePath @param {unknown} fallback */
 function readJson(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) return fallback
@@ -127,23 +159,28 @@ function readJson(filePath, fallback) {
   } catch { return fallback }
 }
 
+/** @param {string} lodgeId */
 function readAutomationConfig(lodgeId) {
   return readJson(getConfigPath(lodgeId), null)
 }
 
+/** @param {string} lodgeId */
 function readAutomationStatus(lodgeId) {
   return readJson(getStatusPath(lodgeId), { lodge_id: lodgeId || state.lodgeId || null, last_success_at: null, last_success_sha256: null, last_success_destination: null, last_verified_at: null, next_due_at: null, last_failure_at: null, last_failure_reason: null, snoozed_until: null, automation_capability: 'starter_backup_automation' })
 }
 
+/** @param {string} lodgeId */
 function readRuns(lodgeId) {
   const runs = readJson(getRunsPath(lodgeId), [])
   return Array.isArray(runs) ? runs : []
 }
 
+/** @param {string} lodgeId @param {AutomationRunRecord[]} runs */
 function writeRuns(lodgeId, runs) {
   writeAtomicJson(getRunsPath(lodgeId), runs.slice(0, 50))
 }
 
+/** @param {string} lodgeId @param {string} passphrase */
 function storePassphrase(lodgeId, passphrase) {
   if (!canUseSafeStorage()) throw new Error('OS secure storage is unavailable. Enable the operating system secure-storage provider, then set up automation again.')
   const value = String(passphrase || '')
@@ -153,6 +190,7 @@ function storePassphrase(lodgeId, passphrase) {
   writeAtomicJson(getCredentialPath(lodgeId), envelope)
 }
 
+/** @param {string} lodgeId */
 function retrievePassphrase(lodgeId) {
   if (!canUseSafeStorage()) throw new Error('OS secure storage is unavailable.')
   const envelope = readJson(getCredentialPath(lodgeId), null)
@@ -164,10 +202,12 @@ function retrievePassphrase(lodgeId) {
   } catch { throw new Error('Automation credential could not be decrypted. Reconfigure the scheduled backup.') }
 }
 
+/** @param {string} lodgeId */
 function clearCredential(lodgeId) {
   try { fs.unlinkSync(getCredentialPath(lodgeId)) } catch {}
 }
 
+/** @param {string} lodgeId @param {string} windowId @param {AutomationOptions & {staleAfterMs?: number}} [options] */
 function acquireRunLock(lodgeId, windowId, options = {}) {
   const safeWindowId = String(windowId || 'default-window').replace(/[^a-zA-Z0-9_-]/g, '_')
   const lockPath = path.join(getAutomationRoot(lodgeId), `run-${safeWindowId}.lock`)
@@ -181,13 +221,15 @@ function acquireRunLock(lodgeId, windowId, options = {}) {
       fsyncDir(path.dirname(lockPath))
       return lockPath
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
+      const caught = /** @type {{code?: unknown}} */ (error);
+      if (caught?.code !== 'EEXIST') throw error
       let stale = false
       try {
         const stat = fs.statSync(lockPath)
         stale = Number.isFinite(nowMs) && nowMs - stat.mtimeMs >= staleAfterMs
       } catch (statError) {
-        if (statError?.code === 'ENOENT') continue
+        const caughtStatError = /** @type {{code?: unknown}} */ (statError);
+        if (caughtStatError?.code === 'ENOENT') continue
       }
       if (stale) {
         try { fs.unlinkSync(lockPath); fsyncDir(path.dirname(lockPath)); continue } catch {}
@@ -199,17 +241,20 @@ function acquireRunLock(lodgeId, windowId, options = {}) {
   throw new Error('A backup for this lodge and backup window is already running.')
 }
 
+/** @param {string} lockPath */
 function releaseLock(lockPath) {
   try { fs.unlinkSync(lockPath) } catch {}
 }
 
+/** @param {string|null|undefined} lastSuccessAt @param {Date|string|number} [nowValue] */
 function computeNextDue(lastSuccessAt, nowValue = new Date()) {
-  if (!lastSuccessAt) return new Date(nowValue).toISOString()
+  if (!lastSuccessAt) return new (/** @type {AutomationDateConstructorExpectedView} */ (Date))(nowValue).toISOString()
   const base = new Date(lastSuccessAt).getTime()
-  if (!Number.isFinite(base)) return new Date(nowValue).toISOString()
+  if (!Number.isFinite(base)) return new (/** @type {AutomationDateConstructorExpectedView} */ (Date))(nowValue).toISOString()
   return new Date(base + AUTOMATION_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
 }
 
+/** @param {AutomationStatusExpectedData} status @param {number} nowMs */
 function isDue(status, nowMs) {
   if (status.audit_state === 'audit_unconfirmed') return true
   if (!status.last_success_at) return true
@@ -218,12 +263,14 @@ function isDue(status, nowMs) {
   return nowMs >= due
 }
 
+/** @param {AutomationStatusExpectedData} status @param {number} nowMs */
 function isSnoozed(status, nowMs) {
   if (!status.snoozed_until) return false
   const until = new Date(status.snoozed_until).getTime()
   return Number.isFinite(until) && nowMs < until
 }
 
+/** @param {string|null|undefined} lodgeIdOverride @param {AutomationOptions} [options] */
 export function getStarterBackupAutomationStatus(lodgeIdOverride, options = {}) {
   const lodgeId = resolveLodgeId(lodgeIdOverride, options)
   const config = readAutomationConfig(lodgeId)
@@ -255,6 +302,7 @@ export function getStarterBackupAutomationStatus(lodgeIdOverride, options = {}) 
   }
 }
 
+/** @param {Record<string, unknown>} [payload] */
 export function configureStarterBackupAutomation(payload = {}) {
   const lodgeId = resolveLodgeId(payload.lodge_id || payload.lodgeId, payload)
   const destinationFolder = String(payload.destination_folder || payload.destinationFolder || '').trim()
@@ -294,13 +342,14 @@ export function configureStarterBackupAutomation(payload = {}) {
   try {
     writeAtomicJson(getConfigPath(lodgeId), config)
   } catch (error) {
+    const caught = /** @type {{message?: unknown}} */ (error);
     try {
       if (previousCredential && previousCredential._encrypted === true) writeAtomicJson(getCredentialPath(lodgeId), previousCredential)
       else clearCredential(lodgeId)
       if (previousConfig) writeAtomicJson(getConfigPath(lodgeId), previousConfig)
       else writeAtomicJson(getConfigPath(lodgeId), { ...config, enabled: false, updated_at: nowIso(payload) })
     } catch {}
-    throw new Error(`Backup automation could not be enabled safely. ${error?.message || 'Try again.'}`)
+    throw new Error(`Backup automation could not be enabled safely. ${caught?.message || 'Try again.'}`)
   }
   // Initialize status if absent; never overwrite last success here.
   const currentStatus = readAutomationStatus(lodgeId)
@@ -311,6 +360,7 @@ export function configureStarterBackupAutomation(payload = {}) {
   return { success: true, lodge_id: lodgeId, config: { destination_folder: config.destination_folder, destination_label: config.destination_label, enabled: config.enabled } }
 }
 
+/** @param {string|null|undefined} lodgeIdOverride @param {AutomationOptions} [options] */
 export function disableStarterBackupAutomation(lodgeIdOverride, options = {}) {
   const lodgeId = resolveLodgeId(lodgeIdOverride, options)
   const config = readAutomationConfig(lodgeId)
@@ -322,6 +372,7 @@ export function disableStarterBackupAutomation(lodgeIdOverride, options = {}) {
   return { success: true, disabled: true }
 }
 
+/** @param {string|null|undefined} lodgeIdOverride @param {AutomationOptions} [options] */
 export function snoozeStarterBackupAutomation(lodgeIdOverride, options = {}) {
   const lodgeId = resolveLodgeId(lodgeIdOverride, options)
   const status = readAutomationStatus(lodgeId)
@@ -330,6 +381,7 @@ export function snoozeStarterBackupAutomation(lodgeIdOverride, options = {}) {
   return { success: true, snoozed_until: status.snoozed_until }
 }
 
+/** @param {string|null|undefined} lodgeIdOverride @param {AutomationOptions} [options] */
 export function clearStarterBackupAutomationSnooze(lodgeIdOverride, options = {}) {
   const lodgeId = resolveLodgeId(lodgeIdOverride, options)
   const status = readAutomationStatus(lodgeId)
@@ -338,17 +390,20 @@ export function clearStarterBackupAutomationSnooze(lodgeIdOverride, options = {}
   return { success: true }
 }
 
+/** @param {string} lodgeId @param {Date|string|number} [now] */
 function buildAutomationFileName(lodgeId, now = new Date()) {
-  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const stamp = new (/** @type {AutomationDateConstructorExpectedView} */ (Date))(now).toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const safeLodge = String(lodgeId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24)
   const windowId = randomUUID().slice(0, 8)
   return `tsa-bonno-core-data-${safeLodge}-${stamp}-${windowId}.tbbackup`
 }
 
+/** @param {string} filePath */
 function fileSha256(filePath) {
   try { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') } catch { return null }
 }
 
+/** @param {string} destinationFolder @param {string} lodgeId @param {string|null} currentSha256 @param {number} [retainedCopies] @param {AutomationRunRecord[]} [runs] */
 function pruneRetention(destinationFolder, lodgeId, currentSha256, retainedCopies = AUTOMATION_MAX_RETAINED, runs = readRuns(lodgeId)) {
   // Only files with a scheduler run record, exact lodge ownership, an in-folder
   // destination, and a matching persisted hash are eligible. Filename patterns
@@ -393,6 +448,7 @@ function pruneRetention(destinationFolder, lodgeId, currentSha256, retainedCopie
   return { deleted, kept: keep.map((entry) => entry.name) }
 }
 
+/** @param {AutomationOptions} [options] */
 export async function runStarterBackupAutomationOnce(options = {}) {
   const lodgeId = resolveLodgeId(options.lodgeId, options)
   const now = resolveNow(options)
@@ -428,6 +484,7 @@ export async function runStarterBackupAutomationOnce(options = {}) {
   const runId = randomUUID()
   const lockPath = acquireRunLock(lodgeId, windowId, { now })
   const runs = readRuns(lodgeId)
+  /** @type {AutomationRunRecord} */
   const runRecord = { run_id: runId, window_id: windowId, lodge_id: lodgeId, started_at: now.toISOString(), state: 'started' }
   const destinationFolder = path.resolve(String(config.destination_folder || '').trim())
   const fileName = buildAutomationFileName(lodgeId, now)
@@ -446,7 +503,9 @@ export async function runStarterBackupAutomationOnce(options = {}) {
     const verification = await verifyBackup(filePath, { passphrase, expectedLodgeId: lodgeId })
     if (!verification?.success) {
       try { fs.unlinkSync(filePath) } catch {}
-      throw new Error(verification?.error || 'Scheduled backup verification failed.')
+      // The existing Error constructor stringifies any supplied message; this
+      // expected-data view preserves that runtime coercion and does not validate it.
+      throw new Error(/** @type {string} */ (verification?.error || 'Scheduled backup verification failed.'))
     }
     artifactVerified = true
     // Authoritative artifact audit: record with distinct verified vs audit_unconfirmed states.
@@ -492,11 +551,12 @@ export async function runStarterBackupAutomationOnce(options = {}) {
     const retention = pruneRetention(destinationFolder, lodgeId, result.sha256, config.retained_copies, [runRecord, ...readRuns(lodgeId).filter((entry) => entry.run_id !== runId)])
     return { success: true, lodge_id: lodgeId, destination: filePath, fileName, sha256: result.sha256, audit_state: auditState, next_due_at: status.next_due_at, retention }
   } catch (error) {
+    const caught = /** @type {{message?: string}} */ (error);
     // Persist a retryable failure, but do not let status persistence hide the
     // original action error. The outer finally always releases the lock.
     runRecord.finished_at = now.toISOString()
     runRecord.state = 'failed'
-    runRecord.error = error?.message || 'Scheduled backup failed.'
+    runRecord.error = caught?.message || 'Scheduled backup failed.'
     if (!artifactVerified) {
       try { fs.unlinkSync(filePath) } catch {}
     }
@@ -514,6 +574,7 @@ export async function runStarterBackupAutomationOnce(options = {}) {
   }
 }
 
+/** @param {string|null|undefined} lodgeIdOverride @param {AutomationOptions} [options] */
 export function evaluateAutomationDueAtStartup(lodgeIdOverride, options = {}) {
   let lodgeId
   try { lodgeId = resolveLodgeId(lodgeIdOverride, options) } catch { return { due: false, reason: 'wrong_lodge' } }

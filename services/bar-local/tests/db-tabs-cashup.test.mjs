@@ -77,6 +77,14 @@ test('tabs enforce ownership checks and cash-up stays maker-checker safe', async
   assert.equal(cashup.ok, true, JSON.stringify(cashup.error))
   assert.equal(Number(cashup.result.variance), 0)
 
+  const pendingReview = await h.query('cashup.pending')
+  assert.equal(pendingReview.complete, true)
+  assert.equal(pendingReview.scope.outlet_id, h.outletId)
+  assert.equal(pendingReview.data.length, 1)
+  assert.equal(pendingReview.data[0].cashup_id, cashup.result.cashup_id)
+  assert.equal(pendingReview.data[0].cashier_name, 'Owner One')
+  assert.equal(pendingReview.data[0].counted_cash, '134.20')
+
   const reviewEnvelope = h.envelope('cashup.review', {
     cashup_id: cashup.result.cashup_id, decision: 'approved', reason: 'counted'
   })
@@ -87,6 +95,8 @@ test('tabs enforce ownership checks and cash-up stays maker-checker safe', async
   const review = await h.call('cmd_cashup_review', reviewEnvelope, { approvalHash: reviewHash, tokenHash: h.managerTokenHash })
   assert.equal(review.ok, true, JSON.stringify(review.error))
   assert.equal(review.result.status, 'approved')
+
+  assert.deepEqual((await h.query('cashup.pending')).data, [], 'reviewed cash-ups leave the pending queue')
 
   const stored = await h.migrator.query('SELECT status, variance FROM bar_local.cashups WHERE id = $1', [cashup.result.cashup_id])
   assert.equal(stored.rows[0].status, 'approved')
