@@ -55,7 +55,7 @@ export function createBarLocalTaxReturnsApi(bridge, expectedScope) {
       if (codes.watermark !== returns.watermark) throw new Error('Local accounting changed while tax records were loading. Refresh before relying on them.')
       for (const code of codes.rows) {
         if (typeof code.code !== 'string' || !code.code || typeof code.name !== 'string' || !code.name
-          || typeof code.rate !== 'string' || !/^(?:0|1|0?\.\d{1,4})$/.test(code.rate)
+          || typeof code.rate !== 'string' || !/^(?:0|[1-9]\d*)(?:\.\d{1,4})?$/.test(code.rate) || Number(code.rate) > 1
           || typeof code.active !== 'boolean' || !Number.isSafeInteger(code.version) || code.version < 1) {
           throw new Error('The local tax-code list contains an invalid record.')
         }

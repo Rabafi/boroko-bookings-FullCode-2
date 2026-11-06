@@ -10,6 +10,8 @@ const onIpc = (channel, cb) => {
   return () => ipcRenderer.off(channel, listener);
 };
 
+/** @typedef {{email: string, password: string}} LegacyBarOwnerCredentialsExpectedView */
+
 const posAPI = {
   // Auth
   login: (/** @type {string} */ email, /** @type {string} */ password, /** @type {string|null} */ lodgeId = null) => ipcRenderer.invoke('pos:auth-login', { email, password, lodgeId }),
@@ -24,7 +26,10 @@ const posAPI = {
     pairDevice: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:pair-device', request),
     reconnectServer: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:reconnect-server', request),
     resumeProvisioning: () => ipcRenderer.invoke('pos:bar-local:resume-provisioning'),
-    login: (/** @type {string | {email: string, password: string}} */ staffId, /** @type {string|undefined} */ pin) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
+    login: (
+      /** @type {string | LegacyBarOwnerCredentialsExpectedView} */ staffId,
+      /** @type {string|undefined} */ pin
+    ) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
     logout: () => ipcRenderer.invoke('pos:bar-local:logout'),
     startPairing: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:start-pairing', request),
     adminStatus: () => ipcRenderer.invoke('pos:bar-local:admin-status'),
