@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createHarness, sha256Json } from './harness.mjs'
+import { randomUUID } from 'node:crypto'
+import { createHarness, sha256Json, sha256Text } from './harness.mjs'
 
 async function businessDate(h) {
   const result = await h.migrator.query(`SELECT to_char(bar_local.current_business_date(), 'YYYY-MM-DD') AS value`)
@@ -353,11 +354,53 @@ test('bank statements import idempotently and reconcile evidence exactly once', 
   }), { tokenHash: h.managerTokenHash })
   assert.equal(wrongEvidence.ok, false)
 
+  await h.call('cmd_bank_statement_import', h.envelope('accounting.bank.statement.import', {
+    bank_account_id: bankAccountId,
+    lines: [{ external_ref: 'STM-3', statement_date: date, description: 'Cross-outlet probe', amount: '300.00' }]
+  }))
+  const otherOutletId = randomUUID()
+  const otherDeviceId = randomUUID()
+  const otherDeviceTokenHash = sha256Text(`cross-outlet-device-${otherDeviceId}`)
+  const otherSessionTokenHash = sha256Text(`cross-outlet-session-${otherDeviceId}`)
+  await h.migrator.query('INSERT INTO bar_local.outlets (id,business_id,name,code) VALUES ($1,$2,$3,$4)',
+    [otherOutletId, h.businessId, 'Second Bar', `SECOND-${otherOutletId.slice(0, 8)}`])
+  await h.migrator.query(
+    `INSERT INTO bar_local.devices (id,business_id,outlet_id,name,platform,certificate_fingerprint,token_hash)
+     VALUES ($1,$2,$3,'Second outlet fixture','modern',$4,$5)`,
+    [otherDeviceId, h.businessId, otherOutletId, `cross-${otherDeviceId}`, otherDeviceTokenHash]
+  )
+  await h.runtime.query('SELECT bar_local.service_create_session($1,$2,$3,$4)',
+    [h.managerStaffId, otherDeviceId, otherOutletId, otherSessionTokenHash])
+  const crossOutletEnvelope = {
+    ...journalEnvelope,
+    operation_id: randomUUID(),
+    outlet_id: otherOutletId,
+    device_id: otherDeviceId,
+    payload: { ...journalEnvelope.payload, memo: 'Same business, other outlet', lines: [
+      { account_code: '1100', debit: '300.00', credit: '0.00' },
+      { account_code: '4000', debit: '0.00', credit: '300.00' }
+    ] }
+  }
+  const crossOutletJournalResult = await h.runtime.query(
+    'SELECT bar_local.cmd_journal_post($1,$2,$3::jsonb,$4,$5) AS result',
+    [otherSessionTokenHash, otherDeviceId, JSON.stringify(crossOutletEnvelope), sha256Json(crossOutletEnvelope.payload), null]
+  )
+  const crossOutletJournal = crossOutletJournalResult.rows[0].result
+  assert.equal(crossOutletJournal.ok, true, JSON.stringify(crossOutletJournal.error))
+  const crossOutletAttempt = await h.callWith(h.runtime, 'cmd_bank_reconcile', h.envelope('accounting.bank.reconcile', {
+    statement_line_id: (await h.migrator.query(
+      `SELECT id FROM bar_local.bank_statement_lines WHERE bank_account_id = $1 AND external_ref = 'STM-3'`, [bankAccountId]
+    )).rows[0].id,
+    journal_entry_id: crossOutletJournal.result.entry_id
+  }), { tokenHash: h.managerTokenHash })
+  assert.equal(crossOutletAttempt.ok, false)
+  assert.equal(crossOutletAttempt.error.code, 'JOURNAL_NOT_FOUND')
+
   const lines = await h.migrator.query(
     `SELECT count(*)::integer AS count FROM bar_local.bank_statement_lines WHERE bank_account_id = $1`,
     [bankAccountId]
   )
-  assert.equal(lines.rows[0].count, 2)
+  assert.equal(lines.rows[0].count, 3)
   const reconciledRows = await h.migrator.query(
     `SELECT count(*)::integer AS count FROM bar_local.bank_reconciliations WHERE bank_account_id = $1`,
     [bankAccountId]

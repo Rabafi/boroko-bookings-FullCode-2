@@ -242,9 +242,19 @@ test('original Staff page and local Accounting chart never use hosted APIs from 
   assert.match(apPage, /canManage && !localAuthority/)
   assert.match(apPage, /canPay && !localAuthority/)
   assert.match(ledgerApi, /bridge\.query\('accounting\.trial_balance'/)
-  for (const route of ['restaurant/accounts-payable','restaurant/bank-reconciliation','restaurant/tax-returns','restaurant/budgets','restaurant/balance-sheet','restaurant/payroll']) {
+  for (const route of ['restaurant/tax-returns','restaurant/budgets','restaurant/balance-sheet','restaurant/payroll']) {
     const start = shell.indexOf('<Route path="'+route+'"')
     const end = shell.indexOf('</Route>', start)
     assert.match(shell.slice(start, end), /<LocalBarRouteUnavailable area="Accounting Pro" \/>/, route+' must be visibly fenced and send no hosted request')
   }
+  const bankRouteStart = shell.indexOf('<Route path="restaurant/bank-reconciliation"')
+  const bankRouteEnd = shell.indexOf('</Route>', bankRouteStart)
+  assert.match(shell.slice(bankRouteStart, bankRouteEnd), /<RestaurantBankReconciliation \/>/)
+  const bankPage = read('src/renderer/src/components/restaurant-accounting/RestaurantBankReconciliation.jsx')
+  const bankApi = read('src/renderer/src/components/restaurant-accounting/barLocalBankReconciliationApi.js')
+  assert.match(bankPage, /user\?\.localAuthority===true\?<LocalBarBankReconciliation/)
+  assert.match(bankPage, /localAuthorityReady=\{!!localApi\}/)
+  assert.match(bankApi, /list\('accounting\.journal_entries'/)
+  assert.match(bankApi, /accounting\.bank\.reconcile/)
+  assert.match(bankPage, /No hosted Accounting request is made/)
 })
