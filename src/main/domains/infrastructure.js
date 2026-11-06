@@ -1919,6 +1919,7 @@ async function _runSyncQueue() {
         'create_event_booking',
         'update_event_booking',
         'update_event_payment',
+        'record_event_invoice_payment',
         'cancel_event_booking',
         'add_event_line_item',
         'void_event_line_item'
@@ -2318,6 +2319,22 @@ export function queueOperation(type, table, data, id = null, meta = {}) {
   return queuedItem._queue_id;
 }
 state.queueOperation = queueOperation;
+
+/**
+ * Mark an RPC queue row committed after its exact online RPC returned a
+ * success or a definitive application rejection. Normal replay cleanup will
+ * remove the durable marker without resending the operation after a crash.
+ * @param {string} queueId
+ */
+export function markQueuedOperationCommitted(queueId) {
+  if (!queueId) return false;
+  const queue = /** @type {ReplayQueueItemExpectedView[]} */ (readSyncQueue());
+  const index = queue.findIndex((item) => item?._queue_id === queueId);
+  if (index < 0) return false;
+  queue[index] = { ...queue[index], _state: 'committed' };
+  writeSyncQueue(queue);
+  return true;
+}
 
 function clearActivityLogForInfrastructure() {
   try {

@@ -1393,6 +1393,17 @@ export async function getBookingPayments(lodgeId, bookingId) {
   return data || []
 }
 
+/** @param {string} lodgeId @param {string} eventId */
+export async function getEventInvoicePayments(lodgeId, eventId) {
+  assertCapability('invoices.view')
+  const { data, error } = await supabase.rpc('get_event_invoice_payments', {
+    p_event_id: eventId,
+    p_lodge_id: lodgeId
+  })
+  if (error) throw errorWithMessage(friendlyErrorMessage(error, 'Could not load the consolidated event ledger.'))
+  return data || []
+}
+
 /**
  * @param {string} lodgeId
  * @param {{forceFresh?: boolean}} [options]
@@ -1621,12 +1632,18 @@ export async function listInvoices(lodgeId, options = {}) {
             issued_at: readDirectField(invoice, 'issued_at') || null,
             due_date: readDirectField(invoice, 'due_date') || readDirectField(invoice, 'check_in') || null,
             invoice_notes: readDirectField(invoice, 'notes') || '',
-            customer_name: readDirectField(invoice, 'guest_name') || 'Guest',
+            customer_name: readDirectField(invoice, 'guest_name') || 'Unresolved guest',
             status: readDirectField(invoice, 'booking_status'),
             total_amount: Number(readDirectField(invoice, 'total_amount') || 0),
             charges_total: Number(readDirectField(invoice, 'charges_total') || 0),
             amount_paid: Number(readDirectField(invoice, 'amount_paid') || 0),
-            balance_due: Math.max(0, Number(readDirectField(invoice, 'balance_due') || 0)),
+            reconciliation_required: readDirectField(invoice, 'reconciliation_required') === true,
+            balance_due: readDirectField(invoice, 'reconciliation_required') === true
+              ? null
+              : Math.max(0, Number(readDirectField(invoice, 'balance_due') || 0)),
+            payment_status: readDirectField(invoice, 'reconciliation_required') === true
+              ? 'reconciliation_required'
+              : readDirectField(invoice, 'payment_status'),
             payment_count: Number(readDirectField(invoice, 'payment_count') || 0),
             nights:
               readDirectField(invoice, 'check_in') && readDirectField(invoice, 'check_out')

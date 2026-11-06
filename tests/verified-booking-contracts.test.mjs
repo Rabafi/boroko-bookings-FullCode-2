@@ -272,7 +272,7 @@ test('deep health RPC checks never execute financial or inventory mutations agai
   const probeBlock = between(health, '// Mutative probes cannot safely use an installed operator database.', 'finance.contract = {')
   assert.ok(!/state\.supabase\.rpc|probeRpc\(/.test(probeBlock), 'deep health checks must not send mutation probes; RPC business errors may now be durably recorded intents')
   assert.ok(/skipped: true/.test(probeBlock) && /Not invoked against an installed operator database/.test(probeBlock), 'deep health must report mutation probes as skipped, not successful')
-  assert.ok(/state\.supabase\.rpc\('get_booking_payments'/.test(health), 'existing read-only payment-ledger availability check remains active')
+  assert.ok(/\)\s*\.rpc\('get_booking_payments'/.test(health), 'existing read-only payment-ledger availability check remains active')
 })
 
 test('multi-room quotation conversion binds quote lifecycle and group receipt atomically', () => {

@@ -7324,6 +7324,15 @@ app.whenReady().then(async () => {
       return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
     }
   })
+  ipcMain.handle('bookings:getEventInvoicePayments', async (_, eventId) => {
+    try {
+      await requireCapability('invoices.view')
+      await assertResourceBelongsToCurrentLodge('Event booking', eventId, db.getEventBookingById)
+      return await db.getEventInvoicePayments(eventId)
+    } catch (e) {
+      return { success: false, error: (/** @type {ErrorMessageReadView} */ (e)).message }
+    }
+  })
   /**
    * Offline success is a pending-approval request carrying request_id,
    * request, booking_id and refund/retention values; it is not a completed
@@ -12363,6 +12372,16 @@ app.whenReady().then(async () => {
     await requireCapability('payments.record')
     await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
     return await db.updateEventPayment(id, amount, method, type, intentKey)
+  })
+  ipcMain.handle('events:getPendingPaymentIntent', async (_, id) => {
+    await requireCapability('conference.view')
+    await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
+    return db.getPendingEventPaymentIntent(id)
+  })
+  ipcMain.handle('events:recordInvoicePayment', async (_, id, amount, method, intentKey) => {
+    await requireCapability('payments.record')
+    await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
+    return await db.recordEventInvoicePayment(id, amount, method, intentKey)
   })
   ipcMain.handle('events:checkAvailability', async (_, resourceKey, startAt, endAt, excludeEventId) => {
     await requireCapability('conference.view')

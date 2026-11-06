@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
 import { CreditCard, ReceiptText, RefreshCw, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { FRONT_DESK_ONLY_MESSAGE, getBookingPayments, listInvoices } from '../lib/api'
+import { FRONT_DESK_ONLY_MESSAGE, getBookingPayments, getEventInvoicePayments, listInvoices } from '../lib/api'
 import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
 
 /** @typedef {{id?: string | null, amount?: number | string | null, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null, notes?: string | null}} InvoicePaymentExpectedView */
-/** @typedef {{booking_id: string, customer_name?: string | null, invoice_number?: string | null, issued_at?: string | null, amount_paid?: number | string | null, balance_due?: number | string | null, payment_status?: string | null}} InvoiceExpectedView */
+/** @typedef {{booking_id: string, customer_name?: string | null, invoice_number?: string | null, issued_at?: string | null, amount_paid?: number | string | null, balance_due?: number | string | null, payment_status?: string | null, invoice_kind?: string | null, event_booking_id?: string | null, event_name?: string | null, child_invoice_numbers?: string[] | null, reconciliation_required?: boolean}} InvoiceExpectedView */
 
 /** @param {{lodgeId: string, invoice: InvoiceExpectedView, onClose: () => void}} props */
 function LedgerSheet({ lodgeId, invoice, onClose }) {
   const [payments, setPayments] = useState(/** @type {InvoicePaymentExpectedView[]} */ ([]))
 
   useEffect(() => {
-    getBookingPayments(lodgeId, invoice.booking_id).then((rows) => setPayments(/** @type {InvoicePaymentExpectedView[]} */ (rows))).catch(() => setPayments([]))
+    const request = String(invoice.invoice_kind || '').startsWith('event') && invoice.event_booking_id
+      ? getEventInvoicePayments(lodgeId, invoice.event_booking_id)
+      : getBookingPayments(lodgeId, invoice.booking_id)
+    request.then((rows) => setPayments(/** @type {InvoicePaymentExpectedView[]} */ (rows))).catch(() => setPayments([]))
   }, [invoice.booking_id, lodgeId])
 
   return (
@@ -67,7 +70,7 @@ export default function Invoices() {
 
   const filtered = invoices.filter((invoice) => {
     const query = search.toLowerCase()
-    return !query || invoice.customer_name?.toLowerCase().includes(query) || invoice.invoice_number?.toLowerCase().includes(query)
+    return !query || invoice.customer_name?.toLowerCase().includes(query) || invoice.invoice_number?.toLowerCase().includes(query) || invoice.event_name?.toLowerCase().includes(query) || invoice.child_invoice_numbers?.some((number) => number.toLowerCase().includes(query))
   })
 
   const outstanding = filtered.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
@@ -96,7 +99,9 @@ export default function Invoices() {
               <div>
                 <p className="text-sm font-semibold text-white">{invoice.customer_name || 'Guest'}</p>
                 <p className="text-xs text-gray-400 mt-1">{invoice.invoice_number} • {shortDate(invoice.issued_at)}</p>
-                <p className="text-xs text-gray-500 mt-1">Paid {money(invoice.amount_paid)} • Balance {money(invoice.balance_due)}</p>
+                {invoice.reconciliation_required
+                  ? <p className="text-xs text-orange-300 mt-1">Receipt reconciliation required · no final balance shown</p>
+                  : <p className="text-xs text-gray-500 mt-1">Paid {money(invoice.amount_paid)} • Balance {money(invoice.balance_due)}</p>}
               </div>
               <span className={`text-xs px-2 py-0.5 rounded-full ${paymentStatusClass(invoice.payment_status)}`}>
                 {titleCase(invoice.payment_status)}

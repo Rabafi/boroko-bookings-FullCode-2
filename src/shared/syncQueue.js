@@ -48,6 +48,7 @@ export const FINANCIAL_SYNC_TABLES = new Set([
   'create_event_booking',
   'update_event_booking',
   'update_event_payment',
+  'record_event_invoice_payment',
   'cancel_event_booking',
   'add_event_line_item',
   'void_event_line_item',

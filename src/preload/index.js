@@ -225,6 +225,7 @@ const api = {
     updateGroupPayment: (groupId, amount, method, intentKey) =>
       invoke('bookings:updateGroupPayment', groupId, amount, method, intentKey),
     getPayments: (bookingId) => invoke('bookings:getPayments', bookingId),
+    getEventInvoicePayments: (eventId) => invoke('bookings:getEventInvoicePayments', eventId),
     refundGroup: (groupId, payload) => invoke('bookings:refundGroup', groupId, payload),
     refund: (bookingId, payload) => invoke('bookings:refund', bookingId, payload),
     createEvent: (data) => invoke('bookings:createEvent', data),
@@ -920,6 +921,8 @@ const api = {
     addLineItem: (data) => invoke('events:addLineItem', data),
     voidLineItem: (lineItemId, reason) => invoke('events:voidLineItem', lineItemId, reason),
     updatePayment: (id, amount, method, type, intentKey) => invoke('events:updatePayment', id, amount, method, type, intentKey),
+    getPendingPaymentIntent: (id) => /** @type {Promise<{amount: number; method: string; type: string; idempotency_key: string; scope: 'event' | 'group'; pending: true} | null>} */ (invoke('events:getPendingPaymentIntent', id)),
+    recordInvoicePayment: (eventId, amount, method, intentKey) => invoke('events:recordInvoicePayment', eventId, amount, method, intentKey),
     checkAvailability: (resourceKey, startAt, endAt, excludeEventId) => invoke('events:checkAvailability', resourceKey, startAt, endAt, excludeEventId),
     getVenuePackages: (category, activeOnly) => invoke('events:getVenuePackages', category, activeOnly),
     createVenuePackage: (data) => invoke('events:createVenuePackage', data),

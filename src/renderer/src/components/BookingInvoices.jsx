@@ -1,5 +1,5 @@
 // @ts-check
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CreditCard, Download, FileText, Mail, Printer, Receipt, RefreshCw, RotateCcw, Search } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router'
 import { Modal } from './shared/Modal'
@@ -13,7 +13,8 @@ import { ErrorNotice } from './shared/ErrorNotice'
 const PAYMENT_STATUS_STYLES = {
   paid: 'bg-green-100 text-green-700',
   partial: 'bg-amber-100 text-amber-700',
-  unpaid: 'bg-red-100 text-red-700'
+  unpaid: 'bg-red-100 text-red-700',
+  reconciliation_required: 'bg-orange-100 text-orange-800'
 }
 
 const BOOKING_STATUS_STYLES = {
@@ -28,21 +29,39 @@ const PAYMENT_METHODS = [
   { value: 'refund', label: 'Refund Adjustment' }
 ]
 
-/** @typedef {{id: string, booking_id: string, lodge_id: string, amount: number, method: string, type: string, paid_at: string, recorded_by: string | null, notes: string, created_at: string, refund_base_amount: number | null, refund_retained_percent: number | null, refund_retained_amount: number | null}} BookingPaymentHistoryRow */
+/** @typedef {{id: string, booking_id: string|null, event_booking_id?: string|null, lodge_id: string, amount: number, method: string, type: string, paid_at: string, recorded_by: string | null, notes: string, created_at: string, refund_base_amount: number | null, refund_retained_percent: number | null, refund_retained_amount: number | null}} BookingPaymentHistoryRow */
 /** @typedef {BookingPaymentHistoryRow[] & {success?: boolean; error?: string} | {success: false; error?: string}} BookingPaymentHistoryResult */
 /** @typedef {{payment_method?: string | null, payment_type?: string | null, amount_paid?: number | null, payment_status?: string | null, charges_total?: number | null, description?: string | null, category?: string | null, amount?: number | null, void_reason?: string | null, payment_id?: string | null, notes?: string | null, total_amount?: number | null}} FinancialAuditSnapshotDisplay */
 /** @typedef {{id: string, action: string, created_at: string, amount_delta: number | null, before_snapshot: FinancialAuditSnapshotDisplay | null, after_snapshot: FinancialAuditSnapshotDisplay | null}} FinancialAuditRow */
-/** @typedef {{id: string, booking_date: string, client_name: string, room_name: string | null, total_amount: unknown, deposit_paid: unknown, payment_status: string | null}} ConferenceBookingInvoiceExpectedRow */
+/** @typedef {{id: string, booking_date: string, client_name: string, event_name?: string|null, customer_id?: string|null, room_name: string | null, total_amount: unknown, deposit_paid: unknown, amount_paid?: unknown, charges_total?: unknown, payment_status: string | null, status?: string|null, reservation_scope?: string|null, exclusive_booking_id?: string|null}} ConferenceBookingInvoiceExpectedRow */
 /**
  * Consumer expectation for invoice rows constructed by getBookingInvoices.
  * Fields used only for accommodation/event variants are optional; these
  * values may also come from the existing cache path and are not validated.
- * @typedef {{booking_id: string, invoice_number?: string | null, customer_name?: string | null, customer_email?: string | null, customer_phone?: string | null, total_amount: number, amount_paid: number, charges_total: number, balance_due: number, check_in?: string | null, check_out?: string | null, nights?: number, room_type?: string | null, room_number?: string | null, room_count?: number, status?: string, payment_status?: string, issued_at?: string | null, booking_type?: string, invoice_notes?: string | null, notes?: string | null, refund_settled?: boolean, refund_request_pending?: boolean, accommodation_group_id?: string, _accommodation_group?: boolean, _event_group?: boolean, _booking_ids?: string[], _room_lines?: Array<{booking_id: string; room_number?: string | null; room_type?: string | null; check_in?: string | null; check_out?: string | null; nights?: number; total_amount?: number; amount_paid?: number}>, _pending_refund_request?: {id?: string; status?: string; settlement_mode?: string; method?: string; retained_percent?: number; notes?: string; proof_reference?: string; approval_note?: string; approver_pin?: string; refund_amount?: number; updated_at?: string; created_at?: string} | null}} BookingInvoiceDisplay
+ * @typedef {{booking_id: string, invoice_number?: string | null, child_invoice_numbers?: string[], customer_name?: string | null, customer_email?: string | null, customer_phone?: string | null, total_amount: number, amount_paid: number, charges_total: number, balance_due: number, reconciliation_required?: boolean, total_is_estimate?: boolean, check_in?: string | null, check_out?: string | null, nights?: number, room_type?: string | null, room_number?: string | null, room_count?: number, status?: string, payment_status?: string, issued_at?: string | null, booking_type?: string, event_id?: string | null, event_name?: string | null, display_notes?: string | null, invoice_notes?: string | null, notes?: string | null, refund_settled?: boolean, refund_request_pending?: boolean, accommodation_group_id?: string, _accommodation_group?: boolean, _event_group?: boolean, _linked_event_rooms?: boolean, _booking_ids?: string[], _event_booking_ids?: string[], _room_lines?: Array<{booking_id: string; invoice_number?: string | null; room_number?: string | null; room_type?: string | null; check_in?: string | null; check_out?: string | null; nights?: number; total_amount?: number; amount_paid?: number}>, _pending_refund_request?: {id?: string; status?: string; settlement_mode?: string; method?: string; retained_percent?: number; notes?: string; proof_reference?: string; approval_note?: string; approver_pin?: string; refund_amount?: number; updated_at?: string; created_at?: string} | null}} BookingInvoiceDisplay
  */
 
 /** @param {string} currency @param {unknown} value */
 function fmtMoney(currency, value) {
   return `${currency} ${Number(value || 0).toFixed(2)}`
+}
+
+/**
+ * Resolve the customer-facing identity for an invoice row. Missing identity is
+ * shown as an actionable unresolved state, never as a fabricated walk-in.
+ * @param {{customer_name?: string|null, event_name?: string|null, display_notes?: string|null, company?: string|null}} invoice
+ */
+function invoiceDisplayName(invoice) {
+  const name = String(invoice?.customer_name || '').trim()
+  if (name) return name
+  const eventName = String(invoice?.event_name || invoice?.display_notes || invoice?.company || '').trim()
+  if (eventName) return eventName
+  return 'Unresolved guest'
+}
+
+/** @param {{customer_name?: string|null}} invoice */
+function invoiceNeedsIdentity(invoice) {
+  return !String(invoice?.customer_name || '').trim()
 }
 
 /** @param {string | number | null | undefined} value */
@@ -155,13 +174,14 @@ function formatStay(invoice) {
 
 /** @param {BookingInvoiceDisplay} invoice */
 function canRefundBooking(invoice) {
+  if (invoice?._event_group || invoice?._linked_event_rooms) return false
   const status = String(invoice?.status || '').toLowerCase()
   return ['pending', 'confirmed', 'cancelled'].includes(status)
 }
 
 /** @param {BookingInvoiceDisplay} invoice */
 function invoiceRefundPending(invoice) {
-  if (invoice?._accommodation_group) return false
+  if (invoice?._accommodation_group || invoice?._event_group || invoice?._linked_event_rooms) return false
   return invoice?.status === 'cancelled' && Number(invoice.amount_paid || 0) > 0.01 && invoice.refund_settled !== true
 }
 
@@ -204,7 +224,10 @@ function LedgerModal({ invoice, currency, onClose }) {
       setError('')
       // getPayments returns SQL rows from get_booking_payments, or the main
       // handler's failure object. RPC row contents are not runtime-validated.
-      const result = /** @type {BookingPaymentHistoryResult} */ (await window.api.bookings.getPayments(invoice.booking_id).catch((e) => ({ success: false, error: e.message })))
+      const paymentRequest = invoice._event_group || invoice._linked_event_rooms
+        ? window.api.bookings.getEventInvoicePayments(invoice.event_id || invoice.booking_id)
+        : window.api.bookings.getPayments(invoice.booking_id)
+      const result = /** @type {BookingPaymentHistoryResult} */ (await paymentRequest.catch((e) => ({ success: false, error: e.message })))
       if (cancelled) return
       if (result?.success === false) {
         setPayments([])
@@ -216,17 +239,21 @@ function LedgerModal({ invoice, currency, onClose }) {
     }
     loadPayments()
     return () => { cancelled = true }
-  }, [invoice.booking_id])
+  }, [invoice.booking_id, invoice.event_id, invoice._event_group, invoice._linked_event_rooms])
 
   return (
     <Modal title={`Payment Ledger · ${invoice.invoice_number}`} onClose={onClose} size="lg">
       <div className="space-y-4">
         <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-600">
-          <p className="font-semibold text-gray-900">{invoice.customer_name || 'Walk-in Guest'}</p>
+          <p className="font-semibold text-gray-900">{invoiceDisplayName(invoice)}</p>
           <p className="mt-1">{formatStay(invoice)}</p>
-          <p className="mt-2">
-            Total {fmtMoney(currency, invoice.total_amount)} · Paid {fmtMoney(currency, invoice.amount_paid)} · Balance {fmtMoney(currency, invoice.balance_due)}
-          </p>
+          {invoice.reconciliation_required ? (
+            <p className="mt-2 font-semibold text-orange-800">Receipts need reconciliation. The amounts below are not available as a collectible balance.</p>
+          ) : (
+            <p className="mt-2">
+              Total {fmtMoney(currency, invoice.total_amount)} · Paid {fmtMoney(currency, invoice.amount_paid)} · Balance {fmtMoney(currency, invoice.balance_due)}
+            </p>
+          )}
         </div>
 
         {error && (
@@ -321,7 +348,7 @@ function AuditModal({ invoice, currency, onClose }) {
     <Modal title={`Financial Audit · ${invoice.invoice_number}`} onClose={onClose} size="lg">
       <div className="space-y-4">
         <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-600">
-          <p className="font-semibold text-gray-900">{invoice.customer_name || 'Walk-in Guest'}</p>
+          <p className="font-semibold text-gray-900">{invoiceDisplayName(invoice)}</p>
           <p className="mt-1">{formatStay(invoice)}</p>
           <p className="mt-2">Invoice {invoice.invoice_number} · Total {fmtMoney(currency, invoice.total_amount)} · Balance {fmtMoney(currency, invoice.balance_due)}</p>
         </div>
@@ -705,11 +732,12 @@ function RefundModal({ invoice, currency, isOffline = false, onClose, onSaved })
 
 /** @typedef {{amount: string; method: string}} GroupPaymentForm */
 
-/** @param {{invoice: BookingInvoiceDisplay; currency: string; form: GroupPaymentForm; setForm: import('react').Dispatch<import('react').SetStateAction<GroupPaymentForm>>; saving: boolean; error: string; onClose: () => void; onSubmit: import('react').FormEventHandler<HTMLFormElement>}} props */
-function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, onClose, onSubmit }) {
+/** @param {{invoice: BookingInvoiceDisplay; currency: string; form: GroupPaymentForm; setForm: import('react').Dispatch<import('react').SetStateAction<GroupPaymentForm>>; saving: boolean; error: string; pendingIntent?: boolean; onClose: () => void; onSubmit: import('react').FormEventHandler<HTMLFormElement>}} props */
+function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, pendingIntent = false, onClose, onSubmit }) {
   return (
     <Modal title={`Collect Payment · ${invoice.invoice_number}`} onClose={onClose} size="md">
       <form onSubmit={onSubmit} className="space-y-4">
+        {pendingIntent && <p className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">A previous payment is awaiting confirmation. Retry the saved amount and method after sync; changing them could duplicate a receipt.</p>}
         <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">{invoice.customer_name || 'Guest'} · {invoice.room_count || invoice._room_lines?.length || 0} rooms</p>
           <p className="mt-1">Outstanding balance: {fmtMoney(currency, invoice.balance_due)}</p>
@@ -722,6 +750,7 @@ function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, on
             max={Number(invoice.balance_due || 0)}
             step="0.01"
             value={form.amount}
+            disabled={pendingIntent || saving}
             onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))}
             className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
             required
@@ -731,6 +760,7 @@ function GroupPaymentModal({ invoice, currency, form, setForm, saving, error, on
           <span className="mb-1.5 block text-sm font-medium text-gray-700">Payment method</span>
           <select
             value={form.method}
+            disabled={pendingIntent || saving}
             onChange={(event) => setForm((current) => ({ ...current, method: event.target.value }))}
             className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-green-500"
           >
@@ -852,6 +882,8 @@ export default function BookingInvoices() {
   const [groupPaymentForm, setGroupPaymentForm] = useState({ amount: '', method: 'cash' })
   const [groupPaymentError, setGroupPaymentError] = useState('')
   const [groupPaymentSaving, setGroupPaymentSaving] = useState(false)
+  const [groupPaymentPendingIntent, setGroupPaymentPendingIntent] = useState(false)
+  const groupPaymentIntentRef = useRef(/** @type {{invoiceId: string; amount: string; method: string; key: string; pending: boolean}} */ ({ invoiceId: '', amount: '', method: '', key: '', pending: false }))
   const [creditReceipt, setCreditReceipt] = useState(/** @type {CreditTransferReceiptDisplay | null} */ (null))
   const [flash, setFlash] = useState(/** @type {{type: 'success' | 'error'; text: string} | null} */ (null))
   const [emailingId, setEmailingId] = useState(/** @type {string | null} */ (null))
@@ -875,24 +907,59 @@ export default function BookingInvoices() {
     // conference:getAll selects these columns and also reads an unvalidated
     // local cache. This remains an expected consumer view, not a validator.
     const conferenceBookings = Array.isArray(confData) ? /** @type {ConferenceBookingInvoiceExpectedRow[]} */ (confData) : []
+    // Conference/event rows are part of the same customer-facing projection:
+    // show open AND settled events, including zero-event-total reservations
+    // that still carry a real deposit. Rows already represented by a
+    // consolidated event/room invoice are not repeated.
+    const representedEvents = new Set()
+    const representedBookings = new Set()
+    for (const row of fresh) {
+      if (row.event_id) representedEvents.add(String(row.event_id))
+      if (row._event_group && row.booking_id) representedEvents.add(String(row.booking_id))
+      if (row.booking_id) representedBookings.add(String(row.booking_id))
+      for (const id of row._booking_ids || []) representedBookings.add(String(id))
+      for (const id of row._event_booking_ids || []) representedBookings.add(String(id))
+    }
     const confInvoices = conferenceBookings
-      .filter((cb) => Number(cb.total_amount || 0) > 0 && Number(cb.deposit_paid || 0) < Number(cb.total_amount || 0))
-      .map((cb) => ({
-        booking_id: cb.id,
-        customer_name: cb.client_name || 'Guest',
-        customer_email: null,
-        customer_phone: null,
-        check_in: cb.booking_date,
-        check_out: cb.booking_date,
-        room_number: cb.room_name || 'Conference Room',
-        total_amount: Number(cb.total_amount || 0),
-        amount_paid: Number(cb.deposit_paid || 0),
-        charges_total: 0,
-        balance_due: Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0)),
-        status: cb.payment_status || 'pending',
-        invoice_number: null,
-        booking_type: 'conference'
-      }))
+      .filter((cb) => String(cb.status || '').toLowerCase() !== 'cancelled')
+      .filter((cb) => {
+        if (representedEvents.has(String(cb.id))) return false
+        if (cb.exclusive_booking_id) {
+          const exclusiveId = String(cb.exclusive_booking_id)
+          if (representedEvents.has(exclusiveId) || representedBookings.has(exclusiveId)) return false
+        }
+        return true
+      })
+      .map((cb) => {
+        const totalAmount = Number(cb.total_amount || 0)
+        const amountPaid = Number(cb.amount_paid ?? cb.deposit_paid ?? 0)
+        // Event total_amount already includes event folio/POS lines.
+        const chargesTotal = 0
+        const reconciliationRequired = amountPaid > 0 && totalAmount <= 0
+        const balance = reconciliationRequired ? null : Math.max(0, totalAmount - amountPaid)
+        const eventName = String(cb.event_name || '').trim()
+        const clientName = String(cb.client_name || '').trim()
+        return {
+          booking_id: cb.id,
+          customer_name: clientName || eventName || '',
+          customer_email: null,
+          customer_phone: null,
+          check_in: cb.booking_date,
+          check_out: cb.booking_date,
+          room_number: cb.room_name || (cb.reservation_scope === 'exclusive_lodge' ? 'Full Lodge' : 'Conference Room'),
+          total_amount: totalAmount,
+          amount_paid: amountPaid,
+          charges_total: chargesTotal,
+          balance_due: balance,
+          status: cb.status === 'cancelled' ? 'cancelled' : 'confirmed',
+          payment_status: reconciliationRequired ? 'reconciliation_required' : cb.payment_status || (balance <= 0 && amountPaid > 0 ? 'paid' : 'pending'),
+          invoice_number: null,
+          event_name: eventName || clientName || null,
+          booking_type: 'conference',
+          reconciliation_required: reconciliationRequired
+        }
+      })
+      .filter((row) => row.total_amount > 0 || row.amount_paid > 0)
     const allInvoices = [...fresh, ...confInvoices]
     // Detect offline: if we got 0 rows but there are bookings, or check sync status
     const syncStatus = await window.api.sync.getStatus().catch(() => null)
@@ -983,7 +1050,48 @@ export default function BookingInvoices() {
   }
 
   /** @param {BookingInvoiceDisplay} invoice */
-  const openCollectionFlow = (invoice) => {
+  const openCollectionFlow = async (invoice) => {
+    if (invoice?.reconciliation_required) {
+      pushFlash('error', 'This reservation has receipts that need reconciliation. Collections and refunds are paused until the authoritative ledger is reviewed.')
+      return
+    }
+    if (invoice?._event_group || invoice?._linked_event_rooms) {
+      const eventId = String(invoice.event_id || invoice.booking_id || '')
+      if (!eventId) {
+        pushFlash('error', 'This event invoice has no verified event identity.')
+        return
+      }
+      if ((invoice._booking_ids || []).some((bookingId) => isFinanciallySyncBlocked(bookingId))) {
+        pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
+        return
+      }
+      if (Number(invoice.balance_due || 0) <= 0 || invoice.status === 'cancelled') {
+        pushFlash('error', 'This invoice does not need payment collection.')
+        return
+      }
+      setGroupPaymentInvoice(invoice)
+      setGroupPaymentForm({ amount: Number(invoice.balance_due || 0).toFixed(2), method: 'cash' })
+      setGroupPaymentError('')
+      setGroupPaymentPendingIntent(false)
+      groupPaymentIntentRef.current = { invoiceId: eventId, amount: '', method: '', key: '', pending: false }
+      const pending = await window.api.events.getPendingPaymentIntent(eventId).catch(() => null)
+      if (pending?.pending && pending.scope === 'group') {
+        const amount = Number(pending.amount).toFixed(2)
+        groupPaymentIntentRef.current = {
+          invoiceId: eventId,
+          amount,
+          method: pending.method,
+          key: pending.idempotency_key,
+          pending: true
+        }
+        setGroupPaymentForm({ amount, method: pending.method })
+        setGroupPaymentPendingIntent(true)
+      } else if (pending?.pending) {
+        setGroupPaymentInvoice(null)
+        pushFlash('error', 'An event payment is pending in Events. Resolve that exact operation before collecting a consolidated invoice payment.')
+      }
+      return
+    }
     if (invoice?._accommodation_group) {
       if ((invoice._booking_ids || []).some((bookingId) => isFinanciallySyncBlocked(bookingId))) {
         pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
@@ -1025,6 +1133,10 @@ export default function BookingInvoices() {
 
   /** @param {BookingInvoiceDisplay} invoice */
   const handleSendEmail = async (invoice) => {
+    if (invoice?._event_group || invoice?._linked_event_rooms) {
+      pushFlash('error', 'This consolidated event invoice is not available for delivery until the group document endpoint is active.')
+      return
+    }
     if (!invoice?.customer_email) {
       pushFlash('error', 'This guest does not have an email address on file.')
       return
@@ -1048,6 +1160,52 @@ export default function BookingInvoices() {
   /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleGroupPaymentSubmit = async (event) => {
     event.preventDefault()
+    if (groupPaymentInvoice?._event_group || groupPaymentInvoice?._linked_event_rooms) {
+      const eventId = String(groupPaymentInvoice.event_id || groupPaymentInvoice.booking_id || '')
+      if (!eventId) return
+      setGroupPaymentSaving(true)
+      setGroupPaymentError('')
+      const amount = Number(groupPaymentForm.amount || 0)
+      if (amount <= 0) {
+        setGroupPaymentError('Payment amount must be greater than zero.')
+        setGroupPaymentSaving(false)
+        return
+      }
+      const amountKey = amount.toFixed(2)
+      const intent = groupPaymentIntentRef.current
+      const sameEnvelope = intent.invoiceId === eventId && intent.amount === amountKey && intent.method === groupPaymentForm.method && intent.key
+      if (intent.pending && !sameEnvelope) {
+        setGroupPaymentError('This payment has an uncertain result. Retry the original amount and method after sync; do not change it or start another payment yet.')
+        setGroupPaymentSaving(false)
+        return
+      }
+      const key = sameEnvelope ? intent.key : `event-invoice-pay-${eventId}-${crypto.randomUUID()}`
+      groupPaymentIntentRef.current = { invoiceId: eventId, amount: amountKey, method: groupPaymentForm.method, key, pending: true }
+      setGroupPaymentPendingIntent(true)
+      let result
+      try {
+        result = await window.api.events.recordInvoicePayment(eventId, amount, groupPaymentForm.method, key)
+      } catch (error) {
+        setGroupPaymentError(error?.message || 'Payment outcome is uncertain. Retry the original amount and method after sync.')
+        setGroupPaymentSaving(false)
+        return
+      }
+      if (result?.success === false) {
+        groupPaymentIntentRef.current = { invoiceId: '', amount: '', method: '', key: '', pending: false }
+        setGroupPaymentPendingIntent(false)
+        setGroupPaymentError(result.error || 'Payment could not be recorded.')
+        setGroupPaymentSaving(false)
+        return
+      }
+      setGroupPaymentSaving(false)
+      setGroupPaymentInvoice(null)
+      setGroupPaymentPendingIntent(false)
+      groupPaymentIntentRef.current = { invoiceId: '', amount: '', method: '', key: '', pending: false }
+      setSelectedInvoice(null)
+      pushFlash('success', 'Consolidated event invoice payment recorded.')
+      loadInvoices()
+      return
+    }
     if (!groupPaymentInvoice?.accommodation_group_id) return
     setGroupPaymentSaving(true)
     setGroupPaymentError('')
@@ -1087,11 +1245,17 @@ export default function BookingInvoices() {
       const query = search.trim().toLowerCase()
       const matchesSearch = !query || [
         invoice.invoice_number,
+        invoice.event_name,
+        invoice.display_notes,
         invoice.customer_name,
         invoice.customer_phone,
         invoice.customer_email,
         invoice.room_number ? `room ${invoice.room_number}` : '',
-        invoice.room_type
+        invoice.room_type,
+        ...(invoice.child_invoice_numbers || []),
+        ...(invoice._room_lines || []).map((line) => line.room_number ? `room ${line.room_number}` : ''),
+        ...(invoice._room_lines || []).map((line) => line.booking_id),
+        ...(invoice._booking_ids || [])
       ].some((value) => String(value || '').toLowerCase().includes(query))
 
       const matchesPayment = paymentFilter === 'all' || invoice.payment_status === paymentFilter
@@ -1131,14 +1295,13 @@ export default function BookingInvoices() {
 
   const collectionQueue = useMemo(() => (
     [...filteredInvoices]
-      .filter((invoice) => Number(invoice.balance_due || 0) > 0 && invoice.status !== 'cancelled')
+      .filter((invoice) => Number(invoice.balance_due || 0) > 0 && invoice.status !== 'cancelled' && invoice.reconciliation_required !== true)
       .sort((left, right) => {
         const leftPriority = left.status === 'checked_out' ? 0 : left.status === 'checked_in' ? 1 : 2
         const rightPriority = right.status === 'checked_out' ? 0 : right.status === 'checked_in' ? 1 : 2
         if (leftPriority !== rightPriority) return leftPriority - rightPriority
         return Number(right.balance_due || 0) - Number(left.balance_due || 0)
       })
-      .slice(0, 4)
   ), [filteredInvoices])
   /** @type {Array<{value: string; label: string}>} */
   const invoiceViews = [
@@ -1245,10 +1408,10 @@ export default function BookingInvoices() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-4">
             <div>
               <p className="text-sm font-semibold text-gray-900">Collection Queue</p>
-              <p className="mt-1 text-sm text-gray-500">Start with the bookings that are already in-house or already checked out.</p>
+              <p className="mt-1 text-sm text-gray-500">{collectionQueue.length} invoice{collectionQueue.length === 1 ? '' : 's'} match the current search and filters; unresolved receipts are excluded from collection.</p>
             </div>
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-              Highest-priority balances first
+              Complete queue · highest priority first
             </div>
           </div>
           <div className="mt-4 space-y-3">
@@ -1256,20 +1419,21 @@ export default function BookingInvoices() {
               <div key={`queue-${invoice.booking_id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-semibold text-gray-900">{invoice.customer_name || 'Walk-in Guest'}</p>
+                    <p className="truncate text-sm font-semibold text-gray-900">{invoiceDisplayName(invoice)}</p>
                     <Badge value={invoice.status} styles={BOOKING_STATUS_STYLES} />
                     <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
                       {fmtMoney(currency, invoice.balance_due)} due
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-gray-500">
-                    {invoice.invoice_number} · {formatStay(invoice)}
+                    {invoice.invoice_number} · {invoice.event_name ? `${invoice.event_name} · ` : ''}{formatStay(invoice)}
                   </p>
+                  {invoice.reconciliation_required && <p className="mt-1 text-xs font-semibold text-orange-800">Needs receipt reconciliation · no collectible balance is shown</p>}
                 </div>
                 <button
                   type="button"
                   onClick={() => openCollectionFlow(invoice)}
-                  disabled={isFinanciallySyncBlocked(invoice.booking_id)}
+                  disabled={invoice.reconciliation_required === true || invoice._linked_event_rooms === true || invoice._event_group === true || isFinanciallySyncBlocked(invoice.booking_id)}
                   className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <CreditCard size={13} />
@@ -1388,7 +1552,7 @@ export default function BookingInvoices() {
                       </button>
                     </td>
                     <td className="px-5 py-4">
-                      <p className="font-semibold text-gray-900">{invoice.customer_name || 'Walk-in Guest'}</p>
+                      <p className="font-semibold text-gray-900">{invoiceDisplayName(invoice)}</p>
                       <p className="mt-1 text-xs text-gray-500">{invoice.customer_email || invoice.customer_phone || 'No guest contact on file'}</p>
                     </td>
                     <td className="px-5 py-4 align-top">
@@ -1398,13 +1562,19 @@ export default function BookingInvoices() {
                       </div>
                     </td>
                     <td className="px-5 py-4 text-right font-semibold text-gray-900">
-                      {fmtMoney(currency, invoice.total_amount)}
+                      {invoice.reconciliation_required || invoice.total_is_estimate
+                        ? <span title="Derived from recorded booking rows pending authoritative consolidation">Recorded {fmtMoney(currency, invoice.total_amount)}</span>
+                        : fmtMoney(currency, invoice.total_amount)}
                     </td>
                     <td className="px-5 py-4 text-right">
-                      <p className={`font-semibold ${invoice.balance_due > 0 ? 'text-amber-700' : 'text-green-700'}`}>
-                        {fmtMoney(currency, invoice.balance_due)}
-                      </p>
-                      <p className="mt-1 text-xs text-gray-500">Paid {fmtMoney(currency, invoice.amount_paid)}</p>
+                      {invoice.reconciliation_required ? (
+                        <p className="font-semibold text-orange-800">Reconciliation required</p>
+                      ) : <>
+                        <p className={`font-semibold ${invoice.balance_due > 0 ? 'text-amber-700' : 'text-green-700'}`}>
+                          {fmtMoney(currency, invoice.balance_due)}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500">Paid {fmtMoney(currency, invoice.amount_paid)}</p>
+                      </>}
                       {Number(invoice.balance_due || 0) > 0 && invoice.status !== 'cancelled' && (
                         <p className="mt-1 text-xs font-semibold text-amber-700">Needs collection</p>
                       )}
@@ -1444,8 +1614,10 @@ export default function BookingInvoices() {
                         </button>
                         <button
                           type="button"
+                          disabled={invoice._event_group || invoice._linked_event_rooms}
+                          title={invoice._event_group || invoice._linked_event_rooms ? 'Event group document service is not active' : 'Financial audit'}
                           onClick={() => setAuditInvoice(invoice)}
-                          className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700"
+                          className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-50"
                         >
                           Audit
                         </button>
@@ -1500,8 +1672,10 @@ export default function BookingInvoices() {
                         )}
                         <button
                           type="button"
+                          disabled={invoice._event_group || invoice._linked_event_rooms}
+                          title={invoice._event_group || invoice._linked_event_rooms ? 'Event group receipt service is not active' : 'Open receipt'}
                           onClick={() => setReceiptInvoice(invoice)}
-                          className="inline-flex items-center gap-1 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-green-800"
+                          className="inline-flex items-center gap-1 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-green-800 disabled:opacity-50"
                         >
                           <Printer size={12} />
                           Receipt
@@ -1525,7 +1699,7 @@ export default function BookingInvoices() {
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-green-200">Booking Invoice</p>
                   <h3 className="mt-2 font-mono text-2xl font-bold">{selectedInvoice.invoice_number}</h3>
                   <p className="mt-2 text-sm text-green-100">
-                    Issued {fmtDate(selectedInvoice.issued_at)} for {selectedInvoice.customer_name || 'Walk-in Guest'}
+                    Issued {fmtDate(selectedInvoice.issued_at)} for {invoiceDisplayName(selectedInvoice)}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1543,7 +1717,7 @@ export default function BookingInvoices() {
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-2xl bg-gray-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Guest</p>
-                <p className="mt-2 font-semibold text-gray-900">{selectedInvoice.customer_name || 'Walk-in Guest'}</p>
+                <p className="mt-2 font-semibold text-gray-900">{invoiceDisplayName(selectedInvoice)}</p>
                 <p className="mt-1 text-sm text-gray-500">{selectedInvoice.customer_email || selectedInvoice.customer_phone || 'No guest contact on file'}</p>
               </div>
               <div className="rounded-2xl bg-gray-50 p-4">
@@ -1560,20 +1734,28 @@ export default function BookingInvoices() {
               </div>
               <div className="rounded-2xl bg-gray-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Financials</p>
-                <p className="mt-2 font-semibold text-gray-900">{fmtMoney(currency, selectedInvoice.total_amount)}</p>
-                <p className="mt-1 text-sm text-gray-500">Paid {fmtMoney(currency, selectedInvoice.amount_paid)}</p>
-                <p className="mt-1 text-sm text-amber-700">Balance {fmtMoney(currency, selectedInvoice.balance_due)}</p>
+                {selectedInvoice.reconciliation_required ? (
+                  <p className="mt-2 font-semibold text-orange-800">Recorded amounts need receipt reconciliation before a total or balance can be confirmed.</p>
+                ) : <>
+                  <p className="mt-2 font-semibold text-gray-900">{selectedInvoice.total_is_estimate ? 'Recorded charges ' : ''}{fmtMoney(currency, selectedInvoice.total_amount)}</p>
+                  <p className="mt-1 text-sm text-gray-500">Paid {fmtMoney(currency, selectedInvoice.amount_paid)}</p>
+                  <p className="mt-1 text-sm text-amber-700">Balance {fmtMoney(currency, selectedInvoice.balance_due)}</p>
+                </>}
               </div>
             </div>
 
-            {selectedInvoice._accommodation_group && Array.isArray(selectedInvoice._room_lines) && (
+            {(selectedInvoice._accommodation_group || selectedInvoice._linked_event_rooms) && Array.isArray(selectedInvoice._room_lines) && (
               <div className="rounded-2xl border border-gray-200 p-4">
-                <p className="mb-3 text-sm font-semibold text-gray-900">Room Lines</p>
+                <p className="mb-3 text-sm font-semibold text-gray-900">{selectedInvoice.reconciliation_required ? 'Recorded room charges' : 'Room Lines'}</p>
+                {selectedInvoice.child_invoice_numbers?.length > 0 && (
+                  <p className="mb-3 text-xs text-gray-500">Retained child invoice references: {selectedInvoice.child_invoice_numbers.join(', ')}</p>
+                )}
                 <div className="space-y-2">
                   {selectedInvoice._room_lines.map((line) => (
                     <div key={line.booking_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2 text-sm">
                       <div>
                         <p className="font-semibold text-gray-900">Room {line.room_number || '—'} · {line.room_type || 'Room'}</p>
+                        {line.invoice_number && <p className="text-xs text-gray-500">Historical invoice {line.invoice_number}</p>}
                         <p className="text-xs text-gray-500">{fmtDate(line.check_in)} - {fmtDate(line.check_out)} · {line.nights || 0} night{Number(line.nights || 0) === 1 ? '' : 's'}</p>
                       </div>
                       <div className="text-right">
@@ -1663,8 +1845,9 @@ export default function BookingInvoices() {
             <div className="flex flex-wrap justify-end gap-2">
               <button
                 type="button"
+                disabled={selectedInvoice._event_group || selectedInvoice._linked_event_rooms}
                 onClick={() => setAuditInvoice(selectedInvoice)}
-                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700"
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-50"
               >
                 <FileText size={15} />
                 Financial Audit
@@ -1679,23 +1862,25 @@ export default function BookingInvoices() {
               </button>
               <button
                 type="button"
+                disabled={selectedInvoice._event_group || selectedInvoice._linked_event_rooms}
                 onClick={() => setDeliveryInvoice(selectedInvoice)}
-                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700"
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-50"
               >
                 <Mail size={15} />
                 Delivery History
               </button>
               <button
                 type="button"
+                disabled={selectedInvoice._event_group || selectedInvoice._linked_event_rooms}
                 onClick={() => handleSendEmail(selectedInvoice)}
-                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700"
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-green-500 hover:text-green-700 disabled:opacity-50"
               >
                 <Mail size={15} />
                 Email Guest
               </button>
               <button
                 type="button"
-                disabled={Number(selectedInvoice.amount_paid || 0) <= 0 || isInvoiceRefundBlocked(selectedInvoice) || !canRefundBooking(selectedInvoice)}
+                disabled={selectedInvoice._event_group || selectedInvoice._linked_event_rooms || Number(selectedInvoice.amount_paid || 0) <= 0 || isInvoiceRefundBlocked(selectedInvoice) || !canRefundBooking(selectedInvoice)}
                 onClick={() => {
                   if (isInvoiceRefundBlocked(selectedInvoice)) {
                     pushFlash('error', FINANCIAL_SYNC_BLOCK_MESSAGE)
@@ -1714,8 +1899,9 @@ export default function BookingInvoices() {
               </button>
               <button
                 type="button"
+                disabled={selectedInvoice._event_group || selectedInvoice._linked_event_rooms}
                 onClick={() => setReceiptInvoice(selectedInvoice)}
-                className="inline-flex items-center gap-2 rounded-xl bg-green-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-green-800"
+                className="inline-flex items-center gap-2 rounded-xl bg-green-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-green-800 disabled:opacity-50"
               >
                 <Printer size={15} />
                 Open Printable Receipt
@@ -1749,7 +1935,11 @@ export default function BookingInvoices() {
           setForm={setGroupPaymentForm}
           saving={groupPaymentSaving}
           error={groupPaymentError}
-          onClose={() => setGroupPaymentInvoice(null)}
+          pendingIntent={groupPaymentPendingIntent}
+          onClose={() => {
+            setGroupPaymentInvoice(null)
+            setGroupPaymentPendingIntent(false)
+          }}
           onSubmit={handleGroupPaymentSubmit}
         />
       )}

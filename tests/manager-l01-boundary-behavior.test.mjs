@@ -366,6 +366,29 @@ test('legacy dashboard, night-audit, and invoice fallbacks preserve valid stale 
   assert.notEqual(malformedMaintenanceCurrent.error, null, 'dashboard should preserve malformed maintenance-row failure')
 })
 
+test('event invoice projection keeps event titles out of customer identity and preserves reconciliation state', async () => {
+  clearSyntheticState()
+  rpcHandlers.set('get_invoice_summary', async () => ({ data: [{
+    booking_id: 'synthetic-event',
+    guest_name: null,
+    event_name: 'Smith Wedding',
+    invoice_kind: 'event',
+    event_booking_id: 'synthetic-event',
+    reconciliation_required: true,
+    total_amount: 4750,
+    amount_paid: 2900,
+    balance_due: 1850,
+    payment_status: 'partial'
+  }], error: null }))
+
+  const [invoice] = await api.listInvoices('synthetic-lodge', { forceFresh: true })
+  assert.equal(invoice.customer_name, 'Unresolved guest')
+  assert.equal(invoice.event_name, 'Smith Wedding')
+  assert.equal(invoice.reconciliation_required, true)
+  assert.equal(invoice.balance_due, null)
+  assert.equal(invoice.payment_status, 'reconciliation_required')
+})
+
 test('actual API optimistic maintenance write retains queued record in the actual runtime cache', async () => {
   clearSyntheticState()
   const runtime = await server.ssrLoadModule(path.join(repoRoot, 'manager-pwa/src/lib/runtime.js'))

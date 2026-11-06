@@ -24,6 +24,12 @@ import {
   roundMoneyValue
 } from './finance.js';
 import { mergeRemoteBookingsWithLocalState } from './bookingMerge.js';
+import {
+  cleanDisplayText,
+  resolveBookingDisplayName,
+  resolveCustomerDisplayName,
+  summarizeEventInvoiceGroup
+} from './bookingInvoiceModel.js';
 import { patchCachedQuotationSyncState } from './syncCache.js';
 import { computeStayTotal, isCampsitePriced, normalizeRateMode, validateAccommodationOccupancy } from '../../shared/accommodation.js';
 import { getBookingFinancialView } from '../../shared/bookingFinancials.js';
@@ -515,7 +521,7 @@ export async function checkExclusiveEventConflict(checkIn, checkOut, excludeGrou
   }
 }
 
-const BOOKING_LIST_SELECT = 'id, customer_id, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate';
+const BOOKING_LIST_SELECT = 'id, customer_id, customer_name, room_id, check_in, check_out, adults, children, total_amount, status, payment_status, amount_paid, charges_total, deposit_amount, notes, is_exclusive_event, invoice_number, created_at, updated_at, created_by, payment_method, source, quotation_id, event_daily_rate';
 const BOOKING_PAGE_SIZE = 1000;
 const BOOKING_MAX_ROWS = 10000;
 
@@ -706,6 +712,17 @@ async function _getAllBookings() {
       eq('lodge_id', state.lodgeId).
       order('check_in', { ascending: false }));
 
+    const eventResult = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
+      from('conference_bookings').
+      select('id, lodge_id, customer_id, client_name, event_name').
+      eq('lodge_id', state.lodgeId);
+    const eventReadComplete = !eventResult.error;
+    const eventParents = Array.isArray(eventResult.data)
+      ? eventResult.data
+      : /** @type {{id?: unknown, lodge_id?: unknown, client_name?: unknown, event_name?: unknown}[]} */ (readCache('conference-bookings'))
+        .filter((event) => String(event?.lodge_id || '') === String(state.lodgeId || ''));
+    const eventParentById = new Map(eventParents.map((event) => [String(event.id), event]));
+
     // The cache is persisted JSON; this is an expected-data view, not validation.
     const cached = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
     if ((data || []).length === 0 && cached.length > 0) {
@@ -717,15 +734,18 @@ async function _getAllBookings() {
 
     const localRowsForMerge = cached;
     // This projection follows BOOKING_LIST_SELECT and its two joined selects; Supabase data is not runtime-validated here.
-    const mapped = /** @type {BookingListExpectedData[]} */ (data || []).map((b) => ({
+    const mapped = /** @type {BookingListExpectedData[]} */ (data || []).map((b) => {
+      // The note marker is only an event-ID pointer. Resolve it against the
+      // same-lodge event table/cache before using the parent's contact name.
+      return {
       ...b,
-      customer_name: b.customers?.name,
-      customer_phone: b.customers?.phone,
-      customer_email: b.customers?.email,
+      customer_name: resolveBookingDisplayName({ customerName: b.customers?.name, snapshotName: b.customer_name, notes: b.notes, eventParentById }) || undefined,
+      customer_phone: b.customers?.phone ?? b.customer_phone,
+      customer_email: b.customers?.email ?? b.customer_email,
       room_number: b.rooms?.room_number,
       room_type: b.rooms?.room_type,
       rate_per_night: b.rooms?.rate_per_night
-    }));
+    }});
     const refundSettlements = await fetchRefundSettlementMap(mapped.map((row) => row.id).filter(Boolean));
     const mappedWithRefundState = applyRefundSettlementState(mapped, refundSettlements);
     // The merge preserves local cache entries as supplied; use the expected
@@ -736,7 +756,7 @@ async function _getAllBookings() {
     return withReadMetadata(
       annotatedRows,
       'server',
-      annotatedRows.every((row) => row?._pending_sync !== true && row?._sync_state !== 'pending')
+      eventReadComplete && annotatedRows.every((row) => row?._pending_sync !== true && row?._sync_state !== 'pending')
     );
   } catch (error) {
     if (state.isOnline) {
@@ -753,15 +773,17 @@ async function _getAllBookings() {
   const bookings = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
   const customers = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'));
   const rooms = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms'));
+  const eventParents = /** @type {{id?: unknown, customer_id?: unknown, client_name?: unknown, event_name?: unknown}[]} */ (readCache('conference-bookings'));
+  const eventParentById = new Map(eventParents.filter((event) => event?.id && String(event?.lodge_id || '') === String(state.lodgeId || '')).map((event) => [String(event.id), event]));
 
   const mappedBookings = bookings.map((b) => {
     const customer = customers.find((c) => c.id === b.customer_id);
     const room = rooms.find((r) => r.id === b.room_id);
     return {
       ...b,
-      customer_name: customer?.name,
-      customer_phone: customer?.phone,
-      customer_email: customer?.email,
+      customer_name: resolveBookingDisplayName({ customerName: customer?.name, snapshotName: b.customer_name, notes: b.notes, eventParentById }) || undefined,
+      customer_phone: customer?.phone ?? b.customer_phone,
+      customer_email: customer?.email ?? b.customer_email,
       room_number: room?.room_number,
       room_type: room?.room_type,
       rate_per_night: room?.rate_per_night
@@ -933,7 +955,7 @@ export async function getPendingOnlineBookings() {
     if (state.isOnline) {
       const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
       from('bookings').
-      select(`id, lodge_id, customer_id, room_id, check_in, check_out, adults, children, total_amount, amount_paid, payment_status, status, source, created_at, notes, customers(name, phone, email), rooms(room_number, room_type)`).
+      select(`id, lodge_id, customer_id, customer_name, room_id, check_in, check_out, adults, children, total_amount, amount_paid, payment_status, status, source, created_at, notes, customers(name, phone, email), rooms(room_number, room_type)`).
       eq('lodge_id', state.lodgeId).
       eq('source', 'online').
       eq('status', 'pending').
@@ -944,9 +966,9 @@ export async function getPendingOnlineBookings() {
       // as getAllBookings; the Supabase response is not runtime-validated here.
       return (/** @type {PendingOnlineBookingExpectedData[]} */ (data || [])).map((b) => ({
         ...b,
-        customer_name: b.customers?.name,
-        customer_phone: b.customers?.phone,
-        customer_email: b.customers?.email,
+        customer_name: resolveCustomerDisplayName({ customerName: b.customers?.name, snapshotName: b.customer_name }) || undefined,
+        customer_phone: b.customers?.phone ?? b.customer_phone,
+        customer_email: b.customers?.email ?? b.customer_email,
         room_number: b.rooms?.room_number,
         room_type: b.rooms?.room_type
       }));
@@ -974,7 +996,7 @@ export async function getBookingsByDateRange(startDate, endDate) {
     if (data) {
       return data.map((b) => ({
         ...b,
-        customer_name: b.customers?.name,
+        customer_name: resolveCustomerDisplayName({ customerName: b.customers?.name, snapshotName: b.customer_name }) || undefined,
         room_number: b.rooms?.room_number,
         room_type: b.rooms?.room_type,
         rate_per_night: b.rooms?.rate_per_night
@@ -997,7 +1019,7 @@ export async function getBookingsByDateRange(startDate, endDate) {
     const room = rooms.find((r) => r.id === b.room_id);
     return {
       ...b,
-      customer_name: customer?.name,
+      customer_name: resolveCustomerDisplayName({ customerName: customer?.name, snapshotName: b.customer_name }) || undefined,
       room_number: room?.room_number,
       room_type: room?.room_type,
       rate_per_night: room?.rate_per_night
@@ -2077,6 +2099,18 @@ export async function getBookingPayments(bookingId) {
   return Array.isArray(data) ? data : [];
 }
 
+/** @param {string} eventId */
+export async function getEventInvoicePayments(eventId) {
+  if (!eventId) return [];
+  if (!state.isOnline) throw new Error('The consolidated event ledger is available when online.');
+  const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_event_invoice_payments', {
+    p_event_id: eventId,
+    p_lodge_id: state.lodgeId
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
 /** @param {string} groupId @param {number} amount @param {string} method @param {string|null} [intentKey] */
 export async function updateGroupInvoicePayment(groupId, amount, method, intentKey = null) {
   if (!groupId) throw new Error('Group invoice is required');
@@ -3102,7 +3136,13 @@ export async function getBookingInvoices() {
   // the explicit columns selected below and the offline producers above.
   let groupRows = /** @type {BookingInvoiceGroupCacheRow[]} */ (readCache('booking-invoice-groups') || []);
   let groupLineRows = /** @type {BookingInvoiceGroupLineCacheRow[]} */ (readCache('booking-invoice-group-lines') || []);
-
+  // Event-linked room bookings and their event parents. These expected-data
+  // rows let the customer-facing projection collapse child room invoices into
+  // one event invoice without changing the operational room records.
+  /** @type {{event_booking_id?: unknown, booking_id?: unknown}[]} */
+  let eventRoomRows = /** @type {{event_booking_id?: unknown, booking_id?: unknown}[]} */ (readCache('event-booking-rooms') || []);
+  /** @type {import('./bookingInvoiceModel.js').EventInvoiceParent[]} */
+  let eventParentRows = /** @type {import('./bookingInvoiceModel.js').EventInvoiceParent[]} */ (readCache('conference-bookings') || []);
   if (state.isOnline) {
     /**
      * Paginate the selected invoice projections. Query/cache values remain
@@ -3166,6 +3206,19 @@ export async function getBookingInvoices() {
       groupLineRows = /** @type {BookingInvoiceGroupLineCacheRow[]} */ (linesResult.data);
       writeCache('booking-invoice-group-lines', groupLineRows, { source: 'remote' });
     }
+
+    const [eventRoomResult, eventParentResult] = await Promise.all([
+      loadRows('event_booking_rooms', 'event_booking_id, booking_id, lodge_id', 'created_at'),
+    loadRows('conference_bookings', 'id, lodge_id, customer_id, event_name, client_name, reservation_scope, status, booking_date, total_amount, amount_paid, charges_total, payment_status, currency, exclusive_booking_id', 'booking_date')
+    ]);
+    if (eventRoomResult.error || eventParentResult.error) authoritative = false;
+    if (!eventRoomResult.error && Array.isArray(eventRoomResult.data)) {
+      eventRoomRows = /** @type {{event_booking_id?: unknown, booking_id?: unknown}[]} */ (eventRoomResult.data);
+      writeCache('event-booking-rooms', eventRoomRows, { source: 'remote' });
+    }
+    if (!eventParentResult.error && Array.isArray(eventParentResult.data)) {
+      eventParentRows = /** @type {import('./bookingInvoiceModel.js').EventInvoiceParent[]} */ (eventParentResult.data);
+    }
   }
 
   const invoiceByBookingId = new Map(
@@ -3217,6 +3270,80 @@ export async function getBookingInvoices() {
 
   const regularRows = nonNullRows.filter((row) => !row.is_exclusive_event);
   const eventRows = nonNullRows.filter((row) => row.is_exclusive_event);
+
+  // Event-linked room bookings: authoritative link table first, then the
+  // persisted [EVENT:<id>] note that create_event_booking writes as a fallback
+  // for historical records whose link row was never backfilled.
+  const linkedEventIdByBookingId = new Map();
+  for (const link of eventRoomRows || []) {
+    const bookingId = String(link?.booking_id || '');
+    const eventId = String(link?.event_booking_id || '');
+    if (bookingId && eventId) linkedEventIdByBookingId.set(bookingId, eventId);
+  }
+  for (const row of regularRows) {
+    const bookingId = String(row.booking_id || '');
+    if (!bookingId || linkedEventIdByBookingId.has(bookingId)) continue;
+    const match = String(row.notes || '').match(/\[EVENT:([0-9a-fA-F-]{36})\]/);
+    if (match) linkedEventIdByBookingId.set(bookingId, match[1]);
+  }
+  const eventParentById = new Map((eventParentRows || []).
+    filter((event) => event?.id).
+    map((event) => [String(event.id), event]));
+  const groupByEventId = new Map();
+  for (const group of groupRows || []) {
+    const eventId = String(group?.event_booking_id || '') || String(group?.group_key || '').match(/^(?:event:|evt-)([0-9a-fA-F-]{36})$/)?.[1];
+    if (eventId) groupByEventId.set(eventId, group);
+  }
+  const customerNameById = new Map((/** @type {{id?: unknown, name?: unknown}[]} */ (readCache('customers') || [])).
+    filter((customer) => customer?.id).
+    map((customer) => [String(customer.id), customer.name]));
+
+  const linkedEventBuckets = new Map();
+  const plainRegularRows = [];
+  for (const row of regularRows) {
+    const eventId = linkedEventIdByBookingId.get(String(row.booking_id || ''));
+    const event = eventId ? eventParentById.get(eventId) : null;
+    if (!eventId || !event) {
+      // Never hide a room invoice just because its event link is missing.
+      plainRegularRows.push(row);
+      continue;
+    }
+    if (!linkedEventBuckets.has(eventId)) linkedEventBuckets.set(eventId, { event, rows: [] });
+    linkedEventBuckets.get(eventId).rows.push(row);
+  }
+  const linkedEventInvoices = [];
+  for (const [eventId, bucket] of linkedEventBuckets) {
+    const group = groupByEventId.get(eventId);
+    const roomRows = bucket.rows;
+    const customerName = bucket.event.customer_id
+      ? customerNameById.get(String(bucket.event.customer_id))
+      : null;
+    const consolidated = summarizeEventInvoiceGroup({
+      event: { ...bucket.event, customer_name: cleanDisplayText(customerName) || null },
+      roomRows,
+      groupInvoiceNumber: group?.invoice_number || roomRows[0]?.invoice_number || null,
+      groupIssuedAt: group?.issued_at || roomRows[0]?.issued_at || null,
+      groupDueDate: group?.due_date || roomRows[0]?.due_date || null,
+      groupNotes: group?.notes || ''
+    });
+    consolidated.accommodation_group_id = group?.id || undefined;
+    const roomStatuses = roomRows.map((row) => String(row.status || '').toLowerCase());
+    consolidated.status = roomStatuses.every((status) => status === 'cancelled')
+      ? 'cancelled'
+      : roomStatuses.some((status) => status === 'checked_in')
+        ? 'checked_in'
+        : roomStatuses.length > 0 && roomStatuses.every((status) => status === 'checked_out')
+          ? 'checked_out'
+          : 'confirmed';
+    consolidated.event_parent_status = bucket.event.status || null;
+    if (!consolidated.customer_name) {
+      // Preserve unresolved identity visibly; BookingInvoices renders an
+      // actionable state instead of a fabricated walk-in name.
+      consolidated.customer_name = '';
+    }
+    linkedEventInvoices.push(consolidated);
+  }
+
   // Cache IDs are not validated; retain the original Map lookup semantics for
   // every runtime key, including null and other malformed values.
   const groupById = new Map((groupRows || []).map((group) =>
@@ -3229,7 +3356,7 @@ export async function getBookingInvoices() {
   );
   const accommodationGroups = new Map();
   const ungroupedRegularRows = [];
-  for (const row of regularRows) {
+  for (const row of plainRegularRows) {
     const groupId = groupIdByBookingId.get(row.booking_id) || (parseAccommodationGroupId(row.notes) ? `local-${parseAccommodationGroupId(row.notes)}` : null);
     const group = groupById.get(groupId) || groupRows.find((entry) => entry?.group_key && entry.group_key === parseAccommodationGroupId(row.notes));
     if (!group) {
@@ -3289,20 +3416,34 @@ export async function getBookingInvoices() {
   const eventGroups = new Map();
   for (const row of eventRows) {
     const groupId = String(row.notes || '').match(/\[GROUP:([^\]]+)\]/)?.[1] || row.booking_id;
+    const parentEventId = String(groupId).match(/^(?:event:|evt-)([0-9a-fA-F-]{36})$/)?.[1] || null;
+    const parentEvent = parentEventId ? eventParentById.get(parentEventId) : null;
     if (!eventGroups.has(groupId)) {
       eventGroups.set(groupId, {
         ...row,
         _event_group: true,
+        event_id: parentEventId,
+        event_name: parentEvent?.event_name || null,
+        customer_id: row.customer_id || parentEvent?.customer_id || null,
+        customer_name: resolveCustomerDisplayName({
+          customerName: row.customer_name || (parentEvent?.customer_id ? customerNameById.get(String(parentEvent.customer_id)) : null),
+          snapshotName: row.customer_name,
+          eventName: parentEvent?.client_name
+        }),
+        total_amount: Number(row.total_amount || 0) + Number(parentEvent?.total_amount || 0),
+        amount_paid: Number(row.amount_paid || 0) + Number(parentEvent?.amount_paid || 0),
         event_group_id: groupId,
-        room_count: parseEventRoomCount(row.notes) || 0,
         room_type: 'Full Lodge',
+        room_count: parseEventRoomCount(row.notes) || 0,
         room_number: 'Full Lodge',
         display_notes: stripEventMetadata(row.notes),
-        _event_booking_ids: []
+        reconciliation_required: Number(row.amount_paid || 0) > 0 && Number(parentEvent?.amount_paid || 0) > 0,
+        _booking_ids: [],
+        _event_booking_ids: parentEventId ? [parentEventId] : []
       });
     }
     const grouped = eventGroups.get(groupId);
-    grouped._event_booking_ids.push(row.booking_id);
+    grouped._booking_ids.push(row.booking_id);
     grouped.room_count = Math.max(Number(grouped.room_count || 0), parseEventRoomCount(row.notes) || 0, grouped._event_booking_ids.length);
     if (row.booking_id !== grouped.booking_id) {
       grouped.total_amount += Number(row.total_amount || 0);
@@ -3310,10 +3451,15 @@ export async function getBookingInvoices() {
       grouped.charges_total += Number(row.charges_total || 0);
       grouped.balance_due = Math.max(0, grouped.total_amount + grouped.charges_total - grouped.amount_paid);
     }
+    if (grouped.reconciliation_required) {
+      grouped.balance_due = null;
+      grouped.payment_status = 'reconciliation_required';
+      grouped.total_is_estimate = true;
+    }
   }
 
   return withReadMetadata(
-    [...ungroupedRegularRows, ...accommodationGroups.values(), ...eventGroups.values()].
+    [...ungroupedRegularRows, ...accommodationGroups.values(), ...linkedEventInvoices, ...eventGroups.values()].
     sort((a, b) => {
     const left = String(a.issued_at || a.created_at || a.check_in || '');
     const right = String(b.issued_at || b.created_at || b.check_in || '');

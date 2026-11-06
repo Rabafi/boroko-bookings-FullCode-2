@@ -501,7 +501,8 @@ function RoomsTab() {
     { value: 'maintenance', label: 'Maintenance' }
   ]
   const visibleRooms = useMemo(() => (
-    activeView === 'all' ? rooms : rooms.filter((room) => room.status === activeView)
+    [...(activeView === 'all' ? rooms : rooms.filter((room) => room.status === activeView))]
+      .sort((left, right) => String(left.room_number || '').localeCompare(String(right.room_number || ''), undefined, { numeric: true, sensitivity: 'base' }))
   ), [activeView, rooms])
   const meshLocksByRoom = useMemo(() => {
     const grouped = new Map()
@@ -1406,16 +1407,20 @@ function RoomCard({ room, activeRate, meshLocks = [], compact = false, onSelect,
   const showingOverride = activeRate && Number(activeRate.rate_per_night) !== Number(room.rate_per_night)
   const isHeld = meshLocks.length > 0
   const kindLabel = getAccommodationKindLabel(room.accommodation_kind)
+  const roomLabel = String(room.room_number || '').trim()
+  const hasKindPrefix = roomLabel.toLowerCase() === kindLabel.toLowerCase() ||
+    roomLabel.toLowerCase().startsWith(`${kindLabel.toLowerCase()} `)
+  const displayLabel = hasKindPrefix ? roomLabel : `${kindLabel} ${roomLabel}`.trim()
   const campsite = isCampsiteUnit(room)
   return (
     <div className="bb-card overflow-hidden transition-shadow hover:shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
       {coverPhoto && (
-        <img src={coverPhoto} alt={`${kindLabel} ${room.room_number}`} className="w-full h-32 object-cover" />
+        <img src={coverPhoto} alt={displayLabel} className="w-full h-32 object-cover" />
       )}
       <div className={compact ? 'p-4' : 'p-5'}>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">{kindLabel} {room.room_number}</p>
+          <p className="text-lg font-bold tracking-[-0.02em] text-slate-800">{displayLabel}</p>
           <p className="text-sm text-slate-500">{room.room_type}</p>
           <div className="mt-1 flex flex-wrap gap-1">
             {campsite && (

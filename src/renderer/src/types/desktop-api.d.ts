@@ -523,6 +523,7 @@ export interface DesktopApi {
     updatePayment(id: string, amount: number, method: string, intentKey: string): Promise<unknown>;
     updateGroupPayment(groupId: string, amount: number, method: string, intentKey: string): Promise<unknown>;
     getPayments(bookingId: string): Promise<unknown>;
+    getEventInvoicePayments(eventId: string): Promise<unknown>;
     refundGroup(groupId: string, payload: unknown): Promise<unknown>;
     refund(bookingId: string, payload: unknown): Promise<unknown>;
     createEvent(data: unknown): Promise<unknown>;
@@ -1162,6 +1163,8 @@ export interface DesktopApi {
     addLineItem(data: unknown): Promise<unknown>;
     voidLineItem(lineItemId: string, reason: string): Promise<unknown>;
     updatePayment(id: string, amount: number, method: string, type: string, intentKey: string): Promise<unknown>;
+    getPendingPaymentIntent(id: string): Promise<{amount: number; method: string; type: string; idempotency_key: string; scope: 'event' | 'group'; pending: true} | null>;
+    recordInvoicePayment(eventId: string, amount: number, method: string, intentKey: string): Promise<unknown>;
     checkAvailability(resourceKey: string, startAt: string, endAt: string, excludeEventId: string): Promise<unknown>;
     getVenuePackages(category: string, activeOnly: unknown): Promise<unknown>;
     createVenuePackage(data: unknown): Promise<unknown>;

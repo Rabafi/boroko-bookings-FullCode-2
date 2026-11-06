@@ -1,5 +1,5 @@
 // @ts-check
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Presentation, Plus, Pencil, Trash2, X, Users, Clock, Calendar, ChevronDown, ChevronUp, CreditCard, Building2 } from 'lucide-react'
 import { PAYMENT_METHOD_PLAIN_OPTIONS } from '../constants/paymentMethods'
@@ -8,13 +8,14 @@ import { localToday } from '../utils/localDate'
 import { ErrorNotice } from './shared/ErrorNotice'
 
 /** Expected consumer views of existing event/conference IPC and SQL producers. These types do not validate returned JSON or cache rows. */
-/** @typedef {{id: string, booking_date: string, start_time: string, end_time: string, client_name: string, total_amount: number|null, deposit_paid: number|null, payment_status: string|null, event_name?: string|null, company?: string|null, event_type?: string|null, reservation_scope?: string|null, status?: string|null, attendees?: number|null, adults?: number|null, children?: number|null, amount_paid?: number|null, setup_type?: string|null, room_name?: string|null, includes_catering?: boolean|null, catering_notes?: string|null, payment_method?: string|null, currency?: string|null, notes?: string|null, extras_total?: number|null, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null}} ConferenceBookingExpectedView */
-/** @typedef {{booking_date: string, start_time: string, end_time: string, client_name: string, company: string, event_name: string, event_type: string, reservation_scope: string, check_in: string, check_out: string, room_ids: string[], resource_keys: string[], status: string, attendees: string, adults: string, children: string, setup_type: string, room_name: string, includes_catering: boolean, catering_notes: string, total_amount: string, deposit_paid: string, deposit_amount: string, payment_status: string, payment_method: string, currency: string, notes: string}} ConferenceFormExpectedView */
+/** @typedef {{id: string, booking_date: string, start_time: string, end_time: string, client_name: string, total_amount: number|null, deposit_paid: number|null, payment_status: string|null, event_name?: string|null, company?: string|null, event_type?: string|null, reservation_scope?: string|null, status?: string|null, attendees?: number|null, adults?: number|null, children?: number|null, amount_paid?: number|null, setup_type?: string|null, room_name?: string|null, includes_catering?: boolean|null, catering_notes?: string|null, payment_method?: string|null, currency?: string|null, notes?: string|null, extras_total?: number|null, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null, customer_id?: string|null, customer_name?: string|null, exclusive_booking_id?: string|null, event_daily_rate?: number|string|null}} ConferenceBookingExpectedView */
+/** @typedef {{booking_date: string, start_time: string, end_time: string, client_name: string, company: string, event_name: string, customer_id: string, event_type: string, reservation_scope: string, check_in: string, check_out: string, room_ids: string[], resource_keys: string[], status: string, attendees: string, adults: string, children: string, setup_type: string, room_name: string, includes_catering: boolean, catering_notes: string, total_amount: string, event_daily_rate: string, deposit_paid: string, deposit_amount: string, payment_status: string, payment_method: string, currency: string, notes: string}} ConferenceFormExpectedView */
+/** @typedef {{id: string, name: string, phone?: string|null, email?: string|null}} ConferenceCustomerExpectedView */
 /** @typedef {{key: string, name: string, type?: string|null, allows_shared_use?: boolean, default_price?: number|string|null}} VenueResourceExpectedView */
 /** @typedef {{id: string, status: string|null, room_number: string|number}} ConferenceRoomExpectedView */
 /** @typedef {{id: string, event_booking_id: string, line_type: string, description: string, quantity: number|string, unit_price: number|string, voided_at?: string|null}} EventLineExpectedView */
-/** @typedef {{id: string, resource_name_snapshot: string}} EventResourceExpectedView */
-/** @typedef {{booking_id: string, room_number: string|number|null, check_in: string, check_out: string, total_amount: number|string|null}} EventRoomExpectedView */
+/** @typedef {{id: string, resource_key?: string|null, resource_name_snapshot: string}} EventResourceExpectedView */
+/** @typedef {{booking_id: string, room_id?: string|null, room_number: string|number|null, check_in: string, check_out: string, total_amount: number|string|null}} EventRoomExpectedView */
 /** @typedef {{id: string, type?: string|null, amount: number|string|null, method: string}} EventPaymentExpectedView */
 /** @typedef {{line_items: EventLineExpectedView[], resources: EventResourceExpectedView[], rooms: EventRoomExpectedView[], payments: EventPaymentExpectedView[]}} EventDetailsExpectedView */
 /** @typedef {{description: string, quantity: number|string, unit_price: number|string}} EventExtraDraftExpectedView */
@@ -72,6 +73,7 @@ const empty = () => ({
   client_name: '',
   company: '',
   event_name: '',
+  customer_id: '',
   event_type: 'conference',
   reservation_scope: 'venue_only',
   check_in: localToday(),
@@ -87,6 +89,7 @@ const empty = () => ({
   includes_catering: false,
   catering_notes: '',
   total_amount: '',
+  event_daily_rate: '',
   deposit_paid: '',
   deposit_amount: '',
   payment_status: 'pending',
@@ -127,8 +130,15 @@ export default function Conference() {
   const [payForm, setPayForm] = useState(/** @type {EventPaymentFormExpectedView} */ ({ amount: '', method: 'cash' }))
   const [paySaving, setPaySaving] = useState(false)
   const [payError, setPayError] = useState('')
+  const [pendingPaymentIntent, setPendingPaymentIntent] = useState(false)
   const [rooms, setRooms] = useState(/** @type {ConferenceRoomExpectedView[]} */ ([]))
   const [venueResources, setVenueResources] = useState(/** @type {VenueResourceExpectedView[]} */ ([]))
+  const [customers, setCustomers] = useState(/** @type {ConferenceCustomerExpectedView[]} */ ([]))
+  const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', email: '' })
+  const [customerSaving, setCustomerSaving] = useState(false)
+  const [operationId, setOperationId] = useState('')
+  const createIntentConsumed = useRef(false)
+  const paymentIntentRef = useRef(/** @type {{eventId: string, amount: string, method: string, type: string, key: string, pending: boolean}} */ ({ eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }))
   const [detailsById, setDetailsById] = useState(/** @type {Record<string, EventDetailsExpectedView|null>} */ ({}))
   const [detailsLoadingId, setDetailsLoadingId] = useState(null)
   const [extraDrafts, setExtraDrafts] = useState(/** @type {Record<string, EventExtraDraftExpectedView>} */ ({}))
@@ -150,10 +160,33 @@ export default function Conference() {
 
   useEffect(() => {
     window.api.rooms.getAll().then((rows) => setRooms(Array.isArray(rows) ? /** @type {ConferenceRoomExpectedView[]} */ (rows) : [])).catch(() => setRooms([]))
+    window.api.customers.getAll().then((rows) => setCustomers(Array.isArray(rows) ? /** @type {ConferenceCustomerExpectedView[]} */ (rows) : [])).catch(() => setCustomers([]))
     window.api.dayuse.getConfig().then((config) => {
       setVenueResources(Array.isArray(config?.resources) ? /** @type {VenueResourceExpectedView[]} */ (config.resources) : [])
     }).catch(() => setVenueResources([]))
   }, [])
+
+  // A Bookings-originated "Event / Lodge Booking" action carries a one-shot
+  // intent. Consume it exactly once, clear it from history state, and open the
+  // single authoritative create form. Back/refresh/return-from-payment can
+  // never re-open the dialog or re-submit a record.
+  useEffect(() => {
+    const intent = /** @type {{createEventIntent?: {scope?: string, source?: string, requestedAt?: number}}|undefined} */ (location.state)
+      ?.createEventIntent
+    if (!intent || createIntentConsumed.current) return
+    createIntentConsumed.current = true
+    const next = empty()
+    next.reservation_scope = intent.scope === 'exclusive_lodge' ? 'exclusive_lodge' : 'venue_only'
+    next.booking_date = localToday()
+    next.check_in = localToday()
+    next.check_out = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+    setEditing(null)
+    setForm(next)
+    setOperationId(crypto.randomUUID())
+    setError('')
+    setShowForm(true)
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [location.state, location.pathname, navigate])
 
   useEffect(() => {
     const targetId = location.state?.collectPaymentBookingId
@@ -238,50 +271,114 @@ export default function Conference() {
   const openCreate = () => {
     setEditing(null)
     setForm(empty())
+    setOperationId(crypto.randomUUID())
+    setNewCustomer({ name: '', phone: '', email: '' })
     setError('')
     setShowForm(true)
   }
 
   /** @param {ConferenceBookingExpectedView} b */
-  const openEdit = (b) => {
-    setEditing(b)
-    setForm({
-      booking_date: b.booking_date,
-      start_time: b.start_time,
-      end_time: b.end_time,
-      client_name: b.client_name,
-      company: b.company || '',
-      event_name: b.event_name || b.client_name || '',
-      event_type: b.event_type || 'conference',
-      reservation_scope: b.reservation_scope || 'venue_only',
-      check_in: b.check_in || b.booking_date,
-      check_out: b.check_out || b.booking_date,
-      room_ids: Array.isArray(b.room_ids) ? b.room_ids : [],
-      resource_keys: [],
-      status: b.status || 'reserved',
-      attendees: String(b.attendees || ''),
-      adults: String(b.adults || ''),
-      children: String(b.children || ''),
-      setup_type: b.setup_type || 'Theatre',
-      room_name: b.room_name || 'Conference Room',
-      includes_catering: b.includes_catering || false,
-      catering_notes: b.catering_notes || '',
-      total_amount: String(b.total_amount || ''),
-      deposit_paid: String(b.deposit_paid || b.amount_paid || ''),
-      deposit_amount: '',
-      payment_status: b.payment_status || 'pending',
-      payment_method: b.payment_method || '',
-      currency: b.currency || 'BWP',
-      notes: b.notes || ''
-    })
+  const openEdit = async (b) => {
+    setDetailsLoadingId(b.id)
     setError('')
-    setShowForm(true)
+    try {
+      const details = /** @type {{event?: ConferenceBookingExpectedView, rooms?: EventRoomExpectedView[], resources?: EventResourceExpectedView[]}} */ (
+        await window.api.events.getDetails(b.id)
+      )
+      const event = details?.event || b
+      const eventRooms = Array.isArray(details?.rooms) ? details.rooms : []
+      const roomIds = eventRooms.map((room) => room.room_id).filter(Boolean)
+      if (event.reservation_scope === 'venue_with_rooms' && roomIds.length === 0) {
+        throw new Error('Room assignment details are unavailable. Refresh while online before editing this event.')
+      }
+      const datesIn = eventRooms.map((room) => room.check_in).filter(Boolean).sort()
+      const datesOut = eventRooms.map((room) => room.check_out).filter(Boolean).sort()
+      if (event.reservation_scope === 'exclusive_lodge' && (!datesIn.length || !datesOut.length)) {
+        throw new Error('Whole-lodge dates are unavailable. Refresh while online before editing this event.')
+      }
+      setEditing(event)
+      setForm({
+        booking_date: event.booking_date,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        client_name: event.client_name,
+        company: event.company || '',
+        event_name: event.event_name || event.client_name || '',
+        customer_id: event.customer_id || '',
+        event_type: event.event_type || 'conference',
+        reservation_scope: event.reservation_scope || 'venue_only',
+        check_in: datesIn[0] || event.check_in || event.booking_date,
+        check_out: datesOut[datesOut.length - 1] || event.check_out || event.booking_date,
+        room_ids: event.reservation_scope === 'venue_with_rooms' ? roomIds : [],
+        resource_keys: (details.resources || []).map((resource) => resource.resource_key).filter(Boolean),
+        status: event.status || 'reserved',
+        attendees: String(event.attendees || ''),
+        adults: String(event.adults || ''),
+        children: String(event.children || ''),
+        setup_type: event.setup_type || 'Theatre',
+        room_name: event.room_name || 'Conference Room',
+        includes_catering: event.includes_catering || false,
+        catering_notes: event.catering_notes || '',
+        total_amount: String(event.total_amount || ''),
+        event_daily_rate: String(event.event_daily_rate || ''),
+        deposit_paid: String(event.deposit_paid || event.amount_paid || ''),
+        deposit_amount: '',
+        payment_status: event.payment_status || 'pending',
+        payment_method: event.payment_method || '',
+        currency: event.currency || 'BWP',
+        notes: event.notes || ''
+      })
+      setShowForm(true)
+    } catch (err) {
+      setError(err?.message || 'Could not load authoritative event assignment details.')
+    } finally {
+      setDetailsLoadingId(null)
+    }
+  }
+
+  /**
+   * Resolve one scoped customer for the reservation. Prefer an explicit
+   * selection, then an exact known customer, and only then create a new
+   * customer through the authoritative IPC contract. A display name alone is
+   * never used to merge two different customers.
+   * @param {string} name
+   * @returns {Promise<string|null>}
+   */
+  const resolveCustomerId = async (name) => {
+    if (form.customer_id) return form.customer_id
+    const trimmed = name.trim()
+    if (!trimmed) return null
+    const exactMatches = customers.filter((customer) => String(customer.name || '').trim().toLowerCase() === trimmed.toLowerCase())
+    if (exactMatches.length > 0) {
+      throw new Error(exactMatches.length === 1
+        ? 'Select the matching customer record above so the reservation links to the verified customer.'
+        : 'Several customers have this name. Select the correct customer record above before saving.')
+    }
+    setCustomerSaving(true)
+    try {
+      const created = await window.api.customers.create({
+        name: trimmed,
+        phone: (newCustomer.phone || '').trim(),
+        email: (newCustomer.email || '').trim()
+      })
+      if (created?.success === false) throw new Error(created.error || 'Could not create customer')
+      const id = created?.id || created?.customer?.id || null
+      if (id) {
+        setCustomers((prev) => [...prev, { id, name: trimmed, phone: newCustomer.phone, email: newCustomer.email }])
+      }
+      return id
+    } finally {
+      setCustomerSaving(false)
+    }
   }
 
   /** @param {import('react').FormEvent<HTMLFormElement>} e */
   const handleSave = async (e) => {
     e.preventDefault()
-    if (!form.client_name.trim()) { setError('Client name is required'); return }
+    const customerName = form.client_name.trim()
+    const eventName = form.event_name.trim() || customerName
+    if (!customerName) { setError('Customer / client name is required'); return }
+    if (!eventName) { setError('Event or group name is required'); return }
     if (!form.booking_date) { setError('Date is required'); return }
     if (!form.start_time || !form.end_time) { setError('Start and end time are required'); return }
     if (form.reservation_scope !== 'venue_only' && (!form.check_in || !form.check_out || form.check_out <= form.check_in)) {
@@ -295,18 +392,25 @@ export default function Conference() {
     setSaving(true)
     setError('')
     try {
+      const customerId = await resolveCustomerId(customerName)
       const hasNewFields = form.event_type || form.reservation_scope || form.event_name
       const payload = {
         ...form,
         booking_date: form.reservation_scope === 'venue_only' ? form.booking_date : form.check_in,
-        event_name: form.client_name.trim(),
+        event_name: eventName,
+        client_name: customerName,
+        customer_id: customerId,
+        operation_id: editing ? undefined : operationId || crypto.randomUUID(),
         company: null,
         setup_type: 'Default',
         room_name: null,
         attendees: Number(form.attendees) || 0,
         adults: Number(form.adults) || Number(form.attendees) || 0,
         children: Number(form.children) || 0,
-        total_amount: parseFloat(form.total_amount) || 0,
+        total_amount: form.reservation_scope === 'exclusive_lodge'
+          ? Math.round((Number(form.event_daily_rate || 0) * Math.max(0, (new Date(`${form.check_out}T00:00:00`).getTime() - new Date(`${form.check_in}T00:00:00`).getTime()) / 86400000)) * 100) / 100
+          : parseFloat(form.total_amount) || 0,
+        event_daily_rate: form.reservation_scope === 'exclusive_lodge' ? Number(form.event_daily_rate || 0) : null,
         deposit_paid: parseFloat(form.deposit_paid) || 0,
         deposit_amount: parseFloat(form.deposit_amount) || parseFloat(form.deposit_paid) || 0,
         resources: venueResources
@@ -353,17 +457,35 @@ export default function Conference() {
   }
 
   /** @param {ConferenceBookingExpectedView} booking */
-  const openPayment = (booking) => {
+  const openPayment = async (booking) => {
     const paid = booking.amount_paid || booking.deposit_paid || 0
     const outstanding = Math.max(0, (booking.total_amount || 0) - paid)
     setPayBooking(booking)
     setPayForm({ amount: String(outstanding), method: booking.payment_method || 'cash' })
+    paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }
+    setPendingPaymentIntent(false)
     setPayError('')
+    const pending = await window.api.events.getPendingPaymentIntent(booking.id).catch(() => null)
+    if (pending?.pending && pending.idempotency_key) {
+      const amount = Number(pending.amount).toFixed(2)
+      paymentIntentRef.current = {
+        eventId: booking.id,
+        amount,
+        method: pending.method,
+        type: pending.type || 'payment',
+        key: pending.idempotency_key,
+        pending: true
+      }
+      setPayForm({ amount, method: pending.method })
+      setPendingPaymentIntent(true)
+    }
   }
 
   const closePaymentModal = () => {
     setPayBooking(null)
     setPayForm({ amount: '', method: 'cash' })
+    paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }
+    setPendingPaymentIntent(false)
     setPayError('')
   }
 
@@ -377,7 +499,23 @@ export default function Conference() {
     setPaySaving(true)
     setPayError('')
     try {
-      const intentKey = `evt-pay-${payBooking.id}-${amount}-${Date.now()}`
+      // Retry the exact same operation key while the event/amount payload is
+      // unchanged; a different amount is a different request and gets a new key.
+      const amountKey = amount.toFixed(2)
+      const intent = paymentIntentRef.current
+      const sameEnvelope = intent.eventId === payBooking.id
+        && intent.amount === amountKey
+        && intent.method === payForm.method
+        && intent.type === 'payment'
+        && intent.key
+      if (intent.pending && !sameEnvelope) {
+        throw new Error('This payment has an uncertain result. Retry the original amount and method after sync; do not change it or start another payment yet.')
+      }
+      const intentKey = sameEnvelope
+        ? intent.key
+        : `evt-pay-${payBooking.id}-${crypto.randomUUID()}`
+      paymentIntentRef.current = { eventId: payBooking.id, amount: amountKey, method: payForm.method, type: 'payment', key: intentKey, pending: true }
+      setPendingPaymentIntent(true)
       const result = await window.api.events.updatePayment(payBooking.id, amount, payForm.method, 'payment', intentKey)
       if (result?.success === false) throw new Error(result.error || 'Payment failed')
       closePaymentModal()
@@ -627,18 +765,77 @@ export default function Conference() {
                 <ErrorNotice className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{error}</ErrorNotice>
               )}
 
-              <div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Event / Client Name *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Event / Group Name *</label>
                   <input
                     className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="e.g. ABC Company"
-                    value={form.client_name}
-                    onChange={(e) => set('client_name', e.target.value)}
+                    placeholder="e.g. ABC Conference, Smith Wedding"
+                    value={form.event_name}
+                    onChange={(e) => set('event_name', e.target.value)}
                     required
                     autoFocus
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+                  <select
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    value={form.customer_id}
+                    onChange={(e) => {
+                      const id = e.target.value
+                      const found = customers.find((customer) => customer.id === id)
+                      set('customer_id', id)
+                      if (found) set('client_name', found.name || '')
+                    }}
+                  >
+                    <option value="">— Select or create —</option>
+                    {[...customers]
+                      .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')))
+                      .map((customer) => (
+                        <option key={customer.id} value={customer.id}>{customer.name}</option>
+                      ))}
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Customer / Contact Name *</label>
+                  <input
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                    placeholder="Name of the person or company holding the reservation"
+                    value={form.client_name}
+                    onChange={(e) => set('client_name', e.target.value)}
+                    readOnly={Boolean(form.customer_id)}
+                    required
+                  />
+                  {!form.customer_id && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      A verified customer record is created for this name when you save. Select an existing customer above to link instead.
+                    </p>
+                  )}
+                </div>
+                {!form.customer_id && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                      <input
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        placeholder="+267 ..."
+                        value={newCustomer.phone}
+                        onChange={(e) => setNewCustomer((prev) => ({ ...prev, phone: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                      <input
+                        type="email"
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        placeholder="name@example.com"
+                        value={newCustomer.email}
+                        onChange={(e) => setNewCustomer((prev) => ({ ...prev, email: e.target.value }))}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
 
               {venueResources.length > 0 && (
@@ -717,14 +914,28 @@ export default function Conference() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Reservation Scope</label>
                   <select
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white disabled:bg-gray-100"
                     value={form.reservation_scope}
                     onChange={(e) => set('reservation_scope', e.target.value)}
+                    disabled={Boolean(editing)}
                   >
                     {RESERVATION_SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
+                  {editing && (
+                    <p className="mt-1 text-xs text-gray-500">Scope cannot be changed after creation. Cancel and recreate the event to change it safely.</p>
+                  )}
                 </div>
               </div>
+
+              {form.reservation_scope === 'exclusive_lodge' && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  <p className="font-semibold">Entire lodge reservation</p>
+                  <p className="mt-1 text-xs">
+                    All {rooms.filter((room) => room.status !== 'maintenance').length} bookable rooms will be reserved for this event.
+                    Entire-lodge scope does not multiply the whole-lodge price by room count.
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {form.reservation_scope === 'venue_only' && <div>
@@ -809,7 +1020,26 @@ export default function Conference() {
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
+                {form.reservation_scope === 'exclusive_lodge' ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Whole-lodge daily rate ({currency}) *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      required={!editing}
+                      disabled={Boolean(editing)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                      placeholder="0.00"
+                      value={form.event_daily_rate}
+                      onChange={(e) => set('event_daily_rate', e.target.value)}
+                    />
+                    {editing && <p className="mt-1 text-xs text-gray-500">Pricing is locked after creation. Cancel and recreate to change it safely.</p>}
+                    <p className="mt-1 text-xs text-gray-500">
+                      {Math.max(0, Math.round((new Date(`${form.check_out}T00:00:00`).getTime() - new Date(`${form.check_in}T00:00:00`).getTime()) / 86400000))} night(s) · whole-lodge total {currency}{(Number(form.event_daily_rate || 0) * Math.max(0, Math.round((new Date(`${form.check_out}T00:00:00`).getTime() - new Date(`${form.check_in}T00:00:00`).getTime()) / 86400000))).toFixed(2)}
+                    </p>
+                  </div>
+                ) : <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Base Venue / Package Fee ({currency})</label>
                   <input
                     type="number"
@@ -820,7 +1050,7 @@ export default function Conference() {
                     value={form.total_amount}
                     onChange={(e) => set('total_amount', e.target.value)}
                   />
-                </div>
+                </div>}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Deposit Paid ({currency})</label>
                   <input
@@ -870,7 +1100,7 @@ export default function Conference() {
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || customerSaving}
                   className="px-5 py-2.5 text-sm font-medium bg-green-700 hover:bg-green-800 disabled:opacity-60 text-white rounded-lg transition-colors"
                 >
                   {saving ? 'Saving...' : editing ? 'Update Booking' : 'Create Booking'}
@@ -894,6 +1124,11 @@ export default function Conference() {
             <form onSubmit={handlePaymentSave} className="px-6 py-5 space-y-4">
               {payError && (
                 <ErrorNotice className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{payError}</ErrorNotice>
+              )}
+              {pendingPaymentIntent && (
+                <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                  A previous payment is awaiting confirmation. Retry the saved amount and method after sync; changing them could duplicate a receipt.
+                </p>
               )}
               <div>
                 <p className="text-sm font-medium text-gray-900">{payBooking.event_name || payBooking.client_name}</p>
@@ -920,6 +1155,7 @@ export default function Conference() {
                   step="0.01"
                   min="0"
                   max={Math.max(0, (payBooking.total_amount || 0) - (payBooking.amount_paid || payBooking.deposit_paid || 0))}
+                  disabled={pendingPaymentIntent || paySaving}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   value={payForm.amount}
                   onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
@@ -929,6 +1165,7 @@ export default function Conference() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
                 <select
+                  disabled={pendingPaymentIntent || paySaving}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
                   value={payForm.method}
                   onChange={(e) => setPayForm({ ...payForm, method: e.target.value })}

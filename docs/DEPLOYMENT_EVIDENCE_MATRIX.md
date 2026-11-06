@@ -1,5 +1,24 @@
 # Deployment Evidence Matrix
 
+## 2026-11-06 — Lodge event invoice continuation (source only; release blocked)
+
+Desktop source and Manager PWA now contain the event invoice identity,
+projection, ledger-read and durable collection-intent changes. Focused event,
+public-booking and offline-queue checks pass; desktop and Manager PWA builds and
+their main/renderer/Manager typechecks pass. The preload typecheck still has
+six existing bridge typing diagnostics. Release architecture checks pass, but
+the required release-behavior check fails on a changed Bar POS source assertion
+in this mixed worktree.
+
+Migration `20261106010000_lodge_event_group_invoices_and_names.sql` is draft
+only. The approved disposable pooler accepted the verified Supabase CA but
+returned SQLSTATE `XX000` during PostgreSQL startup, before SQL or disposable
+marker validation. No SQL test, migration deployment, production data repair,
+installer packaging, signing, publication or operator acceptance is claimed.
+The duplicate-receipt correction still needs a tested cash-neutral audited
+contract; agreed charges and the final event balance remain unverified. A new
+LodgingOS release is not cleared by this evidence.
+
 ## 2026-10-22 - Bar add-on pricing and Accounting dependency (database deployed; no client release)
 
 Linked project `Tsa Bonno HospitalityOS` (`oicgpknsmtvcsjacymum`) is applied

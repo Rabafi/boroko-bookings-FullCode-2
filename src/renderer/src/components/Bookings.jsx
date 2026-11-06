@@ -6,7 +6,6 @@ import {
   Filter,
   CreditCard,
   Building2,
-  CheckCircle2,
   MoreVertical,
   RefreshCw,
   Edit3,
@@ -34,6 +33,7 @@ import { DESKTOP_PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from '../constants/pay
 import { useAccess, useAuth, useSettings, useFeatures } from '../app-context'
 import { canCreateBooking, countMonthlyCreatedBookings, countMonthlyUsageBookings, getEarlyUpgradePromptState, getEffectiveUsageLimits, normalizeSubscriptionPlan } from '../../../shared/subscriptionPlans'
 import { formatLocalDate, localToday } from '../utils/localDate'
+import { sortBookingRows } from '../utils/bookingSort.js'
 import { getBusinessDisplayName, getUiVocabulary } from '../../../shared/uiVocabulary'
 import { getBookingFinancialView, isPendingBookingFinancial, bookingPaymentStatusLabel } from '../../../shared/bookingFinancials.js'
 import {
@@ -291,10 +291,6 @@ function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localN
  * @typedef {{plan: string, limits: import('../../../shared/subscriptionPlans.js').UsageLimits, usage: {monthlyBookings?: number, targetMonthBookings: number, creationMonthBookings: number, rooms: number, users: number}, source: string, statuses?: {bookingTargetMonth?: ReturnType<typeof canCreateBooking>, bookingCreationMonth?: ReturnType<typeof canCreateBooking>}, bookingAllowance?: {targetMonthStatus?: ReturnType<typeof canCreateBooking>, creationMonthStatus?: ReturnType<typeof canCreateBooking>, createdMonthUsed?: number}, recommendation?: unknown}} BookingUsageSnapshotReadExpectedView
  * mesh:lockRoom returns {success, lockId} or {success:false,error}; values are not IPC-validated.
  * @typedef {{success: boolean, lockId?: string | null, error?: string}} BookingRoomLockResultExpectedView
- * bookings:createEvent returns db.createEventBooking fields with the documented
- * deposit-warning error variant; this view does not validate the IPC payload.
- * @typedef {{bookingId: string, count: number, groupId: string, rooms: unknown[], totalPrice: number, nights: number, pendingSync?: boolean, idempotent?: boolean, depositWarning?: string | null}} EventBookingCreationExpectedView
- * @typedef {{success: true} & EventBookingCreationExpectedView | {success: false, error?: string}} EventBookingCreateResultExpectedView
  * @typedef {{created_at?: string | null, date?: string | null, description: string, amount: number | string, paid_at?: string | null, type?: string | null, method?: string | null}} BookingHistoryChargeExpectedView
  * @typedef {{action?: string, before_snapshot?: Record<string, unknown> | null, after_snapshot?: Record<string, unknown> | null, created_at?: string | null}} BookingHistoryAuditExpectedView
  * @typedef {{amount: number | string, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null}} BookingHistoryPaymentExpectedView
@@ -302,6 +298,7 @@ function getMeshLocksForRoom(activeLocks = [], roomId, checkIn, checkOut, localN
 export default function Bookings() {
   const { user, logout } = useAuth()
   const access = useAccess()
+  const canManageEvents = /** @type {{capabilities?: Record<string, boolean>}} */ (access)?.capabilities?.['conference.manage'] === true
   const { settings } = useSettings()
   const currency = settings?.currency || 'P'
   const location = useLocation()
@@ -391,12 +388,6 @@ export default function Bookings() {
   // History Timeline modal
   const [showHistory, setShowHistory] = useState(false)
   const [historyBooking, setHistoryBooking] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
-
-  // Event booking modal
-  const [showEventModal, setShowEventModal] = useState(false)
-  const [eventForm, setEventForm] = useState({ event_name: '', contact_phone: '', contact_email: '', check_in: '', check_out: '', event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
-  const [eventLoading, setEventLoading] = useState(false)
-  const [eventResult, setEventResult] = useState(/** @type {EventBookingCreationExpectedView | null} */ (null)) // success result
 
   // Reschedule modal
   const [rescheduleBookingState, setRescheduleBookingState] = useState(/** @type {BookingListRowExpectedView | null} */ (null))
@@ -1185,27 +1176,19 @@ export default function Bookings() {
     }
   }
 
+  // Event / Group bookings are owned by Events & Venues. The Bookings screen
+  // only carries a one-shot create intent so the operator lands on the single
+  // authoritative create form instead of a second, divergent lodge modal.
   const openEventModal = () => {
-    setEventForm({ event_name: '', contact_phone: '', contact_email: '', check_in: today(), check_out: tomorrow(), event_daily_rate: '', deposit_amount: '', payment_method: 'cash', notes: '' })
-    setEventResult(null)
-    setError('')
-    setShowEventModal(true)
-  }
-
-  /** @param {import('react').FormEvent<HTMLFormElement>} e */
-  const handleEventSave = async (e) => {
-    e.preventDefault()
-    setEventLoading(true)
-    try {
-      const res = /** @type {EventBookingCreateResultExpectedView} */ (await window.api.bookings.createEvent({ ...eventForm, created_by: user.id }))
-      if (res.success === false) throw new Error(res.error)
-      // Pass depositWarning into eventResult so the success screen can display it
-      setEventResult({ ...res, depositWarning: res.depositWarning || null })
-      loadAll()
-    } catch (err) {
-      setError((/** @type {{message?: string}} */ (err)).message || 'Failed to create event booking')
-    }
-    setEventLoading(false)
+    navigate('/conference', {
+      state: {
+        createEventIntent: {
+          scope: 'exclusive_lodge',
+          source: 'bookings',
+          requestedAt: Date.now()
+        }
+      }
+    })
   }
 
   const openReschedule = (b) => {
@@ -1281,27 +1264,7 @@ export default function Bookings() {
   const isEventBooking = (b) => b && (b._event_group || b.is_exclusive_event || b.notes?.includes('[GROUP:'))
 
   const sortBookings = useCallback((list) => {
-    const safeDate = (value) => {
-      const time = value ? new Date(value).getTime() : NaN
-      return Number.isFinite(time) ? time : 0
-    }
-    const safeText = (value) => String(value || '').toLowerCase()
-
-    return [...list].sort((left, right) => {
-      switch (sortBy) {
-        case 'created_asc':
-          return safeDate(left.created_at) - safeDate(right.created_at)
-        case 'check_in_asc':
-          return safeDate(left.check_in) - safeDate(right.check_in)
-        case 'check_in_desc':
-          return safeDate(right.check_in) - safeDate(left.check_in)
-        case 'room_asc':
-          return safeText(left.room_number).localeCompare(safeText(right.room_number), undefined, { numeric: true, sensitivity: 'base' })
-        case 'created_desc':
-        default:
-          return safeDate(right.created_at) - safeDate(left.created_at)
-      }
-    })
+    return sortBookingRows(list, sortBy)
   }, [sortBy])
 
   // The current array originates at bookings:getAll. This is not runtime
@@ -1559,12 +1522,14 @@ export default function Bookings() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={openEventModal}
-            className="inline-flex items-center gap-2 rounded-2xl border border-indigo-500/20 bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)] transition-colors hover:bg-indigo-700"
-          >
-            <Building2 size={16} /> Event / Lodge Booking
-          </button>
+          {canManageEvents && (
+            <button
+              onClick={openEventModal}
+              className="inline-flex items-center gap-2 rounded-2xl border border-indigo-500/20 bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)] transition-colors hover:bg-indigo-700"
+            >
+              <Building2 size={16} /> Event / Lodge Booking
+            </button>
+          )}
           <button
             onClick={openAdd}
             className="btn-primary"
@@ -1661,8 +1626,8 @@ export default function Bookings() {
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
           >
-            <option value="created_desc">Newest created</option>
-            <option value="created_asc">Oldest created</option>
+            <option value="created_desc">Newest created · invoice tie-break</option>
+            <option value="created_asc">Oldest created · invoice tie-break</option>
             <option value="check_in_asc">Check-in soonest</option>
             <option value="check_in_desc">Check-in latest</option>
             <option value="room_asc">Room number</option>
@@ -2319,167 +2284,6 @@ export default function Bookings() {
               </button>
             </div>
           </form>
-        </Modal>
-      )}
-
-      {/* Event / Lodge Booking Modal */}
-      {showEventModal && (
-        <Modal
-          title="🏢 Event / Lodge Booking"
-          onClose={() => setShowEventModal(false)}
-          size="lg"
-        >
-          {eventResult ? (
-            /* ── Success screen ── */
-            <div className="text-center py-6">
-              <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckCircle2 size={28} className="text-green-600" />
-              </div>
-              <h3 className="mb-1 text-lg font-bold text-slate-800">Entire Lodge Reserved!</h3>
-              <p className="mb-4 text-sm text-slate-500">
-                <span className="font-semibold text-slate-700">"{eventForm.event_name}"</span> — Entire lodge reserved.
-              </p>
-              <div className="mb-5 space-y-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm text-slate-600">
-                <p className="font-medium text-slate-700">All {eventResult.count} rooms · Conference · Pool · Bar · Kitchen</p>
-                <p className="text-slate-500">{eventForm.check_in} → {eventForm.check_out} ({eventResult.nights} night{eventResult.nights !== 1 ? 's' : ''})</p>
-                {eventResult.totalPrice > 0 && (
-                  <p className="font-semibold text-green-700">Total: {currency} {eventResult.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-                )}
-              </div>
-              {eventResult?.depositWarning && (
-                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-left text-sm text-amber-800">
-                  ⚠️ Deposit not recorded: {eventResult.depositWarning}. Please record it manually.
-                </div>
-              )}
-              <button onClick={() => setShowEventModal(false)} className="btn-primary px-8">Done</button>
-            </div>
-          ) : (
-            /* ── Booking form ── */
-            <form onSubmit={handleEventSave} className="space-y-5">
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                <strong>EXCLUSIVE lodge booking.</strong> The entire property — all rooms, conference room, pool, bar and kitchen — will be reserved for one guest. No other bookings can be made during this period. <strong>Any existing bookings must be cancelled first.</strong>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <F label="Event / Group Name *">
-                    <input
-                      className="input"
-                      value={eventForm.event_name}
-                      onChange={(e) => setEventForm({ ...eventForm, event_name: e.target.value })}
-                      placeholder="e.g. ABC Conference, Smith Wedding, Company Retreat"
-                      required
-                    />
-                  </F>
-                </div>
-                <F label="Contact Phone">
-                  <input
-                    className="input"
-                    value={eventForm.contact_phone}
-                    onChange={(e) => setEventForm({ ...eventForm, contact_phone: e.target.value })}
-                    placeholder="+267 ..."
-                  />
-                </F>
-                <F label="Contact Email">
-                  <input
-                    type="email"
-                    className="input"
-                    value={eventForm.contact_email}
-                    onChange={(e) => setEventForm({ ...eventForm, contact_email: e.target.value })}
-                  />
-                </F>
-                <F label="Check In *">
-                  <input
-                    type="date"
-                    className="input"
-                    value={eventForm.check_in}
-                    onChange={(e) => setEventForm({ ...eventForm, check_in: e.target.value })}
-                    required
-                  />
-                </F>
-                <F label="Check Out *">
-                  <input
-                    type="date"
-                    className="input"
-                    value={eventForm.check_out}
-                    min={eventForm.check_in}
-                    onChange={(e) => setEventForm({ ...eventForm, check_out: e.target.value })}
-                    required
-                  />
-                </F>
-                <div className="col-span-2">
-                  <F label={`Daily Rate (${currency}) *`}>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      className="input"
-                      value={eventForm.event_daily_rate}
-                      onChange={(e) => setEventForm({ ...eventForm, event_daily_rate: e.target.value })}
-                      placeholder="Fixed daily rate for the entire lodge"
-                      required
-                    />
-                  </F>
-                  {Number(eventForm.event_daily_rate) > 0 && eventForm.check_in && eventForm.check_out && (() => {
-                    const nights = Math.max(0, Math.ceil((new Date(eventForm.check_out) - new Date(eventForm.check_in)) / 86400000))
-                    const total = Number(eventForm.event_daily_rate) * nights
-                    return nights > 0 ? (
-                      <p className="text-xs text-green-700 font-medium mt-1.5">
-                        Total: {currency} {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({nights} night{nights !== 1 ? 's' : ''} × {currency} {Number(eventForm.event_daily_rate).toLocaleString(undefined, { minimumFractionDigits: 2 })}/night)
-                      </p>
-                    ) : null
-                  })()}
-                </div>
-                <F label={`Deposit (${currency}) — optional`}>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    className="input"
-                    value={eventForm.deposit_amount}
-                    onChange={(e) => setEventForm({ ...eventForm, deposit_amount: e.target.value })}
-                    placeholder="Optional deposit amount"
-                  />
-                </F>
-                {Number(eventForm.deposit_amount) > 0 && (
-                  <F label="Deposit Payment Method">
-                    <select
-                      className="input"
-                      value={eventForm.payment_method}
-                      onChange={(e) => setEventForm({ ...eventForm, payment_method: e.target.value })}
-                    >
-                      {PAYMENT_METHODS.map((m) => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
-                    <p className="mt-1.5 text-xs text-slate-500">If the deposit comes by bank transfer, confirm POP before saving the event booking.</p>
-                  </F>
-                )}
-                <div className="col-span-2">
-                  <F label="Notes">
-                    <textarea
-                      className="input resize-none"
-                      rows={2}
-                      value={eventForm.notes}
-                      onChange={(e) => setEventForm({ ...eventForm, notes: e.target.value })}
-                      placeholder="Event details, special requirements..."
-                    />
-                  </F>
-                </div>
-              </div>
-
-              {error && (
-                <ErrorNotice className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</ErrorNotice>
-              )}
-
-              <div className="flex gap-3 pt-1">
-                <button type="button" onClick={() => setShowEventModal(false)} className="btn-secondary flex-1">Cancel</button>
-                <button type="submit" disabled={eventLoading} className="btn-primary flex-1 bg-indigo-600 hover:bg-indigo-700">
-                  {eventLoading ? 'Reserving lodge...' : '🏢 Reserve Entire Lodge'}
-                </button>
-              </div>
-            </form>
-          )}
         </Modal>
       )}
 

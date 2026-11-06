@@ -22,6 +22,8 @@
     "test:offline-pos-critical": "node .\\tests\\offline-pos-regression.test.mjs",
     "test:offline-queue-critical": "node .\\tests\\offline-queue-regression.test.mjs",
     "test:financial-integrity": "node .\\tests\\financial-integrity-regression.test.mjs",
+    "test:lodge-event-invoice-model": "node --test tests/lodge-event-invoice-model.test.mjs",
+    "test:lodge-event-durable-intents": "node --test tests/lodge-event-durable-intents.test.mjs",
     "test:financial-truth": "node --test tests/financial-truth-control-plane.test.mjs tests/restaurant-accounting-p1-completion.test.mjs tests/restaurant-accounting-p3-full-shutdown.test.mjs tests/restaurant-accounting-contract.test.mjs tests/financial-truth-gap-closure.test.mjs tests/financial-truth-cutover-audit.test.mjs tests/financial-truth-finality-contract.test.mjs tests/financial-truth-remediation-followup.test.mjs tests/pos-return-financial-reversal.test.mjs tests/pos-financial-truth.test.mjs tests/pos-history-artifact-handlers.test.mjs tests/ap-supplier-controls.test.mjs",
     "test:customer-credit-reschedule": "node .\\tests\\customer-credit-reschedule-regression.test.mjs",
     "test:inventory-offline-sync": "node .\\tests\\inventory-offline-sync-regression.test.mjs",
