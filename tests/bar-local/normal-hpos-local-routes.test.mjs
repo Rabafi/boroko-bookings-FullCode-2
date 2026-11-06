@@ -253,7 +253,7 @@ test('original Staff page and local Accounting chart never use hosted APIs from 
   const taxPage = read('src/renderer/src/components/restaurant-accounting/RestaurantTaxReturns.jsx')
   const taxApi = read('src/renderer/src/components/restaurant-accounting/barLocalTaxReturnsApi.js')
   assert.match(taxPage, /user\?\.localAuthority===true\?<LocalBarTaxReturns/)
-  assert.match(taxPage, /does not submit a return/)
+  assert.match(taxPage, /or submit a return/)
   assert.match(taxApi, /accounting\.tax_return\.prepare/)
   const bankRouteStart = shell.indexOf('<Route path="restaurant/bank-reconciliation"')
   const bankRouteEnd = shell.indexOf('</Route>', bankRouteStart)

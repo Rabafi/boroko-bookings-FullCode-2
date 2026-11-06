@@ -39,7 +39,7 @@ test('local tax adapter loads complete, matching outlet snapshots and validates 
 
 test('local tax adapter rejects wrong scope, changing watermarks and malformed rates', async () => {
   await assert.rejects(createBarLocalTaxReturnsApi(bridge({ wrongScope: true }), scope).load(), /another Bar session/)
-  await assert.rejects(createBarLocalTaxReturnsApi(bridge({ changingWatermark: true }), scope).load(), /changed while loading/)
+  await assert.rejects(createBarLocalTaxReturnsApi(bridge({ changingWatermark: true }), scope).load(), /changed while tax records were loading/)
   const invalid = bridge()
   invalid.query = async (_name, filters) => response(filters.kind === 'tax_codes'
     ? [{ id: codeId, code: 'VAT', name: 'VAT', rate: '1.0001', active: true, version: 1 }]
