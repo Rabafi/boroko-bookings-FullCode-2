@@ -34,9 +34,9 @@ function buildRoomHighlights(room) {
  * If the image is served from Supabase Storage, append resize/format parameters.
  * Otherwise return the original URL unchanged.
  */
-/** @param {string} url @param {number} width @returns {string} */
+/** @template T @param {T} url @param {number} width @returns {T extends string ? string : T} */
 export function optimizeImageUrl(url, width) {
-  if (!url || typeof url !== 'string') return url
+  if (!url || typeof url !== 'string') return /** @type {T extends string ? string : T} */ (url)
   try {
     const parsed = new URL(url)
     // Supabase Storage transformer endpoint

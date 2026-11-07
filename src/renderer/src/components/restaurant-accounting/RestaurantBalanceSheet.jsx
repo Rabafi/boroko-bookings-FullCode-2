@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { AccountingButton, AccountingExportButton, AccountingLoading, AccountingNotice, AccountingPage, AccountingPanel, EmptyState, accountingInvoke, firstOfMonth, inputClass, labelClass, money, runIdempotent, today, unwrap } from './RestaurantAccountingUi'
-import { useAccess } from '../../app-context'
+import { useAccess, useAuth, useSettings } from '../../app-context'
 import { canAccessCapability } from '../../../../shared/accessControl'
+import { createBarLocalBalanceSheetApi } from './barLocalBalanceSheetApi.js'
 function Rows({rows,valueKey='balance'}){return rows?.length?<div className="divide-y divide-slate-100">{rows.map(r=><div key={r.id||r.account_id} className="flex justify-between gap-4 py-2 text-sm"><span><b>{r.code}</b> — {r.name}{!r.is_active&&<small className="ml-2 text-slate-400">(inactive)</small>}</span><b>{money(r[valueKey])}</b></div>)}</div>:<EmptyState title="No activity"/>}
 
-export default function RestaurantBalanceSheet(){
+function CloudRestaurantBalanceSheet(){
  const access=useAccess(),canClose=canAccessCapability(access,'accounting.close')
  const [dates,setDates]=useState({startDate:firstOfMonth(),endDate:today()}),[data,setData]=useState(null),[periodClose,setPeriodClose]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('')
  const load=useCallback(async()=>{setLoading(true);setError('');try{const [statement,close]=await Promise.all([accountingInvoke('getStatements',dates.startDate,dates.endDate),accountingInvoke('getPeriodClose',dates.startDate,dates.endDate)]);setData(unwrap(statement,null));setPeriodClose(unwrap(close,null))}catch(e){setError(e.message)}finally{setLoading(false)}},[dates])
@@ -28,4 +29,31 @@ export default function RestaurantBalanceSheet(){
    <AccountingPanel title="Cash flow classifications"><div className="grid gap-3 sm:grid-cols-4">{['operating','investing','financing','unclassified'].map(k=><div key={k} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{k}</p><b className={k==='unclassified'&&Number(cf[k]||0)!==0?'text-rose-700':'text-slate-900'}>{money(cf[k])}</b></div>)}</div></AccountingPanel>
   </div>}
  </AccountingPage>
+}
+
+function LocalBarBalanceSheet(){
+ const {user}=useAuth(),{settings}=useSettings()
+ const api=useMemo(()=>{try{return createBarLocalBalanceSheetApi(window.api?.barLocal,{businessId:settings?.lodge_id||user?.lodge_id,outletId:settings?.outlet_id,staffId:user?.id})}catch{return null}},[settings?.lodge_id,settings?.outlet_id,user?.id,user?.lodge_id])
+ const [dates,setDates]=useState({startDate:firstOfMonth(),endDate:today()}),[data,setData]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('')
+ const load=useCallback(async()=>{setLoading(true);setError('');try{if(!api)throw new Error('Local accounting scope is unavailable. Sign in again before continuing.');setData(await api.load(dates.startDate,dates.endDate))}catch(err){setError(err.message)}finally{setLoading(false)}},[api,dates])
+ useEffect(()=>{void load()},[load])
+ const bs=data?.balance_sheet,is=data?.income_statement
+ return <AccountingPage title="Financial statements" description="Local balance sheet and income statement from a complete outlet-scoped posted journal snapshot." actions={<AccountingButton tone="secondary" onClick={()=>void load()}><RefreshCw size={15}/>Refresh</AccountingButton>}>
+  <AccountingNotice type="warning">Local statement reports include the selected period's income and account balances through its end date. Local Bar does not support cash-flow classification, period close, or statement export here. No hosted Accounting data is used.</AccountingNotice>
+  {error&&<AccountingNotice type="error">{error}</AccountingNotice>}
+  <AccountingPanel title="Statement period" className="mb-4"><div className="grid max-w-xl gap-3 sm:grid-cols-2"><label className={labelClass}>From<input type="date" className={inputClass} value={dates.startDate} onChange={e=>setDates({...dates,startDate:e.target.value})}/></label><label className={labelClass}>To<input type="date" className={inputClass} value={dates.endDate} onChange={e=>setDates({...dates,endDate:e.target.value})}/></label></div></AccountingPanel>
+  {loading?<AccountingLoading/>:bs&&is&&<div className="space-y-4">
+   {Number(bs.difference)!==0&&<AccountingNotice type="error">Balance sheet difference is {money(bs.difference)}. Investigate this local ledger result; the report does not hide it.</AccountingNotice>}
+   <AccountingPanel title="Period close control"><p className="text-sm">Local period-close checklist, approval and reopen controls are unavailable in this build. Use the local Finance & close page only when its local workflow is enabled.</p></AccountingPanel>
+   <div className="grid gap-4 xl:grid-cols-3"><AccountingPanel title="Assets"><Rows rows={bs.assets} valueKey="balance"/><div className="mt-3 flex justify-between border-t pt-3 font-black"><span>Total assets</span><span>{money(bs.assets_total)}</span></div></AccountingPanel><AccountingPanel title="Liabilities"><Rows rows={bs.liabilities} valueKey="balance"/><div className="mt-3 flex justify-between border-t pt-3 font-black"><span>Total liabilities</span><span>{money(bs.liabilities_total)}</span></div></AccountingPanel><AccountingPanel title="Equity"><Rows rows={bs.equity} valueKey="balance"/><div className="mt-3 flex justify-between border-t pt-3 text-sm"><span>Current-period earnings</span><b>{money(bs.current_period_earnings)}</b></div><div className="mt-3 flex justify-between border-t pt-3 font-black"><span>Liabilities + equity</span><span>{money(bs.liabilities_and_equity_total)}</span></div></AccountingPanel></div>
+   <div className="grid gap-4 xl:grid-cols-2"><AccountingPanel title="Income statement — revenue"><Rows rows={is.revenue} valueKey="period"/><div className="mt-3 flex justify-between border-t pt-3 font-black"><span>Total revenue</span><span>{money(is.revenue_total)}</span></div></AccountingPanel><AccountingPanel title="Income statement — expenses"><Rows rows={is.expenses} valueKey="period"/><div className="mt-3 flex justify-between border-t pt-3 font-black"><span>Total expenses</span><span>{money(is.expense_total)}</span></div></AccountingPanel></div>
+   <AccountingPanel title="Period result"><div className="text-3xl font-black text-slate-900">{money(is.net_income)}</div><p className="mt-2 text-xs text-slate-500">Local snapshot watermark {data.snapshot_watermark}</p></AccountingPanel>
+   <AccountingNotice type="warning">Cash-flow report is unavailable because this local workflow does not yet store verified operating, investing and financing classifications.</AccountingNotice>
+  </div>}
+ </AccountingPage>
+}
+
+export default function RestaurantBalanceSheet(){
+ const {user}=useAuth()
+ return user?.localAuthority===true?<LocalBarBalanceSheet/>:<CloudRestaurantBalanceSheet/>
 }

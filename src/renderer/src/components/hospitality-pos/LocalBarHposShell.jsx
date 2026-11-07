@@ -32,6 +32,7 @@ const RestaurantAccountsPayable = lazy(() => import('../restaurant-accounting/Re
 const RestaurantBankReconciliation = lazy(() => import('../restaurant-accounting/RestaurantBankReconciliation.jsx'))
 const RestaurantTaxReturns = lazy(() => import('../restaurant-accounting/RestaurantTaxReturns.jsx'))
 const RestaurantBudgets = lazy(() => import('../restaurant-accounting/RestaurantBudgets.jsx'))
+const RestaurantBalanceSheet = lazy(() => import('../restaurant-accounting/RestaurantBalanceSheet.jsx'))
 const RestaurantWorkspace = lazy(() => import('../restaurant/RestaurantWorkspace.jsx'))
 const RestaurantInventoryLots = lazy(() => import('../restaurant/RestaurantInventoryLots.jsx'))
 const RestaurantPurchasing = lazy(() => import('../restaurant/RestaurantPurchasing.jsx'))
@@ -284,7 +285,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="restaurant/bank-reconciliation" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantBankReconciliation /></LocalBarAddonGate>} />
                         <Route path="restaurant/tax-returns" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantTaxReturns /></LocalBarAddonGate>} />
                         <Route path="restaurant/budgets" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantBudgets /></LocalBarAddonGate>} />
-                        <Route path="restaurant/balance-sheet" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Accounting Pro" /></LocalBarAddonGate>} />
+                        <Route path="restaurant/balance-sheet" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantBalanceSheet /></LocalBarAddonGate>} />
                         <Route path="restaurant/payroll" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Accounting Pro" /></LocalBarAddonGate>} />
                         <Route path="restaurant/tips" element={<Navigate to="/restaurant/finance-close?tab=tips" replace />} />
                         <Route path="restaurant/settlements" element={<Navigate to="/restaurant/finance-close?tab=settlements" replace />} />

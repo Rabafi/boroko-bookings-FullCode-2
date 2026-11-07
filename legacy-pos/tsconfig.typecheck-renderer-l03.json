@@ -18,5 +18,5 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/renderer/src/**/*.js", "src/renderer/src/**/*.jsx", "src/shared/**/*.js"]
+  "include": ["src/renderer/src/**/*.js", "src/renderer/src/**/*.jsx", "src/shared/**/*.js", "src/shared/**/*.d.ts"]
 }

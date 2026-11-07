@@ -42,6 +42,29 @@ function assertStrictSuboptions(options, label) {
   if (disabled.length) throw new Error(`${label}: strict sub-options disabled: ${disabled.map((name) => `${name}=false`).join(', ')}`)
 }
 
+function assertConfiguredInventory(roots, expectedProductionRoots, expectedSupportRoots, label) {
+  const rootSet = new Set(roots.map((path) => resolve(path)))
+  const expectedProductionSet = new Set(expectedProductionRoots.map((path) => resolve(path)))
+  const expectedSupportSet = new Set(expectedSupportRoots.map((path) => resolve(path)))
+  const expectedConfiguredSet = new Set([...expectedProductionSet, ...expectedSupportSet])
+  const missingRoots = expectedProductionRoots.filter((path) => !rootSet.has(resolve(path)))
+  const extraRoots = roots.filter((path) => !expectedConfiguredSet.has(resolve(path)))
+  const missingSupport = expectedSupportRoots.filter((path) => !rootSet.has(resolve(path)))
+  if (missingRoots.length || extraRoots.length || missingSupport.length) {
+    throw new Error(`${label}: configured root/support inventory mismatch; missing roots=${missingRoots.map(toRepoPath).join(',')}; missing support=${missingSupport.map(toRepoPath).join(',')}; extra=${extraRoots.map(toRepoPath).join(',')}`)
+  }
+}
+
+function assertProgramSupportInventory(actualPaths, expectedSupportRoots, supportDirectories, label) {
+  const actualSet = new Set(actualPaths.map((path) => resolve(path)))
+  const expectedSet = new Set(expectedSupportRoots.map((path) => resolve(path)))
+  const missing = expectedSupportRoots.filter((path) => !actualSet.has(resolve(path)))
+  const extra = actualPaths.filter((path) => supportDirectories.some((directory) => isWithin(path, directory)) && path.endsWith('.d.ts') && !expectedSet.has(resolve(path)))
+  if (missing.length || extra.length) {
+    throw new Error(`${label}: type-support declaration inventory mismatch; missing from program.getSourceFiles()=${missing.map(toRepoPath).join(',')}; unexpected=${extra.map(toRepoPath).join(',')}`)
+  }
+}
+
 function assertProductionInventory(roots, actualPaths, expected, label) {
   const rootSet = new Set(roots.map((path) => resolve(path)))
   const expectedSet = new Set(expected.map((path) => resolve(path)))
@@ -94,7 +117,7 @@ function assertStandardLibraryProvenance(sourcePaths, sourceFiles, profile) {
       return name !== 'es2020' || !isWithin(file, legacyNodeTypesRoot)
     })
     const domLibs = libPaths.filter((path) => /^lib\.dom(?:\.|\.d\.ts)/i.test(path.split(sep).at(-1) ?? ''))
-    if (unexpected.length || (domLibs.length && !references.some(({ file, name }) => file === allowedDomReference && name === 'dom'))) {
+    if (unexpected.length || (profile.name === 'main' && domLibs.length && !references.some(({ file, name }) => file === allowedDomReference && name === 'dom'))) {
       throw new Error(`${profile.name}: unexpected standard-library reference in Node16 program: ${unexpected.map(({ file, name }) => `${toRepoPath(file)} -> ${name}`).join(', ') || 'DOM library without the known cross-fetch reference'}`)
     }
     const unsupported = libPaths.filter((path) => /lib\.(?:esnext|webworker|scripthost)/i.test(path.split(sep).at(-1) ?? ''))
@@ -128,6 +151,7 @@ function assertLegacyRendererOptions(options, label) {
 
 function assertLegacyRendererTypeOrigins(sourcePaths, label) {
   assertLegacyRendererHasNoNodeDeclarations(sourcePaths, label)
+  assertLegacyRendererHasNoElectronDeclarations(sourcePaths, label)
   const reactPaths = sourcePaths.filter((path) => path.includes(`${sep}@types${sep}react${sep}`))
   const reactDomPaths = sourcePaths.filter((path) => path.includes(`${sep}@types${sep}react-dom${sep}`))
   const misplaced = [...reactPaths.filter((path) => !isWithin(path, resolve(legacyRendererTypesRoot, 'react'))), ...reactDomPaths.filter((path) => !isWithin(path, resolve(legacyRendererTypesRoot, 'react-dom')))]
@@ -214,8 +238,9 @@ function assertLegacyNodeOptions(options, label, resolvedNodeTypesPath) {
   if (options.module !== ts.ModuleKind.Node16 || options.moduleResolution !== ts.ModuleResolutionKind.Node16) {
     throw new Error(`${label}: main/preload must retain Node16 module and resolution settings`)
   }
-  if (JSON.stringify(options.lib) !== JSON.stringify(['lib.es2020.d.ts'])) {
-    throw new Error(`${label}: main/preload must use only the ES2020 standard library`)
+  const expectedLibs = label.includes('preload') ? ['lib.es2020.d.ts', 'lib.dom.d.ts'] : ['lib.es2020.d.ts']
+  if (JSON.stringify(options.lib) !== JSON.stringify(expectedLibs)) {
+    throw new Error(`${label}: ${label.includes('preload') ? 'preload must use ES2020 plus the Electron renderer DOM library' : 'main must use only the ES2020 standard library'}`)
   }
   if (JSON.stringify(options.types) !== JSON.stringify(['node'])) {
     throw new Error(`${label}: main/preload ambient types must contain only node`)
@@ -228,6 +253,19 @@ function assertLegacyNodeOptions(options, label, resolvedNodeTypesPath) {
     throw new Error(`${label}: node type reference resolved outside the isolated Node16 declarations`)
   }
 }
+function assertLegacyRendererHasNoElectronDeclarations(sourcePaths, label) {
+  const declarationRoots = [
+    resolve(legacyRoot, 'node_modules/electron'),
+    resolve(legacyRoot, 'node_modules/@types/electron'),
+    resolve(repoRoot, 'node_modules/electron'),
+    resolve(repoRoot, 'node_modules/@types/electron'),
+  ]
+  const leaked = sourcePaths.filter((path) => path.endsWith('.d.ts') && declarationRoots.some((root) => isWithin(path, root)))
+  if (leaked.length) {
+    throw new Error(`${label}: Electron declarations entered the Legacy renderer program: ${leaked.map(toRepoPath).join(', ')}`)
+  }
+}
+
 function assertLegacyRendererHasNoNodeDeclarations(sourcePaths, label) {
   const leaked = sourcePaths.filter((path) => path.includes(`${sep}@types${sep}node${sep}`))
   if (leaked.length) {
@@ -251,6 +289,11 @@ function assertProfileGuardSensitivity() {
   }
   const nodeEntry = resolve(legacyNodeTypesRoot, 'node/index.d.ts')
   assertLegacyNodeOptions(baseline, 'guard baseline', nodeEntry)
+  const preloadBaseline = { ...baseline, lib: ['lib.es2020.d.ts', 'lib.dom.d.ts'] }
+  assertLegacyNodeOptions(preloadBaseline, 'guard preload baseline', nodeEntry)
+  let missingPreloadDomRejected = false
+  try { assertLegacyNodeOptions({ ...preloadBaseline, lib: ['lib.es2020.d.ts'] }, 'guard preload missing DOM', nodeEntry) } catch (error) { missingPreloadDomRejected = String(error).includes('preload must use ES2020 plus the Electron renderer DOM library') }
+  if (!missingPreloadDomRejected) throw new Error('Legacy checker guard failed sensitivity case: preload DOM declarations were omitted')
   const rendererBaseline = {
     strict: true, noEmit: true, allowJs: true, checkJs: true, skipLibCheck: false,
     target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext,
@@ -285,6 +328,25 @@ function assertProfileGuardSensitivity() {
   const expected = [resolve(legacyRoot, 'src/main/guard-one.js'), resolve(legacyRoot, 'src/main/guard-two.js')]
   const rootBaseline = [...expected]
   const actualBaseline = [...expected]
+  const support = [resolve(legacyRoot, 'src/shared/guard-contract.d.ts')]
+  assertConfiguredInventory([...rootBaseline, ...support], expected, support, 'guard configured inventory baseline')
+  let missingConfiguredRootRejected = false
+  try { assertConfiguredInventory([...rootBaseline.slice(1), ...support], expected, support, 'guard configured missing root') } catch (error) { missingConfiguredRootRejected = String(error).includes('configured root/support inventory mismatch') }
+  if (!missingConfiguredRootRejected) throw new Error('Legacy checker guard failed sensitivity case: configured production root omitted')
+  let missingConfiguredSupportRejected = false
+  try { assertConfiguredInventory(rootBaseline, expected, support, 'guard configured missing support') } catch (error) { missingConfiguredSupportRejected = String(error).includes('missing support=') }
+  if (!missingConfiguredSupportRejected) throw new Error('Legacy checker guard failed sensitivity case: configured support declaration omitted')
+  let extraConfiguredRootRejected = false
+  try { assertConfiguredInventory([...rootBaseline, ...support, resolve(legacyRoot, 'src/main/unexpected.js')], expected, support, 'guard configured extra root') } catch (error) { extraConfiguredRootRejected = String(error).includes('extra=') }
+  if (!extraConfiguredRootRejected) throw new Error('Legacy checker guard failed sensitivity case: unexpected configured root')
+  const supportDirectory = resolve(legacyRoot, 'src/shared')
+  assertProgramSupportInventory([...actualBaseline, ...support], support, [supportDirectory], 'guard support program baseline')
+  let missingProgramSupportRejected = false
+  try { assertProgramSupportInventory(actualBaseline, support, [supportDirectory], 'guard missing support program') } catch (error) { missingProgramSupportRejected = String(error).includes('missing from program.getSourceFiles()') }
+  if (!missingProgramSupportRejected) throw new Error('Legacy checker guard failed sensitivity case: support declaration omitted from Program')
+  let unexpectedProgramSupportRejected = false
+  try { assertProgramSupportInventory([...actualBaseline, ...support, resolve(supportDirectory, 'unexpected.d.ts')], support, [supportDirectory], 'guard unexpected support program') } catch (error) { unexpectedProgramSupportRejected = String(error).includes('unexpected=') }
+  if (!unexpectedProgramSupportRejected) throw new Error('Legacy checker guard failed sensitivity case: unexpected declaration entered Program')
   assertProductionInventory(rootBaseline, actualBaseline, expected, 'guard inventory baseline')
   let missingRootRejected = false
   try { assertProductionInventory(rootBaseline.slice(1), actualBaseline, expected, 'guard missing root') } catch (error) { missingRootRejected = String(error).includes('root inventory mismatch') }
@@ -359,6 +421,9 @@ function assertProfileGuardSensitivity() {
     assertLegacyRendererHasNoNodeDeclarations([resolve(legacyRoot, 'node_modules/@types/node/index.d.ts')], 'guard renderer-node-leak')
   } catch { rendererLeakRejected = true }
   if (!rendererLeakRejected) throw new Error('Legacy checker guard failed sensitivity case: renderer-node-leak')
+  let electronLeakRejected = false
+  try { assertLegacyRendererTypeOrigins([resolve(legacyRoot, 'node_modules/electron/electron.d.ts'), resolve(legacyRendererTypesRoot, 'react/index.d.ts'), resolve(legacyRendererTypesRoot, 'react-dom/index.d.ts')], 'guard renderer-electron-leak') } catch (error) { electronLeakRejected = String(error).includes('Electron declarations entered') }
+  if (!electronLeakRejected) throw new Error('Legacy checker guard failed sensitivity case: Electron declarations entered renderer')
 }
 const legacyNodeTypes = JSON.parse(readFileSync(legacyNodeTypesPackage, 'utf8'))
 if (legacyNodeTypes.version !== expectedLegacyNodeTypesVersion) {
@@ -378,7 +443,21 @@ function filesUnder(directory) {
       if (entry.isDirectory()) {
         if (entry.name === 'test' || entry.name === '__tests__') continue
         visit(full)
-      } else if (entry.isFile() && extensions.has(extname(entry.name)) && !/\.(test|spec)\.[^.]+$/i.test(entry.name)) result.push(full)
+      } else if (entry.isFile() && extensions.has(extname(entry.name)) && !entry.name.endsWith('.d.ts') && !/\.(test|spec)\.[^.]+$/i.test(entry.name)) result.push(full)
+    }
+  }
+  visit(directory)
+  return result
+}
+function declarationFilesUnder(directory) {
+  const result = []
+  function visit(path) {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const full = resolve(path, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === 'test' || entry.name === '__tests__') continue
+        visit(full)
+      } else if (entry.isFile() && entry.name.endsWith('.d.ts')) result.push(full)
     }
   }
   visit(directory)
@@ -399,17 +478,20 @@ for (const profile of profiles) {
   } else {
     assertLegacyRendererOptions(options, profile.name)
   }
-  const roots = parsed.fileNames.map((path) => resolve(path)).sort()
+  const configuredPaths = parsed.fileNames.map((path) => resolve(path)).sort()
   const expected = profile.dirs.flatMap((dir) => filesUnder(resolve(legacyRoot, dir))).sort()
-  const rootSet = new Set(roots)
-  const missingRoots = expected.filter((path) => !rootSet.has(path))
-  const extraRoots = roots.filter((path) => !expected.includes(path))
-  if (missingRoots.length || extraRoots.length) throw new Error(`${profile.name}: root inventory mismatch; missing=${missingRoots.map(toRepoPath).join(',')}; extra=${extraRoots.map(toRepoPath).join(',')}`)
-  const program = ts.createProgram({ rootNames: roots, options })
+  const supportDirectories = profile.dirs.map((dir) => resolve(legacyRoot, dir))
+  const expectedSupport = supportDirectories.flatMap((directory) => declarationFilesUnder(directory)).sort()
+  const expectedConfiguredSupport = profile.name === 'renderer' ? expectedSupport : []
+  const expectedProgramSupport = profile.name === 'main' ? [] : expectedSupport
+  assertConfiguredInventory(configuredPaths, expected, expectedConfiguredSupport, profile.name)
+  const roots = configuredPaths.filter((path) => !path.endsWith('.d.ts'))
+  const program = ts.createProgram({ rootNames: configuredPaths, options })
   const actual = program.getSourceFiles()
   const actualPaths = actual.map((sourceFile) => resolve(sourceFile.fileName))
   const actualSet = new Set(actual.map((sourceFile) => resolve(sourceFile.fileName)))
   assertProductionInventory(roots, actualPaths, expected, profile.name)
+  assertProgramSupportInventory(actualPaths, expectedProgramSupport, supportDirectories, profile.name)
   assertNoSuppressions(expected, actual, profile.name)
   assertStandardLibraryProvenance(actualPaths, actual, profile)
   if (profile.name === 'main' || profile.name === 'preload') {
@@ -421,7 +503,7 @@ for (const profile of profiles) {
       .map((sourceFile) => resolve(sourceFile.fileName))
     const allowedDomReference = resolve(legacyRoot, 'node_modules/cross-fetch/index.d.ts')
     const unexpectedDomReferences = domReferenceSources.filter((path) => path !== allowedDomReference)
-    if (domLibFiles.length && (!domReferenceSources.includes(allowedDomReference) || unexpectedDomReferences.length)) {
+    if (profile.name === 'main' && domLibFiles.length && (!domReferenceSources.includes(allowedDomReference) || unexpectedDomReferences.length)) {
       throw new Error(`${profile.name}: unexpected DOM declaration edge in Node16 program: ${unexpectedDomReferences.map(toRepoPath).join(', ') || 'DOM library present without the known cross-fetch reference'}`)
     }
   } else if (profile.name === 'renderer') {
@@ -441,8 +523,8 @@ for (const profile of profiles) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const sidecar = resolve(evidenceDir, `L03-legacy-${profile.name}-diagnostics-${stamp}.jsonl`)
   mkdirSync(evidenceDir, { recursive: true })
-  const records = [{ recordType: 'metadata', profile: `L03-legacy-${profile.name}`, typescriptVersion: ts.version, typescriptArtifactSha256, configPath: toRepoPath(configPath), configSha256: configHash, productionRoots: roots.length, productionRootsSha256: rootHash, actualProgramFiles: actual.length, actualDeclarationProgramFiles: actual.filter((sourceFile) => sourceFile.isDeclarationFile).length, actualCheckedProductionRoots: expected.length, diagnostics: diagnostics.length, countsByCode, diagnosticBaseline }, ...diagnosticLabels.map((diagnostic) => ({ recordType: 'diagnostic', ...diagnostic }))]
+  const records = [{ recordType: 'metadata', profile: `L03-legacy-${profile.name}`, typescriptVersion: ts.version, typescriptArtifactSha256, configPath: toRepoPath(configPath), configSha256: configHash, productionRoots: expected.length, productionRootsSha256: rootHash, configuredTypeSupportRoots: expectedConfiguredSupport.length, programTypeSupportFiles: expectedProgramSupport.length, actualProgramFiles: actual.length, actualDeclarationProgramFiles: actual.filter((sourceFile) => sourceFile.isDeclarationFile).length, actualCheckedProductionRoots: expected.length, diagnostics: diagnostics.length, countsByCode, diagnosticBaseline }, ...diagnosticLabels.map((diagnostic) => ({ recordType: 'diagnostic', ...diagnostic }))]
   writeFileSync(sidecar, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
-  console.log(`[typecheck-legacy-l03] ${profile.name}: roots=${roots.length}, actualProgramFiles=${actual.length}, checkedProductionRoots=${expected.length}, errors=${diagnostics.length}, baseline=${diagnosticBaseline.status}${diagnosticBaseline.status === 'compared' ? ` unchanged=${diagnosticBaseline.unchanged} introduced=${diagnosticBaseline.introduced} cleared=${diagnosticBaseline.cleared}` : ` uncompared=${diagnosticBaseline.uncompared}`}, sidecar=${toRepoPath(sidecar)}`)
+  console.log(`[typecheck-legacy-l03] ${profile.name}: roots=${expected.length}, configuredTypeSupportRoots=${expectedConfiguredSupport.length}, programTypeSupportFiles=${expectedProgramSupport.length}, actualProgramFiles=${actual.length}, checkedProductionRoots=${expected.length}, errors=${diagnostics.length}, baseline=${diagnosticBaseline.status}${diagnosticBaseline.status === 'compared' ? ` unchanged=${diagnosticBaseline.unchanged} introduced=${diagnosticBaseline.introduced} cleared=${diagnosticBaseline.cleared}` : ` uncompared=${diagnosticBaseline.uncompared}`}, sidecar=${toRepoPath(sidecar)}`)
   if (diagnostics.length) process.exitCode = 1
 }

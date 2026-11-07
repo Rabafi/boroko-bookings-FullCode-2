@@ -10,8 +10,7 @@ const onIpc = (channel, cb) => {
   return () => ipcRenderer.off(channel, listener);
 };
 
-/** @typedef {{email: string, password: string}} LegacyBarOwnerCredentialsExpectedView */
-
+/** @type {import('../shared/legacyApiContract.js').LegacyPosApi} */
 const posAPI = {
   // Auth
   login: (/** @type {string} */ email, /** @type {string} */ password, /** @type {string|null} */ lodgeId = null) => ipcRenderer.invoke('pos:auth-login', { email, password, lodgeId }),
@@ -26,10 +25,7 @@ const posAPI = {
     pairDevice: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:pair-device', request),
     reconnectServer: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:reconnect-server', request),
     resumeProvisioning: () => ipcRenderer.invoke('pos:bar-local:resume-provisioning'),
-    login: (
-      /** @type {string | LegacyBarOwnerCredentialsExpectedView} */ staffId,
-      /** @type {string|undefined} */ pin
-    ) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
+    login: (staffId, pin) => ipcRenderer.invoke('pos:bar-local:login', staffId, pin),
     logout: () => ipcRenderer.invoke('pos:bar-local:logout'),
     startPairing: (/** @type {unknown} */ request) => ipcRenderer.invoke('pos:bar-local:start-pairing', request),
     adminStatus: () => ipcRenderer.invoke('pos:bar-local:admin-status'),
@@ -167,7 +163,7 @@ const posAPI = {
     onError: (/** @type {(value: unknown) => void} */ cb) => onIpc('pos:update-error', cb),
     check: () => ipcRenderer.invoke('pos:update-check'),
     download: () => ipcRenderer.invoke('pos:update-download'),
-    install: (/** @type {unknown} */ options) => ipcRenderer.invoke('pos:update-install', options || {}),
+    install: (options) => ipcRenderer.invoke('pos:update-install', options || {}),
     getState: () => ipcRenderer.invoke('pos:update-get-state'),
     getInstallSafety: () => ipcRenderer.invoke('pos:update-get-install-safety')
   },

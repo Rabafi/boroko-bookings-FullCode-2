@@ -19,14 +19,10 @@ const MAX_RESPONSE_BYTES = 1_000_000
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const record = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
-/** @param {unknown} value @returns {value is unknown[]} */
-const unknownArray = (value) => Array.isArray(value)
 /** @param {unknown} value @param {RegExp} pattern @returns {value is string} */
 const requiredString = (value, pattern) => typeof value === 'string' && pattern.test(value)
 /** @param {unknown} value @param {RegExp} pattern @returns {value is string|null} */
 const nullableString = (value, pattern) => value === null || requiredString(value, pattern)
-/** @param {unknown} value @returns {value is number} */
-const nonnegativeInteger = (value) => typeof value === 'number' && Number.isInteger(value) && value >= 0
 
 function baseUrl() {
   const value = import.meta.env.VITE_BAR_OWNER_API_URL?.trim()
@@ -66,7 +62,7 @@ async function request(path, { method = 'GET', body, token = null, signal } = {}
   /** @type {ReadableStreamDefaultReader<Uint8Array>|null} */
   let reader = null
   /** @type {(reason: unknown) => void} */
-  let rejectInterrupt = () => {}
+  let rejectInterrupt
   const interrupted = new Promise((_, reject) => { rejectInterrupt = reject })
   /** @param {unknown} reason */
   const interrupt = (reason) => {
@@ -147,8 +143,8 @@ async function request(path, { method = 'GET', body, token = null, signal } = {}
 
 /** @param {unknown} value @returns {BarOwnerLink[]} */
 function parseLinks(value) {
-  if (!unknownArray(value)) throw new Error('The owner service returned an invalid Bar list.')
-  return value.map((entry) => {
+  if (!Array.isArray(value)) throw new Error('The owner service returned an invalid Bar list.')
+  return /** @type {unknown[]} */ (value).map((entry) => {
     if (!record(entry) || !requiredString(entry.key_id, KEY_ID) || !requiredString(entry.authority_id, UUID)
       || !requiredString(entry.business_id, UUID) || typeof entry.business_name !== 'string'
       || typeof entry.active !== 'boolean' || typeof entry.revoked !== 'boolean' || typeof entry.stale !== 'boolean'
@@ -168,25 +164,25 @@ function parseSales(value) {
     || !requiredString(value.period.from, DATE) || !requiredString(value.period.to, DATE)
     || !nullableString(value.last_ingested_at, /^\d{4}-\d\d-\d\dT/)
     || !nullableString(value.max_ingested_sequence, /^[0-9]+$/) || !requiredString(value.received_at, /^\d{4}-\d\d-\d\dT/)
-    || !record(value.totals) || !unknownArray(value.by_day) || !unknownArray(value.transactions)) {
+    || !record(value.totals) || !Array.isArray(value.by_day) || !Array.isArray(value.transactions)) {
     throw new Error('The received Bar sales projection is incomplete or has an unsupported shape. Financial totals are withheld.')
   }
   const totals = value.totals
   for (const field of ['gross_sales', 'returns', 'voids', 'other_corrections_signed', 'net_sales', 'tax', 'tips']) {
     if (!validMoney(totals[field])) throw new Error('The received Bar sales projection contains an invalid amount. Financial totals are withheld.')
   }
-  if (!nonnegativeInteger(totals.committed_sales)) throw new Error('The received Bar sales projection contains an invalid sale count.')
-  const byDay = value.by_day.map((day) => {
+  if (!Number.isInteger(/** @type {number} */ (totals.committed_sales)) || /** @type {number} */ (totals.committed_sales) < 0) throw new Error('The received Bar sales projection contains an invalid sale count.')
+  const byDay = /** @type {unknown[]} */ (value.by_day).map((day) => {
     if (!record(day) || !requiredString(day.business_date, DATE) || !validMoney(day.gross_sales)
       || !validMoney(day.signed_adjustments) || !validMoney(day.net_sales)
-      || !nonnegativeInteger(day.committed_sales)) throw new Error('The received Bar chart data is incomplete.')
+      || !Number.isInteger(/** @type {number} */ (day.committed_sales)) || /** @type {number} */ (day.committed_sales) < 0) throw new Error('The received Bar chart data is incomplete.')
     return /** @type {BarOwnerDay} */ (day)
   })
-  const transactions = value.transactions.map((row) => {
-    if (!record(row) || typeof row.event_type !== 'string' || !['sale.committed', 'sale.returned', 'sale.voided', 'sale.corrected_after_close'].includes(row.event_type)
+  const transactions = /** @type {unknown[]} */ (value.transactions).map((row) => {
+    if (!record(row) || !['sale.committed', 'sale.returned', 'sale.voided', 'sale.corrected_after_close'].includes(/** @type {string} */ (row.event_type))
       || !requiredString(row.operation_id, UUID) || !requiredString(row.commit_sequence, /^[0-9]+$/)
       || !requiredString(row.business_date, DATE) || !nullableString(row.sale_id, UUID)
-      || !nullableString(row.original_sale_id, UUID) || !nonnegativeInteger(row.items_count)
+      || !nullableString(row.original_sale_id, UUID) || !Number.isInteger(/** @type {number} */ (row.items_count)) || /** @type {number} */ (row.items_count) < 0
       || !requiredString(row.received_at, /^\d{4}-\d\d-\d\dT/)
       || !nullableString(row.total, MONEY) || !nullableString(row.tax, MONEY) || !nullableString(row.tip, MONEY)) {
       throw new Error('The received Bar transaction history is incomplete.')
@@ -208,12 +204,12 @@ function parseOperations(value) {
     throw new Error('The received Bar operations projection is incomplete. Stock and cash-up figures are withheld.')
   }
   if (!value.complete || value.summary === null) throw new Error('The received Bar operations projection is incomplete or exceeds its 500-event limit. Narrow the date range; figures are withheld.')
-  if (!record(value.summary) || !nonnegativeInteger(value.summary.stock_movement_count)
-    || !nonnegativeInteger(value.summary.cashup_count) || !validMoney(value.summary.submitted_variance_total)
-    || !unknownArray(value.stock_movements) || !unknownArray(value.stock_lot_events) || !unknownArray(value.cashups)) {
+  if (!record(value.summary) || !Number.isInteger(/** @type {number} */ (value.summary.stock_movement_count)) || /** @type {number} */ (value.summary.stock_movement_count) < 0
+    || !Number.isInteger(/** @type {number} */ (value.summary.cashup_count)) || /** @type {number} */ (value.summary.cashup_count) < 0 || !validMoney(value.summary.submitted_variance_total)
+    || !Array.isArray(value.stock_movements) || !Array.isArray(value.stock_lot_events) || !Array.isArray(value.cashups)) {
     throw new Error('The received Bar operations projection has an invalid summary.')
   }
-  const stockMovements = value.stock_movements.map((row) => {
+  const stockMovements = /** @type {unknown[]} */ (value.stock_movements).map((row) => {
     if (!record(row) || typeof row.event_type !== 'string' || !row.event_type.startsWith('stock.')
       || !requiredString(row.operation_id, UUID) || !requiredString(row.commit_sequence, /^[0-9]+$/)
       || !requiredString(row.business_date, DATE) || !requiredString(row.product_id, UUID)
@@ -224,8 +220,8 @@ function parseOperations(value) {
     }
     return /** @type {BarOwnerStockMovement} */ (row)
   })
-  const cashups = value.cashups.map((row) => {
-    if (!record(row) || typeof row.event_type !== 'string' || !['cashup.submitted', 'cashup.reviewed', 'cashup.reopened'].includes(row.event_type)
+  const cashups = /** @type {unknown[]} */ (value.cashups).map((row) => {
+    if (!record(row) || !['cashup.submitted', 'cashup.reviewed', 'cashup.reopened'].includes(/** @type {string} */ (row.event_type))
       || !requiredString(row.operation_id, UUID) || !requiredString(row.commit_sequence, /^[0-9]+$/)
       || !requiredString(row.business_date, DATE) || !requiredString(row.cashup_id, UUID) || !requiredString(row.shift_id, UUID)
       || !validMoney(row.counted_cash) || !validMoney(row.expected_cash) || !validMoney(row.variance)
@@ -235,7 +231,7 @@ function parseOperations(value) {
     }
     return /** @type {BarOwnerCashup} */ (row)
   })
-  const lotEvents = value.stock_lot_events.map((row) => {
+  const lotEvents = /** @type {unknown[]} */ (value.stock_lot_events).map((row) => {
     if (!record(row) || row.event_type !== 'stock.lot.released' || !requiredString(row.operation_id, UUID)
       || !requiredString(row.commit_sequence, /^[0-9]+$/) || !requiredString(row.business_date, DATE)
       || !requiredString(row.product_id, UUID) || !requiredString(row.lot_id, UUID)

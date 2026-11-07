@@ -5,36 +5,46 @@ import { RefreshCw, Wifi, WifiOff, AlertTriangle, CheckCircle, Clock, ChevronDow
  * queue/cache data. Main derives these fields from the existing producers. */
 /** @typedef {{isOnline: boolean, syncInProgress: boolean, pendingCount: number, failedCount: number, syncedCount: number, totalItems: number}} LegacySyncStatusExpectedView */
 /** @typedef {{id: string, entityType: string, functionName: string, status: string, createdAt: string, updatedAt: string, attempts: number, lastError: string|null, dependsOn: string|null, isFinancial: boolean, dependencyState: string|null, displayName: string, manualReviewAction: string, canRetry: boolean}} LegacySyncQueueExpectedView */
-/** @typedef {{error: string|null, remote_count: number|null, bar_outlet_count: number|null, cached_count: number, outlet_filter: string[], bar_outlet_names: string[], unlinked_bar_inventory_count: number|null}} LegacyInventoryDiagnosticsExpectedView */
-/** @typedef {{phase: string, currentVersion: string, version: string|null, releaseName: string, releaseDate: string, releaseNotes: string, progress: {percent: number, transferred: number, total: number, bytesPerSecond: number}|null, error: string, safety?: {blockers?: string[]}}} LegacyUpdateStateExpectedView */
+/** @typedef {{error: 'No lodge context'}|{error: string|null, lodge_id: string, outlet_filter: string[]|null, cached_count: number, remote_count: number|null, bar_outlet_count: number|null, bar_outlet_ids: string[], bar_outlet_names: string[], linked_menu_inventory_count: number, unlinked_bar_inventory_count: number|null}} LegacyInventoryDiagnosticsExpectedView */
+/** @typedef {{phase: string, currentVersion: string, version: string|null, releaseName: string, releaseDate: string, releaseNotes: string, progress: {percent: number, transferred: number, total: number, bytesPerSecond: number}|null, error: string, safety?: {blocked: boolean, blockers: string[], pendingCount: number, failedCount: number, openShiftCount: number, openTabCount: number, unfinalizedCashupCount: number}}} LegacyUpdateStateExpectedView */
 /** @typedef {{running: boolean, peerCount: number, lastError: string, lastMergeAt: string|null, httpPort: number|null, rememberedPeerCount: number, localInterfaces: {name: string, address: string}[], warnings: string[]}} LegacyMeshStatusExpectedView */
+/** @typedef {{skipped: true}|{skipped: true, reason: 'offline'}|{synced: number, failed: number}} LegacySyncRetryResultExpectedView */
+/** @typedef {{success: true, updateAvailable: boolean, dev?: true, gated?: true, latestVersion?: string|null, releaseName?: string, releaseDate?: string, releaseNotes?: string, state: LegacyUpdateStateExpectedView}|{success: false, offline?: true, error: string, state: LegacyUpdateStateExpectedView}} LegacyUpdateCheckResultExpectedView */
+/** @typedef {{success: true, dev?: true, state: LegacyUpdateStateExpectedView}|{success: false, offline?: true, error: string, state: LegacyUpdateStateExpectedView}} LegacyUpdateDownloadResultExpectedView */
+/** @typedef {{success: false, blocked: true, safety: NonNullable<LegacyUpdateStateExpectedView['safety']>, error: string}|{success: true, dev: true, safety: NonNullable<LegacyUpdateStateExpectedView['safety']>}|{success: true, safety: NonNullable<LegacyUpdateStateExpectedView['safety']>}} LegacyUpdateInstallResultExpectedView */
+/** @typedef {{success: true, peer: unknown, status: LegacyMeshStatusExpectedView}} LegacyMeshConnectResultExpectedView */
 
 /** @param {{user?: unknown, isOnline: boolean, setIsOnline: (online: boolean) => void, barOnly?: boolean}} props */
 export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
-  const [syncStatus, setSyncStatus] = /** @type {[LegacySyncStatusExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacySyncStatusExpectedView|null>>]} */ (useState(null));
+  const [syncStatus, setSyncStatus] = useState(/** @type {LegacySyncStatusExpectedView|null} */ (null));
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [queueDetail, setQueueDetail] = /** @type {[LegacySyncQueueExpectedView[], import('react').Dispatch<import('react').SetStateAction<LegacySyncQueueExpectedView[]>>]} */ (useState([]));
+  const [queueDetail, setQueueDetail] = useState(/** @type {LegacySyncQueueExpectedView[]} */ ([]));
   const [showDetail, setShowDetail] = useState(false);
-  const [inventoryDiag, setInventoryDiag] = /** @type {[LegacyInventoryDiagnosticsExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyInventoryDiagnosticsExpectedView|null>>]} */ (useState(null));
+  const [inventoryDiag, setInventoryDiag] = useState(/** @type {LegacyInventoryDiagnosticsExpectedView|null} */ (null));
   const [showInventoryDiag, setShowInventoryDiag] = useState(false);
-  const [updateInfo, setUpdateInfo] = /** @type {[LegacyUpdateStateExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyUpdateStateExpectedView|null>>]} */ (useState(null));
+  const [updateInfo, setUpdateInfo] = useState(/** @type {LegacyUpdateStateExpectedView|null} */ (null));
   const [updateBusy, setUpdateBusy] = useState('');
-  const [meshStatus, setMeshStatus] = /** @type {[LegacyMeshStatusExpectedView|null, import('react').Dispatch<import('react').SetStateAction<LegacyMeshStatusExpectedView|null>>]} */ (useState(null));
+  const [meshStatus, setMeshStatus] = useState(/** @type {LegacyMeshStatusExpectedView|null} */ (null));
   const [manualMeshIp, setManualMeshIp] = useState('');
   const [meshBusy, setMeshBusy] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
-      const status = await window.api.pos.getSyncStatus();
+      /** Expected handler view: get-sync-status returns these six counters/flags. */
+      const status = /** @type {LegacySyncStatusExpectedView} */ (await window.api.pos.getSyncStatus());
       setSyncStatus(status);
-      const detail = await window.api.pos.getSyncQueueDetail();
+      /** Expected handler view from get-sync-queue-detail; queue data itself is not validated. */
+      const detail = /** @type {LegacySyncQueueExpectedView[]|null|undefined} */ (await window.api.pos.getSyncQueueDetail());
       setQueueDetail(detail || []);
-      const diag = await window.api.pos.getInventoryDiagnostics().catch(() => null);
+      /** Expected handler view, including the actual no-lodge-context early return. */
+      const diag = /** @type {LegacyInventoryDiagnosticsExpectedView|null} */ (await window.api.pos.getInventoryDiagnostics().catch(() => null));
       setInventoryDiag(diag);
-      const updates = await Promise.resolve(window.api.pos.updates?.getState?.()).catch(() => null);
+      /** Expected update state emitted by main; IPC does not validate it. */
+      const updates = /** @type {LegacyUpdateStateExpectedView|null} */ (await Promise.resolve(window.api.pos.updates?.getState?.()).catch(() => null));
       if (updates) setUpdateInfo(updates);
-      const mesh = await Promise.resolve(window.api.pos.mesh?.getStatus?.()).catch(() => null);
+      /** Expected mesh status view from the main controller. */
+      const mesh = /** @type {LegacyMeshStatusExpectedView|null} */ (await Promise.resolve(window.api.pos.mesh?.getStatus?.()).catch(() => null));
       if (mesh) setMeshStatus(mesh);
     } catch (e) {
       console.error('Failed to load sync status:', e);
@@ -53,8 +63,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   useEffect(() => {
     const updates = window.api.pos.updates;
     if (!updates) return undefined;
-    /** @param {LegacyUpdateStateExpectedView} info */
-    const applyInfo = (info) => setUpdateInfo((prev) => ({ ...(prev || {}), ...(info || {}) }));
+    /** @param {unknown} value */
+    const applyInfo = (value) => setUpdateInfo((prev) => ({ ...(prev || {}), ...(/** Main emits the existing updateState object; this is an expected-data view, not validation. */ /** @type {LegacyUpdateStateExpectedView} */ (value) || {}) }));
     const cleanups = [
       updates.onAvailable(applyInfo),
       updates.onNotAvailable(applyInfo),
@@ -79,7 +89,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   const handleRetrySync = async () => {
     setSyncing(true);
     try {
-      const result = await window.api.pos.syncRetry();
+      /** Expected variants returned by the existing sync-retry handler. */
+      const result = /** @type {LegacySyncRetryResultExpectedView} */ (await window.api.pos.syncRetry());
       if (result?.synced > 0) {
         alert(`Synced ${result.synced} item(s).${result?.failed > 0 ? ` ${result.failed} failed.` : ''}`);
       } else if (result?.reason === 'offline') {
@@ -100,7 +111,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   const handleCheckUpdates = async () => {
     setUpdateBusy('checking');
     try {
-      const result = await window.api.pos.updates.check();
+      /** Expected checkForPosUpdates result shape, based on the main handler. */
+      const result = /** @type {LegacyUpdateCheckResultExpectedView} */ (await window.api.pos.updates.check());
       if (result?.state) setUpdateInfo(result.state);
       else await loadStatus();
     } finally {
@@ -111,7 +123,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   const handleDownloadUpdate = async () => {
     setUpdateBusy('downloading');
     try {
-      const result = await window.api.pos.updates.download();
+      /** Download results carry state in each existing success/error branch. */
+      const result = /** @type {LegacyUpdateDownloadResultExpectedView} */ (await window.api.pos.updates.download());
       if (result?.state) setUpdateInfo(result.state);
     } finally {
       setUpdateBusy('');
@@ -119,7 +132,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
   };
 
   const handleInstallUpdate = async () => {
-    const result = await window.api.pos.updates.install();
+    /** Install handler returns success/blocked/safety metadata. */
+    const result = /** @type {LegacyUpdateInstallResultExpectedView} */ (await window.api.pos.updates.install());
     if (result?.blocked) {
       setUpdateInfo((prev) => ({ ...(prev || {}), safety: result.safety }));
       alert(`Finish these before installing:\n${(result.safety?.blockers || []).join('\n')}`);
@@ -233,6 +247,7 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
                 onClick={async () => {
                   setMeshBusy(true);
                   try {
+                    /** @type {LegacyMeshStatusExpectedView|null|undefined} */
                     const next = await window.api.pos.mesh?.refreshDiscovery?.();
                     if (next) setMeshStatus(next);
                   } finally {
@@ -256,7 +271,8 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
                   if (!manualMeshIp.trim()) return;
                   setMeshBusy(true);
                   try {
-                    const result = await window.api.pos.mesh?.connectManual?.(manualMeshIp.trim());
+                    /** Main's mesh controller returns these fields for a manual connection. */
+                    const result = /** @type {LegacyMeshConnectResultExpectedView|null|undefined} */ (await window.api.pos.mesh?.connectManual?.(manualMeshIp.trim()));
                     if (result?.success) {
                       setMeshStatus(result.status);
                       setManualMeshIp('');
@@ -277,6 +293,7 @@ export default function Sync({ user, isOnline, setIsOnline, barOnly = false }) {
                 onClick={async () => {
                   setMeshBusy(true);
                   try {
+                    /** @type {LegacyMeshStatusExpectedView|null|undefined} */
                     const next = await window.api.pos.mesh?.syncNow?.();
                     if (next) setMeshStatus(next);
                   } finally {

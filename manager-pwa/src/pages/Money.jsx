@@ -12,8 +12,9 @@ import MobileBoundaryNotice from '../components/MobileBoundaryNotice'
 import { useToast } from '../App'
 import { isBarHospitalityMode } from '../lib/productShell'
 
-// listExpenses currently reads only these three inputs. Preserve the historical fourth
-// options argument at both call sites without changing the imported function or its arity.
+// The producer accepts three arguments and currently ignores the historical fourth
+// `{forceFresh:true}` argument at both call sites. This local consumer view preserves
+// those existing calls; it does not claim that listExpenses implements freshness control.
 /** @type {(lodgeId: string, start: string, end: string, options: {forceFresh: boolean}) => ReturnType<typeof listExpenses>} */
 const listExpensesWithLegacyFreshOption = listExpenses
 
