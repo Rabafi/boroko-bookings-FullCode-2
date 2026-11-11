@@ -576,3 +576,16 @@ The new Command Central owner-link form is available only for a loopback `local_
 - Local Bar does not provide the cloud annual monthly matrix, templates, separate budget approval or export in this workflow. Users should compare the displayed budget/actual/variance for the named period; the app does not use hosted figures.
 - Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide remain pending per user direction; no PDF was edited.
 - Verification: EV-243. Budget adapter and original-route tests passed 17/17; renderer typecheck and Hospitality POS production build passed. No local database mutation was used for these UI checks; the versioned budget SQL/actual calculation contract is covered by the isolated PostgreSQL accounting suite in EV-241.
+
+## Accounting Pro local financial statements workflow (2026-11-06)
+
+- Manual impact: Required. The original Financial Statements page now reads a complete outlet-scoped local journal snapshot and the chart at a matching watermark, then presents a local balance sheet and selected-period income statement. A non-zero balance sheet difference remains visible as an error for investigation.
+- Local cash-flow classifications, period-close/reopen controls and statement export are unavailable in this route and the original local page says so. No hosted data or fallback is used.
+- Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide remain pending per user direction; no PDF was edited.
+- Verification: EV-244. Financial-statement adapter and route checks passed 26/26 together with tax, budgets and bank; renderer typecheck passed; Hospitality POS production build passed on 11 November 2026 after the current source additions.
+
+## Original Bar vouchers on local authority (2026-11-11)
+
+- Manual impact: Required. The existing Bar vouchers route now shows a complete outlet-scoped local voucher list and issues local stored-value liabilities through the atomic voucher command with manager approval. Ambiguous outcomes retain the same operation ID; unrelated pending operations block issuance. Voucher redemption remains through the original POS sale flow.
+- External provider/global vouchers and cloud voucher records remain unavailable in this route. Customer PDFs/manual, quick-start, screenshots, approved manifest/checksum and packaged offline guide remain pending per user direction; no PDF was edited.
+- Verification: EV-245. Voucher API and original route suites passed 20/20; renderer typecheck passed; Hospitality POS production build passed. No live/saved database was used for UI verification; isolated voucher command evidence remains in the service test record. Rendered/installed acceptance remains unverified.

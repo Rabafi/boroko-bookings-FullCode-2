@@ -57,7 +57,7 @@ test('local Bar restores the established operational routes and its Stock Pro an
     const routeSource = routeAt < 0 ? '' : shell.slice(routeAt, nextRouteAt < 0 ? undefined : nextRouteAt)
     assert.match(routeSource, new RegExp(`<${component}\\b`), `${route} must render its established page`)
   }
-  assert.match(shell, /<Route path="hpos\/growth-tools" element=\{<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><LocalBarRouteUnavailable area="Growth tools"/)
+  assert.match(shell, /<Route path="hpos\/growth-tools" element=\{<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><RestaurantGrowthControls tabKey="customer-funds" localAuthority \/>/)
   assert.match(shell, /<Route path="hpos\/attendance" element=\{<Navigate to="\/hpos\/shift-close" replace \/>/)
   assert.match(shell, /<Route path="restaurant\/accounting-setup" element=\{<LocalBarAddonGate addonKey="bar_accounting_workforce">/)
   assert.doesNotMatch(shell, /BarLocalWorkspace/)

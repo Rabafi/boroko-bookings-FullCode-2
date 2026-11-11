@@ -37,6 +37,7 @@ const RestaurantWorkspace = lazy(() => import('../restaurant/RestaurantWorkspace
 const RestaurantInventoryLots = lazy(() => import('../restaurant/RestaurantInventoryLots.jsx'))
 const RestaurantPurchasing = lazy(() => import('../restaurant/RestaurantPurchasing.jsx'))
 const RestaurantPurchaseSuggestions = lazy(() => import('../restaurant/RestaurantPurchaseSuggestions.jsx'))
+const RestaurantGrowthControls = lazy(() => import('../restaurant/RestaurantGrowthControls.jsx'))
 
 /** @param {{addonKey: string, children: import('react').ReactNode}} props */
 function LocalBarAddonGate({ addonKey, children }) {
@@ -240,7 +241,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="hpos/reports" element={<HposReports />} />
                         <Route path="hpos/expenses" element={<HposExpenses />} />
                         <Route path="hpos/customers" element={<HposCustomers />} />
-                        <Route path="hpos/growth-tools" element={<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><LocalBarRouteUnavailable area="Growth tools" /></LocalBarAddonGate>} />
+                        <Route path="hpos/growth-tools" element={<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><RestaurantGrowthControls tabKey="customer-funds" localAuthority /></LocalBarAddonGate>} />
                         <Route path="hpos/control" element={<HposControl />} />
                         <Route path="hpos/business-control" element={<LocalBarRouteUnavailable area="Business Control" />} />
                         <Route path="hpos/manage" element={<HposManageHub />} />
