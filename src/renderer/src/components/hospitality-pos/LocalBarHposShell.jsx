@@ -294,7 +294,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="restaurant/gift-cards-policies" element={<Navigate to="/restaurant/finance-close?tab=customer-funds" replace />} />
                         <Route path="restaurant/outlet-control" element={<LocalBarAddonGate addonKey="bar_growth_multi_outlet"><LocalBarRouteUnavailable area="Multi-outlet control" /></LocalBarAddonGate>} />
                         <Route path="multi-outlet-pos" element={<Navigate to="/restaurant/outlet-control" replace />} />
-                        <Route path="restaurant/finance-close" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Finance & close" /></LocalBarAddonGate>} />
+                        <Route path="restaurant/finance-close" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantWorkspace workspace="finance" defaultTab="cashups" enabledTabs={['cashups', 'sales', 'expenses']} /></LocalBarAddonGate>} />
                         <Route path="restaurant/cash-close" element={<Navigate to="/restaurant/finance-close?tab=cashups" replace />} />
                         <Route path="restaurant/accounting-setup" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Accounting Pro" /></LocalBarAddonGate>} />
                         <Route path="data-management" element={<Navigate to="/hpos/manage" replace />} />

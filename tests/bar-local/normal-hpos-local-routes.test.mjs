@@ -196,12 +196,16 @@ test('original My Sales reads only own local receipts and fences hosted sale cor
 })
 
 test('local Bar restores the original recipe workspace and fences unsupported Restaurant workspaces and second-display links', () => {
-  for (const [route, area] of [['hpos/floor','Floor & tables'],['hpos/kitchen','Kitchen display'],['hpos/service','Reservations & waitlist'],['hpos/business-control','Business Control'],['restaurant/finance-close','Finance & close'],['restaurant/team-workspace','Accounting & Workforce'],['pos/customer-display','Customer display'],['pos/bar-display','Bar display']]) {
+  for (const [route, area] of [['hpos/floor','Floor & tables'],['hpos/kitchen','Kitchen display'],['hpos/service','Reservations & waitlist'],['hpos/business-control','Business Control'],['restaurant/team-workspace','Accounting & Workforce'],['pos/customer-display','Customer display'],['pos/bar-display','Bar display']]) {
     const line = shell.split(/\r?\n/).find(value => value.includes('<Route path=\"'+route+'\"')) || ''
     assert.match(line, new RegExp('<LocalBarRouteUnavailable area=\"'+area+'\"'), route+' must never invoke a hosted page in local mode')
   }
   assert.match(shell, /<Route path="restaurant\/menu-production" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="menu" enabledTabs=\{\['menu', 'recipes'\]\} \/><\/LocalBarAddonGate>\}/)
   assert.match(shell, /<Route path="restaurant\/recipes" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="recipes" enabledTabs=\{\['recipes'\]\} \/><\/LocalBarAddonGate>\}/)
+  assert.match(shell, /<Route path="restaurant\/finance-close" element=\{<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantWorkspace workspace="finance" defaultTab="cashups" enabledTabs=\{\['cashups', 'sales', 'expenses'\]\} \/><\/LocalBarAddonGate>\}/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/HposCashClose.jsx'), /localAuthority \? createLocalHposCashupApi/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/HposReports.jsx'), /if \(localAuthority\)[\s\S]*barLocal\?\.query\('sales\.list'/)
+  assert.match(read('src/renderer/src/components/hospitality-pos/HposExpenses.jsx'), /submitLocalExpense/)
   const recipes = read('src/renderer/src/components/restaurant/RestaurantRecipes.jsx')
   assert.match(recipes, /createBarLocalRecipesApi\(window\.api\?\.barLocal/)
   assert.match(recipes, /if \(localAuthority\) \{[\s\S]*api\.save\(window\.localStorage, localPayload\)/)

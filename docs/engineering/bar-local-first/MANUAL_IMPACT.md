@@ -1,5 +1,9 @@
 # Bar manual impact record
 
+## 11 November 2026 — original Finance & Close shell restored for local cash-up, sales and expenses
+
+**Impact: Accounting Pro navigation and the available Finance & Close controls change; PDF/quick-start updates remain pending by user direction and non-blocking for this software checkpoint.** The original Finance & Close workspace now opens in local Bar mode with the existing Cash-ups & Drawers, Sales & Payments, and Expenses pages. Each uses its local Bar adapter. Unwired settlement, customer-funds, tips, daily-close and owner-review tabs are not exposed through this route. No new page was created. No PDF, quick-start, screenshot, manifest checksum or packaged-guide artifact was changed. Route tests, renderer typecheck and Hospitality POS production build pass; rendered local acceptance remains outstanding. Local-Bar commissioning remains unqualified.
+
 ## 11 November 2026 — original Purchasing desk now posts local supplier and receipt commands
 
 **Impact: supplier, purchase-order approval and goods-receipt steps change; PDF/quick-start edits remain pending by user direction and non-blocking for this software checkpoint.** The original Purchasing desk now creates/updates local supplier records, creates a purchase order only after an exact-command manager PIN approval, and records partial or full physical receipts through the local stock ledger. Receipt lines support optional lot and expiry capture. Unknown command results keep the exact operation for same-ID retry, and the local order version guards stale receipts. Supplier email and purchase-order PDF export remain unavailable in local Bar mode. No PDF, quick-start, screenshot, manifest checksum or packaged-guide artifact was changed. Focused route/API tests, renderer typecheck and Hospitality POS production build pass; local Bar service/database rendered acceptance remains outstanding.
