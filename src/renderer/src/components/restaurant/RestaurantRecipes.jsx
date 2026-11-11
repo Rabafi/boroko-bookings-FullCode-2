@@ -3,9 +3,16 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router";
 import { Plus, Pencil, Trash2, X } from "lucide-react";
 import { ErrorNotice } from "../shared/ErrorNotice";
+import { useAccess, useSettings } from "../../app-context";
+import { canAccessCapability } from "../../../../shared/accessControl";
+import { createBarLocalRecipesApi } from "./barLocalRecipesApi.js";
 
 export default function RestaurantRecipes() {
   const [searchParams] = useSearchParams();
+  const access = useAccess();
+  const { settings } = useSettings();
+  const localAuthority = settings?.authority_mode === 'bar_local';
+  const canManageLocal = canAccessCapability(access, 'pos.menu_manage');
   const [recipes, setRecipes] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [inventoryItems, setInventoryItems] = useState([]);
@@ -21,6 +28,7 @@ export default function RestaurantRecipes() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pendingLocal, setPendingLocal] = useState([]);
 
   useEffect(() => {
     loadData();
@@ -35,7 +43,7 @@ export default function RestaurantRecipes() {
       menu_item_id: menuItemId,
       serving_size: "1",
       ingredients: [
-        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "" },
+        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "", unit_cost: "" },
       ],
     });
     setError("");
@@ -49,6 +57,16 @@ export default function RestaurantRecipes() {
     try {
       setLoading(true);
       setError("");
+      if (localAuthority) {
+        if (!canManageLocal) throw new Error('This local Bar login cannot manage recipe configuration. Sign in with a manager who has Menu management permission.');
+        const api = createBarLocalRecipesApi(window.api?.barLocal, { businessId: String(settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(access?.user?.id || '') });
+        const result = await api.load();
+        setRecipes(result.recipes);
+        setMenuItems(result.menuItems);
+        setInventoryItems(result.inventoryItems);
+        setPendingLocal(api.pendingAll(window.localStorage));
+        return;
+      }
       const [r, m, inventory] = await Promise.all([
         window.api.pos.getRecipes(),
         window.api.pos.getMenuItems(),
@@ -72,7 +90,7 @@ export default function RestaurantRecipes() {
       menu_item_id: "",
       serving_size: "",
       ingredients: [
-        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "" },
+        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "", unit_cost: "" },
       ],
     });
     setShowForm(true);
@@ -91,6 +109,7 @@ export default function RestaurantRecipes() {
               quantity: i.quantity || "",
               unit: i.unit || "",
               waste_percent: i.wastage_pct || i.waste_percent || "",
+              unit_cost: i.unit_cost || i.recipe_unit_cost || "",
             }))
           : [
               {
@@ -98,6 +117,7 @@ export default function RestaurantRecipes() {
                 quantity: "",
                 unit: "",
                 waste_percent: "",
+                unit_cost: "",
               },
             ],
     });
@@ -109,7 +129,7 @@ export default function RestaurantRecipes() {
       ...form,
       ingredients: [
         ...form.ingredients,
-        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "" },
+        { inventory_item_id: "", quantity: "", unit: "", waste_percent: "", unit_cost: "" },
       ],
     });
   }
@@ -129,7 +149,7 @@ export default function RestaurantRecipes() {
   }
 
   async function saveRecipe() {
-    if (!form.name.trim()) return;
+    if (!form.name.trim() && !localAuthority) return;
     const validIngredients = form.ingredients.filter(
       (i) => i.inventory_item_id && Number(i.quantity) > 0,
     );
@@ -155,6 +175,30 @@ export default function RestaurantRecipes() {
       setSaving(true);
       setError("");
       setNotice("");
+      if (localAuthority) {
+        if (!canManageLocal) throw new Error('Menu management permission is required to save a local Bar recipe.')
+        if (!form.menu_item_id) throw new Error('Choose the Bar product this recipe produces.')
+        if (validIngredients.some((line) => !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(String(line.unit_cost || inventoryItems.find((item) => item.id === line.inventory_item_id)?.latest_unit_cost || '')))) {
+          throw new Error('Enter a valid unit cost for each stock ingredient. Use the current local stock cost shown beside the ingredient when it is available.')
+        }
+        const savedRecipe = recipes.find((recipe) => recipe.menu_item_id === form.menu_item_id)
+        const localPayload = {
+          product_id: form.menu_item_id,
+          expected_version: Number(savedRecipe?.version || 0),
+          lines: validIngredients.map((line) => ({
+            ingredient_product_id: line.inventory_item_id,
+            quantity: String(line.quantity).trim(),
+            unit_cost: String(line.unit_cost || inventoryItems.find((item) => item.id === line.inventory_item_id)?.latest_unit_cost || '0.00').trim()
+          }))
+        }
+        const api = createBarLocalRecipesApi(window.api?.barLocal, { businessId: String(settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(access?.user?.id || '') })
+        await api.save(window.localStorage, localPayload)
+        setShowForm(false)
+        setEditingRecipe(null)
+        setNotice(`Recipe ${savedRecipe ? 'updated' : 'created'} in the local Bar catalogue.`)
+        await loadData()
+        return
+      }
       if (editingRecipe) {
         payload.id = editingRecipe.id;
         payload.version = (editingRecipe.version || 1) + 1;
@@ -170,6 +214,12 @@ export default function RestaurantRecipes() {
       await loadData();
     } catch (err) {
       console.error("Failed to save recipe:", err);
+      if (localAuthority) {
+        try {
+          const api = createBarLocalRecipesApi(window.api?.barLocal, { businessId: String(settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(access?.user?.id || '') })
+          setPendingLocal(api.pendingAll(window.localStorage))
+        } catch { /* The primary save error remains visible. */ }
+      }
       setError(err.message || "Could not save recipe.");
     } finally {
       setSaving(false);
@@ -181,6 +231,16 @@ export default function RestaurantRecipes() {
     try {
       setError("");
       setNotice("");
+      if (localAuthority) {
+        if (!canManageLocal) throw new Error('Menu management permission is required to remove a local Bar recipe.')
+        const recipe = recipes.find((row) => row.id === id)
+        if (!recipe) throw new Error('The local recipe changed or was removed. Refresh before continuing.')
+        const api = createBarLocalRecipesApi(window.api?.barLocal, { businessId: String(settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(access?.user?.id || '') })
+        await api.save(window.localStorage, { product_id: String(id), expected_version: Number(recipe.version), lines: [] })
+        setNotice('Recipe removed from the local Bar catalogue.')
+        await loadData()
+        return
+      }
       const result = await window.api.pos.deleteRecipe(id);
       if (result?.success === false)
         throw new Error(result.error || "Could not delete recipe.");
@@ -197,15 +257,16 @@ export default function RestaurantRecipes() {
       <div className="restaurant-native-hero">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
-            Recipes & Costing
+            {localAuthority ? 'Bar Recipes & Costing' : 'Recipes & Costing'}
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Create, edit, and cost recipes
+            {localAuthority ? 'Build each Bar product recipe from counted local stock and cost it from the local snapshot.' : 'Create, edit, and cost recipes'}
           </p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={openNew}
+            disabled={localAuthority && !canManageLocal}
             className="bb-btn-primary text-sm flex items-center gap-1.5"
           >
             <Plus size={14} /> New Recipe
@@ -226,6 +287,10 @@ export default function RestaurantRecipes() {
           {notice}
         </div>
       )}
+      {localAuthority && pendingLocal.map((operation) => <div key={operation.operationId} role="status" className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+        Recipe operation {operation.operationId} has an unresolved local result. Retry the saved operation before changing this recipe.
+        <button className="ml-3 rounded bg-amber-800 px-3 py-1 font-semibold text-white" onClick={async () => { try { const api = createBarLocalRecipesApi(window.api?.barLocal, { businessId: String(settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(access?.user?.id || '') }); await api.retry(window.localStorage, operation.productId); setNotice('The saved recipe operation was confirmed.'); await loadData() } catch (err) { setError(err.message || 'The saved recipe remains unresolved.') } }}>Retry same operation</button>
+      </div>)}
 
       {loading ? (
         <div className="restaurant-native-loading">
@@ -304,18 +369,18 @@ export default function RestaurantRecipes() {
                       )}
                     </div>
                     <div className="flex gap-1">
-                      <button
+                    {!localAuthority || canManageLocal ? <button
                         onClick={() => openEdit(recipe)}
                         className="text-gray-400 hover:text-blue-600 p-1"
                       >
                         <Pencil size={14} />
-                      </button>
-                      <button
+                    </button> : null}
+                    {(!localAuthority || canManageLocal) && <button
                         onClick={() => deleteRecipe(recipe.id)}
                         className="text-gray-400 hover:text-red-600 p-1"
                       >
                         <Trash2 size={14} />
-                      </button>
+                    </button>}
                     </div>
                   </div>
                 </div>
@@ -392,7 +457,7 @@ export default function RestaurantRecipes() {
                   {error}
                 </ErrorNotice>
               )}
-              <div>
+              {!localAuthority && <div>
                 <label className="text-xs font-medium text-gray-600">
                   Recipe Name *
                 </label>
@@ -402,7 +467,7 @@ export default function RestaurantRecipes() {
                   className="bb-input w-full mt-1"
                   placeholder="e.g. Classic Burger"
                 />
-              </div>
+              </div>}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-medium text-gray-600">
@@ -410,12 +475,14 @@ export default function RestaurantRecipes() {
                   </label>
                   <select
                     value={form.menu_item_id}
-                    onChange={(e) =>
-                      setForm({ ...form, menu_item_id: e.target.value })
-                    }
+                    required={localAuthority}
+                    onChange={(e) => {
+                      const item = menuItems.find((row) => row.id === e.target.value)
+                      setForm({ ...form, menu_item_id: e.target.value, ...(localAuthority ? { name: item?.name || '' } : {}) })
+                    }}
                     className="bb-input w-full mt-1"
                   >
-                    <option value="">None</option>
+                    <option value="" disabled={localAuthority}>{localAuthority ? 'Choose a Bar product…' : 'None'}</option>
                     {menuItems.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name}
@@ -423,7 +490,7 @@ export default function RestaurantRecipes() {
                     ))}
                   </select>
                 </div>
-                <div>
+                {!localAuthority && <div>
                   <label className="text-xs font-medium text-gray-600">
                     Serving Size
                   </label>
@@ -438,7 +505,7 @@ export default function RestaurantRecipes() {
                     className="bb-input w-full mt-1"
                     placeholder="1"
                   />
-                </div>
+                </div>}
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -453,9 +520,9 @@ export default function RestaurantRecipes() {
                   </button>
                 </div>
                 <p className="mb-2 text-xs leading-5 text-gray-500">
-                  Add the stock used for one serving. <strong>Waste %</strong>{" "}
-                  is optional—for example, enter 5 when roughly 5% is lost
-                  during preparation.
+                  {localAuthority
+                    ? 'Enter the stock quantity and unit cost used for one serving. Local Bar recipes use the stock unit configured in the catalogue.'
+                    : <>Add the stock used for one serving. <strong>Waste %</strong>{" "}is optional—for example, enter 5 when roughly 5% is lost during preparation.</>}
                 </p>
                 <div className="space-y-3">
                   {form.ingredients.map((ing, i) => (
@@ -481,7 +548,7 @@ export default function RestaurantRecipes() {
                             <option value="">Choose stock item…</option>
                             {inventoryItems.map((item) => (
                               <option key={item.id} value={item.id}>
-                                {item.name}
+                                {item.name}{localAuthority ? ` · ${item.unit} · current cost ${item.latest_unit_cost ?? 'not available'}` : ''}
                               </option>
                             ))}
                           </select>
@@ -500,7 +567,7 @@ export default function RestaurantRecipes() {
                             placeholder="e.g. 0.25"
                           />
                         </label>
-                        <label className="text-xs font-medium text-gray-600">
+                        {!localAuthority && <label className="text-xs font-medium text-gray-600">
                           Unit
                           <select
                             value={ing.unit}
@@ -519,8 +586,20 @@ export default function RestaurantRecipes() {
                               ),
                             )}
                           </select>
-                        </label>
-                        <label className="text-xs font-medium text-gray-600">
+                        </label>}
+                        {localAuthority && <label className="text-xs font-medium text-gray-600">
+                          Unit cost per {inventoryItems.find((item) => item.id === ing.inventory_item_id)?.unit || 'stock unit'}
+                          <input
+                            value={ing.unit_cost || inventoryItems.find((item) => item.id === ing.inventory_item_id)?.latest_unit_cost || ''}
+                            onChange={(e) => updateIngredient(i, 'unit_cost', e.target.value)}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            className="bb-input mt-1 w-full"
+                            placeholder="0.00"
+                          />
+                        </label>}
+                        {!localAuthority && <label className="text-xs font-medium text-gray-600">
                           Waste %{" "}
                           <span className="font-normal text-gray-400">
                             optional
@@ -540,7 +619,7 @@ export default function RestaurantRecipes() {
                             className="bb-input mt-1 w-full"
                             placeholder="e.g. 5"
                           />
-                        </label>
+                        </label>}
                       </div>
                       {form.ingredients.length > 1 && (
                         <button
@@ -568,7 +647,7 @@ export default function RestaurantRecipes() {
               </button>
               <button
                 onClick={saveRecipe}
-                disabled={!form.name.trim() || saving}
+                disabled={(!localAuthority && !form.name.trim()) || (localAuthority && !form.menu_item_id) || saving}
                 className="bb-btn-primary flex-1"
               >
                 {saving

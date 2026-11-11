@@ -1,5 +1,9 @@
 # Bar manual impact record
 
+## 11 November 2026 — original Stock Pro recipe workflow restored to local Bar
+
+**Impact: customer workflow and recovery guidance change; manual/quick-start PDF edits are pending by user direction and non-blocking for this software checkpoint.** The original Recipes & Costing page is restored under the existing Stock Pro route and reads coherent, scoped local menu/stock/recipe snapshots. Manager recipe writes and removals use the local atomic versioned recipe command; ambiguous outcomes keep the same operation available for retry. The page now asks for the stock quantity and unit cost used per serving. The local menu/stock/recipe snapshot must agree on its authority watermark or the page refuses edits. No PDF, quick-start, screenshot, manifest checksum or packaged-guide artifact was changed. Focused adapter/route tests and renderer typecheck pass; a build and rendered local Bar acceptance remain to be completed. Local-Bar commissioning remains unqualified.
+
 ## 5 November 2026 — restored established local Bar navigation
 
 **Impact: customer navigation and workflow guidance change; approved PDF and quick-start edits remain pending by user direction.** The local shell now restores the established Manage label and page, original Hpos routes, Stock Pro and Accounting Pro routes, Growth Tools, and existing restaurant route aliases. Open Checks and Sales Report read through the local Bar authority. The original Accounts Payable screen now captures invoice drafts and exposes manager-approved local invoice approval and payment commands; these controls still need real local database acceptance before customer use. Split, waiter transfer, voids, exports, corrections, and other unconnected accounting workflows remain unavailable. The restored routes are not yet customer-release qualified. No PDF, screenshot, manifest checksum or packaged-guide artifact was changed. The current app was not restarted.

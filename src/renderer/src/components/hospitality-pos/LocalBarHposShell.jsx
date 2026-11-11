@@ -256,8 +256,8 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="restaurant/kitchen-workspace" element={<LocalBarRouteUnavailable area="Kitchen workspace" />} />
                         <Route path="restaurant/kitchen" element={<Navigate to="/hpos/kitchen" replace />} />
                         <Route path="restaurant/menu" element={<Navigate to="/hpos/menu" replace />} />
-                        <Route path="restaurant/menu-production" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><LocalBarRouteUnavailable area="Stock Pro" /></LocalBarAddonGate>} />
-                        <Route path="restaurant/recipes" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><LocalBarRouteUnavailable area="Stock Pro" /></LocalBarAddonGate>} />
+                        <Route path="restaurant/menu-production" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="menu" enabledTabs={['menu', 'recipes']} /></LocalBarAddonGate>} />
+                        <Route path="restaurant/recipes" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="recipes" enabledTabs={['recipes']} /></LocalBarAddonGate>} />
                         <Route path="restaurant/combos" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><LocalBarRouteUnavailable area="Stock Pro" /></LocalBarAddonGate>} />
                         <Route path="restaurant/recipe-variance" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><LocalBarRouteUnavailable area="Stock Pro" /></LocalBarAddonGate>} />
                         <Route path="restaurant/prep-batches" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><LocalBarRouteUnavailable area="Stock Pro" /></LocalBarAddonGate>} />
