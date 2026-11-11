@@ -499,7 +499,7 @@ async function buildDashboardSnapshotLegacy(lodgeId, today = formatDate(new Date
   const [rooms, bookings, payments, creditCashFlows, expenses, maintenance, inventory, quotations, conference, dayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id, room_number, room_type, rate_per_night, max_occupancy, status, amenities, description, photo, photos, lodge_id, created_at, updated_at, housekeeping_status, housekeeping_notes').eq('lodge_id', lodgeId).order('room_number').limit(200)),
     listBookings(lodgeId, { forceFresh: true }),
-    safeSelect(supabase.from('payments').select('amount, paid_at, method, type').eq('lodge_id', lodgeId).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
+    safeSelect(supabase.from('payments').select('amount, paid_at, method, type').eq('lodge_id', lodgeId).is('voided_at', null).gte('paid_at', monthStart).lt('paid_at', monthEndExclusive), []),
     safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
       p_lodge_id: lodgeId,
       p_start_at: `${monthStart}T00:00:00`,
@@ -644,7 +644,7 @@ async function buildReportsSnapshotLegacy(lodgeId, today = formatDate(new Date()
   const [rooms, bookings, payments, creditCashFlows, refundApprovals, expenses, posOrders, conferenceBookings, poolDayUse] = await Promise.all([
     safeSelect(supabase.from('rooms').select('id').eq('lodge_id', lodgeId), []),
     safeSelectPaged(() => supabase.from('bookings').select('id, check_in, check_out, total_amount, charges_total, amount_paid, payment_status, status').eq('lodge_id', lodgeId), []),
-    safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type, method').eq('lodge_id', lodgeId).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
+    safeSelect(supabase.from('payments').select('booking_id, amount, paid_at, type, method').eq('lodge_id', lodgeId).is('voided_at', null).gte('paid_at', reportCashStart).lte('paid_at', reportCashEnd), []),
     safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
       p_lodge_id: lodgeId,
       p_start_at: reportCashStart,
@@ -764,7 +764,7 @@ async function buildNightAuditLegacy(lodgeId, date) {
   const [bookings, posOrders, payments, creditCashFlows, expenses] = await Promise.all([
     listBookings(lodgeId, { forceFresh: true }),
     safeSelect(supabase.from('pos_orders').select('*, pos_order_items(*)').eq('lodge_id', lodgeId).eq('status', 'completed').gte('created_at', dayStart).lte('created_at', dayEnd).order('created_at', { ascending: false }), []),
-    safeSelect(supabase.from('payments').select('amount, paid_at, type, method').eq('lodge_id', lodgeId).gte('paid_at', dayStart).lte('paid_at', dayEnd), []),
+    safeSelect(supabase.from('payments').select('amount, paid_at, type, method').eq('lodge_id', lodgeId).is('voided_at', null).gte('paid_at', dayStart).lte('paid_at', dayEnd), []),
     safeSelect(supabase.rpc('get_customer_credit_cash_flow', {
       p_lodge_id: lodgeId,
       p_start_at: dayStart,

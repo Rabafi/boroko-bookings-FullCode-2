@@ -96,6 +96,21 @@ test('ledger validation requires production transaction types and signs, referen
   }
 })
 
+test('voided duplicate receipts remain disclosed but do not restore booking totals', () => {
+  const source = payload()
+  source.tables.bookings = [{ id: 'booking-a', lodge_id: 'lodge-a', total_amount: 100, charges_total: 0, status: 'confirmed' }]
+  source.tables.signed_payment_ledger = [
+    { id: 'payment-original', lodge_id: 'lodge-a', booking_id: 'booking-a', amount: 100, method: 'cash', type: 'payment' },
+    { id: 'payment-duplicate', lodge_id: 'lodge-a', booking_id: 'booking-a', amount: 100, method: 'cash', type: 'payment', voided_at: '2026-11-10T12:00:00Z', void_reason: 'Duplicate room receipt', voided_by: 'actor-a', voided_as_duplicate_of: 'payment-original' }
+  ]
+  const verified = validateStarterBackupPackage(createStarterBackupPackage(source).bytes)
+  assert.equal(verified.success, true)
+  const ledger = reconstructBookingLedger(source.tables)
+  assert.equal(ledger.bookingResults[0].derived_amount_paid, 100)
+  assert.equal(ledger.totals.gross_collections, 100)
+  assert.equal(ledger.totals.voided_receipts_excluded, 1)
+})
+
 test('campsite booking scalars and nested accommodation details survive the DTO and validate strictly', () => {
   const source = payload()
   source.tables.bookings = [{

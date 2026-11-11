@@ -42,7 +42,7 @@ const RESTORE_FIELD_ALLOWLIST = {
   // database-derived from the signed payment ledger during a real restore.
   bookings: new Set(['id', 'lodge_id', 'room_id', 'customer_id', 'check_in', 'check_out', 'adults', 'children', 'tents_count', 'vehicles_count', 'accommodation_kind', 'booking_accommodation_details', 'status', 'total_amount', 'deposit_amount', 'payment_method', 'charges_total', 'created_at', 'updated_at', 'created_by', 'booking_number', 'invoice_number', 'is_exclusive_event', 'event_daily_rate', 'cancelled_at', 'cancel_reason', 'quotation_id', 'notes', 'source', 'group_id', 'vat_enabled', 'vat_rate']),
   quotations: new Set(['id', 'quotation_number', 'lodge_id', 'customer_id', 'customer_name', 'customer_phone', 'room_id', 'room_name', 'check_in', 'check_out', 'adults', 'children', 'subtotal', 'tax_amount', 'total_amount', 'currency', 'notes', 'status', 'valid_until', 'converted_booking_id', 'created_by', 'created_at', 'updated_at', 'parent_quotation_id', 'quotation_type', 'event_name', 'event_daily_rate', 'accommodation_lines']),
-  signed_payment_ledger: new Set(['id', 'booking_id', 'conference_booking_id', 'lodge_id', 'amount', 'method', 'type', 'paid_at', 'recorded_by', 'notes', 'created_at']),
+  signed_payment_ledger: new Set(['id', 'booking_id', 'conference_booking_id', 'lodge_id', 'amount', 'method', 'type', 'paid_at', 'recorded_by', 'notes', 'created_at', 'voided_at', 'void_reason', 'voided_by', 'voided_as_duplicate_of']),
   // `issue`/`description` remain for older cache/package rows; the current
   // maintenance ticket contract also carries title, notes, costs, vendor,
   // reported_date, and completed_at.
@@ -66,7 +66,7 @@ const CORE_TABLE_SPECS = [
   { key: 'customers', table: 'customers', cache: 'customers', order: 'name', select: 'id,lodge_id,name,email,phone,id_number,address,nationality,notes,is_blacklisted,blacklist_reason,created_at,updated_at' },
   { key: 'bookings', table: 'bookings', cache: 'bookings', order: 'check_in', select: 'id,lodge_id,room_id,customer_id,check_in,check_out,adults,children,tents_count,vehicles_count,accommodation_kind,total_amount,deposit_amount,payment_method,status,notes,created_by,updated_at,created_at,booking_number,invoice_number,is_exclusive_event,event_daily_rate,quotation_id,charges_total,source,vat_enabled,vat_rate,cancel_reason,cancelled_at,booking_accommodation_details(booking_id,lodge_id,accommodation_kind,adults,children,tents,vehicles,rate_mode,pricing_snapshot,created_at)' },
   { key: 'quotations', table: 'quotations', cache: 'quotations', order: 'created_at', select: 'id,quotation_number,lodge_id,customer_id,customer_name,customer_phone,room_id,room_name,check_in,check_out,adults,children,subtotal,tax_amount,total_amount,currency,notes,status,valid_until,converted_booking_id,created_by,created_at,updated_at,parent_quotation_id,quotation_type,event_name,event_daily_rate,accommodation_lines' },
-  { key: 'signed_payment_ledger', table: 'payments', cache: 'payments', order: 'created_at', select: 'id,booking_id,conference_booking_id,lodge_id,amount,method,type,paid_at,recorded_by,notes,created_at' },
+  { key: 'signed_payment_ledger', table: 'payments', cache: 'payments', order: 'created_at', select: 'id,booking_id,conference_booking_id,lodge_id,amount,method,type,paid_at,recorded_by,notes,created_at,voided_at,void_reason,voided_by,voided_as_duplicate_of' },
   { key: 'maintenance', table: 'maintenance_tickets', cache: 'maintenance', order: 'created_at', select: 'id,lodge_id,room_id,title,description,status,priority,reported_date,notes,labour_cost,parts_cost,total_cost,vendor_name,cost_notes,created_at' }
 ]
 const INCLUDED_CATEGORIES = ['property settings', 'rooms', 'guest/customer records', 'bookings', 'quotations', 'signed payment ledger', 'maintenance tickets']
@@ -604,7 +604,17 @@ function validateLedgerRows(tables, options = {}) {
   const bookings = Array.isArray(tables?.bookings) ? tables.bookings : []
   const payments = Array.isArray(tables?.signed_payment_ledger) ? tables.signed_payment_ledger : []
   const bookingIds = new Set(bookings.map((row) => String(row?.id || '')).filter(Boolean))
-  const validated = payments.map((payment, index) => validateLedgerEntrySign(payment, index, bookingIds, options))
+  const validated = payments.map((payment, index) => {
+    const hasVoidMetadata = ['void_reason', 'voided_by', 'voided_as_duplicate_of'].some((field) => payment?.[field] !== undefined && payment?.[field] !== null)
+    if (payment?.voided_at !== undefined && payment?.voided_at !== null) {
+      if (String(payment.void_reason || '').trim().length < 8 || !payment.voided_by || !payment.voided_as_duplicate_of || String(payment.id || '') === String(payment.voided_as_duplicate_of)) {
+        throw new Error(`Backup payment ledger row ${index + 1} has incomplete duplicate-void metadata.`)
+      }
+    } else if (hasVoidMetadata) {
+      throw new Error(`Backup payment ledger row ${index + 1} has void metadata without a void timestamp.`)
+    }
+    return validateLedgerEntrySign(payment, index, bookingIds, options)
+  })
   const netByBooking = new Map()
   validated.forEach(({ bookingId, amount }) => {
     if (bookingId && bookingIds.has(bookingId)) netByBooking.set(bookingId, (netByBooking.get(bookingId) || 0) + amount)
@@ -1142,6 +1152,7 @@ export function reconstructBookingLedger(tables, options = {}) {
   const bookingIds = new Set(bookings.map((row) => String(row.id || '')).filter(Boolean))
   let totalPayments = 0
   let totalRefunds = 0
+  let voidedPayments = 0
   // Strict validation is the default. A caller that is explicitly producing a
   // historical diagnostic may opt into orphan disclosure with strict:false;
   // no restore path should use that mode.
@@ -1150,16 +1161,20 @@ export function reconstructBookingLedger(tables, options = {}) {
   for (let index = 0; index < payments.length; index += 1) {
     const payment = payments[index]
     const { type, amount, bookingId, conferenceId } = validated[index]
+    const voided = payment?.voided_at !== undefined && payment?.voided_at !== null
+    if (voided) voidedPayments += 1
     const signedAmount = amount
-    if (type === 'refund') totalRefunds += Math.abs(amount)
-    else totalPayments += amount
+    if (!voided) {
+      if (type === 'refund') totalRefunds += Math.abs(amount)
+      else totalPayments += amount
+    }
     if (!bookingId || !bookingIds.has(bookingId)) {
       // Conference/event ledgers are outside the Starter restore DTO. Keep a
       // non-financial disclosure for callers explicitly requesting that mode.
-      orphanPayments.push({ id: payment.id, booking_id: payment.booking_id, conference_booking_id: conferenceId, amount: payment.amount, reason: conferenceId ? 'excluded_conference_reference' : 'missing_booking_reference' })
+      orphanPayments.push({ id: payment.id, booking_id: payment.booking_id, conference_booking_id: conferenceId, amount: payment.amount, voided, reason: conferenceId ? 'excluded_conference_reference' : 'missing_booking_reference' })
       continue
     }
-    ledgerByBooking.set(bookingId, (ledgerByBooking.get(bookingId) || 0) + signedAmount)
+    if (!voided) ledgerByBooking.set(bookingId, (ledgerByBooking.get(bookingId) || 0) + signedAmount)
   }
   const bookingResults = bookings.map((booking) => {
     const paid = ledgerByBooking.get(String(booking.id)) || 0
@@ -1178,7 +1193,7 @@ export function reconstructBookingLedger(tables, options = {}) {
     authority_note: 'Derived rehearsal fields are advisory only. The production database must recompute amount_paid and payment_status from accepted ledger deltas.',
     bookingResults,
     orphanPayments,
-    totals: { gross_collections: Math.round(totalPayments * 100) / 100, refunds: Math.round(totalRefunds * 100) / 100, net_paid: Math.round((totalPayments - totalRefunds) * 100) / 100 },
+    totals: { gross_collections: Math.round(totalPayments * 100) / 100, refunds: Math.round(totalRefunds * 100) / 100, net_paid: Math.round((totalPayments - totalRefunds) * 100) / 100, voided_receipts_excluded: voidedPayments },
     missing_lineage_disclosure: 'Historical idempotency keys, financial audit logs, and managed retention lineage are not part of the Starter package and are not reconstructed.'
   }
 }
@@ -1243,6 +1258,7 @@ export function remapPayloadForRecovery(payload, identityMap) {
       if (out.room_id && identityMap.rooms?.[String(out.room_id)]) out.room_id = identityMap.rooms[String(out.room_id)]
       if (out.customer_id && identityMap.customers?.[String(out.customer_id)]) out.customer_id = identityMap.customers[String(out.customer_id)]
       if (out.booking_id && identityMap.bookings?.[String(out.booking_id)]) out.booking_id = identityMap.bookings[String(out.booking_id)]
+      if (out.voided_as_duplicate_of && identityMap.payments?.[String(out.voided_as_duplicate_of)]) out.voided_as_duplicate_of = identityMap.payments[String(out.voided_as_duplicate_of)]
       if (out.quotation_id && identityMap.quotations?.[String(out.quotation_id)]) out.quotation_id = identityMap.quotations[String(out.quotation_id)]
       if (out.converted_booking_id && identityMap.bookings?.[String(out.converted_booking_id)]) out.converted_booking_id = identityMap.bookings[String(out.converted_booking_id)]
       if (key === 'bookings' && out.booking_accommodation_details) {

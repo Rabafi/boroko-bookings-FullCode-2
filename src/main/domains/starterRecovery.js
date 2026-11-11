@@ -642,6 +642,10 @@ function projectServerRestoreTables(remappedTables, generatedAt) {
  * @param {Record<string, StarterRecoveryRowReadView[]>} remappedTables
  */
 function buildServerRestorePayload(op, verification, remappedTables) {
+  const voidedReceiptCount = (remappedTables?.signed_payment_ledger || []).filter((row) => row?.voided_at !== undefined && row?.voided_at !== null).length
+  if (voidedReceiptCount > 0) {
+    throw new Error(`Server recovery cannot safely restore this package yet: ${voidedReceiptCount} voided receipt(s) require the database recovery contract to preserve their audit state.`)
+  }
   const tables = projectServerRestoreTables(remappedTables, verification.manifest?.generated_at)
   const counts = Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, rows.length]))
   const perTableHashes = Object.fromEntries(Object.entries(tables).map(([table, rows]) => [table, perTableCanonicalHash(rows)]))

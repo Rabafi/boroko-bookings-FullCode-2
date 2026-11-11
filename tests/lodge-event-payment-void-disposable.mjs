@@ -7,20 +7,27 @@ const query=`begin;
 do $$
 declare
  v_lodge uuid;
- v_actor constant uuid := '11111111-1111-4111-8111-111111111111';
+ v_actor constant uuid := '77777777-7777-4777-8777-777777777777';
  v_event constant uuid := '22222222-2222-4222-8222-222222222222';
  v_booking constant uuid := '33333333-3333-4333-8333-333333333333';
  v_source constant uuid := '44444444-4444-4444-8444-444444444444';
  v_duplicate constant uuid := '55555555-5555-4555-8555-555555555555';
+ v_customer constant uuid := '66666666-6666-4666-8666-666666666666';
  v_result jsonb;
  v_paid numeric;
  v_event_paid numeric;
  v_voided timestamptz;
  v_count integer;
  v_report_count integer;
+ v_report_paid numeric;
+ v_report_balance numeric;
+ v_event_details jsonb;
 begin
  select id into v_lodge from public.settings order by id limit 1;
  if v_lodge is null then raise exception 'Disposable fixture needs one settings row'; end if;
+ insert into public.users(id,lodge_id,name,email,role,password_hash,status)
+ values(v_actor,v_lodge,'Disposable Correction Test Actor','disposable-correction-test@example.invalid','manager','rollback-only-test-hash','active')
+ on conflict(id) do nothing;
  perform set_config('request.jwt.claim.role','postgres',true);
  perform set_config('request.jwt.claims','{"role":"postgres"}',true);
  perform set_config('app.session_valid','true',true);
@@ -58,8 +65,36 @@ begin
  select count(*) into v_report_count from public.get_payment_transaction_report(v_lodge,current_date,current_date)
   where payment_id in(v_source,v_duplicate);
  if v_report_count<>1 then raise exception 'Payment transaction report row count for source and duplicate was %',v_report_count; end if;
+ select amount_paid,balance_due into v_report_paid,v_report_balance
+   from public.get_outstanding_balance_report(v_lodge,current_date,current_date)
+  where booking_id=v_booking;
+ if v_report_paid is distinct from 0::numeric or v_report_balance is distinct from 500::numeric then
+   raise exception 'Outstanding balance report reintroduced the voided receipt: paid %, due %',v_report_paid,v_report_balance;
+ end if;
+ if pg_get_functiondef('public.reschedule_booking(uuid,uuid,uuid,date,date,text,text,text,boolean,numeric,timestamp with time zone,uuid)'::regprocedure) ilike '%from public.payments%'
+    or pg_get_functiondef('public.apply_customer_credit_to_booking(uuid,uuid,uuid,numeric,text,text,uuid,timestamp with time zone)'::regprocedure) ilike '%from public.payments%'
+    or pg_get_functiondef('public.reverse_customer_credit_entry(uuid,uuid,text,text,uuid)'::regprocedure) ilike '%from public.payments%' then
+   raise exception 'A booking recalculation routine still reads raw payment rows';
+ end if;
  if (select count(*) from public.get_event_invoice_payments(v_lodge,v_event) where id in(v_source,v_duplicate) and (id=v_duplicate and voided_at is not null or id=v_source and voided_at is null))<>2 then
    raise exception 'Event payment ledger does not retain source and mark duplicate';
+ end if;
+ v_event_details := public.get_event_booking_details(v_event,v_lodge);
+ if not exists(select 1 from jsonb_array_elements(coalesce(v_event_details->'payments','[]'::jsonb)) payment
+                where payment->>'id'=v_source::text
+                  and payment ? 'voided_as_duplicate_of') then
+   raise exception 'Event detail payment JSON omits void history metadata';
+ end if;
+ insert into public.customers(id,lodge_id,name) values(v_customer,v_lodge,'Disposable Correction Test Guest') on conflict(id) do nothing;
+ v_result := public.repair_event_invoice_identity(v_lodge,v_event,true,v_customer);
+ if coalesce((v_result->>'success')::boolean,false) is not true or coalesce((v_result->>'dry_run')::boolean,false) is not true then raise exception 'Identity repair dry run failed: %',v_result; end if;
+ v_result := public.repair_event_invoice_identity(v_lodge,v_event,false,v_customer);
+ if coalesce((v_result->>'success')::boolean,false) is not true or (v_result->>'receipt_count')::integer<>2 then raise exception 'Identity/group repair failed or changed receipt history: %',v_result; end if;
+ if (select count(*) from public.booking_invoice_groups where event_booking_id=v_event and customer_id=v_customer)<>1
+    or (select count(*) from public.booking_invoice_group_lines l join public.booking_invoice_groups g on g.id=l.group_id where g.event_booking_id=v_event and l.booking_id=v_booking)<>1
+    or (select customer_id from public.conference_bookings where id=v_event) is distinct from v_customer
+    or (select customer_id from public.bookings where id=v_booking) is distinct from v_customer then
+   raise exception 'Identity or group membership projection did not persist';
  end if;
 end $$;
 rollback;`

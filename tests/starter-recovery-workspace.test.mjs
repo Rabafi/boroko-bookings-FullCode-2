@@ -223,6 +223,11 @@ test('Identity remapping is deterministic and preserves provenance while rewriti
   assert.equal(remapped.tables.bookings[0].room_id, map1.rooms['r-a'])
   assert.equal(remapped.tables.bookings[0].customer_id, map1.customers['c-a'])
   assert.equal(remapped.tables.signed_payment_ledger[0].booking_id, map1.bookings['b-a'])
+  const voidedSource = payload()
+  voidedSource.tables.signed_payment_ledger.push({ id: 'p-duplicate', lodge_id: 'lodge-a', booking_id: 'b-a', amount: 20, method: 'cash', type: 'payment', voided_at: '2026-11-10T12:00:00Z', void_reason: 'Duplicate room receipt', voided_by: 'actor-a', voided_as_duplicate_of: voidedSource.tables.signed_payment_ledger[0].id })
+  const voidedMap = buildRecoveryIdentityMap(voidedSource, { operationId, recoveryLodgeId })
+  const remappedVoided = remapPayloadForRecovery(voidedSource, voidedMap)
+  assert.equal(remappedVoided.tables.signed_payment_ledger[2].voided_as_duplicate_of, voidedMap.payments['p-a'])
   assert.match(remapped.tables.settings[0].slug, /-recovery-11111111/)
   assert.equal(remapped._recovery_provenance.source_lodge_id, 'lodge-a')
   // Conference references are marked unresolved, not silently kept
@@ -240,10 +245,16 @@ test('RESTORE_FIELD_ALLOWLIST is explicit and does not include protected secrets
   }
   assert.ok(RESTORE_FIELD_ALLOWLIST.settings.has('slug'))
   assert.ok(RESTORE_FIELD_ALLOWLIST.signed_payment_ledger.has('amount'))
+  assert.ok(RESTORE_FIELD_ALLOWLIST.signed_payment_ledger.has('voided_as_duplicate_of'))
   assert.equal(RESTORE_FIELD_ALLOWLIST.customers.has('id_photo'), false)
   assert.equal(RESTORE_FIELD_ALLOWLIST.bookings.has('payment_status'), false)
   assert.equal(RESTORE_FIELD_ALLOWLIST.rooms.has('photo'), false)
   assert.equal(RESTORE_FIELD_ALLOWLIST.rooms.has('photos'), false)
+})
+
+test('server restore fails closed when the recovery RPC cannot preserve voided receipt state', () => {
+  const recovery = fs.readFileSync('src/main/domains/starterRecovery.js', 'utf8')
+  assert.match(recovery, /voidedReceiptCount[\s\S]*Server recovery cannot safely restore this package yet/i)
 })
 
 test('Atomic write uses temp+rename with fsync and cleanup of temp files', () => {
@@ -338,7 +349,7 @@ test('Backup reads use immutable context, not mutable globals per table', () => 
   // Ensure the old pattern of reading state.lodgeId inside the loop is gone from load path
   // The new function should capture lodgeId from context, not re-read state each iteration
   assert.match(backup, /const lodgeId = effectiveContext\.lodgeId/)
-  assert.match(backup, /const supabaseClient = effectiveContext\.supabaseClient/)
+  assert.match(backup, /const supabaseClient = [^\n]*effectiveContext\.supabaseClient/)
 })
 
 test('IPC and preload expose recovery and automation without leaking passphrase', () => {

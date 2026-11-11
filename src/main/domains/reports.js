@@ -226,6 +226,7 @@ async function getRevenueReportLocal(startDate, endDate) {
     from('payments').
     select('booking_id, amount, method, type, paid_at').
     eq('lodge_id', state.lodgeId).
+    is('voided_at', null).
     gte('paid_at', paymentWindowStart).
     lte('paid_at', paymentWindowEnd),
     /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).
@@ -455,6 +456,7 @@ export async function getTodayBookingPaymentMix(dateValue = null) {
   from('payments').
   select('amount, method, type, paid_at').
   eq('lodge_id', state.lodgeId).
+  is('voided_at', null).
   gte('paid_at', dayStart.toISOString()).
   lte('paid_at', dayEnd.toISOString()),
   /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).rpc('get_customer_credit_cash_flow', {

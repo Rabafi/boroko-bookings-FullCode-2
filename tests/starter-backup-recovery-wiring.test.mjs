@@ -88,7 +88,8 @@ test('recovery package chooser is protected before opening a customer file dialo
   const block = handlerBlock(main, 'backup:recoveryChoosePackage')
   assert.match(block, /requireFreshCommandCentralReauth\(\)/)
   assert.match(block, /requireCapability\('command_central\.recovery\.manage'\)/)
-  assert.match(block, /dialog\.showOpenDialog/)
+  assert.match(block, /const win = BrowserWindow\.fromWebContents\(event\.sender\)/)
+  assert.match(block, /showOpenDialogForWindow\(win,/)
   assert.match(block, /extensions:\s*\['tbbackup'\]/)
 })
 
@@ -126,7 +127,8 @@ test('Starter automation uses a separate capability-gated folder picker', () => 
   const block = handlerBlock(main, 'backup:chooseStarterAutomationFolder')
   assert.match(block, /requireCapability\('backup\.starter_automation'\)/)
   assert.match(block, /requireCommercialFeature\('starter_backup_automation'/)
-  assert.match(block, /dialog\.showOpenDialog/)
+  assert.match(block, /const win = BrowserWindow\.fromWebContents\(event\.sender\)/)
+  assert.match(block, /showOpenDialogForWindow\(win,/)
   assert.match(block, /openDirectory/)
 })
 
