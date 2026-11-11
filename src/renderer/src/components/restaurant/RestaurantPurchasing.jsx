@@ -1,8 +1,10 @@
 // @ts-check
 import { useState, useEffect, useMemo } from 'react'
 import { AlertTriangle, CheckCircle2, ClipboardList, Download, Mail, Pencil, Plus, RefreshCw, Trash2, Truck, X } from 'lucide-react'
-import { useAuth, useSettings } from '../../app-context'
+import { useAccess, useAuth, useSettings } from '../../app-context'
+import { canAccessCapability } from '../../../../shared/accessControl.js'
 import { createBarLocalRestaurantStockApi } from './barLocalRestaurantStockApi.js'
+import { createBarLocalPurchasingApi } from './barLocalPurchasingApi.js'
 
 /**
  * Purchasing rows come from the current POS/database producers or the JSON IPC
@@ -28,12 +30,16 @@ const FIELD = 'mt-1 w-full rounded-xl border border-[#d7c9c8] bg-[#fffdfb] px-3 
 export default function RestaurantPurchasing() {
   const { settings } = useSettings()
   const { user } = useAuth()
+  const access = useAccess()
   const localAuthority = user?.localAuthority === true || settings?.authority_mode === 'bar_local'
+  const canManageLocal = canAccessCapability(access, 'inventory.manage')
+  const canApproveLocal = canAccessCapability(access, 'inventory.approve')
+  const localScope = { businessId: String(settings?.lodge_id || user?.lodge_id || settings?.id || ''), outletId: String(settings?.outlet_id || ''), staffId: String(user?.id || '') }
   const localStockApi = useMemo(() => {
     if (!localAuthority) return null
-    try { return createBarLocalRestaurantStockApi(window.api?.barLocal, { businessId: settings?.lodge_id || user?.lodge_id, outletId: settings?.outlet_id, staffId: user?.id }) }
+    try { return createBarLocalRestaurantStockApi(window.api?.barLocal, { businessId: settings?.lodge_id || user?.lodge_id || settings?.id, outletId: settings?.outlet_id, staffId: user?.id }) }
     catch { return null }
-  }, [localAuthority, settings?.lodge_id, settings?.outlet_id, user?.id, user?.lodge_id])
+  }, [localAuthority, settings?.id, settings?.lodge_id, settings?.outlet_id, user?.id, user?.lodge_id])
   const currency = settings?.currency || 'P'
   const [suppliers, setSuppliers] = useState(/** @type {PurchasingSupplierExpectedView[]} */ ([]))
   const [inventoryItems, setInventoryItems] = useState(/** @type {PurchasingInventoryItemExpectedView[]} */ ([]))
@@ -48,6 +54,10 @@ export default function RestaurantPurchasing() {
   const [editingSupplier, setEditingSupplier] = useState(/** @type {PurchasingSupplierExpectedView | null} */ (null))
   const [receivingOrder, setReceivingOrder] = useState(/** @type {PurchasingOrderExpectedView | null} */ (null))
   const [receiptLocationId, setReceiptLocationId] = useState('')
+  const [receiptLines, setReceiptLines] = useState(/** @type {{id:string; quantity:string; lot_code:string; expires_on:string}[]} */ ([]))
+  const [supplierReference, setSupplierReference] = useState('')
+  const [managerPin, setManagerPin] = useState('')
+  const [pendingPurchase, setPendingPurchase] = useState(null)
   const [supplierForm, setSupplierForm] = useState(/** @type {PurchasingSupplierFormExpectedView} */ ({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' }))
   const [poForm, setPoForm] = useState(/** @type {PurchasingDraftExpectedView} */ ({ supplier_id: '', stock_location_id: '', expected_delivery: '', notes: '', items: [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }] }))
   const [notice, setNotice] = useState('')
@@ -64,6 +74,7 @@ export default function RestaurantPurchasing() {
       setShowSupplierForm(false)
       setShowPOForm(false)
       setDetailOrder(null)
+      setManagerPin('')
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
@@ -75,6 +86,7 @@ export default function RestaurantPurchasing() {
       setError('')
       if (localAuthority) {
         if (!localStockApi) throw new Error('The local purchasing scope could not be verified. Sign in again before continuing.')
+        setPendingPurchase(createBarLocalPurchasingApi(window.api?.barLocal, localScope).pending(window.localStorage))
         const snapshot = await localStockApi.inventory.getPurchasingSnapshot()
         if (snapshot?.complete !== true) throw new Error('Local purchasing data is incomplete. Refresh before relying on it.')
         setSuppliers(snapshot.suppliers)
@@ -104,7 +116,22 @@ export default function RestaurantPurchasing() {
   }
 
   async function saveSupplier() {
-    if (localAuthority) { setError('Supplier changes are not connected to this local purchasing screen yet. No hosted request was made.'); return }
+    if (localAuthority) {
+      if (!canManageLocal) { setError('Your local Bar role cannot manage supplier records.'); return }
+      try {
+        setSaving(true); setError(''); setNotice('')
+        const api = createBarLocalPurchasingApi(window.api?.barLocal, localScope)
+        await api.saveSupplier(window.localStorage, { ...supplierForm, id: editingSupplier?.id, version: editingSupplier?.version })
+        setShowSupplierForm(false); setEditingSupplier(null)
+        setSupplierForm({ name: '', contact_person: '', phone: '', email: '', address: '', payment_terms: '' })
+        setNotice(`${supplierForm.name.trim()} was saved in the local Bar supplier list.`)
+        await loadData()
+      } catch (err) {
+        setPendingPurchase(createBarLocalPurchasingApi(window.api?.barLocal, localScope).pending(window.localStorage))
+        setError(/** @type {string} */ (/** @type {{message?: unknown}} */ (err)?.message) || 'Supplier could not be saved locally.')
+      } finally { setSaving(false) }
+      return
+    }
     if (!supplierForm.name.trim()) { setError('Enter the supplier name.'); return }
     try {
       setSaving(true); setError(''); setNotice('')
@@ -131,7 +158,29 @@ export default function RestaurantPurchasing() {
   }
 
   async function savePO() {
-    if (localAuthority) { setError('Purchase order creation is not connected to this local screen yet. No hosted request was made.'); return }
+    if (localAuthority) {
+      if (!canManageLocal || !canApproveLocal) { setError('Your local Bar role needs purchasing and purchase-approval access to create a purchase order.'); return }
+      if (!poForm.supplier_id) { setError('Choose a supplier for this purchase order.'); return }
+      if (poForm.items.some(i => !i.inventory_item_id || !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,6})?$/.test(String(i.quantity)) || Number(i.quantity) <= 0 || !/^(?:0|[1-9]\d{0,11})(?:\.\d{1,4})?$/.test(String(i.unit_cost)) || Number(i.unit_cost) < 0)) { setError('Choose a stock item and enter a positive quantity and non-negative unit cost on every line.'); return }
+      try {
+        setSaving(true); setError(''); setNotice('')
+        const supplier = suppliers.find((row) => row.id === poForm.supplier_id)
+        if (!supplier) throw new Error('The selected supplier changed. Refresh purchasing records and try again.')
+        const api = createBarLocalPurchasingApi(window.api?.barLocal, localScope)
+        await api.createPurchaseOrder(window.localStorage, {
+          supplier_id: supplier.id, supplier_version: supplier.version, expected_delivery: poForm.expected_delivery || null,
+          notes: poForm.notes, items: poForm.items
+        }, managerPin)
+        setManagerPin(''); setShowPOForm(false); setEditingOrder(null)
+        setPoForm({ supplier_id: '', stock_location_id: '', expected_delivery: '', notes: '', items: [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }] })
+        setNotice('The manager-approved purchase order was created in the local Bar database. Receive the goods only after they arrive.')
+        await loadData()
+      } catch (err) {
+        setPendingPurchase(createBarLocalPurchasingApi(window.api?.barLocal, localScope).pending(window.localStorage))
+        setError(/** @type {string} */ (/** @type {{message?: unknown}} */ (err)?.message) || 'Purchase order could not be created locally.')
+      } finally { setSaving(false); setManagerPin('') }
+      return
+    }
     if (!poForm.supplier_id) { setError('Choose a supplier for this purchase order.'); return }
     if (!poForm.stock_location_id) { setError('Choose where the goods will physically be received.'); return }
     if (!poForm.items.some(i => i.inventory_item_id)) { setError('Add at least one inventory item to the purchase order.'); return }
@@ -180,7 +229,22 @@ export default function RestaurantPurchasing() {
 
   /** @param {string} orderId @param {string} stockLocationId */
   async function receiveOrder(orderId, stockLocationId) {
-    if (localAuthority) { setError('Purchase receiving is not connected to this local screen yet. No hosted request was made.'); return }
+    if (localAuthority) {
+      if (!canManageLocal) { setError('Your local Bar role cannot receive stock against purchase orders.'); return }
+      try {
+        setSaving(true); setError(''); setNotice('')
+        const order = orders.find((row) => row.id === orderId)
+        if (!order) throw new Error('This purchase order changed. Refresh before recording a receipt.')
+        const api = createBarLocalPurchasingApi(window.api?.barLocal, localScope)
+        const result = await api.receivePurchaseOrder(window.localStorage, order, { supplier_reference: supplierReference, lines: receiptLines })
+        setNotice(result?.result?.status === 'received' ? 'All outstanding goods were received into this local Bar and stock was updated atomically.' : 'The partial delivery was recorded and local stock was updated atomically.')
+        setReceivingOrder(null); setSupplierReference(''); setReceiptLines([]); await loadData()
+      } catch (err) {
+        setPendingPurchase(createBarLocalPurchasingApi(window.api?.barLocal, localScope).pending(window.localStorage))
+        setError(/** @type {string} */ (/** @type {{message?: unknown}} */ (err)?.message) || 'Goods could not be received locally.')
+      } finally { setSaving(false) }
+      return
+    }
     try {
       setActionOrderId(orderId); setError(''); setNotice('')
       const result = /** @type {PurchasingMutationExpectedView} */ (await window.api.pos.receivePurchaseOrder(orderId, stockLocationId))
@@ -227,6 +291,7 @@ export default function RestaurantPurchasing() {
       draft: 'bg-gray-100 text-gray-600',
       pending: 'bg-amber-100 text-amber-700',
       approved: 'bg-blue-100 text-blue-700',
+      partially_received: 'bg-amber-100 text-amber-700',
       received: 'bg-emerald-100 text-emerald-700',
       cancelled: 'bg-red-100 text-red-700'
     }
@@ -247,6 +312,7 @@ export default function RestaurantPurchasing() {
   /** @param {PurchasingOrderExpectedView | null} [order] */
   const startPurchaseOrderForm = (order = null) => {
     setError(''); setEditingOrder(order)
+    setManagerPin('')
     setPoForm(order ? {
       supplier_id: order.supplier_id || '', stock_location_id: order.stock_location_id || '', expected_delivery: order.expected_delivery ? String(order.expected_delivery).slice(0, 10) : '', notes: order.notes || '',
       items: order.items?.length ? order.items.map((item) => ({ inventory_item_id: item.inventory_item_id || '', description: item.description || '', quantity: item.quantity ?? '', unit_cost: item.unit_cost ?? '' })) : [{ inventory_item_id: '', description: '', quantity: '', unit_cost: '' }]
@@ -258,6 +324,8 @@ export default function RestaurantPurchasing() {
   const startReceipt = (order) => {
     setError(''); setReceivingOrder(order)
     setReceiptLocationId(order.stock_location_id || stockLocations.find((location) => location.is_default)?.id || '')
+    setSupplierReference('')
+    setReceiptLines((order.items || []).filter((item) => Number(item.quantity_remaining ?? item.quantity) > 0).map((item) => ({ id: item.id, quantity: String(item.quantity_remaining ?? item.quantity), lot_code: '', expires_on: '' })))
   }
 
   return (
@@ -268,13 +336,13 @@ export default function RestaurantPurchasing() {
           <p className="mt-1 text-sm text-white/70">Suppliers, purchase orders and receiving—kept separate from live service stock.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {!localAuthority && tab === 'suppliers' ? (
+          {tab === 'suppliers' && (!localAuthority || canManageLocal) ? (
             <button type="button" onClick={() => startSupplierForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md">
               <Plus size={14} /> Add supplier
             </button>
           ) : (
-            !localAuthority && <button type="button" disabled={!inventoryItems.length} title={!inventoryItems.length ? 'Add an inventory item in Stock Control first' : undefined} onClick={() => startPurchaseOrderForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md disabled:cursor-not-allowed disabled:opacity-50">
-              <Plus size={14} /> New purchase order
+            (!localAuthority || (canManageLocal && canApproveLocal)) && <button type="button" disabled={!inventoryItems.length || !suppliers.length} title={!inventoryItems.length ? 'Add an inventory item in Stock Control first' : !suppliers.length ? 'Add a supplier before creating a purchase order' : undefined} onClick={() => startPurchaseOrderForm()} className="flex items-center gap-1.5 rounded-xl bg-[#e8994e] px-3 py-2.5 text-sm font-extrabold text-[#2a1c23] shadow-md disabled:cursor-not-allowed disabled:opacity-50">
+              <Plus size={14} /> {localAuthority ? 'Create approved purchase order' : 'New purchase order'}
             </button>
           )}
           <button type="button" onClick={() => { void loadData() }} disabled={loading} className="inline-flex items-center gap-1.5 rounded-xl border border-white/25 bg-white/10 px-3 py-2.5 text-sm font-extrabold text-white disabled:opacity-50"><RefreshCw className={loading ? 'animate-spin' : ''} size={14}/> {loading ? 'Refreshing…' : 'Reload purchasing data'}</button>
@@ -282,7 +350,8 @@ export default function RestaurantPurchasing() {
       </div>
 
       {(notice || error) && <div role={error ? 'alert' : 'status'} className={`mb-5 flex items-start gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold ${error ? 'border-[#efb7aa] bg-[#fff0ed] text-[#8b3027]' : 'border-[#a7d8bf] bg-[#eaf8f0] text-[#17613f]'}`}>{error ? <AlertTriangle className="mt-0.5 shrink-0" size={17}/> : <CheckCircle2 className="mt-0.5 shrink-0" size={17}/>}<span>{error || notice}</span></div>}
-      {localAuthority && <div role="status" className="mb-5 rounded-xl border border-[#efd09e] bg-[#fff3df] px-4 py-3 text-sm font-semibold text-[#794017]">Viewing purchasing records from the local Bar database. Supplier changes, purchase order creation/approval/receiving, email and exports are not connected here yet. No hosted request is made.</div>}
+      {localAuthority && <div role="status" className="mb-5 rounded-xl border border-[#d6e8db] bg-[#edf8f0] px-4 py-3 text-sm font-semibold text-[#27543a]">Purchasing uses the local Bar database. Supplier changes, manager-approved orders and partial or full receipts are recorded locally. PDF export and supplier email remain unavailable here.</div>}
+      {localAuthority && pendingPurchase && <div role="status" className="mb-5 rounded-xl border border-[#efd09e] bg-[#fff3df] px-4 py-3 text-sm font-semibold text-[#794017]">A purchasing operation has an uncertain result. Retry this exact operation before starting another change.<button type="button" onClick={async () => { try { const api = createBarLocalPurchasingApi(window.api?.barLocal, localScope); const pending = api.pending(window.localStorage); await api.retry(window.localStorage); setPendingPurchase(null); if (pending?.command === 'supplier.upsert') { setShowSupplierForm(false); setEditingSupplier(null) } if (pending?.command === 'purchase_order.create') { setShowPOForm(false); setEditingOrder(null); setManagerPin('') } if (pending?.command === 'purchase_order.receive') { setReceivingOrder(null); setReceiptLines([]); setSupplierReference('') } setNotice('The saved local purchasing operation was confirmed.'); await loadData() } catch (err) { setError(/** @type {string} */ (/** @type {{message?: unknown}} */ (err)?.message) || 'The saved purchasing operation remains unresolved.') } }} className="ml-3 rounded bg-amber-800 px-3 py-1 font-semibold text-white">Retry same operation</button></div>}
       {!loading && !inventoryItems.length && <div className="mb-5 flex items-start gap-2 rounded-2xl border border-[#efd09e] bg-[#fff3df] px-4 py-3 text-sm font-semibold text-[#794017]"><AlertTriangle className="mt-0.5 shrink-0" size={17}/><span>Add the ingredients and supplies you buy in Stock Control before creating a purchase order. This keeps receiving linked to the stock ledger.</span></div>}
 
       {/* Tab bar */}
@@ -301,7 +370,7 @@ export default function RestaurantPurchasing() {
       ) : tab === 'orders' ? (
         orders.length === 0 ? (
           <div className="rounded-[22px] border border-[#decfd0] bg-[#fffaf7] p-12 text-center shadow-[0_12px_28px_rgba(65,38,48,.08)]">
-            <Truck size={40} className="mx-auto mb-3 text-[#c8784c]" /><p className="mb-2 text-lg font-black text-[#35242c]">No purchase orders</p><p className="text-sm text-[#806d73]">Create a draft, approve it, then receive only when goods physically arrive.</p>
+            <Truck size={40} className="mx-auto mb-3 text-[#c8784c]" /><p className="mb-2 text-lg font-black text-[#35242c]">No purchase orders</p><p className="text-sm text-[#806d73]">{localAuthority ? 'Create a manager-approved order, then record each delivery only after the goods physically arrive.' : 'Create a draft, approve it, then receive only when goods physically arrive.'}</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -325,7 +394,7 @@ export default function RestaurantPurchasing() {
                     {!localAuthority && o.status === 'draft' && (
                       <><button type="button" disabled={actionOrderId === o.id} onClick={() => startPurchaseOrderForm(o)} className="inline-flex items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-3 py-2 text-xs font-extrabold text-[#713f35] disabled:opacity-55"><Pencil size={13} /> Edit draft</button><button type="button" disabled={actionOrderId === o.id} onClick={() => approveOrder(o.id)} className="rounded-lg bg-[#e8994e] px-3 py-2 text-xs font-extrabold text-[#2a1c23] disabled:opacity-55">{actionOrderId === o.id ? 'Approving…' : 'Approve'}</button></>
                     )}
-                    {!localAuthority && o.status === 'approved' && (
+                    {(!localAuthority || canManageLocal) && ['approved', 'partially_received'].includes(o.status) && (
                       <button type="button" disabled={actionOrderId === o.id} onClick={() => startReceipt(o)} className="rounded-lg bg-[#285f4b] px-3 py-2 text-xs font-extrabold text-white disabled:opacity-55">{actionOrderId === o.id ? 'Receiving…' : 'Receive goods'}</button>
                     )}
                     {!localAuthority && o.status === 'received' && (
@@ -351,7 +420,7 @@ export default function RestaurantPurchasing() {
                     {[s.contact_person, s.phone, s.email, s.payment_terms].filter(Boolean).join(' · ')}
                   </div>
                 </div>
-                {!localAuthority && <button type="button" onClick={() => startSupplierForm(s)} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-2.5 py-1.5 text-xs font-extrabold text-[#713f35]"><Pencil size={13} /> Edit</button>}
+                {(!localAuthority || canManageLocal) && <button type="button" onClick={() => startSupplierForm(s)} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#d9b59e] bg-white px-2.5 py-1.5 text-xs font-extrabold text-[#713f35]"><Pencil size={13} /> Edit</button>}
               </div>
             ))}
           </div>
@@ -381,12 +450,16 @@ export default function RestaurantPurchasing() {
       )}
 
       {receivingOrder && (
-        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-[#241920]/65 p-4" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) setReceivingOrder(null) }}>
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-[#241920]/65 p-4" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) { setReceivingOrder(null); setSupplierReference(''); setReceiptLines([]) } }}>
           <div role="dialog" aria-modal="true" aria-labelledby="receipt-location-title" className="w-full max-w-md rounded-[24px] border border-white/20 bg-[#fffaf7] p-6 shadow-2xl">
             <p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#a06f5c]">Confirm physical receipt</p><h2 id="receipt-location-title" className="mt-1 text-xl font-black text-[#35242c]">Where did these goods arrive?</h2>
-            <p className="mt-2 text-sm text-[#806d73]">This records the actual physical stock location for this approved purchase order. It is separate from the Till that will sell the goods.</p>
-            <label className="mt-5 block text-sm font-bold text-[#5d464e]">Receiving stock location<select value={receiptLocationId} onChange={(event) => setReceiptLocationId(event.target.value)} className={FIELD}><option value="">Choose receiving location</option>{stockLocations.filter((location) => location.is_active !== false).map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-            <div className="mt-6 flex gap-3"><button type="button" disabled={saving} onClick={() => setReceivingOrder(null)} className="flex-1 rounded-xl border border-[#d8c8c7] bg-white px-4 py-2.5 text-sm font-extrabold text-[#604a52]">Cancel</button><button type="button" disabled={saving || !receiptLocationId} onClick={() => receiveOrder(receivingOrder.id, receiptLocationId)} className="flex-1 rounded-xl bg-[#285f4b] px-4 py-2.5 text-sm font-extrabold text-white disabled:opacity-50">{saving ? 'Receiving…' : 'Confirm receipt'}</button></div>
+            <p className="mt-2 text-sm text-[#806d73]">{localAuthority ? 'Enter the quantities physically delivered. You can record a partial delivery; local stock changes atomically with the receipt.' : 'This records the actual physical stock location for this approved purchase order. It is separate from the Till that will sell the goods.'}</p>
+            {!localAuthority && <label className="mt-5 block text-sm font-bold text-[#5d464e]">Receiving stock location<select value={receiptLocationId} onChange={(event) => setReceiptLocationId(event.target.value)} className={FIELD}><option value="">Choose receiving location</option>{stockLocations.filter((location) => location.is_active !== false).map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>}
+            {localAuthority && <div className="mt-4 space-y-3"><label className="block text-sm font-bold text-[#5d464e]">Supplier invoice / delivery reference<input value={supplierReference} onChange={event => setSupplierReference(event.target.value)} className={FIELD} maxLength={120} placeholder="Optional reference"/></label>{receiptLines.map((line, index) => {
+              const item = receivingOrder.items.find(row => row.id === line.id)
+              return <div key={line.id} className="rounded-xl border border-[#eadedb] bg-white/60 p-3"><strong className="text-sm text-[#35242c]">{item?.description || 'Stock item'}</strong><p className="text-xs text-[#806d73]">Outstanding: {item?.quantity_remaining ?? '—'} {item?.unit || ''}</p><div className="mt-2 grid grid-cols-2 gap-2"><label className="text-xs font-bold text-[#806d73]">Delivered quantity<input type="number" min="0" max={item?.quantity_remaining ?? undefined} step="0.000001" value={line.quantity} onChange={event => setReceiptLines(receiptLines.map((row, i) => i === index ? { ...row, quantity: event.target.value } : row))} className={FIELD}/></label><label className="text-xs font-bold text-[#806d73]">Lot / batch code (optional)<input value={line.lot_code} onChange={event => setReceiptLines(receiptLines.map((row, i) => i === index ? { ...row, lot_code: event.target.value } : row))} maxLength={80} className={FIELD}/></label><label className="col-span-2 text-xs font-bold text-[#806d73]">Expiry date (optional)<input type="date" value={line.expires_on} onChange={event => setReceiptLines(receiptLines.map((row, i) => i === index ? { ...row, expires_on: event.target.value } : row))} className={FIELD}/></label></div></div>
+            })}</div>}
+            <div className="mt-6 flex gap-3"><button type="button" disabled={saving} onClick={() => setReceivingOrder(null)} className="flex-1 rounded-xl border border-[#d8c8c7] bg-white px-4 py-2.5 text-sm font-extrabold text-[#604a52]">Cancel</button><button type="button" disabled={saving || (localAuthority ? !receiptLines.some(line => Number(line.quantity) > 0) : !receiptLocationId)} onClick={() => receiveOrder(receivingOrder.id, receiptLocationId)} className="flex-1 rounded-xl bg-[#285f4b] px-4 py-2.5 text-sm font-extrabold text-white disabled:opacity-50">{saving ? 'Receiving…' : 'Confirm receipt'}</button></div>
           </div>
         </div>
       )}
@@ -418,10 +491,10 @@ export default function RestaurantPurchasing() {
                   <label className="text-sm font-bold text-[#5d464e]">Email</label>
                   <input type="email" value={supplierForm.email} onChange={e => setSupplierForm({ ...supplierForm, email: e.target.value })} className={FIELD} />
                 </div>
-                <div>
+                {!localAuthority && <div>
                   <label className="text-sm font-bold text-[#5d464e]">Payment terms</label>
                   <input value={supplierForm.payment_terms} onChange={e => setSupplierForm({ ...supplierForm, payment_terms: e.target.value })} className={FIELD} placeholder="Cash on delivery, 30 days…" />
-                </div>
+                </div>}
               </div>
               <div><label className="text-sm font-bold text-[#5d464e]">Address</label><input value={supplierForm.address} onChange={e => setSupplierForm({ ...supplierForm, address: e.target.value })} className={FIELD} placeholder="Delivery or trading address" /></div>
             </div>
@@ -439,7 +512,7 @@ export default function RestaurantPurchasing() {
           <div role="dialog" aria-modal="true" aria-labelledby="purchase-order-dialog-title" className="max-h-[86vh] w-full max-w-2xl overflow-y-auto rounded-[24px] border border-white/20 bg-[#fffaf7] p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <div><p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#a06f5c]">Controlled purchasing</p><h2 id="purchase-order-dialog-title" className="mt-1 text-xl font-black text-[#35242c]">{editingOrder ? 'Edit draft purchase order' : 'New purchase order'}</h2></div>
-              <button type="button" disabled={saving} aria-label="Close purchase order dialog" onClick={() => { setShowPOForm(false); setEditingOrder(null) }} className="grid h-10 w-10 place-items-center rounded-xl border border-[#decfd0] bg-white text-[#6d565e] hover:border-[#d87945] disabled:opacity-50"><X size={18} /></button>
+              <button type="button" disabled={saving} aria-label="Close purchase order dialog" onClick={() => { setShowPOForm(false); setEditingOrder(null); setManagerPin('') }} className="grid h-10 w-10 place-items-center rounded-xl border border-[#decfd0] bg-white text-[#6d565e] hover:border-[#d87945] disabled:opacity-50"><X size={18} /></button>
             </div>
             <div className="space-y-3">
               <div>
@@ -449,19 +522,20 @@ export default function RestaurantPurchasing() {
                   {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
               </div>
-              <div>
+              {!localAuthority ? <div>
                 <label className="text-sm font-bold text-[#5d464e]">Receive goods into *</label>
                 <select value={poForm.stock_location_id} onChange={e => setPoForm({ ...poForm, stock_location_id: e.target.value })} className={FIELD}>
                   <option value="">Choose physical stock location</option>
                   {stockLocations.map(location => <option key={location.id} value={location.id}>{location.name}{location.is_default ? ' (default shared stock)' : ''}</option>)}
                 </select>
                 <p className="mt-1 text-xs font-semibold text-[#806d73]">This is where the goods physically arrive. It is not the Till that will sell them.</p>
-              </div>
+              </div> : <div role="status" className="rounded-xl border border-[#d6e8db] bg-[#edf8f0] p-3 text-sm font-semibold text-[#27543a]">This purchase order is scoped to this Bar outlet. Manager approval is required before it is recorded.</div>}
               <div>
                 <label className="text-sm font-bold text-[#5d464e]">Notes</label>
                 <input value={poForm.notes} onChange={e => setPoForm({ ...poForm, notes: e.target.value })} className={FIELD} placeholder="Delivery instructions or internal reference" />
               </div>
               <div><label className="text-sm font-bold text-[#5d464e]">Expected delivery</label><input type="date" value={poForm.expected_delivery} onChange={e => setPoForm({ ...poForm, expected_delivery: e.target.value })} className={FIELD} /></div>
+              {localAuthority && <label className="block text-sm font-bold text-[#5d464e]">Approving manager PIN *<input type="password" inputMode="numeric" autoComplete="current-password" value={managerPin} onChange={event => setManagerPin(event.target.value.replace(/\D/g, '').slice(0, 12))} className={FIELD} placeholder="4–12 digits"/><span className="mt-1 block text-xs font-normal text-[#806d73]">Used once to approve this exact order. The local service will record it as an approved purchase order.</span></label>}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-bold text-[#5d464e]">Line items</label>
@@ -480,8 +554,8 @@ export default function RestaurantPurchasing() {
               </div>
             </div>
             <div className="flex gap-3 mt-6">
-              <button type="button" disabled={saving} onClick={() => { setShowPOForm(false); setEditingOrder(null) }} className="flex-1 rounded-xl border border-[#d8c8c7] bg-white px-4 py-2.5 text-sm font-extrabold text-[#604a52] disabled:opacity-50">Cancel</button>
-              <button type="button" onClick={savePO} disabled={saving || !poForm.supplier_id || !poForm.items.some(i => i.inventory_item_id && Number(i.quantity) > 0)} className="flex-1 rounded-xl bg-[#e8994e] px-4 py-2.5 text-sm font-extrabold text-[#291b21] disabled:opacity-50">{saving ? (editingOrder ? 'Saving…' : 'Creating…') : (editingOrder ? 'Save draft changes' : 'Create draft PO')}</button>
+              <button type="button" disabled={saving} onClick={() => { setShowPOForm(false); setEditingOrder(null); setManagerPin('') }} className="flex-1 rounded-xl border border-[#d8c8c7] bg-white px-4 py-2.5 text-sm font-extrabold text-[#604a52] disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={savePO} disabled={saving || !poForm.supplier_id || !poForm.items.some(i => i.inventory_item_id && Number(i.quantity) > 0) || (localAuthority && !managerPin)} className="flex-1 rounded-xl bg-[#e8994e] px-4 py-2.5 text-sm font-extrabold text-[#291b21] disabled:opacity-50">{saving ? (editingOrder ? 'Saving…' : 'Creating…') : (localAuthority ? 'Approve & create purchase order' : (editingOrder ? 'Save draft changes' : 'Create draft PO'))}</button>
             </div>
           </div>
         </div>

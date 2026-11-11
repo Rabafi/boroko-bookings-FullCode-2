@@ -124,7 +124,7 @@ export function createBarLocalRestaurantStockApi(bridge, expectedScope, options 
           if (detail?.complete !== true || detail.unavailable?.length || !detail.data || Array.isArray(detail.data) ||
               detail.snapshot_watermark !== orderResult.watermark || detail.scope?.business_id !== expected.business_id ||
               detail.scope?.outlet_id !== expected.outlet_id || detail.scope?.actor_staff_id !== expected.actor_staff_id ||
-              String(detail.data.purchase_order_id || '') !== orderId) {
+              String(detail.data.purchase_order_id || '') !== orderId || !Number.isSafeInteger(detail.data.version) || detail.data.version < 1) {
             throw new Error('Purchasing records changed or are incomplete while loading order details. Refresh before relying on them.')
           }
           return detail.data
@@ -150,6 +150,7 @@ export function createBarLocalRestaurantStockApi(bridge, expectedScope, options 
           return {
             id: String(detail.purchase_order_id), supplier_id: supplierId, stock_location_id: expected.outlet_id,
             stock_location_name: 'This Bar outlet', status, order_date: detail.ordered_on,
+            version: Number(detail.version),
             expected_delivery: detail.expected_on || null, notes: detail.notes || null, total: detail.total,
             created_at: detail.created_at || null, updated_at: detail.updated_at || null,
             supplier_name: supplier?.name || detail.supplier?.name || 'Supplier',
