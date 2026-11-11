@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { FRONT_DESK_ONLY_MESSAGE, getBookingPayments, getEventInvoicePayments, listInvoices } from '../lib/api'
 import { money, paymentStatusClass, shortDate, shortDateTime, titleCase } from '../lib/format'
 
-/** @typedef {{id?: string | null, amount?: number | string | null, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null, notes?: string | null}} InvoicePaymentExpectedView */
+/** @typedef {{id?: string | null, amount?: number | string | null, paid_at?: string | null, created_at?: string | null, type?: string | null, method?: string | null, notes?: string | null, voided_at?: string | null, void_reason?: string | null, voided_as_duplicate_of?: string | null}} InvoicePaymentExpectedView */
 /** @typedef {{booking_id: string, customer_name?: string | null, invoice_number?: string | null, issued_at?: string | null, amount_paid?: number | string | null, balance_due?: number | string | null, payment_status?: string | null, invoice_kind?: string | null, event_booking_id?: string | null, event_name?: string | null, child_invoice_numbers?: string[] | null, reconciliation_required?: boolean}} InvoiceExpectedView */
 
 /** @param {{lodgeId: string, invoice: InvoiceExpectedView, onClose: () => void}} props */
@@ -35,12 +35,12 @@ function LedgerSheet({ lodgeId, invoice, onClose }) {
             <div key={payment.id || `${payment.amount}-${payment.paid_at}`} className="bg-gray-800 rounded-xl p-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-white">{titleCase(payment.type || 'payment')}</p>
+                  <p className="text-sm font-semibold text-white">{payment.voided_at ? 'Voided duplicate' : titleCase(payment.type || 'payment')}</p>
                   <p className="text-xs text-gray-400 mt-1">{shortDateTime(payment.paid_at || payment.created_at)} • {titleCase(payment.method || 'tender unavailable')}</p>
                 </div>
-                <p className={`text-sm font-bold ${Number(payment.amount || 0) < 0 ? 'text-red-300' : 'text-green-300'}`}>{money(payment.amount)}</p>
+                <p title={payment.voided_at ? `Duplicate of receipt ${payment.voided_as_duplicate_of || 'reference unavailable'}; no cash movement` : undefined} className={`text-sm font-bold ${payment.voided_at ? 'text-gray-500 line-through' : Number(payment.amount || 0) < 0 ? 'text-red-300' : 'text-green-300'}`}>{money(payment.amount)}</p>
               </div>
-              {payment.notes && <p className="text-xs text-gray-500 mt-2">{payment.notes}</p>}
+              {(payment.voided_at || payment.notes) && <p className="text-xs text-gray-500 mt-2">{payment.voided_at ? `Cash-neutral duplicate correction · ${payment.void_reason || 'Reason unavailable'} · receipt retained` : payment.notes}</p>}
             </div>
           ))}
           {payments.length === 0 && <p className="text-sm text-gray-500">No payment history found for this booking.</p>}

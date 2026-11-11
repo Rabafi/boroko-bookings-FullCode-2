@@ -29,7 +29,7 @@ const PAYMENT_METHODS = [
   { value: 'refund', label: 'Refund Adjustment' }
 ]
 
-/** @typedef {{id: string, booking_id: string|null, event_booking_id?: string|null, lodge_id: string, amount: number, method: string, type: string, paid_at: string, recorded_by: string | null, notes: string, created_at: string, refund_base_amount: number | null, refund_retained_percent: number | null, refund_retained_amount: number | null}} BookingPaymentHistoryRow */
+/** @typedef {{id: string, booking_id: string|null, event_booking_id?: string|null, lodge_id: string, amount: number, method: string, type: string, paid_at: string, recorded_by: string | null, notes: string, created_at: string, refund_base_amount: number | null, refund_retained_percent: number | null, refund_retained_amount: number | null, voided_at?: string|null, void_reason?: string|null, voided_as_duplicate_of?: string|null, voided_by?: string|null}} BookingPaymentHistoryRow */
 /** @typedef {BookingPaymentHistoryRow[] & {success?: boolean; error?: string} | {success: false; error?: string}} BookingPaymentHistoryResult */
 /** @typedef {{payment_method?: string | null, payment_type?: string | null, amount_paid?: number | null, payment_status?: string | null, charges_total?: number | null, description?: string | null, category?: string | null, amount?: number | null, void_reason?: string | null, payment_id?: string | null, notes?: string | null, total_amount?: number | null}} FinancialAuditSnapshotDisplay */
 /** @typedef {{id: string, action: string, created_at: string, amount_delta: number | null, before_snapshot: FinancialAuditSnapshotDisplay | null, after_snapshot: FinancialAuditSnapshotDisplay | null}} FinancialAuditRow */
@@ -288,20 +288,22 @@ function LedgerModal({ invoice, currency, onClose }) {
                   <tr key={payment.id || `${payment.paid_at}-${payment.amount}`} className="border-t border-gray-100">
                     <td className="px-4 py-3 text-gray-600">{fmtDateTime(payment.paid_at || payment.created_at)}</td>
                     <td className="px-4 py-3">
-                      <Badge
+                      {payment.voided_at ? (
+                        <span title={payment.void_reason || 'Duplicate receipt voided without cash movement'} className="inline-flex rounded-full bg-gray-200 px-2.5 py-0.5 text-xs font-semibold text-gray-700">Voided duplicate</span>
+                      ) : <Badge
                         value={payment.type}
                         styles={{
                           payment: 'bg-green-100 text-green-700',
                           deposit: 'bg-blue-100 text-blue-700',
                           refund: 'bg-rose-100 text-rose-700'
                         }}
-                      />
+                      />}
                     </td>
                     <td className="px-4 py-3 text-gray-700">{String(payment.method || '—').replace(/_/g, ' ')}</td>
-                    <td className={`px-4 py-3 text-right font-semibold ${Number(payment.amount || 0) < 0 ? 'text-rose-700' : 'text-gray-900'}`}>
+                    <td title={payment.voided_at ? `Voided as a duplicate of receipt ${payment.voided_as_duplicate_of || 'reference unavailable'}; no cash movement` : undefined} className={`px-4 py-3 text-right font-semibold ${payment.voided_at ? 'text-gray-500 line-through' : Number(payment.amount || 0) < 0 ? 'text-rose-700' : 'text-gray-900'}`}>
                       {fmtMoney(currency, payment.amount)}
                     </td>
-                    <td className="px-4 py-3 text-xs leading-5 text-gray-500">{payment.notes || '—'}</td>
+                    <td className="px-4 py-3 text-xs leading-5 text-gray-500">{payment.voided_at ? `Cash-neutral duplicate correction · ${payment.void_reason || 'Reason unavailable'} · receipt retained` : payment.notes || '—'}</td>
                   </tr>
                 ))}
               </tbody>
