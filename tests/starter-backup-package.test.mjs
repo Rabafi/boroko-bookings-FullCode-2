@@ -109,6 +109,13 @@ test('voided duplicate receipts remain disclosed but do not restore booking tota
   assert.equal(ledger.bookingResults[0].derived_amount_paid, 100)
   assert.equal(ledger.totals.gross_collections, 100)
   assert.equal(ledger.totals.voided_receipts_excluded, 1)
+
+  const maskedRefund = structuredClone(source)
+  maskedRefund.tables.signed_payment_ledger = [
+    { ...source.tables.signed_payment_ledger[1], id: 'payment-voided-cover' },
+    { id: 'active-refund', lodge_id: 'lodge-a', booking_id: 'booking-a', amount: -100, method: 'cash', type: 'refund' }
+  ]
+  assert.throws(() => reconstructBookingLedger(maskedRefund.tables), /negative paid balance/i)
 })
 
 test('campsite booking scalars and nested accommodation details survive the DTO and validate strictly', () => {

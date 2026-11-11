@@ -616,7 +616,8 @@ function validateLedgerRows(tables, options = {}) {
     return validateLedgerEntrySign(payment, index, bookingIds, options)
   })
   const netByBooking = new Map()
-  validated.forEach(({ bookingId, amount }) => {
+  validated.forEach(({ bookingId, amount }, index) => {
+    if (payments[index]?.voided_at !== undefined && payments[index]?.voided_at !== null) return
     if (bookingId && bookingIds.has(bookingId)) netByBooking.set(bookingId, (netByBooking.get(bookingId) || 0) + amount)
   })
   for (const [bookingId, net] of netByBooking) {
