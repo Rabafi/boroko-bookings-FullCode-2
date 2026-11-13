@@ -139,8 +139,8 @@ async function run() {
   assert.match(createPosOrderSource, /const orderId = callerOrderId \|\| submitIntentId/)
   assert.match(createPosOrderSource, /const submitIdempotencyKey = `pos-order:\$\{submitIntentId\}`/)
   assert.match(createPosOrderSource, /create_idempotency_key: submitIdempotencyKey/)
-  assert.match(createPosOrderSource, /state\.supabase\.rpc\('create_pos_order_v3'/)
-  assert.doesNotMatch(createPosOrderSource, /state\.supabase\.rpc\('create_pos_order'/)
+  assert.match(createPosOrderSource, /(?:state\.supabase|\(state\.supabase\))\.rpc\('create_pos_order_v3'/)
+  assert.doesNotMatch(createPosOrderSource, /(?:state\.supabase|\(state\.supabase\))\.rpc\('create_pos_order'/)
 }
 
 run()

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { state } from '../state.js'
+import { applyBackendSession, getBackendSession } from './authClients.js'
 import {
   dedupePromise,
   logActivity,
@@ -23,7 +24,9 @@ const VALID_EVENT_STATUSES = ['draft', 'reserved', 'confirmed', 'active', 'compl
  * validate the incoming IPC payload, cache rows or RPC JSON. Cache IDs come
  * from the existing conference-booking/item writers (UUIDs or database IDs).
  * Numeric fields retain the number/string forms already handled by Number().
- * @typedef {{id: string, event_booking_id?: string|undefined, inventory_item_id?: string|null, voided_at?: string|null, void_reason?: string|null, cancelled_at?: string|null, cancellation_reason?: string|null, status?: string|null, created_at?: string|null, updated_at?: string|null, booking_date?: string|null|undefined, start_time?: string|null, client_name?: string|null, amount_paid?: number|string|null, deposit_paid?: number|string|null, total_amount?: number|string|null, balance_due?: number|string|null, subtotal?: number|string|null, unit_price?: number|string|null, quantity?: number|string|null, depletion_quantity?: number|string|null, extras_total?: number|string|null, charges_total?: number|string|null, current_stock?: number|string|null, payment_status?: string|null, _pending_sync?: boolean, _pending_payment?: boolean, _financial_estimate?: boolean, _sync_state?: string, _sync_error?: string|null}} EventCacheExpectedData
+ * @typedef {{id: string, event_booking_id?: string|undefined, inventory_item_id?: string|null, voided_at?: string|null, void_reason?: string|null, cancelled_at?: string|null, cancellation_reason?: string|null, status?: string|null|undefined, created_at?: string|null, updated_at?: string|null, booking_date?: string|null|undefined, start_time?: string|null|undefined, client_name?: string|null|undefined, amount_paid?: number|string|null, deposit_paid?: number|string|null, total_amount?: number|string|null, balance_due?: number|string|null, event_invoice_total?: number|string|null, event_invoice_paid?: number|string|null, event_invoice_balance?: number|string|null, event_invoice_status?: string|null, invoice_reconciliation_required?: boolean, subtotal?: number|string|null, unit_price?: number|string|null, quantity?: number|string|null, depletion_quantity?: number|string|null, extras_total?: number|string|null, charges_total?: number|string|null, current_stock?: number|string|null, payment_status?: string|null, _estimated_amount_paid?: number|string|null, _estimated_balance_due?: number|string|null, _estimated_payment_status?: string|null, _pending_sync?: boolean, _pending_payment?: boolean, _financial_estimate?: boolean, _sync_state?: string, _sync_error?: string|null}} EventCacheExpectedData
+ * @typedef {Record<string, unknown> & {p_event_id?: unknown, p_lodge_id?: unknown, p_amount?: unknown, p_method?: unknown, p_type?: unknown, p_idempotency_key?: unknown}} EventPaymentQueueDataExpectedView
+ * @typedef {Record<string, unknown> & {type?: unknown, table?: unknown, _state?: unknown, data?: EventPaymentQueueDataExpectedView|null}} EventPaymentQueueItemExpectedView
  * These input views describe the local call shapes; IPC payloads are not validated here.
  * @typedef {{booking_date: string, start_time: string, end_time: string, id?: string, idempotency_key?: string, operation_id?: string, customer_id?: string|null, customer_name?: string, event_name?: string, event_type?: string, reservation_scope?: string, status?: string, client_name?: string, company?: string|null, adults?: number, children?: number, room_name?: string|null, setup_type?: string, includes_catering?: boolean, catering_notes?: string|null, total_amount?: number|string, deposit_amount?: number|string, payment_method?: string|null, currency?: string, notes?: string|null, room_ids?: string[]|null, resources?: unknown, check_in?: string|null, check_out?: string|null, event_daily_rate?: number|string|null, quotation_id?: string|null}} CreateEventBookingInputExpectedData\n * @typedef {{event_name?: string, event_type?: string, reservation_scope?: string, status?: string, client_name?: string, company?: string|null, adults?: number, children?: number, room_name?: string|null, setup_type?: string, includes_catering?: boolean, catering_notes?: string|null, booking_date?: string, start_time?: string, end_time?: string, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null, resources?: unknown, event_daily_rate?: number|string|null, customer_id?: string|null, total_amount?: number|string, currency?: string, notes?: string|null, idempotency_key?: string, operation_id?: string, expected_updated_at?: string|null}} UpdateEventBookingPatchExpectedData\n * @typedef {{event_booking_id: string, id?: string, idempotency_key?: string, line_type?: string, description?: string, category?: string|null, quantity?: number|string, unit_price?: number|string, inventory_item_id?: string|null, depletion_quantity?: number|string|null}} AddEventLineItemInputExpectedData
  * @typedef {{success?: boolean, error?: string, event_id?: string, exclusive_booking_id?: string|null, idempotent?: boolean, line_item_id?: string, subtotal?: number|string}} EventRpcResultExpectedData
@@ -57,7 +60,7 @@ function patchCachedEventLineItem(lineItemId, patch = {}) {
   return next[idx]
 }
 
-/** @param {string} eventId @param {number} [delta] */
+/** @param {string|undefined} eventId @param {number} [delta] */
 function patchCachedEventTotals(eventId, delta = 0) {
   const rows = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
   const idx = rows.findIndex((row) => row?.id === eventId)
@@ -108,6 +111,26 @@ export function getEventBookings(start, end) {
     return cached
       .filter((row) => (!start || String(row.booking_date || '') >= start) && (!end || String(row.booking_date || '') <= end))
       .sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || '')))
+      .map((row) => {
+        const invoice = /** @type {{total_amount?: unknown, amount_paid?: unknown, balance_due?: unknown, reconciliation_required?: boolean}|null} */ (readCache(`event-invoice-summary-${row.id}`))
+        return invoice ? {
+          ...row,
+          event_invoice_total: invoice.total_amount,
+          event_invoice_paid: invoice.amount_paid,
+          event_invoice_balance: invoice.balance_due,
+          event_invoice_status: String(invoice.payment_status || ''),
+          invoice_reconciliation_required: invoice.reconciliation_required === true,
+          _financial_estimate: true
+        } : {
+          ...row,
+          event_invoice_total: null,
+          event_invoice_paid: null,
+          event_invoice_balance: null,
+          event_invoice_status: 'unavailable',
+          invoice_reconciliation_required: true,
+          _financial_estimate: true
+        }
+      })
   }
   // This existing online branch is the lifecycle guard for the optional client in state.js.
   let q = /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
@@ -117,10 +140,49 @@ export function getEventBookings(start, end) {
   if (start) q = q.gte('booking_date', start)
   if (end) q = q.lte('booking_date', end)
   q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200)
-  q.then(({ data }) => {
-    if (data) writeCache('conference-bookings', data, { source: 'remote' })
-  }).catch(() => {})
-  return q.then(({ data }) => data || []).catch(() => cached)
+  return /** @type {Promise<EventCacheExpectedData[]>} */ (q.then(async ({ data, error }) => {
+    if (error) throw error
+    if (!data) return []
+    const rows = /** @type {EventCacheExpectedData[]} */ (data)
+    const { data: invoices, error: invoiceError } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_invoice_summary', {
+      p_lodge_id: state.lodgeId,
+      p_booking_id: null
+    })
+    if (invoiceError) throw invoiceError
+    if (Array.isArray(invoices)) {
+      for (const invoice of /** @type {Record<string, unknown>[]} */ (invoices)) {
+        if (!invoice.event_booking_id) continue
+        writeCache(`event-invoice-summary-${String(invoice.event_booking_id)}`, invoice, { source: 'remote' })
+      }
+      const invoiceById = new Map(/** @type {Record<string, unknown>[]} */ (invoices)
+        .filter((invoice) => invoice.event_booking_id)
+        .map((invoice) => [String(invoice.event_booking_id), invoice]))
+      const enriched = rows.map((row) => {
+        const invoice = invoiceById.get(row.id)
+        return invoice ? {
+          ...row,
+          event_invoice_total: invoice.total_amount,
+          event_invoice_paid: invoice.amount_paid,
+          event_invoice_balance: invoice.balance_due,
+          event_invoice_status: String(invoice.payment_status || ''),
+          invoice_reconciliation_required: invoice.reconciliation_required === true,
+          _financial_estimate: false
+        } : {
+          ...row,
+          event_invoice_total: null,
+          event_invoice_paid: null,
+          event_invoice_balance: null,
+          event_invoice_status: 'unavailable',
+          invoice_reconciliation_required: true,
+          _financial_estimate: false
+        }
+      })
+      writeCache('conference-bookings', enriched, { source: 'remote' })
+      return enriched
+    }
+    writeCache('conference-bookings', rows, { source: 'remote' })
+    return rows
+  }))
 }
 
 /** @param {string} id */
@@ -142,15 +204,44 @@ export async function getEventBookingDetails(id) {
   if (!id) return null
   if (!state.isOnline) {
     const event = (/** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))).find((row) => row.id === id) || null
-    return event ? { event, resources: [], line_items: getCachedEventLineItems(id), rooms: [], payments: [] } : null
+    return event ? { event, resources: [], line_items: getCachedEventLineItems(id), rooms: [], payments: [], invoice: readCache(`event-invoice-summary-${id}`) || null } : null
   }
-  const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_event_booking_details', {
+  const session = getBackendSession()
+  if (!session?.token) throw new Error('Your server session is missing. Sign in again while online to load event details.')
+  // Profile changes and session restore can rebuild the Supabase client. Bind
+  // the current desktop token again before the scoped request, then ask the
+  // server to validate its expiry and lodge identity. This does not elevate
+  // the user or relax the RPC's own lodge-role check.
+  applyBackendSession(session)
+  const client = /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase)
+  const { data: sessionData, error: sessionError } = await client.rpc('validate_app_session', { p_session_token: session.token })
+  if (sessionError) throw new Error(sessionError.message)
+  const sessionRow = /** @type {{session_type?: string, lodge_id?: string}|null} */ (Array.isArray(sessionData) ? sessionData[0] : sessionData)
+  if (!sessionRow || sessionRow.session_type !== (session.session_type || 'desktop')) {
+    throw new Error('Your server session has expired. Sign in again while online to load event details.')
+  }
+  if (!state.lodgeId || sessionRow.lodge_id !== state.lodgeId) {
+    throw new Error('Your active lodge does not match this server session. Switch to the correct lodge and sign in again.')
+  }
+  const { data, error } = await client.rpc('get_event_booking_details', {
     p_event_id: id,
     p_lodge_id: state.lodgeId
   })
   if (error) throw new Error(error.message)
-  const details = /** @type {{success?: boolean, error?: string, event?: Record<string, unknown>, resources?: Record<string, unknown>[], rooms?: Record<string, unknown>[], line_items?: EventCacheExpectedData[]}} */ (data)
+  const details = /** @type {{success?: boolean, error?: string, event?: Record<string, unknown>, resources?: Record<string, unknown>[], rooms?: Record<string, unknown>[], payments?: Record<string, unknown>[], line_items?: EventCacheExpectedData[]}} */ (data)
   if (!details?.success) throw new Error(details?.error || 'Could not load event details')
+  const lineItems = Array.isArray(details.line_items) ? details.line_items : []
+  const agreedBaseAmount = lineItems
+    .filter((line) => String(line.source_reference || '') === `event-base:${id}` && !line.voided_at)
+    .reduce((sum, line) => sum + Number(line.subtotal || 0), 0)
+  const { data: invoiceRows, error: invoiceError } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('get_invoice_summary', {
+    p_lodge_id: state.lodgeId,
+    p_booking_id: id
+  })
+  if (invoiceError) throw new Error(invoiceError.message)
+  const invoice = (/** @type {Record<string, unknown>[]} */ (invoiceRows || []))
+    .find((row) => String(row.event_booking_id || '') === id) || null
+  if (invoice) writeCache(`event-invoice-summary-${id}`, invoice, { source: 'remote' })
   if (Array.isArray(details.line_items)) {
     writeCache('event-line-items', [
       ...details.line_items,
@@ -185,7 +276,8 @@ export async function getEventBookingDetails(id) {
   }
   return {
     ...data,
-    event: exclusiveBookingRate(details.event, normalizedRooms, exclusiveBookingId),
+    event: { ...exclusiveBookingRate(details.event, normalizedRooms, exclusiveBookingId), agreed_base_amount: agreedBaseAmount },
+    invoice,
     rooms: normalizedRooms
   }
 }
@@ -261,7 +353,7 @@ export async function createEventBooking(data) {
     id: payload.id,
     amount_paid: payload.deposit_amount || 0,
     balance_due: payload.total_amount || 0,
-    payment_status: payload.deposit_amount > 0 ? 'partial' : 'unpaid',
+    payment_status: /** @type {number} */ (payload.deposit_amount) > 0 ? 'partial' : 'unpaid',
     _pending_sync: true,
     _sync_state: 'pending',
     _sync_error: null,
@@ -341,17 +433,19 @@ export async function updateEventBooking(id, data) {
   return { success: true }
 }
 
-/** @param {string} id @param {string} reason @param {boolean} [cancelLinkedRooms] */
-export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
+/** @param {string} id @param {string} reason @param {boolean} [cancelLinkedRooms] @param {string} [idempotencyKey] */
+export async function cancelEventBooking(id, reason, cancelLinkedRooms = true, idempotencyKey = `event-cancel-${id}`) {
   if (!id) throw new Error('Event booking ID is required')
-  if (!reason) throw new Error('Cancellation reason is required')
+  if (!reason?.trim()) throw new Error('Cancellation reason is required')
+  if (!idempotencyKey || !/^[A-Za-z0-9:_-]{8,128}$/.test(idempotencyKey)) throw new Error('A valid cancellation operation key is required')
 
   if (state.isOnline) {
     const { data: rawResult, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('cancel_event_booking', {
       p_event_id: id,
       p_lodge_id: state.lodgeId,
-      p_reason: reason,
-      p_cancel_linked_rooms: cancelLinkedRooms
+      p_reason: reason.trim(),
+      p_cancel_linked_rooms: cancelLinkedRooms,
+      p_idempotency_key: idempotencyKey
     })
     const result = /** @type {EventRpcResultExpectedData|null} */ (rawResult)
     if (error) throw new Error(error.message)
@@ -367,8 +461,9 @@ export async function cancelEventBooking(id, reason, cancelLinkedRooms = true) {
   queueOperation('rpc', 'cancel_event_booking', {
     p_event_id: id,
     p_lodge_id: state.lodgeId,
-    p_reason: reason,
-    p_cancel_linked_rooms: cancelLinkedRooms
+    p_reason: reason.trim(),
+    p_cancel_linked_rooms: cancelLinkedRooms,
+    p_idempotency_key: idempotencyKey
   }, null, dependsOn ? { _depends_on: dependsOn } : {})
   if (idx >= 0) {
     cached[idx] = { ...cached[idx], status: 'cancelled', cancelled_at: new Date().toISOString(), cancellation_reason: reason, _pending_sync: true, updated_at: new Date().toISOString() }
@@ -488,7 +583,7 @@ export async function updateEventPayment(id, amount, method, type = 'payment', i
   if (!method) throw new Error('Payment method is required')
   const numericAmount = Number(Number(amount).toFixed(2))
   let intentKey = idempotencyKey || `event-pay-${Date.now()}-${crypto.randomUUID()}`
-  const queuedPayment = /** @type {import('./infrastructure.js').ReplayQueueItemExpectedView|null} */ (readSyncQueue().find((item) =>
+  const queuedPayment = /** @type {EventPaymentQueueItemExpectedView|null} */ (/** @type {EventPaymentQueueItemExpectedView[]} */ (readSyncQueue()).find((item) =>
     item?.type === 'rpc' && ['update_event_payment', 'record_event_invoice_payment'].includes(String(item?.table || ''))
     && item?._state !== 'committed'
     && item?.data?.p_event_id === id
@@ -560,7 +655,7 @@ export async function updateEventPayment(id, amount, method, type = 'payment', i
 /** @param {string} eventId */
 export function getPendingEventPaymentIntent(eventId) {
   if (!eventId) return null
-  const queued = readSyncQueue().find((item) => item?.type === 'rpc'
+  const queued = /** @type {EventPaymentQueueItemExpectedView[]} */ (readSyncQueue()).find((item) => item?.type === 'rpc'
     && ['update_event_payment', 'record_event_invoice_payment'].includes(String(item?.table || ''))
     && item?._state !== 'committed'
     && item?.data?.p_event_id === eventId
@@ -579,12 +674,11 @@ export function getPendingEventPaymentIntent(eventId) {
 /** @param {string} eventId @param {number|string} amount @param {string} method @param {string} [idempotencyKey] */
 export async function recordEventInvoicePayment(eventId, amount, method, idempotencyKey = '') {
   if (!eventId) throw new Error('Event invoice ID is required')
-  if (!state.isOnline) throw new Error('Reconnect to verify the consolidated invoice balance before collecting payment.')
   const numericAmount = Number(Number(amount).toFixed(2))
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) throw new Error('Payment amount must be greater than zero')
   if (!method) throw new Error('Payment method is required')
 
-  const queued = readSyncQueue().find((item) => item?.type === 'rpc'
+  const queued = /** @type {EventPaymentQueueItemExpectedView[]} */ (readSyncQueue()).find((item) => item?.type === 'rpc'
     && ['update_event_payment', 'record_event_invoice_payment'].includes(String(item?.table || ''))
     && item?._state !== 'committed'
     && item?.data?.p_event_id === eventId
@@ -605,6 +699,31 @@ export async function recordEventInvoicePayment(eventId, amount, method, idempot
     p_idempotency_key: intentKey
   }
   const queueId = `event-invoice-pay-${eventId}-${intentKey}`
+  if (!state.isOnline) {
+    const invoice = /** @type {{balance_due?: unknown, amount_paid?: unknown, reconciliation_required?: unknown}|null} */ (readCache(`event-invoice-summary-${eventId}`))
+    const verifiedBalance = Number(invoice?.balance_due)
+    if (!invoice || invoice.reconciliation_required === true || !Number.isFinite(verifiedBalance)) {
+      throw new Error('No verified consolidated invoice balance is saved on this device. Reconnect before collecting payment.')
+    }
+    if (!original && numericAmount > verifiedBalance) throw new Error(`Payment exceeds the last verified consolidated balance of ${verifiedBalance.toFixed(2)}. Reconnect to refresh the invoice.`)
+    queueOperation('rpc', 'record_event_invoice_payment', args, null, { _queue_id: queueId })
+    if (!original) {
+      writeCache(`event-invoice-summary-${eventId}`, {
+        ...invoice,
+        amount_paid: Number(invoice.amount_paid || 0) + numericAmount,
+        balance_due: Math.max(0, verifiedBalance - numericAmount),
+        financial_estimate: true,
+        pending_sync: true
+      }, { source: 'local' })
+      const rows = /** @type {EventCacheExpectedData[]} */ (readCache('conference-bookings'))
+      const index = rows.findIndex((row) => row.id === eventId)
+      if (index >= 0) {
+        rows[index] = { ...rows[index], _pending_payment: true, _financial_estimate: true, _sync_state: 'pending' }
+        writeCache('conference-bookings', rows, { source: 'local' })
+      }
+    }
+    return { success: true, offline: true, queued: true, financial_estimate: true }
+  }
   queueOperation('rpc', 'record_event_invoice_payment', args, null, { _queue_id: queueId })
   const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('record_event_invoice_payment', args)
   if (error) throw new Error(error.message)
@@ -620,7 +739,7 @@ export async function recordEventInvoicePayment(eventId, amount, method, idempot
 
 /** @param {string} resourceKey @param {string} startAt @param {string} endAt @param {string|null} [excludeEventId] */
 export async function checkEventResourceAvailability(resourceKey, startAt, endAt, excludeEventId = null) {
-  if (!state.isOnline) return { available: true }
+  if (!state.isOnline) return { available: null, verified: false, reason: 'offline' }
   const { data, error } = await /** @type {import('@supabase/supabase-js').SupabaseClient} */ (state.supabase).rpc('check_event_resource_conflict', {
     p_lodge_id: state.lodgeId,
     p_resource_key: resourceKey,
@@ -629,7 +748,7 @@ export async function checkEventResourceAvailability(resourceKey, startAt, endAt
     p_exclude_event_id: excludeEventId
   })
   if (error) throw new Error(error.message)
-  return { available: !data }
+  return { available: !data, verified: true }
 }
 
 // ── Venue Packages ──────────────────────────────────────────────────────────

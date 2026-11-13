@@ -30,6 +30,7 @@ import {
   resolveCustomerDisplayName,
   summarizeEventInvoiceGroup
 } from './bookingInvoiceModel.js';
+import { EVENT_BOOKING_CACHE_SELECT } from './eventBookingProjection.js';
 import { patchCachedQuotationSyncState } from './syncCache.js';
 import { computeStayTotal, isCampsitePriced, normalizeRateMode, validateAccommodationOccupancy } from '../../shared/accommodation.js';
 import { getBookingFinancialView } from '../../shared/bookingFinancials.js';
@@ -97,7 +98,7 @@ import { getBookingFinancialView } from '../../shared/bookingFinancials.js';
 
 /**
  * Local/offline cache writes preserve the current profile's nullable lodge id and raw actor id; cache values are not validated.
- * @typedef {{id: string, lodge_id: string | null, group_key: string, customer_id: string | null, invoice_number: string, issued_at: string, due_date?: string | null, notes: string | null, created_by?: unknown, created_at: string, updated_at: string, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean}} BookingInvoiceGroupCacheRow
+ * @typedef {{id: string, lodge_id: string | null, group_key: string, customer_id: string | null, invoice_number: string, issued_at: string, due_date?: string | null, notes: string | null, created_by?: unknown, created_at: string, updated_at: string, event_booking_id?: unknown, _pending_sync?: boolean, _sync_state?: string, _financial_estimate?: boolean}} BookingInvoiceGroupCacheRow
  * @typedef {Omit<BookingInvoiceGroupCacheRow, 'id' | 'group_key'> & ({id: string, group_key?: string} | {id?: string, group_key: string})} BookingInvoiceGroupInput
  * @typedef {{group_id: string, booking_id: string, lodge_id: string, line_order: number, created_at?: string | null, _pending_sync?: boolean, _sync_state?: string}} BookingInvoiceGroupLineCacheRow
  * @typedef {{booking_id: string, line_order?: number, lodge_id?: string | null, group_id?: string, created_at?: string | null, _pending_sync?: boolean, _sync_state?: string}} BookingInvoiceGroupLineInput
@@ -773,7 +774,7 @@ async function _getAllBookings() {
   const bookings = /** @type {BookingListExpectedData[]} */ (readCache('bookings'));
   const customers = /** @type {BookingCustomerCacheExpectedData[]} */ (readCache('customers'));
   const rooms = /** @type {BookingRoomCacheExpectedData[]} */ (readCache('rooms'));
-  const eventParents = /** @type {{id?: unknown, customer_id?: unknown, client_name?: unknown, event_name?: unknown}[]} */ (readCache('conference-bookings'));
+  const eventParents = /** @type {{id?: unknown, lodge_id?: unknown, customer_id?: unknown, client_name?: unknown, event_name?: unknown}[]} */ (readCache('conference-bookings'));
   const eventParentById = new Map(eventParents.filter((event) => event?.id && String(event?.lodge_id || '') === String(state.lodgeId || '')).map((event) => [String(event.id), event]));
 
   const mappedBookings = bookings.map((b) => {
@@ -813,123 +814,19 @@ export function getAllBookings() {
  */
 export async function getCollectionsSummary() {
   if (!state.lodgeId) return { count: 0, amount: 0 };
-  try {
-    if (!state.isOnline) {
-      // The expected cache views do not validate persisted JSON. Keep the same
-      // truthy fallback and direct iteration behavior for malformed cache data.
-      const all = /** @type {(CollectionsBookingExpectedData|null|undefined)[]} */ (readCache('bookings') || []);
-      const allConf = /** @type {CollectionsConferenceBookingExpectedData[]} */ (readCache('conference-bookings') || []);
-      const eventGroupMap = /** @type {Record<string, CollectionsEventAccumulator>} */ ({});
-      const deduped = /** @type {CollectionsOpenBalanceCandidate[]} */ ([]);
-      for (const b of all) {
-        if (!b) continue;
-        if (b.is_exclusive_event) {
-          const match = String(b.notes || '').match(/\[GROUP:([^\]]+)\]/);
-          const gid = match?.[1] || b.check_in;
-          if (!eventGroupMap[gid]) {
-            eventGroupMap[gid] = {
-              total_amount: Number(b.total_amount || 0),
-              charges_total: Number(b.charges_total || 0),
-              amount_paid: Number(b.amount_paid || 0)
-            };
-            deduped.push(eventGroupMap[gid]);
-          } else {
-            const g = eventGroupMap[gid];
-            g.total_amount += Number(b.total_amount || 0);
-            g.charges_total += Number(b.charges_total || 0);
-            g.amount_paid += Number(b.amount_paid || 0);
-          }
-        } else {
-          deduped.push({
-            total_amount: Number(b.total_amount || 0),
-            charges_total: Number(b.charges_total || 0),
-            amount_paid: Number(b.amount_paid || 0),
-            status: b.status
-          });
-        }
-      }
-      const openBalances = deduped.filter((booking) => {
-        if (String(booking.status || '').toLowerCase() === 'cancelled') return false;
-        return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0;
-      });
-      const confOpen = allConf
-        .filter((cb) => String(cb.payment_status || '').toLowerCase() !== 'cancelled')
-        .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0);
-      const totalOpen = openBalances.length + confOpen.length;
-      const amount = openBalances.reduce((sum, booking) => (
-        sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
-      ), 0) + confOpen.reduce((sum, cb) => (
-        sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
-      ), 0);
-      return { count: totalOpen, amount };
-    }
-    const [bookingsResult, confResult] = await Promise.all([
-      // initializeSupabase assigns the client before connectivity marks the
-      // process online; retain the existing unguarded property access.
-      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
-        .from('bookings')
-        .select('id, total_amount, charges_total, amount_paid, status, notes, is_exclusive_event, check_in')
-        .eq('lodge_id', state.lodgeId)
-        .neq('status', 'cancelled')
-        .limit(500),
-      /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
-        .from('conference_bookings')
-        .select('id, total_amount, deposit_paid, payment_status')
-        .eq('lodge_id', state.lodgeId)
-        .neq('payment_status', 'cancelled')
-        .limit(500)
-    ]);
-    if (bookingsResult.error) throw bookingsResult.error;
-    if (confResult.error) throw confResult.error;
-    // These selected SQL columns are expected input views, not RPC/query validation.
-    const all = /** @type {(CollectionsBookingExpectedData|null|undefined)[]} */ (bookingsResult.data || []);
-    const allConf = /** @type {CollectionsConferenceBookingExpectedData[]} */ (confResult.data || []);
-    const eventGroupMap = /** @type {Record<string, CollectionsEventAccumulator>} */ ({});
-    const deduped = /** @type {CollectionsOpenBalanceCandidate[]} */ ([]);
-    for (const b of all) {
-      if (!b) continue;
-      if (b.is_exclusive_event) {
-        const match = String(b.notes || '').match(/\[GROUP:([^\]]+)\]/);
-        const gid = match?.[1] || b.check_in;
-        if (!eventGroupMap[gid]) {
-          eventGroupMap[gid] = {
-            total_amount: Number(b.total_amount || 0),
-            charges_total: Number(b.charges_total || 0),
-            amount_paid: Number(b.amount_paid || 0)
-          };
-          deduped.push(eventGroupMap[gid]);
-        } else {
-          const g = eventGroupMap[gid];
-          g.total_amount += Number(b.total_amount || 0);
-          g.charges_total += Number(b.charges_total || 0);
-          g.amount_paid += Number(b.amount_paid || 0);
-        }
-      } else {
-        deduped.push({
-          total_amount: Number(b.total_amount || 0),
-          charges_total: Number(b.charges_total || 0),
-          amount_paid: Number(b.amount_paid || 0),
-          status: b.status
-        });
-      }
-    }
-    const openBalances = deduped.filter((booking) => {
-      if (String(booking.status || '').toLowerCase() === 'cancelled') return false;
-      return Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0)) > 0;
-    });
-    const confOpen = allConf
-      .filter((cb) => String(cb.payment_status || '').toLowerCase() !== 'cancelled')
-      .filter((cb) => Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0) > 0);
-    const totalOpen = openBalances.length + confOpen.length;
-    const amount = openBalances.reduce((sum, booking) => (
-      sum + Math.max(0, Number(booking.total_amount || 0) + Number(booking.charges_total || 0) - Number(booking.amount_paid || 0))
-    ), 0) + confOpen.reduce((sum, cb) => (
-      sum + Math.max(0, Number(cb.total_amount || 0) - Number(cb.deposit_paid || 0))
-    ), 0);
-    return { count: totalOpen, amount };
-  } catch {
-    return { count: 0, amount: 0 };
+  const invoices = /** @type {(Record<string, unknown> & {balance_due?: number|null, status?: string, reconciliation_required?: boolean, total_is_estimate?: boolean})[] & ReadMetadataRows} */ (await getBookingInvoices());
+  if (state.isOnline && invoices._complete !== true) throw new Error('The consolidated invoice list is incomplete. Refresh invoices before relying on collection totals.');
+  const activeInvoices = invoices.filter((invoice) => String(invoice.status || '').toLowerCase() !== 'cancelled');
+  const unresolved = activeInvoices.filter((invoice) => invoice.reconciliation_required || invoice.balance_due == null);
+  if (unresolved.length > 0) {
+    return { count: null, amount: null, unavailable: true, reason: 'reconciliation_required', needs_attention_count: unresolved.length };
   }
+  const open = activeInvoices.filter((invoice) => Number(invoice.balance_due || 0) > 0);
+  return {
+    count: open.length,
+    amount: open.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0),
+    financial_estimate: !state.isOnline || invoices._complete !== true
+  };
 }
 
 /** @param {string} id */
@@ -3209,7 +3106,7 @@ export async function getBookingInvoices() {
 
     const [eventRoomResult, eventParentResult] = await Promise.all([
       loadRows('event_booking_rooms', 'event_booking_id, booking_id, lodge_id', 'created_at'),
-    loadRows('conference_bookings', 'id, lodge_id, customer_id, event_name, client_name, reservation_scope, status, booking_date, total_amount, amount_paid, charges_total, payment_status, currency, exclusive_booking_id', 'booking_date')
+      loadRows('conference_bookings', EVENT_BOOKING_CACHE_SELECT, 'booking_date')
     ]);
     if (eventRoomResult.error || eventParentResult.error) authoritative = false;
     if (!eventRoomResult.error && Array.isArray(eventRoomResult.data)) {
@@ -3298,6 +3195,7 @@ export async function getBookingInvoices() {
     filter((customer) => customer?.id).
     map((customer) => [String(customer.id), customer.name]));
 
+  /** @type {Map<string, {event: import('./bookingInvoiceModel.js').EventInvoiceParent, rows: import('./bookingInvoiceModel.js').EventRoomInvoiceLine[]}>} */
   const linkedEventBuckets = new Map();
   const plainRegularRows = [];
   for (const row of regularRows) {
@@ -3308,8 +3206,12 @@ export async function getBookingInvoices() {
       plainRegularRows.push(row);
       continue;
     }
-    if (!linkedEventBuckets.has(eventId)) linkedEventBuckets.set(eventId, { event, rows: [] });
-    linkedEventBuckets.get(eventId).rows.push(row);
+    let bucket = linkedEventBuckets.get(eventId);
+    if (!bucket) {
+      bucket = { event, rows: [] };
+      linkedEventBuckets.set(eventId, bucket);
+    }
+    bucket.rows.push(row);
   }
   const linkedEventInvoices = [];
   for (const [eventId, bucket] of linkedEventBuckets) {
@@ -3318,14 +3220,14 @@ export async function getBookingInvoices() {
     const customerName = bucket.event.customer_id
       ? customerNameById.get(String(bucket.event.customer_id))
       : null;
-    const consolidated = summarizeEventInvoiceGroup({
+    const consolidated = /** @type {ReturnType<typeof summarizeEventInvoiceGroup> & {accommodation_group_id?: string, event_parent_status?: string|null}} */ (summarizeEventInvoiceGroup({
       event: { ...bucket.event, customer_name: cleanDisplayText(customerName) || null },
       roomRows,
       groupInvoiceNumber: group?.invoice_number || roomRows[0]?.invoice_number || null,
       groupIssuedAt: group?.issued_at || roomRows[0]?.issued_at || null,
       groupDueDate: group?.due_date || roomRows[0]?.due_date || null,
       groupNotes: group?.notes || ''
-    });
+    }));
     consolidated.accommodation_group_id = group?.id || undefined;
     const roomStatuses = roomRows.map((row) => String(row.status || '').toLowerCase());
     consolidated.status = roomStatuses.every((status) => status === 'cancelled')
@@ -3437,7 +3339,11 @@ export async function getBookingInvoices() {
         room_count: parseEventRoomCount(row.notes) || 0,
         room_number: 'Full Lodge',
         display_notes: stripEventMetadata(row.notes),
-        reconciliation_required: Number(row.amount_paid || 0) > 0 && Number(parentEvent?.amount_paid || 0) > 0,
+        reconciliation_required: (
+          Number(row.amount_paid || 0) > 0 && Number(parentEvent?.amount_paid || 0) > 0
+        ) || (
+          Number(parentEvent?.amount_paid || 0) > 0 && Number(parentEvent?.total_amount || 0) <= 0
+        ),
         _booking_ids: [],
         _event_booking_ids: parentEventId ? [parentEventId] : []
       });

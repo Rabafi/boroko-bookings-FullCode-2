@@ -13,6 +13,7 @@ import { applyQueuedPosInventoryReservations, applyQueuedDayUseInventoryReservat
 import { mergeRemoteInventoryWithLocalState } from './inventoryMerge.js';
 import { mergeRemoteQuotationsWithLocalState } from './quotationMerge.js';
 import { getRuntimeProductId } from '../../shared/productIdentity.js';
+import { EVENT_BOOKING_CACHE_MAX_ROWS, EVENT_BOOKING_CACHE_PAGE_SIZE, EVENT_BOOKING_CACHE_SELECT } from './eventBookingProjection.js';
 
 /** Error-like values are read as-is; this type view does not validate them. */
 /** Existing thrown errors expose string messages; this view does not validate arbitrary errors. */
@@ -257,6 +258,27 @@ async function fetchBookingsForRefresh() {
   return { data: rows, error: null };
 }
 
+async function fetchConferenceBookingsForRefresh() {
+  const rows = [];
+  for (let from = 0; from < EVENT_BOOKING_CACHE_MAX_ROWS; from += EVENT_BOOKING_CACHE_PAGE_SIZE) {
+    const { data, error } = await /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
+      .from('conference_bookings')
+      .select(EVENT_BOOKING_CACHE_SELECT)
+      .eq('lodge_id', state.lodgeId)
+      .order('booking_date', { ascending: false })
+      .order('start_time', { ascending: true })
+      .range(from, from + EVENT_BOOKING_CACHE_PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < EVENT_BOOKING_CACHE_PAGE_SIZE) return { data: rows, error: null };
+  }
+  return {
+    data: null,
+    error: new Error('The event cache exceeds the supported read size; the previous complete cache was retained.')
+  };
+}
+
 /** @param {...string} names */
 async function refreshCacheStrict(...names) {
   if (!state.lodgeId) return;
@@ -283,7 +305,7 @@ async function refreshCacheStrict(...names) {
       p_offset: 0
     }),
     quotations: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('quotations').select('id, customer_id, customer_name, customer_phone, room_id, room_name, check_in, check_out, adults, children, subtotal, tax_amount, total_amount, currency, notes, status, valid_until, quotation_number, created_at, updated_at, created_by, lodge_id, parent_quotation_id, converted_booking_id, quotation_type, event_name, event_daily_rate').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(200),
-    'conference-bookings': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId).order('booking_date', { ascending: false }).order('start_time', { ascending: true }).limit(200),
+    'conference-bookings': () => fetchConferenceBookingsForRefresh(),
     'event-line-items': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('event_booking_line_items').select('*').eq('lodge_id', state.lodgeId).order('created_at', { ascending: false }).limit(1000),
     'pool-day-use': () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('pool_day_use').select(POOL_DAY_USE_SELECT).eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),
     expenses: () => /** @type {NonNullable<typeof state.supabase>} */ (state.supabase).from('expenses').select('id, date, category, description, amount, outlet_id, created_at, updated_at, outlets(name)').eq('lodge_id', state.lodgeId).order('date', { ascending: false }).limit(500),

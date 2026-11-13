@@ -3372,6 +3372,10 @@ function createWindow() {
       backgroundThrottling: false
     }
   })
+  state.emitAuthRuntimeStatus = (status) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('auth:runtime-status', status)
+  }
+  state.emitAuthRuntimeStatus(db.getAuthRuntimeStatus?.() || state.authRuntimeStatus)
 
   // -- Proactive Ops AI watcher (lightweight) ---------------------------------
   // Emits ai:alert events to the renderer so Ops AI feels "alive" across screens.
@@ -3504,6 +3508,7 @@ function createWindow() {
 
   mainWindow.on('show', closeSplashWindow)
   mainWindow.on('closed', closeSplashWindow)
+  mainWindow.on('closed', () => { state.emitAuthRuntimeStatus = undefined })
 
   mainWindow.webContents.on('did-finish-load', () => {
     startupTrace('renderer-document-loaded')
@@ -5107,12 +5112,13 @@ app.whenReady().then(async () => {
       const restored = db.restoreCurrentTrustedSession?.()
       if (restored) db.runScheduledFinancialValidation('startup').catch(() => {})
       return restored
-    } catch { return null }
+    } catch (error) { throw error }
   })
 
   ipcMain.handle('auth:validateSession', async () => {
-    try { return await db.validateCurrentSession() } catch { return null }
+    return await db.validateCurrentSession()
   })
+  ipcMain.handle('auth:getRuntimeStatus', () => db.getAuthRuntimeStatus())
 
   // Clears the active app session on logout, but keeps the trusted device session.
   // Offline-first front desks must be able to log out and reopen while offline.
@@ -6658,11 +6664,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('trial:getInvoices', async (_, lodgeId, options) => loadClientCommercialInvoices(lodgeId, options))
   ipcMain.handle('trial:getCommercialInvoices', async (_, lodgeId, options) => loadClientCommercialInvoices(lodgeId, options))
   ipcMain.handle('invoices:getBookingInvoices', async () => {
+    const authRequestContext = db.getAuthRequestContext?.()
     try {
       await requireCapability('invoices.view')
       return await db.getBookingInvoices()
-    } catch {
-      return []
+    } catch (error) {
+      await db.reportAuthRequestFailure?.(error, 'invoices:getBookingInvoices', authRequestContext)
+      throw error
     }
   })
   ipcMain.handle('invoices:sendBookingInvoiceEmail', async (_, invoice) => {
@@ -7153,8 +7161,9 @@ app.whenReady().then(async () => {
   /** Booking creation may throw this view after the domain has committed the booking but failed deposit collection. */
   /** @typedef {ErrorMessageReadView & {booking_id?: string}} BookingCreationThrownExpectedData */
   ipcMain.handle('customers:getAll', async () => {
+    const authRequestContext = db.getAuthRequestContext?.()
     try { await requireCapability('guests.view'); return await db.getAllCustomers() }
-    catch { return [] }
+    catch (error) { await db.reportAuthRequestFailure?.(error, 'customers:getAll', authRequestContext); throw error }
   })
   ipcMain.handle('customers:create', async (_, data) => {
     try {
@@ -7183,12 +7192,17 @@ app.whenReady().then(async () => {
 
   // -- Bookings --------------------------------------------------------------
   ipcMain.handle('bookings:getAll', async () => {
+    const authRequestContext = db.getAuthRequestContext?.()
     try { await requireCapability('bookings.view'); return await db.getAllBookings() }
-    catch { return [] }
+    catch (error) { await db.reportAuthRequestFailure?.(error, 'bookings:getAll', authRequestContext); throw error }
   })
   ipcMain.handle('bookings:getCollectionsSummary', async () => {
+    const authRequestContext = db.getAuthRequestContext?.()
     try { await requireCapability('bookings.view'); return await db.getCollectionsSummary() }
-    catch { return { count: 0, amount: 0 } }
+    catch (error) {
+      await db.reportAuthRequestFailure?.(error, 'bookings:getCollectionsSummary', authRequestContext)
+      return { count: null, amount: null, unavailable: true, reason: 'read_failed' }
+    }
   })
   ipcMain.handle('bookings:getCachedByDateRange', async (_, start, end) => {
     try {
@@ -12310,8 +12324,9 @@ app.whenReady().then(async () => {
 
   // -- Conference Bookings ----------------------------------------------------
   ipcMain.handle('conference:getAll', async (_, start, end) => {
-    try { await requireCapability('conference.view'); return await db.getConferenceBookings(start, end).catch(() => []) }
-    catch { return [] }
+    const authRequestContext = db.getAuthRequestContext?.()
+    try { await requireCapability('conference.view'); return await db.getConferenceBookings(start, end) }
+    catch (error) { await db.reportAuthRequestFailure?.(error, 'conference:getAll', authRequestContext); throw error }
   })
   ipcMain.handle('conference:create', async (_, data) => {
     await requireCapability('conference.manage')
@@ -12335,16 +12350,20 @@ app.whenReady().then(async () => {
 
   // -- Events & Venues -----------------------------------------------------
   ipcMain.handle('events:getAll', async (_, start, end) => {
-    try { await requireCapability('conference.view'); return await db.getEventBookings(start, end).catch(() => []) }
-    catch { return [] }
+    const authRequestContext = db.getAuthRequestContext?.()
+    try { await requireCapability('conference.view'); return await db.getEventBookings(start, end) }
+    catch (error) { await db.reportAuthRequestFailure?.(error, 'events:getAll', authRequestContext); throw error }
   })
   ipcMain.handle('events:getById', async (_, id) => {
     await requireCapability('conference.view')
     return await db.getEventBookingById(id)
   })
   ipcMain.handle('events:getDetails', async (_, id) => {
-    await requireCapability('conference.view')
-    return await db.getEventBookingDetails(id)
+    const authRequestContext = db.getAuthRequestContext?.()
+    try {
+      await requireCapability('conference.view')
+      return await db.getEventBookingDetails(id)
+    } catch (error) { await db.reportAuthRequestFailure?.(error, 'events:getDetails', authRequestContext); throw error }
   })
   ipcMain.handle('events:create', async (_, data) => {
     await requireCapability('conference.manage')
@@ -12372,6 +12391,27 @@ app.whenReady().then(async () => {
     await requireCapability('payments.record')
     await assertResourceBelongsToCurrentLodge('Event booking', id, db.getEventBookingById)
     return await db.updateEventPayment(id, amount, method, type, intentKey)
+  })
+  ipcMain.handle('events:voidDuplicateEventPayment', async (_, input) => {
+    const authRequestContext = db.getAuthRequestContext?.()
+    try {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('A duplicate receipt correction request is required')
+      const user = await db.validateCurrentSession()
+      const auth = db.getAuthRuntimeStatus?.()
+      if (!user || auth?.status !== 'authenticated' || auth?.reason !== 'server_validation_succeeded' || auth?.tokenPresent !== true || auth?.clientBound !== true) {
+        throw new Error('Server verification is unavailable. Reconnect and verify Lodge access before correcting a receipt.')
+      }
+      requireRole('finance', 'manager', 'admin', 'super_admin')
+      await requireCapability('payments.record')
+      requireStablePrepaymentOperation({ idempotencyKey: input.p_idempotency_key }, 'event duplicate-payment correction')
+      requirePrepaymentReason({ reason: input.p_reason }, 'correction')
+      if (typeof input.p_event_id !== 'string' || !input.p_event_id.trim()) throw new Error('Event booking ID is required')
+      await assertResourceBelongsToCurrentLodge('Event booking', input.p_event_id, db.getEventBookingById)
+      return await db.voidDuplicateEventPayment(input)
+    } catch (error) {
+      await db.reportAuthRequestFailure?.(error, 'events:voidDuplicateEventPayment', authRequestContext)
+      throw error
+    }
   })
   ipcMain.handle('events:getPendingPaymentIntent', async (_, id) => {
     await requireCapability('conference.view')

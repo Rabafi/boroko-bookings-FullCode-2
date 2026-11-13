@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import fs, { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildApprovedDisposableRestaurantRunnerEnvironment } from '../scripts/approved-disposable-restaurant-runner-env.mjs'
@@ -43,7 +43,9 @@ describe('Bar and Accounting financial-truth remediation evidence', () => {
     assert.match(disposableHarness, /no child process or database connection was started/)
   })
 
-  it('fails the disposal guard closed for unapproved or incomplete targets without contacting a database', () => {
+  it('fails the disposal guard closed for unapproved or incomplete targets without contacting a database', (t) => {
+    const realReadFileSync = fs.readFileSync.bind(fs)
+    t.mock.method(fs, 'readFileSync', (file, ...args) => String(file).replaceAll('\\', '/') === 'supabase/.temp/project-ref' ? 'oicgpknsmtvcsjacymum' : realReadFileSync(file, ...args))
     // A marker that does not identify the approved disposable target is rejected.
     assert.throws(
       () => buildApprovedDisposableRestaurantRunnerEnvironment({ LUNA_REMEDIATION_TARGET_MARKER: 'not-the-approved-marker' }),
@@ -63,7 +65,7 @@ describe('Bar and Accounting financial-truth remediation evidence', () => {
     // only allow-listed variables into the child environment.
     const { env, target } = buildApprovedDisposableRestaurantRunnerEnvironment({
       PATH: 'path-value',
-      LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://postgres.repsrmlomedqrmrdsbga:secret@aws-0-eu-west-1.pooler.supabase.co:5432/postgres',
+      LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://postgres.repsrmlomedqrmrdsbga:secret@aws-0-eu-west-1.pooler.supabase.com:5432/postgres',
       LUNA_REMEDIATION_LEDGER_STAFF_SESSION: 'session-value',
       UNRELATED_SECRET: 'must-not-pass-through'
     })

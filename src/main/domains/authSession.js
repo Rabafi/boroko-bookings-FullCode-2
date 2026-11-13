@@ -101,6 +101,65 @@ const CURRENT_SESSION_NONCE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const TRUSTED_SESSION_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // password-unlocked offline sessions
 const MASTER_ADMIN_SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
 
+/** @param {import('../state.js').DesktopAuthRuntimeStatus['status']} status @param {string} reason */
+function publishAuthRuntimeStatus(status, reason) {
+  const user = state.currentUser
+  const tokenPresent = !!state.backendSession?.token
+  const next = {
+    status,
+    generation: state.authSessionGeneration,
+    actorId: user?.id ? String(user.id) : null,
+    lodgeId: state.lodgeId ? String(state.lodgeId) : null,
+    reason: String(reason || 'unspecified').slice(0, 80),
+    at: new Date().toISOString(),
+    tokenPresent,
+    clientBound: Boolean(state.supabase && tokenPresent)
+  }
+  const previous = state.authRuntimeStatus
+  state.authRuntimeStatus = next
+  if (previous?.status !== next.status || previous?.reason !== next.reason || previous?.generation !== next.generation) {
+    // This diagnostic intentionally excludes tokens, hashes, passwords, and cookies.
+    console.info('[AUTH STATE]', {
+      status: next.status,
+      reason: next.reason,
+      generation: next.generation,
+      actorId: next.actorId,
+      lodgeId: next.lodgeId,
+      tokenPresent: next.tokenPresent,
+      clientBound: next.clientBound,
+      at: next.at
+    })
+  }
+  try { state.emitAuthRuntimeStatus?.({ ...next }) } catch { /* best-effort renderer notice */ }
+  return next
+}
+
+export function getAuthRuntimeStatus() {
+  return { ...state.authRuntimeStatus }
+}
+
+/** Snapshot used only to prevent an old protected request from changing a newer session. */
+export function getAuthRequestContext() {
+  return {
+    generation: state.authSessionGeneration,
+    actorId: state.currentUser?.id ? String(state.currentUser.id) : null,
+    lodgeId: state.lodgeId ? normalizeLodgeId(state.lodgeId) : null
+  }
+}
+
+/** @param {{generation?: number, actorId?: string|null, lodgeId?: string|null}|null|undefined} context */
+function authRequestContextIsCurrent(context) {
+  return Boolean(context
+    && context.generation === state.authSessionGeneration
+    && context.actorId === (state.currentUser?.id ? String(state.currentUser.id) : null)
+    && context.lodgeId === (state.lodgeId ? normalizeLodgeId(state.lodgeId) : null))
+}
+
+function bumpAuthSessionGeneration() {
+  state.authSessionGeneration += 1
+  state.authSessionGenerationToken = null
+}
+
 /** @param {StoredSessionExpectedView | null | undefined} record @param {{trustedUnlock?: boolean}} [options] */
 function getStoredSessionMaxAgeMs(record, { trustedUnlock = false } = {}) {
   if (record?.isMasterAdmin) return MASTER_ADMIN_SESSION_MAX_AGE_MS;
@@ -268,11 +327,21 @@ export function setCurrentUser(user) {
   // normalizeSessionUser preserves non-object truthy inputs; this expected view
   // reflects its actual object input from auth producers without adding a guard.
   state.currentUser = /** @type {typeof state.currentUser} */ (normalizeSessionUser(user));
+  const backendToken = typeof state.backendSession?.token === 'string' ? state.backendSession.token : null
+  if (backendToken && backendToken !== state.authSessionGenerationToken) {
+    state.authSessionGeneration += 1
+    state.authSessionGenerationToken = backendToken
+  }
   if (state.currentUser?.isMasterAdmin) {
     clearBackendSession();
+    state.replayAuthReady = false
+    publishAuthRuntimeStatus('authenticated', 'master_admin_local_session')
   }
   if (state.currentUser) {
-    state.replayAuthReady = true;
+    if (!state.currentUser.isMasterAdmin) {
+      state.replayAuthReady = Boolean(backendToken)
+      publishAuthRuntimeStatus(backendToken ? 'authenticated' : state.isOnline ? 'sign_in_required' : 'offline_trusted', backendToken ? 'login_or_restore' : state.isOnline ? 'missing_backend_token' : 'offline_restore')
+    }
     // Trigger local P2P Mesh initialization
     import('./mesh/meshLifecycle.js').then((module) => {
       module.initializeMesh();
@@ -287,9 +356,11 @@ export function getCurrentUser() {
 export function logoutCurrentUser({ forgetTrustedSession = false } = {}) {
   const wasMasterAdmin = Boolean(state.currentUser?.isMasterAdmin);
   state.currentUser = null;
+  bumpAuthSessionGeneration()
   state.replayAuthReady = false;
   clearBackendSession();
   if (forgetTrustedSession || wasMasterAdmin) clearSessionNonce();
+  publishAuthRuntimeStatus('sign_in_required', 'user_signed_out')
 
   // Shut down local P2P Mesh operations
   import('./mesh/meshLifecycle.js').then((module) => {
@@ -527,87 +598,148 @@ export function restoreSavedTrustedSession(email = '', password = '') {
   { user: null, nonce: '', code: 'saved_session_invalid', error: 'The saved offline session could not be opened. Connect to the internet and sign in again.' };
 }
 
-export async function validateCurrentSession() {
-  if (state.currentUser?.isMasterAdmin) return state.currentUser;
-
-  const session = getBackendSession();
+async function validateCurrentSessionImpl() {
+  if (state.currentUser?.isMasterAdmin) {
+    state.replayAuthReady = false
+    publishAuthRuntimeStatus('authenticated', 'master_admin_local_session')
+    return state.currentUser
+  }
   if (!state.currentUser) {
-    console.warn('[AUTH] Session validation failed: missing user');
-    return null;
+    state.replayAuthReady = false
+    publishAuthRuntimeStatus('sign_in_required', 'missing_main_user')
+    return null
   }
-
   if (!assertCachedSettingsMatchCurrentProduct()) {
-    clearSessionForProductMismatch();
-    authTrace('validateCurrentSession result', { valid: false, reason: 'product_profile_mismatch' });
-    return null;
+    clearSessionForProductMismatch()
+    publishAuthRuntimeStatus('sign_in_required', 'product_profile_mismatch')
+    return null
   }
 
+  // A profile switch or restore can leave the current user in memory while
+  // the backend client has lost its custom session header. Rebind only from
+  // this same actor/lodge's encrypted session nonce; the server still decides
+  // whether that token is active.
+  let session = getBackendSession()
   if (!session?.token) {
-    authTrace('validateCurrentSession skipped', {
-      reason: 'missing_backend_token',
-      userId: state.currentUser?.id || null,
-      lodge_id: state.lodgeId
-    });
-    return state.currentUser;
-  }
-
-  if (session.expires_at) {
-    const expiryTs = new Date(/** @type {string | number} */ (session.expires_at)).getTime();
-    if (Number.isFinite(expiryTs) && expiryTs <= Date.now()) {
-      console.warn('[AUTH] Offline session expired');
-      state.replayAuthReady = false;
-      state.currentUser = null;
-      clearBackendSession();
-      clearSessionNonce();
-      return null;
+    if (!state.isOnline) {
+      state.replayAuthReady = false
+      publishAuthRuntimeStatus('offline_trusted', 'offline_without_backend_token')
+      return state.currentUser
+    }
+    const stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce())
+    const sameActor = String(stored?.userId || stored?.id || '') === String(state.currentUser.id || '')
+    const sameLodge = normalizeLodgeId(stored?.lodge_id || state.lodgeId) === normalizeLodgeId(state.lodgeId)
+    if (stored?.session_token && sameActor && sameLodge) {
+      applyBackendSession({ token: stored.session_token, expires_at: stored.session_expires_at || null, session_type: stored.session_type || 'desktop' })
+      session = getBackendSession()
+      if (session?.token !== state.authSessionGenerationToken) {
+        state.authSessionGeneration += 1
+        state.authSessionGenerationToken = String(session?.token || '')
+      }
+    } else {
+      state.currentUser = null
+      state.replayAuthReady = false
+      publishAuthRuntimeStatus('sign_in_required', 'missing_backend_token')
+      return null
     }
   }
 
-  // Don't block loading screen if IO is exhausted
-  const onlineCheck = checkOnline();
-  const timeout = new Promise((/** @type {(value: 'timeout') => void} */ r) => setTimeout(() => r('timeout'), 3000));
-  const result = await Promise.race([onlineCheck, timeout]);
-  if (result === 'timeout' || !state.isOnline) {
-    return state.currentUser;
+  // The guard above returns when no stored session can be restored. In the
+  // restore branch, applyBackendSession stores the truthy token before the
+  // synchronous getBackendSession read; this view adds no runtime validation.
+  const activeSession = /** @type {NonNullable<ReturnType<typeof getBackendSession>>} */ (session)
+
+  if (activeSession.expires_at) {
+    const expiryTs = new Date(/** @type {string | number} */ (activeSession.expires_at)).getTime()
+    if (Number.isFinite(expiryTs) && expiryTs <= Date.now()) {
+      state.replayAuthReady = false
+      state.currentUser = null
+      clearBackendSession()
+      clearSessionNonce()
+      publishAuthRuntimeStatus('sign_in_required', 'locally_expired_server_session')
+      return null
+    }
+  }
+
+  // Bind every awaited recovery step to the session that supplied its token.
+  // A login/profile switch during reachability must not be overwritten by an
+  // older validation attempt.
+  const generationAtStart = state.authSessionGeneration
+  const actorAtStart = String(state.currentUser.id || '')
+  const lodgeAtStart = normalizeLodgeId(state.lodgeId)
+  const tokenAtStart = String(activeSession.token)
+  const isCurrentSession = () => generationAtStart === state.authSessionGeneration
+    && actorAtStart === String(state.currentUser?.id || '')
+    && lodgeAtStart === normalizeLodgeId(state.lodgeId)
+    && tokenAtStart === String(getBackendSession()?.token || '')
+  const onlineCheck = checkOnline()
+  let reachabilityTimer
+  const timeout = new Promise((/** @type {(value: 'timeout') => void} */ resolve) => {
+    reachabilityTimer = setTimeout(() => resolve('timeout'), 3000)
+  })
+  let reachability
+  try {
+    reachability = await Promise.race([onlineCheck, timeout])
+  } catch {
+    reachability = 'timeout'
+  } finally {
+    clearTimeout(reachabilityTimer)
+  }
+  if (!isCurrentSession()) return state.currentUser
+  if (reachability === 'timeout' || !state.isOnline) {
+    state.replayAuthReady = false
+    publishAuthRuntimeStatus(state.isOnline ? 'validation_unavailable' : 'offline_trusted', state.isOnline ? 'reachability_check_timeout' : 'offline')
+    return state.currentUser
   }
 
   try {
-    // Profile setup initializes this client before session validation. The
-    // assertion preserves the existing property access failure if that
-    // precondition is broken; it does not create a fallback client.
-    const supabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase);
-    const rpcPromise = supabase.rpc('validate_app_session', {
-      p_session_token: session.token
-    });
-    const rpcTimeout = new Promise((/** @type {(reason: Error) => void} */ reject) =>
-      setTimeout(() => reject(new Error('validate_app_session timed out')), 5000)
-    );
-    // The timeout promise only rejects; a fulfilled race value is the exact
-    // Supabase RPC response shape without altering timeout/order behavior.
-    const { data, error } = /** @type {Awaited<typeof rpcPromise>} */ (await Promise.race([rpcPromise, rpcTimeout]));
-    if (error) throw error;
-
-    // validate_app_session's SQL return columns establish this expected read
-    // view; the remote response is still not runtime-validated here.
-    const row = /** @type {AuthRecordExpectedView | null | undefined} */ (Array.isArray(data) ? data[0] : data);
-    if (!row) {
-      state.replayAuthReady = false;
-      state.currentUser = null;
-      clearBackendSession();
-      clearSessionNonce();
-      return null;
+    if (!isCurrentSession()) return state.currentUser
+    // Rebuild exactly the existing anon-key client with this session token;
+    // this repairs a lost header binding without changing role or tenant.
+    applyBackendSession(activeSession)
+    const supabase = /** @type {NonNullable<typeof state.supabase>} */ (state.supabase)
+    const rpcPromise = supabase.rpc('validate_app_session', { p_session_token: activeSession.token })
+    let rpcTimer
+    const rpcTimeout = new Promise((/** @type {(value: never) => void} */ _resolve, /** @type {(reason: Error) => void} */ reject) => {
+      rpcTimer = setTimeout(() => reject(new Error('validate_app_session timed out')), 5000)
+    })
+    let result
+    try {
+      result = /** @type {Awaited<typeof rpcPromise>} */ (await Promise.race([rpcPromise, rpcTimeout]))
+    } finally {
+      clearTimeout(rpcTimer)
+    }
+    const { data, error } = result
+    if (!isCurrentSession()) return state.currentUser
+    if (error) {
+      const code = String(/** @type {{code?: unknown}|null|undefined} */ (error)?.code || '')
+      if (code === '42501') {
+        state.replayAuthReady = false
+        publishAuthRuntimeStatus('access_denied', 'server_authorization_denied')
+        return state.currentUser
+      }
+      throw error
     }
 
-    const rowLodgeId = normalizeLodgeId(row.lodge_id);
-    if (
-    row.session_type !== (session.session_type || 'desktop') ||
-    rowLodgeId && rowLodgeId !== normalizeLodgeId(state.lodgeId))
-    {
-      state.replayAuthReady = false;
-      state.currentUser = null;
-      clearBackendSession();
-      clearSessionNonce();
-      return null;
+    const row = /** @type {AuthRecordExpectedView | null | undefined} */ (Array.isArray(data) ? data[0] : data)
+    if (!row) {
+      state.replayAuthReady = false
+      state.currentUser = null
+      clearBackendSession()
+      clearSessionNonce()
+      publishAuthRuntimeStatus('sign_in_required', 'server_session_missing_or_revoked')
+      return null
+    }
+
+    const rowLodgeId = normalizeLodgeId(row.lodge_id)
+    if (row.session_type !== (activeSession.session_type || 'desktop') || !rowLodgeId || rowLodgeId !== lodgeAtStart
+      || String(row.id || '') !== actorAtStart) {
+      state.replayAuthReady = false
+      state.currentUser = null
+      clearBackendSession()
+      clearSessionNonce()
+      publishAuthRuntimeStatus('sign_in_required', 'server_session_scope_mismatch')
+      return null
     }
 
     const refreshedUser = /** @type {SessionUserExpectedView} */ (normalizeSessionUser({
@@ -617,35 +749,73 @@ export async function validateCurrentSession() {
       email: row.email || state.currentUser.email,
       role: row.role || state.currentUser.role,
       lodge_id: row.lodge_id || state.currentUser.lodge_id || state.lodgeId
-    }));
-
-    setCurrentUser(refreshedUser);
-    upsertCachedUser(refreshedUser);
+    }))
+    setCurrentUser(refreshedUser)
+    state.replayAuthReady = true
+    publishAuthRuntimeStatus('authenticated', 'server_validation_succeeded')
+    upsertCachedUser(refreshedUser)
     await touchUserPresence({
-      userId: refreshedUser.id,
+      // The server validated this row's id against actorAtStart above; the
+      // auth cache normalizer retains that existing id value without coercion.
+      userId: /** @type {string} */ (refreshedUser.id),
       lodgeId: refreshedUser.lodge_id || state.lodgeId,
-      sessionType: row.session_type || session.session_type || 'desktop',
+      sessionType: row.session_type || activeSession.session_type || 'desktop',
       markSignIn: false
-    });
-
-    const stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce());
+    }).catch(() => {})
+    if (!isCurrentSession()) return state.currentUser
+    const stored = /** @type {StoredSessionExpectedView | null} */ (readSessionNonce())
     if (stored?.nonce) {
-      const persisted = writeSessionNonce(refreshedUser, stored.nonce);
-      if (!persisted) {
-        authTrace('validateCurrentSession secure persistence unavailable', {
-          userId: refreshedUser.id || null,
-          lodge_id: state.lodgeId
-        });
-      }
+      if (!isCurrentSession()) return state.currentUser
+      const persisted = writeSessionNonce(refreshedUser, stored.nonce)
+      if (!persisted) authTrace('validateCurrentSession secure persistence unavailable', { userId: refreshedUser.id || null, lodge_id: state.lodgeId })
     }
-
-    return refreshedUser;
+    return refreshedUser
   } catch (error) {
-    const errorView = /** @type {{message?: unknown} | null | undefined} */ (error);
-    authTrace('validateCurrentSession failed', {
-      message: errorView?.message || 'unknown_error',
-      lodge_id: state.lodgeId
-    });
-    return state.currentUser;
+    if (!isCurrentSession()) return state.currentUser
+    const errorView = /** @type {{message?: unknown, code?: unknown}|null|undefined} */ (error)
+    state.replayAuthReady = false
+    authTrace('validateCurrentSession failed', { code: errorView?.code || null, lodge_id: state.lodgeId })
+    const errorClass = errorView?.code
+      ? String(errorView.code).slice(0, 24)
+      : /timed out|timeout/i.test(String(errorView?.message || '')) ? 'timeout' : 'network_or_validation_error'
+    publishAuthRuntimeStatus('validation_unavailable', errorClass)
+    return state.currentUser
+  }
+}
+
+/** @type {ReturnType<typeof validateCurrentSessionImpl> | null} */
+let authValidationPromise = null
+export function validateCurrentSession() {
+  if (authValidationPromise) return authValidationPromise
+  authValidationPromise = validateCurrentSessionImpl().finally(() => { authValidationPromise = null })
+  return authValidationPromise
+}
+
+/** @param {unknown} error @param {string} source */
+export async function reportAuthRequestFailure(error, source = 'protected_request', requestContext = getAuthRequestContext()) {
+  if (!authRequestContextIsCurrent(requestContext)) return
+  const view = /** @type {{message?: unknown, code?: unknown}|null|undefined} */ (error)
+  const code = String(view?.code || '')
+  const message = String(view?.message || error || '')
+  if (code === '42501' || /access denied|not allowed to perform|role does not have access|not authorized to/i.test(message)) {
+    // One bounded safe validation distinguishes a stale header from a real
+    // role/lodge denial. The protected request remains rejected either way.
+    await validateCurrentSession()
+    if (!authRequestContextIsCurrent(requestContext)) return
+    if (state.authRuntimeStatus.status === 'authenticated') {
+      state.replayAuthReady = false
+      publishAuthRuntimeStatus('access_denied', `request_scope_denied:${source}`)
+    }
+    return
+  }
+  if (code === '401' || code === 'PGRST301' || /not authenticated|valid app session|session (has )?(expired|been revoked)|invalid session/i.test(message)) {
+    // An explicit invalid-session response is authoritative. Revalidate once
+    // before clearing so a concurrent network failure is not mistaken for
+    // revocation; never create a new token or silently extend this one.
+    await validateCurrentSession()
+    // validateCurrentSession owns invalid/revoked-session clearing. If it
+    // authenticated or repaired this same session, the failing request cannot
+    // revoke that newer/current authority.
+    if (!authRequestContextIsCurrent(requestContext)) return
   }
 }

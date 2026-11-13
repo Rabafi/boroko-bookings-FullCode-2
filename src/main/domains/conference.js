@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { state } from '../state.js'
 import { checkExclusiveEventConflict } from './bookings.js'
+import { EVENT_BOOKING_CACHE_MAX_ROWS, EVENT_BOOKING_CACHE_PAGE_SIZE, EVENT_BOOKING_CACHE_SELECT } from './eventBookingProjection.js'
 import {
   logActivity,
   queueOperation,
@@ -41,18 +42,23 @@ export async function getConferenceBookings(start, end) {
       sort((a, b) => String(b.booking_date || '').localeCompare(String(a.booking_date || '')) || String(a.start_time || '').localeCompare(String(b.start_time || ''))), 'offline-cache', false);
   }
   const rows = [];
-  for (let from = 0; from < 100000; from += 500) {
-    let q = (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).from('conference_bookings').select('id, booking_date, start_time, end_time, client_name, company, attendees, setup_type, room_name, includes_catering, catering_notes, total_amount, deposit_paid, payment_status, payment_method, notes, created_at, updated_at, lodge_id').eq('lodge_id', state.lodgeId);
+  let complete = false
+  for (let from = 0; from < EVENT_BOOKING_CACHE_MAX_ROWS; from += EVENT_BOOKING_CACHE_PAGE_SIZE) {
+    let q = (/** @type {NonNullable<typeof state.supabase>} */ (state.supabase)).from('conference_bookings').select(EVENT_BOOKING_CACHE_SELECT).eq('lodge_id', state.lodgeId);
     if (start) q = q.gte('booking_date', start);
     if (end) q = q.lte('booking_date', end);
-    const { data, error } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).range(from, from + 499);
+    const { data, error } = await q.order('booking_date', { ascending: false }).order('start_time', { ascending: true }).range(from, from + EVENT_BOOKING_CACHE_PAGE_SIZE - 1);
     if (error) throw new Error(error.message);
     const page = data || [];
     rows.push(...page);
-    if (page.length < 500) break;
+    if (page.length < EVENT_BOOKING_CACHE_PAGE_SIZE) {
+      complete = true
+      break
+    }
   }
+  if (!complete) throw new Error('The event list exceeds the supported read size. The saved event cache was kept unchanged.')
   writeCache('conference-bookings', rows, { source: 'remote' });
-  return withReadMetadata(rows, 'server', rows.length < 100000);
+  return withReadMetadata(rows, 'server', true);
 }
 
 /** @param {unknown} id */

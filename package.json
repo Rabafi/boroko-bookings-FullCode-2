@@ -1,6 +1,6 @@
 {
   "name": "tsa-bonno-hospitalityos",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "private": true,
   "type": "module",
   "description": "Tsa Bonno HospitalityOS desktop product workspace",
@@ -174,7 +174,7 @@
     "@electron-toolkit/utils": "^3.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "chrono-node": "^2.10.1",
     "date-fns": "^3.3.1",
     "electron-updater": "^6.8.9",
@@ -207,7 +207,7 @@
   },
   "overrides": {
     "js-yaml": "4.3.2",
-    "undici": "7.29.1"
+    "undici": "7.30.2"
   },
   "build": {
     "appId": "com.boroko.bookings",

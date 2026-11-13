@@ -11,6 +11,7 @@ import type {
   DesktopProfileRemoveDraftResult,
   DesktopProfileSelectionDataReadView,
   DesktopProfileSelectResult,
+  DesktopAuthRuntimeStatusReadView,
   DesktopPosCurrentShiftReadView,
   PendingOnlineBookingReadView,
   ShellOpenExternalResult,
@@ -331,6 +332,8 @@ export interface DesktopApi {
     restoreCurrentSession(): Promise<unknown>;
     restoreSavedSession(email: string, password: string): Promise<unknown>;
     validateSession(): Promise<unknown>;
+    getRuntimeStatus(): Promise<DesktopAuthRuntimeStatusReadView>;
+    onRuntimeStatus(listener: (status: DesktopAuthRuntimeStatusReadView) => void): () => unknown;
     logout(): Promise<DesktopIpcResult<'auth:logout'>>;
   };
   profiles: {
@@ -1163,6 +1166,7 @@ export interface DesktopApi {
     addLineItem(data: unknown): Promise<unknown>;
     voidLineItem(lineItemId: string, reason: string): Promise<unknown>;
     updatePayment(id: string, amount: number, method: string, type: string, intentKey: string): Promise<unknown>;
+    voidDuplicateEventPayment(payload: {p_lodge_id: string; p_event_id: string; p_original_payment_id: string; p_duplicate_payment_id: string; p_expected_amount: number; p_reason: string; p_idempotency_key: string}): Promise<unknown>;
     getPendingPaymentIntent(id: string): Promise<{amount: number; method: string; type: string; idempotency_key: string; scope: 'event' | 'group'; pending: true} | null>;
     recordInvoicePayment(eventId: string, amount: number, method: string, intentKey: string): Promise<unknown>;
     checkAvailability(resourceKey: string, startAt: string, endAt: string, excludeEventId: string): Promise<unknown>;

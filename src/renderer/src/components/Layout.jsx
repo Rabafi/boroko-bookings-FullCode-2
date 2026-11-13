@@ -385,7 +385,7 @@ function MandatoryBackupModal({ onGoToBackup }) {
 }
 
 export default function Layout() {
-  const { user, logout } = useAuth()
+  const { user, logout, authRuntimeStatus } = useAuth()
   const { settings } = useSettings()
   const access = useAccess()
   const { count: onlineRequestCount, requests: onlineRequests } = useOnlineRequests()
@@ -396,7 +396,7 @@ export default function Layout() {
   const [showHelp, setShowHelp] = useState(false)
   const [upgradeItem, setUpgradeItem] = useState(/** @type {{label: string, tier: string, capability: string}|null} */ (null)) // locked item clicked
   const [syncStatus, setSyncStatus] = useState(/** @type {SyncStatusUiExpectedView} */ ({ pending: 0, failed: 0, syncInProgress: false, lastSuccessfulSyncAt: null }))
-  const [collectionSummary, setCollectionSummary] = useState(/** @type {CollectionSummaryView} */ ({ count: 0, amount: 0 }))
+  const [collectionSummary, setCollectionSummary] = useState(/** @type {CollectionSummaryView} */ ({ count: null, amount: null, unavailable: true }))
   const [backupStatus, setBackupStatus] = useState(/** @type {BackupStatusView} */ ({ latestAt: null, overdue: false, enabled: false }))
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [inboxAlerts, setInboxAlerts] = useState(/** @type {InboxAlertView[]} */ ([]))
@@ -454,21 +454,26 @@ export default function Layout() {
 
   useEffect(() => {
     let mounted = true
+    let request = 0
     const loadCollections = async () => {
+      const currentRequest = ++request
       try {
         const summary = await window.api.bookings.getCollectionsSummary()
-        if (mounted) setCollectionSummary(summary || { count: 0, amount: 0 })
+        if (mounted && currentRequest === request) setCollectionSummary(summary || { count: null, amount: null, unavailable: true, reason: 'read_failed' })
       } catch {
-        if (mounted) setCollectionSummary({ count: 0, amount: 0 })
+        if (mounted && currentRequest === request) setCollectionSummary({ count: null, amount: null, unavailable: true, reason: 'read_failed' })
       }
     }
+    setCollectionSummary({ count: null, amount: null, unavailable: true })
     loadCollections()
     const interval = setInterval(loadCollections, 60_000)
+    window.addEventListener('booking-invoices-refreshed', loadCollections)
     return () => {
       mounted = false
       clearInterval(interval)
+      window.removeEventListener('booking-invoices-refreshed', loadCollections)
     }
-  }, [])
+  }, [settings?.lodge_id, user?.id, authRuntimeStatus?.status, authRuntimeStatus?.generation])
 
   useEffect(() => {
     let mounted = true
@@ -946,7 +951,12 @@ export default function Layout() {
   }
 
   const financialFailedCount = Number(syncStatus.financialFailedCount || 0)
-  const syncTone = financialFailedCount > 0
+  const authNeedsAttention = Boolean(authRuntimeStatus && !['authenticated', 'checking'].includes(authRuntimeStatus.status))
+  const syncTone = authNeedsAttention
+    ? authRuntimeStatus?.status === 'access_denied' || authRuntimeStatus?.status === 'sign_in_required'
+      ? 'border-rose-200 bg-rose-50 text-rose-800'
+      : 'border-amber-200 bg-amber-50 text-amber-800'
+    : financialFailedCount > 0
     ? 'border-rose-200 bg-rose-50 text-rose-800'
     : failedCount > 0
       ? 'border-amber-200 bg-amber-50 text-amber-800'
@@ -958,7 +968,15 @@ export default function Layout() {
             ? 'border-amber-200 bg-amber-50 text-amber-800'
             : 'border-emerald-200 bg-emerald-50 text-emerald-800'
 
-  const syncLabel = financialFailedCount > 0
+  const syncLabel = authRuntimeStatus?.status === 'sign_in_required'
+    ? 'Sign-in required'
+    : authRuntimeStatus?.status === 'access_denied'
+      ? 'Access denied'
+      : authRuntimeStatus?.status === 'validation_unavailable'
+        ? 'Access unverified'
+        : authRuntimeStatus?.status === 'offline_trusted'
+          ? 'Offline, unverified'
+          : financialFailedCount > 0
     ? `${financialFailedCount} critical issue${financialFailedCount !== 1 ? 's' : ''}`
     : failedCount > 0
       ? `${failedCount} item${failedCount !== 1 ? 's' : ''} need review`
@@ -972,7 +990,15 @@ export default function Layout() {
               ? 'Offline'
               : 'Synced'
 
-  const syncSubLabel = failedCount > 0
+  const syncSubLabel = authRuntimeStatus?.status === 'sign_in_required'
+    ? 'Sign in to resume protected data access'
+    : authRuntimeStatus?.status === 'access_denied'
+      ? 'Check account and business access'
+      : authRuntimeStatus?.status === 'validation_unavailable'
+        ? 'Retry when the server is reachable'
+        : authRuntimeStatus?.status === 'offline_trusted'
+          ? 'Financial sync waits for verified access'
+          : failedCount > 0
     ? 'Open System Health'
     : syncInProgress
       ? 'Sync replay is running'
@@ -1019,12 +1045,22 @@ export default function Layout() {
       detail: 'Confirm or decline',
       to: '/bookings'
     },
-    collectionSummary.count > 0 && {
+    collectionSummary.unavailable === true && {
+      key: 'collections-unavailable',
+      tone: 'warning',
+      icon: CreditCard,
+      label: collectionSummary.reason === 'reconciliation_required' ? 'Invoice reconciliation needed' : 'Collection totals unavailable',
+      detail: collectionSummary.reason === 'reconciliation_required'
+        ? `${collectionSummary.needs_attention_count || 1} invoice(s) need review; collection total remains unavailable`
+        : 'Retry the refresh after server access is verified',
+      to: '/invoices'
+    },
+    collectionSummary.unavailable !== true && collectionSummary.count > 0 && {
       key: 'collections',
       tone: 'danger',
       icon: CreditCard,
-      label: `${currency} ${Number(collectionSummary.amount || 0).toFixed(2)} owed`,
-      detail: `${collectionSummary.count} collection${collectionSummary.count === 1 ? '' : 's'}`,
+      label: `${collectionSummary.financial_estimate ? 'Estimate · ' : ''}${currency} ${Number(collectionSummary.amount || 0).toFixed(2)} owed`,
+      detail: `${collectionSummary.count} collection${collectionSummary.count === 1 ? '' : 's'}${collectionSummary.financial_estimate ? ' · reconnect to refresh' : ''}`,
       to: '/invoices'
     },
     pendingCount > 0 && failedCount === 0 && {

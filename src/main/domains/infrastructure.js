@@ -56,6 +56,7 @@ import {
   writeCache,
   dedupePromise
 } from './cacheStore.js';
+import { getAuthRequestContext, reportAuthRequestFailure } from './authSession.js'
 import {
   buildSupabaseClient
 } from './authClients.js';
@@ -339,7 +340,10 @@ export {
   clearSessionNonce,
   createSessionNonce,
   getCurrentUser,
+  getAuthRuntimeStatus,
+  getAuthRequestContext,
   logoutCurrentUser,
+  reportAuthRequestFailure,
   restoreCurrentTrustedSession,
   restoreSavedTrustedSession,
   restoreUserSession,
@@ -884,6 +888,13 @@ async function _runSyncQueue() {
   let shouldRefreshRateOverrides = false;
 
   while (pending.length > 0) {
+    if (!state.replayAuthReady) {
+      appendOperationJournalEntry('replay_paused_auth_unverified', pending[0] || {}, {
+        message: 'Financial sync paused because server access is no longer verified. The operation and its stable key remain queued.'
+      });
+      writeReplayQueue(pending, { completedQueueIds, deadLetter });
+      break;
+    }
     // Circuit-breaker: if the link died mid-drain, stop instead of burning
     // one retry on every remaining item. The in-flight item already spent its
     // attempt; the rest stay pending untouched for the next reconnect.
@@ -1057,6 +1068,7 @@ async function _runSyncQueue() {
     writeReplayQueue(pending, { inFlightItem: item, completedQueueIds, deadLetter });
 
     let supabaseError = null;
+    const authRequestContext = getAuthRequestContext();
     /** @type {unknown} RPC response data remains unvalidated until an operation-specific consumer uses its expected fields. */
     /** @type {unknown} */
     let rpcResultData = null;
@@ -1273,6 +1285,11 @@ async function _runSyncQueue() {
     }
 
     if (supabaseError) {
+      const authError = /** @type {{code?: unknown, message?: unknown}|null} */ (supabaseError)
+      if (String(authError?.code || '') === '42501' || String(authError?.code || '') === '401'
+        || /access denied|not authenticated|invalid session|valid app session|session (has )?(expired|been revoked)/i.test(String(authError?.message || ''))) {
+        await reportAuthRequestFailure(supabaseError, `sync:${String(item?.table || 'operation').slice(0, 48)}`, authRequestContext)
+      }
       // Track failed queue IDs so dependents are skipped
       if (item._queue_id) failedQueueIds.add(item._queue_id);
       // Expected Supabase/JavaScript error-message view; preserve raw malformed

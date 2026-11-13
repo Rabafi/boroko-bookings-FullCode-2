@@ -986,7 +986,9 @@ function FinancialHealthBanner() {
     ? 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100'
     : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
   const count = errors.length
-  const label = isTrulyCritical ? 'critical error' : 'system warning'
+  // These are persisted incident records, not a live connection-health check.
+  // Recovery must not erase their history or present them as current failures.
+  const label = isTrulyCritical ? 'saved error' : 'saved warning'
   const dotTone = isTrulyCritical ? 'bg-rose-500' : 'bg-amber-500 animate-pulse'
   const firstMessage = importantIssueMessage(errors[0])
   const signature = errors.map((entry) => entry?.id || entry?.detected_at || importantIssueMessage(entry)).join('|')
@@ -1009,12 +1011,13 @@ function FinancialHealthBanner() {
     <div className="fixed top-[72px] right-4 z-[9995] pointer-events-none">
       <div
         className={`${tone} pointer-events-auto inline-flex items-center gap-3 rounded-full border px-3 py-2 text-xs shadow-lg backdrop-blur-sm transition-colors`}
+        title="Saved issue history. Entries remain after recovery until reviewed or cleared in System Health."
         onClick={() => navigate('/settings', { state: { activeTab: 'system' } })}
       >
         <div className={`h-2.5 w-2.5 rounded-full ${dotTone}`} />
         <span className="font-semibold">{count} {label}{count === 1 ? '' : 's'}</span>
         <span className="hidden max-w-[320px] text-[11px] font-medium opacity-80 sm:inline leading-tight">{firstMessage}</span>
-        <span className="text-[11px] font-medium opacity-75">Open Health</span>
+        <span className="text-[11px] font-medium opacity-75">View history</span>
         <button type="button" onClick={(event) => { event.stopPropagation(); setMinimized(true) }} aria-label="Minimize system warning banner"><ChevronDown size={13} /></button>
         <button type="button" onClick={(event) => { event.stopPropagation(); setDismissedSignature(signature) }} aria-label="Dismiss system warning banner"><X size={13} /></button>
       </div>
@@ -1877,6 +1880,7 @@ export default function App() {
     }
   })
   const [authRestoreLoading, setAuthRestoreLoading] = useState(() => !isBrowserPreview && !!user)
+  const [authRuntimeStatus, setAuthRuntimeStatus] = useState(/** @type {import('./types/desktop-api.js').DesktopAuthRuntimeStatusReadView | null} */ (null))
   const [profiles, setProfiles] = useState([])
   const [activeProfile, setActiveProfile] = useState(null)
   const [profilesLoading, setProfilesLoading] = useState(!isBrowserPreview)
@@ -2290,6 +2294,45 @@ export default function App() {
     }
   }, [isBrowserPreview, user])
 
+  // Keep the renderer's display identity aligned with authoritative main
+  // process session state. Revalidation is bounded and runs on reconnect,
+  // window focus, and a slow periodic cadence; offline reachability alone is
+  // never treated as proof of authentication.
+  useEffect(() => {
+    if (isBrowserPreview || !window.api?.auth) return undefined
+    let active = true
+    const acceptStatus = (status) => {
+      if (!active || !status) return
+      setAuthRuntimeStatus(status)
+      if (status.status === 'sign_in_required') clearStoredRendererSession()
+    }
+    const refreshStatus = async () => {
+      try { acceptStatus(await window.api.auth.getRuntimeStatus()) } catch { /* runtime status is unavailable during startup */ }
+    }
+    const validate = async () => {
+      if (document.visibilityState === 'hidden' || !user || user.isMasterAdmin) return refreshStatus()
+      try {
+        const validated = await window.api.auth.validateSession?.()
+        if (!validated && active) await refreshStatus()
+      } catch { /* status event/query reports the recoverable state */ }
+      await refreshStatus()
+    }
+    const unsubscribe = window.api.auth.onRuntimeStatus?.(acceptStatus)
+    refreshStatus()
+    const interval = setInterval(validate, 60_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') validate() }
+    const onOnline = () => validate()
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('online', onOnline)
+    return () => {
+      active = false
+      clearInterval(interval)
+      unsubscribe?.()
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [clearStoredRendererSession, isBrowserPreview, user])
+
   useEffect(() => {
     if (profilesLoading || !user || restoreAttemptedRef.current || !window.api?.auth?.restoreCurrentSession) return
 
@@ -2299,29 +2342,48 @@ export default function App() {
       if (!activeLodgeId || storedScope !== activeLodgeId) return
     }
 
+    let active = true
     restoreAttemptedRef.current = true
     console.info('[STARTUP] session-restore-start', { at_ms: Math.round(performance.now()) })
     const restorePromise = window.api.auth.restoreCurrentSession()
 
     restorePromise.then((restored) => {
+      if (!active) return null
       console.info('[STARTUP] session-restore-result', { at_ms: Math.round(performance.now()), restored: Boolean(restored) })
       if (!restored) {
-        clearStoredRendererSession()
-        setAuthRestoreLoading(false)
-        return null
+        return window.api.auth.getRuntimeStatus?.().then((status) => {
+          if (!active) return null
+          setAuthRuntimeStatus(status || null)
+          if (status?.status === 'sign_in_required') clearStoredRendererSession()
+          setAuthRestoreLoading(false)
+          return null
+        })
       }
       return window.api.auth.validateSession?.()
         .then((validated) => {
-          return validated || restored
+          if (!active || !validated) return null
+          return validated
         })
-        .catch(() => restored)
+        .catch(async () => {
+          if (!active) return null
+          const status = await window.api.auth.getRuntimeStatus?.().catch(() => null)
+          if (!active) return null
+          if (status) setAuthRuntimeStatus(status)
+          if (status?.status === 'sign_in_required') clearStoredRendererSession()
+          return restored
+        })
         .finally(() => {
-          setAuthRestoreLoading(false)
+          if (active) setAuthRestoreLoading(false)
         })
-    }).catch(() => {
-      clearStoredRendererSession()
+    }).catch(async () => {
+      if (!active) return
+      const status = await window.api.auth.getRuntimeStatus?.().catch(() => null)
+      if (!active) return
+      if (status) setAuthRuntimeStatus(status)
+      if (status?.status === 'sign_in_required') clearStoredRendererSession()
       setAuthRestoreLoading(false)
     })
+    return () => { active = false }
   }, [activeProfile?.lodge_id, clearStoredRendererSession, profilesLoading, user])
 
   useEffect(() => {
@@ -2541,7 +2603,7 @@ export default function App() {
     </main>
   }
 
-  const authContextValue = { user, login, logout }
+  const authContextValue = { user, login, logout, authRuntimeStatus }
   // Commercial package identity comes from the authenticated entitlement and is
   // authoritative for Bar POS, even when older settings rows lack bar_only.
   const effectiveSettings = settings ? {
@@ -2638,6 +2700,25 @@ export default function App() {
                 <TrialBanner daysLeft={trialStatus.daysLeft} />
               )}
             </div>
+            {(user || (authRuntimeStatus?.status === 'sign_in_required' && authRuntimeStatus.reason !== 'user_signed_out')) && authRuntimeStatus?.status && authRuntimeStatus.status !== 'authenticated' && authRuntimeStatus.status !== 'checking' && (
+              <div role="status" className={`fixed left-1/2 top-4 z-[9998] w-[min(92vw,42rem)] -translate-x-1/2 rounded-xl border px-4 py-3 text-sm shadow-lg ${authRuntimeStatus.status === 'access_denied' || authRuntimeStatus.status === 'sign_in_required' ? 'border-rose-300 bg-rose-50 text-rose-900' : 'border-amber-300 bg-amber-50 text-amber-950'}`}>
+                <p className="font-semibold">
+                  {authRuntimeStatus.status === 'access_denied' ? 'Your account cannot access this data.'
+                    : authRuntimeStatus.status === 'sign_in_required' ? 'Your session needs sign-in.'
+                      : authRuntimeStatus.status === 'offline_trusted' ? 'Offline mode: server access is unverified.'
+                        : 'Server access could not be verified.'}
+                </p>
+                <p className="mt-1">{authRuntimeStatus.status === 'access_denied'
+                  ? 'Protected actions and financial sync are paused. Check your business and account access.'
+                  : authRuntimeStatus.status === 'offline_trusted'
+                    ? 'Saved work stays on this device. Financial changes will wait for verified server access.'
+                    : 'Saved work is preserved. Reconnect and retry, or sign in again to restore server access.'}</p>
+                <div className="mt-2 flex gap-2">
+                  {authRuntimeStatus.status !== 'offline_trusted' && <button type="button" className="rounded-md border border-current px-3 py-1 font-semibold" onClick={() => { if (authRuntimeStatus.status === 'sign_in_required') { logout(); window.location.hash = '#/login' } else window.api.auth.validateSession?.().catch(() => {}) }}> {authRuntimeStatus.status === 'sign_in_required' ? 'Sign in' : 'Retry verification'} </button>}
+                  {authRuntimeStatus.status === 'access_denied' && <button type="button" className="rounded-md border border-current px-3 py-1 font-semibold" onClick={() => { logout(); window.location.hash = '#/login' }}>Switch account</button>}
+                </div>
+              </div>
+            )}
             <Routes>
               <Route
                 path="/welcome"

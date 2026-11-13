@@ -164,6 +164,54 @@ test('offline event payment keeps server-owned totals unchanged and labels its e
   assert.equal(cached._estimated_payment_status, 'partial')
 })
 
+test('offline consolidated event payment queues the same invoice RPC once and preserves its exact key', async (t) => {
+  setup(t, async () => {
+    throw new Error('offline consolidated payment must not reach Supabase')
+  })
+  state.isOnline = false
+  infrastructure.writeCache('conference-bookings', [{
+    id: EVENT_ID,
+    total_amount: 500,
+    amount_paid: 0,
+    balance_due: 500,
+    payment_status: 'unpaid'
+  }])
+  infrastructure.writeCache(`event-invoice-summary-${EVENT_ID}`, {
+    event_booking_id: EVENT_ID,
+    total_amount: 1000,
+    amount_paid: 250,
+    balance_due: 750,
+    reconciliation_required: false
+  }, { source: 'remote' })
+
+  const first = await events.recordEventInvoicePayment(EVENT_ID, 100, 'cash', 'invoice-offline-stable-key')
+  const invoiceAfterFirst = infrastructure.readCache(`event-invoice-summary-${EVENT_ID}`)
+  assert.equal(first.queued, true)
+  assert.equal(first.financial_estimate, true)
+  assert.equal(invoiceAfterFirst.amount_paid, 350)
+  assert.equal(invoiceAfterFirst.balance_due, 650)
+  assert.equal(invoiceAfterFirst.financial_estimate, true)
+  assert.equal(infrastructure.readCache('conference-bookings')[0].amount_paid, 0)
+  assert.deepEqual(events.getPendingEventPaymentIntent(EVENT_ID), {
+    amount: 100,
+    method: 'cash',
+    type: 'payment',
+    idempotency_key: 'invoice-offline-stable-key',
+    scope: 'group',
+    pending: true
+  })
+  await assert.rejects(
+    events.recordEventInvoicePayment(EVENT_ID, 101, 'cash', 'replacement-invoice-key'),
+    /uncertain result/
+  )
+  const retry = await events.recordEventInvoicePayment(EVENT_ID, 100, 'cash', 'replacement-invoice-key')
+  assert.equal(retry.queued, true)
+  assert.equal(infrastructure.readCache(`event-invoice-summary-${EVENT_ID}`).amount_paid, 350, 'retry must not double the local estimate')
+  const [queued] = infrastructure.readSyncQueue()
+  assert.equal(queued.table, 'record_event_invoice_payment')
+  assert.equal(queued.data.p_idempotency_key, 'invoice-offline-stable-key')
+})
+
 test('a definitive group payment rejection releases the original form lock', async (t) => {
   setup(t, async () => ({
     data: { success: false, reconciliation_required: true, error: 'Receipts need reconciliation' },

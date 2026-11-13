@@ -231,7 +231,8 @@ test('full data exports fail closed for financial gaps and label allowed partial
 
 test('full data exports use paged readers instead of capped screen queries', () => {
   assert.match(main, /getInventoryMovements', \{ start_date: normalized\.startDate, end_date: normalized\.endDate, export_all: true \}/)
-  assert.match(read('src/main/domains/conference.js'), /\.range\(from, from \+ 499\)/)
+  assert.match(read('src/main/domains/conference.js'), /\.range\(from, from \+ EVENT_BOOKING_CACHE_PAGE_SIZE - 1\)/)
+  assert.match(read('src/main/domains/eventBookingProjection.js'), /EVENT_BOOKING_CACHE_PAGE_SIZE = 500/)
   assert.match(read('src/main/domains/pool.js'), /\.range\(from, from \+ 499\)/)
   assert.match(read('src/main/domains/inventory.js'), /const exportAll = filters\?\.export_all === true/)
   assert.match(read('src/main/domains/inventory.js'), /for \(let from = 0; from < maxRows; from \+= pageSize\)/)

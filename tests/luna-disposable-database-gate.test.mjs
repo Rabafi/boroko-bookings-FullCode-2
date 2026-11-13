@@ -8,6 +8,21 @@ import {
   DisposableDatabaseBlocked,
   readLunaDatabaseTarget
 } from './helpers/luna-disposable-database.mjs'
+import { guardLodgeDisposableQuery } from './helpers/lodge-management-disposable.mjs'
+
+test('Management API fixture queries verify the server marker before mutations in the same transaction', () => {
+  for (const query of ['begin; insert into fixture values (1); rollback;', 'delete from fixture;']) {
+    const guarded = guardLodgeDisposableQuery(query)
+    assert.match(guarded, /^begin;/)
+    assert.ok(guarded.indexOf('Disposable database identity') < guarded.indexOf(query.includes('insert') ? 'insert into fixture' : 'delete from fixture'))
+    assert.match(guarded, /project_ref = 'repsrmlomedqrmrdsbga'/)
+    assert.match(guarded, /environment_kind = 'disposable'/)
+    assert.match(guarded, /allow_mutation is true/)
+    assert.match(guarded, /database_name = current_database\(\)/)
+    assert.ok(guarded.endsWith(query.startsWith('begin;') ? 'rollback;' : 'commit;'))
+  }
+  assert.throws(() => guardLodgeDisposableQuery(''), /Fixture SQL is required/)
+})
 
 const goodEnv = {
   LUNA_REMEDIATION_TEST_DB_URL: 'postgresql://tester:secret@db.repsrmlomedqrmrdsbga.supabase.co:5432/postgres',

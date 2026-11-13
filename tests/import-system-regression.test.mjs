@@ -21,7 +21,9 @@ async function run() {
   assert.match(mainIndex, /book_append_sheet\(wb, dataSheet, 'Import Data'\)/)
   assert.match(mainIndex, /book_append_sheet\(wb, readMeSheet, 'Read Me'\)/)
   assert.match(mainIndex, /Keep the header row unchanged/)
-  assert.match(mainIndex, /online database access/)
+  const misc = await read('src/main/domains/misc.js')
+  assert.match(misc, /if \(!state\.isOnline\) throw new Error\('Internet connection required to import bookings\.'/)
+  assert.match(misc, /if \(!state\.isOnline\) throw new Error\(`Internet connection required to import \$\{normalizedType\}\./)
 
   const importUi = await read('src/renderer/src/components/DataImport.jsx')
   const preload = await read('src/preload/index.js')
@@ -50,7 +52,6 @@ async function run() {
   assert.match(importUi, /payment mode/)
   assert.doesNotMatch(importUi, /Supabase/)
 
-  const misc = await read('src/main/domains/misc.js')
   assert.match(misc, /function suggestRoomNumbers/)
   assert.match(misc, /suggestions:\s*\{\s*room_number/)
 

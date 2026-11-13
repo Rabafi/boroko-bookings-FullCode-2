@@ -61,7 +61,7 @@ export function calculateInvoicePaymentStatus(totalOwed, amountPaid) {
 }
 
 /**
- * @typedef {{booking_id: string, room_id?: string|null, room_number?: string|null, room_type?: string|null, check_in?: string|null, check_out?: string|null, nights?: number, adults?: number|string|null, children?: number|string|null, total_amount?: number, amount_paid?: number, charges_total?: number, balance_due?: number, status?: string|null, payment_status?: string|null}} EventRoomInvoiceLine
+ * @typedef {{booking_id: string, room_id?: string|null|undefined, room_number?: string|null|undefined, room_type?: string|null|undefined, check_in?: string|null, check_out?: string|null, nights?: number, adults?: number|string|null, children?: number|string|null, total_amount?: number, amount_paid?: number, charges_total?: number, balance_due?: number, status?: string|null|undefined, payment_status?: string|null|undefined, invoice_number?: string|null|undefined, issued_at?: string|null|undefined, due_date?: string|null|undefined}} EventRoomInvoiceLine
  * @typedef {{id: string, customer_id?: string|null, customer_name?: string|null, event_name?: string|null, client_name?: string|null, reservation_scope?: string|null, status?: string|null, booking_date?: string|null, check_in?: string|null, check_out?: string|null, total_amount?: number|string|null, charges_total?: number|string|null, amount_paid?: number|string|null, payment_status?: string|null, currency?: string|null, exclusive_booking_id?: string|null}} EventInvoiceParent
  */
 

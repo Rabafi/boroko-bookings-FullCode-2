@@ -23,7 +23,8 @@ import { createContext, useContext } from 'react'
 /** @typedef {{
  *   user: AuthContextUser | null,
  *   login: (user: AuthContextUser) => Promise<void> | Promise<null>,
- *   logout: () => Promise<null> | void
+ *   logout: () => Promise<null> | void,
+ *   authRuntimeStatus?: import('./types/desktop-api.js').DesktopAuthRuntimeStatusReadView | null
  * }} AuthContextValue
  */
 

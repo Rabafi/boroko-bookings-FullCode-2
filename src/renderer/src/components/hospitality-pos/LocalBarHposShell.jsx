@@ -182,7 +182,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
     profilesLoading: Boolean(session && !bootstrap && !bootstrapError),
     reloadProfiles: async () => localProfile ? [localProfile] : [],
     selectProfile: async (profileId) => String(profileId) === businessId ? localProfile : null,
-    createDraftProfile: async () => { throw new Error('Create or switch businesses from the Hospitality POS business chooser.') },
+    createDraftProfile: async () => { throw new Error('Create or switch businesses from the Restaurant & Bar POS business chooser.') },
     removeDraftProfile: async () => null
   }), [localProfile, session, bootstrap, bootstrapError, businessId])
   const localFeatures = useMemo(() => {

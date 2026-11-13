@@ -245,6 +245,15 @@ async function run() {
   assert.match(eventsDomain, /rpc\('void_event_line_item'/)
   assert.match(eventsDomain, /rpc\('update_event_payment'/)
   assert.match(eventsDomain, /rpc\('get_event_booking_details'/)
+  assert.match(eventsDomain, /applyBackendSession\(session\)/)
+  assert.match(eventsDomain, /rpc\('validate_app_session'/)
+  assert.match(eventsDomain, /get_invoice_summary/)
+  assert.match(eventsDomain, /event_invoice_status: 'unavailable'/)
+  assert.doesNotMatch(eventsDomain, /\.catch\(\(\) => cached\)/)
+  assert.match(conferenceUi, /STATUS_COLORS\[b\.invoice_reconciliation_required \? 'unavailable'/)
+  assert.match(conferenceUi, /STATUS_COLORS\[b\.invoice_reconciliation_required \? 'unavailable' : b\.event_invoice_status/)
+  assert.match(eventsDomain, /available: null, verified: false/)
+  assert.match(eventsDomain, /financial_estimate: true/)
   assert.match(eventsDomain, /rpc\('check_event_resource_conflict'/)
   // events.js uses offline queue for mutations
   assert.match(eventsDomain, /queueOperation\('rpc', 'create_event_booking'/)
@@ -311,6 +320,8 @@ async function run() {
 
   // ═══ CONFERENCE.JSX: uses events API ═══
   assert.match(conferenceUi, /window\.api\.events\.getAll/)
+  assert.match(conferenceUi, /Could not refresh events/)
+  assert.doesNotMatch(conferenceUi, /events\.getAll\(start, end\)\.catch\(/)
   assert.match(conferenceUi, /window\.api\.events\.create/)
   assert.match(conferenceUi, /window\.api\.events\.update/)
   assert.match(conferenceUi, /window\.api\.events\.cancel/)
@@ -356,10 +367,15 @@ async function run() {
   assert.match(conferenceUi, /window\.api\.events\.update/)
   assert.match(conferenceUi, /window\.api\.events\.cancel/)
   assert.match(conferenceUi, /window\.api\.events\.updatePayment/)
-  assert.match(conferenceUi, /window\.api\.conference\.getAll/)
+  assert.doesNotMatch(conferenceUi, /window\.api\.conference\.getAll/)
   assert.match(conferenceUi, /window\.api\.conference\.create/)
   assert.match(conferenceUi, /window\.api\.conference\.update/)
-  assert.match(conferenceUi, /window\.api\.conference\.delete/)
+  assert.doesNotMatch(conferenceUi, /window\.api\.conference\.delete/)
+  assert.match(conferenceUi, /recordInvoicePayment/)
+  assert.match(conferenceUi, /agreed_base_amount/)
+  assert.match(conferenceUi, /Voided duplicate receipt/)
+  assert.match(conferenceUi, /cancellation does not issue a refund/)
+  assert.match(conferenceUi, /Room and venue assignments cannot be changed/)
 
   console.log('events-venues-regression: ok')
 }

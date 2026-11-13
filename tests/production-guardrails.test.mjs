@@ -67,7 +67,9 @@ async function run() {
 
   const mainIndex = await read('src/main/index.js')
   const databaseFacade = await read('src/main/database.js')
+  // Type-only JSDoc casts do not change the RPC authority being checked.
   const database = [databaseFacade, ...(await readTree('src/main/domains'))].join('\n')
+    .replace(/\/\*\* @type \{NonNullable<typeof state\.supabase>\} \*\/\s*\(state\.supabase\)/g, 'state.supabase')
   const syncQueueSource = await read('src/shared/syncQueue.js')
   const surfaceIntelligence = await read('src/renderer/src/components/SurfaceIntelligence.jsx')
   const adminApi = await read('src/renderer/src/utils/adminApi.js')
@@ -135,7 +137,7 @@ async function run() {
 
   const authLogin = await read('src/main/domains/authLogin.js')
   assert.match(authLogin, /supabase_auth_not_migrated/)
-  assert.match(authLogin, /\['supabase_auth_unavailable', 'supabase_auth_not_migrated'\]\.includes\(supabaseAuth\.code\)/)
+  assert.match(authLogin, /\(?\['supabase_auth_unavailable', 'supabase_auth_not_migrated'\]\)?\.includes\(supabaseAuth\.code\)/)
   assert.doesNotMatch(authLogin, /if \(supabaseAuth\.user \|\| supabaseAuth\.code !== 'supabase_auth_unavailable'\)/)
 
   const panel = await read('src/renderer/src/components/SystemHealthPanel.jsx')
@@ -181,7 +183,8 @@ async function run() {
   assert.match(database, /severity:\s*safeSeverity/)
   assert.match(database, /fault\.context && typeof fault\.context === 'object'/)
   assert.match(database, /function valuesEqualForDrift\(/)
-  const health = await read('src/main/domains/health.js')
+  const health = (await read('src/main/domains/health.js'))
+    .replace(/\/\*\* @type \{NonNullable<typeof state\.supabase>\} \*\/\s*\(state\.supabase\)/g, 'state.supabase')
   assert.match(health, /const mutationProbeNames = \[/)
   assert.match(health, /skipped: true/)
   assert.match(health, /Not invoked against an installed operator database/)
@@ -216,7 +219,8 @@ async function run() {
   assert.match(database, /getInventoryItems received empty live result; using cached inventory items instead/)
   assert.match(database, /export async function getInventoryPurchases\(itemId\)\s*\{[\s\S]*?getInventoryPurchases received empty live result; using cached purchases instead/)
   assert.match(database, /getInventoryPurchases falling back to cache:/)
-  assert.match(database, /export async function getLowStockItems\(\)\s*\{[\s\S]*?getInventoryItems\(\)\.catch\(\(\) => readCache\('inventory-items'\)\)/)
+  assert.match(database, /function readInventoryItemCacheExpectedData\(\)[\s\S]*?readCache\('inventory-items'\)/)
+  assert.match(database, /export async function getLowStockItems\(\)\s*\{[\s\S]*?getInventoryItems\(\)\.catch\(\(\) => readInventoryItemCacheExpectedData\(\)\)/)
   assert.match(database, /if \(name === 'outlets'\)[\s\S]{0,400}writeCache\(name, cachedRows, \{ source: 'cache' \}\)/)
   assert.match(database, /for \(const name of targetNames\)[\s\S]*refreshCacheStrict\(name\)/)
   assert.match(database, /const mergedLiveRows = mergeRemotePosOrdersWithLocalState\(data \|\| \[\], cachedOrders\)/)
@@ -360,7 +364,8 @@ async function run() {
   assert.match(sqlUsageHarness, /120 base \+ 2 grace bookings/)
   assert.doesNotMatch(sqlUsageHarness, /monthly booking creation limit/i)
 
-  const adminCentral = await read('src/renderer/src/components/AdminCentral.jsx')
+  const adminCentral = (await read('src/renderer/src/components/AdminCentral.jsx'))
+    .replace(/\/\*\* @type \{[^}]+\} \*\/\s*\(([a-zA-Z]+)\)/g, '$1')
   const adminDomain = await read('src/main/domains/admin.js')
   const licensingWorkbench = await read('src/renderer/src/components/LicensingWorkbench.jsx')
   const bookingsUi = await read('src/renderer/src/components/Bookings.jsx')
@@ -518,7 +523,7 @@ async function run() {
   assert.match(bookingsUi, /data-testid="booking-creation-usage"/)
   assert.match(roomsUi, /disabled=\{roomLimitStatus\.isBlocked\}/)
   assert.match(roomsUi, /setShowUpgradePrompt\(true\)/)
-  assert.match(staffUi, /disabled=\{userLimitStatus\.isBlocked\}/)
+  assert.match(staffUi, /disabled=\{!localAuthority && userLimitStatus\.isBlocked\}/)
   assert.match(staffUi, /setShowUpgradePrompt\(true\)/)
   assert.match(staffUi, /UsageLimitIndicator label="Users"/)
   assert.doesNotMatch(staffUi, /Unlimited access/)

@@ -58,7 +58,7 @@ function classify(relativePath, line) {
   if (relativePath.startsWith('supabase/migrations/') || relativePath.startsWith('supabase/migrations_archive/')) {
     return 'database-history-review'
   }
-  if (relativePath.startsWith('tests/') || relativePath.startsWith('Playwright tests/')) return 'test-contract'
+  if (relativePath.startsWith('scripts/typecheck-') || relativePath.startsWith('tests/') || relativePath.startsWith('Playwright tests/')) return 'test-contract'
   if (relativePath.startsWith('docs/') || /(^|\/)(README|CHANGELOG|PROJECT_STATE|AGENTS|NEW_PC_SETUP_AND_MIGRATION)\.md$/i.test(relativePath)) {
     return 'documentation'
   }
@@ -78,7 +78,7 @@ function classify(relativePath, line) {
 }
 
 const liveExternalReference = /(?:borokobookings\.com|borokobookings\.netlify\.app|borokoonlinebookings\.netlify\.app|boroko-bookings\.vercel\.app|(?:facebook|instagram)\.com\/borokobookings|linkedin\.com\/company\/borokobookings|@borokobookings|support@boroko\.io|github\.com\/[^\s"']*boroko|Rabafi\/boroko)/i
-const compatibilityContract = /(?:\b(?:MAIN_VITE_)?BOROKO_[A-Z0-9_]+\b|__BOROKO_PRODUCT__|x-boroko(?:-[a-z0-9-]+)?|com\.boroko\.[a-z0-9.]+|BorokoSession|boroko(?:[-_.:]|_)(?:bookings?|hotel|hospitality|legacy|manager|pwa|desktop|mesh|cache|session|enterprise|upgrade|crm|cookie|local|ai|push|chat|last|installed|dev|pending|backups)|boroko_mesh_hello|Boroko Restaurant & Bar POS Dev Desk|boroko-bookings-releases|boroko-hotel-releases|boroko-hospitality-pos-releases|boroko-pos-legacy-releases)/i
+const compatibilityContract = /(?:\b(?:MAIN_VITE_)?BOROKO_[A-Z0-9_]+\b|__BOROKO_PRODUCT__|__BOROKO_APP_(?:VERSION|BUILD_ID)__|LEGACY_BOROKO_REDIRECTS|boroko:rooms-changed|x-boroko(?:-[a-z0-9-]+)?|com\.boroko\.[a-z0-9.]+|BorokoSession|boroko(?:[-_.:]|_)(?:bookings?|hotel|hospitality|legacy|manager|pwa|desktop|mesh|cache|session|enterprise|upgrade|crm|cookie|local|ai|push|chat|last|installed|dev|pending|backups)|boroko_mesh_hello|Boroko Restaurant & Bar POS Dev Desk|boroko-bookings-releases|boroko-hotel-releases|boroko-hospitality-pos-releases|boroko-pos-legacy-releases)/i
 const localEvidencePath = /^(?:scratch\/|tmp[^/]*\.log$|.*\.err\.log$|generate_(?:qa_)?pdf\.py$|build\/|electron\.vite\.config\.\d+\.mjs$|AUDIT_REPORT\.md$|COMMAND_CENTRAL_REPORT\.md$|todo\.txt$)/i
 
 function resolveDisposition(relativePath, line, classification) {

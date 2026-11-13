@@ -31,7 +31,10 @@ export {
   getUserPosOutletFilter,
   setCurrentUser,
   getCurrentUser,
+  getAuthRuntimeStatus,
+  getAuthRequestContext,
   logoutCurrentUser,
+  reportAuthRequestFailure,
   restoreCurrentTrustedSession,
   restoreUserSession,
   restoreSavedTrustedSession,
@@ -600,6 +603,8 @@ export {
   updateConferenceBookingPayment,
   deleteConferenceBooking
 } from './domains/conference.js'
+export { voidDuplicateEventPayment } from './domains/eventPaymentCorrection.js'
+
 export {
   getEventBookings,
   getEventBookingById,

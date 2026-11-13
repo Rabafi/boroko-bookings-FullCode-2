@@ -192,6 +192,7 @@ function refundRequestPending(invoice) {
 
 /** @param {BookingInvoiceDisplay} invoice */
 function invoiceNeedsAttention(invoice) {
+  if (invoice.reconciliation_required) return true
   const total = Math.max(0, Number(invoice.total_amount || 0) + Number(invoice.charges_total || 0))
   const paid = Math.max(0, Number(invoice.amount_paid || 0))
   const status = String(invoice.payment_status || 'unpaid')
@@ -860,7 +861,7 @@ function CreditTransferReceipt({ receipt, currency, settings, onClose }) {
 
 export default function BookingInvoices() {
   const { settings } = useSettings()
-  const { user } = useAuth()
+  const { user, authRuntimeStatus } = useAuth()
   const currency = (/** @type {(ReceiptSettingsDisplay & {currency?: string}) | null} */ (settings))?.currency || 'P'
   const navigate = useNavigate()
   const location = useLocation()
@@ -868,6 +869,15 @@ export default function BookingInvoices() {
   // RPC/cache rows and conference rows are not shape-validated before display.
   const [invoices, setInvoices] = useState(/** @type {BookingInvoiceDisplay[]} */ ([]))
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const invoiceLoadRequestRef = useRef(0)
+  const invoiceReadScopeRef = useRef('')
+  const invoiceReadFailedRef = useRef(false)
+  const syncOnlineRef = useRef(/** @type {boolean | null} */ (null))
+  const syncCacheStaleRef = useRef(/** @type {boolean | null} */ (null))
+  const syncRecoveryVersionRef = useRef(0)
+  const lastRecoveryRetryVersionRef = useRef(0)
+  const loadInvoicesRef = useRef(/** @type {() => Promise<void>} */ (() => Promise.resolve()))
   const [isOffline, setIsOffline] = useState(false)
   const [search, setSearch] = useState('')
   const [paymentFilter, setPaymentFilter] = useState('all')
@@ -894,90 +904,148 @@ export default function BookingInvoices() {
   const [financialCacheStale, setFinancialCacheStale] = useState(false)
   const FINANCIAL_SYNC_BLOCK_MESSAGE = 'Collections and refunds are temporarily locked until booking and payment sync are fully confirmed.'
 
-  const loadInvoices = async () => {
-    setLoading(true)
-    setIsOffline(false)
-    const [data, confData] = await Promise.all([
-      window.api.invoices.getBookingInvoices().catch(() => []),
-      window.api.conference.getAll().catch(() => [])
-    ])
-    // getBookingInvoices returns constructed SQL rows or the existing cache
-    // value; neither source validates each row before this display consumer.
-    // The main producer returns its constructed booking invoice rows, but its
-    // offline cache and IPC values are not runtime-validated here.
-    const fresh = Array.isArray(data) ? /** @type {BookingInvoiceDisplay[]} */ (data) : []
-    // conference:getAll selects these columns and also reads an unvalidated
-    // local cache. This remains an expected consumer view, not a validator.
-    const conferenceBookings = Array.isArray(confData) ? /** @type {ConferenceBookingInvoiceExpectedRow[]} */ (confData) : []
-    // Conference/event rows are part of the same customer-facing projection:
-    // show open AND settled events, including zero-event-total reservations
-    // that still carry a real deposit. Rows already represented by a
-    // consolidated event/room invoice are not repeated.
-    const representedEvents = new Set()
-    const representedBookings = new Set()
-    for (const row of fresh) {
-      if (row.event_id) representedEvents.add(String(row.event_id))
-      if (row._event_group && row.booking_id) representedEvents.add(String(row.booking_id))
-      if (row.booking_id) representedBookings.add(String(row.booking_id))
-      for (const id of row._booking_ids || []) representedBookings.add(String(id))
-      for (const id of row._event_booking_ids || []) representedBookings.add(String(id))
-    }
-    const confInvoices = conferenceBookings
-      .filter((cb) => String(cb.status || '').toLowerCase() !== 'cancelled')
-      .filter((cb) => {
-        if (representedEvents.has(String(cb.id))) return false
-        if (cb.exclusive_booking_id) {
-          const exclusiveId = String(cb.exclusive_booking_id)
-          if (representedEvents.has(exclusiveId) || representedBookings.has(exclusiveId)) return false
-        }
-        return true
-      })
-      .map((cb) => {
-        const totalAmount = Number(cb.total_amount || 0)
-        const amountPaid = Number(cb.amount_paid ?? cb.deposit_paid ?? 0)
-        // Event total_amount already includes event folio/POS lines.
-        const chargesTotal = 0
-        const reconciliationRequired = amountPaid > 0 && totalAmount <= 0
-        const balance = reconciliationRequired ? null : Math.max(0, totalAmount - amountPaid)
-        const eventName = String(cb.event_name || '').trim()
-        const clientName = String(cb.client_name || '').trim()
-        return {
-          booking_id: cb.id,
-          customer_name: clientName || eventName || '',
-          customer_email: null,
-          customer_phone: null,
-          check_in: cb.booking_date,
-          check_out: cb.booking_date,
-          room_number: cb.room_name || (cb.reservation_scope === 'exclusive_lodge' ? 'Full Lodge' : 'Conference Room'),
-          total_amount: totalAmount,
-          amount_paid: amountPaid,
-          charges_total: chargesTotal,
-          balance_due: balance,
-          status: cb.status === 'cancelled' ? 'cancelled' : 'confirmed',
-          payment_status: reconciliationRequired ? 'reconciliation_required' : cb.payment_status || (balance <= 0 && amountPaid > 0 ? 'paid' : 'pending'),
-          invoice_number: null,
-          event_name: eventName || clientName || null,
-          booking_type: 'conference',
-          reconciliation_required: reconciliationRequired
-        }
-      })
-      .filter((row) => row.total_amount > 0 || row.amount_paid > 0)
-    const allInvoices = [...fresh, ...confInvoices]
-    // Detect offline: if we got 0 rows but there are bookings, or check sync status
-    const syncStatus = await window.api.sync.getStatus().catch(() => null)
-    setIsOffline(syncStatus?.isOnline === false)
-    setInvoices(allInvoices)
-    // Keep selectedInvoice in sync so the modal reflects the latest financial state
-    setSelectedInvoice((prev) => {
-      if (!prev) return prev
-      return fresh.find((inv) => inv.booking_id === prev.booking_id) ?? prev
-    })
-    setLoading(false)
+  /** @param {number} requestRecoveryVersion */
+  const retryAfterObservedRecovery = (requestRecoveryVersion) => {
+    const recoveryVersion = syncRecoveryVersionRef.current
+    if (recoveryVersion <= requestRecoveryVersion || lastRecoveryRetryVersionRef.current === recoveryVersion) return false
+    lastRecoveryRetryVersionRef.current = recoveryVersion
+    invoiceReadFailedRef.current = false
+    void loadInvoicesRef.current()
+    return true
   }
 
+  const loadInvoices = async () => {
+    const request = ++invoiceLoadRequestRef.current
+    const recoveryVersionAtStart = syncRecoveryVersionRef.current
+    setLoading(true)
+    try {
+      const [data, confData] = await Promise.all([
+        window.api.invoices.getBookingInvoices(),
+        window.api.conference.getAll()
+      ])
+      if (request !== invoiceLoadRequestRef.current) return
+      if (!Array.isArray(data) || !Array.isArray(confData)) throw new Error('The invoice response is incomplete. Retry the refresh.')
+      // getBookingInvoices returns constructed SQL rows or the existing cache
+      // value; neither source validates each row before this display consumer.
+      // The main producer returns its constructed booking invoice rows, but its
+      // offline cache and IPC values are not runtime-validated here.
+      const fresh = Array.isArray(data) ? /** @type {BookingInvoiceDisplay[]} */ (data) : []
+      // conference:getAll selects these columns and also reads an unvalidated
+      // local cache. This remains an expected consumer view, not a validator.
+      const conferenceBookings = Array.isArray(confData) ? /** @type {ConferenceBookingInvoiceExpectedRow[]} */ (confData) : []
+      // Conference/event rows are part of the same customer-facing projection:
+      // show open AND settled events, including zero-event-total reservations
+      // that still carry a real deposit. Rows already represented by a
+      // consolidated event/room invoice are not repeated.
+      const representedEvents = new Set()
+      const representedBookings = new Set()
+      for (const row of fresh) {
+        if (row.event_id) representedEvents.add(String(row.event_id))
+        if (row._event_group && row.booking_id) representedEvents.add(String(row.booking_id))
+        if (row.booking_id) representedBookings.add(String(row.booking_id))
+        for (const id of row._booking_ids || []) representedBookings.add(String(id))
+        for (const id of row._event_booking_ids || []) representedBookings.add(String(id))
+      }
+      const confInvoices = conferenceBookings
+        .filter((cb) => String(cb.status || '').toLowerCase() !== 'cancelled')
+        .filter((cb) => {
+          if (representedEvents.has(String(cb.id))) return false
+          if (cb.exclusive_booking_id) {
+            const exclusiveId = String(cb.exclusive_booking_id)
+            if (representedEvents.has(exclusiveId) || representedBookings.has(exclusiveId)) return false
+          }
+          return true
+        })
+        .map((cb) => {
+          const totalAmount = Number(cb.total_amount || 0)
+          const amountPaid = Number(cb.amount_paid ?? cb.deposit_paid ?? 0)
+          // Event total_amount already includes event folio/POS lines.
+          const chargesTotal = 0
+          const reconciliationRequired = amountPaid > 0 && totalAmount <= 0
+          const balance = reconciliationRequired ? null : Math.max(0, totalAmount - amountPaid)
+          const eventName = String(cb.event_name || '').trim()
+          const clientName = String(cb.client_name || '').trim()
+          return {
+            booking_id: cb.id,
+            customer_name: clientName || eventName || '',
+            customer_email: null,
+            customer_phone: null,
+            check_in: cb.booking_date,
+            check_out: cb.booking_date,
+            room_number: cb.room_name || (cb.reservation_scope === 'exclusive_lodge' ? 'Full Lodge' : 'Conference Room'),
+            total_amount: totalAmount,
+            amount_paid: amountPaid,
+            charges_total: chargesTotal,
+            balance_due: balance,
+            status: cb.status === 'cancelled' ? 'cancelled' : 'confirmed',
+            payment_status: reconciliationRequired ? 'reconciliation_required' : cb.payment_status || (balance <= 0 && amountPaid > 0 ? 'paid' : 'pending'),
+            invoice_number: null,
+            event_name: eventName || clientName || null,
+            booking_type: 'conference',
+            reconciliation_required: reconciliationRequired
+          }
+        })
+        .filter((row) => row.total_amount > 0 || row.amount_paid > 0)
+      const allInvoices = [...fresh, ...confInvoices]
+      // Detect offline: if we got 0 rows but there are bookings, or check sync status
+      const syncStatus = await window.api.sync.getStatus().catch(() => null)
+      if (request !== invoiceLoadRequestRef.current) return
+      setIsOffline(syncStatus?.isOnline === false)
+      const sourceIncomplete = /** @type {{_complete?: boolean}} */ (data)._complete === false
+        || /** @type {{_complete?: boolean}} */ (confData)._complete === false
+      if (sourceIncomplete) {
+        invoiceReadFailedRef.current = true
+        if (retryAfterObservedRecovery(recoveryVersionAtStart)) return
+        if (syncStatus?.isOnline !== false) {
+          setLoadError('Some invoice sources could not be confirmed. A partial invoice list was withheld; retry after the background refresh recovers.')
+          return
+        }
+        setLoadError('')
+        if (invoices.length === 0) setInvoices(allInvoices)
+        return
+      }
+      invoiceReadFailedRef.current = false
+      setLoadError('')
+      setInvoices(allInvoices)
+      // Keep selectedInvoice in sync so the modal reflects the latest financial state
+      setSelectedInvoice((prev) => {
+        if (!prev) return prev
+        return fresh.find((inv) => inv.booking_id === prev.booking_id) ?? prev
+      })
+      window.dispatchEvent(new Event('booking-invoices-refreshed'))
+    } catch (error) {
+      if (request === invoiceLoadRequestRef.current) {
+        invoiceReadFailedRef.current = true
+        if (retryAfterObservedRecovery(recoveryVersionAtStart)) return
+        setLoadError(error?.message || 'Invoice data could not be refreshed. Retry when server access is verified.')
+      }
+    } finally {
+      if (request === invoiceLoadRequestRef.current) setLoading(false)
+    }
+  }
+  loadInvoicesRef.current = loadInvoices
+
   useEffect(() => {
-    loadInvoices()
-  }, [])
+    const scope = `${user?.id || ''}:${user?.lodge_id || ''}:${settings?.lodge_id || ''}`
+    if (scope !== invoiceReadScopeRef.current) {
+      invoiceReadScopeRef.current = scope
+      setInvoices([])
+      setSelectedInvoice(null)
+      setReceiptInvoice(null)
+      setLedgerInvoice(null)
+      setAuditInvoice(null)
+      setDeliveryInvoice(null)
+      setRefundInvoice(null)
+      setGroupPaymentInvoice(null)
+      setCreditReceipt(null)
+    }
+    if (user && (!authRuntimeStatus || ['authenticated', 'offline_trusted'].includes(authRuntimeStatus.status))) {
+      loadInvoices()
+    } else {
+      setLoading(false)
+    }
+    return () => { invoiceLoadRequestRef.current += 1 }
+  }, [user?.id, user?.lodge_id, settings?.lodge_id, authRuntimeStatus?.status, authRuntimeStatus?.generation])
 
   // Handle incoming navigation state from Bookings and customer-credit ledger links
   useEffect(() => {
@@ -1003,15 +1071,35 @@ export default function BookingInvoices() {
 
   useEffect(() => {
     let cancelled = false
+    /** @param {import('../types/desktop-api.js').SyncStatusSnapshot & {financialPendingBookingIds?: unknown[], financialFailedBookingIds?: unknown[], cacheStale?: {active?: boolean}}} status */
+    const applySyncStatus = (status) => {
+      if (cancelled) return
+      const wasOnline = syncOnlineRef.current
+      const wasCacheStale = syncCacheStaleRef.current
+      const isOnline = typeof status?.isOnline === 'boolean' ? status.isOnline : null
+      const cacheStale = typeof status?.cacheStale?.active === 'boolean' ? status.cacheStale.active : null
+      if (isOnline !== null) syncOnlineRef.current = isOnline
+      if (cacheStale !== null) syncCacheStaleRef.current = cacheStale
+
+      setFinancialPendingIds(new Set(status?.financialPendingBookingIds || []))
+      setFinancialFailedIds(new Set(status?.financialFailedBookingIds || []))
+      setFinancialCacheStale(cacheStale === true)
+
+      const recovered = (wasCacheStale === true && cacheStale === false && isOnline !== false)
+        || (wasOnline === false && isOnline === true)
+      if (recovered) {
+        syncRecoveryVersionRef.current += 1
+        if (invoiceReadFailedRef.current) {
+          lastRecoveryRetryVersionRef.current = syncRecoveryVersionRef.current
+          invoiceReadFailedRef.current = false
+          void loadInvoicesRef.current()
+        }
+      }
+    }
     const loadSyncStatus = async () => {
       try {
         const status = await window.api.sync.getStatus()
-        if (cancelled) return
-      // getStatus can return the main handler's minimal offline fallback; these
-      // extra fields are absent there and remain undefined, as before.
-      setFinancialPendingIds(new Set((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {financialPendingBookingIds?: unknown[]}} */ (status))?.financialPendingBookingIds || []))
-      setFinancialFailedIds(new Set((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {financialFailedBookingIds?: unknown[]}} */ (status))?.financialFailedBookingIds || []))
-      setFinancialCacheStale((/** @type {import('../types/desktop-api.js').SyncStatusSnapshot & {cacheStale?: {active?: boolean}}} */ (status))?.cacheStale?.active === true)
+        applySyncStatus(status)
       } catch {
         if (cancelled) return
         setFinancialPendingIds(new Set())
@@ -1020,21 +1108,25 @@ export default function BookingInvoices() {
       }
     }
     loadSyncStatus()
+    const unsubscribe = window.api?.sync?.onStatusChanged?.(applySyncStatus)
     const interval = window.setInterval(loadSyncStatus, 30000)
     return () => {
       cancelled = true
       window.clearInterval(interval)
+      unsubscribe?.()
     }
   }, [])
 
   /** @param {string} bookingId */
   const isFinanciallySyncBlocked = (bookingId) => (
-    financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
+    Boolean(loadError) || Boolean(authRuntimeStatus && authRuntimeStatus.status !== 'authenticated')
+      || financialCacheStale || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId)
   )
 
   /** @param {string} bookingId */
   const isRefundActionBlocked = (bookingId) => (
-    financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId) || (!isOffline && financialCacheStale)
+    Boolean(loadError) || Boolean(authRuntimeStatus && authRuntimeStatus.status !== 'authenticated')
+      || financialPendingIds.has(bookingId) || financialFailedIds.has(bookingId) || (!isOffline && financialCacheStale)
   )
 
   /** @param {BookingInvoiceDisplay} invoice */
@@ -1053,6 +1145,10 @@ export default function BookingInvoices() {
 
   /** @param {BookingInvoiceDisplay} invoice */
   const openCollectionFlow = async (invoice) => {
+    if (loadError || (authRuntimeStatus && authRuntimeStatus.status !== 'authenticated')) {
+      pushFlash('error', 'Refresh invoices after server access is verified before collecting payment.')
+      return
+    }
     if (invoice?.reconciliation_required) {
       pushFlash('error', 'This reservation has receipts that need reconciliation. Collections and refunds are paused until the authoritative ledger is reviewed.')
       return
@@ -1162,6 +1258,10 @@ export default function BookingInvoices() {
   /** @param {import('react').FormEvent<HTMLFormElement>} event */
   const handleGroupPaymentSubmit = async (event) => {
     event.preventDefault()
+    if (loadError || (authRuntimeStatus && authRuntimeStatus.status !== 'authenticated')) {
+      setGroupPaymentError('Refresh invoices after server access is verified before collecting payment.')
+      return
+    }
     if (groupPaymentInvoice?._event_group || groupPaymentInvoice?._linked_event_rooms) {
       const eventId = String(groupPaymentInvoice.event_id || groupPaymentInvoice.booking_id || '')
       if (!eventId) return
@@ -1285,14 +1385,19 @@ export default function BookingInvoices() {
 
   const totals = filteredInvoices.reduce((acc, invoice) => {
     acc.total += Number(invoice.total_amount || 0)
-    acc.paid += Number(invoice.amount_paid || 0)
-    acc.balance += Number(invoice.balance_due || 0)
+    if (invoice.reconciliation_required) {
+      acc.reconciliationCount += 1
+      acc.receiptsUnderReview += Number(invoice.amount_paid || 0)
+    } else {
+      acc.paid += Number(invoice.amount_paid || 0)
+      acc.balance += Number(invoice.balance_due || 0)
+    }
     if (invoice.payment_status !== 'paid') acc.openCount += 1
     return acc
-  }, { total: 0, paid: 0, balance: 0, openCount: 0 })
+  }, { total: 0, paid: 0, balance: 0, openCount: 0, reconciliationCount: 0, receiptsUnderReview: 0 })
   const needsAttentionCount = useMemo(
-    () => invoices.filter((invoice) => financialFailedIds.has(invoice.booking_id) || invoiceNeedsAttention(invoice)).length,
-    [financialFailedIds, invoices]
+    () => filteredInvoices.filter((invoice) => financialFailedIds.has(invoice.booking_id) || invoiceNeedsAttention(invoice)).length,
+    [filteredInvoices, financialFailedIds]
   )
 
   const collectionQueue = useMemo(() => (
@@ -1345,6 +1450,14 @@ export default function BookingInvoices() {
         </div>
       )}
 
+      {loadError && (
+        <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-800">
+          <p className="font-semibold">Invoices could not be refreshed</p>
+          <p className="mt-1">{invoices.length ? 'Showing the last loaded invoices; totals may be out of date. ' : 'Invoice totals are unavailable. '}{loadError}</p>
+          <button type="button" className="mt-2 rounded-lg border border-red-300 px-3 py-1.5 font-semibold" onClick={loadInvoices} disabled={loading}>Retry refresh</button>
+        </ErrorNotice>
+      )}
+
       {isOffline && (
         <div className="flex items-start gap-3 rounded-2xl border border-slate-300 bg-slate-100 px-5 py-4 text-sm text-slate-700 font-medium shadow-sm">
           <span className="text-lg leading-none">📶</span>
@@ -1368,25 +1481,36 @@ export default function BookingInvoices() {
       <div className="bb-compact-stat-grid">
         <div className="bb-compact-stat bg-white text-gray-700">
           <p className="bb-compact-stat__label">Invoices</p>
-          <p className="bb-compact-stat__value text-gray-900">{filteredInvoices.length}</p>
+          <p className="bb-compact-stat__value text-gray-900">{loadError && !invoices.length ? 'Unavailable' : filteredInvoices.length}</p>
         </div>
         <div className="bb-compact-stat bg-white text-gray-700">
           <p className="bb-compact-stat__label">Total Invoiced</p>
-          <p className="bb-compact-stat__value text-gray-900">{fmtMoney(currency, totals.total)}</p>
+          <p className="bb-compact-stat__value text-gray-900">{loadError && !invoices.length ? 'Unavailable' : fmtMoney(currency, totals.total)}</p>
         </div>
         <div className="bb-compact-stat bg-white text-green-700">
-          <p className="bb-compact-stat__label">Collected</p>
-          <p className="bb-compact-stat__value">{fmtMoney(currency, totals.paid)}</p>
+          <p className="bb-compact-stat__label">{totals.reconciliationCount ? 'Verified collected' : 'Collected'}</p>
+          <p className="bb-compact-stat__value">{loadError && !invoices.length ? 'Unavailable' : fmtMoney(currency, totals.paid)}</p>
         </div>
         <div className="bb-compact-stat bg-white text-amber-700">
-          <p className="bb-compact-stat__label">Outstanding</p>
-          <p className="bb-compact-stat__value">{fmtMoney(currency, totals.balance)}</p>
+            <p className="bb-compact-stat__label">Known outstanding</p>
+            <p className="bb-compact-stat__value">{loadError && !invoices.length ? 'Unavailable' : fmtMoney(currency, totals.balance)}</p>
         </div>
         <div className="bb-compact-stat bg-white text-amber-700">
           <p className="bb-compact-stat__label">Needs Attention</p>
           <p className="bb-compact-stat__value">{needsAttentionCount}</p>
         </div>
       </div>
+
+      {totals.reconciliationCount > 0 && (
+        <div className="rounded-2xl border border-orange-200 bg-orange-50 px-5 py-4 text-sm text-orange-950">
+          <p className="font-semibold">Invoice receipts need reconciliation</p>
+          <p className="mt-1 text-orange-900">
+            {totals.reconciliationCount} invoice{totals.reconciliationCount === 1 ? '' : 's'} has unresolved receipt allocation.{' '}
+            {fmtMoney(currency, totals.receiptsUnderReview)} in recorded receipts is excluded from verified collections and outstanding totals until reviewed.
+            {' '}Keep the original receipt records unchanged while they are matched.
+          </p>
+        </div>
+      )}
 
       {totals.balance > 0 && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-sm">

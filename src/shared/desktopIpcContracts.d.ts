@@ -63,10 +63,25 @@ export interface AdminNotificationsReadResult {
   count: unknown;
 }
 
-/** Main returns numeric sums from the database query or the same zero summary in its catch branch. */
+/** Unverified collection totals remain unavailable, with reconciliation distinguished from a failed read. */
 export interface BookingCollectionsSummary {
-  count: number;
-  amount: number;
+  count: number | null;
+  amount: number | null;
+  unavailable?: boolean;
+  financial_estimate?: boolean;
+  reason?: 'reconciliation_required' | 'read_failed';
+  needs_attention_count?: number;
+}
+
+export interface DesktopAuthRuntimeStatusReadView {
+  status: 'checking'|'authenticated'|'offline_trusted'|'validation_unavailable'|'sign_in_required'|'access_denied';
+  generation: number;
+  actorId: string | null;
+  lodgeId: string | null;
+  reason: string;
+  at: string;
+  tokenPresent: boolean;
+  clientBound: boolean;
 }
 
 /**

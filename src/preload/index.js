@@ -23,6 +23,8 @@ const api = {
     restoreCurrentSession: ()          => invoke('auth:restoreCurrentSession'),
     restoreSavedSession: (email, password) => invoke('auth:restoreSavedSession', email, password),
     validateSession: ()               => invoke('auth:validateSession'),
+    getRuntimeStatus: ()              => invoke('auth:getRuntimeStatus'),
+    onRuntimeStatus: (listener)        => onIpc('auth:runtime-status', listener),
     // Both main branches return the same constructed success envelope.
     logout:         ()                => /** @type {Promise<import('../shared/desktopIpcContracts.js').DesktopIpcResult<'auth:logout'>>} */ (invoke('auth:logout'))
   },
@@ -921,6 +923,7 @@ const api = {
     addLineItem: (data) => invoke('events:addLineItem', data),
     voidLineItem: (lineItemId, reason) => invoke('events:voidLineItem', lineItemId, reason),
     updatePayment: (id, amount, method, type, intentKey) => invoke('events:updatePayment', id, amount, method, type, intentKey),
+    voidDuplicateEventPayment: (payload) => invoke('events:voidDuplicateEventPayment', payload),
     getPendingPaymentIntent: (id) => /** @type {Promise<{amount: number; method: string; type: string; idempotency_key: string; scope: 'event' | 'group'; pending: true} | null>} */ (invoke('events:getPendingPaymentIntent', id)),
     recordInvoicePayment: (eventId, amount, method, intentKey) => invoke('events:recordInvoicePayment', eventId, amount, method, intentKey),
     checkAvailability: (resourceKey, startAt, endAt, excludeEventId) => invoke('events:checkAvailability', resourceKey, startAt, endAt, excludeEventId),

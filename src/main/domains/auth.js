@@ -101,7 +101,10 @@ export { readSessionNonce } from './authSession.js'
 export {
   setCurrentUser,
   getCurrentUser,
+  getAuthRuntimeStatus,
+  getAuthRequestContext,
   logoutCurrentUser,
+  reportAuthRequestFailure,
   restoreCurrentTrustedSession,
   restoreUserSession,
   restoreSavedTrustedSession,

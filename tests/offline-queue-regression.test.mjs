@@ -468,10 +468,10 @@ async function run() {
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'update_event_payment'/)
   assert.match(database, /FINANCIAL_SYNC_TABLES[\s\S]*'cancel_event_booking'/)
   assert.match(database, /'create_event_booking'[\s\S]*'update_event_booking'[\s\S]*'update_event_payment'[\s\S]*'cancel_event_booking'[\s\S]*shouldRefreshConference = true/)
-  assert.match(conferenceUi, /window\.api\.conference\.getAll\(start, end\)/)
+  assert.match(conferenceUi, /window\.api\.events\.getAll\(start, end\)/)
   assert.match(conferenceUi, /window\.api\.conference\.create\(payload\)/)
   assert.match(conferenceUi, /window\.api\.conference\.update\(editing\.id, payload\)/)
-  assert.match(conferenceUi, /window\.api\.conference\.delete\(id\)/)
+  assert.match(conferenceUi, /window\.api\.events\.cancel\(id, reason, true\)/)
 
   // Pool / day use: offline create/delete stay queued and UI refreshes on sync.
   assert.match(database, /queueOperation\('rpc', 'add_pool_day_use', \{ payload \}/)

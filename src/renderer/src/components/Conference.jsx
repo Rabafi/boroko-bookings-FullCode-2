@@ -8,7 +8,7 @@ import { localToday } from '../utils/localDate'
 import { ErrorNotice } from './shared/ErrorNotice'
 
 /** Expected consumer views of existing event/conference IPC and SQL producers. These types do not validate returned JSON or cache rows. */
-/** @typedef {{id: string, booking_date: string, start_time: string, end_time: string, client_name: string, total_amount: number|null, deposit_paid: number|null, payment_status: string|null, event_name?: string|null, company?: string|null, event_type?: string|null, reservation_scope?: string|null, status?: string|null, attendees?: number|null, adults?: number|null, children?: number|null, amount_paid?: number|null, setup_type?: string|null, room_name?: string|null, includes_catering?: boolean|null, catering_notes?: string|null, payment_method?: string|null, currency?: string|null, notes?: string|null, extras_total?: number|null, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null, customer_id?: string|null, customer_name?: string|null, exclusive_booking_id?: string|null, event_daily_rate?: number|string|null}} ConferenceBookingExpectedView */
+/** @typedef {{id: string, booking_date: string, start_time: string, end_time: string, client_name: string, total_amount: number|null, deposit_paid: number|null, payment_status: string|null, event_invoice_status?: string|null, event_invoice_total?: number|string|null, event_invoice_paid?: number|string|null, event_invoice_balance?: number|string|null, invoice_reconciliation_required?: boolean, event_name?: string|null, company?: string|null, event_type?: string|null, reservation_scope?: string|null, status?: string|null, attendees?: number|null, adults?: number|null, children?: number|null, amount_paid?: number|null, setup_type?: string|null, room_name?: string|null, includes_catering?: boolean|null, catering_notes?: string|null, payment_method?: string|null, currency?: string|null, notes?: string|null, extras_total?: number|null, check_in?: string|null, check_out?: string|null, room_ids?: string[]|null, customer_id?: string|null, customer_name?: string|null, exclusive_booking_id?: string|null, event_daily_rate?: number|string|null, _financial_estimate?: boolean}} ConferenceBookingExpectedView */
 /** @typedef {{booking_date: string, start_time: string, end_time: string, client_name: string, company: string, event_name: string, customer_id: string, event_type: string, reservation_scope: string, check_in: string, check_out: string, room_ids: string[], resource_keys: string[], status: string, attendees: string, adults: string, children: string, setup_type: string, room_name: string, includes_catering: boolean, catering_notes: string, total_amount: string, event_daily_rate: string, deposit_paid: string, deposit_amount: string, payment_status: string, payment_method: string, currency: string, notes: string}} ConferenceFormExpectedView */
 /** @typedef {{id: string, name: string, phone?: string|null, email?: string|null}} ConferenceCustomerExpectedView */
 /** @typedef {{key: string, name: string, type?: string|null, allows_shared_use?: boolean, default_price?: number|string|null}} VenueResourceExpectedView */
@@ -16,8 +16,9 @@ import { ErrorNotice } from './shared/ErrorNotice'
 /** @typedef {{id: string, event_booking_id: string, line_type: string, description: string, quantity: number|string, unit_price: number|string, voided_at?: string|null}} EventLineExpectedView */
 /** @typedef {{id: string, resource_key?: string|null, resource_name_snapshot: string}} EventResourceExpectedView */
 /** @typedef {{booking_id: string, room_id?: string|null, room_number: string|number|null, check_in: string, check_out: string, total_amount: number|string|null}} EventRoomExpectedView */
-/** @typedef {{id: string, type?: string|null, amount: number|string|null, method: string}} EventPaymentExpectedView */
-/** @typedef {{line_items: EventLineExpectedView[], resources: EventResourceExpectedView[], rooms: EventRoomExpectedView[], payments: EventPaymentExpectedView[]}} EventDetailsExpectedView */
+/** @typedef {{id: string, type?: string|null, amount: number|string|null, method: string, paid_at?: string|null, voided_at?: string|null, void_reason?: string|null, voided_as_duplicate_of?: string|null}} EventPaymentExpectedView */
+/** @typedef {{total_amount?: number|string|null, amount_paid?: number|string|null, balance_due?: number|string|null, reconciliation_required?: boolean, financial_estimate?: boolean}} EventInvoiceExpectedView */
+/** @typedef {{event?: ConferenceBookingExpectedView & {agreed_base_amount?: number}, invoice?: EventInvoiceExpectedView|null, line_items: EventLineExpectedView[], resources: EventResourceExpectedView[], rooms: EventRoomExpectedView[], payments: EventPaymentExpectedView[]}} EventDetailsExpectedView */
 /** @typedef {{description: string, quantity: number|string, unit_price: number|string}} EventExtraDraftExpectedView */
 /** @typedef {{amount: string, method: string}} EventPaymentFormExpectedView */
 
@@ -51,12 +52,13 @@ const STATUS_COLORS = {
   deposit_paid: 'bg-blue-100 text-blue-800',
   paid: 'bg-green-100 text-green-800',
   unpaid: 'bg-gray-100 text-gray-600',
-  partial: 'bg-amber-100 text-amber-800'
+  partial: 'bg-amber-100 text-amber-800',
+  unavailable: 'bg-red-100 text-red-800'
 }
 const STATUS_LABELS = {
   draft: 'Draft', reserved: 'Reserved', confirmed: 'Confirmed', active: 'Active',
   completed: 'Completed', cancelled: 'Cancelled',
-  pending: 'Pending', deposit_paid: 'Deposit Paid', paid: 'Paid', unpaid: 'Unpaid', partial: 'Partial'
+  pending: 'Pending', deposit_paid: 'Deposit Paid', paid: 'Paid', unpaid: 'Unpaid', partial: 'Partial', unavailable: 'Invoice check'
 }
 const EVENT_TYPE_LABELS = Object.fromEntries(EVENT_TYPES.map((e) => [e.value, e.label]))
 const SCOPE_LABELS = Object.fromEntries(RESERVATION_SCOPES.map((s) => [s.value, s.label]))
@@ -138,22 +140,26 @@ export default function Conference() {
   const [customerSaving, setCustomerSaving] = useState(false)
   const [operationId, setOperationId] = useState('')
   const createIntentConsumed = useRef(false)
-  const paymentIntentRef = useRef(/** @type {{eventId: string, amount: string, method: string, type: string, key: string, pending: boolean}} */ ({ eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }))
+  const paymentIntentRef = useRef(/** @type {{eventId: string, amount: string, method: string, type: string, key: string, pending: boolean, scope: string}} */ ({ eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false, scope: 'group' }))
   const [detailsById, setDetailsById] = useState(/** @type {Record<string, EventDetailsExpectedView|null>} */ ({}))
   const [detailsLoadingId, setDetailsLoadingId] = useState(null)
   const [extraDrafts, setExtraDrafts] = useState(/** @type {Record<string, EventExtraDraftExpectedView>} */ ({}))
   const [folioError, setFolioError] = useState('')
+  const [listError, setListError] = useState('')
 
   const load = async () => {
     setLoading(true)
     const start = filterDate || undefined
     const end = filterDate || undefined
-    const data = await window.api.events.getAll(start, end).catch(() =>
-      window.api.conference.getAll(start, end).catch(() => [])
-    )
-    // Both handlers return the query result array or the existing [] fallback.
-    setBookings(/** @type {ConferenceBookingExpectedView[]} */ (data))
-    setLoading(false)
+    try {
+      const data = await window.api.events.getAll(start, end)
+      setBookings(/** @type {ConferenceBookingExpectedView[]} */ (data))
+      setListError('')
+    } catch {
+      setListError('Could not refresh events. Check server access or your connection, then retry. Previously loaded events are still shown.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { load() }, [filterDate])
@@ -282,7 +288,7 @@ export default function Conference() {
     setDetailsLoadingId(b.id)
     setError('')
     try {
-      const details = /** @type {{event?: ConferenceBookingExpectedView, rooms?: EventRoomExpectedView[], resources?: EventResourceExpectedView[]}} */ (
+      const details = /** @type {{event?: ConferenceBookingExpectedView & {agreed_base_amount?: number}, rooms?: EventRoomExpectedView[], resources?: EventResourceExpectedView[]}} */ (
         await window.api.events.getDetails(b.id)
       )
       const event = details?.event || b
@@ -296,7 +302,8 @@ export default function Conference() {
       if (event.reservation_scope === 'exclusive_lodge' && (!datesIn.length || !datesOut.length)) {
         throw new Error('Whole-lodge dates are unavailable. Refresh while online before editing this event.')
       }
-      setEditing(event)
+      const originalResourceKeys = (details.resources || []).map((resource) => resource.resource_key).filter(Boolean).sort()
+      setEditing({ ...event, _original_resource_keys: originalResourceKeys, _original_room_ids: [...roomIds].sort() })
       setForm({
         booking_date: event.booking_date,
         start_time: event.start_time,
@@ -319,7 +326,9 @@ export default function Conference() {
         room_name: event.room_name || 'Conference Room',
         includes_catering: event.includes_catering || false,
         catering_notes: event.catering_notes || '',
-        total_amount: String(event.total_amount || ''),
+        // The row total also includes extras and resource charges. Editing it
+        // as the venue base would add those charges a second time.
+        total_amount: String(event.agreed_base_amount ?? ''),
         event_daily_rate: String(event.event_daily_rate || ''),
         deposit_paid: String(event.deposit_paid || event.amount_paid || ''),
         deposit_amount: '',
@@ -389,6 +398,15 @@ export default function Conference() {
       setError('Select at least one guest room')
       return
     }
+    if (editing) {
+      const roomIdsChanged = JSON.stringify([...form.room_ids].sort()) !== JSON.stringify(editing._original_room_ids || [])
+      const currentResourceKeys = venueResources.filter((resource) => form.resource_keys.includes(resource.key)).map((resource) => resource.key).sort()
+      const resourceKeysChanged = JSON.stringify(currentResourceKeys) !== JSON.stringify(editing._original_resource_keys || [])
+      if (roomIdsChanged || resourceKeysChanged) {
+        setError('Room and venue assignments cannot be changed in this edit form. Keep the current assignments and ask a manager to correct them through the supported booking workflow.')
+        return
+      }
+    }
     setSaving(true)
     setError('')
     try {
@@ -413,7 +431,7 @@ export default function Conference() {
         event_daily_rate: form.reservation_scope === 'exclusive_lodge' ? Number(form.event_daily_rate || 0) : null,
         deposit_paid: parseFloat(form.deposit_paid) || 0,
         deposit_amount: parseFloat(form.deposit_amount) || parseFloat(form.deposit_paid) || 0,
-        resources: venueResources
+        resources: !editing ? venueResources
           .filter((resource) => form.resource_keys.includes(resource.key))
           .map((resource) => ({
             resource_key: resource.key,
@@ -422,7 +440,7 @@ export default function Conference() {
             exclusive_use: resource.allows_shared_use !== true,
             quantity: 1,
             unit_price: Number(resource.default_price || 0)
-          }))
+          })) : undefined
       }
       if (editing) {
         if (hasNewFields) {
@@ -447,44 +465,73 @@ export default function Conference() {
 
   /** @param {string} id */
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this event booking?')) return
+    const booking = bookings.find((row) => row.id === id)
+    if (!booking) return
+    const details = await window.api.events.getDetails(id).catch((err) => {
+      setError(err?.message || 'Could not load linked rooms and payment history. Refresh online before cancelling.')
+      return null
+    })
+    if (!details) return
+    const linkedRooms = (details.rooms || []).map((room) => `Room ${room.room_number || room.room_id} (${room.check_in}–${room.check_out})`).join(', ')
+    const paid = Number(booking.amount_paid || booking.deposit_paid || 0)
+    const impact = [
+      linkedRooms ? `Linked room bookings will also be cancelled: ${linkedRooms}.` : 'No linked guest rooms were found.',
+      paid > 0 ? `Recorded receipts totaling ${currency} ${paid.toFixed(2)} will remain in the ledger; cancellation does not issue a refund.` : 'No event receipts are recorded.'
+    ].join('\n')
+    if (!window.confirm(`Cancel ${booking.event_name || booking.client_name}?\n\n${impact}`)) return
+    const reason = window.prompt('Enter the cancellation reason (required):')?.trim()
+    if (!reason) return
     setDeleting(id)
-    await window.api.events.cancel(id, 'Deleted by user', true).catch(() =>
-      window.api.conference.delete(id).catch(() => {})
-    )
+    setError('')
+    try {
+      await window.api.events.cancel(id, reason, true)
+    } catch (err) {
+      setError(`${err?.message || 'Cancellation failed.'} The booking and its receipts were not deleted. Refresh before retrying.`)
+    }
     setDeleting(null)
     load()
   }
 
   /** @param {ConferenceBookingExpectedView} booking */
   const openPayment = async (booking) => {
-    const paid = booking.amount_paid || booking.deposit_paid || 0
-    const outstanding = Math.max(0, (booking.total_amount || 0) - paid)
-    setPayBooking(booking)
-    setPayForm({ amount: String(outstanding), method: booking.payment_method || 'cash' })
-    paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }
-    setPendingPaymentIntent(false)
-    setPayError('')
-    const pending = await window.api.events.getPendingPaymentIntent(booking.id).catch(() => null)
-    if (pending?.pending && pending.idempotency_key) {
-      const amount = Number(pending.amount).toFixed(2)
-      paymentIntentRef.current = {
-        eventId: booking.id,
-        amount,
-        method: pending.method,
-        type: pending.type || 'payment',
-        key: pending.idempotency_key,
-        pending: true
+    try {
+      const details = await window.api.events.getDetails(booking.id)
+      const invoice = details?.invoice || {}
+      if (!details?.invoice || invoice.reconciliation_required === true || Number(invoice.total_amount || 0) <= 0) {
+        throw new Error('This event has no verified positive consolidated invoice balance. Set or verify the agreed charge before taking payment.')
       }
-      setPayForm({ amount, method: pending.method })
-      setPendingPaymentIntent(true)
+      const paid = Number(invoice.amount_paid ?? booking.amount_paid ?? booking.deposit_paid ?? 0)
+      const total = Number(invoice.total_amount ?? booking.total_amount ?? 0)
+      const outstanding = Math.max(0, total - paid)
+      setPayBooking({ ...booking, total_amount: total, amount_paid: paid, _financial_estimate: invoice.financial_estimate === true })
+      setPayForm({ amount: String(outstanding), method: booking.payment_method || 'cash' })
+      paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false, scope: 'group' }
+      setPendingPaymentIntent(false)
+      setPayError('')
+      const pending = await window.api.events.getPendingPaymentIntent(booking.id).catch(() => null)
+      if (pending?.pending && pending.idempotency_key) {
+        const amount = Number(pending.amount).toFixed(2)
+        paymentIntentRef.current = {
+          eventId: booking.id,
+          amount,
+          method: pending.method,
+          type: pending.type || 'payment',
+          key: pending.idempotency_key,
+          pending: true,
+          scope: pending.scope || 'group'
+        }
+        setPayForm({ amount, method: pending.method })
+        setPendingPaymentIntent(true)
+      }
+    } catch (err) {
+      setError(err?.message || 'Could not load the current event invoice. Refresh online before collecting payment.')
     }
   }
 
   const closePaymentModal = () => {
     setPayBooking(null)
     setPayForm({ amount: '', method: 'cash' })
-    paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false }
+    paymentIntentRef.current = { eventId: '', amount: '', method: '', type: 'payment', key: '', pending: false, scope: 'group' }
     setPendingPaymentIntent(false)
     setPayError('')
   }
@@ -514,9 +561,11 @@ export default function Conference() {
       const intentKey = sameEnvelope
         ? intent.key
         : `evt-pay-${payBooking.id}-${crypto.randomUUID()}`
-      paymentIntentRef.current = { eventId: payBooking.id, amount: amountKey, method: payForm.method, type: 'payment', key: intentKey, pending: true }
+      paymentIntentRef.current = { eventId: payBooking.id, amount: amountKey, method: payForm.method, type: 'payment', key: intentKey, pending: true, scope: intent.scope || 'group' }
       setPendingPaymentIntent(true)
-      const result = await window.api.events.updatePayment(payBooking.id, amount, payForm.method, 'payment', intentKey)
+      const result = intent.scope === 'event'
+        ? await window.api.events.updatePayment(payBooking.id, amount, payForm.method, 'payment', intentKey)
+        : await window.api.events.recordInvoicePayment(payBooking.id, amount, payForm.method, intentKey)
       if (result?.success === false) throw new Error(result.error || 'Payment failed')
       closePaymentModal()
       load()
@@ -571,8 +620,11 @@ export default function Conference() {
       </div>
 
       {/* List */}
+      {listError && <ErrorNotice className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">{listError} <button className="ml-2 font-semibold underline" onClick={() => void load()}>Retry</button></ErrorNotice>}
       {loading ? (
         <div className="text-center py-16 text-gray-400">Loading...</div>
+      ) : listError && bookings.length === 0 ? (
+        <div className="text-center py-16 text-gray-500">Events are unavailable until the list refreshes successfully.</div>
       ) : bookings.length === 0 ? (
         <div className="text-center py-16">
           <Presentation size={40} className="text-gray-300 mx-auto mb-3" />
@@ -615,8 +667,8 @@ export default function Conference() {
                               {STATUS_LABELS[b.status] || b.status}
                             </span>
                           )}
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[b.payment_status] || ''}`}>
-                            {STATUS_LABELS[b.payment_status] || b.payment_status}
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[b.invoice_reconciliation_required ? 'unavailable' : b.event_invoice_status || b.payment_status] || ''}`}>
+                            {STATUS_LABELS[b.invoice_reconciliation_required ? 'unavailable' : b.event_invoice_status || b.payment_status] || b.event_invoice_status || b.payment_status}
                           </span>
                         </div>
                         <div className="flex items-center gap-4 mt-1 text-xs text-gray-500 flex-wrap">
@@ -636,10 +688,17 @@ export default function Conference() {
                         </div>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <p className="font-bold text-gray-900 text-sm">{currency}{(b.total_amount || 0).toFixed(2)}</p>
-                        {(b.amount_paid || b.deposit_paid || 0) > 0 && (
-                          <p className="text-xs text-gray-400">Paid: {currency}{(b.amount_paid || b.deposit_paid || 0).toFixed(2)}</p>
+                        {b.invoice_reconciliation_required
+                          ? <p className="font-bold text-red-700 text-sm">Invoice unavailable</p>
+                          : <p className="font-bold text-gray-900 text-sm">{currency}{Number(b.event_invoice_total ?? b.total_amount ?? 0).toFixed(2)}</p>}
+                        {!b.invoice_reconciliation_required && (b.event_invoice_paid ?? b.amount_paid ?? b.deposit_paid ?? 0) > 0 && (
+                          <p className="text-xs text-gray-400">Paid: {currency}{Number(b.event_invoice_paid ?? b.amount_paid ?? b.deposit_paid ?? 0).toFixed(2)}</p>
                         )}
+                        {!b.invoice_reconciliation_required && (b.event_invoice_balance ?? b.balance_due ?? 0) > 0 && (
+                          <p className="text-xs text-amber-700">Due: {currency}{Number(b.event_invoice_balance ?? b.balance_due ?? 0).toFixed(2)}</p>
+                        )}
+                        {b._financial_estimate && <p className="text-[10px] text-amber-700">Cached balance · reconnect to refresh</p>}
+                        {b.invoice_reconciliation_required && <p className="text-[10px] text-red-700">Invoice reconciliation required</p>}
                       </div>
                       <div className="flex items-center gap-1 ml-2">
                         <button
@@ -658,14 +717,16 @@ export default function Conference() {
                         >
                           <Trash2 size={15} />
                         </button>
-                        {b.payment_status !== 'paid' && (b.total_amount || 0) > 0 && (
+                        {b.status !== 'cancelled' && b.status !== 'completed' && (
+                          !b.invoice_reconciliation_required && (['venue_with_rooms', 'exclusive_lodge'].includes(b.reservation_scope || '') || ((b.event_invoice_total ?? b.total_amount ?? 0) > 0 && b.event_invoice_status !== 'paid')) && (
                           <button
                             onClick={() => openPayment(b)}
                             className="p-1.5 text-gray-400 hover:text-blue-600 rounded"
-                            title={`Collect payment — ${currency} ${Math.max(0, (b.total_amount || 0) - (b.amount_paid || b.deposit_paid || 0)).toFixed(2)} outstanding`}
+                            title="Load the current consolidated event invoice balance"
                           >
                             <CreditCard size={15} />
                           </button>
+                          )
                         )}
                       </div>
                     </div>
@@ -675,11 +736,12 @@ export default function Conference() {
                         {b.reservation_scope && <p>Scope: <span className="font-medium">{SCOPE_LABELS[b.reservation_scope] || b.reservation_scope}</span></p>}
                         {b.status && <p>Status: <span className="font-medium">{STATUS_LABELS[b.status] || b.status}</span></p>}
                         {b.payment_method && <p>Payment Method: <span className="font-medium">{b.payment_method}</span></p>}
-                        {(b.total_amount || 0) > 0 && (
-                          <p>Outstanding: <span className={`font-medium ${(b.amount_paid || b.deposit_paid || 0) < (b.total_amount || 0) ? 'text-amber-700' : 'text-green-700'}`}>
-                            {currency} {Math.max(0, (b.total_amount || 0) - (b.amount_paid || b.deposit_paid || 0)).toFixed(2)}
+                        {detailsById[b.id]?.invoice && !detailsById[b.id]?.invoice?.reconciliation_required && (
+                          <p>Consolidated invoice due: <span className={`font-medium ${Number(detailsById[b.id]?.invoice?.balance_due || 0) > 0 ? 'text-amber-700' : 'text-green-700'}`}>
+                            {currency} {Number(detailsById[b.id]?.invoice?.balance_due || 0).toFixed(2)}
                           </span></p>
                         )}
+                        {detailsById[b.id] && (!detailsById[b.id]?.invoice || detailsById[b.id]?.invoice?.reconciliation_required) && <p className="font-medium text-red-700">No verified consolidated invoice balance is available. Reconcile the event before collecting.</p>}
                         {b.catering_notes && <p>Catering Notes: <span className="font-medium">{b.catering_notes}</span></p>}
                         {b.notes && <p>Notes: <span className="font-medium">{b.notes}</span></p>}
                         {detailsLoadingId === b.id && <p className="text-gray-400">Loading event folio…</p>}
@@ -708,7 +770,13 @@ export default function Conference() {
                                   <p className="font-semibold text-blue-900">Payments</p>
                                   {(details.payments || []).length === 0
                                     ? <p className="mt-1 text-gray-400">No payments recorded.</p>
-                                    : (details.payments || []).map((payment) => <p key={payment.id} className="mt-1">{payment.type || 'payment'} · {currency}{Number(payment.amount || 0).toFixed(2)} · {payment.method}</p>)}
+                                    : (details.payments || []).map((payment) => {
+                                      const original = (details.payments || []).find((row) => row.id === payment.voided_as_duplicate_of)
+                                      return <p key={payment.id} className={`mt-1 ${payment.voided_at ? 'text-gray-400 line-through' : ''}`}>
+                                        {payment.voided_at ? 'Voided duplicate receipt' : payment.type || 'payment'} · {currency}{Number(payment.amount || 0).toFixed(2)} · {payment.method}
+                                        {payment.voided_at && <span className="ml-1 no-underline">(linked to {original ? `${original.type || 'receipt'} ${currency}${Number(original.amount || 0).toFixed(2)} · ${original.paid_at || 'original deposit'}` : `receipt …${String(payment.voided_as_duplicate_of || 'on file').slice(-8)}`})</span>}
+                                      </p>
+                                    })}
                                 </div>
                               </div>
                               <div className="rounded-xl border border-amber-200 bg-white p-3">
@@ -1130,6 +1198,11 @@ export default function Conference() {
                   A previous payment is awaiting confirmation. Retry the saved amount and method after sync; changing them could duplicate a receipt.
                 </p>
               )}
+              {payBooking?._financial_estimate && (
+                <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                  This balance includes a payment saved on this device. It is an estimate until the server confirms the queued payment.
+                </p>
+              )}
               <div>
                 <p className="text-sm font-medium text-gray-900">{payBooking.event_name || payBooking.client_name}</p>
                 {payBooking.company && <p className="text-xs text-gray-500">{payBooking.company}</p>}
@@ -1193,6 +1266,7 @@ export default function Conference() {
           </div>
         </div>
       )}
+
     </div>
   )
 }

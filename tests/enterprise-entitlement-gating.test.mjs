@@ -163,10 +163,17 @@ test('every preload ipcRenderer.invoke channel has a matching ipcMain.handle', (
   }
   assert.ok(invokeChannels.size > 0, 'Expected preload invoke channels')
 
-  // Extract handle channel names from main
+  // Include the local Bar handlers from the module actually registered by main.
+  assert.match(mainIndex, /import \{ registerBarLocalIpc \} from '\.\/bar-local\/electronRuntime\.js'/)
+  assert.match(mainIndex, /registerBarLocalIpc\(\{/)
+  const barLocalIpc = readSrc('src/main/bar-local/electronRuntime.js')
+  assert.ok(barLocalIpc, 'Expected the registered local Bar IPC module')
+
+  // Extract handle channel names from main and its registered module.
   const handleChannels = new Set()
   const handleRegex = /ipcMain\.handle\('([^']+)'/g
-  while ((match = handleRegex.exec(mainIndex)) !== null) {
+  const registeredHandleSource = `${mainIndex}\n${barLocalIpc}`
+  while ((match = handleRegex.exec(registeredHandleSource)) !== null) {
     handleChannels.add(match[1])
   }
   assert.ok(handleChannels.size > 0, 'Expected ipcMain.handle channels')

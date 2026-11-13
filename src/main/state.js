@@ -31,6 +31,10 @@
  * @property {boolean} syncInProgress
  * @property {Promise<unknown> | null} syncQueuePromise
  * @property {boolean} replayAuthReady
+ * @property {number} authSessionGeneration
+ * @property {string | null} authSessionGenerationToken
+ * @property {DesktopAuthRuntimeStatus} authRuntimeStatus
+ * @property {(status: DesktopAuthRuntimeStatus) => void} [emitAuthRuntimeStatus]
  * @property {{ token?: unknown, expires_at?: unknown, session_type?: unknown } | null} backendSession
  * @property {number} consecutiveConnectivityFailures
  * @property {boolean} connectivityCheckInProgress
@@ -47,6 +51,7 @@
  * @property {string} [reviewBookingId]
  * @property {string} [collectPaymentBookingId]
  * @property {number} [posSubmitDeadlineMs] Optional test-only POS network deadline override; production falls back to the module's fixed deadline.
+ * @typedef {{status: 'checking'|'authenticated'|'offline_trusted'|'validation_unavailable'|'sign_in_required'|'access_denied', generation: number, actorId: string|null, lodgeId: string|null, reason: string, at: string, tokenPresent: boolean, clientBound: boolean}} DesktopAuthRuntimeStatus
  */
 /** @type {MainState} */
 export const state = {
@@ -62,6 +67,12 @@ export const state = {
   syncInProgress: false,
   syncQueuePromise: null,
   replayAuthReady: false,
+  authSessionGeneration: 0,
+  authSessionGenerationToken: null,
+  authRuntimeStatus: {
+    status: 'checking', generation: 0, actorId: null, lodgeId: null,
+    reason: 'startup', at: new Date().toISOString(), tokenPresent: false, clientBound: false
+  },
   backendSession: null,
   consecutiveConnectivityFailures: 0,
   connectivityCheckInProgress: false,
@@ -95,6 +106,12 @@ export function resetState() {
   state.syncInProgress = false
   state.syncQueuePromise = null
   state.replayAuthReady = false
+  state.authSessionGeneration += 1
+  state.authSessionGenerationToken = null
+  state.authRuntimeStatus = {
+    status: 'checking', generation: state.authSessionGeneration, actorId: null, lodgeId: null,
+    reason: 'reset', at: new Date().toISOString(), tokenPresent: false, clientBound: false
+  }
   state.backendSession = null
   state.consecutiveConnectivityFailures = 0
   state.connectivityCheckInProgress = false

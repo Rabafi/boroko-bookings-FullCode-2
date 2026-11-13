@@ -1956,8 +1956,8 @@ test('subscription request document workflow records quote and pro-forma documen
   assert.ok(subscriptionRequestsUiSource.includes("createDocument(requestId, 'quote'"), 'Send Quote must record quote document')
   assert.ok(subscriptionRequestsUiSource.includes("createDocument(requestId, 'invoice'"), 'Send Invoice must record pro-forma document')
   assert.ok(mainIndexSource.includes('buildSubscriptionRequestDocumentPdfHtml'), 'desktop must render subscription documents as PDFs')
-  assert.ok(subscriptionRequestsUiSource.includes('exportDocumentPdf(selected.quote_payload)'), 'Command Central must export quote PDFs')
-  assert.ok(subscriptionRequestsUiSource.includes('exportDocumentPdf(selected.invoice_payload)'), 'Command Central must export pro-forma PDFs')
+  assert.ok(subscriptionRequestsUiSource.includes('exportDocumentPdf(selectedRequest.quote_payload)'), 'Command Central must export quote PDFs')
+  assert.ok(subscriptionRequestsUiSource.includes('exportDocumentPdf(selectedRequest.invoice_payload)'), 'Command Central must export pro-forma PDFs')
 })
 
 test('public subscription auto quote migration stores pricing and alerts Command Central', () => {
