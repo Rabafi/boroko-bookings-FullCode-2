@@ -33,6 +33,7 @@ const RestaurantBankReconciliation = lazy(() => import('../restaurant-accounting
 const RestaurantTaxReturns = lazy(() => import('../restaurant-accounting/RestaurantTaxReturns.jsx'))
 const RestaurantBudgets = lazy(() => import('../restaurant-accounting/RestaurantBudgets.jsx'))
 const RestaurantBalanceSheet = lazy(() => import('../restaurant-accounting/RestaurantBalanceSheet.jsx'))
+const RestaurantPayroll = lazy(() => import('../restaurant-accounting/RestaurantPayroll.jsx'))
 const RestaurantWorkspace = lazy(() => import('../restaurant/RestaurantWorkspace.jsx'))
 const RestaurantInventoryLots = lazy(() => import('../restaurant/RestaurantInventoryLots.jsx'))
 const RestaurantPurchasing = lazy(() => import('../restaurant/RestaurantPurchasing.jsx'))
@@ -182,7 +183,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
     profilesLoading: Boolean(session && !bootstrap && !bootstrapError),
     reloadProfiles: async () => localProfile ? [localProfile] : [],
     selectProfile: async (profileId) => String(profileId) === businessId ? localProfile : null,
-    createDraftProfile: async () => { throw new Error('Create or switch businesses from the Restaurant & Bar POS business chooser.') },
+    createDraftProfile: async () => { throw new Error('Create or switch businesses from the Hospitality POS business chooser.') },
     removeDraftProfile: async () => null
   }), [localProfile, session, bootstrap, bootstrapError, businessId])
   const localFeatures = useMemo(() => {
@@ -287,7 +288,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="restaurant/tax-returns" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantTaxReturns /></LocalBarAddonGate>} />
                         <Route path="restaurant/budgets" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantBudgets /></LocalBarAddonGate>} />
                         <Route path="restaurant/balance-sheet" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantBalanceSheet /></LocalBarAddonGate>} />
-                        <Route path="restaurant/payroll" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Accounting Pro" /></LocalBarAddonGate>} />
+                        <Route path="restaurant/payroll" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantPayroll /></LocalBarAddonGate>} />
                         <Route path="restaurant/tips" element={<Navigate to="/restaurant/finance-close?tab=tips" replace />} />
                         <Route path="restaurant/settlements" element={<Navigate to="/restaurant/finance-close?tab=settlements" replace />} />
                         <Route path="restaurant/feedback-deposits" element={<Navigate to="/restaurant/finance-close?tab=customer-funds" replace />} />

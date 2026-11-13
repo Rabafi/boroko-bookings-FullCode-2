@@ -2,7 +2,7 @@ import { createHmac, randomBytes, randomInt, randomUUID, X509Certificate } from 
 import { readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Pool } from 'pg'
+import type { Pool } from './pg.js'
 import {
   BAR_LOCAL_ERROR_CODES,
   BarLocalError,

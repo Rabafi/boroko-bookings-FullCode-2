@@ -9,7 +9,7 @@ import {
   validateEnvelope
 } from '@tsa-bonno/bar-contracts'
 import type { CommandOutcome, Payload } from '@tsa-bonno/bar-contracts'
-import type { Pool } from 'pg'
+import type { Pool } from './pg.js'
 import { callFunction } from './db.js'
 import type { FunctionArgument, JsonRecord } from './db.js'
 import type { ServiceConfig } from './config.js'

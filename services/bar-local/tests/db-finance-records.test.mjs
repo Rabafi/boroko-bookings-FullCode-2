@@ -40,6 +40,7 @@ test('finance record reads are complete, scoped, capability checked and preserve
  const token=sha256Text('synthetic-read-denial')
  await h.runtime.query('SELECT bar_local.service_create_session($1,$2,$3,$4)',[staff,h.deviceId,h.outletId,token])
  await assert.rejects(h.query('accounting.records',{kind:'bank_accounts'},{tokenHash:token}),/capability/i)
+ await assert.rejects(h.query('accounting.records',{kind:'payroll_runs'},{tokenHash:token}),/capability/i)
  await assert.rejects(h.runtime.query('SELECT bar_local.query_finance_records($1,$2,$3,$4,$5)',[h.ownerTokenHash,h.deviceId,h.authorityId,1,{kind:'bank_accounts'}]),error=>error.code==='42501')
  for(const kind of ['ap_invoices','ap_payments','bank_reconciliations','tax_codes','tax_return_periods','payroll_runs','budgets','journal_entries','suppliers']){
   const result=await h.query('accounting.records',{kind})
@@ -52,6 +53,16 @@ test('finance record reads are complete, scoped, capability checked and preserve
  const supplier=(await h.migrator.query(`INSERT INTO bar_local.suppliers(business_id,name,created_by,updated_by,created_operation_id,updated_operation_id)
   VALUES($1,'Detail supplier',$2,$2,gen_random_uuid(),gen_random_uuid()) RETURNING id`,[h.businessId,h.ownerStaffId])).rows[0].id
  const date=(await h.migrator.query("SELECT bar_local.current_business_date()::text AS value")).rows[0].value
+ const payroll=await h.call('cmd_payroll_run_create',h.envelope('accounting.payroll_run.create',{
+  period_start:date,period_end:date,pay_date:date,expense_account_code:'5000',payable_account_code:'2000',
+  deductions_account_code:'2000',lines:[{employee_ref:'EMP-DETAIL-1',gross:'125.50',deductions:'12.25'}]
+ }))
+ assert.equal(payroll.ok,true,JSON.stringify(payroll.error))
+ const payrollSummary=(await h.query('accounting.records',{kind:'payroll_runs'})).data[0]
+ assert.equal(payrollSummary.id,payroll.result.payroll_run_id)
+ assert.equal(Object.hasOwn(payrollSummary,'lines'),false,'line-level pay data must be omitted from the default summary')
+ const payrollDetail=(await h.query('accounting.records',{kind:'payroll_runs',record_id:payroll.result.payroll_run_id})).data[0]
+ assert.deepEqual(payrollDetail.lines,[{employee_ref:'EMP-DETAIL-1',gross:'125.50',deductions:'12.25',net:'113.25'}])
  const invoice=await h.call('cmd_ap_invoice_upsert',h.envelope('accounting.ap.invoice.upsert',{
   supplier_id:supplier,invoice_number:'DETAIL-1',invoice_date:date,payable_account_code:'2000',subtotal:'12.00',tax_total:'0.00',total:'12.00',
   lines:[{description:'Full line',expense_account_code:'5000',quantity:'1.5',unit_price:'8.00',tax_rate:'0'}]
