@@ -1063,13 +1063,14 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
     const channelName = String(channel)
     const isLocalAuthorityOperation = channelName.startsWith('barLocal:')
     const isOfflineGuideOperation = channelName.startsWith('barGuides:')
+    const isLocalDesktopUpdateStatus = ['update:check', 'update:download', 'update:install', 'update:getState'].includes(channelName)
     if (runtime.training && (channelName.startsWith('barLocal:serverSetup') || ['barLocal:selectCloudWorkspace', 'barLocal:selectLocalBarWorkspace', 'barLocal:openLocalBarWorkspace', 'barLocal:pairDevice', 'barLocal:startPairing', 'barLocal:setupOwner', 'barLocal:resumeProvisioning'].includes(channelName))) {
       throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Practice mode cannot install a live server, join another Bar or switch to cloud.')
     }
     if (runtime.restartRequired && isLocalAuthorityOperation && !['barLocal:getStatus', 'barLocal:getChooserEntry'].includes(channelName)) {
       throw new BarLocalAdapterError('LOCAL_RESTART_REQUIRED', 'Local setup was committed. Restart this application before signing in or trading; do not repeat setup or pairing.')
     }
-    if ((runtime.mode === AUTHORITY_MODES.BAR_LOCAL || runtime.provisioning || runtime.restartRequired || runtime.cloudStartupDeferred || runtime.switchingWorkspace) && !isLocalAuthorityOperation && !isOfflineGuideOperation) {
+    if ((runtime.mode === AUTHORITY_MODES.BAR_LOCAL || runtime.provisioning || runtime.restartRequired || runtime.cloudStartupDeferred || runtime.switchingWorkspace) && !isLocalAuthorityOperation && !isOfflineGuideOperation && !isLocalDesktopUpdateStatus) {
       throw new BarLocalAdapterError('LOCAL_WORKSPACE_NOT_ROUTED', 'This Bar installation is committed to its local authority. This cloud-backed action is blocked until its local workflow is connected.')
     }
     if (runtime.switchingWorkspace && isLocalAuthorityOperation && !['barLocal:getStatus', 'barLocal:selectCloudWorkspace', 'barLocal:selectLocalBarWorkspace'].includes(channelName)) {

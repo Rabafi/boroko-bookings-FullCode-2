@@ -23,6 +23,8 @@ const hposMyShift = read('src/renderer/src/components/hospitality-pos/HposMyShif
 const myShiftAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposMyShiftApi.js')
 const hposTeam = read('src/renderer/src/components/hospitality-pos/HposTeam.jsx')
 const teamAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposTeamLocalApi.js')
+const main = read('src/main/index.js')
+const runtime = read('src/main/bar-local/electronRuntime.js')
 const hposMySales = read('src/renderer/src/components/hospitality-pos/HposMySales.jsx')
 const mySalesAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposMySalesApi.js')
 
@@ -30,8 +32,13 @@ test('local Bar restores the established operational routes and its Stock Pro an
   assert.match(app, /<LocalBarHposShell status=\{currentAuthority\}/)
   assert.match(shell, /<Login\s+initialLoginNotice=\{ownerSignInNotice\}/)
   assert.match(read('src/renderer/src/components/Login.jsx'), /if \(localBarAuthority\)[\s\S]*?window\.api\.barLocal\.login\(\{ email: email\.trim\(\)\.toLowerCase\(\), password \}\)/)
-  assert.match(read('src/renderer/src/components/Login.jsx'), /window\.api\.barLocal\.login\(\{ staff_id: staffId\.trim\(\), pin: staffPin \}\)/)
-  assert.match(read('src/renderer/src/components/Login.jsx'), /Staff PIN/)
+  assert.doesNotMatch(read('src/renderer/src/components/Login.jsx'), /Staff ID|Staff PIN|staff_id: staffId|staffPin/)
+  assert.match(read('src/renderer/src/components/Login.jsx'), /window\.api\.barLocal\.login\(\{ email: email\.trim\(\)\.toLowerCase\(\), password \}\)/)
+  assert.match(read('src/renderer/src/components/Login.jsx'), /selectCloudWorkspace\(\)/)
+  const localStartup = main.slice(main.indexOf("if (barLocalRuntime?.mode === AUTHORITY_MODES.BAR_LOCAL"), main.indexOf('// Init DB'))
+  for (const channel of ['update:check', 'update:download', 'update:install', 'update:getState']) assert.ok(localStartup.includes(`ipcMain.handle('${channel}'`), `${channel} must have a safe local-mode response`)
+  assert.match(localStartup, /No hosted update check was made/)
+  assert.match(runtime, /isLocalDesktopUpdateStatus[\s\S]*?&& !isLocalDesktopUpdateStatus/)
   assert.match(shell, /window\.api\.barLocal\.query\('bootstrap', \{\}\)/)
   assert.match(shell, /authority_mode: 'bar_local'/)
   assert.match(shell, /activeProfile: localProfile/)
@@ -195,11 +202,17 @@ test('original My Sales reads only own local receipts and fences hosted sale cor
   assert.match(hposMySales, /Local sale corrections are pending/)
 })
 
-test('local Bar restores the original recipe workspace and fences unsupported Restaurant workspaces and second-display links', () => {
-  for (const [route, area] of [['hpos/floor','Floor & tables'],['hpos/kitchen','Kitchen display'],['hpos/service','Reservations & waitlist'],['hpos/business-control','Business Control'],['restaurant/team-workspace','Accounting & Workforce'],['pos/customer-display','Customer display'],['pos/bar-display','Bar display']]) {
+test('local Bar restores the original recipe and Team roster workspaces and fences unsupported Restaurant workspaces and second-display links', () => {
+  for (const [route, area] of [['hpos/floor','Floor & tables'],['hpos/kitchen','Kitchen display'],['hpos/service','Reservations & waitlist'],['hpos/business-control','Business Control'],['pos/customer-display','Customer display'],['pos/bar-display','Bar display']]) {
     const line = shell.split(/\r?\n/).find(value => value.includes('<Route path=\"'+route+'\"')) || ''
     assert.match(line, new RegExp('<LocalBarRouteUnavailable area=\"'+area+'\"'), route+' must never invoke a hosted page in local mode')
   }
+  assert.match(shell, /<Route path="restaurant\/team-workspace" element=\{<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantWorkspace workspace="team" defaultTab="roster" enabledTabs=\{\['roster'\]\} \/><\/LocalBarAddonGate>\}/)
+  const rosterPage = read('src/renderer/src/components/restaurant/BarWorkforceSchedule.jsx')
+  assert.match(rosterPage, /createBarLocalWorkforceScheduleApi\(window\.api\?\.barLocal/)
+  assert.match(rosterPage, /localApi\.schedule\(window\.localStorage/)
+  assert.match(rosterPage, /localApi\.cancel\(window\.localStorage/)
+  assert.match(read('src/renderer/src/components/restaurant/barLocalWorkforceScheduleApi.js'), /workforce\.shift\.schedule/)
   assert.match(shell, /<Route path="restaurant\/menu-production" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="menu" enabledTabs=\{\['menu', 'recipes'\]\} \/><\/LocalBarAddonGate>\}/)
   assert.match(shell, /<Route path="restaurant\/recipes" element=\{<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantWorkspace workspace="menu" defaultTab="recipes" enabledTabs=\{\['recipes'\]\} \/><\/LocalBarAddonGate>\}/)
   assert.match(shell, /<Route path="restaurant\/finance-close" element=\{<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantWorkspace workspace="finance" defaultTab="cashups" enabledTabs=\{\['cashups', 'sales', 'expenses'\]\} \/><\/LocalBarAddonGate>\}/)

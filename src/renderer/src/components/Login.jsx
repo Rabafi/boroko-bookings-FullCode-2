@@ -40,8 +40,8 @@ function initials(email) {
   return email.split('@')[0].slice(0, 2).toUpperCase()
 }
 
-/** @param {{initialLoginNotice?: string, initialStaffId?: string, consumeLocalSetupNotice?: boolean, onLocalSetupNoticeConsumed?: () => void}} props */
-export default function Login({ initialLoginNotice = '', initialStaffId = '', consumeLocalSetupNotice = false, onLocalSetupNoticeConsumed = () => {} }) {
+/** @param {{initialLoginNotice?: string, consumeLocalSetupNotice?: boolean, onLocalSetupNoticeConsumed?: () => void}} props */
+export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice = false, onLocalSetupNoticeConsumed = () => {} }) {
   const { login } = useAuth()
   const { activeProfile, profiles, createDraftProfile } = useProfiles()
   const { settings } = useSettings()
@@ -81,9 +81,6 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
   }, [barOnly])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [localLoginMethod, setLocalLoginMethod] = useState('owner')
-  const [staffId, setStaffId] = useState(initialStaffId)
-  const [staffPin, setStaffPin] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
@@ -105,6 +102,7 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
   const [recoverySuccess, setRecoverySuccess] = useState('')
   const [updateStatus, setUpdateStatus] = useState({ checking: false, available: false, version: '', error: '' })
   const [creatingLodge, setCreatingLodge] = useState(false)
+  const [switchingWorkspace, setSwitchingWorkspace] = useState(false)
   const [companyChoices, setCompanyChoices] = useState([])
   const passwordRef = useRef(null)
   const loginInFlightRef = useRef(false)
@@ -191,19 +189,15 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
     if (localBarAuthority) {
       setLoading(true)
       try {
-        const result = localLoginMethod === 'staff_pin'
-          ? await window.api.barLocal.login({ staff_id: staffId.trim(), pin: staffPin })
-          : await window.api.barLocal.login({ email: email.trim().toLowerCase(), password })
+        const result = await window.api.barLocal.login({ email: email.trim().toLowerCase(), password })
         if (!result?.session?.staff) {
           setError('The local Bar service did not return a staff session. No cloud sign-in was attempted.')
           return
         }
-        if (localLoginMethod === 'owner') {
-          saveEmail(emailStorageKey, email.trim().toLowerCase())
-          setSavedEmails(getSavedEmails(emailStorageKey))
-        }
+        saveEmail(emailStorageKey, email.trim().toLowerCase())
+        setSavedEmails(getSavedEmails(emailStorageKey))
         await login(result)
-        if (localLoginMethod === 'owner' && consumeLocalSetupNotice) {
+        if (consumeLocalSetupNotice) {
           try {
             await window.api.barLocal.consumePostSetupNotice()
             onLocalSetupNoticeConsumed()
@@ -211,7 +205,7 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
         }
         navigate('/hpos/pos', { replace: true })
       } catch (e) {
-        setError(e?.message || (localLoginMethod === 'staff_pin' ? 'Local staff sign-in failed. Check the staff ID and PIN.' : 'Local Bar sign-in failed. Check the email and password, then try again.'))
+        setError(e?.message || 'Local Bar sign-in failed. Check the email and password, then try again.')
       } finally {
         loginInFlightRef.current = false
         setLoading(false)
@@ -334,6 +328,10 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
   }
 
   const handleCheckUpdates = async () => {
+    if (localBarAuthority) {
+      setUpdateStatus({ checking: false, available: false, version: '', error: 'Desktop app updates are managed from Manage > Local authority. No hosted update check was made.' })
+      return
+    }
     if (!navigator.onLine) {
       setUpdateStatus({ checking: false, available: false, version: '', error: 'Internet connection required to check for updates.' })
       return
@@ -341,7 +339,11 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
     setUpdateStatus({ checking: true, available: false, version: '', error: '' })
     try {
       const res = await window.api.updates.check()
-      if (res.success) {
+      if (res.success && res.dev) {
+        setUpdateStatus({ checking: false, available: false, version: '', error: 'Development builds do not check for desktop updates.' })
+      } else if (res.success && res.gated) {
+        setUpdateStatus({ checking: false, available: false, version: '', error: 'The release policy has paused desktop update checks. Try again later or contact your administrator.' })
+      } else if (res.success) {
         setUpdateStatus({
           checking: false,
           available: res.updateAvailable,
@@ -359,6 +361,29 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
 
   const handleInstallUpdate = () => {
     window.api.updates.install()
+  }
+
+  const handleBackToWelcome = async () => {
+    setError('')
+    if (!localBarAuthority) {
+      navigate(hasProfiles ? '/choose-lodge' : '/welcome')
+      return
+    }
+    if (switchingWorkspace) return
+    setSwitchingWorkspace(true)
+    try {
+      const result = await window.api.barLocal.selectCloudWorkspace()
+      if (result?.restart_required) return
+      if (result?.workspace === 'cloud') {
+        navigate('/welcome', { replace: true })
+        return
+      }
+      throw new Error('The app could not open the business welcome screen. Your Bar setup was kept unchanged.')
+    } catch (cause) {
+      setError(cause?.message || 'Could not return to the business welcome screen. Your Bar setup was kept unchanged.')
+    } finally {
+      setSwitchingWorkspace(false)
+    }
   }
 
 
@@ -452,13 +477,8 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
           {authStatus.message}
         </div>
 
-        {localBarAuthority && <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-          <button type="button" onClick={() => { setLocalLoginMethod('owner'); setError('') }} aria-pressed={localLoginMethod === 'owner'} className={`rounded-lg px-3 py-2 text-sm font-semibold ${localLoginMethod === 'owner' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>Owner / manager</button>
-          <button type="button" onClick={() => { setLocalLoginMethod('staff_pin'); setError('') }} aria-pressed={localLoginMethod === 'staff_pin'} className={`rounded-lg px-3 py-2 text-sm font-semibold ${localLoginMethod === 'staff_pin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}>Staff PIN</button>
-        </div>}
-
         <form onSubmit={handleSubmit} className="space-y-4">
-          {(!localBarAuthority || localLoginMethod === 'owner') && <div>
+          <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
             <input
               type="email"
@@ -498,14 +518,9 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
                 ))}
               </div>
             )}
-          </div>}
+          </div>
 
-          {localBarAuthority && localLoginMethod === 'staff_pin' && <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">Staff ID</label>
-            <input type="text" value={staffId} onChange={(e) => setStaffId(e.target.value)} className="input" autoComplete="username" required />
-          </div>}
-
-          {(!localBarAuthority || localLoginMethod === 'owner') && <div>
+          <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
             <div className="relative">
                 <input
@@ -527,12 +542,7 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
                 {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
               </button>
             </div>
-          </div>}
-
-          {localBarAuthority && localLoginMethod === 'staff_pin' && <div>
-            <label className="mb-1.5 block text-sm font-medium text-slate-700">Staff PIN</label>
-            <input type="password" inputMode="numeric" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={staffPin} onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, '').slice(0, 8))} className="input" autoComplete="current-password" required />
-          </div>}
+          </div>
 
         {error && (
             <ErrorNotice className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
@@ -648,8 +658,8 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
         </div>}
 
         <p className="mt-3 text-center text-xs text-slate-400">
-          {localBarAuthority
-            ? 'Sign in with the staff email and password created for this local Bar. A manager can reset staff access from Team.'
+            {localBarAuthority
+            ? 'Sign in with your staff email and password for this local Bar. A manager can reset staff access from Team.'
             : `Use the email and password created for the selected ${BUSINESS_NOUN}. If a staff member still cannot sign in, a manager can reset access from Team.`}
         </p>
 
@@ -686,13 +696,13 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
             </div>
           )}
 
-          {!updateStatus.checking && !updateStatus.available && !updateStatus.error && updateStatus.version === '' && (
+          {!localBarAuthority && !updateStatus.checking && !updateStatus.available && !updateStatus.error && updateStatus.version === '' && (
              <p className="mt-2 text-[10px] text-slate-400">
                Auto-updates run in the background. Use the button above to manually check if you're missing a version.
              </p>
           )}
           
-          {updateStatus.version && !updateStatus.available && !updateStatus.error && (
+          {!localBarAuthority && updateStatus.version && !updateStatus.available && !updateStatus.error && (
             <div className="mt-3 rounded-xl bg-green-50 border border-green-200 p-3 text-xs text-green-700">
               ✓ You are running the latest version.
             </div>
@@ -702,10 +712,11 @@ export default function Login({ initialLoginNotice = '', initialStaffId = '', co
         <div className="mt-5 text-center">
           <button
             type="button"
-            onClick={() => navigate(hasProfiles ? '/choose-lodge' : '/welcome')}
+              onClick={() => void handleBackToWelcome()}
+              disabled={switchingWorkspace}
             className="text-xs text-slate-400 underline hover:text-slate-600"
           >
-            {hasProfiles ? `← Back to ${BUSINESS_NOUN_TITLE} Chooser` : '← Back to Welcome'}
+            {switchingWorkspace ? 'Opening welcome…' : '← Back to Welcome'}
           </button>
         </div>
       </div>

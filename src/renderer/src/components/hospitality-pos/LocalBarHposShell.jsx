@@ -211,7 +211,6 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                   {!session ? <div className="min-h-screen bg-slate-50">
                     <Login
                       initialLoginNotice={ownerSignInNotice}
-                      initialStaffId={status.training === true ? String(status.setup_owner_staff_id || '') : ''}
                       consumeLocalSetupNotice={postSetupNoticePending}
                       onLocalSetupNoticeConsumed={() => setPostSetupNoticePending(false)}
                     />
@@ -266,7 +265,7 @@ export default function LocalBarHposShell({ status, onLogout, initialLoginNotice
                         <Route path="restaurant/lots-expiry" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantInventoryLots /></LocalBarAddonGate>} />
                         <Route path="restaurant/purchase-suggestions" element={<LocalBarAddonGate addonKey="bar_stock_purchasing_pro"><RestaurantPurchaseSuggestions /></LocalBarAddonGate>} />
                         <Route path="restaurant/team" element={<Navigate to="/restaurant/team-workspace" replace />} />
-                        <Route path="restaurant/team-workspace" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><LocalBarRouteUnavailable area="Accounting & Workforce" /></LocalBarAddonGate>} />
+                        <Route path="restaurant/team-workspace" element={<LocalBarAddonGate addonKey="bar_accounting_workforce"><RestaurantWorkspace workspace="team" defaultTab="roster" enabledTabs={['roster']} /></LocalBarAddonGate>} />
                         <Route path="restaurant/shifts" element={<Navigate to="/hpos/team" replace />} />
                         <Route path="restaurant/cash-drawer" element={<Navigate to="/hpos/cash" replace />} />
                         <Route path="restaurant/daily-close" element={<Navigate to="/restaurant/finance-close?tab=daily-close" replace />} />
