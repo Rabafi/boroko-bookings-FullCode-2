@@ -1,5 +1,11 @@
 # Bar local authority: implementation and verification plan
 
+## 13 November 2026 — original Accounting Pro Payroll local workflow
+
+The existing `/restaurant/payroll` route now mounts the original Accounting Pro Payroll page in local Bar mode. It reads manager-scoped payroll summaries and opaque employee-reference lines from the local finance-record query, reads active local accounts, creates draft runs, prepares an immutable local snapshot and finalises a prepared run through the local atomic command with a separate manager approval. A forward local-service migration adds line detail only to an individual payroll-run read; default run lists remain summary-only. The page clearly says payment and statutory filing are external and that it does not calculate statutory wages or retain employee personal/bank data. The cloud Payroll page retains its existing path. EV-246 records passed focused route/API, rendered Chromium, isolated finance-query, renderer/service typecheck and Hospitality POS build checks.
+
+This restores the existing page and the local command subset; it does not complete Accounting Pro parity. Local employee/terms setup, attendance inputs, statutory rule calculation, payment export/settlement, filing evidence and accounting exports remain unavailable. Manual impact is required. Customer PDFs, quick-start, screenshots and packaged guide checks remain pending by user direction and are non-blocking for this software continuation. Local Bar remains uncommissioned / NO-GO pending its broader plan gates.
+
 ## 2 November 2026 — first-use follow-up and standard Hpos route adapter
 
 Empty-menu first-use is now unblocked at the catalogue read boundary: a verified empty catalogue can be loaded while financial writes remain readiness-gated. The one-time owner sign-in notice survives restart; customer tax input is a percentage; failed menu reads remain unverified. Focused Electron/browser tests and an isolated synthetic HTTP/PostgreSQL first-use test pass; evidence is in EV-180.
