@@ -12,7 +12,7 @@ import { ServerSetupOrchestrator } from './serverSetup.js'
 import { importUpdatePackageDirectory } from './updates.js'
 import { TrainingSupervisor } from './training.ts'
 import { readNativeHposMenu, retryNativeHposBarProduct, saveNativeHposBarProduct } from './nativeHposMenu.js'
-import { isLocalProfileId, linkLocalBarChooserDraft, readLocalBarChooserEntry } from './chooserEntry.js'
+import { isLocalProfileId, linkLocalBarChooserDraft, readLocalBarChooserEntry, writeLocalBarChooserSummary } from './chooserEntry.js'
 import { spawn } from 'node:child_process'
 import { verifyBarReplacement } from '../../shared/barLocalReplacement.js'
 import { BAR_WORKSPACE_SELECTION_FILE, makeBarWorkspaceSelection, parseBarWorkspaceSelection } from '../../shared/barWorkspaceSelection.js'
@@ -109,6 +109,8 @@ export class BarLocalElectronRuntime {
     // local-authority process may open a local session or execute commands.
     this.restartRequired = false
     this.switchingWorkspace = false
+    /** @type {{path:string, previous:Buffer|null}|null} */
+    this.workspaceSelectionRollback = null
     this.setupOwnerStaffId = null
     this.postSetupNoticePending = false
     this.training = process.argv.includes('--bar-training')
@@ -131,6 +133,29 @@ export class BarLocalElectronRuntime {
     catch { return null }
   }
 
+  /** @param {string} path @param {'cloud'|'local_bar'} workspace */
+  #stageWorkspaceSelection(path, workspace) {
+    this.workspaceSelectionRollback = { path, previous: existsSync(path) ? readFileSync(path) : null }
+    writeDurableAtomic(path, makeBarWorkspaceSelection(workspace))
+    this.switchingWorkspace = true
+  }
+
+  /** Restore the prior chooser state if Electron cannot schedule the handoff. */
+  cancelWorkspaceSelection() {
+    const previous = this.workspaceSelectionRollback
+    if (!previous) return false
+    if (previous.previous === null) {
+      try { unlinkSync(previous.path) } catch (error) {
+        if (!error || typeof error !== 'object' || /** @type {{code?:unknown}} */ (error).code !== 'ENOENT') throw error
+      }
+    } else {
+      writeDurableAtomic(previous.path, previous.previous)
+    }
+    this.workspaceSelectionRollback = null
+    this.switchingWorkspace = false
+    return true
+  }
+
   selectLocalBarWorkspace() {
     if (this.dedicatedLocalWorkspace || this.mode !== AUTHORITY_MODES.CLOUD || this.provisioning || this.restartRequired) {
       throw new BarLocalAdapterError('WRONG_AUTHORITY', 'Select a saved Bar from the ordinary business chooser before signing in.')
@@ -144,8 +169,7 @@ export class BarLocalElectronRuntime {
     if (!['ready', 'draft', 'recovery'].includes(entry.status)) {
       throw new BarLocalAdapterError('SETUP_NOT_FOUND', 'No saved local Bar setup was found. No new Bar was created.')
     }
-    writeDurableAtomic(join(this.root, 'workspace-choice.json'), makeBarWorkspaceSelection('local_bar'))
-    this.switchingWorkspace = true
+    this.#stageWorkspaceSelection(join(this.root, 'workspace-choice.json'), 'local_bar')
     return { restart_required: true, workspace: 'local_bar' }
   }
 
@@ -164,16 +188,14 @@ export class BarLocalElectronRuntime {
       }
       // Return to the parent Restaurant profile. Never write the Restaurant
       // selection into the isolated Bar user-data tree.
-      writeDurableAtomic(join(dirname(this.userDataPath), BAR_WORKSPACE_SELECTION_FILE), makeBarWorkspaceSelection('cloud'))
-      this.switchingWorkspace = true
+      this.#stageWorkspaceSelection(join(dirname(this.userDataPath), BAR_WORKSPACE_SELECTION_FILE), 'cloud')
       return { restart_required: true, workspace: 'cloud' }
     }
     if (this.mode !== AUTHORITY_MODES.CLOUD) throw new BarLocalAdapterError('WRONG_AUTHORITY', 'This Bar authority cannot be converted into a cloud business.')
     // The regular cloud profile is already open; do not fence it and leave it
     // unusable when a stale renderer repeats the current selection.
     if (!this.cloudStartupDeferred) return { restart_required: false, workspace: 'cloud' }
-    writeDurableAtomic(join(this.root, 'workspace-choice.json'), makeBarWorkspaceSelection('cloud'))
-    this.switchingWorkspace = true
+    this.#stageWorkspaceSelection(join(this.root, 'workspace-choice.json'), 'cloud')
     return { restart_required: this.cloudStartupDeferred, workspace: 'cloud' }
   }
 
@@ -405,7 +427,35 @@ export class BarLocalElectronRuntime {
       // Publish the backend pin before any migrated till can dispatch work.
       if(config.authority_mode===AUTHORITY_MODES.BAR_LOCAL)this.#persistConfig(config)
       this.adapter=adapter
+      this.#publishChooserSummary(config)
     }catch(error){adapter.close();throw error}
+  }
+
+  /** Publish only the Bar's safe name and completion hint for the parent chooser. */
+  #publishChooserSummary(config) {
+    if (!this.dedicatedLocalWorkspace || this.training) return
+    try {
+      const setupFile = join(this.root, 'server-setup', 'server-setup.bin')
+      let setup = null
+      if (existsSync(setupFile) && this.safeStorage.isEncryptionAvailable()) {
+        try { setup = JSON.parse(this.safeStorage.decryptString(readFileSync(setupFile))) } catch {}
+      }
+      const owner = setup?.owner && typeof setup.owner === 'object' && !Array.isArray(setup.owner) ? setup.owner : null
+      const rawConfig = JSON.parse(this.safeStorage.decryptString(readFileSync(this.configPath)))
+      const rawName = typeof owner?.business_name === 'string' ? owner.business_name
+        : typeof rawConfig?.business_name === 'string' ? rawConfig.business_name : null
+      if (typeof rawName !== 'string' || !rawName.trim()) return
+      const complete = config.authority_mode === AUTHORITY_MODES.BAR_LOCAL || setup?.phase === 'complete'
+      this.publishLocalBarChooserSummary({ label: rawName, completion: complete ? 'complete' : 'draft' })
+    } catch (error) {
+      this.logger.warn?.('[BarLocal] Could not refresh the credential-free chooser name.', error)
+    }
+  }
+
+  /** @param {{label:unknown,completion:unknown}} summary */
+  publishLocalBarChooserSummary(summary) {
+    if (!this.dedicatedLocalWorkspace || this.training) return
+    writeLocalBarChooserSummary({ barRoot: this.root, label: summary.label, completion: summary.completion })
   }
 
   get mode() {
@@ -1038,7 +1088,8 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
     basePath: typeof app.getAppPath === 'function' ? app.getAppPath() : process.cwd(),
     isPackaged: app.isPackaged === true,
     buildProductId,
-    safeStorage
+    safeStorage,
+    publishChooserSummary: (summary) => runtime.publishLocalBarChooserSummary(summary)
   })
   if (runtime.training) {
     runtime.trainingSupervisor = new TrainingSupervisor({
@@ -1138,18 +1189,23 @@ export function registerBarLocalIpc({ ipcMain, app, safeStorage, dialog, buildPr
   ipcMain.handle('barLocal:serverSetupCancel', () => serverSetup.cancel())
   const relaunchWorkspace = () => {
     app.relaunch({ args: app.isPackaged ? [] : [app.getAppPath()] })
-    app.exit(0)
+    // Let IPC return so the renderer can show the named transition before the
+    // current process closes and Electron starts the explicitly selected root.
+    setTimeout(() => app.quit(), 150)
   }
   ipcMain.handle('barLocal:selectLocalBarWorkspace', () => {
     const result = runtime.selectLocalBarWorkspace()
-    if (result.restart_required) relaunchWorkspace()
+    if (result.restart_required) {
+      try { relaunchWorkspace() }
+      catch (error) { runtime.cancelWorkspaceSelection(); throw error }
+    }
     return result
   })
   ipcMain.handle('barLocal:selectCloudWorkspace', async () => {
     const result = await runtime.selectCloudWorkspace()
     if (result.restart_required) {
       try { relaunchWorkspace() }
-      catch (error) { runtime.logger.error?.('[BarLocal] Restart required to open the cloud workspace.', error) }
+      catch (error) { runtime.cancelWorkspaceSelection(); throw error }
     }
     return result
   })

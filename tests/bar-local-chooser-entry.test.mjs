@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { linkLocalBarChooserDraft, readLocalBarChooserEntry } from '../src/main/bar-local/chooserEntry.js'
+import { linkLocalBarChooserDraft, readLocalBarChooserEntry, writeLocalBarChooserSummary } from '../src/main/bar-local/chooserEntry.js'
 import { projectBarChooserProfiles } from '../src/shared/barLocalChooser.js'
 
 const profileId = 'c699837b-3892-4d04-bca8-a12fe36c4dd0'
@@ -101,6 +101,26 @@ test('unreadable saved setup gets recovery instead of an unsafe new-setup state'
   mkdirSync(join(fixture.barRoot, 'server-setup'), { recursive: true })
   writeFileSync(fixture.setupPath, 'not encrypted setup data')
   assert.deepEqual(fixture.read(), { status: 'recovery', label: 'Saved Bar setup', origin_profile_id: null })
+})
+
+test('a credential-free chooser summary shows the saved name but never upgrades unreadable profile state', (t) => {
+  const fixture = setupFixture(t)
+  mkdirSync(join(fixture.barRoot, 'server-setup'), { recursive: true })
+  writeFileSync(fixture.setupPath, 'not encrypted setup data')
+  writeLocalBarChooserSummary({ barRoot: fixture.barRoot, label: 'Rabafi Pub', completion: 'complete' })
+  const entry = fixture.read()
+  assert.deepEqual(entry, {
+    status: 'recovery', label: 'Rabafi Pub', origin_profile_id: null,
+    identity_status: 'confirmed', completion_status: 'complete'
+  })
+  assert.equal(entry.status === 'ready', false)
+})
+
+test('malformed chooser summary is ignored and cannot create a saved Bar entry', (t) => {
+  const fixture = setupFixture(t)
+  mkdirSync(fixture.barRoot, { recursive: true })
+  writeFileSync(join(fixture.barRoot, 'chooser-summary.json'), JSON.stringify({ version: 1, label: 'Rabafi Pub', completion: 'complete', updated_at: 'invalid' }))
+  assert.deepEqual(fixture.read(), { status: 'none', label: null, origin_profile_id: null })
 })
 
 test('only the explicitly linked Bar draft is folded into the Bar card; other profiles survive', () => {

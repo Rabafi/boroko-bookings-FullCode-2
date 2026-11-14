@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Building2, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useProfiles } from '../app-context'
@@ -32,8 +32,9 @@ export default function LodgeChooser() {
   } = useProfiles()
 
   const [workingId, setWorkingId] = useState('')
+  const localBarTransitionRef = useRef(false)
   const [error, setError] = useState('')
-  const [localBarEntry, setLocalBarEntry] = useState({ status: 'loading', label: null, origin_profile_id: null })
+  const [localBarEntry, setLocalBarEntry] = useState({ status: 'loading', label: null, origin_profile_id: null, identity_status: null, completion_status: null })
 
   useEffect(() => {
     if (!IS_HPOS) return
@@ -44,7 +45,9 @@ export default function LodgeChooser() {
       setLocalBarEntry({
         status,
         label: typeof entry?.label === 'string' && entry.label.trim() ? entry.label.trim() : status === 'none' ? null : 'Saved Bar setup',
-        origin_profile_id: typeof entry?.origin_profile_id === 'string' ? entry.origin_profile_id : null
+        origin_profile_id: typeof entry?.origin_profile_id === 'string' ? entry.origin_profile_id : null,
+        identity_status: entry?.identity_status === 'confirmed' ? 'confirmed' : null,
+        completion_status: ['complete', 'draft'].includes(entry?.completion_status) ? entry.completion_status : null
       })
     }).catch(() => {
       if (!cancelled) setLocalBarEntry({ status: 'recovery', label: 'Saved Bar setup', origin_profile_id: null })
@@ -53,13 +56,19 @@ export default function LodgeChooser() {
   }, [])
 
   const selectSavedLocalBar = async () => {
+    if (localBarTransitionRef.current) return
+    localBarTransitionRef.current = true
     setWorkingId('local-bar')
     setError('')
+    let handoffScheduled = false
     try {
       const result = await window.api?.barLocal?.selectLocalBarWorkspace?.()
       if (result?.restart_required !== true || result?.workspace !== 'local_bar') throw new Error('The saved Bar could not be selected. Your existing setup is preserved.')
+      handoffScheduled = true
     } catch (e) { setError(e?.message || 'Could not select the saved local Bar. Do not create another business; contact support.') }
-    finally { setWorkingId('') }
+    finally {
+      if (!handoffScheduled) { localBarTransitionRef.current = false; setWorkingId('') }
+    }
   }
 
   const linkDraftToLocalBar = async (profile) => {
@@ -385,13 +394,13 @@ export default function LodgeChooser() {
                   <h2 className="text-lg font-semibold text-gray-800 truncate">{localBarEntry.label}</h2>
                   {localBarEntry.status === 'ready' && <span className={`text-[11px] font-semibold px-2 py-1 rounded-full ${readyBadge}`}>Ready</span>}
                   {localBarEntry.status === 'draft' && <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">Draft Setup</span>}
-                  {localBarEntry.status === 'recovery' && <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">Saved setup</span>}
+                  {localBarEntry.status === 'recovery' && <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800">{localBarEntry.identity_status === 'confirmed' ? localBarEntry.completion_status === 'complete' ? 'Completed • verify profile' : 'Setup in progress • verify profile' : 'Needs verification'}</span>}
                 </div>
                 <div className="mt-5 flex items-center justify-between gap-3">
-                  <p className="text-sm text-gray-600">{localBarEntry.status === 'ready' ? 'Your local Bar is set up on this computer.' : localBarEntry.status === 'draft' ? 'Continue the saved setup for this Bar.' : 'Open this saved setup to check or continue it.'}</p>
+                  <p className="text-sm text-gray-600">{localBarEntry.status === 'ready' ? 'Your local Bar is set up on this computer.' : localBarEntry.status === 'draft' ? 'Continue the saved setup for this Bar.' : localBarEntry.identity_status === 'confirmed' && localBarEntry.completion_status === 'complete' ? 'This Bar setup was completed. Open it to verify this Windows profile before sign-in.' : localBarEntry.identity_status === 'confirmed' ? 'This Bar setup was in progress. Open it to verify the saved setup and continue safely.' : 'Open this saved Bar to verify its setup. No data has been changed.'}</p>
                   <button type="button" onClick={() => void selectSavedLocalBar()} disabled={Boolean(workingId)} className={`${useBtn} ml-0`}>
                     {workingId === 'local-bar' ? <Loader2 size={16} className="animate-spin" /> : null}
-                    {workingId === 'local-bar' ? 'Switching to Bar…' : localBarEntry.status === 'ready' ? 'Open Bar' : localBarEntry.status === 'draft' ? 'Continue setup' : 'Open Bar'}
+                    {workingId === 'local-bar' ? `Opening ${localBarEntry.label}…` : localBarEntry.status === 'ready' ? 'Open Bar' : localBarEntry.status === 'draft' ? 'Continue setup' : 'Open Bar'}
                   </button>
                 </div>
               </article>}

@@ -329,7 +329,6 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
 
   const handleCheckUpdates = async () => {
     if (localBarAuthority) {
-      setUpdateStatus({ checking: false, available: false, version: '', error: 'Desktop app updates are managed from Manage > Local authority. No hosted update check was made.' })
       return
     }
     if (!navigator.onLine) {
@@ -371,9 +370,10 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
     }
     if (switchingWorkspace) return
     setSwitchingWorkspace(true)
+    let handoffScheduled = false
     try {
       const result = await window.api.barLocal.selectCloudWorkspace()
-      if (result?.restart_required) return
+      if (result?.restart_required) { handoffScheduled = true; return }
       if (result?.workspace === 'cloud') {
         navigate('/welcome', { replace: true })
         return
@@ -382,7 +382,7 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
     } catch (cause) {
       setError(cause?.message || 'Could not return to the business welcome screen. Your Bar setup was kept unchanged.')
     } finally {
-      setSwitchingWorkspace(false)
+      if (!handoffScheduled) setSwitchingWorkspace(false)
     }
   }
 
@@ -665,6 +665,7 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
 
         <div className="mt-5 border-t border-slate-100 pt-4">
           <div className="flex items-center justify-between">
+            {localBarAuthority ? <p className="text-sm text-slate-600">Desktop software update availability is not checked from this local Bar sign-in screen. Ask your administrator for approved release instructions.</p> : <>
             <button
               type="button"
               onClick={handleCheckUpdates}
@@ -674,16 +675,17 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
               <RefreshCw size={14} className={updateStatus.checking ? 'animate-spin' : ''} />
               {updateStatus.checking ? 'Checking for updates...' : 'Update Software'}
             </button>
-            {!localBarAuthority && <span className="text-[10px] text-slate-400 font-mono">v{diagnostics?.app_version || '...'}</span>}
+            <span className="text-[10px] text-slate-400 font-mono">v{diagnostics?.app_version || '...'}</span>
+            </>}
           </div>
 
-          {updateStatus.error && (
+          {!localBarAuthority && updateStatus.error && (
             <div className="mt-3 rounded-xl bg-red-50 border border-red-100 p-3 text-xs text-red-700">
               {updateStatus.error}
             </div>
           )}
 
-          {updateStatus.available && (
+          {!localBarAuthority && updateStatus.available && (
             <div className="mt-3 rounded-xl bg-blue-50 border border-blue-200 p-4">
               <p className="text-sm font-bold text-blue-900">New version available!</p>
               <p className="text-xs text-blue-700 mt-1">Version {updateStatus.version} is ready to be installed.</p>
@@ -716,7 +718,7 @@ export default function Login({ initialLoginNotice = '', consumeLocalSetupNotice
               disabled={switchingWorkspace}
             className="text-xs text-slate-400 underline hover:text-slate-600"
           >
-            {switchingWorkspace ? 'Opening welcome…' : '← Back to Welcome'}
+            {switchingWorkspace ? 'Returning to business selection…' : '← Back to Welcome'}
           </button>
         </div>
       </div>

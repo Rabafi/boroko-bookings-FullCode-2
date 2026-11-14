@@ -19,7 +19,7 @@ import {AuthContext, ProfilesContext, SettingsContext} from './src/renderer/src/
 import Login from './src/renderer/src/components/Login.jsx'
 const f = window.fixture
 window.api = {settings:{getDiagnostics:async()=>({})},auth:{getStatus:async()=>({online:false}),login:async()=>{f.cloudLogins++;throw new Error('Cloud auth must not be called')}} ,
-updates:{check:async()=>{f.updateChecks++;throw new Error('Missing update handler')},install:async()=>{f.updateInstalls++}},
+updates:{check:async()=>{f.updateChecks++;return {success:false,unsupported:true}},install:async()=>{f.updateInstalls++}},
 barLocal:{login:async(credentials)=>{f.credentials=credentials;return {session:{staff:{id:'staff-1',email:credentials.email}}}},
 selectCloudWorkspace:async()=>{f.workspaceSwitches++;return {restart_required:true,workspace:'cloud'}}}}
 createRoot(document.getElementById('root')).render(<MemoryRouter><AuthContext.Provider value={{user:null,login:async(user)=>{f.loggedIn=user.session.staff},logout:()=>{}}}>
@@ -28,7 +28,7 @@ createRoot(document.getElementById('root')).render(<MemoryRouter><AuthContext.Pr
 </ProfilesContext.Provider></AuthContext.Provider></MemoryRouter>)
 `
 
-test('local sign-in is email-only, remains local, returns to welcome through workspace handoff, and gives a safe update status', { timeout: 120000 }, async (t) => {
+test('local sign-in is email-only, remains local, returns to welcome through workspace handoff, and gives neutral desktop-update guidance', { timeout: 120000 }, async (t) => {
   const bundle = await esbuild.build({ stdin: { contents: entry, resolveDir: process.cwd(), loader: 'jsx' }, bundle: true, write: false,
     platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl' },
     define: { 'process.env.NODE_ENV': '"development"', __TSA_BONNO_PRODUCT__: '"hospitality-pos"' } })
@@ -55,8 +55,8 @@ test('local sign-in is email-only, remains local, returns to welcome through wor
   })
 
   await page.reload()
-  await page.getByRole('button', { name: 'Update Software' }).click()
-  await page.getByText(/Desktop app updates are managed from Manage > Local authority/).waitFor()
+  await page.getByText(/Desktop software update availability is not checked from this local Bar sign-in screen/).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'Update Software' }).count(), 0)
   assert.equal((await page.evaluate(() => window.fixture)).updateChecks, 0)
   assert.equal((await page.evaluate(() => window.fixture)).updateInstalls, 0)
 })

@@ -8,6 +8,7 @@ import { AUTHORITY_MODES, validateAuthorityConfig } from './authority.js'
 
 const SETUP_PHASES = new Set(['prepared', 'installing', 'installed', 'owner_pending', 'complete', 'failed'])
 const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const SUMMARY_NAME = 'chooser-summary.json'
 
 /** @param {unknown} value */
 function safeLabel(value) {
@@ -26,6 +27,48 @@ function readProtectedRecord(file, safeStorage) {
   }
 }
 
+/** @param {string} root @param {unknown} value */
+function writeSummary(root, value) {
+  mkdirSync(root, { recursive: true })
+  const file = join(root, SUMMARY_NAME)
+  const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`
+  let fd
+  try {
+    fd = openSync(temporary, 'wx', 0o600)
+    writeFileSync(fd, JSON.stringify(value), 'utf8')
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    renameSync(temporary, file)
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd)
+    try { unlinkSync(temporary) } catch {}
+    throw error
+  }
+}
+
+/** Credential-free presentation metadata. It never grants authority or login readiness.
+ * @param {{barRoot:string, label:unknown, completion:unknown, updatedAt?:string}} options
+ */
+export function writeLocalBarChooserSummary({ barRoot, label, completion, updatedAt = new Date().toISOString() }) {
+  const safeName = safeLabel(label)
+  if (!safeName || !['complete', 'draft'].includes(String(completion)) || !Number.isFinite(Date.parse(updatedAt))) {
+    throw new Error('A verified Bar name and setup state are required for chooser display metadata.')
+  }
+  writeSummary(barRoot, { version: 1, label: safeName, completion, updated_at: updatedAt })
+}
+
+/** @param {string} root */
+function readSummary(root) {
+  try {
+    const value = JSON.parse(readFileSync(join(root, SUMMARY_NAME), 'utf8'))
+    if (!value || value.version !== 1 || !safeLabel(value.label)
+      || !['complete', 'draft'].includes(value.completion)
+      || typeof value.updated_at !== 'string' || !Number.isFinite(Date.parse(value.updated_at))) return null
+    return { label: safeLabel(value.label), completion: value.completion }
+  } catch { return null }
+}
+
 /**
  * Read only the public chooser identity from the dedicated Bar workspace.
  * Completion is based on its durable owner-complete record or committed
@@ -36,6 +79,7 @@ export function readLocalBarChooserEntry({ userDataPath, safeStorage }) {
   const root = join(userDataPath, LOCAL_BAR_WORKSPACE_DIR, 'bar-local')
   const setup = readProtectedRecord(join(root, 'server-setup', 'server-setup.bin'), safeStorage)
   const authority = readProtectedRecord(join(root, 'authority.bin'), safeStorage)
+  const summary = readSummary(root)
   const hasLegacyProvisioning = existsSync(join(root, 'provisioning.bin'))
   let linkedProfileId = null
   const link = readProtectedRecord(join(root, 'chooser-link.bin'), safeStorage).value
@@ -54,10 +98,14 @@ export function readLocalBarChooserEntry({ userDataPath, safeStorage }) {
   }
 
   if (committedLocalAuthority || (validSetup && state.phase === 'complete')) {
-    return { status: 'ready', label: setupName || safeLabel(authority.value?.business_name) || 'Local Bar', origin_profile_id: linkedProfileId }
+    return { status: 'ready', label: setupName || safeLabel(authority.value?.business_name) || summary?.label || 'Local Bar', origin_profile_id: linkedProfileId }
   }
   if (validSetup) {
-    return { status: 'draft', label: setupName || 'Saved Bar setup', origin_profile_id: linkedProfileId }
+    return { status: 'draft', label: setupName || summary?.label || 'Saved Bar setup', origin_profile_id: linkedProfileId }
+  }
+  if (summary) {
+    return { status: 'recovery', label: summary.label, origin_profile_id: linkedProfileId,
+      identity_status: 'confirmed', completion_status: summary.completion }
   }
   const hasSavedRecord = setup.exists || authority.exists || hasLegacyProvisioning
   if (hasSavedRecord) {

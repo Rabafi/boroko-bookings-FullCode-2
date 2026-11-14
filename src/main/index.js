@@ -229,6 +229,7 @@ function buildWasteExportSection(movementRead, includeWaste) {
 import { writePosHistoryExcelArtifact, writePosHistoryJsonArtifact, writePosHistoryPdfArtifact } from './posHistoryExportArtifacts.js'
 import { registerBarGuideIpc } from './barGuidesIpc.js'
 import { registerBarLocalIpc } from './bar-local/electronRuntime.js'
+import { registerLocalDesktopUpdateStatus } from './bar-local/desktopUpdateStatus.js'
 import { AUTHORITY_MODES } from './bar-local/authority.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -4981,24 +4982,9 @@ app.whenReady().then(async () => {
     // renderer opens the fixed local Bar workspace; the registered local IPC
     // surface fails closed and never falls back to Supabase.
     try { console.log('[BOOT] bar_local authority: cloud startup disabled'); } catch {}
-    // Keep the sign-in screen's desktop-update bridge explicit without
-    // starting the cloud Command Central gate or an updater background loop.
-    // Local authority software updates use the approved local update package
-    // workflow under Manage > Local authority.
-    const localDesktopUpdateStatus = () => ({
-      phase: 'error',
-      currentVersion: app.getVersion(),
-      version: null,
-      releaseName: '',
-      releaseDate: '',
-      releaseNotes: '',
-      progress: null,
-      error: 'Desktop app updates are managed from Manage > Local authority while this Bar uses local authority. No hosted update check was made.'
-    })
-    ipcMain.handle('update:check', () => ({ success: false, gated: true, error: localDesktopUpdateStatus().error, state: localDesktopUpdateStatus() }))
-    ipcMain.handle('update:download', () => ({ success: false, gated: true, error: localDesktopUpdateStatus().error }))
-    ipcMain.handle('update:install', () => ({ success: false, gated: true, error: localDesktopUpdateStatus().error }))
-    ipcMain.handle('update:getState', () => localDesktopUpdateStatus())
+    // Local Bar desktop release delivery is explicitly unavailable until an
+    // approved app-release source and safe install lifecycle are implemented.
+    registerLocalDesktopUpdateStatus({ ipcMain, getVersion: () => app.getVersion() })
     createWindow()
     try { console.log('[BOOT] local Bar main window created'); } catch {}
     app.on('activate', () => {

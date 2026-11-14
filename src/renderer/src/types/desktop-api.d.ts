@@ -287,6 +287,8 @@ export type DesktopUpdateStateReadView = {
   releaseNotes: string;
   progress: DesktopUpdateProgressReadView | null;
   error: string;
+  availability?: 'supported' | 'unsupported';
+  message?: string;
 };
 
 export type DesktopUpdateProgressEventReadView = DesktopUpdateStateReadView & DesktopUpdateProgressReadView;
@@ -315,6 +317,7 @@ export type DesktopUpdateCheckReadResult =
       state: DesktopUpdateStateReadView;
     }
   | { success: true; updateAvailable: false; dev?: undefined; gated: true; state: DesktopUpdateStateReadView }
+  | { success: false; unsupported: true; error: string; state: DesktopUpdateStateReadView }
   | { success: false; dev?: undefined; error: unknown };
 
 export type DesktopUpdateDownloadReadResult =

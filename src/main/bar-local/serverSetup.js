@@ -678,6 +678,7 @@ export class ServerSetupOrchestrator {
    *   isPackaged: boolean,
    *   buildProductId: string,
    *   safeStorage: {isEncryptionAvailable(): boolean, encryptString(value: string): Buffer, decryptString(value: Buffer): string},
+   *   publishChooserSummary?: (summary: {label: string, completion: 'complete'|'draft'}) => void,
    *   installRoot?: string,
    *   payloadDir?: string,
    *   platform?: NodeJS.Platform,
@@ -697,6 +698,7 @@ export class ServerSetupOrchestrator {
     this.isPackaged = options.isPackaged
     this.buildProductId = options.buildProductId
     this.safeStorage = options.safeStorage
+    this.publishChooserSummary = options.publishChooserSummary ?? (() => {})
     this.platform = options.platform ?? process.platform
     this.now = options.now ?? (() => new Date())
     this.runner = options.runner ?? defaultElevatedRunner
@@ -749,6 +751,13 @@ export class ServerSetupOrchestrator {
     }
     state.updated_at = this.now().toISOString()
     writeDurableAtomic(this.statePath, this.safeStorage.encryptString(JSON.stringify(state)))
+    // This credential-free identity hint is display-only. The chooser still
+    // requires the selected child profile to validate its protected authority.
+    try {
+      this.publishChooserSummary({ label: state.owner.business_name, completion: state.phase === 'complete' ? 'complete' : 'draft' })
+    } catch (error) {
+      console.warn('[BarLocal] Could not refresh the credential-free chooser name.', error)
+    }
   }
 
   /** @param {ServerSetupState} state @param {ServerSetupPhase} phase @param {{code: string, message: string} | null} [error] */
