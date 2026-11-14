@@ -22,23 +22,24 @@ import {
   HposPageHero,
   HposStatusBadge,
 } from './HposUi';
+import { createLocalHposControlApi } from './bar-local/hposControlApi.js';
 
 
 /**
  * Read views mirror the existing SQL/cache producer fields consumed below.
  * The IPC/RPC JSON and persisted cache rows are not validated by these types.
- * @typedef {{id: string, completed?: boolean, is_completed: boolean, text?: string|null, item_label: string, label?: string|null, _pending_sync?: boolean}} HposChecklistItemExpectedView
+ * @typedef {{id: string, completed?: boolean, is_completed: boolean, text?: string|null, item_label: string, label?: string|null, _pending_sync?: boolean, checklist_id?: string, item_id?: string, expected_version?: number}} HposChecklistItemExpectedView
  * @typedef {{id: string, name?: string|null, type?: string|null, checklist_type: string, items: HposChecklistItemExpectedView[]}} HposChecklistExpectedView
  * @typedef {{id: string, category: string, severity: string, message: string|null, created_at: string, is_resolved: boolean, acknowledged_at: string|null, acknowledged_by: string|null|undefined, acknowledgement_reason: string|null, resolved_at: string|null, resolved_by: string|null|undefined, resolved_reason: string|null, title?: string|null, detail?: string|null, description?: string|null}} HposAlertExpectedView
  * @typedef {{template_key: string, name: string}} HposBarChecklistTemplateExpectedView
- * @typedef {{id: string, created_at: string, title: string, incident_type: string, description: string|null, severity: string}} HposIncidentExpectedView
+ * @typedef {{id: string, created_at: string, title: string, incident_type: string, description: string|null, severity: string, status?: string, version?: number, incident_date?: string}} HposIncidentExpectedView
  * @typedef {HposIncidentExpectedView|(HposIncidentCreateResultExpectedView & {id: string})} HposIncidentDisplayExpectedView
  * @typedef {'stock'|'financial'|'compliance'|'operational'} HposAlertCategory
  * @typedef {{success: boolean, error?: string|null, offline?: boolean, id?: string|null, acknowledged_at?: string|null, acknowledged_by?: string|null, resolved_at?: string|null, resolved_by?: string|null}} HposActionExpectedView
  * @typedef {HposActionExpectedView & {incident?: HposIncidentExpectedView|null}} HposIncidentCreateResultExpectedView
  * @typedef {{message?: string}|null|undefined} HposCaughtErrorExpectedView
  * @typedef {{title: string, incident_type: string, description: string, severity: string}} HposIncidentForm
- * @typedef {{onClose: () => void, onLogged?: (created: HposIncidentExpectedView|HposIncidentCreateResultExpectedView|null) => void, onNotice?: (message: string) => void}} HposIncidentLogModalProps
+ * @typedef {{onClose: () => void, localApi?: ReturnType<typeof createLocalHposControlApi>|null, onLogged?: (created: HposIncidentExpectedView|HposIncidentCreateResultExpectedView|null) => void, onNotice?: (message: string) => void}} HposIncidentLogModalProps
  * @typedef {{categories: string[], value: string, onChange: (value: string) => void, severity: string, onSeverityChange: (value: string) => void, showResolved: boolean, onToggleResolved: () => void}} HposAlertToolbarProps
  */
 
@@ -54,6 +55,7 @@ export default function HposControl() {
   const access = useAccess();
   const { settings } = useSettings();
   const barOnly = isBarOnlyMode(settings);
+  const localAuthority = settings?.authority_mode === 'bar_local';
   const canManage = canAccessCapability(access, 'pos.manage');
   // Incident log is a Bar POS base feature (incident_log): it must stay
   // reachable from this base-visible board even without the Growth add-on.
@@ -76,11 +78,46 @@ export default function HposControl() {
   const [notice, setNotice] = useState('');
   const alertOperationIds = useRef(/** @type {Map<string, string>} */ (new Map()));
   const checklistOperationIds = useRef(/** @type {Map<string, string>} */ (new Map()));
+  const localApi = useMemo(() => localAuthority ? createLocalHposControlApi({
+    bridge: window.api.barLocal,
+    storage: window.localStorage,
+    businessId: String(settings?.lodge_id || settings?.business_id || ''),
+    outletId: String(settings?.outlet_id || '')
+  }) : null, [localAuthority, settings?.lodge_id, settings?.business_id, settings?.outlet_id]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setActionError('');
     try {
+      if (localApi) {
+        if (!canManage) throw new Error('The local Bar Control board requires the server-verified POS management capability. Ask an owner to review your access.')
+        const [checklistRows, templateRows, incidentRows] = await Promise.all([
+          localApi.listChecklists(), localApi.listTemplates(), canManage ? localApi.listIncidents() : Promise.resolve([])
+        ]);
+        setChecklists(checklistRows.map((/** @type {Record<string, any>} */ row) => ({
+          id: String(row.checklist_id), name: String(row.template_name || row.checklist_type || 'Checklist'),
+          type: String(row.checklist_type || ''), checklist_type: String(row.checklist_type || ''), version: Number(row.version),
+          items: (Array.isArray(row.items) ? row.items : []).map((/** @type {Record<string, any>} */ item) => ({
+            id: String(item.item_id), item_id: String(item.item_id), checklist_id: String(row.checklist_id),
+            expected_version: Number(row.version), item_label: String(item.label || 'Checklist item'), text: String(item.label || ''),
+            completed: item.completed === true, is_completed: item.completed === true, note: item.note ?? null
+          }))
+        })));
+        setBarTemplates(templateRows.map((/** @type {Record<string, any>} */ row) => ({
+          template_key: String(row.template_key), name: String(row.name || 'Checklist'), items: Array.isArray(row.items) ? row.items : []
+        })));
+        setIncidents(incidentRows.map((/** @type {Record<string, any>} */ row) => ({
+          id: String(row.id), created_at: String(row.incident_date || ''), incident_date: String(row.incident_date || ''),
+          title: String(row.category || 'Incident'), incident_type: String(row.category || 'operational'),
+          description: typeof row.description === 'string' ? row.description : null,
+          severity: String(row.severity || 'medium'), status: String(row.status || 'open'), version: Number(row.version)
+        })));
+        // Local Bar has no verified local live-alert feed yet. Do not read the
+        // cloud cache or label the absence of a feed as a clear queue.
+        setAlerts([]);
+        setAlertHistory([]);
+        return;
+      }
       if (barOnly) {
         // Best-effort seed: templates load from cache offline.
         await window.api?.pos?.seedBarChecklistTemplates?.().catch(() => null);
@@ -103,7 +140,7 @@ export default function HposControl() {
     } finally {
       setLoading(false);
     }
-  }, [barOnly, canViewIncidents]);
+  }, [barOnly, canViewIncidents, canManage, localApi]);
 
   useEffect(() => {
     load();
@@ -121,6 +158,13 @@ export default function HposControl() {
     setActionError('');
     setNotice('');
     try {
+      if (localApi) {
+        if (!item.checklist_id || !item.item_id || !Number.isSafeInteger(item.expected_version)) throw new Error('This checklist item has no verified version. Refresh before completing it.')
+        await localApi.setChecklistItem(item);
+        setNotice(`Completed: ${itemLabel(item)}`);
+        await load();
+        return;
+      }
       // The handler forwards the RPC result or its explicit offline/failure envelope; this view does not validate JSON.
       const result = /** @type {HposActionExpectedView|null|undefined} */ (await window.api?.pos?.completeChecklistItem?.({ itemId: item.id }));
       if (!result?.success) throw new Error(result?.error || 'Could not complete this item.');
@@ -146,6 +190,12 @@ export default function HposControl() {
     setBusyId(`template:${template.template_key}`);
     setActionError('');
     try {
+      if (localApi) {
+        await localApi.startChecklist(template.template_key);
+        setNotice(`${template.name || 'Checklist'} started by the local Bar authority.`);
+        await load();
+        return;
+      }
       const operationId = checklistOperationIds.current.get(template.template_key) || crypto.randomUUID();
       checklistOperationIds.current.set(template.template_key, operationId);
       // The RPC returns a JSON result and the offline path returns its explicit queued envelope.
@@ -220,6 +270,22 @@ export default function HposControl() {
     }
   };
 
+  const resolveLocalIncident = async (incident) => {
+    if (!localApi || !incident?.id || !Number.isSafeInteger(incident?.version) || !canManage) return;
+    const resolution = window.prompt('Record the resolution and follow-up for this incident.');
+    if (!resolution || resolution.trim().length < 3) return;
+    setBusyId(`incident:${incident.id}`);
+    setActionError('');
+    setNotice('');
+    try {
+      await localApi.resolveIncident({ incident_id: incident.id, expected_version: incident.version, resolution: resolution.trim() });
+      setNotice('Incident resolution was recorded by the local Bar authority.');
+      await load();
+    } catch (error) {
+      setActionError((/** @type {HposCaughtErrorExpectedView} */ (error))?.message || 'Could not resolve this incident. Retry the saved operation if its result is unknown.');
+    } finally { setBusyId(''); }
+  };
+
   const visibleAlerts = alerts.filter((alert) => (alertCategory === 'all' || String(alert.category || 'operational').toLowerCase() === alertCategory) && (alertSeverity === 'all' || String(alert.severity || 'info').toLowerCase() === alertSeverity));
   const alertCategories = Array.from(new Set(alertHistory.map((alert) => String(alert.category || 'operational').trim().toLowerCase()).filter(Boolean))).sort();
   const visibleHistory = alertHistory.filter((alert) => (alertCategory === 'all' || String(alert.category || 'operational').toLowerCase() === alertCategory) && (alertSeverity === 'all' || String(alert.severity || 'info').toLowerCase() === alertSeverity));
@@ -244,10 +310,10 @@ export default function HposControl() {
       <section className="hpos-control-overview">
         <article><ClipboardList size={20} /><small>Checklists</small><strong>{loading ? '—' : checklists.length}</strong></article>
         <article className={openItems ? 'is-warning' : 'is-clear'}><Circle size={20} /><small>Open tasks</small><strong>{loading ? '—' : openItems}</strong></article>
-        <article className={alerts.length ? 'is-danger' : 'is-clear'}><AlertTriangle size={20} /><small>Active alerts</small><strong>{loading ? '—' : alerts.length}</strong></article>
+        <article className={localAuthority ? '' : alerts.length ? 'is-danger' : 'is-clear'}><AlertTriangle size={20} /><small>{localAuthority ? 'Alerts' : 'Active alerts'}</small><strong>{loading ? '—' : localAuthority ? 'Unavailable' : alerts.length}</strong></article>
         <div className="hpos-control-readiness">
           <ShieldCheck size={22} />
-          <div><strong>{alerts.length || openItems ? 'Service needs attention' : 'Ready for service'}</strong><span>{alerts.length || openItems ? 'Work through the open items below.' : 'No open checklist tasks or active alerts.'}</span></div>
+          <div><strong>{alerts.length || openItems ? 'Service needs attention' : localAuthority ? 'Review checks before service' : 'Ready for service'}</strong><span>{alerts.length || openItems ? 'Work through the open items below.' : localAuthority ? 'The local alert feed is unavailable; this board cannot confirm overall readiness.' : 'No open checklist tasks or active alerts.'}</span></div>
         </div>
       </section>
 
@@ -258,7 +324,7 @@ export default function HposControl() {
         <button type="button" role="tab" aria-selected={activeTab === 'alerts'} className={activeTab === 'alerts' ? 'is-active' : ''} onClick={() => setActiveTab('alerts')}>
           <AlertTriangle size={15} /> Alerts <span>{alerts.length}</span>
         </button>
-        {canViewIncidents && (
+        {(localAuthority ? canManage : canViewIncidents) && (
           <button type="button" role="tab" aria-selected={activeTab === 'incidents'} className={activeTab === 'incidents' ? 'is-active' : ''} onClick={() => setActiveTab('incidents')}>
             <ShieldCheck size={15} /> Incidents <span>{incidents.length}</span>
           </button>
@@ -316,7 +382,7 @@ export default function HposControl() {
           </>
         )
       ) : activeTab === 'incidents' ? (
-        canViewIncidents ? (
+        (localAuthority ? canManage : canViewIncidents) ? (
           <section className="hpos-alert-list" aria-label="Incident log">
             <div className="hpos-alert-toolbar">
               <span>Base Bar POS includes the incident log. Growth analytics stay in Business overview.</span>
@@ -337,6 +403,7 @@ export default function HposControl() {
                       <small>{incident?.created_at ? new Date(incident.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable'}</small>
                     </div>
                     <HposStatusBadge tone={['critical', 'high'].includes(String(incident?.severity || '').toLowerCase()) ? 'danger' : 'warning'}>{String(incident?.severity || 'medium')}</HposStatusBadge>
+                    {localApi && incident?.status === 'open' && canManage && <HposButton disabled={busyId === `incident:${incident.id}`} onClick={() => void resolveLocalIncident(incident)}>{busyId === `incident:${incident.id}` ? 'Saving…' : 'Record resolution'}</HposButton>}
                   </article>
                 );
               })
@@ -344,6 +411,7 @@ export default function HposControl() {
             {incidentModalOpen && (
               <IncidentLogModal
                 onClose={() => setIncidentModalOpen(false)}
+                localApi={localApi}
                 onLogged={(created) => {
                   setIncidentModalOpen(false);
                   setIncidents((prev) => (created?.id ? [/** @type {HposIncidentDisplayExpectedView} */ (created), ...prev] : prev));
@@ -357,6 +425,11 @@ export default function HposControl() {
         ) : (
           <HposEmptyState icon={ShieldCheck} title="Incident log requires permission" description="Ask a manager to grant incident log access." />
         )
+      ) : localAuthority ? (
+        <section className="m-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
+          <strong>Local alert feed is not available yet.</strong>
+          <p className="mt-1">This Bar does not read hosted alerts. Review the local checklist and incident records above; no alerts are claimed as cleared.</p>
+        </section>
       ) : alerts.length === 0 ? (
         <>
           <AlertToolbar categories={alertCategories} value={alertCategory} onChange={setAlertCategory} severity={alertSeverity} onSeverityChange={setAlertSeverity} showResolved={showResolved} onToggleResolved={() => setShowResolved((value) => !value)} />
@@ -391,7 +464,7 @@ export default function HposControl() {
 }
 
 /** @param {HposIncidentLogModalProps} props */
-function IncidentLogModal({ onClose, onLogged, onNotice }) {
+function IncidentLogModal({ onClose, localApi = null, onLogged, onNotice }) {
   const [form, setForm] = useState(/** @type {HposIncidentForm} */ ({ title: '', incident_type: 'safety', description: '', severity: 'medium' }));
   const [saving, setSaving] = useState(false);
   /** @param {import('react').FormEvent<HTMLFormElement>} event */
@@ -399,6 +472,14 @@ function IncidentLogModal({ onClose, onLogged, onNotice }) {
     event.preventDefault();
     setSaving(true);
     try {
+      if (localApi) {
+        const incident = await localApi.logIncident({
+          category: form.incident_type, severity: form.severity,
+          description: [form.title.trim(), form.description.trim()].filter(Boolean).join('\n'), immediate_action: ''
+        });
+        onLogged?.(incident ? /** @type {HposIncidentExpectedView} */ (incident) : null);
+        return;
+      }
       // The main handler forwards create_incident_log JSON unchanged; this expected-data view is not validation.
       const result = /** @type {HposIncidentCreateResultExpectedView|null|undefined} */ (await window.api?.incidents?.create?.(form));
       if (result?.success === false) throw new Error(result?.error || 'Could not log incident.');

@@ -27,6 +27,8 @@ const main = read('src/main/index.js')
 const runtime = read('src/main/bar-local/electronRuntime.js')
 const hposMySales = read('src/renderer/src/components/hospitality-pos/HposMySales.jsx')
 const mySalesAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposMySalesApi.js')
+const hposControl = read('src/renderer/src/components/hospitality-pos/HposControl.jsx')
+const controlAdapter = read('src/renderer/src/components/hospitality-pos/bar-local/hposControlApi.js')
 
 test('local Bar restores the established operational routes and its Stock Pro and Accounting Pro add-on routes', () => {
   assert.match(app, /<LocalBarHposShell status=\{currentAuthority\}/)
@@ -316,4 +318,20 @@ test('original Staff page and local Accounting chart never use hosted APIs from 
   assert.match(bankApi, /list\('accounting\.journal_entries'/)
   assert.match(bankApi, /accounting\.bank\.reconcile/)
   assert.match(bankPage, /No hosted Accounting request is made/)
+})
+
+test('original Bar Control board uses local atomic workflows and does not claim hosted alerts are clear', () => {
+  assert.match(hposControl, /createLocalHposControlApi/)
+  assert.match(hposControl, /if \(localApi\) \{[\s\S]*?localApi\.listChecklists\(\)[\s\S]*?return;[\s\S]*?window\.api\?\.pos\?\.getChecklists/)
+  assert.match(hposControl, /localApi\.setChecklistItem\(item\)/)
+  assert.match(hposControl, /localApi\.startChecklist\(template\.template_key\)/)
+  assert.match(hposControl, /localApi\.resolveIncident\(/)
+  assert.match(hposControl, /localApi\.logIncident\(/)
+  assert.match(hposControl, /Local alert feed is not available yet/)
+  assert.match(hposControl, /cannot confirm overall readiness/)
+  for (const command of ['control.checklist.start', 'control.checklist.item.set', 'control.incident.log', 'control.incident.resolve']) {
+    assert.ok(controlAdapter.includes(`'${command}'`), `${command} must use a local atomic command`)
+  }
+  assert.match(controlAdapter, /loadCompleteBarList/)
+  assert.match(controlAdapter, /retryOperation\(operationId\)/)
 })
