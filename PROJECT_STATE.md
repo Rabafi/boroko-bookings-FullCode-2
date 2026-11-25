@@ -1,3 +1,8 @@
+## 2026-11-25 — Marketing lead access release candidate
+
+- Added a local migration limiting public callers to inserting lead form fields. Browser CRM read and status updates require server-managed `marketing_crm_admin` in Supabase Auth app metadata. Desktop Command Central keeps service-role access. The old unguarded status RPC is revoked for public client roles.
+- The browser login handles the deployed function's verified-account response. The disposable PostgreSQL role test passed for visitors, ordinary accounts, approved staff and the desktop service role. The targeted production migration and approved staff claim were applied in one transaction. Catalog checks confirmed exactly one approved account, removal of the broad policies and legacy RPC grant, and continued visitor insert access. Owner browser sign-in has not been exercised. No Bar operator workflow changes or manual update required.
+
 ## 2026-10-19 — Proposed local Bar authority plan and implementation/review handoff
 
 - Prepared `docs/engineering/bar-local-first/TECHNICAL_PLAN.md`, `IMPLEMENTATION_PROMPT.md` and `REVIEW_PROMPT.md` at the owner's request. Proposed architecture: one local PostgreSQL-backed Bar service for single/multiple tills, modern and Legacy clients, local financial/stock authority, full feature/add-on inventory, recovery, packaging and acceptance evidence; HotelOS/LodgingOS retain existing online-first Supabase contracts. This is a plan, not an implemented authority change or readiness approval.

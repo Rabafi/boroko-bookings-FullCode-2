@@ -196,20 +196,36 @@
         try {
           var res = await fetch(EDGE_FUNCTION_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: SUPABASE_ANON_KEY,
+              Authorization: 'Bearer ' + SUPABASE_ANON_KEY
+            },
             body: JSON.stringify({ email: email, password: password })
           })
           var payload = await res.json()
-          if (!res.ok || !payload.access_token) throw new Error(payload.error || 'Invalid credentials')
+          if (!res.ok) throw new Error(payload.error || 'Invalid credentials')
 
-          var signInResponse = await supabase.auth.setSession({
-            access_token: payload.access_token,
-            refresh_token: payload.refresh_token
-          })
+          var signInResponse
+          if (payload.access_token && payload.refresh_token) {
+            signInResponse = await supabase.auth.setSession({
+              access_token: payload.access_token,
+              refresh_token: payload.refresh_token
+            })
+          } else if (payload.success && payload.auth_user_id) {
+            signInResponse = await supabase.auth.signInWithPassword({ email: email, password: password })
+          } else {
+            throw new Error('The administrator sign-in could not be verified.')
+          }
 
           if (signInResponse.error) throw signInResponse.error
 
           currentUser = signInResponse.data.user
+          if (payload.auth_user_id && currentUser.id !== payload.auth_user_id) {
+            await supabase.auth.signOut()
+            currentUser = null
+            throw new Error('The administrator sign-in returned a different account.')
+          }
           userEmail.textContent = currentUser.email || email
           showView('dashboard')
           await loadLeads()
