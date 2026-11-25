@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://borokobookings.com/sitemap.xml
+Sitemap: https://tsabonno.com/sitemap.xml

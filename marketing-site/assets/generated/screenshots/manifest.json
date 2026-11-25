@@ -112,6 +112,32 @@
       1920
     ]
   },
+  "hotel-front-desk.png": {
+    "fileName": "hotel-front-desk.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
+  "hotel-room-grid.png": {
+    "fileName": "hotel-room-grid.png",
+    "width": 1920,
+    "height": 993,
+    "orientation": "landscape",
+    "widths": [
+      640,
+      960,
+      1280,
+      1600,
+      1920
+    ]
+  },
   "pwa-alerts.png": {
     "fileName": "pwa-alerts.png",
     "width": 780,

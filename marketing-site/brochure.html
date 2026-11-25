@@ -4,20 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tsa Bonno HospitalityOS Brochure | Download PDF</title>
-    <meta name="description" content="Download the Tsa Bonno HospitalityOS customer brochure: lodge operations, bookings, payments, POS, inventory, manager mobile app, and direct online bookings." />
+    <meta name="description" content="Download the LodgingOS brochure for guest houses, B&Bs, lodges, camps and motels. HotelOS for hotels and resorts and PropertyOS are separate coming-soon products." />
     <meta property="og:title" content="Tsa Bonno HospitalityOS Brochure" />
-    <meta property="og:description" content="A polished shareable brochure for lodge owners and managers considering Tsa Bonno HospitalityOS." />
+    <meta property="og:description" content="Explore LodgingOS for guest houses, B&Bs, lodges, camps and motels. HotelOS and PropertyOS are separate coming-soon products." />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta property="og:image" content="https://tsabonno.com/assets/og-image.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Tsa Bonno HospitalityOS Brochure" />
-    <meta name="twitter:description" content="Download the Tsa Bonno HospitalityOS brochure for lodge owners and managers." />
-    <meta name="twitter:image" content="https://borokobookings.com/assets/og-image.png" />
+    <meta name="twitter:description" content="Explore LodgingOS for guest houses, B&Bs, lodges, camps and motels. HotelOS and PropertyOS are separate coming-soon products." />
+    <meta name="twitter:image" content="https://tsabonno.com/assets/og-image.png" />
     <meta name="theme-color" content="#18352b" />
-    <link rel="canonical" href="https://borokobookings.com/brochure" />
+    <link rel="canonical" href="https://tsabonno.com/brochure" />
     <link rel="icon" type="image/svg+xml" href="./assets/tsa-bonno-hospitalityos-logo.svg" />
     <link rel="alternate icon" type="image/png" href="./assets/tsa-bonno-hospitalityos-logo-light.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script src="./analytics.js" defer></script>
     <style>
       :root {
         --brochure-ink: #10241d;
@@ -325,7 +326,8 @@
         display: block;
         width: 100%;
         height: 100%;
-        object-fit: cover;
+        object-fit: contain;
+        background: var(--brochure-cream);
       }
 
       .image-frame.desktop {
@@ -699,6 +701,21 @@
         color: white;
       }
 
+      .brochure-page.dark-panel .contact-card:not(.hero-contact) {
+        background: rgba(255, 250, 241, 0.96);
+        color: var(--brochure-ink);
+      }
+
+      .brochure-page.dark-panel .contact-card:not(.hero-contact) h3,
+      .brochure-page.dark-panel .contact-card:not(.hero-contact) strong {
+        color: var(--brochure-ink);
+      }
+
+      .brochure-page.dark-panel .contact-card:not(.hero-contact) p,
+      .brochure-page.dark-panel .contact-card:not(.hero-contact) li {
+        color: #4b5e54;
+      }
+
       .big-contact {
         display: grid;
         gap: 12px;
@@ -801,6 +818,10 @@
           background: white !important;
         }
 
+        /* The site-wide animated grain filter rasterizes a large full-page
+           image on every print sheet and adds tens of megabytes to the PDF. */
+        body::after { display: none !important; }
+
         .topbar,
         .mobile-overlay,
         .site-footer,
@@ -837,6 +858,26 @@
 
         .page-inner {
           padding: 10mm 12mm;
+        }
+
+        /* Restore the designed grids when print media triggers the narrow-page breakpoint. */
+        .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .journey-panel { grid-template-columns: 0.82fr 1.18fr; }
+        .module-board { grid-template-columns: 1.1fr 0.9fr; }
+        .workflow-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .ecosystem-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .package-ladder { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .contact-grid { grid-template-columns: 0.95fr 1.05fr; }
+        .module-board > .ribbon-note { grid-column: 1 / -1; }
+        .proof-card img {
+          height: 210px;
+          object-fit: contain;
+          background: var(--brochure-cream);
+        }
+        .proof-card:nth-child(2) img {
+          width: auto;
+          max-width: 100%;
+          margin-inline: auto;
         }
 
         .cover-page .page-inner {
@@ -1028,6 +1069,32 @@
           padding: 10px;
         }
 
+        section[aria-label="Packages"] .page-inner > h2 {
+          font-size: 27pt;
+        }
+        section[aria-label="Packages"] .brochure-copy {
+          margin-top: 6px;
+          font-size: 9.5pt;
+        }
+        section[aria-label="Packages"] .package-ladder {
+          gap: 8px;
+          margin-top: 12px;
+        }
+        section[aria-label="Packages"] .package-card {
+          padding: 10px;
+        }
+        section[aria-label="Packages"] .module-board {
+          gap: 10px;
+          margin-top: 10px;
+        }
+        section[aria-label="Packages"] .module-board .image-frame.desktop {
+          aspect-ratio: auto;
+        }
+        section[aria-label="Packages"] .module-board .image-frame.desktop img {
+          height: 175px;
+          object-fit: contain;
+        }
+
         .contact-grid .image-frame.desktop {
           height: 104px;
           margin-top: 10px !important;
@@ -1077,15 +1144,15 @@
         <div class="topbar-pill">
           <a class="brand" href="./index.html" aria-label="Tsa Bonno HospitalityOS home">
             <span class="brand-mark">
-              <img src="./assets/tsa-bonno-hospitalityos-logo-light.png" alt="" aria-hidden="true" width="150" height="54" />
+              <img src="./assets/tsa-bonno-hospitalityos-logo-color.png" alt="" aria-hidden="true" width="150" height="54" />
             </span>
             <span class="brand-copy"><strong>Tsa Bonno HospitalityOS</strong></span>
           </a>
-          <nav id="site-nav" class="site-nav" aria-label="Main navigation"><a href="./lodge-app.html" data-nav="lodge-app">Lodge</a><a href="./hotel.html" data-nav="hotel">Hotel</a><a href="./restaurant-pos.html" data-nav="restaurant-pos">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos">Bar POS</a><a href="./packages.html" data-nav="packages">Packages</a><a href="./contact.html" data-nav="contact">Contact</a></nav>
+          <nav id="site-nav" class="site-nav" aria-label="Main navigation"><a href="./index.html#product-apps" data-nav="products">Products</a><a href="./packages.html" data-nav="packages">Pricing</a><a href="./contact.html" data-nav="contact">Contact</a><a href="./brochure.html" data-nav="brochure">Brochure</a></nav>
           <div class="topbar-actions">
             <a class="nav-cta-pill" href="./assets/tsa-bonno-hospitalityos-brochure.pdf" download>Download PDF</a>
           </div>
-          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation menu">
+          <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="mobile-overlay" aria-label="Open navigation menu">
             <span class="sr-only">Menu</span>
             <span class="menu-bar"></span>
             <span class="menu-bar"></span>
@@ -1097,7 +1164,7 @@
       <div class="mobile-overlay" id="mobile-overlay" aria-hidden="true">
         <div class="mobile-overlay-bg"></div>
         <div class="mobile-overlay-content">
-          <nav class="mobile-nav" aria-label="Mobile navigation"><a href="./index.html" data-nav="home" data-stagger="0">Home</a><a href="./lodge-app.html" data-nav="lodge-app" data-stagger="1">Lodge &amp; Camp</a><a href="./hotel.html" data-nav="hotel" data-stagger="2">Hotel</a><a href="./restaurant-pos.html" data-nav="restaurant-pos" data-stagger="3">Restaurant POS</a><a href="./bar-pos.html" data-nav="bar-pos" data-stagger="4">Bar POS</a><a href="./packages.html" data-nav="packages" data-stagger="5">Packages</a><a href="./contact.html" data-nav="contact" data-stagger="6">Contact</a></nav>
+          <nav class="mobile-nav" aria-label="Mobile navigation"><a href="./index.html" data-nav="home" data-stagger="0">Home</a><a href="./index.html#product-apps" data-nav="products" data-stagger="1">Products</a><a href="./packages.html" data-nav="packages" data-stagger="2">Pricing</a><a href="./contact.html" data-nav="contact" data-stagger="3">Contact</a><a href="./brochure.html" data-nav="brochure">Brochure</a></nav>
           <div class="mobile-overlay-footer">
             <a class="mobile-cta" href="./assets/tsa-bonno-hospitalityos-brochure.pdf" download>Download PDF</a>
             <a class="mobile-cta-secondary" href="./contact.html">Start free trial</a>
@@ -1109,7 +1176,7 @@
         <div class="brochure-toolbar" aria-label="Brochure actions">
           <div>
             <strong>Customer brochure</strong>
-            <p>A deeper customer PDF for lodge owners, managers, and decision-makers.</p>
+            <p>A customer PDF for guest houses, B&amp;Bs, lodges, camps, motels, managers, and decision-makers.</p>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;">
             <a class="download-link" href="./assets/tsa-bonno-hospitalityos-brochure.pdf" download>Download brochure PDF</a>
@@ -1125,17 +1192,17 @@
                 <span class="cover-tag">Hospitality operations system</span>
               </div>
               <div>
-                <span class="page-kicker">Run the lodge with confidence</span>
+                <span class="page-kicker">LodgingOS for guest houses, B&amp;Bs, lodges, camps, and motels</span>
                 <h1>Stop losing bookings, money, and stock in scattered admin.</h1>
                 <p class="brochure-copy">
-                  Tsa Bonno HospitalityOS brings front desk operations, billing, POS, inventory, owner oversight, and direct online reservations into one connected lodge system.
+                  LodgingOS brings front desk operations, billing, POS, inventory, manager oversight, and direct online reservations into one connected system. HotelOS for hotels and resorts and PropertyOS are separate products, currently coming soon.
                 </p>
               </div>
               <div class="cover-meta">
                 <div class="cover-contact">
                   <span>Botswana-built hospitality software</span>
-                  <a href="https://borokobookings.com">borokobookings.com</a>
-                  <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+                  <a href="https://tsabonno.com">tsabonno.com</a>
+                  <a href="mailto:support@tsabonno.com">support@tsabonno.com</a>
                   <a href="https://wa.me/26772789415">+267 72 789 415</a>
                 </div>
                 <span class="page-number">01 / 11</span>
@@ -1149,7 +1216,7 @@
                 <span class="page-kicker">What Tsa Bonno fixes first</span>
                 <h2>The costly problems are usually hiding in ordinary daily work.</h2>
                 <p class="brochure-copy">
-                  Tsa Bonno is built around the pressure points that make a lodge harder to control: unclear bookings, uncertain balances, quiet stock losses, delayed owner updates, and online enquiries that live outside the front desk.
+                  Tsa Bonno is built around the pressure points that make accommodation businesses harder to control: unclear bookings, uncertain balances, quiet stock losses, delayed owner updates, and online enquiries that live outside the front desk.
                 </p>
               </div>
               <div class="pain-list">
@@ -1167,28 +1234,28 @@
               <span class="page-kicker">The Tsa Bonno ecosystem</span>
               <h2>One product family for the front desk, the owner, and the guest.</h2>
               <p class="brochure-copy">
-                Tsa Bonno is strongest when the full operating loop is connected: the desktop app runs the lodge, the manager app gives oversight, and the booking site creates direct demand.
+                Tsa Bonno is strongest when the full operating loop is connected: the desktop app supports daily accommodation operations, the manager app gives oversight, and the booking site creates direct demand.
               </p>
               <div class="ecosystem-strip">
                 <article class="proof-card">
-                  <img src="./assets/screenshots/desktop-dashboard.png" alt="Tsa Bonno desktop dashboard showing lodge operations" />
+                  <img src="./assets/brochure/desktop-dashboard.jpg" alt="Tsa Bonno desktop dashboard showing accommodation operations" />
                   <div>
                     <h3>Desktop App</h3>
                     <p>For reception and front desk teams managing bookings, rooms, billing, POS, stock, reports, and day-to-day operations.</p>
                   </div>
                 </article>
                 <article class="proof-card">
-                  <img src="./assets/screenshots/pwa-dashboard.png" alt="Tsa Bonno Manager mobile app dashboard" />
+                  <img src="./assets/brochure/pwa-dashboard.jpg" alt="Tsa Bonno Manager mobile app dashboard" />
                   <div>
                     <h3>Manager App</h3>
                     <p>For owners and managers who need mobile visibility into money, rooms, alerts, bookings, and operational pressure.</p>
                   </div>
                 </article>
                 <article class="proof-card">
-                  <img src="./assets/screenshots/booking-site-lodge.png" alt="Tsa Bonno guest booking site" />
+                  <img src="./assets/brochure/booking-site-lodge.jpg" alt="Tsa Bonno guest booking site" />
                   <div>
                     <h3>Booking Site</h3>
-                    <p>A branded direct booking page where guests search rooms, send requests, and contact the lodge without commission.</p>
+                    <p>A branded direct booking page where guests search rooms, send requests, and contact the property without commission.</p>
                   </div>
                 </article>
               </div>
@@ -1200,12 +1267,12 @@
               <span class="page-kicker">The desktop app</span>
               <h2>The front desk gets a real command centre, not another spreadsheet.</h2>
               <p class="brochure-copy">
-                The Desktop App is where the lodge operates every day. It keeps reception focused on the next action: who is arriving, which rooms are occupied, who still owes money, what needs attention, and which online requests must be confirmed.
+                The Desktop App is where an accommodation business operates every day. It keeps reception focused on the next action: who is arriving, which rooms are occupied, who still owes money, what needs attention, and which online requests must be confirmed.
               </p>
               <div class="module-board">
-                <div class="ribbon-note"><strong>Hotel Core is a separate path.</strong> HotelOS includes the full accommodation depth for a hotel day—front desk, rooms, folios, rates, housekeeping, maintenance, reports, and night audit. Specialist capabilities are scoped separately.</div>
+                <div class="ribbon-note"><strong>HotelOS for hotels and resorts is coming soon.</strong> It is a separate product being developed for hotel operations. Register your interest to hear from us when launch details are available.</div>
                 <div class="image-frame desktop">
-                  <img src="./assets/screenshots/desktop-dashboard.png" alt="Tsa Bonno desktop dashboard showing daily lodge operations" />
+                  <img src="./assets/brochure/desktop-dashboard.jpg" alt="Tsa Bonno desktop dashboard showing daily accommodation operations" />
                   <div class="image-caption">The dashboard is built for handovers: arrivals, departures, balances, low stock, online requests, and alerts.</div>
                 </div>
                 <div class="module-stack">
@@ -1222,18 +1289,18 @@
               <span class="page-kicker">A calmer day at reception</span>
               <h2>Tsa Bonno turns the day into a sequence the team can follow.</h2>
               <p class="brochure-copy">
-                Good lodge software should reduce anxiety. Tsa Bonno helps the team move from morning planning to guest service to evening handover without losing the operational thread.
+                Good accommodation software should reduce anxiety. Tsa Bonno helps the team move from morning planning to guest service to evening handover without losing the operational thread.
               </p>
               <div class="workflow-grid">
                 <article class="workflow-card" data-step="1"><strong>Morning clarity</strong><p>Check arrivals, departures, occupied rooms, pending requests, and rooms needing housekeeping or maintenance attention.</p></article>
                 <article class="workflow-card" data-step="2"><strong>Booking discipline</strong><p>Create or update bookings, assign rooms, capture guest details, and keep payment expectations visible.</p></article>
                 <article class="workflow-card" data-step="3"><strong>Payment follow-up</strong><p>See unpaid and partial balances before they quietly become end-of-stay surprises.</p></article>
                 <article class="workflow-card" data-step="4"><strong>Room handover</strong><p>Use room status and housekeeping signals so the next shift knows what is ready, dirty, occupied, or blocked.</p></article>
-                <article class="workflow-card" data-step="5"><strong>Owner visibility</strong><p>As the lodge matures, managers can see the health of the business without waiting for manual updates.</p></article>
+                <article class="workflow-card" data-step="5"><strong>Owner visibility</strong><p>As the business grows, managers can see its health without waiting for manual updates.</p></article>
                 <article class="workflow-card" data-step="6"><strong>Growth loop</strong><p>When ready, direct booking requests, POS sales, and inventory control feed back into the same operating picture.</p></article>
               </div>
               <div class="ribbon-note">
-                The point is not to make the team “use software.” The point is to make the lodge feel easier to run, easier to hand over, and easier to understand.
+                The point is not to make the team “use software.” The point is to make the property easier to run, easier to hand over, and easier to understand.
               </div>
             </div>
           </section>
@@ -1243,7 +1310,7 @@
               <div class="journey-card dark">
                 <span class="large-word">Starter</span>
                 <h3>Not a weak entry package. A real front desk system.</h3>
-                <p style="margin-top:14px;">Starter is for lodges that want to stop relying on scattered notebooks, memory, WhatsApp threads, and disconnected spreadsheets.</p>
+                <p style="margin-top:14px;">Starter is for accommodation businesses that want to stop relying on scattered notebooks, memory, WhatsApp threads, and disconnected spreadsheets.</p>
                 <ul>
                   <li>Daily booking control</li>
                   <li>Guest and room records</li>
@@ -1259,9 +1326,9 @@
               </div>
               <div>
                 <span class="page-kicker">Why Starter already matters</span>
-                <h2>Starter gives the lodge operational order before anything else.</h2>
+                <h2>Starter gives an accommodation business operational order before anything else.</h2>
                 <p class="brochure-copy">
-                  A lodge does not need to start with every advanced feature to feel the value of Tsa Bonno. If the front desk can see rooms clearly, record bookings properly, keep guest details in one place, and follow balances with less confusion, the business is already stronger.
+                  An accommodation business does not need every advanced feature to feel the value of Tsa Bonno. If the front desk can see rooms clearly, record bookings properly, keep guest details in one place, and follow balances with less confusion, the business is already stronger.
                 </p>
                 <ul class="feature-matrix">
                   <li><strong>Replace the booking book</strong><span>Core</span></li>
@@ -1282,9 +1349,9 @@
             <div class="page-inner two-col">
               <div>
                 <span class="page-kicker">Why move to Standard</span>
-                <h2>When the owner starts asking “what is really happening?” the lodge is ready for Standard.</h2>
+                <h2>When the owner asks “what is really happening?” the business is ready for Standard.</h2>
                 <p class="brochure-copy">
-                  Standard is the control layer. It is for lodges where daily operations are no longer enough. The owner or manager needs full Staff and Reports, clearer visibility into money and expenses, and Prepayments Management for portfolio search, reconciliation, and export.
+                  Standard is the control layer for accommodation businesses where daily operations are no longer enough. The owner or manager needs full Staff and Reports, clearer visibility into money and expenses, and Prepayments Management for portfolio search, reconciliation, and export.
                 </p>
                 <div class="feature-grid" style="margin-top:28px;">
                   <div class="mini-card"><strong>Management reports</strong><p>Turn activity into a clearer business picture instead of waiting for manual summaries.</p></div>
@@ -1294,7 +1361,7 @@
                 </div>
               </div>
               <div class="image-frame desktop">
-                <img src="./assets/screenshots/desktop-reports.png" alt="Tsa Bonno desktop reports showing management visibility" />
+                <img src="./assets/brochure/desktop-reports.jpg" alt="Tsa Bonno desktop reports showing management visibility" />
               </div>
             </div>
           </section>
@@ -1303,9 +1370,9 @@
             <div class="page-inner journey-panel">
               <div>
                 <span class="page-kicker">Why move to Pro</span>
-                <h2>Pro is where Tsa Bonno becomes the commercial engine of the lodge.</h2>
+                <h2>Pro connects the wider commercial operation.</h2>
                 <p class="brochure-copy">
-                  Pro is for lodges that are ready to connect more than rooms. It brings Credit Control &amp; Automation, read-only Manager App oversight, direct guest demand, POS sales, stock control, supplies, and deeper operational visibility into the same system.
+                  Pro is for accommodation businesses ready to connect more than rooms. It brings Credit Control &amp; Automation, a Manager PWA owner overview, direct guest demand, POS sales, stock control, supplies, and deeper operational visibility. The app also supports selected mobile operations where the product features and user permissions allow them.
                 </p>
                 <ul class="feature-matrix">
                   <li><strong>Direct online booking requests</strong><span>Growth</span></li>
@@ -1313,13 +1380,13 @@
                   <li><strong>Inventory and low-stock alerts</strong><span>Control</span></li>
                   <li><strong>Room supplies visibility</strong><span>Operations</span></li>
                   <li><strong>Ageing, advisory matching, thresholds and alerts</strong><span>Credit Control</span></li>
-                  <li><strong>Read-only Manager App oversight</strong><span>Oversight</span></li>
-                  <li><strong>Best fit for growing lodges</strong><span>Scale</span></li>
+                  <li><strong>Owner overview in the Manager PWA</strong><span>Oversight</span></li>
+                  <li><strong>Best fit for growing properties</strong><span>Scale</span></li>
                 </ul>
               </div>
               <div class="side-photo">
-                <img src="./assets/photos/restaurant.jpg" alt="Restaurant service representing lodge POS and commercial operations" />
-                <div class="caption">When accommodation, guest requests, POS, and stock are connected, the lodge sees more of the real business.</div>
+                <img src="./assets/photos/desert-restaurant.webp" alt="Illustrative restaurant dining scene" />
+                <div class="caption">When accommodation, guest requests, POS, and stock are connected, the property sees more of the real business. The dining scene is illustrative.</div>
               </div>
             </div>
           </section>
@@ -1327,24 +1394,25 @@
           <section class="brochure-page" aria-label="Product capabilities">
             <div class="page-inner two-col">
               <div>
-                <span class="page-kicker">Selling features</span>
-                <h2>Everything a growing lodge needs to see clearly.</h2>
+                <span class="page-kicker">LodgingOS features</span>
+                <h2>Everything a growing accommodation business needs to see clearly.</h2>
                 <p class="brochure-copy">
-                  Tsa Bonno is practical software for real lodge work: quick enough for the front desk, structured enough for owners, and connected enough to support growth.
+                  Tsa Bonno is practical software for accommodation operations: quick enough for the front desk, structured enough for owners, and connected enough to support growth.
                 </p>
                 <div class="feature-grid" style="margin-top:28px;">
                   <div class="mini-card"><strong>Bookings and rooms</strong><p>Room board, arrivals, departures, guest records, and direct online requests.</p></div>
-                  <div class="mini-card"><strong>Money control</strong><p>Invoices, balances, payments, expenses, reports, and cleaner follow-up—with Guest Deposits tiered from Lite through Credit Control &amp; Automation.</p></div>
+                  <div class="mini-card"><strong>Money control</strong><p>Invoices, balances, payments, expenses, reports, and cleaner follow-up - with Guest Deposits tiered from Lite through Credit Control &amp; Automation.</p></div>
                   <div class="mini-card"><strong>POS and inventory</strong><p>Bar, kitchen, stock levels, low-stock alerts, and room-supply control.</p></div>
                   <div class="mini-card"><strong>Offline reliability</strong><p>Designed for real operating conditions where internet is not always perfect.</p></div>
                 </div>
               </div>
               <div class="module-stack">
                 <div class="image-frame desktop">
-                  <img src="./assets/screenshots/desktop-bookings.png" alt="Tsa Bonno bookings screen with guest, room, status, and payment columns" />
+                  <img src="./assets/brochure/desktop-bookings.jpg" alt="Tsa Bonno bookings screen with guest, room, status, and payment columns" />
                 </div>
                 <div class="image-frame desktop">
-                  <img src="./assets/screenshots/desktop-pos.png" alt="Tsa Bonno Restaurant & Bar POS screen showing product items and order panel" />
+                  <img src="./assets/brochure/desktop-pos.jpg" alt="Tsa Bonno LodgingOS point-of-sale screen with sample items; this is not a Restaurant or Bar POS screen" />
+                  <p class="image-caption">LodgingOS POS example · sample data · not a Restaurant or Bar POS screen</p>
                 </div>
               </div>
             </div>
@@ -1353,7 +1421,7 @@
           <section class="brochure-page" aria-label="Packages">
             <div class="page-inner">
               <span class="page-kicker">Packages built around maturity</span>
-              <h2>Choose the package that matches how your lodge operates today.</h2>
+              <h2>Choose the package that matches how your property operates today.</h2>
               <p class="brochure-copy">
                 Tsa Bonno is not packaged as random bundles. Each level has a clear job: get organised, gain control, then grow direct demand and commercial visibility.
               </p>
@@ -1361,7 +1429,7 @@
                 <article class="package-card">
                   <span class="label">Starter</span>
                   <h3>Front desk operations</h3>
-                  <p>For lodges that need structure around daily bookings, rooms, guests, invoices, and handovers.</p>
+                  <p>For accommodation businesses that need structure around daily bookings, rooms, guests, invoices, and handovers.</p>
                   <ul>
                     <li>Bookings and guest records</li>
                     <li>Room board and planning</li>
@@ -1383,7 +1451,7 @@
                 <article class="package-card featured">
                   <span class="label">Pro</span>
                   <h3>Growth and commercial control</h3>
-                  <p>For lodges ready to connect Credit Control &amp; Automation, read-only Manager oversight, direct bookings, POS, stock, supplies, and wider operational performance.</p>
+                  <p>For accommodation businesses ready to connect Credit Control &amp; Automation, read-only Manager oversight, direct bookings, POS, stock, supplies, and wider operational performance.</p>
                   <ul>
                     <li>Direct Booking Site</li>
                     <li>POS for bar and kitchen</li>
@@ -1395,11 +1463,11 @@
               </div>
               <div class="module-board">
                 <div class="image-frame desktop">
-                  <img src="./assets/screenshots/desktop-reports.png" alt="Tsa Bonno reports screen showing performance and financial visibility" />
+                  <img src="./assets/brochure/desktop-reports.jpg" alt="Tsa Bonno reports screen showing performance and financial visibility" />
                   <div class="image-caption">Reports help owners understand the business without waiting for manual summaries.</div>
                 </div>
                 <div class="image-frame desktop">
-                  <img src="./assets/screenshots/desktop-room-grid.png" alt="Tsa Bonno room board showing room status and housekeeping" />
+                  <img src="./assets/brochure/desktop-room-grid.jpg" alt="Tsa Bonno room board showing room status and housekeeping" />
                   <div class="image-caption">Room visibility keeps front desk work calmer and easier to hand over.</div>
                 </div>
               </div>
@@ -1409,9 +1477,9 @@
           <section class="brochure-page dark-panel" aria-label="Contact and next steps">
             <div class="page-inner">
               <span class="page-kicker">Start with a free trial</span>
-              <h2>See whether Tsa Bonno fits the way your lodge really works.</h2>
+              <h2>See whether Tsa Bonno fits the way your property really works.</h2>
               <p class="brochure-copy">
-                Every customer can start with a free 1-month trial. Use it to test the front desk workflow, owner visibility, online booking requests, and whether Tsa Bonno makes the lodge easier to run.
+                Every eligible property can start with a free 1-month trial. Use it to test the front desk workflow, owner visibility, online booking requests, and whether Tsa Bonno makes day-to-day operations easier to run.
               </p>
               <div class="contact-grid">
                 <article class="contact-card hero-contact">
@@ -1420,8 +1488,8 @@
                     <p>Share the number of rooms, whether you run a bar or kitchen, and what you want to fix first.</p>
                     <div class="big-contact">
                       <a href="https://wa.me/26772789415">WhatsApp <span>+267 72 789 415</span></a>
-                      <a href="mailto:hello@borokobookings.com">Email <span>hello@borokobookings.com</span></a>
-                      <a href="https://borokobookings.com">Website <span>borokobookings.com</span></a>
+                      <a href="mailto:support@tsabonno.com">Email <span>support@tsabonno.com</span></a>
+                      <a href="https://tsabonno.com">Website <span>tsabonno.com</span></a>
                     </div>
                   </div>
                   <div class="brochure-logo-lockup">
@@ -1442,7 +1510,7 @@
                     <li>Does POS and inventory help reduce hidden stock leakage?</li>
                   </ul>
                   <div class="image-frame desktop" style="margin-top:24px;">
-                    <img src="./assets/screenshots/desktop-invoices.png" alt="Tsa Bonno invoices screen showing balances and payment follow-up" />
+                    <img src="./assets/brochure/desktop-invoices.jpg" alt="Tsa Bonno invoices screen showing balances and payment follow-up" />
                   </div>
                 </article>
               </div>
@@ -1463,7 +1531,7 @@
                 <span>Built by Batswana for Batswana hospitality businesses</span>
               </span>
             </div>
-            <p class="footer-copy">Built to help lodges operate smoothly, make better decisions, and grow into stronger hospitality businesses.</p>
+            <p class="footer-copy">Built to help hospitality businesses operate smoothly, make better decisions, and grow with control.</p>
           </div>
           <div class="footer-links">
             <a href="./index.html">Home</a>
@@ -1476,14 +1544,14 @@
             <a href="./contact.html">Contact</a>
             <a href="./assets/tsa-bonno-hospitalityos-brochure.pdf" download>Download brochure PDF</a>
             <a href="https://wa.me/26772789415" target="_blank" rel="noreferrer">WhatsApp: +267 72 789 415</a>
-            <a href="mailto:hello@borokobookings.com">hello@borokobookings.com</a>
+            <a href="mailto:support@tsabonno.com">support@tsabonno.com</a>
           </div>
         </div>
       </footer>
 
-      <div class="cookie-banner" role="dialog" aria-modal="true" aria-label="Cookie consent">
+      <div class="cookie-banner" role="region" aria-label="Cookie choices">
         <div class="container cookie-inner">
-          <p>We use minimal cookies for analytics. By continuing, you accept our <a href="./privacy.html">Privacy Policy</a>.</p>
+          <p>We use optional analytics cookies. Read our <a href="./privacy.html">Privacy Policy</a>.</p>
           <div class="cookie-actions">
             <button class="btn btn-primary cookie-accept" type="button">Accept</button>
             <button class="btn btn-cookie-decline" type="button">Decline</button>
